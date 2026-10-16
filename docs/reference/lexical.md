@@ -65,10 +65,12 @@ Data is read with `from` (`json`, `jsonl`, `table`, `toml`, `xml`, `yaml`) and w
 (`json`, `jsonl`, `yaml`). These words are special only in those positions;
 anywhere else they are ordinary names.
 
-`pure` and `readonly` each start their own indented block. Code in a
+`pure`, `readonly` and `plan` each start their own indented block. Code in a
 `pure` block may have no effects at all; code in a `readonly` block may
-read (files, the environment, the clock, HTTP GETs) but change nothing.
-`pure` also marks a function: `let pure f x = …`. Neither goes after `within`.
+read (files, the environment, the clock, HTTP GETs) but change nothing;
+a `plan` block runs its reads and captures its file and HTTP changes as a
+`Plan` to preview, compare or apply. `pure` also marks a function:
+`let pure f x = …`. None of them goes after `within`.
 <!-- keywords:end -->
 
 The reserved words are deliberate. Two of them, `rec` and `mutable`,
@@ -80,12 +82,11 @@ let rec f x = x // 'rec' is reserved; weir has no let rec
 print "y"
 ```
 
-Four more are reserved only so that the error can help. weir has no
+Three more are reserved only so that the error can help. weir has no
 such constructs, but if you type one out of habit from another
 language, the error tells you what to write instead: `while` points
 at `retry`/`poll` and seq iteration, `return` at a function's last
-expression, `try` at `| complete` and the `within` scopes, and `def`
-at `let`:
+expression, and `def` at `let`:
 
 ```weir-error
 while true do print "x" // 'while' is not a weir word — the error points at retry/poll
@@ -309,8 +310,8 @@ exactly one of these three contexts:
 | directive | purpose | context |
 |---|---|---|
 | `#sig` | bind a command signature file | script file, read at check time |
-| `#schema` | the schema a `yaml` block is checked against (currently written as `schema=` on the marker line) | script file, read at check time |
-| `#session` | session settings: cwd, env, echo cap, log level | init.weir, read once at startup |
+| `#init` | marks the file as the init file; its required first line | init.weir, read once at startup |
+| `#session` | session settings: cwd, env, log level, echo cap, prompt | init.weir, read once at startup |
 | `#alias` | a command alias (`#alias k = kubectl`) | init.weir (also works at the prompt) |
 | `#help` | the directives, the modules, one member's doc | REPL prompt, runs now |
 | `#find` | fuzzy help search (fzf + live preview; substring fallback) | REPL prompt, runs now |
@@ -320,9 +321,10 @@ exactly one of these three contexts:
 | `#history` | show history (`#history` all, `#history N` last N); prints the file path | REPL prompt, runs now |
 | `#quit` | leave the REPL | REPL prompt, runs now |
 
+There is no `#schema` directive: a `yaml` block names its schema on
+its marker line, `yaml schema=<name>` ([schemas](../tooling.md#yaml-schemas)).
 The [REPL manual](../repl.md) covers the prompt set and the init
-file. [Signatures](../tooling.md#command-signatures) and
-[schemas](../tooling.md#yaml-schemas) cover the check-time ones.
+file; [signatures](../tooling.md#command-signatures) cover `#sig`.
 
 ## Attributes
 

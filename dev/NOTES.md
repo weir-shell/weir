@@ -1,5 +1,122 @@
 # Spike Notes
 
+## Recovery positions (2026-10-16)
+
+Invariant 8's two red classes [D:fuzz-hunt2-invariants], closed.
+
+Positions past the line end [D:recovery-physical-indent]. Not the
+logical-line join: `translate` was right. Assembly recovery
+[D:assembly-recovery] re-indents a misaligned line onto its
+siblings' column and re-assembles the REPAIRED text, so the
+segments recorded the repair's indent. After an unclosed `[`
+swallows the following lines every one of them is "misaligned" and
+gets re-indented to the entry column — then every column computed
+off those segments (the assembly diagnostic's content start, read
+from the repaired input too; `translate` for parse, check, the
+seq-unit warning and hints; the LSP's physical<->logical map) was
+shifted by the re-indent delta, past the end of a shorter source
+line. Lines indented right of their siblings shifted left instead —
+in range, so the fuzzer could not see them, but on the wrong token
+(a pipeline stage two columns off its group put a type error on `+`
+instead of `"x"`). The fix maps back, it does not clamp: the repair
+rewrites leading spaces only, so the source indent restores every
+column exactly. Recovered lines' segments carry the source indent
+(`withPhysicalIndents`, which carries the segment ends across the
+new record), the assembly diagnostic reads the source line.
+
+fmt and layout errors [D:fmt-repairs-layout]: ruled by the user —
+fmt may repair a pure layout error; the law now fails a 0 -> 1
+flip, a 1 -> 0 with nothing listed, and any non-layout error that
+fmt makes disappear. The layout class is `doc-align` alone: the
+other layout errors are assembly errors, and fmt refuses those.
+
+Measured with a counting copy of the invariant-8 composition (the
+property stops at its first failure), same programs before and after
+(seeds 11-13 x 1,200 programs x 5 neighbors): positions past the
+line end 23 -> 0 (parse 19, assembly 2, cmd-not-found 1, seq-unit 1 — all
+gone); verdict flips 14 -> 14, every one a pure `doc-align` repair,
+so 0 under the ruled law. Fresh seeds 21-22 (2,400 programs) on the
+fixed binary with the ruled law: 0 violations (2 exempt doc-align
+repairs).
+## W2a — the audit rulings (2026-10-16)
+
+Five W2 docs-vs-binary findings, ruled by the user the same day.
+
+Scalar Map values [D:map-values]. SKILL said a whole JSON document
+reads as `Map<string, T>`; the slot's value position only took a
+record name or `{| … |}`, so `from json Map<string, int>` was a bare
+parse error while a `Map<string, int>` FIELD worked. The slot now
+parses `Map<K, V>` with tySyn and reads a non-record V through the
+field reader. Side effect: `Map<string, Map<string, R>>` reads (it
+used to be "unknown type 'Map'"). yaml was not touched — it has no
+Map wrap at all, its refusal is the stated follow-up, not the same
+path. `Map<int, …>` in the slot now teaches as a declaration does.
+
+Assembly columns [D:assembly-col]. check/LSP already carried a column
+(the recovery path computed the indentation); the runner, import,
+init, fmt, -e and the REPL printed `line N:` only. One helper now
+derives line/col from the message for every consumer.
+
+Docs only: a late `import` works from its line on [D:late-imports];
+the single-line `let … in` takes a command RHS [D:let-in-commands].
+Seen while probing, not ruled: `let x = (let n = echo a b in n)` runs
+the command in a file, while `(let n = echo a b in n)` at -e teaches
+`$()` — the paren carve-out is not uniform.
+
+## W6 — regression automation (2026-10-15)
+
+The two bug hunts' acceptance harnesses (tools/sweep-repro.weir,
+tools/hunt2-repro.weir) were run by hand per stage and then by nobody.
+They now gate ci.yml's linux job and ci/local.sh [D:repro-gates].
+
+Ports [D:harness-ports]. hunt2's H14 once died `Address already in
+use` between `freePort` and the python server's bind. The old picker
+probed `Net.portOpen` over 20000..62000 — most of that is the Linux
+ephemeral range (32768-60999), where any outbound client socket (every
+curl and restore in the run) holds a local port that is NOT listening,
+so `portOpen` calls it free and the bind then fails. Python servers
+now bind port 0 and print the kernel's pick (no window at all); `within
+serve` is HttpListener, which takes no port 0, so its probes draw
+candidates from a per-run block in 20000..31999 and rerun on the next
+candidate when the bind is lost. Exercised by holding two candidates
+bound-but-not-listening: the serve landed on the third.
+
+Local gate vs CI. ci/local.sh already ran the default (Debug)
+configuration and dead-privates — the drift was in the ad-hoc gates
+sessions ran instead (`-c Release`), which hid a Debug-frame stack
+overflow, and a leftover private only CI's dead-privates caught. Both
+files now state `-c Debug` explicitly and the PROCESS rule names the
+battery. Also found: local.sh's image excluded .git (the root
+.dockerignore), so its decision-keys step (`git ls-files`) could not
+pass in the container; ci/run.Dockerfile.dockerignore keeps .git.
+
+The Linux-CI-only fuzz red (`--seed 4242 --count 10`, one of 46; the
+count-200 smoke green in the same job) is not seed-specific: the
+default seed at count 10 fails the same way. Reproduced by
+oversubscribing 4 cores 2.5x (`taskset -c 0-3` + six busy loops):
+count 10 red, count 200 green — CI's exact shape. The reds are the
+depth axis's wall-clock bounds (operator spine, let-in, elif: 15s).
+Instrumented: the Task.Run queue delay stayed <= 137ms (thread-pool
+starvation ruled out — forcing 64 min pool threads changed nothing);
+the WORK itself took 21-27s against ~0.6s alone — the depth cases
+contending with each other (allocation-heavy parses, shared GC). Run
+sequenced [D:fuzz-depth-sequenced] they pass under the same load,
+worst 8.9s (let-in). Without load, unsequenced, every variant passed
+here (15 cores; taskset 1/2/4 cores; LANG unset) — a CI runner is
+slower per core, which is why only CI saw it.
+
+The hunt-2 laws became invariant 8 [D:fuzz-hunt2-invariants]. Red on
+deep runs from day one, kept red (dev/BACKLOG.md has the inputs):
+positions past the line end after an unclosed bracket, and fmt
+repairing a doc-align error. A first 1,500-program sweep showed
+hundreds of exit-134/255 crashes — all EAGAIN from the container's
+2048-pid cap while other agents ran e2e; serialized, none remained.
+
+The e2e cells that pgrep/pkill their own children matched fixed
+markers (`sleep 98761`…), so concurrent runs killed each other's
+children; markers now derive from the e2e shell's pid
+[D:e2e-run-markers].
+
 ## NUL in a path — the resolve funnel guard (STRIX-5) (2026-09-21)
 
 A `.weir` file whose one line was `./a<NUL>b c` did not error — it

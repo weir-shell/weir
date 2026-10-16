@@ -1,6 +1,6 @@
 # PLAN: pipe chains — the early-exit hang, reifiers on chains, the let-RHS teaching
 
-**Status: APPROVED 2026-10-07** (both rulings as recommended: a chain's
+**Status: LANDED ([D:chain-reifiers] [D:pipe-early-exit]); originally APPROVED 2026-10-07** (both rulings as recommended: a chain's
 code is the LEFTMOST failing stage's; `complete.stderr` concatenates every
 stage's stderr in stage order). Found while answering "show me a reifier
 after a pipeline".

@@ -29,6 +29,22 @@ let liveAmbient () =
       Cwd = None
       Ambient = None }
 
+// a Secret spliced into argv reaches the child in the clear, but every
+// message weir renders from an argv shows it as *** [D:secret-argv-mask]:
+// the splice registers the word's text; the renderer masks any word equal
+// to a registered one (equal text IS the secret — the safe direction)
+let private secretWords = System.Collections.Concurrent.ConcurrentDictionary<string, byte>()
+
+let markSecretWord (s: string) : unit =
+    if s <> "" then
+        secretWords.TryAdd(s, 0uy) |> ignore
+
+/// one command line for a message, Secret-spliced words masked
+let showArgv (words: string list) : string =
+    words
+    |> List.map (fun w -> if secretWords.ContainsKey w then "***" else w)
+    |> String.concat " "
+
 // NUL refusal at the spawn hand-off [D:spawn-nul-funnel]: argv and
 // env are NUL-terminated C strings, so a NUL-bearing word would
 // silently truncate at the child (the prefix runs; exit 0; no
@@ -247,7 +263,7 @@ let private raiseNonzero (s: Spec) (code: int) =
     // a child killed by a teardown is the teardown's, not a failure
     // [D:signal-main-unwind]
     Session.checkTeardown ()
-    let shown = String.concat " " (s.Prog :: s.Args)
+    let shown = showArgv (s.Prog :: s.Args)
 
     let signalNote =
         // 128+N = terminated by signal N; name the common ones so a

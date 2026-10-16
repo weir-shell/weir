@@ -54,10 +54,10 @@ let generate
     // re-entrant resolve is a cycle — the opaque note posture
     let memo = Collections.Generic.Dictionary<string, string option>()
 
-    // a cyclic reference renders as this marker; the record walk drops a
-    // field whose type carries it — weir records are finite trees, so the
-    // JSON/YAML boundary refuses a recursive type and an opaque Yaml field
-    // is not admitted by `from json` [D:schema-types]
+    // a cyclic reference renders as this marker; the record walk drafts
+    // a field whose type carries it as the opaque `Yaml` node — weir
+    // records are finite trees, and both boundaries read a subtree whole
+    // into `Yaml` [D:json-yaml-field]
     let cyc = "\u0000cycle"
 
     let rec shape (desired: string) (srcKey: string) (parentStem: string) (path: string) (s: Schema) : string =
@@ -135,26 +135,25 @@ let generate
                 // determinism: fields alphabetical by wire key (ordinal),
                 // the sig generator's own ordering law
                 |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
-                |> List.choose (fun (k, sub) ->
+                |> List.map (fun (k, sub) ->
                     let childPath = if path = "" then k else path + "." + k
                     let core = shape (Infer.capitalize (Infer.identStem k)) k thisStem childPath sub
 
-                    if core.Contains cyc then
-                        reg.AddNote
-                            $"{childPath}: refers back to its own definition — omitted (a weir record is a finite tree; reading ignores the key; a bounded hand-written shape can add it)"
+                    let core =
+                        if core.Contains cyc then
+                            reg.AddNote
+                                $"{childPath}: refers back to its own definition — drafted Yaml (a weir record is a finite tree; the node holds the subtree whole)"
 
-                        None
-                    else
-                        // the headline rule: absent from `required` → Option —
-                        // the fact no sample can carry [D:schema-types]
-                        let ty = if List.contains k required then core else opt core
-                        Some(k, ty))
+                            core.Replace(cyc, "Yaml")
+                        else
+                            core
 
-            // every field cyclic: the object has no finite shape of its own
-            if List.isEmpty rendered then
-                cyc
-            else
-                reg.Claim desired srcKey parentStem rendered
+                    // the headline rule: absent from `required` → Option —
+                    // the fact no sample can carry [D:schema-types]
+                    let ty = if List.contains k required then core else opt core
+                    k, ty)
+
+            reg.Claim desired srcKey parentStem rendered
 
     and resolveRef (key: string) : string =
         match memo.TryGetValue key with
@@ -162,8 +161,8 @@ let generate
         | true, None ->
             // a cycle (JSONSchemaProps and friends): no finite weir
             // record spells a self-referential type — the marker makes
-            // the referring field drop with a note, never a hang and
-            // never a silent guess
+            // the referring field an opaque Yaml node with a note, never
+            // a hang and never a silent guess
             cyc
         | _ ->
             memo[key] <- None

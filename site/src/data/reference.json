@@ -330,6 +330,20 @@
           "pointer": null
         },
         {
+          "name": "getOr",
+          "signature": "Env.getOr (name: string) (fallback: string) : string",
+          "summary": "An environment variable as a string, or the default when it is unset. A set-but-empty variable gives \u0022\u0022, not the default.",
+          "example": "Env.getOr \u0022PORT\u0022 \u00228080\u0022",
+          "pointer": null
+        },
+        {
+          "name": "need",
+          "signature": "Env.need (name: string) : string",
+          "summary": "A required environment variable as a string; raises naming the variable when it is unset. A set-but-empty variable gives \u0022\u0022.",
+          "example": "Env.need \u0022PATH\u0022",
+          "pointer": "For a typed or multi-variable read, use Env.load."
+        },
+        {
           "name": "ofPairs",
           "signature": "Env.ofPairs (pairs: seq\u003Cstring * string\u003E) : seq\u003CEnvVar\u003E",
           "summary": "Build EnvVar records from name/value tuples.",
@@ -1396,6 +1410,13 @@
           "pointer": null
         },
         {
+          "name": "initInfinite",
+          "signature": "Seq.initInfinite (f: int -\u003E \u0027a) : seq\u003C\u0027a\u003E",
+          "summary": "The endless sequence f 0, f 1, f 2, \u2026, computed lazily as it is read. Bound it with take, takeWhile or a slice before forcing it.",
+          "example": "Seq.initInfinite (fun i -\u003E i * i) |\u003E Seq.take 4 |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
           "name": "isEmpty",
           "signature": "Seq.isEmpty (xs: seq\u003C\u0027a\u003E) : bool",
           "summary": "True when the sequence has no elements.",
@@ -1711,7 +1732,7 @@
         {
           "name": "streamErrors",
           "signature": "Server.streamErrors (srv: Server) : seq\u003Cstring\u003E",
-          "summary": "Error messages from Stream response bodies that raised partway through; the client received a truncated body for each. Empty until one fails. Streaming errors are reported here instead of being raised out of the handler.",
+          "summary": "Error messages from Stream response bodies that raised partway through (the client received a truncated body for each), and from response headers that could not be sent (the client received a 500). Empty until one fails. These errors are reported here instead of being raised out of the handler.",
           "example": null,
           "pointer": "When a Stream body raises, the client\u0027s response is cut off and the error is recorded here."
         }
@@ -2226,7 +2247,7 @@
     {
       "name": "cd",
       "signature": "cd (path: string) : string",
-      "summary": "Change the session\u0027s directory and return the previous one, so you can go back later (\u0060let prev = cd \u0022/tmp\u0022\u0060). A bare name uses the value of that binding (\u0060cd target\u0060). \u0060cd\u0060 with no argument, or a typed \u0060cd ~\u0060, goes to the home directory; a string argument is used literally. To change directory for a block only, use \u0060within cd\u0060.",
+      "summary": "Change the session\u0027s directory and return the absolute directory it moved to (\u0060let here = cd \u0022/tmp\u0022\u0060). A bare name uses the value of that binding (\u0060cd target\u0060). \u0060cd\u0060 with no argument, or a typed \u0060cd ~\u0060, goes to the home directory; a string argument is used literally. To change directory for a block only, use \u0060within cd\u0060.",
       "example": "cd \u0022.\u0022",
       "pointer": null
     },
@@ -2315,6 +2336,13 @@
       "pointer": "Use it as a pipe stage: \u0060lines |\u003E from yaml Deployment\u0060 gives a seq\u003CDeployment\u003E, one per YAML document."
     },
     {
+      "name": "fst",
+      "signature": "fst (pair: \u0027a * \u0027b) : \u0027a",
+      "summary": "The first element of a pair. Wider tuples are a type error, as in F#.",
+      "example": "fst (1, \u0022a\u0022)",
+      "pointer": null
+    },
+    {
       "name": "id",
       "signature": "id (x: \u0027a) : \u0027a",
       "summary": "The identity function: returns its argument unchanged. Useful where a function is expected, as in \u0060Seq.choose id\u0060 over a seq of Options. Unlike \u0060not\u0060 or \u0060fst\u0060, \u0060id\u0060 can still be used as a variable name; a binding named \u0060id\u0060 simply shadows it.",
@@ -2334,6 +2362,13 @@
       "summary": "Run a one-value command and return its single line of output as a trimmed string \u2014 for tools like \u0060git rev-parse HEAD\u0060 or \u0060az \u2026 -o tsv\u0060. Raises on a nonzero exit, or when the output is not exactly one line.",
       "example": null,
       "pointer": "For several lines use \u0060| text\u0060 (one string), or bind the command itself (a seq\u003Cstring\u003E, one element per line)."
+    },
+    {
+      "name": "ls",
+      "signature": "ls : seq\u003CFileRow\u003E",
+      "summary": "The current directory\u0027s entries as typed rows (name, kind, target, bytes, modified, hidden, path), sorted by name. Dir.stat gives the same rows for a named directory; ^ls runs the external ls.",
+      "example": "ls |\u003E Seq.where (fun f -\u003E f.kind == Directory)",
+      "pointer": null
     },
     {
       "name": "not",
@@ -2378,6 +2413,13 @@
       "pointer": "To mark a whole function, use \u0060let pure\u0060. Calls the checker cannot see into (a function parameter, a member of an import) count as impure, so the check may reject code that is actually pure, but it never accepts code that is not."
     },
     {
+      "name": "pwd",
+      "signature": "pwd : string",
+      "summary": "The session\u0027s current directory, read where it is used.",
+      "example": "pwd",
+      "pointer": null
+    },
+    {
       "name": "retry",
       "signature": null,
       "summary": "Re-run an indented body until it succeeds: \u0060retry attempts=5 delay=30s\u0060 followed by the body. If the body returns a bool, true means success. If it returns another value, add \u0060until r\u0060 and a predicate block; retry then returns the value that passed. Running out of attempts raises. An error raised inside the body is not retried, it propagates; to retry a failing command, turn its result into data with \u0060| succeeds\u0060 or \u0060| complete\u0060.",
@@ -2389,6 +2431,13 @@
       "signature": "show (value: \u0027a) : string",
       "summary": "Turn any value into its text form, the same text string interpolation produces. Use it where interpolation does not fit, such as \u0060Seq.map show\u0060. A Secret cannot be interpolated, but \u0060show\u0060 renders it masked. It works on every value; functions show as an opaque placeholder.",
       "example": "[1; 2; 3] |\u003E Seq.map show |\u003E Seq.freeze",
+      "pointer": null
+    },
+    {
+      "name": "snd",
+      "signature": "snd (pair: \u0027a * \u0027b) : \u0027b",
+      "summary": "The second element of a pair. Wider tuples are a type error, as in F#.",
+      "example": "snd (1, \u0022a\u0022)",
       "pointer": null
     },
     {
@@ -2463,6 +2512,476 @@
         {
           "name": "lock",
           "doc": "an advisory file lock, held for the block and released however it ends, even on kill -9"
+        }
+      ]
+    }
+  ],
+  "types": [
+    {
+      "name": "Auth",
+      "kind": "union",
+      "cases": [
+        {
+          "name": "NoAuth",
+          "payload": null
+        },
+        {
+          "name": "Bearer",
+          "payload": "Secret"
+        },
+        {
+          "name": "Basic",
+          "payload": "string * Secret"
+        }
+      ]
+    },
+    {
+      "name": "Completed",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "exitCode",
+          "type": "int"
+        },
+        {
+          "name": "stdout",
+          "type": "seq\u003Cstring\u003E"
+        },
+        {
+          "name": "stderr",
+          "type": "seq\u003Cstring\u003E"
+        }
+      ]
+    },
+    {
+      "name": "EnvVar",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "value",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "FileKind",
+      "kind": "union",
+      "cases": [
+        {
+          "name": "Regular",
+          "payload": null
+        },
+        {
+          "name": "Directory",
+          "payload": null
+        },
+        {
+          "name": "Symlink",
+          "payload": null
+        }
+      ]
+    },
+    {
+      "name": "FileRow",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "kind",
+          "type": "FileKind"
+        },
+        {
+          "name": "target",
+          "type": "Option\u003Cstring\u003E"
+        },
+        {
+          "name": "bytes",
+          "type": "Size"
+        },
+        {
+          "name": "modified",
+          "type": "Instant"
+        },
+        {
+          "name": "hidden",
+          "type": "bool"
+        },
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "HttpBody",
+      "kind": "union",
+      "cases": [
+        {
+          "name": "NoBody",
+          "payload": null
+        },
+        {
+          "name": "Json",
+          "payload": "seq\u003Cstring\u003E"
+        },
+        {
+          "name": "Text",
+          "payload": "string"
+        },
+        {
+          "name": "Stream",
+          "payload": "seq\u003Cstring\u003E"
+        },
+        {
+          "name": "Form",
+          "payload": "seq\u003Cstring * string\u003E"
+        }
+      ]
+    },
+    {
+      "name": "HttpMethod",
+      "kind": "union",
+      "cases": [
+        {
+          "name": "Get",
+          "payload": null
+        },
+        {
+          "name": "Post",
+          "payload": null
+        },
+        {
+          "name": "Put",
+          "payload": null
+        },
+        {
+          "name": "Delete",
+          "payload": null
+        },
+        {
+          "name": "Patch",
+          "payload": null
+        },
+        {
+          "name": "Head",
+          "payload": null
+        },
+        {
+          "name": "Options",
+          "payload": null
+        },
+        {
+          "name": "Query",
+          "payload": null
+        },
+        {
+          "name": "Other",
+          "payload": "string"
+        }
+      ]
+    },
+    {
+      "name": "HttpRequest",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "method",
+          "type": "HttpMethod"
+        },
+        {
+          "name": "url",
+          "type": "string"
+        },
+        {
+          "name": "auth",
+          "type": "Auth"
+        },
+        {
+          "name": "headers",
+          "type": "seq\u003Cstring * string\u003E"
+        },
+        {
+          "name": "secretHeaders",
+          "type": "seq\u003Cstring * Secret\u003E"
+        },
+        {
+          "name": "body",
+          "type": "HttpBody"
+        },
+        {
+          "name": "timeout",
+          "type": "Duration"
+        },
+        {
+          "name": "insecure",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "HttpResponse",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "status",
+          "type": "int"
+        },
+        {
+          "name": "headers",
+          "type": "seq\u003Cstring * string\u003E"
+        },
+        {
+          "name": "body",
+          "type": "seq\u003Cstring\u003E"
+        }
+      ]
+    },
+    {
+      "name": "HttpServerRequest",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "method",
+          "type": "HttpMethod"
+        },
+        {
+          "name": "path",
+          "type": "string"
+        },
+        {
+          "name": "query",
+          "type": "string"
+        },
+        {
+          "name": "headers",
+          "type": "seq\u003Cstring * string\u003E"
+        },
+        {
+          "name": "body",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "HttpServerResponse",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "status",
+          "type": "int"
+        },
+        {
+          "name": "headers",
+          "type": "seq\u003Cstring * string\u003E"
+        },
+        {
+          "name": "body",
+          "type": "HttpBody"
+        }
+      ]
+    },
+    {
+      "name": "Op",
+      "kind": "union",
+      "cases": [
+        {
+          "name": "WriteFile",
+          "payload": "string * seq\u003Cstring\u003E"
+        },
+        {
+          "name": "DeleteFile",
+          "payload": "string"
+        },
+        {
+          "name": "Copy",
+          "payload": "string * string"
+        },
+        {
+          "name": "Move",
+          "payload": "string * string"
+        },
+        {
+          "name": "CopyDir",
+          "payload": "string * string"
+        },
+        {
+          "name": "MoveDir",
+          "payload": "string * string"
+        },
+        {
+          "name": "MakeDir",
+          "payload": "string"
+        },
+        {
+          "name": "DeleteDir",
+          "payload": "string"
+        },
+        {
+          "name": "DeleteTree",
+          "payload": "string"
+        },
+        {
+          "name": "HttpSend",
+          "payload": "HttpRequest"
+        }
+      ]
+    },
+    {
+      "name": "Option",
+      "kind": "union",
+      "cases": [
+        {
+          "name": "Some",
+          "payload": "\u0027a"
+        },
+        {
+          "name": "None",
+          "payload": null
+        }
+      ]
+    },
+    {
+      "name": "Poll",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "timeout",
+          "type": "Duration"
+        },
+        {
+          "name": "interval",
+          "type": "Duration"
+        }
+      ]
+    },
+    {
+      "name": "PromptStatus",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "ok",
+          "type": "bool"
+        },
+        {
+          "name": "exit",
+          "type": "Option\u003Cint\u003E"
+        }
+      ]
+    },
+    {
+      "name": "Result",
+      "kind": "union",
+      "cases": [
+        {
+          "name": "Ok",
+          "payload": "\u0027a"
+        },
+        {
+          "name": "Error",
+          "payload": "\u0027e"
+        }
+      ]
+    },
+    {
+      "name": "Retry",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "attempts",
+          "type": "int"
+        },
+        {
+          "name": "delay",
+          "type": "Duration"
+        },
+        {
+          "name": "timeout",
+          "type": "Option\u003CDuration\u003E"
+        }
+      ]
+    },
+    {
+      "name": "ServerConfig",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "port",
+          "type": "int"
+        },
+        {
+          "name": "maxConcurrent",
+          "type": "int"
+        },
+        {
+          "name": "bodyTimeout",
+          "type": "Duration"
+        },
+        {
+          "name": "maxBody",
+          "type": "Size"
+        }
+      ]
+    },
+    {
+      "name": "UuidNamespaces",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "dns",
+          "type": "Uuid"
+        },
+        {
+          "name": "url",
+          "type": "Uuid"
+        },
+        {
+          "name": "oid",
+          "type": "Uuid"
+        },
+        {
+          "name": "x500",
+          "type": "Uuid"
+        }
+      ]
+    },
+    {
+      "name": "Yaml",
+      "kind": "union",
+      "cases": [
+        {
+          "name": "YStr",
+          "payload": "string"
+        },
+        {
+          "name": "YInt",
+          "payload": "int"
+        },
+        {
+          "name": "YFloat",
+          "payload": "float"
+        },
+        {
+          "name": "YBool",
+          "payload": "bool"
+        },
+        {
+          "name": "YNull",
+          "payload": null
+        },
+        {
+          "name": "YSeq",
+          "payload": "seq\u003CYaml\u003E"
+        },
+        {
+          "name": "YMap",
+          "payload": "seq\u003Cstring * Yaml\u003E"
         }
       ]
     }

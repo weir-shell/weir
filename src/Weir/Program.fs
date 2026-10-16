@@ -76,6 +76,14 @@ let private evalOnce (input: string) : int =
 
         match assembled with
         | Error msg ->
+            // the named line under a caret at its indentation
+            // [D:assembly-col], as a parse error shows its line
+            match Script.assemblyErrorAt (srcLines |> List.mapi (fun i l -> i + 1, l)) msg with
+            | Some(l, c, _) ->
+                Console.Error.WriteLine(srcLine l)
+                Console.Error.WriteLine(Types.Color.red Types.Color.onStderr.Value (String(' ', c - 1) + "^"))
+            | None -> ()
+
             Console.Error.WriteLine msg
             1
         | Ok lls ->
@@ -291,7 +299,7 @@ let main argv =
                 2
 
             match flags |> List.tryFind (fun f -> not (known.Contains f)), paths with
-            | Some f, _ -> usage $"unknown flag {f}"
+            | Some f, _ -> usage $"unknown flag {f}{didYouMean f known}"
             | None, [] -> usage "which script? — give its path"
             | None, _ :: _ :: _ -> usage $"""one script at a time — got {paths |> String.concat " "}"""
             | None, [ path ] ->
@@ -314,7 +322,7 @@ let main argv =
                 2
 
             match flags |> List.tryFind (fun f -> f <> "--check"), paths with
-            | Some f, _ -> usage $"unknown flag {f}"
+            | Some f, _ -> usage $"""unknown flag {f}{didYouMean f [ "--check" ]}"""
             | None, [] -> usage "which script? — give its path"
             | None, _ :: _ :: _ -> usage $"""one script at a time — got {paths |> String.concat " "}"""
             | None, [ path ] -> Fmt.formatFile (List.contains "--check" flags) path
@@ -674,7 +682,6 @@ let main argv =
                 "usage: weir gen types --schema <name> [--as <TypeName>] [--out <path>|-]   generate weir types from a locked schema"
 
             2
-        | "run" :: path :: rest -> runOnMain (fun () -> Script.run path rest)
         | path :: rest when not (path.StartsWith "-") -> runOnMain (fun () -> Script.run path rest)
         // teaching arms, not dumps [D:windows-v1]: a mistyped option gets a
         // did-you-mean; a mis-quoted -e gets its arity named (on Windows a
@@ -692,7 +699,7 @@ let main argv =
             2
         | opt :: _ when opt.StartsWith "-" && opt <> "--help" && opt <> "-h" ->
             let spellings =
-                [ "-e"; "--version"; "check"; "fmt"; "lsp"; "add"; "gen"; "restore"; "verify"; "run" ]
+                [ "-e"; "--help"; "--version"; "check"; "fmt"; "lsp"; "add"; "gen"; "restore"; "verify" ]
 
             Console.Error.WriteLine $"weir: unknown option '{opt}'{didYouMean opt spellings} (weir --help for usage)"
             2

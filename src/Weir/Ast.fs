@@ -181,9 +181,14 @@ let exitCodeDiscardMsg =
 type FromShape =
     | FromName of string
     | FromAnon of fields: (string * Ty) list
-    // the ID-keyed object [D:map-string]: Map<string, Name|{|…|}> in
-    // the adapter slot — the inner shape is a record, string keys only
-    | FromMap of inner: FromShape
+    // a generic record instantiated in the slot, `B<int>` [D:wire-generics]
+    | FromApp of name: string * args: Ty list
+    // the ID-keyed object [D:map-string]: Map<K, V> in the adapter
+    // slot — the checker refuses a non-string key; the value is a
+    // record shape or any wire-crossable type [D:map-values]
+    | FromMap of key: Ty * inner: FromShape
+    // a non-record value type, only under FromMap [D:map-values]
+    | FromTy of Ty
 
 type Expr = { Kind: ExprKind; Span: Span }
 
@@ -648,6 +653,12 @@ let rec sexpr (e: Expr) : string =
     | EFrom(fmt, Some(FromName ty), false, true) -> $"(from {fmt} stream {ty})"
     | EFrom(fmt, Some(FromName ty), false, _) -> $"(from {fmt} {ty})"
     | EFrom(fmt, Some(FromName ty), true, _) -> $"(from {fmt} seq<{ty}>)"
+    | EFrom(fmt, Some(FromApp(n, args)), s, st) ->
+        let shape = formatTy (TNamed(n, args))
+
+        if st then $"(from {fmt} stream {shape})"
+        elif s then $"(from {fmt} seq<{shape}>)"
+        else $"(from {fmt} {shape})"
     | EFrom(fmt, Some(FromAnon fields), s, _) ->
         let shape = anonRecordName fields
 
@@ -655,14 +666,17 @@ let rec sexpr (e: Expr) : string =
             $"(from {fmt} seq<{shape}>)"
         else
             $"(from {fmt} {shape})"
-    | EFrom(fmt, Some(FromMap inner), _, _) ->
+    | EFrom(fmt, Some(FromMap(k, inner)), _, _) ->
         let shape =
             match inner with
             | FromName n -> n
+            | FromApp(n, args) -> formatTy (TNamed(n, args))
             | FromAnon fields -> anonRecordName fields
+            | FromTy ty -> formatTy ty
             | FromMap _ -> "…"
 
-        $"(from {fmt} Map<string, {shape}>)"
+        $"(from {fmt} Map<{formatTy k}, {shape}>)"
+    | EFrom(fmt, Some(FromTy ty), _, _) -> $"(from {fmt} {formatTy ty})"
     | ETo(fmt, true) -> $"(to {fmt} stream)"
     | ETo(fmt, false) -> $"(to {fmt})"
     | EList items ->

@@ -54,7 +54,8 @@ Five reasons, most important first:
 - `weir` starts the interactive REPL. See [The REPL](#the-repl) at
   the end of this guide.
 - `weir -e '1 + 2'` runs a small program and prints the value of its
-  last statement, which must be an expression. Newlines separate
+  last statement with its type, as the REPL echoes it (`3 : int`).
+  That statement must be an expression. Newlines separate
   statements, as in a file. A declaration on its own is rejected,
   since there would be nothing to show. The same strict rules as
   scripts apply.
@@ -1712,7 +1713,9 @@ make it an `Option`.
 
 When an object's keys are data rather than fixed field names, like
 objects keyed by ID, read it as a `Map<string, T>`. That works for a
-field, or for the whole document:
+field, or for the whole document with `from json`; `T` is anything a
+field can hold — a record (declared or anonymous), `int`,
+`seq<string>`, another `Map`:
 
 ```weir
 type WDoc = { id: string }
@@ -1722,9 +1725,10 @@ docs |> Map.pairs |> Seq.iter (fun (k, d) -> print $"{k}={d.id}")
 ```
 
 Keys can only be strings, since JSON object keys are strings. A
-`Map<int, …>` is an error that explains this. Pairs come out sorted
-by key, if a key appears twice the last one wins, and `to json`
-writes the object back. The `Map` functions:
+`Map<int, …>` field or `from json Map<int, …>` is an error that
+explains this. Pairs come out
+sorted by key, if a key appears twice the last one wins, and
+`to json` writes the object back. The `Map` functions:
 
 - `ofPairs` (last key wins), `pairs`, `keys`, `values` (sorted by
   key)
@@ -1932,7 +1936,7 @@ that's sent in chunks as it's produced:
 let handler = fun req ->
     match req.path with
     | "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
-    | "/events" -> HttpServerResponse { status = 200; headers = []; body = Stream (nats |> Seq.map show) }
+    | "/events" -> HttpServerResponse { status = 200; headers = []; body = Stream (Seq.initInfinite show) }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
 
 within serve srv = { port = 8080; maxConcurrent = 8 } handler
@@ -2054,8 +2058,10 @@ match Args.load Cmd with // no argv here: "missing subcommand; one of: clone, st
 
 There are no positional arguments. Pass everything as a flag
 (`pull --subdir libx`), for the same reason records beat tuples: a
-name is easier to read than a position you have to count. There is
-no `[<Positional>]` attribute. You only lose the typed,
+name is easier to read than a position you have to count.
+`[<Positional>]` on an `Args.load` field is a check error; it only
+describes a foreign tool's operands in a [command
+signature](tooling.md#command-signatures). You only lose the typed,
 help-generating route, though. To read arguments your own way,
 `Args.flag "--clean" "-c"` and `Args.value "--out"` search the raw
 `Self.args` sequence. An option with several values becomes one flag
@@ -2726,7 +2732,7 @@ shows one member's docs, from the same source as editor hover, so
 the two always match.
 
 A line starting with `#` is an instruction to weir's tools rather than
-code. There are two kinds. File directives (`#sig`, `#schema`) are
+code. There are two kinds. File directives (`#sig`) are
 read when the script is checked. Session directives (`#help`,
 `#quit`) run immediately.
 

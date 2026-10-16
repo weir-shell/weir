@@ -80,8 +80,8 @@ let tripwires =
 
               let expr =
                   "let getV = map _.V in "
-                  + "let a = nats |> take 1 |> map (fun n -> { V = n; Tag = true }) |> getV in "
-                  + "let b = nats |> take 1 |> map (fun n -> { V = \"s\"; Alt = true }) |> getV in "
+                  + "let a = (Seq.initInfinite id) |> take 1 |> map (fun n -> { V = n; Tag = true }) |> getV in "
+                  + "let b = (Seq.initInfinite id) |> take 1 |> map (fun n -> { V = \"s\"; Alt = true }) |> getV in "
                   + "0"
 
               match Weir.Parser.parseExpr expr with

@@ -76,9 +76,15 @@ supported; the error suggests `[<Tag>]`.
 ## Keys that are data
 
 `Map<string, T>` reads an object keyed by IDs, either as a field or
-as the whole document. Keys must be strings, entries are iterated in
+as the whole document (`from json Map<string, int>`; `T` is anything
+a field can hold). Keys must be strings, entries are iterated in
 key order, and for duplicate keys the last one wins. `to json` writes
 the object back.
+
+```weir
+let counts = ["{\"b\": 2, \"a\": 1}"] |> from json Map<string, int>
+counts |> Map.pairs |> Seq.iter (fun (k, n) -> print $"{k}={n}")
+```
 
 ## YAML
 

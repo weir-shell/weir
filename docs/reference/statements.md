@@ -159,5 +159,4 @@ squares |> Seq.map show |> print
 `type` and `module` are statements too; `import` must come first in
 the file. A file that starts with `module` is a module: it contains
 only declarations, can be imported, and cannot be run. Directives
-(`#sig`, `#schema`) go at the top of the file and are read at check
-time.
+(`#sig`) go at the top of the file and are read at check time.

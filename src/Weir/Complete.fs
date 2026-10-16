@@ -84,15 +84,36 @@ let interpHoleStart (text: string) : int option =
 // first. Both completion slots read this: the line-head '#' slot (bare
 // names — the editor's word starts after the '#') and the empty-prompt
 // head [D:empty-prompt-directives] (the '#'-prefixed teaching set).
-let sessionDirectives = [ "help"; "find"; "echo"; "infer"; "save"; "history"; "quit" ]
+//
+// Each entry carries its #help lines, so the list `#help` prints, the
+// dispatch's did-you-mean and completion are the one table
+let sessionDirectiveHelp: (string * string list) list =
+    [ "help",
+      [ "#help                 // this list"
+        "#help <name>          // documentation for a module or member" ]
+      "find", [ "#find [query]         // fuzzy-search modules and members (fzf + live preview)" ]
+      "echo",
+      [ "#echo [<n> | all]     // the unforced-echo cap (default 100); bare reports;"
+        "                      //   all = no cap — an infinite seq will hang (Ctrl+C)" ]
+      "infer",
+      [ "#infer [<src>] from <json|jsonl|yaml|table> as <Name|_>"
+        "                      //   draft named types from a sample (src defaults to 'it'; _ auto-names)"
+        "#infer let <x> = <src> |> from <fmt> as <Name|_>"
+        "                      //   one shot: draft the types and bind the parsed value (runs once)" ]
+      "save", [ "#save <path>          // dump the session's accepted lines to a runnable .weir" ]
+      "history", [ "#history [<n>]        // show history (bare = all, <n> = last n); prints the file path" ]
+      "alias", [ "#alias [name = cmd …] // bare lists; a command-head alias (init.weir is canonical)" ]
+      "quit", [ "#quit                 // leave the REPL (Ctrl+D works too)" ] ]
+
+let sessionDirectives = sessionDirectiveHelp |> List.map fst
 
 // the `#help` documentable universe, one source [D:help-arg-complete]:
 // the bare names `#help <name>` can document — modules, top-level
 // forms/members (user values), and types (records and unions, the
 // #infer-injected ones included). Both `#help`'s unknown-name pool
 // (Repl.fs) and the #help-arg completion slot read this, so what
-// `#help X` documents and what `#help <TAB>` offers cannot drift
-// (as sessionDirectives does). Modules also document their
+// `#help X` documents and what `#help <TAB>` offers cannot drift.
+// Modules also document their
 // members via `#help Module.member`; the qualified names live in the
 // slot itself, keyed off env.Modules.
 let helpNames (env: TypeEnv) : string list =
@@ -629,8 +650,8 @@ let rec suggestScopedWith
     // '#' is not a word char to the editor, so the word starts after it.
     // Bare names are returned so the editor's replacement yields `#help`,
     // never `##help`. The set mirrors Repl's dispatch (session directives
-    // only — #sig/#schema are file directives and the unknown-directive
-    // teaching already routes them).
+    // only — #sig is a file directive and the unknown-directive
+    // teaching already routes it).
     let directiveSlot =
         let raw = text.Substring(0, min wordStart text.Length)
         raw.TrimStart() = "#"

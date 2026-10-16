@@ -112,6 +112,9 @@ let private httpCtorMembers =
           "Http.options"
           "Http.query" ]
 
+// the one-var reads name a literal variable [D:env-need-getor]
+let private envOneVar = Set [ "Env.get"; "Env.need"; "Env.getOr" ]
+
 let private procMembers = Set [ "Proc.stop"; "Proc.wait" ]
 
 // overlay names, when literal [D:can-report]: Env.pair lists and
@@ -260,15 +263,15 @@ let rec private walkExpr
          elif qual = "File.readSecret" then
              add (FsRead(qual, None)) te.Span
              add (SecretLoad "File.readSecret") te.Span
-         elif qual = "Env.get" then
-             add (EnvRead "a named variable (Env.get)") te.Span
+         elif envOneVar.Contains qual then
+             add (EnvRead $"a named variable ({qual})") te.Span
          elif qual = "Env.vars" then
              add (EnvRead "the entire environment (Env.vars)") te.Span
      | TEApp({ Kind = TEVar qual }, arg) when qual.Contains "." ->
          (match literalStr arg with
           | Some lit when fsReads.Contains qual -> add (FsRead(qual, Some lit)) te.Span
           | Some lit when fsWrites.Contains qual -> add (FsWrite(qual, Some lit)) te.Span
-          | Some lit when qual = "Env.get" -> add (EnvRead $"{lit} (Env.get)") te.Span
+          | Some lit when envOneVar.Contains qual -> add (EnvRead $"{lit} ({qual})") te.Span
           | Some lit when qual = "File.readSecret" ->
               add (FsRead(qual, Some lit)) te.Span
               add (SecretLoad $"File.readSecret {lit}") te.Span
@@ -281,8 +284,8 @@ let rec private walkExpr
               elif networkMembers.Contains qual then
                   // an `Http.get "lit"`-shaped request names its url
                   add (Network(qual, requestUrlLit arg)) te.Span
-              elif qual = "Env.get" then
-                  add (EnvRead "a named variable (Env.get)") te.Span)
+              elif envOneVar.Contains qual then
+                  add (EnvRead $"a named variable ({qual})") te.Span)
 
          // the fn side is fully handled; walk only the argument
          walkExpr binds site acc arg

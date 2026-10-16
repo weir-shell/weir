@@ -3,9 +3,9 @@ module Weir.Lsp
 // weir lsp — v1 [D:lsp-v1]: diagnostics, hover, completion over
 // stdio JSON-RPC. Hand-rolled loop (Ionide.LanguageServerProtocol
 // carries a reflection serializer the trimmer discipline bans).
-// Whole-file re-check per didChange; the server owns no type state
-// between checks — per-document text is the only state (stale-cache
-// bugs refused by construction).
+// Whole-file re-check per didChange. The one cache is the analysis per
+// (file, exact text), shared by every request until the next document
+// event drops it [D:lsp-analysis-cache].
 
 open System
 open Weir.Types
@@ -175,10 +175,40 @@ let private notify (method: string) (writeParams: Text.Json.Utf8JsonWriter -> un
 
 let tokenLegend = [| "weirCommandHead"; "weirArgv"; "weirSplice" |]
 
+// the analysis cache [D:lsp-analysis-cache]: hover, completion,
+// definition and tokens re-asked for the same text re-analyzed it per
+// request (a 20k-line file, seconds each). Keyed by file and init mode,
+// hit only on the exact same lines; every document event (open, change,
+// close) drops it all, so an edited module reaches its importers.
+let private analysisCache =
+    Collections.Generic.Dictionary<struct (bool * string), string list * (Script.Diagnostic list * (Script.LogicalLine * Script.CheckedStatement) list * TypeEnv * Script.LogicalLine list)>()
+
+let private analyzeCachedAs (asInit: bool) (path: string) (lines: string list) =
+    let key = struct (asInit, path)
+
+    let hit =
+        lock analysisCache (fun () ->
+            match analysisCache.TryGetValue key with
+            | true, (ls, r) when ls = lines -> Some r
+            | _ -> None)
+
+    match hit with
+    | Some r -> r
+    | None ->
+        let r = Script.analyzeLinesAs asInit path lines
+        lock analysisCache (fun () -> analysisCache[key] <- (lines, r))
+        r
+
+let analyzeCached (path: string) (lines: string list) = analyzeCachedAs false path lines
+
+/// drop every cached analysis — a document changed [D:lsp-analysis-cache]
+let dropAnalyses () =
+    lock analysisCache (fun () -> analysisCache.Clear())
+
 /// (0-based line, 0-based startChar, length, tokenType), sorted by
 /// position — the raw form the LSP delta encoding rides on.
 let semanticTokensFor (lines: string list) : (int * int * int * int) list =
-    let _, stmts, _, _ = Script.analyzeLines "tokens" lines
+    let _, stmts, _, _ = analyzeCached "tokens" lines
     let lineArr = List.toArray lines
     let out = ResizeArray<int * int * int * int>()
 
@@ -424,21 +454,6 @@ let private effectiveLines (uri: string) (text: string) : string list =
     else
         raw
 
-// #session field validation [D:session-prompt]: the value-as-let-RHS check
-// (via the rewrite) catches errors IN a value, but not an unknown key or a
-// value of the wrong type for its key. This adds those, from the init
-// loader's own key -> type table (applySessionField [D:repl-init]).
-let private knownSessionKeys = Set [ "cwd"; "env"; "logLevel"; "echoCap"; "prompt" ]
-
-let private expectedFieldTypes (key: string) : Ty list =
-    match key with
-    | "cwd"
-    | "logLevel" -> [ TStr ]
-    | "echoCap" -> [ TInt ]
-    | "env" -> [ TSeq(TTuple [ TStr; TStr ]) ]
-    | "prompt" -> [ TStr; TFun(TUnit, TStr); TFun(TNamed("PromptStatus", []), TStr) ]
-    | _ -> []
-
 // hover on a #session field key [D:init-marker]: the directive rewrite
 // turns `env = v` into a synthesized `let _nv = v` (same-length,
 // distinct binder — [D:session-prompt]), so the ordinary binder hover
@@ -480,137 +495,28 @@ let private sessionFieldHover (path: string) (rawLines: string list) (line: int)
                 let keyStart = m.Groups[1].Value.Length // 0-based
                 let colZ = col - 1
 
-                if colZ >= keyStart && colZ < keyStart + key.Length && Set.contains key knownSessionKeys then
-                    let tys = expectedFieldTypes key |> List.map formatTy |> String.concat " | "
+                if colZ >= keyStart && colZ < keyStart + key.Length && Set.contains key Script.knownSessionKeys then
+                    let tys = Script.expectedFieldTypes key |> List.map formatTy |> String.concat " | "
                     Some $"{key} : {tys}"
                 else
                     None
-
-let private sessionFieldDiags
-    (file: string)
-    (raw: string list)
-    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
-    : Script.Diagnostic list =
-    let fieldStart =
-        System.Text.RegularExpressions.Regex @"^(\s{0,4})([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(.*)$"
-
-    let mutable inBlock = false
-    let acc = ResizeArray<Script.Diagnostic>()
-
-    raw
-    |> List.iteri (fun i l ->
-        let t = l.Trim()
-
-        if inBlock then
-            if t = "}" then
-                inBlock <- false
-            else
-                let m = fieldStart.Match l
-
-                if m.Success then
-                    let key = m.Groups.[2].Value
-                    let lineNo = i + 1
-                    let keyCol = m.Groups.[1].Value.Length + 1
-
-                    if not (Set.contains key knownSessionKeys) then
-                        acc.Add
-                            { File = file
-                              Line = lineNo
-                              Col = keyCol
-                              EndLine = Some lineNo
-                              EndCol = Some(keyCol + key.Length)
-                              Severity = "error"
-                              Code = "session-key"
-                              Message =
-                                $"unknown #session key '{key}' — the keys: cwd, env, logLevel, echoCap, prompt" }
-                    else
-                        // the value's inferred type (the rewritten `let <binder>
-                        // = value` on this line); a value that errored is not in
-                        // stmts — that error already shows, so skip it here
-                        match stmts |> List.tryFind (fun (ll, _) -> ll.Head = lineNo) with
-                        | Some(_, chk) ->
-                            match chk.Kind with
-                            | Script.KLet(_, _, te) ->
-                                let valStr = formatTy te.Ty
-                                let exp = expectedFieldTypes key
-                                // a generic/ambiguous value (an empty list ->
-                                // seq<'a>) carries a tyvar — do not flag it
-                                let hasTyVar = valStr.Contains "'"
-
-                                let promptRow =
-                                    key = "prompt"
-                                    && (match chk.Kind with
-                                        | Script.KLet(_, _, te2) ->
-                                            (match te2.Ty with
-                                             | TFun(dom, TStr) -> Script.promptStatusDomain dom
-                                             | _ -> false)
-                                        | _ -> false)
-
-                                if not hasTyVar && not promptRow && not (exp |> List.exists (fun e -> formatTy e = valStr)) then
-                                    let valCol =
-                                        m.Groups.[1].Value.Length
-                                        + key.Length
-                                        + m.Groups.[3].Value.Length
-                                        + 1
-
-                                    let expStr = exp |> List.map formatTy |> String.concat " or "
-
-                                    acc.Add
-                                        { File = file
-                                          Line = lineNo
-                                          Col = valCol
-                                          EndLine = Some lineNo
-                                          EndCol = Some(l.Length + 1)
-                                          Severity = "error"
-                                          Code = "session-type"
-                                          Message = $"#session {key} expects {expStr}, got {valStr}" }
-                            | _ -> ()
-                        | None -> ()
-        elif t.StartsWith "#session" then
-            inBlock <- t.EndsWith "{")
-
-    List.ofSeq acc
 
 let private analyze (uri: string) (text: string) =
     // analyze against the real path so imports resolve relative to the file;
     // diagnostics come back File-identified (the entry + its modules)
     let path = uriToPath uri
     let raw = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
-    let lines = effectiveLines uri text
-
-    let diags, stmts, env0, lls = Script.analyzeLines path lines
-    let marked = Script.isInitMarked raw
     let canonical = isReplInitPath path
 
-    // an init file (marked anywhere, or the canonical path) checks as
-    // the init it is [D:init-marker]: its declarations are session
-    // exports, so the script law's unused-binding judgement does not
-    // apply — the loader never judges it (checkStatement carries no
-    // whole-file unused pass) — and its #session fields are validated
-    let diags =
-        if canonical || marked then
-            (diags |> List.filter (fun d -> d.Code <> "unused-binding"))
-            @ sessionFieldDiags path raw stmts
+    // an init file (marked anywhere, or the canonical path) checks as the
+    // init it is [D:init-marker] — the shared path, so the editor reports
+    // exactly what `weir check` and the loader do (checkInit [D:repl-init]),
+    // the missing marker included
+    let diags, stmts, env0, lls =
+        if canonical || Script.isInitMarked raw then
+            analyzeCachedAs true path raw
         else
-            diags
-
-    // the marker is REQUIRED [D:init-marker]: the loader refuses the
-    // canonical file without it, so the editor says so first
-    let diags =
-        if canonical && not marked then
-            let d: Script.Diagnostic =
-                { File = path
-                  Line = 1
-                  Col = 1
-                  EndLine = Some 1
-                  EndCol = Some 1
-                  Severity = "error"
-                  Code = "init-marker"
-                  Message = "init.weir declares itself — put #init on the first line (the loader refuses without it)" }
-
-            d :: diags
-        else
-            diags
+            analyzeCached path raw
 
     diags, stmts, env0, lls
 
@@ -927,7 +833,7 @@ let rec private innerLetSig (name: string) (jcol: int) (te: Check.TypedExpr) : s
 let private targetStmts (absPath: string) =
     Script.targetSourceLines absPath
     |> Option.map (fun lines ->
-        let _, stmts, _, _ = Script.analyzeLines absPath lines
+        let _, stmts, _, _ = analyzeCached absPath lines
         lines, stmts)
 
 // the KType declaring `tyName` among `stmts` — file-agnostic so the
@@ -1148,7 +1054,7 @@ let definitionTarget
     (line: int)
     (col: int)
     : (string option * int * int * int) option =
-    let _, stmts, _, _ = Script.analyzeLines path lines
+    let _, stmts, _, _ = analyzeCached path lines
 
     let imports =
         stmts
@@ -1332,6 +1238,7 @@ let definitionTarget
                             match top with
                             | Check.TopRec d -> d.Name
                             | Check.TopUnion u -> u.Name
+                            | Check.TopValue _ -> ""
 
                         wordAt useLl.Text jcol
                         |> Option.bind (fun w -> if w = topName then typeSite topName None else None)
@@ -1661,7 +1568,7 @@ let private schemaHover (path: string) (name: string) : string option =
 /// site for a usage / field / case reference (definitionFor) [Group 1a],
 /// else the builtin's [D:builtin-docs].
 let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string option =
-    let _, stmts, _, _ = Script.analyzeLines path lines
+    let _, stmts, _, _ = analyzeCached path lines
 
     match toLogical stmts line col with
     | Some(ll, chk, jcol) when
@@ -2336,6 +2243,7 @@ let run (debug: bool) : int =
                              match jStr "uri" td, jStr "text" td with
                              | Some uri, Some text ->
                                  docs[uri] <- text
+                                 dropAnalyses ()
                                  // re-check all: this doc and any open importer of it
                                  refreshAll ()
                              | _ -> ()
@@ -2346,6 +2254,7 @@ let run (debug: bool) : int =
                              match jStr "uri" td, jStr "text" change with
                              | Some uri, Some text ->
                                  docs[uri] <- text
+                                 dropAnalyses ()
                                  refreshAll ()
                              | _ -> ()
                          | _ -> ())
@@ -2354,6 +2263,7 @@ let run (debug: bool) : int =
                         |> Option.bind (jStr "uri")
                         |> Option.iter (fun uri ->
                             docs.Remove uri |> ignore
+                            dropAnalyses ()
                             refreshAll ())
                     | "textDocument/semanticTokens/full" ->
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
@@ -2560,10 +2470,10 @@ let run (debug: bool) : int =
                         // the CLI refuses there are no edits.
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
-                            | Some(_, text) ->
+                            | Some(uri, text) ->
                                 let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
-                                match Fmt.formatSource text with
+                                match Fmt.formatSource (uriToPath uri) text with
                                 | Ok(formatted, true) ->
                                     let arr = List.toArray lines
                                     let lastIdx = arr.Length - 1

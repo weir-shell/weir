@@ -1,6 +1,6 @@
 # weir — byte pipes: raw command-to-command hops, typed edges
 
-Status: PROPOSED (2026-09-12). Driver: the deterministic-archive probe
+Status: LANDED ([D:byte-pipes]); originally PROPOSED (2026-09-12). Driver: the deterministic-archive probe
 (gzip bytes through a weir pipe came out U+FFFD-substituted, silently,
 rc=0 — the silent-corruption class). Carries a RIDER: the value-headed
 pipe child's ambient-scope bug, probed same day, same spawn seam.

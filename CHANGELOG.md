@@ -1,5 +1,166 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`Env.need` and `Env.getOr` read one variable as a string.**
+  `Env.need "TOKEN"` fails at that line with `Env.need: TOKEN is not
+  set` when it is unset; `Env.getOr "PORT" "8080"` gives the default
+  when unset. A set-but-empty variable gives `""` in both, as with
+  `Env.get`, and `within env` applies.
+- **`Env.load` and `Args.load` take an inline type:**
+  `Env.load {| TOKEN: string; PORT: int; CI: Option<string> |}` — no
+  `type` declaration needed for a small script. An anonymous type takes
+  no attributes; `{| [<Default 3>] a: int |}` now says to declare a
+  `type` instead of failing with a generic parse error.
+
+### Removed
+
+- **`nats` is gone; use `Seq.initInfinite`.** F#'s name: `Seq.initInfinite f`
+  is the endless sequence `f 0, f 1, …`, read lazily. `nats` is
+  `Seq.initInfinite id`; `nats |> Seq.map show` is `Seq.initInfinite show`.
+  The name `nats` is no longer reserved.
+- **`weir run <script>` is gone** — it was undocumented; `weir <script>`
+  does the same.
+
+### Changed
+
+- **The init file refuses bare names.** It is a script, not typing at
+  the prompt: `let evens () = xs |> where …` loaded before and now
+  needs `Seq.where`, as in any script. Bare names still work at the
+  prompt, including for names the init file defines.
+- **An alias target refuses `|`, `|>`, `&&`, `||` and `;`.** An alias
+  is one program plus fixed words, so `#alias inf = git add . | and
+  git commit …` passed `|`, `and`, `git`… to `git add` as arguments.
+  The error names the fix: `let inf () = …`.
+
+### Fixed
+- **`weir fmt` keeps a file's line endings.** It wrote the platform
+  newline, so reformatting turned an LF file CRLF on Windows and a CRLF
+  file LF elsewhere; a CRLF file now stays CRLF and an LF file LF.
+
+- **`from json Map<string, int>` reads a whole document.** The value
+  type can be anything a `Map` field can hold — `int`, `string`,
+  `seq<string>`, `Option<…>`, another `Map`, a record — where it had to
+  be a record (anything else was a parse error). `from json Map<int, …>`
+  now says keys must be strings, as a declared `Map<int, …>` field does.
+- **Indentation errors give a column:** `s.weir:2:5: this let needs a
+  body …` where the runner printed `s.weir: line 2: …`. `weir check`
+  and the editor drop the repeated `line 2:` from the message,
+  `weir fmt` says `line 2:5:`, and `-e` and the REPL show the line with
+  a caret.
+- **Docs:** an `import` below other statements works, from its line on
+  (the docs said imports must come first); a one-line
+  `let n = echo a b in n` runs the command (the docs said it could not).
+
+- **`weir fmt` refuses a file that does not parse** — a yaml-block error
+  or an ordinary parse error is reported with its line and the file is
+  left as it was (exit 3), as `weir check` would report it. Editor
+  formatting makes no edits on such a file.
+- **`weir fmt` no longer respaces `$<<<`/`$$<<<` block content** (`{a}`
+  became `{ a }`) or a `$"…{ … }"` hole that spans lines.
+- **`weir fmt` ends every file in exactly one newline** — trailing blank
+  lines are removed, as the docs always said.
+- **The REPL no longer rewrites invalid UTF-8 in the history file** as
+  `�`. Such a line is left out of history (one note names it) and
+  written back byte for byte whenever the file is rewritten.
+- **`a + b + 0` infers.** `+` on two unknown values now waits for the
+  rest of the statement: the other operand, a later `+ 0`, or how the
+  result is used decides it, so the order you write it in no longer
+  matters. Nothing deciding it is still the "cannot infer" error.
+- **Generic records cross json, jsonl and yaml.** Name the instance in
+  the slot — `from json Page<string>`, `from json seq<Page<int>>` (was
+  a parse error) — and a record holding one, like
+  `{ first: Page<int> }`, reads and writes too.
+- **`from json` reads a `Yaml` field,** keeping any subtree whole, and
+  `to json` writes it back. `weir gen types` uses it: a field that refers
+  back to its own definition is now `Yaml` instead of left out.
+- **Errors on a misaligned line point at the line as written.** On a
+  line indented off its siblings — typically after a `[` or `{` stayed
+  open and swallowed the lines below it — `weir check` and the editor
+  put further errors at the column the line would have had once lined
+  up, often past the end of the real line. They now point at the
+  offending token.
+
+- **`#alias` completes and gets a did-you-mean**, like the other
+  directives; `#help`'s directive list now comes from the same table.
+- **Hover and `#help` explain `fst`, `snd`, `ls`, `pwd`, `[<Attr>]` and
+  `[<Elem>]`**, and `cd`'s text says what it returns: the directory it
+  moved to (it said the previous one).
+- **The site reference lists every prelude type** with its cases and
+  fields.
+- **Docs:** `#schema` was documented but never existed (a `yaml` block
+  names its schema with `yaml schema=<name>`); `[<Positional>]` exists
+  for command signatures; retry's `timeout=` option is documented.
+
+- **`weir check` on an init file refuses what the REPL refuses.** Most
+  of the loader's rules passed check and then stopped the init from
+  loading: a `#session` value that runs a command
+  (`$(cat /etc/hostname | line)`), an unknown, repeated or mistyped key,
+  a statement or an eager command `let`, a bad `#alias`, a malformed
+  `#session` block. Check, the editor and the REPL now share one set of
+  rules, with the same messages. Only what needs the value stays
+  load-time: a `cwd` that doesn't exist, an unknown `logLevel`, an
+  `echoCap` out of range.
+- **The REPL reports every error in the init file**, not just the first.
+- **A `#session` value that names one of the file's declarations says
+  why it can't.** Every key but `prompt` is read before the
+  declarations bind; the REPL said "unbound variable", and check
+  accepted it. Both now explain the rule and point at the name.
+- **A tuple alone on its own line in a multi-line list no longer warns.**
+  `env = [` / `"A", "b"` / `]` is one pair per line, not the `[1, 2]`
+  comma habit; a single-line `["a", 1]` still warns.
+- **A directive right after a multi-line statement runs in a piped
+  REPL.** After match arms or a `|>` chain, `#echo` (any `#` line) was
+  glued onto the statement and reported as a parse error.
+- **A mistyped `--help`, `check` flag or `fmt` flag gets a "did you
+  mean"** (`weir --hlep`, `weir check --cna`); only other top-level
+  options got one.
+- Docs: `-e` echoes its result with the type (`3 : int`).
+- **`weir s.weir > log 2>&1` keeps all of stdout.** Stdout written to a
+  regular file shared with stderr overwrote stderr's lines and lost its
+  own; output now lands in order.
+- **A missing dashed command is named at run.** `no-such-tool a` said
+  `unbound variable 'no'` where `weir check` warned about the command;
+  it now says `unknown command 'no-such-tool'`.
+- **A reifier in a single-line `let … in` teaches `$()`.** It said
+  `unknown command 'complete' … Did you mean the reifier 'complete'?`.
+- **Docs:** SKILL.md prose corrected against the binary (`print` and argv
+  splices take `Uuid`, `isEmpty` is qualified-only in the REPL, `$HOME`
+  in argv is a splice, `&&` warns, `Path.glob` sorts per level, and
+  smaller wording fixes).
+- **A `serve` `Stream` body that raises partway now looks cut off to the
+  client.** It ended with a clean chunked terminator, so the client read
+  a complete stream; the connection now closes without it (curl exits
+  18). `Server.streamErrors` still records the error.
+- **A header weir can't send is an error naming it, never dropped.**
+  `Http.send` skipped a header with a bad name (`"Bad Name"`) and a
+  `Content-Type`/`Expires` on a `NoBody` request; it now refuses before
+  sending, and says why (a non-ASCII value said "cannot reach"). A
+  `serve` response header the listener rejects (a bad name, a control or
+  non-ASCII byte) was dropped from a 200; the client now gets a 500 and
+  `Server.streamErrors` names the header. A control byte in a request
+  header value (e.g. BEL), sent before, is refused too.
+- **A `Secret` in a failed command's error shows as `***`.** `curl -H
+  $auth …` exiting nonzero printed the token in "command failed … :
+  curl -H <token>" — in CI logs too. Every error that shows a command
+  line (statements, `| text`/`| line`/…, pipelines, output read later)
+  now masks it; the command still receives the real value.
+- **The re-enumeration warning sees indirect reads**: two calls of a
+  function that reads a command-backed binding, a read inside a `for`
+  body or a `Seq.map` lambda, and two uses of a lazy binding derived
+  from it (`let ys = xs |> Seq.where …`, or `let ys = xs`) each run the
+  command again, and now warn.
+- **A runtime error in a one-line form points at the failing call.**
+  `let y = if x > 2 then fail "boom" else 1` reported column 1; it now
+  points at `fail` (and `xs |> Seq.item 5` at `Seq.item`).
+- **The LSP no longer re-analyzes the file on every request.** Hover
+  and completion in a 20k-line file took seconds each; the analysis is
+  now reused until the next edit.
+- **`from xml` refuses mixed content in a text field.** `<n>a<b/>c</n>`
+  read as `"ac"`; it is now an error naming `<n>`, `<b>` and the field.
+
 ## v0.0.74
 
 ### Removed

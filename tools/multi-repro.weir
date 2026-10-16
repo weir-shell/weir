@@ -22,6 +22,8 @@
 //     outside" cannot pass by restore being broken;
 //   - control-header-arrives: a benign header reaches the wire, so F3's and
 //     F11's "no forged/dropped header" cannot pass by headers never working;
+//   - control-redirect-followed: F4's redirect reached the second origin, so
+//     "no secret there" cannot pass by the hop never happening;
 //   - control-pure-accepts: `pure` accepts the very body F6 fails on under
 //     `readonly`, so F6 cannot pass by the body being illegal everywhere.
 //
@@ -214,6 +216,7 @@ let serveFixture port dir = $<<<
         match req.path with
         | "/control" -> HttpServerResponse {{ status = 200; headers = [("X-Control", "present")]; body = Text "ok" }}
         | "/crlf" -> HttpServerResponse {{ status = 200; headers = [("X-Crlf", "a" + crlf + "Injected: yes")]; body = Text "ok" }}
+        | "/badname" -> HttpServerResponse {{ status = 200; headers = [("Bad Name", "v")]; body = Text "ok" }}
         | "/half" ->
             HttpServerResponse {{
                 status = 200
@@ -237,8 +240,19 @@ let serveFixture port dir = $<<<
         let ctl = raw "/control"
         print (if ctl |> Str.contains "X-Control" then "control-header-arrives OK" else "control-header-arrives FAILED")
 
-        let dropped = raw "/crlf"
-        print (if dropped |> Str.contains "X-Crlf" then "F11 OK" else "F11 REPRODUCES (a header weir cannot send is silently dropped)")
+        // F11 is fixed when an unsendable header is LOUD [D:http-header-bytes]
+        // [D:http-header-unsendable]: either it arrives, or the response is
+        // refused (not a 200) AND Server.streamErrors names the header. A
+        // 200 without it is the silent drop.
+        let loud path name =
+            let out = raw path
+            let arrived = out |> Str.contains name
+            let refused = not (out |> Str.contains "STATUS HTTP/1.1 200")
+            let named = Server.streamErrors srv |> Seq.exists (fun m -> m |> Str.contains $"'{{name}}'")
+            arrived || (refused && named)
+
+        let f11 = loud "/crlf" "X-Crlf" && loud "/badname" "Bad Name"
+        print (if f11 then "F11 OK" else "F11 REPRODUCES (a header weir cannot send is silently dropped)")
 
         let half = raw "/half"
         let looksComplete = (half |> Str.contains "STATUS HTTP/1.1 200") && (half |> Str.contains "TERMINATED True")
@@ -251,14 +265,18 @@ let serveFixture port dir = $<<<
         let kept = (dup |> Str.contains "X-D=one") && (dup |> Str.contains "X-D=three")
         print (if kept then "F10 OK" else "F10 REPRODUCES (duplicate request headers collapsed)")
 
-// ---- the HTTP client fixture: F3, F4 --------------------------------------
+// ---- the HTTP client fixtures: F3, F4 -------------------------------------
+// F3 runs alone: its fix REFUSES the send (exit 1, a message naming the
+// header) [D:http-header-bytes], which would end a shared fixture before the
+// control and F4 requests ever ran.
+
+let clientF3Fixture portA = $<<<
+    let crlf = Str.fromBase64 "DQo="
+    let r1 = Http.send {{ Http.get "http://127.0.0.1:{portA}/dest" with headers = [("X-Evil", "a" + crlf + "Injected: yes")] }}
+    print $"F3-status {{r1.status}}"
 
 let clientFixture portA = $<<<
     let tok = Secret.of "SECRET-TOKEN-ABC"
-    let crlf = Str.fromBase64 "DQo="
-
-    let r1 = Http.send {{ Http.get "http://127.0.0.1:{portA}/dest" with headers = [("X-Evil", "a" + crlf + "Injected: yes")] }}
-    print $"F3-status {{r1.status}}"
 
     let r2 = Http.send {{ Http.get "http://127.0.0.1:{portA}/dest" with headers = [("X-Benign", "present")] }}
     print $"control-status {{r2.status}}"
@@ -367,23 +385,36 @@ let f34Probe d vpath =
     let refPath = $"{d}/referee.py"
     let logPath = $"{d}/referee.log"
     let fixturePath = $"{d}/client.weir"
+    let f3Path = $"{d}/client-f3.weir"
     logRefereeSrc |> File.write refPath
     clientFixture "8533" |> File.write fixturePath
+    clientF3Fixture "8533" |> File.write f3Path
 
     within proc referee = sh -c $"python3 '{refPath}' '{logPath}' 'http://127.0.0.1:8534/dest' 8533 8534 45"
         poll timeout=10s interval=200ms watch=referee
             Net.portOpen 8533
 
+        let f3child = runChild f3Path
         let child = runChild fixturePath
         let logLines = File.read logPath |> Seq.freeze
         let logText = logLines |> Str.join "\n"
         let benignArrived = logText |> Str.contains "X-Benign"
         let forged = logText |> Str.contains "Injected"
-        let crossed = logLines |> Seq.where (fun l -> l |> Str.contains "port=8534") |> Seq.length
-        let secretCrossed = (logText |> Str.contains "X-Api-Key") && crossed > 0
+        // the secret crossed iff it sits in a request logged by the
+        // redirect's origin (port 8534) — its presence at the first hop
+        // (8533) is the request itself, not a crossing
+        let secretCrossed =
+            logLines
+            |> Seq.scan (fun (block, _) l -> if l |> Str.startsWith "--- " then (l, l) else (block, l)) ("", "")
+            |> Seq.exists (fun (block, l) -> (block |> Str.contains "port=8534") && (l |> Str.contains "X-Api-Key"))
 
+        let redirectFollowed = logLines |> Seq.exists (fun l -> l |> Str.startsWith "--- port=8534")
         record vpath "control-header-arrives" (verdictOf benignArrived "control OK" "*** CONTROL FAILED")
-        record vpath "F3" (verdictOf (not forged) "OK" "REPRODUCES (a CRLF header value forged a second header on the wire)")
+        record vpath "control-redirect-followed" (verdictOf redirectFollowed "control OK (F4's hop reached the second origin)" "*** CONTROL FAILED")
+        // the REFUSAL is asserted, not only the absence: a silent drop is
+        // also absent from the log
+        let f3refused = f3child.exitCode == 1 && (f3child.stdout |> Str.join "\n" |> Str.contains "'X-Evil'")
+        record vpath "F3" (verdictOf (not forged && f3refused) "OK" $"REPRODUCES (a CRLF header value was forged or not refused by name; exit {f3child.exitCode})")
         record vpath "F4" (verdictOf (not secretCrossed) "OK" "REPRODUCES (secretHeaders crossed to the redirect's origin)")
 
         if child.exitCode <> 0 then

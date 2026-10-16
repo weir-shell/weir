@@ -19,8 +19,9 @@
 //     exit 1, and the fixture's own file named in the diagnostic.
 //
 // Every probe runs in its own `within tmp` directory. Servers bind 127.0.0.1
-// on ports probed free; nothing leaves the machine; bodies stay tiny (H20
-// probes a 1 KiB `maxBody`, never the 16 MiB default).
+// on ports the kernel or a retry settles [D:harness-ports]; nothing leaves
+// the machine; bodies stay tiny (H20 probes a 1 KiB `maxBody`, never the
+// 16 MiB default).
 //
 // Positive controls (`control-*`) pin the neighbouring behaviour each probe
 // leans on, so no probe can pass by the binary being broken in a new way; a
@@ -115,11 +116,35 @@ let failing cases =
 
 let hx s = Bytes.toHex (Str.toUtf8 s)
 
-// ports: a per-run base, a per-probe block, the first one nothing listens on
-let basePort = 20000 + (Self.pid % 1400) * 20
+// ports [D:harness-ports]: a python server binds port 0 and reports the
+// kernel's pick, so it cannot race. `serve` takes a fixed port, so its probes
+// take candidates from a per-run block BELOW the kernel's ephemeral range
+// (32768+ — a client socket there is invisible to Net.portOpen yet blocks a
+// bind) and move to the next candidate when the bind is lost anyway.
+let basePort = 20000 + (Self.pid % 40) * 300
 
-let freePort off =
-    [0..19] |> Seq.map (fun i -> basePort + off * 1000 + i) |> Seq.find (fun p -> not (Net.portOpen p))
+let portCandidates off =
+    [0..19] |> Seq.map (fun i -> basePort + off * 20 + i) |> Seq.where (fun p -> not (Net.portOpen p))
+
+let lostBind msg = (msg |> Str.contains "cannot listen") || (msg |> Str.contains "Address already in use")
+
+let noPort off = fail $"no port in block {off} could be bound"
+
+// an in-process `within serve`: a lost bind raises, the next candidate runs
+let onFreePort off body =
+    portCandidates off
+    |> Seq.map (fun p -> body p |> try result)
+    |> Seq.tryFind (function | Error m -> not (lostBind m) | Ok _ -> true)
+    |> Option.map (function | Ok v -> v | Error m -> fail m)
+    |> Option.defaultWith (fun () -> noPort off)
+
+// a child script serving on the port: rerun on the next candidate while its
+// diagnostics say the bind was lost
+let runOnFreePort off run =
+    portCandidates off
+    |> Seq.map run
+    |> Seq.tryFind (fun r -> not (lostBind (diagOf r)))
+    |> Option.defaultWith (fun () -> noPort off)
 
 // ---- python helpers ----------------------------------------------------------
 
@@ -230,7 +255,6 @@ let rawCliPy = <<<
 // a raw HTTP server: canned responses a .NET listener cannot produce
 let rawSrvPy = <<<
     import socket, sys, threading
-    port = int(sys.argv[1])
     def handle(c):
         try:
             data = b""
@@ -252,8 +276,10 @@ let rawSrvPy = <<<
             else: reply("404 Not Found", [], "nf")
         finally:
             c.close()
-    s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(("127.0.0.1", port)); s.listen(16)
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0)); s.listen(16)
+    port = s.getsockname()[1]
+    print(port, flush=True)
     while True:
         c, _ = s.accept()
         threading.Thread(target=handle, args=(c,), daemon=True).start()
@@ -280,13 +306,16 @@ let lspInit = """MSG {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"ca
 // the response line for one request id
 let reply id lines = lines |> Seq.tryFind (fun l -> l |> Str.contains $"\"id\": {id},") |> Option.defaultValue ""
 
-let withRawServer dir off body =
+// the server prints the port the kernel gave it once it is listening
+let withRawServer dir body =
     let py = put dir "rawsrv.py" rawSrvPy
-    let port = freePort off
-    within proc srv = python3 $py $port
-        poll timeout=10s interval=100ms watch=srv
-            Net.portOpen port
-        let v = body port
+    within proc srv = python3 $py
+        let reported =
+            poll timeout=10s interval=100ms watch=srv
+                Proc.tail srv |> Seq.tryHead |> Option.bind Str.tryToInt
+            until p
+                p <> None
+        let v = body (reported |> Option.defaultValue 0)
         v
 
 // ---- H1: `into` runs sh -c past every effect check --------------------------
@@ -413,23 +442,22 @@ let h4 d =
 // ---- H5: `weir restore` overwrites lock.json -----------------------------------
 
 let h5 d =
-    let port = freePort 1
     let w = $"{d}/p"
     Dir.create $"{w}/.weir"
     let sha = Str.sha256 "pwned"
-    let lock = $$<<<
-        {"schemaVersion":1,"artifacts":[{"kind":"schema","name":"a","url":"http://127.0.0.1:$port/x","sha256":"$sha","path":"lock.json"}]}
-    let lockPath = put $"{w}/.weir" "lock.json" lock
     let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "pwned" }
 
-    let r =
-        within serve srv = { port = port; maxConcurrent = 4 } handler
-            within cd w
-                let x = timeout 30 $cli.bin restore | complete
-                x
-
-    let after = File.read lockPath |> Str.join "\n"
-    failing [ ($"an entry with path lock.json (exit {codeOf r})", after == (lock |> Str.join "\n") && codeOf r == 1) ]
+    onFreePort 1 (fun port ->
+        let lock = $$<<<
+            {"schemaVersion":1,"artifacts":[{"kind":"schema","name":"a","url":"http://127.0.0.1:$port/x","sha256":"$sha","path":"lock.json"}]}
+        let lockPath = put $"{w}/.weir" "lock.json" lock
+        let r =
+            within serve srv = { port = port; maxConcurrent = 4 } handler
+                within cd w
+                    let x = timeout 30 $cli.bin restore | complete
+                    x
+        let after = File.read lockPath |> Str.join "\n"
+        failing [ ($"an entry with path lock.json (exit {codeOf r})", after == (lock |> Str.join "\n") && codeOf r == 1) ])
 
 // ---- H6: builtin-named module members not exported (R3) -----------------------
 
@@ -596,24 +624,24 @@ let h12 d =
 // ---- H13: `weir restore` omits the host token -------------------------------
 
 let h13 d =
-    let port = freePort 2
     let w = $"{d}/p"
     Dir.create $"{w}/.weir"
     let sha = Str.sha256 "module H"
-    let lock = $$<<<
-        {"schemaVersion":1,"artifacts":[{"kind":"module","name":"h","url":"http://127.0.0.1:$port/h.weir","sha256":"$sha","path":"modules/h.weir"}]}
-    let _l = put $"{w}/.weir" "lock.json" lock
     let authorized req = req.headers |> Seq.exists (fun (k, v) -> (Str.toLower k == "authorization") && (v |> Str.contains "tok-h13"))
     let handler = fun req ->
         if authorized req then HttpServerResponse { status = 200; headers = []; body = Text "module H" }
         else HttpServerResponse { status = 404; headers = []; body = Text "nf" }
 
     let r =
-        within serve srv = { port = port; maxConcurrent = 4 } handler
-            within cd w
-                within env WEIR_TOKEN_127_0_0_1=tok-h13
-                    let x = timeout 30 $cli.bin restore | complete
-                    x
+        onFreePort 2 (fun port ->
+            let lock = $$<<<
+                {"schemaVersion":1,"artifacts":[{"kind":"module","name":"h","url":"http://127.0.0.1:$port/h.weir","sha256":"$sha","path":"modules/h.weir"}]}
+            let _l = put $"{w}/.weir" "lock.json" lock
+            within serve srv = { port = port; maxConcurrent = 4 } handler
+                within cd w
+                    within env WEIR_TOKEN_127_0_0_1=tok-h13
+                        let x = timeout 30 $cli.bin restore | complete
+                        x)
 
     failing [ ($"a private module restores with WEIR_TOKEN_<host> (exit {codeOf r})", codeOf r == 0 && File.exists $"{w}/.weir/modules/h.weir") ]
 
@@ -625,7 +653,7 @@ let h14Fixture u = $$<<<
     print $"{Http.header "server" r}"
 
 let h14 d =
-    let r = withRawServer d 3 (fun port -> runAt d "30" (put d "h14.weir" (h14Fixture $"http://127.0.0.1:{port}")))
+    let r = withRawServer d (fun port -> runAt d "30" (put d "h14.weir" (h14Fixture $"http://127.0.0.1:{port}")))
     let line i = r.stdout |> Seq.tryItem i |> Option.defaultValue "<none>"
     failing [
         ($"repeated X-A (got {line 0})", codeOf r == 0 && line 0 == "[\"1\"; \"2\"]")
@@ -639,7 +667,7 @@ let h15Fixture u = $$<<<
     print $"{r.status}"
 
 let h15 d =
-    let r = withRawServer d 4 (fun port -> runAt d "30" (put d "h15.weir" (h15Fixture $"http://127.0.0.1:{port}")))
+    let r = withRawServer d (fun port -> runAt d "30" (put d "h15.weir" (h15Fixture $"http://127.0.0.1:{port}")))
     let e = diagOf r
     failing [ ("charset=x-weir-unknown", codeOf r < 128 && not (e |> Str.contains "cannot reach") && not (leaks e)) ]
 
@@ -661,7 +689,7 @@ let serveFixture port = $$<<<
 // runs the serve fixture; the raw response for one case
 let serveRun d off =
     let _c = put d "rawcli.py" rawCliPy
-    let r = runAt d "60" (put d "serve.weir" (serveFixture (freePort off)))
+    let r = runOnFreePort off (fun port -> runAt d "60" (put d "serve.weir" (serveFixture port)))
     fun name -> if File.exists $"{d}/{name}.out" then File.read $"{d}/{name}.out" |> Str.join "\n" else $"<no {name}.out: exit {codeOf r}>"
 
 let h16 d =
@@ -716,7 +744,7 @@ let h20Fixture port = $$<<<
 
 let h20 d =
     let _b = put d "body.txt" [Str.replicate 2048 "x"]
-    let r = runAt d "30" (put d "h20.weir" (h20Fixture (freePort 8)))
+    let r = runOnFreePort 8 (fun port -> runAt d "30" (put d "h20.weir" (h20Fixture port)))
     failing [ ($"a 2 KiB body past maxBody = 1KiB (exit {codeOf r})", prints "413" r) ]
 
 // ---- H21: a transitively reachable union makes a local constructor ambiguous --
@@ -1090,7 +1118,7 @@ let h55Body d port =
         ("a redirect loop returns 302 as data", codeOf rLoop == 1 && not (leaks (diagOf rLoop)))
     ]
 
-let h55 d = withRawServer d 9 (h55Body d)
+let h55 d = withRawServer d (h55Body d)
 
 // ---- H56: contracts small inconsistencies -------------------------------------------
 
@@ -1103,18 +1131,18 @@ let h56 d =
     let _x2 = put $"{d}/.weir/types" "x.weir" ["module X"; "let w : int"; "let w = 2"]
     let rShadow = checkW (put d "b.weir" ["import \"weir:x\" as X"; "print $\"{X.v}\""])
 
-    let port = freePort 10
     let w = $"{d}/p"
     Dir.create $"{w}/.weir"
-    let lock = $$<<<
-        {"schemaVersion":1,"artifacts":[{"kind":"module","name":"m","url":"http://127.0.0.1:$port/m.weir","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"modules/m.weir"}]}
-    let _l = put $"{w}/.weir" "lock.json" lock
     let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "changed" }
     let rMis =
-        within serve srv = { port = port; maxConcurrent = 4 } handler
-            within cd w
-                let x = timeout 30 $cli.bin restore | complete
-                x
+        onFreePort 10 (fun port ->
+            let lock = $$<<<
+                {"schemaVersion":1,"artifacts":[{"kind":"module","name":"m","url":"http://127.0.0.1:$port/m.weir","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"modules/m.weir"}]}
+            let _l = put $"{w}/.weir" "lock.json" lock
+            within serve srv = { port = port; maxConcurrent = 4 } handler
+                within cd w
+                    let x = timeout 30 $cli.bin restore | complete
+                    x)
 
     failing [
         ("`as Some` accepted as an alias", codeOf rSome == 1 && (diagOf rSome |> Str.contains "a.weir:1:"))
@@ -1180,39 +1208,38 @@ let ctlSecretStatement d = prints "tok" (runAt d "30" (put d "c.weir" ["let s = 
 
 let ctlSecretCapture d = prints "tok" (runAt d "30" (put d "c.weir" ["let s = Secret.of \"tok\""; "let l = $(echo $s) |> Seq.head"; "print l"]))
 
-let ctlServeGet d =
-    let port = freePort 11
-    let src = $$<<<
-        let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Text $"got {Str.length req.body}" }
-        within serve srv = { port = $port; maxConcurrent = 2 } handler
-            let b = curl -s --data-binary "0123456789" http://127.0.0.1:$port/ | line
-            print b
-    prints "got 10" (runAt d "30" (put d "c.weir" src))
+let ctlServeSrc port = $$<<<
+    let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Text $"got {Str.length req.body}" }
+    within serve srv = { port = $port; maxConcurrent = 2 } handler
+        let b = curl -s --data-binary "0123456789" http://127.0.0.1:$port/ | line
+        print b
+
+let ctlServeGet d = prints "got 10" (runOnFreePort 11 (fun port -> runAt d "30" (put d "c.weir" (ctlServeSrc port))))
 
 let rawEcho port =
     let r = curl -s $"http://127.0.0.1:{port}/echo" | complete
     codeOf r == 0 && (outOf r |> Str.contains "Host: 127.0.0.1")
 
-let ctlRawServer d = withRawServer d 12 rawEcho
+let ctlRawServer d = withRawServer d rawEcho
 
 let ctlRawClient d =
     let raw = serveRun d 13 "nc"
     raw |> Str.contains "HTTP/1.1 204"
 
 let ctlRestorePlain d =
-    let port = freePort 14
     let w = $"{d}/p"
     Dir.create $"{w}/.weir"
     let sha = Str.sha256 "{}"
-    let lock = $$<<<
-        {"schemaVersion":1,"artifacts":[{"kind":"schema","name":"a","url":"http://127.0.0.1:$port/a.json","sha256":"$sha","path":"schemas/a.json"}]}
-    let _l = put $"{w}/.weir" "lock.json" lock
     let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "{}" }
     let r =
-        within serve srv = { port = port; maxConcurrent = 4 } handler
-            within cd w
-                let x = timeout 30 $cli.bin restore | complete
-                x
+        onFreePort 14 (fun port ->
+            let lock = $$<<<
+                {"schemaVersion":1,"artifacts":[{"kind":"schema","name":"a","url":"http://127.0.0.1:$port/a.json","sha256":"$sha","path":"schemas/a.json"}]}
+            let _l = put $"{w}/.weir" "lock.json" lock
+            within serve srv = { port = port; maxConcurrent = 4 } handler
+                within cd w
+                    let x = timeout 30 $cli.bin restore | complete
+                    x)
     codeOf r == 0 && File.exists $"{w}/.weir/schemas/a.json"
 
 let ctlLocalUnionParam d =

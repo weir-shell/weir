@@ -72,7 +72,10 @@ again, including external commands. `Seq.freeze` computes the values
 once and keeps them, and is the usual fix. The checker warns when a
 binding backed by a command is iterated in a second place without
 being frozen (`possible re-enumeration`; this is only a warning, and
-`weir check` still exits 0). Capturing a command gives a
+`weir check` still exits 0) — including indirectly: two calls of a
+function that reads it, a read inside a `for` body or a `Seq.map`
+lambda, or two uses of a lazy binding derived from it (`let ys = xs |>
+Seq.where …`). Capturing a command gives a
 `seq<string>`, one element per line.
 
 A `let` bound to a command, a pipeline of commands, `ls` or
@@ -104,8 +107,8 @@ bracket must directly follow the name, because `f [0]` is a function
 call. `xs[a..b]` slices, **inclusive and clamped** to the available
 range (an out-of-range or reversed range gives an empty result rather
 than an error), and either end can be left open: `xs[..b]` / `xs[a..]`.
-A bounded slice stops reading a lazy source, so `nats[0..4]`
-terminates. A slice has the type of what you slice: a `seq` gives a
+A bounded slice stops reading a lazy source, so
+`(Seq.initInfinite id)[0..4]` terminates. A slice has the type of what you slice: a `seq` gives a
 `seq`, a `string` a `string` (`"weir"[1..2]` is `"ei"`, counted in
 UTF-16 chars), and `Bytes` gives `Bytes`. `^n` counts from the end
 (`^n` = length − n): `xs[^1]` is the last element, `xs[..^2]` all but

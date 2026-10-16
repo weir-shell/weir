@@ -168,8 +168,13 @@ so a lazily produced seq streams as it goes: the client sees the
 first elements before the sequence is finished. If a `Stream` producer
 raises partway through, the error is not raised out of the handler.
 Instead it is recorded on the handle, and you read it with
-`Server.streamErrors srv` (the response is aborted, so a careful
-client can tell it was cut short). `maxConcurrent` limits how many
+`Server.streamErrors srv`. The client can tell too: the connection
+closes without the chunked body's final empty chunk, so its HTTP layer
+reports a truncated body (curl exits 18) rather than a complete
+stream. A response header that can't be sent — a name that isn't a
+valid header token, or a value with a control or non-ASCII character
+— is never dropped quietly: the client gets a 500 and
+`Server.streamErrors` names the header and why. `maxConcurrent` limits how many
 handlers run at once, as with `Seq.pmapWith`; extra requests wait in a
 queue.
 

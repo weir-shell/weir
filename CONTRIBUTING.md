@@ -20,9 +20,10 @@ and it applies to every change regardless of author:
   pins against the compiled binary, doc examples that execute in CI
   (`ci/skill-doc.sh`), an F# oracle for fidelity claims, and a
   metamorphic fuzzer. "It works" is not evidence; a pin is.
-- **The battery is the bar.** `ci/local.sh` mirrors CI: unit,
-  publish, e2e, fuzz smoke, doc-tests, oracle, timing. Green before
-  review, on every platform the matrix covers.
+- **The battery is the bar.** `ci/local.sh` mirrors CI: unit (Debug,
+  CI's configuration), publish, e2e, fuzz smoke, doc-tests, the
+  dead-private check, the bug-hunt repro harnesses, oracle, timing.
+  Green before review, on every platform the matrix covers.
 - **Receipts before features.** New surface area waits for a
   demonstrated need (a "receipt"); parked ideas carry their
   reopening trigger in the ledger. A PR adding speculative surface

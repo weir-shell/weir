@@ -13,7 +13,16 @@ stops being true fails the build.
   declaration is refused (`-e` shows you a result, by design — a
   deliberate divergence from `python -c`).
 - `weir fmt file.weir` canonicalizes indentation (4 per block depth);
-  `--check` for CI.
+  `--check` for CI. `weir lsp` is the language server (stdio).
+- Command signatures: `weir add sig <tool>` probes the installed
+  binary and writes `.weir/sigs/<tool>.weir` (+ lock entry); a script
+  opts in with a `#sig <tool>` line at its top, and `weir check` then
+  checks that tool's flags (unknown flag = warning; `let exhaustive =
+  true` in the sig file makes it an error). Vendoring: `weir add
+  module <src>//<file>@<ref> --as <name>` (then `import "weir:<name>"
+  as M`), `weir restore` re-materializes the lock's files, `weir
+  verify` diffs them against the lock (exit 1 on drift). See
+  docs/tooling.md.
 - The whole file typechecks before ANY line runs. A check error = zero
   side effects. Iterate until it checks.
 - Comments are `//`, full-line or TRAILING (`let x = 5 // note`) —
@@ -47,7 +56,7 @@ stops being true fails the build.
   `where`, `sortBy`) exist in the REPL session ONLY, and the REPL's
   set is DERIVED [D:bare-partition]: every single-home member of
   `Seq`/`Str` is bare there; a name with two homes is qualified-only
-  everywhere — `contains`, `length` and `replicate`, the whole list. The qualified
+  everywhere — `contains`, `isEmpty`, `length` and `replicate`, the whole list. The qualified
   spelling always works. A bare name in a file errors naming the
   qualified spelling, and the LSP offers the rewrite as a code action.
 
@@ -86,7 +95,7 @@ print (show 1)
   shaped): to sequence AFTER an if, parenthesize it.
 - `;` does NOT chain commands: in a command line it is a literal argv
   word (you get a warning). One command per line.
-- `print` takes string, int, bool, or `seq<string>`. For records,
+- `print` takes string, int, float, bool, `Uuid`, or `seq<string>`. For records,
   unions, options: AN INTERPOLATION HOLE renders any Show value —
   `print $"{row}"` (only functions reject; a bare string hole stays
   raw/unquoted). `show x` produces the same text as a plain string;
@@ -96,7 +105,8 @@ print (show 1)
   [D:hole-generic]: `let addr s = $"{s.name}:{s.port}"` takes any
   record with those fields and any renderable field types (a Secret
   argument still refuses at the call); only a hole nothing generalizes
-  defaults to string. Command-argument splices stay string/int/bool. Lossy debug format (strings come quoted, long
+  defaults to string. Command-argument splices stay string/int/bool
+  (plus `Uuid` and `Secret`). Lossy debug format (strings come quoted, long
   seqs truncate); `print` remains the raw data channel. The REPL's
   echo is tighter still (100 unforced elements — `#echo` moves it,
   forced seqs echo whole; clipped strings, a hint naming the way
@@ -180,8 +190,34 @@ print (show (f 2))
   the source may be an expression — bare match/if need parens).
   Update never ADDS fields, and a row-typed updater
   (`let bump r = { r with N = r.N + 1 }`) generalizes to any record
-  with the field. A comma between fields is a parse error (F#
+  with the field. A comma between fields is refused (F#
   silently makes the field a TUPLE there; weir refuses the trap).
+- User GENERICS, F#'s spelling: `type Page<'a> = { items: seq<'a> }`,
+  `type Either<'a, 'e> = Left of 'a | Right of 'e`. Use sites never
+  write the args — a literal or a constructor infers the instance
+  (`{ items = [1] }` is `Page<int>`). Write the instance in a TYPE
+  position: fields (`{ first: Page<int> }`), signatures, and the
+  adapter slot — `from json Page<string>`, `seq<Page<int>>`,
+  `Map<string, Page<int>>`, `from jsonl`/`from yaml` alike
+  [D:wire-generics]; the wire law runs on the instance's fields, and
+  `to json`/`to yaml` take any concrete instance. REFUSED: a bare
+  generic name in the slot (`from json Page` names the instance to
+  write), `from toml`/`xml`/`table`, `Env.load`/`Args.load`, a
+  generic TAGGED union, and a value whose instance is still open
+  where it is written (`to json` in a helper over `'a` — write it at
+  the call site).
+
+```weir
+type Page<'a> = { items: seq<'a>; next: Option<string> }
+let p = { items = [1; 2]; next = None }
+p |> to json |> Seq.iter print
+let q = ["{\"items\": [\"a\"]}"] |> from json Page<string>
+q.items |> Seq.iter print
+```
+```weir-error
+type Page<'a> = { items: seq<'a> }
+let q = ["{\"items\": []}"] |> from json Page // generic: name the instance, Page<int>
+```
 - Type declarations and list literals continue across lines inside
   the open bracket (line break = separator; a dangling operator
   continues the same element; blank lines are transparent here as
@@ -202,9 +238,10 @@ print (show (f 2))
   reserved word are all legal there), `Args.load` REJECTS it (argv is
   weir's own boundary, so there is no wire to match — flags DERIVE, and
   `[<Short>]`/`[<NoShort>]` are the naming controls), and
-  two fields resolving to one wire key refuse at the declaration. The name set is CLOSED — an unregistered name
-  (`[<Positional>]` among them: dropped, scripts take flags) is a
-  check error with a did-you-mean. Attributes attach to record
+  two fields resolving to one wire key refuse at the declaration. The name set is CLOSED — an unregistered name is a
+  check error with a did-you-mean. `[<Positional>]` is registered for
+  command-signature files only (a foreign tool's operands); on
+  an `Args.load` field it is a check error — scripts take flags. Attributes attach to record
   fields, union cases, and union type declarations (an attribute
   line above `type` binds to it), and the registry is
   POSITION-SCOPED — a registered name in the wrong position names
@@ -289,8 +326,11 @@ echo $root/* // argv words do not concatenate — the tail would be its own argu
 ```weir-error
 echo --flag="quoted v" // the quoted part would be its own argument; quote the whole word
 ```
-- `+` on two unknown params cannot infer (int-or-string): anchor one
-  side (`x + 0`) or take data in. All single-typing operators
+- `+` on two unknowns waits for the rest of the statement
+  [D:plus-defer]: an anchor ANYWHERE decides it — either operand, the
+  result's use, a later link (`a + b + 0` infers like `0 + a + b`).
+  Nothing deciding it by the statement's end cannot infer
+  (int-or-string): anchor one side (`x + 0`) or take data in. All single-typing operators
   (`- * / % > <`) default to int; `let rec` and `mutable` are reserved
   words with no meaning. `%` is integer remainder, TRUNCATED like
   F#/.NET (`-7 % 3` is `-1`, NOT Python's `2`); zero divisor raises
@@ -367,9 +407,10 @@ print v
   `File.sha256 path` (streams internally — hash a file without loading
   it). The capture law scopes the type: bounded and in-memory (~2GB
   cap); a gigabyte artifact is not a value. Laws: `==` is byte
-  equality; no ordering; `print`, `to json`/`to yaml`, argv splices
-  and `Args.load`/`Env.load` all REFUSE, each naming `Bytes.toBase64`
-  or `File.writeBytes` as the exit; a hole or `show` renders a SUMMARY
+  equality; no ordering; `print`, `to json`/`to yaml` and argv splices
+  REFUSE, each naming `Bytes.toBase64` or `File.writeBytes` as the
+  exit (`Args.load`/`Env.load` refuse too, listing the field types
+  they take); a hole or `show` renders a SUMMARY
   (`<1.4 MiB>`), never content — raw bytes wreck terminals.
 
 ```weir
@@ -518,13 +559,14 @@ print $"{key} -> {value}"
   process (a counter in `rand_a`), so v7 ids sort by creation as
   uuids AND as text — the append-only log key. `Uuid.v4 ()` is
   random; `Uuid.v5 Uuid.ns.dns "name"` is name-based and
-  deterministic (`Uuid.ns.dns`/`url`/`oid`/`x500`, or any uuid as your
+  deterministic (`Uuid.ns : UuidNamespaces`, a record of
+  `dns`/`url`/`oid`/`x500`, or any uuid as your
   own namespace). `Uuid.v7At t` stamps a given `Instant` (ms-truncated;
   orders with v7 only when `t` lies between the last id and now;
   raises before 1970). `Uuid.parse` reads 8-4-4-4-12 or 32 bare hex,
   any case, optional `urn:uuid:` — never braces, never surrounding
   whitespace (`Str.trim` first); it RAISES on anything else,
-  `Uuid.tryParse` returns `Option` (weir has no Result).
+  `Uuid.tryParse` returns `Option`.
   `Uuid.version id : int`, `Uuid.instant id : Option<Instant>` (`Some`
   for v7 only), `Uuid.toString` (lowercase canonical — what `show`,
   JSON and argv use), `Uuid.nil`/`Uuid.max`, `Uuid.toBytes`/
@@ -541,7 +583,9 @@ print $"{key} -> {value}"
   naming `Secret.reveal`, the one exit. It DOES splice into argv in the
   clear (`curl -H $auth`, reified too: `… | complete`/`line`/`$e(…)`;
   and as an env value: `TOKEN=$s cmd`, `within env TOKEN=$s` —
-  `ps`-visible, a stated non-claim). `Eq`
+  `ps`-visible, a stated non-claim) — while weir's own messages that
+  show the command line ("command failed …: curl -H ***") mask the
+  spliced word [D:secret-argv-mask]. `Eq`
   compares (`s1 == s2`), `Ord` refuses. Produced by `Env.load`/`Args.load`
   `Secret` fields (env is the CI secret channel), `File.readSecret p`
   (a mounted secret file), a `Secret` field READ by `from json`/`from
@@ -556,7 +600,8 @@ print $"{key} -> {value}"
   `Http.send (Http.get u)`, `Http.send { Http.post u with auth = Bearer
   tok; body = Json payload }` — one per method
   (get/post/put/delete/patch/head/options/query), each equal to `{
-  Http.defaults with method = M; url = u }`. `Http.expect : HttpRequest
+  Http.defaults with method = M; url = u }` (`HttpMethod` =
+  `Get`/`Post`/`Put`/`Delete`/`Patch`/`Head`/`Options`/`Query`/`Other of string`). `Http.expect : HttpRequest
   -> seq<string>` [D:http-dx] is the raising read (`curl -sf`'s
   posture): body out, raises on non-2xx naming method, redacted url,
   status and a capped body snippet — `Http.get u |> Http.expect` is the
@@ -580,13 +625,17 @@ print $"{key} -> {value}"
   `secretHeaders`, any casing) and exactly one is ever sent. The
   default is applied at SEND time, not a field of `Http.defaults` —
   so a shown/pinned request stays stable across releases, and `show
-  req` does NOT display the UA the wire will carry [D:http-ua]. `auth` is a UNION
-  (`NoAuth`/`Bearer of Secret`/`Basic of string * Secret` — Basic does
+  req` does NOT display the UA the wire will carry [D:http-ua]. `auth` is a UNION,
+  `Auth` (`NoAuth`/`Bearer of Secret`/`Basic of string * Secret` — Basic does
   the base64); a `Secret` carries WHOLE (interpolating a token is a
   check error) and `show` masks it. Status is DATA (`if resp.status >=
   400 then fail …`, a 404 binds); only TRANSPORT failure raises (and a
   redirect loop — past 50 hops it raises, naming it). `auth` plus an
-  explicit `Authorization` header is refused (two credentials). On a
+  explicit `Authorization` header is refused (two credentials). A
+  header the wire cannot carry raises before anything is sent, naming
+  the header — a CR/LF/NUL byte, a non-token name (`"Bad Name"`), a
+  control or non-ASCII value byte, or a body header (`Content-Type`,
+  `Expires`) on a `NoBody` request. On a
   cross-origin redirect `auth`, every `secretHeaders` name and a plain
   `Authorization`/`Proxy-Authorization`/`Cookie` header are dropped. The
   body is `NoBody`/`Json`/`Text of string`/`Form of seq<string * string>`
@@ -653,7 +702,8 @@ print $"{key} -> {value}"
   `watch=` or `Proc.wait`, nowhere else. Nested scopes release LIFO.
   The command position takes splices and env sigils like any command;
 - A SCOPED HTTP LISTENER is `within serve srv = { port;
-  maxConcurrent } handler` + an indented block [D:http-serve]: the
+  maxConcurrent } handler` (the config is a `ServerConfig`: `port`,
+  `maxConcurrent`, `bodyTimeout`, `maxBody`) + an indented block [D:http-serve]: the
   socket lifetime IS the block — served until the scope exits
   (normal, raise, SIGINT/SIGTERM) and CLOSED on every path, so the
   port frees (a second bind then succeeds). Same no-orphan discipline
@@ -680,7 +730,11 @@ print $"{key} -> {value}"
   the seq ends. If a `Stream` producer RAISES mid-body, the failure is
   surfaced to the script through `Server.streamErrors srv` (the
   designated channel, Proc.wait's shape — it is not raised out of the
-  handler). A HEAD, 1xx, 204 or 304 reply carries no body bytes
+  handler), and the client sees a TRUNCATED body: the connection closes
+  without the final empty chunk (curl exits 18), never a clean end. A
+  response header the wire cannot carry (a non-token name, a control or
+  non-ASCII value byte, CR/LF) is refused, never dropped: a 500 to the
+  client, the header and reason on `Server.streamErrors`. A HEAD, 1xx, 204 or 304 reply carries no body bytes
   whatever the handler returned (HEAD still declares the GET length).
   Framing and hop-by-hop headers a handler returns (`Transfer-Encoding`,
   `Content-Length`, `Connection`, `Keep-Alive`, `TE`, `Trailer`,
@@ -886,13 +940,16 @@ let p =
   first `|` optional, guards work) — the usual spelling for
   `Seq.choose` over lines.
 - Bounded loops are `retry`/`poll` compound forms (no `while`):
-  `retry attempts=5 delay=30s` + an indented body block, then
+  `retry attempts=5 delay=30s` + an indented body block (optional
+  total-time ceiling `timeout=(Some 2m)` — an `Option<Duration>`,
+  default `None`; it cancels a pending delay), then
   optionally `until r` + an indented predicate block binding the
   body's value. A `bool` body IS the predicate (no `until`, yields
   unit); a value body REQUIRES `until` and yields the value.
   `poll timeout=5m interval=10s` is the time-bounded twin (its
   `timeout` and `interval` must be positive — no busy loop). The head
-  desugars over a record — `retry { Retry.defaults with attempts = 5 }`
+  desugars over a record (`Retry` = `{ attempts; delay; timeout }`,
+  `Poll` = `{ timeout; interval }`) — `retry { Retry.defaults with attempts = 5 }`
   is the same form, so options can be computed and shared. Exhaustion
   RAISES; raises inside the body propagate (retry on the predicate,
   not on exceptions — use `| succeeds`/`| complete` to make failure
@@ -988,7 +1045,10 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   STRICT — not for infinite seqs). When to force, three customers:
   REUSE (a command-backed seq re-runs its process per enumeration —
   force once, consume twice; `weir check` WARNS on the second pull of
-  an unforced command-backed binding — advisory, exit stays 0; the
+  an unforced command-backed binding, indirect pulls included — two
+  calls of a function reading it, a read in a `for`/`Seq.*` lambda,
+  a lazy binding derived from it [D:reenum-indirect] — advisory, exit
+  stays 0; the
   REPL echo of such a `let` shows `name : type (command-backed — runs
   on each use; type name to run it)` and NEVER runs it
   [D:repl-let-echo-lazy]); TIMING (a lazy `ls`/`Path.glob`/command
@@ -1010,7 +1070,9 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   (Eq on the key); `reduce` (fold without a seed, raises on empty) and
   `scan` (fold with intermediates, seed first); `chunkBySize` (the
   batching member); `except` (set difference, exclusions first);
-  `replicate`; `max`/`min`/`maxBy`/`minBy` (Ord; raise on empty; one
+  `replicate`; `initInfinite f` (F#'s: the endless `f 0, f 1, …`,
+  lazy — the one infinite source; bound it with `take`/`takeWhile`/a
+  slice before forcing); `max`/`min`/`maxBy`/`minBy` (Ord; raise on empty; one
   pass, no sort); `take` (`first` is retired [D:first-retired]). Sums: `Seq.sum`
   is `seq<int>`; `Float.sum`/`Size.sum`/`Duration.sum` (and their
   `average`s) own the other types — `Seq.average` alone crosses types
@@ -1034,7 +1096,7 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   directions differ); `(&&)`/`(||)` refuse (a value
   cannot short-circuit); the pipes and `>>` refuse (grammar /
   already the composed function).
-- Match-or-skip over a stream is `Seq.choose` (lazy, qualified-only):
+- Match-or-skip over a stream is `Seq.choose` (lazy):
   the arm returns `Some out` or `None`, never a sentinel `""` to
   filter later. The natural pair with the `Regex` pattern:
 
@@ -1085,8 +1147,8 @@ refs
   case-runner idiom, no sigil: `| "build" -> sh -c "make"`. In
   statement position each arm streams; a value-position match (a `let`
   RHS) captures the last arm's chain as `seq<string>`. The chain ends
-  at the next `| <pattern> ->`, so an argv word spelling `x ->` needs
-  quoting to stay an argument.
+  at the next `| <pattern> ->`, so argv spelling `| x ->` needs
+  quoting to stay an argument (a lone `x ->` is fine).
 - `let x = e in body` inline; in multi-line scripts an indented `let`
   line closes at the next line of the same indent (F# light syntax).
 - String/seq ops are data-last for piping: `Seq.where (Str.contains "err")`.
@@ -1257,8 +1319,8 @@ print x
   mid-line `^D` is NOT EOF), the second at the now-empty line is EOF.
   Works on every build.
 - Bareword heads run externals: `git status` works at a statement head.
-  Builtins shadow PATH (`ls` is typed rows — files AND
-  subdirectories: name, kind (`Regular | Directory | Symlink` — a
+  Builtins shadow PATH (`ls` is typed rows, `seq<FileRow>` — files AND
+  subdirectories: name, kind (`FileKind` = `Regular | Directory | Symlink` — a
   fact, not an answer; `where (fun f -> f.kind == Directory)`),
   target (`Some` for a symlink — the one fact no `File.*` query
   answers; `None` otherwise, and the table hides an all-`None`
@@ -1290,7 +1352,7 @@ print x
   (the checker catches future shadowing loudly — expression mode, not
   a silent tool swap). Builtins WITHOUT a
   qualified spelling (`cd`, `pwd`, `print`, `printerr`, `show`,
-  `exit`, `fail`, `not`, `fst`, `snd`, `nats`) are RESERVED
+  `exit`, `fail`, `not`, `fst`, `snd`) are RESERVED
   binder names [D:reserve-builtins] — a binding would shadow them for
   the whole file with no way back, so the checker refuses; bare
   aliases (`max`, `find`, `item`…) stay bindable because the
@@ -1402,9 +1464,11 @@ Path.glob "*" |> Seq.map (File)
   (`--flag=$@xs` — map the prefix on, or separate args).
 - No glob EXPANSION (`Path.glob` is the typed spelling — a
   function, not argv magic), no redirects, no `&&`, no `$VAR` env
-  expansion — those
+  expansion (`$HOME` is a weir SPLICE — unbound unless you bind it;
+  `Env.get "HOME"` / `Path.home ()` are the typed reads) — the other
   characters pass through as literal argv (`echo a && b` prints
-  "a && b"); `>`/`>>` additionally WARN with the File spelling
+  "a && b", warning with `| and`; `||` refuses, naming `| or`);
+  `>`/`>>` WARN with the File spelling
   (redirection is the fenced block below / `File.append`).
   For bash semantics: `sh -c "the bash line"` (a command
   line; streams, completes, pipes like any command). Inside that
@@ -1460,7 +1524,7 @@ within tmp d
   (`then` ends the argv only there — quote `"then"` to pass the word;
   the checker demands bool, so a bare streaming chain errors naming
   it). Bind first when the verdict is used twice.
-  Full inspection: `cmd | complete` gives `{ exitCode; stdout;
+  Full inspection: `cmd | complete` gives a `Completed` record, `{ exitCode; stdout;
   stderr }`; a COMPUTED argv splats into the chain —
   `$author(git commit-tree $@argv | complete) |> _.stdout` (literal
   head, splatted argv, sigil env; works with every reifier,
@@ -1604,17 +1668,22 @@ Deploy { replicas = 2 } |> to json |> Seq.iter print
 type Bad = C of int
 ```
   The field law is RECURSIVE: a field is a scalar (`int`, `float`,
-  `string`, `bool`), an `Option` of an admitted type, a record whose
+  `string`, `bool`, `Uuid`), an `Option` of an admitted type, a record whose
   fields are all admitted, a `seq` of an admitted type, a
   `seq<string * T>` mapping (an object whose keys are DATA — k8s
   `data`/`labels`: reads as pairs in document order, writes back as
-  ONE object; an empty mapping writes `[]` and reads back empty), or
-  a `Map<string, T>` of one — so `{ entityids: Entity }`,
+  ONE object; an empty mapping writes `[]` and reads back empty),
+  a `Map<string, T>` of one, or an opaque `Yaml` node — any subtree
+  read whole (JSON is a YAML subset: object -> `YMap` in document
+  order, `null` -> `YNull`) and written back as the JSON it denotes
+  [D:json-yaml-field] — so `{ entityids: Entity }`,
   `{ items: seq<Item> }`, `{ labels: seq<string * string> }`, and an
   ID-keyed `{ documents: Map<string, Doc> }` all read. A `Map`'s keys are DATA, not schema, and strings
   ONLY (JSON object keys ARE strings; `Map<int, …>` teaches). The
   whole document can be the map: `from json Map<string, T>` (the
-  adapter slot's third form; `{| … |}` composes in the value slot;
+  adapter slot's third form; `T` is anything a `Map` field's value
+  may be — a record, `{| … |}`, `int`, `seq<string>`, `Option<…>`,
+  another `Map` [D:map-values]; `Map<int, …>` teaches here too;
   `jsonl` refuses — a map is ONE object; `yaml` does not take it
   yet). Duplicate keys last-win. `Map` surface: `ofPairs`
   (last-wins) / `pairs` / `keys` / `values` (key-sorted) / `get`
@@ -1654,7 +1723,8 @@ type Bad = C of int
   element (the bundle write — `to yaml stream |> from yaml stream
   T` roundtrips, `to yaml |> from yaml seq<T>` too). `None` fields
   omit; ambiguous strings like `"no"`/`"007"` auto-quote. `Yaml`
-  nodes (`YMap [("k", YStr "v")]`, `YSeq`, `YInt`…) render directly —
+  nodes (`YStr`/`YInt`/`YFloat`/`YBool`/`YNull`/`YSeq`/`YMap`;
+  `YMap [("k", YStr "v")]`) render directly —
   `YMap` keeps YOUR key order; record fields render in DECLARATION
   order [D:record-order] (wire order for an anonymous shape).
   Literal block scalars `|`/`|-` are in the subset (folded `>` and
@@ -1758,8 +1828,15 @@ type Bad = C of int
   [D:help-find] (fzf with a live doc preview at a tty; a substring
   fallback piped/without fzf). `#history [N]` shows history (bare =
   all, `N` = last N) with the file path in its header — the quick way
-  to find where history lives. All REPL
-  scaffolding — see docs/repl.md.
+  to find where history lives. `#quit` (or `^D`) exits. The init
+  file's FIRST line must be `#init`; it holds declarations, imports,
+  `#alias` lines and one `#session { cwd; env; logLevel; echoCap;
+  prompt }` block (`prompt` = a string or a `unit -> string` /
+  `PromptStatus -> string` function from the file). It is STRICT:
+  script rules (no bare `map`), alias targets refuse `|`/`|>`/`&&`/
+  `||`/`;`, `#session` values cannot run commands nor (except
+  `prompt`) name the file's declarations; `weir check init.weir`
+  checks it. All REPL scaffolding — see docs/repl.md.
 
 ```weir
 let sample = ["{\"id\": 1, \"tags\": [\"a\"]}"]
@@ -1804,7 +1881,10 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   and there is NO `to xml`. A DTD (`<!DOCTYPE …>`) refuses
   [D:xml-no-dtd] — no declared entity expands or resolves.
   An element that repeats under a `string`/`Option<string>`/record
-  field refuses (never silently the first) — declare a `seq< >`.
+  field refuses (never silently the first) — declare a `seq< >`. A
+  text field over MIXED content (`<n>a<b/>c</n>`) refuses too, naming
+  the element and field — never the concatenated text
+  [D:from-xml-mixed].
 
 ```weir
 type Ref  = { [<Attr>] Include: string }
@@ -1932,7 +2012,9 @@ conf |> Seq.iter print
   reached at import any other way — a helper passed as a value,
   composed, or in a `Seq.pmap` arm — raises at run time, located
   [D:module-import-no-commands]), not runnable. Import it with `import "./lib/x.weir"`
-  (a literal path, first in the file before declarations) or
+  (a literal path; imports go first by convention, but a later
+  `import` works — its alias is in scope from its line on,
+  [D:late-imports]) or
   `import "./lib/x.weir" as X`. Access is ALWAYS qualified:
   `X.helper`, `X.Ctx` types cross the boundary; a member named like
   a builtin (`Doc.Text`, `M.id`) exports too, reached qualified — the
@@ -2038,8 +2120,9 @@ if clean then sh -c "echo acting"
   `let r = git status | complete` binds the record. Externals only —
   builtins stay functions there (`let w = cd target` applies the
   BINDING target). The carve-outs are EXPRESSION positions: paren
-  interiors and the bare single-line `let ... in` spelling at the
-  REPL/`-e` (the `in`-swallow is structural). In a refused position a
+  interiors. The bare single-line `let ... in` is NOT one —
+  `let n = echo a b in n` runs the command, the bareword `in`
+  ending its argv [D:let-in-commands]. In a refused position a
   command-shaped RHS teaches `$()`, naming the actual context. A
   bareword `in` on a let RHS ends the command grammar; quote `"in"` to
   pass it.
@@ -2164,7 +2247,8 @@ print (f 1)
   `?`, `[abc]`/`[!abc]`/`[a-z]` (one code point; a `]` first is a
   member, a reversed range matches nothing, `\` is a plain member —
   never regex). Bash's dotfile law: `*` skips dotfiles, a
-  `.`-leading segment matches them. Sorted; relative patterns
+  `.`-leading segment matches them. Sorted per level (a directory's
+  matches, then its subdirectories' — not one global sort); relative patterns
   echo relative and resolve against the cwd AT ENUMERATION —
   `|> Seq.freeze` pins the answer before a `cd`. No matches = the
   empty seq (`match ... with | [] -> fail "no matches"`).
@@ -2244,7 +2328,12 @@ print (f 1)
   field deriving `--help` is a check error (reserved). No
   positionals — spell operands as flags. The untyped floor:
   `Args.flag "--clean" "-c"` (bool), `Args.value "--out"`
-  (Option of the next token).
+  (Option of the next token). For a small script the record can be
+  INLINE [D:env-inline-type]: `Args.load {| verbose: bool; out:
+  Option<string> |}` — the same rules as a named record, but an
+  anonymous type takes NO attributes (`[<Short>]`, `[<Default>]`… need
+  a declared `type`), and its fields sort by name, so `--help` lists
+  flags alphabetically.
 
 ```weir
 type Cli = {
@@ -2277,6 +2366,12 @@ print c.flag
 ```
 
 - Environment: `Env.get "NAME"` (Option<string>) for one var;
+  `Env.need "NAME"` (string — raises `Env.need: NAME is not set` at
+  that line when unset) and `Env.getOr "NAME" "default"` (string — the
+  default only when unset) [D:env-need-getor]. All three read the same
+  way: a set-but-EMPTY var is set and gives `""`, the `within env`
+  overlay counts, and `--can` names a literal variable. They are
+  string-only on purpose — anything typed goes through `Env.load`.
   `Env.load Config` for typed config — declare
   `type Config = { PORT: int; DEBUG: bool; TOKEN: Option<string> }`
   (field names = env-var names VERBATIM unless `[<Wire "NAME">]` says
@@ -2298,7 +2393,25 @@ print c.flag
   resting point sits below the whole overlay stack). No twin mints
   here: env bools are text, so `[<Default false>]` is legal
   ("absent → false" is a real statement, unlike argv presence). `Env.vars` lists everything.
+  The type may be written INLINE [D:env-inline-type] — `Env.load {|
+  TOKEN: string; PORT: int; CI: Option<string> |}`, the `from json
+  {| … |}` shape: same field law, same one-error report, same `--can`
+  names. An anonymous type takes NO attributes, here or anywhere
+  (F#'s rule): an optional var is `Option<T>` + `Option.defaultValue`
+  at the use, and `[<Default>]`/`[<Wire>]` need a declared `type`.
   No `$NAME` expansion in commands — interpolate: `-H $"token {key}"`.
+
+```weir
+let home = Env.need "HOME"
+let port = Env.getOr "WEIR_SKILL_PORT_ZZ" "8080"
+let env = Env.load {| HOME: string; WEIR_SKILL_CI_ZZ: Option<string> |}
+print $"{home == env.HOME} {port} {env.WEIR_SKILL_CI_ZZ}"
+```
+
+```weir-error
+// attributes need a named type — declare `type Cfg = { … }`
+let env = Env.load {| [<Default 8080>] PORT: int |}
+```
 - `//` mid-token is NOT a comment: bareword URLs (`https://...`) pass
   through; comments need line start or a preceding space.
 - Every command head is a LITERAL program name resolved at check
@@ -2385,7 +2498,7 @@ print $"exit={r.exitCode}"
   literal urls, environment reads/writes, Secret loads AND any Secret
   reaching a command's argv (the ps-visible non-claim, surfaced), and
   scoped processes. `sh -c` and the other interpreters are FIRST-CLASS
-  UNKNOWNS — the report's header says "incomplete: N opaque sites" and
+  UNKNOWNS — the report's header says "incomplete: N opaque site(s)" and
   `--strict` exits 2 on any, so CI chooses whether unanalysable means
   failure. `--json` for machines. The boundary, stated: the report
   covers what WEIR does; any external can itself do anything.
@@ -2500,7 +2613,7 @@ not the teaching.
 - `Args`: `flag` `load` `value`
 - `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move` `stat`
 - `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
-- `Env`: `fromFile` `get` `load` `ofPairs` `pair` `vars`
+- `Env`: `fromFile` `get` `getOr` `load` `need` `ofPairs` `pair` `vars`
 - `File`: `append` `copy` `delete` `exists` `isExecutable` `mode` `move` `read` `readBytes` `readSecret` `sha256` `size` `stat` `write` `writeAtomic` `writeBytes` — `mode` is the permissions as `Some "rwxr-xr-x"` (`None` on Windows); `stat` is one path's `FileRow` (a symlink describes the link itself); `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity]
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
@@ -2527,7 +2640,33 @@ not the teaching.
 - `Color`: `red` `green` `yellow` `blue` `magenta` `cyan` `gray` `bold` `dim` `underline` `sgr` — each `string -> string`, wrapping in a colour/attribute. Context-aware: emits the escape only at a terminal with colour on (no `NO_COLOR`) and returns the plain string when piped, so `print (Color.green x)` colours interactively and stays plain in a pipe. Nest to combine (`Color.bold (Color.red "!")`); `Color.sgr "38;5;208" s` is the raw-code escape hatch for 256-colour/truecolor. `print` keeps colour (SGR) at a tty but still neutralizes every terminal-driving escape a value carries (title, clipboard, cursor, CR) and shows bidi controls as a visible `\uXXXX`.
 - `Term`: `width` — `Term.width () : int`, the terminal columns queried live; falls back to 80 when there is no terminal (piped/redirected), so it never raises. The `tput cols` primitive.
 - `Self`: `prompt`, everywhere — writes its message to stderr and reads one stdin line (raises at end of input); and `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
-- `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`
+- `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `initInfinite` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `fromHex` `hmacSha256` `length` `sha256` `sub` `toBase64` `toHex` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
 - `Str`: `contains` `endsWith` `fields` `fromBase64` `isEmpty` `isMatch` `join` `length` `nonEmpty` `padLeft` `padRight` `replace` `replicate` `rmatch` `rmatchAll` `rsplit` `rsplitOnce` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `tryRsplitOnce` `trySplitOnce` `tryToInt` `fromUtf8`
+
+Bare builtins and the prelude types (a union lists its cases, the
+constructors; a record its fields), kept honest by a unit test against
+the checker's own environment [D:surface-gate] — same contract as above:
+
+- bare builtins: `cd` `exit` `fail` `fst` `id` `ls` `not` `print` `printerr` `pwd` `show` `snd`
+- type `Auth`: `NoAuth` `Bearer` `Basic`
+- type `Completed`: { `exitCode` `stdout` `stderr` }
+- type `EnvVar`: { `name` `value` }
+- type `FileKind`: `Regular` `Directory` `Symlink`
+- type `FileRow`: { `name` `kind` `target` `bytes` `modified` `hidden` `path` }
+- type `HttpBody`: `NoBody` `Json` `Text` `Stream` `Form`
+- type `HttpMethod`: `Get` `Post` `Put` `Delete` `Patch` `Head` `Options` `Query` `Other`
+- type `HttpRequest`: { `method` `url` `auth` `headers` `secretHeaders` `body` `timeout` `insecure` }
+- type `HttpResponse`: { `status` `headers` `body` }
+- type `HttpServerRequest`: { `method` `path` `query` `headers` `body` }
+- type `HttpServerResponse`: { `status` `headers` `body` }
+- type `Op`: `WriteFile` `DeleteFile` `Copy` `Move` `CopyDir` `MoveDir` `MakeDir` `DeleteDir` `DeleteTree` `HttpSend`
+- type `Option`: `Some` `None`
+- type `Poll`: { `timeout` `interval` }
+- type `PromptStatus`: { `ok` `exit` }
+- type `Result`: `Ok` `Error`
+- type `Retry`: { `attempts` `delay` `timeout` }
+- type `ServerConfig`: { `port` `maxConcurrent` `bodyTimeout` `maxBody` }
+- type `UuidNamespaces`: { `dns` `url` `oid` `x500` }
+- type `Yaml`: `YStr` `YInt` `YFloat` `YBool` `YNull` `YSeq` `YMap`

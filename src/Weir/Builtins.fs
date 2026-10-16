@@ -387,7 +387,10 @@ let private sumImpl: Value =
             VInt total
         | v -> unreachable $"the checker rejects 'sum' on {formatValue v}")
 
-let private natsImpl: Value = VSeq(Seq.initInfinite (int64 >> VInt))
+// F#'s Seq.initInfinite [D:init-infinite]: f 0, f 1, … lazily, the one
+// infinite-sequence spelling; an int64 index, so no int32 ceiling
+let private initInfiniteImpl: Value =
+    VBuiltin(fun f -> VSeq(Seq.unfold (fun i -> Some(VInt i, i + 1L)) 0L |> Seq.map (apply f)))
 
 let private notImpl: Value =
     VBuiltin(fun v ->
@@ -591,7 +594,7 @@ let private oneLine (prog: string) (argv: string list) (lines: seq<string>) : Va
     match List.ofSeq lines with
     | [ one ] -> VStr(one.Trim())
     | ls ->
-        let shown = String.concat " " (prog :: argv)
+        let shown = Proc.showArgv (prog :: argv)
         failwith $"'{shown} | line' expected exactly one line of output, got {List.length ls}"
 
 let private linedWith (overlay: (string * string) list) : Value =
@@ -2350,6 +2353,7 @@ let private seqMembers: (string * Ty * Value) list =
       "pick", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, tB)), pickImpl
       "except", TFun(TSeq tA, TFun(TSeq tA, TSeq tA)), exceptImpl
       "replicate", TFun(TInt, TFun(tA, TSeq tA)), replicateImpl
+      "initInfinite", TFun(TFun(TInt, tA), TSeq tA), initInfiniteImpl
       "max", TFun(TSeq tA, tA), extremumImpl "max" (fun c -> c > 0)
       "min", TFun(TSeq tA, tA), extremumImpl "min" (fun c -> c < 0)
       "maxBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), extremumByImpl "maxBy" (fun c -> c > 0)
@@ -3296,7 +3300,25 @@ let private envMembers: (string * Ty * Value) list =
               | None -> VUnion("None", None)
               | Some value -> VUnion("Some", Some(VStr value))
           | v -> unreachable $"the checker rejects 'Env.get' on {formatValue v}")
-      "vars", TSeq(TNamed(envVarDef.Name, [])), envVarsImpl
+      // the one-var string forms [D:env-need-getor]: Env.get's read
+      // (overlay included, set-but-empty is set) with the unwrap built in
+      "need",
+      TFun(TStr, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VStr name ->
+              match Session.getEnv name with
+              | Some value -> VStr value
+              | None -> failwith $"Env.need: {name} is not set"
+          | v -> unreachable $"the checker rejects 'Env.need' on {formatValue v}")
+      "getOr",
+      TFun(TStr, TFun(TStr, TStr)),
+      VBuiltin(fun n ->
+          VBuiltin(fun d ->
+              match n, d with
+              | VStr name, VStr dflt -> VStr(Session.getEnv name |> Option.defaultValue dflt)
+              | _ -> unreachable "the checker rejects 'Env.getOr' on these arguments"))
+      "vars",TSeq(TNamed(envVarDef.Name, [])), envVarsImpl
       "fromFile", TFun(TStr, TSeq(TNamed(envVarDef.Name, []))), envFromFileImpl ]
 
 // the read-side guards [D:sized-findings]: reads must give the same
@@ -4575,6 +4597,11 @@ let private runRequest (reqV: Value) : Http.Resp =
         // second header on the wire. One crossing, the argv-NUL
         // guard's shape.
         Http.refuseHeaderInjection "request header" failwith req.Headers
+
+        // a header with no place on the wire is refused, never skipped
+        // [D:http-header-unsendable]: a non-token name, a control or
+        // non-ASCII value byte, a body header on a bodyless request
+        Http.refuseUnsendableRequestHeader failwith req.Body.IsSome req.Headers
 
         let host =
             try
@@ -5961,7 +5988,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "srv" ]
           "Server.streamErrors",
           bd
-              "Error messages from Stream response bodies that raised partway through; the client received a truncated body for each. Empty until one fails. Streaming errors are reported here instead of being raised out of the handler."
+              "Error messages from Stream response bodies that raised partway through (the client received a truncated body for each), and from response headers that could not be sent (the client received a 500). Empty until one fails. These errors are reported here instead of being raised out of the handler."
               None
               (Some "When a Stream body raises, the client's response is cut off and the error is recorded here.")
           |> named [ "srv" ]
@@ -6217,6 +6244,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Seq.replicate 3 \"x\" |> Seq.freeze")
               None
           |> named [ "n"; "x" ]
+          "Seq.initInfinite",
+          bd
+              "The endless sequence f 0, f 1, f 2, …, computed lazily as it is read. Bound it with take, takeWhile or a slice before forcing it."
+              (Some "Seq.initInfinite (fun i -> i * i) |> Seq.take 4 |> Seq.freeze")
+              None
+          |> named [ "f" ]
           "Seq.max",
           bd "The largest element, found in one pass without sorting. Elements must be comparable; raises on an empty sequence." (Some "Seq.max [3; 1; 2]") None
           |> named [ "xs" ]
@@ -6410,9 +6443,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "[Some 1; None; Some 3] |> Seq.choose id")
               None
            |> named [ "x" ])
+          "fst", (bd "The first element of a pair. Wider tuples are a type error, as in F#." (Some "fst (1, \"a\")") None |> named [ "pair" ])
+          "snd", (bd "The second element of a pair. Wider tuples are a type error, as in F#." (Some "snd (1, \"a\")") None |> named [ "pair" ])
+          "ls",
+          (bd
+              "The current directory's entries as typed rows (name, kind, target, bytes, modified, hidden, path), sorted by name. Dir.stat gives the same rows for a named directory; ^ls runs the external ls."
+              (Some "ls |> Seq.where (fun f -> f.kind == Directory)")
+              None)
+          "pwd",
+          (bd "The session's current directory, read where it is used." (Some "pwd") None)
           "cd",
           (bd
-              "Change the session's directory and return the previous one, so you can go back later (`let prev = cd \"/tmp\"`). A bare name uses the value of that binding (`cd target`). `cd` with no argument, or a typed `cd ~`, goes to the home directory; a string argument is used literally. To change directory for a block only, use `within cd`."
+              "Change the session's directory and return the absolute directory it moved to (`let here = cd \"/tmp\"`). A bare name uses the value of that binding (`cd target`). `cd` with no argument, or a typed `cd ~`, goes to the home directory; a string argument is used literally. To change directory for a block only, use `within cd`."
               (Some "cd \".\"")
               None
            |> named [ "path" ])
@@ -6850,7 +6892,19 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Env.get",
           (bd "A process environment variable as an Option." (Some "Env.get \"PATH\"") None
            |> named [ "name" ])
-          "Env.vars", bd "Every environment variable as EnvVar records." (Some "Env.vars |> Seq.freeze") None
+          "Env.need",
+          (bd
+              "A required environment variable as a string; raises naming the variable when it is unset. A set-but-empty variable gives \"\"."
+              (Some "Env.need \"PATH\"")
+              (Some "For a typed or multi-variable read, use Env.load.")
+           |> named [ "name" ])
+          "Env.getOr",
+          (bd
+              "An environment variable as a string, or the default when it is unset. A set-but-empty variable gives \"\", not the default."
+              (Some "Env.getOr \"PORT\" \"8080\"")
+              None
+           |> named [ "name"; "fallback" ])
+          "Env.vars",bd "Every environment variable as EnvVar records." (Some "Env.vars |> Seq.freeze") None
           "Env.pair",
           (bd "Build one EnvVar from a name and value." (Some "Env.pair \"K\" \"V\"") None
            |> named [ "name"; "value" ])
@@ -7309,7 +7363,10 @@ let attrDocs: Map<string, string> =
           "[<EpochSec>] — an Instant field crosses json/yaml as integer epoch seconds (a sub-second value raises on write)"
           "Millis", "[<Millis>] — a Duration field crosses json/yaml as integer milliseconds"
           "Seconds", "[<Seconds>] — a Duration field crosses json/yaml as integer seconds (a sub-second value raises on write)"
-          "ByteCount", "[<ByteCount>] — a Size field crosses json/yaml as an integer byte count" ]
+          "ByteCount", "[<ByteCount>] — a Size field crosses json/yaml as an integer byte count"
+          "Attr",
+          "[<Attr>] / [<Attr \"Name\">] — read this field from an XML attribute (from xml), named like the field unless given"
+          "Elem", "[<Elem \"Child\">] — the repeated child element a seq field reads (from xml)" ]
 
 let adapterNames (dir: string) : string list =
     builtinDocs
@@ -7485,7 +7542,7 @@ let private chainSpecs (stagesV: Value) (stdinV: Value) : Proc.Spec list =
     | v -> unreachable $"the parser builds a chain as a stage list, got {formatValue v}"
 
 let private chainShown (specs: Proc.Spec list) =
-    specs |> List.map (fun sp -> String.concat " " (sp.Prog :: sp.Args)) |> String.concat " | "
+    specs |> List.map (fun sp -> Proc.showArgv (sp.Prog :: sp.Args)) |> String.concat " | "
 
 let private chainBuiltin (k: Proc.Spec list -> Value) : Value =
     VBuiltin(fun stagesV -> VBuiltin(fun stdinV -> k (chainSpecs stagesV stdinV)))
@@ -7545,7 +7602,6 @@ let private chainTy (result: Ty) : Ty =
 
 let private entries: (string * Ty * Value) list =
     [ "ls", seqFileRow, realLs
-      "nats", seqInt, natsImpl
       "cd", TFun(TStr, TStr), cdImpl
       "pwd", TStr, pwdImpl
       "not", TFun(TBool, TBool), notImpl

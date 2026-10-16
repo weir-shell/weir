@@ -600,7 +600,7 @@ else:
     expect("session-key" in [d["code"] for d in init_diags()], "an unknown #session key is flagged")
     init_change('#init\n#session {\n    cwd = 42\n}\n')
     tdiags = init_diags()
-    expect(any(d["code"] == "session-type" and "expects string" in d["message"] for d in tdiags),
+    expect(any(d["code"] == "session-type" and "expects a string" in d["message"] for d in tdiags),
            f"a wrong-typed #session value is flagged: {[d['code'] for d in tdiags]}")
     # a #alias command completes against PATH (git is present in a git CI)
     init_change('#init\n#alias g = gi\n')
@@ -871,6 +871,9 @@ expect(isinstance(r, list) and len(r) == 1 and r[0]["newText"].endswith("print (
        f"the formatted text ends in a newline: {r}")
 r = format5(75, "#!/usr/bin/env weir\n  print \"a\"\n")
 expect(r == [] or r is None, f"where the CLI refuses, no edits: {r}")
+# a doc check cannot parse is refused too [D:fmt-parse-gate]
+r = format5(76, "let x = (1 +\nprint  x\n")
+expect(r == [] or r is None, f"an unparseable doc gets no edits: {r}")
 
 send5({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}})
 m = read5()

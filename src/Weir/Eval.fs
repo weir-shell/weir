@@ -44,6 +44,15 @@ type RunPos() =
         with get () = RunPos.current
         and set (v: obj) = RunPos.current <- v
 
+    [<System.ThreadStatic; DefaultValue>]
+    static val mutable private exact: bool
+
+    /// Current is an application's callee while the call runs: a raise
+    /// there is reported at its own column [D:runtime-position-call]
+    static member Exact
+        with get () = RunPos.exact
+        and set (v: bool) = RunPos.exact <- v
+
     static member val SameStatement: System.Func<obj, bool> = null with get, set
 
     static member IsCall(body: obj) =
@@ -129,6 +138,7 @@ let pinOnThread (ex: exn) : unit =
 
         if isNull b.Node then
             b.Node <- RunPos.Current
+            b.Exact <- RunPos.Exact
 
 /// a command's stdin feed, pinned where the producer raised: the writer
 /// thread pulls it, the main thread rethrows the raise
@@ -1216,6 +1226,39 @@ let private decodeCoded (where: string) (c: Codec) (text: string option) (num: i
     | Seconds -> VDur(seconds (needInt "seconds"))
     | ByteCount -> VSize(needInt "a byte count")
 
+// a JSON value as a `Yaml` node [D:json-yaml-field]: JSON is a YAML
+// subset, so an opaque `Yaml` field reads any subtree whole — object
+// -> YMap (document order), array -> YSeq, and a number by the YAML
+// scalar rule (integer-shaped -> YInt, else YFloat)
+let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) : Value =
+    match e.ValueKind with
+    | System.Text.Json.JsonValueKind.Object ->
+        VUnion(
+            "YMap",
+            Some(
+                VSeq(
+                    e.EnumerateObject()
+                    |> Seq.map (fun p -> VTuple [ VStr p.Name; jsonYamlNode where p.Value ])
+                    |> List.ofSeq
+                )
+            )
+        )
+    | System.Text.Json.JsonValueKind.Array ->
+        VUnion("YSeq", Some(VSeq(e.EnumerateArray() |> Seq.map (jsonYamlNode where) |> List.ofSeq)))
+    | System.Text.Json.JsonValueKind.String -> VUnion("YStr", Some(VStr(e.GetString())))
+    | System.Text.Json.JsonValueKind.True -> VUnion("YBool", Some(VBool true))
+    | System.Text.Json.JsonValueKind.False -> VUnion("YBool", Some(VBool false))
+    | System.Text.Json.JsonValueKind.Number ->
+        let raw = e.GetRawText()
+
+        match System.Int64.TryParse raw with
+        | true, n -> VUnion("YInt", Some(VInt n))
+        | _ ->
+            match parseFloat raw with
+            | Ok f -> VUnion("YFloat", Some(VFloat f))
+            | Error _ -> failwith $"{where}: number {raw} is out of float range"
+    | _ -> VUnion("YNull", None)
+
 let private jsonLine
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, string * string * bool>)
@@ -1306,6 +1349,25 @@ let private jsonLine
             writer.WriteStartObject()
             writeFields rname fields
             writer.WriteEndObject()
+        // a `Yaml` node writes as the JSON it denotes [D:json-yaml-field]
+        // — after the tagged arm, which owns any user case names
+        | VUnion("YMap", Some(VSeq entries)) ->
+            writer.WriteStartObject()
+
+            for e in entries do
+                match e with
+                | VTuple [ VStr k; v ] ->
+                    writer.WritePropertyName k
+                    write v
+                | v -> unreachable $"a YMap entry is a pair, not {formatValue v}"
+
+            writer.WriteEndObject()
+        | VUnion("YSeq", Some(VSeq items)) ->
+            writer.WriteStartArray()
+            items |> Seq.iter write
+            writer.WriteEndArray()
+        | VUnion(("YStr" | "YInt" | "YFloat" | "YBool"), Some scalar) -> write scalar
+        | VUnion("YNull", None) -> writer.WriteNullValue()
         | v -> unreachable $"the checker rejects 'to json' on {formatValue v}"
 
     // the field loop, shared by records and tagged payloads
@@ -1482,6 +1544,7 @@ let private jsonDocRead
             prop.EnumerateObject()
             |> Seq.fold (fun m p -> Map.add p.Name (readValue $"{name}[\"{p.Name}\"]" inner p.Value) m) Map.empty
             |> VMap
+        | TNamed("Yaml", []) -> jsonYamlNode $"{who}: field '{name}'" prop
         | TNamed(n, []) when defs.ContainsKey n ->
             if prop.ValueKind <> System.Text.Json.JsonValueKind.Object then
                 failwith
@@ -1591,6 +1654,9 @@ let private jsonDocRead
                     // only sees what the sample had [D:schema-types]
                     failwith
                         $"{who}: missing field '{shownName}'{wireNote} in: {shown} — if the field is sometimes absent, declare it Option<{formatTy ty}>; a type drafted from a sample only sees what the sample had"
+                // a null is a `Yaml` node like any other, as `from yaml`
+                // reads it [D:json-yaml-field]
+                | TNamed("Yaml", []) when isNull -> VUnion("YNull", None)
                 | _ when isNull ->
                     failwith
                         $"{who}: field '{shownName}' is null; declare it Option<{formatTy ty}> to allow it, in: {shown}"
@@ -1631,11 +1697,27 @@ let private jsonDocRead
         match top with
         | TopRec d -> d.Name
         | TopUnion u -> u.Name
+        | TopValue ty -> formatTy ty
 
     let readTopEl (prefix: string) (el: System.Text.Json.JsonElement) =
         match top with
         | TopRec d -> objRow prefix d el
         | TopUnion u -> readUnion prefix u el
+        | TopValue _ -> unreachable "the checker admits a value top only under Map< >"
+
+    match top with
+    | TopValue ty when wantMap ->
+        // a non-record value type [D:map-values]: each property reads
+        // as a Map<string, V> field's values do, paths through the key
+        match root.ValueKind with
+        | System.Text.Json.JsonValueKind.Object ->
+            root.EnumerateObject()
+            |> Seq.fold (fun m p -> Map.add p.Name (readValue $"[\"{p.Name}\"]" ty p.Value) m) Map.empty
+            |> VMap
+        | k ->
+            failwith
+                $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is Map<string, {topName}>, in: {shown}"
+    | _ ->
 
     if wantMap then
         // the ID-keyed object [D:map-string]: the top level is the map
@@ -1774,6 +1856,15 @@ let private xmlDoc
         |> Seq.tryHead
         |> Option.map (fun a -> a.Value)
 
+    // a text leaf is the element's own text: child elements inside it
+    // (mixed content) refuse rather than concatenate [D:from-xml-mixed]
+    let textOf (c: XElement) (shownName: string) =
+        match c.Elements() |> Seq.tryHead with
+        | Some inner ->
+            failwith
+                $"{who}: element <{c.Name.LocalName}> for field '{shownName}' holds a child element <{inner.Name.LocalName}> — a text field reads an element with text only (mixed content is outside the XML subset): {shown}"
+        | None -> c.Value
+
     // one element -> one row; `prefix` is the dotted path above it
     let rec objRowXml (prefix: string) (rdef: RecordDef) (el: XElement) : Value =
         let readField (name: string, ty: Ty) =
@@ -1796,13 +1887,13 @@ let private xmlDoc
                     // a child element's inner text (required / optional)
                     | TStr ->
                         match childElem el name shownName "seq<string>" with
-                        | Some c -> VStr c.Value
+                        | Some c -> VStr(textOf c shownName)
                         | None ->
                             failwith
                                 $"{who}: missing element <{name}> in <{el.Name.LocalName}> for field '{shownName}' in: {shown}"
                     | TNamed("Option", [ TStr ]) ->
                         match childElem el name shownName "seq<string>" with
-                        | Some c -> VUnion("Some", Some(VStr c.Value))
+                        | Some c -> VUnion("Some", Some(VStr(textOf c shownName)))
                         | None -> VUnion("None", None)
                     // repeated children: [<Elem "X">] names them, else the
                     // element type (a record) or the field name (strings)
@@ -1816,7 +1907,7 @@ let private xmlDoc
                         childElems el elemName
                         |> Seq.mapi (fun i c ->
                             match elem with
-                            | TStr -> VStr c.Value
+                            | TStr -> VStr(textOf c $"{shownName}[{i}]")
                             | TNamed(n, []) when defs.ContainsKey n -> objRowXml $"{shownName}[{i}]." defs[n] c
                             | _ -> unreachable "the checker restricts an XML seq to strings or records")
                         |> List.ofSeq
@@ -1837,7 +1928,8 @@ let private xmlDoc
 
     match top with
     | TopRec d -> objRowXml "" d root
-    | TopUnion _ -> unreachable "the checker admits only records at the XML boundary"
+    | TopUnion _
+    | TopValue _ -> unreachable "the checker admits only records at the XML boundary"
 
 // ---- the aligned-table boundary [D:from-table] ----------------------------
 
@@ -2003,7 +2095,8 @@ let private fromAdapter
 
                 match top with
                 | TopRec def -> tableRows "from table" def strs
-                | TopUnion _ -> unreachable "the checker admits only records at the table boundary"
+                | TopUnion _
+                | TopValue _ -> unreachable "the checker admits only records at the table boundary"
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     | f -> unreachable $"the checker rejects unknown format '{f}'"
 
@@ -2481,8 +2574,11 @@ let scalarString (what: string) (v: Value) : string =
     | VStr s -> s
     // a Secret splices to argv in the clear [D:secret]: `curl -H
     // $auth` needs the real value. print/printerr reject Secret at
-    // the type (printArgTy), so this arm is reached only via argv
-    | VSecret s -> s
+    // the type (printArgTy), so this arm is reached only via argv —
+    // marked so argv-rendering messages mask it [D:secret-argv-mask]
+    | VSecret s ->
+        Proc.markSecretWord s
+        s
     | VUuid g -> formatUuid g
     | VInt n -> string n
     | VBool true -> "true"
@@ -3257,6 +3353,7 @@ and private progOf (env: Env) (h: Check.TCmdHead) : string =
 
 and eval (env: Env) (te: TypedExpr) : Value =
     RunPos.Current <- box te
+    RunPos.Exact <- false
     // a signal or closed stdout unwinds here, before the node runs
     // [D:signal-main-unwind]
     Session.checkTeardown ()
@@ -3485,7 +3582,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         eval (bindings |> List.fold (fun m (n, v) -> Map.add n v m) env) body
     | TELambdaPat(pat, body) -> VClosurePat(pat, body, env)
     | TELambda(param, _, body) -> VClosure(param, body, env)
-    | TEApp(fn, arg) -> apply (eval env fn) (eval env arg)
+    | TEApp(fn, arg) -> callAt env fn arg
     | TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) }) ->
         // collect the command chain left of this hop [D:byte-pipes]: a
         // command feeding a command is a raw byte hop (a hop makes no
@@ -3522,7 +3619,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         System.Console.Out.Flush()
         Proc.runChainInherited (chainSpecs env arg chead cargs cenvO)
         VUnit
-    | TEPipe(arg, fn) -> apply (eval env fn) (eval env arg)
+    | TEPipe(arg, fn) -> callAt env fn arg
     | TEField(target, field) ->
         match eval env target with
         | VRecord(name, fields) ->
@@ -3903,7 +4000,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
                  let b = blameFor original
 
                  if isNull b.Node then
-                     b.Node <- RunPos.Current)
+                     b.Node <- RunPos.Current
+                     b.Exact <- RunPos.Exact)
 
             (try
                 if Session.deregisterAlways hooked then
@@ -4225,7 +4323,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     // script through the stream-error channel, and the
                     // response is refused without the injecting header
                     // (the accept loop 500s it).
-                    Http.refuseHeaderInjection "response header" (fun m -> raise (Serve.ResponseHeaderInjection m)) headers
+                    Http.refuseHeaderInjection "response header" (fun m -> raise (Serve.ResponseHeaderRefused m)) headers
 
                     let asString v =
                         match v with
@@ -4346,10 +4444,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                                 ignore
                                          with _ ->
                                              ())
-                                    | Serve.ResponseHeaderInjection msg ->
+                                    | Serve.ResponseHeaderRefused msg ->
                                         // a handler returned a header carrying
-                                        // CR/LF/NUL [D:http-header-bytes]: refuse
-                                        // the response without the injecting
+                                        // CR/LF/NUL [D:http-header-bytes] or one
+                                        // the wire cannot carry
+                                        // [D:http-header-unsendable]: refuse
+                                        // the response without the offending
                                         // header (never a silent drop) — a 500
                                         // to the client, and the located message
                                         // to the script via the stream-error
@@ -4642,6 +4742,32 @@ and apply (fn: Value) (arg: Value) : Value =
     | VBuiltin f -> f arg
     | v -> unreachable $"the checker rejects application of {formatValue v}"
 
+// an application: callee, then argument, then the call — which runs with
+// the callee as the current node, so a raise from the call itself (`fail`,
+// a builtin) is reported at the callee's column, not the line's first
+// [D:runtime-position-call]
+and private callAt (env: Env) (fn: TypedExpr) (arg: TypedExpr) : Value =
+    let f = eval env fn
+    let a = eval env arg
+
+    // a reifier's call is its command's: blamed at the command, whose
+    // program is the reifier's first argument
+    let rec reifiedCmd (e: TypedExpr) =
+        match e.Kind with
+        | TEApp({ Kind = TEVar v }, first) when v.StartsWith '|' && (Ast.reifierOfVar v).IsSome -> Some first
+        | TEApp(g, _) -> reifiedCmd g
+        | _ -> None
+
+    let at = reifiedCmd fn |> Option.defaultValue fn
+
+    if at.Span.Start.Col >= 1 then
+        RunPos.Current <- box at
+        RunPos.Exact <- true
+
+    let r = apply f a
+    RunPos.Exact <- false
+    r
+
 // a call of a function defined elsewhere [D:runtime-position]: a raise
 // unwinding through it is blamed on the innermost node first (if nothing
 // blamed it yet), then gains this call site as a trace frame
@@ -4657,6 +4783,7 @@ and private inFunction (f: unit -> Value) : Value =
 
         if isNull b.Node then
             b.Node <- RunPos.Current
+            b.Exact <- RunPos.Exact
 
         if not (isNull callSite) then
             b.Frames.Add callSite

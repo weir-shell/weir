@@ -1,6 +1,6 @@
 # PLAN — fmt keeps the layout inside an open bracket
 
-Status: APPROVED (user, 2026-10-13) — R1: preserve (shift, don't re-level).
+Status: LANDED (CHANGELOG v0.0.74); originally APPROVED (user, 2026-10-13) — R1: preserve (shift, don't re-level).
 
 Found while assembling the bug sweep (PLAN-sweep-fixes.md): `weir fmt` over
 `ci/feature-docs.weir`, `ci/release-published.weir` and

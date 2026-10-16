@@ -30,6 +30,10 @@ until r
 print (out.stdout |> Seq.head)
 ```
 
+`retry` also takes an optional total-time ceiling,
+`timeout=(Some 2m)` (an `Option<Duration>`, `None` by default): when
+it passes, the retry fails without waiting out the pending delay.
+
 `poll timeout=5m interval=10s` has the same form but is limited by
 time; it is the loop for waiting until something is ready.
 `watch=<proc handle>` makes it fail immediately if the watched child

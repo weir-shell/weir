@@ -1,6 +1,6 @@
 # weir — typed command signatures: the design (v1 local, v2 registry)
 
-Status: DESIGN, BLESSED (user 2026-07-30) — the decisions are settled
+Status: LANDED ([D:command-signatures]); originally DESIGN, BLESSED (user 2026-07-30) — the decisions are settled
 here; implementation is its own arc of blessed sessions. Written on
 the advisor's leanings for the four open questions, each marked
 LEANING so a session may revisit with evidence. REVISED 2026-08-01:

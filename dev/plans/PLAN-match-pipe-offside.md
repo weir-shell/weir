@@ -1,6 +1,6 @@
 # Plan — a trailing `|>` closes the match, the F# way (offside)
 
-Status: PLANNED (2026-09-09). Implements the parked "real fix" named in
+Status: LANDED ([D:match-pipe-offside]); originally PLANNED (2026-09-09). Implements the parked "real fix" named in
 `dev/NOTES.md` (the `|`-vs-pipe resolution) and closes the unrecorded
 fidelity gap the reference-review surfaced.
 

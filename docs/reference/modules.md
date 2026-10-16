@@ -16,7 +16,8 @@ evaluates anything.
 
 ## Import forms
 
-`import` comes first in the file, before any declarations. How a
+Imports usually come first in the file. A later `import` works too:
+its alias can be used from that line on, not above it. How a
 path resolves depends only on how it is written, never on which files
 exist:
 

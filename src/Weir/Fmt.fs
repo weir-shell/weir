@@ -219,7 +219,11 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
             | _ -> body
 
     match logicalAt lineOffset body with
-    | Error e -> Error $"cannot format: {e} (fix errors first)"
+    | Error e ->
+        // located as a parse refusal is, line:col [D:assembly-col]
+        match Script.assemblyErrorAt (body |> List.mapi (fun i l -> i + 1 + lineOffset, l)) e with
+        | Some(l, c, rest) -> Error $"cannot format: line {l}:{c}: {rest} (fix errors first)"
+        | None -> Error $"cannot format: {e} (fix errors first)"
     | Ok originalLogical ->
 
         // open indent levels, deepest first [D:fmt-depth-model]: any
@@ -550,17 +554,43 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                     | Ok stmt -> Parser.stmtExprs stmt |> List.exists hasCmd
                     | Error _ -> true
 
+                // lines respace never touches [D:fmt-respace]: district
+                // content is bytes [D:content-bytes], and a line that begins
+                // inside a string (an interpolation hole spanning lines) has
+                // no per-line string mask — the shape guard cannot catch a
+                // respaced hole (`{a}` → `{ a }` keeps the sexpr)
+                let frozen =
+                    let arr = List.toArray formatted
+                    let mask = Script.districtContentMask formatted
+
+                    for ll in formattedLogical do
+                        let mutable prefix = ""
+
+                        for (_, pl, _) in ll.Segments do
+                            let i = pl - 1 - lineOffset
+
+                            if i >= 0 && i < arr.Length then
+                                if Script.endsInsideString prefix then
+                                    mask[i] <- true
+
+                                prefix <- prefix + "\n" + Script.stripComment arr[i]
+
+                    mask
+
                 let respaced =
                     formatted
-                    |> List.map (fun raw ->
-                        // respace the code only; the gap before a
-                        // trailing comment is alignment and survives
-                        let code = Script.stripComment raw
-                        let codeTrim = code.TrimEnd(parserWs)
+                    |> List.mapi (fun i raw ->
+                        if frozen[i] then
+                            raw
+                        else
+                            // respace the code only; the gap before a
+                            // trailing comment is alignment and survives
+                            let code = Script.stripComment raw
+                            let codeTrim = code.TrimEnd(parserWs)
 
-                        Script.respaceLine codeTrim
-                        + code.Substring codeTrim.Length
-                        + raw.Substring code.Length)
+                            Script.respaceLine codeTrim
+                            + code.Substring codeTrim.Length
+                            + raw.Substring code.Length)
 
                 match logicalOf respaced with
                 | Error _ -> Ok formatted // respace broke assembly: revert wholesale
@@ -631,8 +661,10 @@ let formatLines (body: string list) : Result<string list, string> = formatSettle
 /// out, plus whether they differ from the source. The shebang line
 /// rides verbatim (never formatted), an error names the file's own line
 /// number, and the canonical text ends in exactly one newline — a
-/// source without it is not canonical. CRLF reads as LF.
-let formatSource (text: string) : Result<string list * bool, string> =
+/// source without it is not canonical. CRLF reads as LF. A file `weir
+/// check` cannot parse is refused [D:fmt-parse-gate]; `path` anchors
+/// its imports, as check's does.
+let formatSource (path: string) (text: string) : Result<string list * bool, string> =
     let normalized = text.Replace("\r\n", "\n")
 
     let lines =
@@ -653,10 +685,39 @@ let formatSource (text: string) : Result<string list * bool, string> =
         | first :: rest when first.StartsWith "#!" -> [ first ], rest
         | _ -> [], lines
 
+    // the formatter only proves the file assembles; the checker's own
+    // parse decides whether it is a script fmt may rewrite — a parse
+    // error in this file (an import's is its own) refuses, located
+    let parseError () =
+        let diags, _, _, _ = Script.analyzeLines path lines
+
+        diags
+        |> List.tryFind (fun d -> d.File = path && d.Code = "parse" && d.Severity = "error")
+
     formatSettled header.Length body
-    |> Result.map (fun formattedBody ->
-        let result = header @ formattedBody
-        result, (result <> lines || not finalNewline))
+    |> Result.bind (fun formattedBody ->
+        match parseError () with
+        | Some d -> Error $"cannot format: line {d.Line}:{d.Col}: {d.Message} (fix errors first)"
+        | None ->
+            // exactly one final newline: trailing blank lines go — blanks
+            // never end a statement [D:body-blanks], so the assembly is
+            // unchanged (checked, not assumed)
+            let trimmed =
+                let kept =
+                    formattedBody
+                    |> List.rev
+                    |> List.skipWhile (fun l -> l.Trim(parserWs) = "")
+                    |> List.rev
+
+                let assembled (ls: string list) =
+                    ls |> List.mapi (fun i l -> i + 1, l) |> Script.assemble |> Result.map (List.map _.Text)
+
+                match assembled formattedBody, assembled kept with
+                | Ok a, Ok b when a = b -> kept
+                | _ -> formattedBody
+
+            let result = header @ trimmed
+            Ok(result, (result <> lines || not finalNewline)))
 
 // #save's bare-alias qualifier [D:repl-save]: a saved script is
 // strict, where bare aliases (`map`, `where`, `startsWith`) do not
@@ -773,7 +834,9 @@ let formatFile (checkOnly: bool) (path: string) : int =
     | Ok _ ->
         // the entry read validated the file [D:source-utf8]; the formatter
         // takes the raw text so a BOM and the shebang survive verbatim
-        match formatSource (System.IO.File.ReadAllText path) with
+        let text = System.IO.File.ReadAllText path
+
+        match formatSource path text with
         | Error msg ->
             System.Console.Error.WriteLine $"weir fmt: {msg}"
             3
@@ -795,7 +858,15 @@ let formatFile (checkOnly: bool) (path: string) : int =
                         let head = Array.zeroCreate<byte> 3
                         f.Read(head, 0, 3) = 3 && head = [| 0xEFuy; 0xBBuy; 0xBFuy |]
 
-                    System.IO.File.WriteAllLines(path, result, System.Text.UTF8Encoding(bom))
+                    // the file's own line ending is kept: CRLF reads as LF, so
+                    // writing the platform newline would turn an LF file CRLF on
+                    // Windows (churn fmt --check never asked for)
+                    let nl = if text.Contains "\r\n" then "\r\n" else "\n"
+
+                    let out =
+                        if List.isEmpty result then "" else String.concat nl result + nl
+
+                    System.IO.File.WriteAllText(path, out, System.Text.UTF8Encoding(bom))
                     System.Console.Error.WriteLine $"weir fmt: formatted {path}"
                     0
                 with

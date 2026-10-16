@@ -37,9 +37,10 @@ usage: weir                                    the REPL
   shebang works too. The script gets its arguments as `Self.args`, or
   parsed into a type you declare with `Args.load`.
 - `weir -e '<program>'` — run a program and print the value of its
-  last statement. Newlines separate statements, just as in a file. The
-  last statement must be an expression; if it is a declaration (a
-  `let`, a `type`, …), the error says which kind.
+  last statement with its type, as the REPL echoes it (`3 : int`).
+  Newlines separate statements, just as in a file. The last statement
+  must be an expression; if it is a declaration (a `let`, a `type`,
+  …), the error says which kind.
 
 ### Checking
 
@@ -91,8 +92,9 @@ These maintain the [`.weir/` tree](#project-layout-weir):
 ### Conventions
 
 - `weir --help` prints usage on stdout and exits 0 when asked for;
-  any unrecognized invocation prints the same usage on stderr and
-  exits 2.
+  any unrecognized invocation exits 2 with a message on stderr: the
+  usage (of the subcommand, if one was named), or for an unknown
+  option a pointer to `weir --help`.
 - If you mistype an option, weir suggests the closest one.
 - `weir lsp` speaks JSON-RPC over stdio; arguments that editors
   commonly pass, like `--stdio`, are accepted ([editors](editors.md)).
@@ -253,8 +255,9 @@ More of the mapping:
 - an `enum` becomes `string` plus a `//` note listing the values
   (string unions are planned)
 - `anyOf` uses the first variant, with a note asking you to check it
-- a field that refers back to its own definition is omitted, with a
-  note — a weir record is a finite tree, and reading ignores the key
+- a field that refers back to its own definition becomes `Yaml`, with
+  a note — a weir record is a finite tree, so the subtree is read
+  whole as an untyped node
 - field names are cleaned up the same way `#infer` does it, so a
   `type:` key becomes `[<Wire "type">] kind`
 

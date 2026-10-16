@@ -1683,6 +1683,32 @@ rangeTermRef.Value <-
 
 postfixAtomFwdRef.Value <- postfixAtom
 
+// the anonymous shape's field-list parser is set after tySyn and
+// fieldNameDecl exist (forward ref, as sigilChain does)
+// [D:anon-records]
+let private anonShape, private anonShapeRef =
+    createParserForwardedToRef<(string * Ty) list, unit> ()
+
+// `Env.load {| … |}` / `Args.load {| … |}` [D:env-inline-type]: the one
+// expression position an anonymous TYPE takes. The shape passes as its
+// canonical name — the name IS the type [D:anon-records], registered
+// through the pending table like a nested shape — so the checker's
+// named-record arm validates it unchanged. Commits on `{| name :` or
+// `{| [<` (the attribute teaching); a `{| name = …` literal falls
+// through to the ordinary argument.
+let private isLoadHead (e: Expr) =
+    match e.Kind with
+    | EField({ Kind = EVar("Env" | "Args") }, "load", _) -> true
+    | _ -> false
+
+let private loadShapeArg: Parser<Expr, unit> =
+    attempt (lookAhead (pstring "{|" >>. ws >>. ((pstring "[<" >>% ()) <|> (identSpanned >>. ws >>. skipChar ':'))))
+    >>. spanned anonShape
+    |>> fun (fields, span) ->
+        let n = anonRecordName fields
+        pushAnonDef n fields
+        { Kind = EVar n; Span = span }
+
 // a text block after an application is a trailing argument
 // [D:arm-blocks]: its content would end mid-call, so teach the pipe
 let private blockArgGuard: Parser<unit, unit> =
@@ -1715,7 +1741,14 @@ let private finishAppChain (stream: CharStream<unit>) (reply: Reply<Expr list>) 
         )
 
 let private appChain: Parser<Expr, unit> =
-    let atoms = many1 postfixAtom
+    let atoms =
+        postfixAtom
+        >>= fun head ->
+            if isLoadHead head then
+                opt loadShapeArg .>>. many postfixAtom
+                |>> fun (shape, rest) -> head :: (Option.toList shape @ rest)
+            else
+                many postfixAtom |>> fun rest -> head :: rest
 
     fun stream ->
         let reply = atoms stream
@@ -2246,12 +2279,6 @@ binderParamRef.Value <-
 
 binderPatRef.Value <- commaPats
 
-// the anonymous shape's field-list parser is set after tySyn and
-// fieldNameDecl exist (forward ref, as sigilChain does)
-// [D:anon-records]
-let private anonShape, private anonShapeRef =
-    createParserForwardedToRef<(string * Ty) list, unit> ()
-
 // a qualified type name in the adapter slot [D:qualified-name-teach]
 // teaches: an imported module's types resolve by their plain name
 // (types live flat across the module boundary; the alias qualifies
@@ -2264,6 +2291,22 @@ let private bareAdapterName (w: string) : Parser<string, unit> =
                   $"the adapter slot takes a bare record name — write '{m}', not '{w}.{m}': imported types resolve by their plain name (they live flat; the module alias qualifies values, not types here)"
           preturn w ]
 
+// a generic record's instantiation in the slot, `B<int>`
+// [D:wire-generics] — the args are the one type grammar (tySyn),
+// set after it exists
+let private slotTyArgs, private slotTyArgsRef =
+    createParserForwardedToRef<Ty list, unit> ()
+
+// one type in the slot's Map< > wrap [D:map-values] — the one type
+// grammar (tySyn), set after it exists
+let private slotTy, private slotTyRef = createParserForwardedToRef<Ty, unit> ()
+
+let private slotName (w: string) : Parser<FromShape, unit> =
+    opt slotTyArgs
+    |>> function
+        | Some args -> FromApp(w, args)
+        | None -> FromName w
+
 let private fromExpr =
     spanned (
         keyword "from" >>. ident
@@ -2275,9 +2318,10 @@ let private fromExpr =
         .>>. opt (
             // the slot takes a record name, the narrow seq<…> wrap
             // [D:from-json-seq], or an anonymous shape `{| f: ty |}`
-            // [D:anon-records] — never the general type grammar (tySyn
-            // is reachable only inside the shape's fields; the admitted
-            // set stays closed)
+            // [D:anon-records] — never the general type grammar at the
+            // top (tySyn is reachable only inside the shape's fields, a
+            // generic name's args [D:wire-generics], and the Map< > wrap's
+            // two slots [D:map-values])
             (anonShape |>> fun fs -> FromAnon fs, false)
             // the qualified spelling is recognized whole first, so the
             // fatal fires outside the slot's attempt (a fatal inside it
@@ -2314,22 +2358,30 @@ let private fromExpr =
                 identSpanned
                 >>= fun (w, _) ->
                     if w = "Map" then
-                        // Map<string, Name|{|…|}> [D:map-string]: the
-                        // key slot is literally `string` (the narrowing);
-                        // the value slot is the seq< > rule's set
+                        // Map<K, V> [D:map-string] [D:map-values]: both
+                        // slots are the one type grammar — the checker
+                        // teaches a non-string key as a declared type's
+                        // does, and V is any wire-crossable type, as a
+                        // Map field's is; `{| … |}` stays the slot's own
+                        // anon form, a dotted name the slot's teaching
                         between
                             (str_ws "<")
                             (str_ws ">")
-                            (str_ws "string"
-                             >>. str_ws ","
-                             >>. ((anonShape |>> FromAnon)
-                                  <|> (identSpanned
-                                       >>= fun (inner, _) ->
-                                           if Char.IsUpper inner[0] then
-                                               bareAdapterName inner |>> FromName
-                                           else
-                                               fail "a record name inside Map< >")))
-                        |>> fun sh -> FromMap sh, false
+                            (slotTy .>> str_ws ","
+                             .>>. ((anonShape |>> FromAnon)
+                                   <|> (attempt (
+                                            identSpanned
+                                            >>= fun (inner, _) ->
+                                                if Char.IsUpper inner[0] then
+                                                    pchar '.' >>. identSpanned |>> fun (m, _) -> (inner, m)
+                                                else
+                                                    ifail "not a qualified name"
+                                        )
+                                        >>= fun (inner, m) ->
+                                            failFatally
+                                                $"the adapter slot takes a bare record name — write '{m}', not '{inner}.{m}': imported types resolve by their plain name (they live flat; the module alias qualifies values, not types here)")
+                                   <|> (slotTy |>> FromTy)))
+                        |>> fun (k, sh) -> FromMap(k, sh), false
                     elif w = "seq" then
                         between
                             (str_ws "<")
@@ -2338,12 +2390,12 @@ let private fromExpr =
                              <|> (identSpanned
                                   >>= fun (inner, _) ->
                                       if Char.IsUpper inner[0] then
-                                          bareAdapterName inner |>> FromName
+                                          bareAdapterName inner >>= slotName
                                       else
                                           fail "a record name inside seq< >"))
                         |>> fun sh -> sh, true
                     elif Char.IsUpper w[0] then
-                        preturn (FromName w, false)
+                        slotName w |>> fun sh -> sh, false
                     else
                         fail "a record name"
             )
@@ -5219,11 +5271,24 @@ let private recordBody =
 // attrs, no docs — a foreign shape read once. `{|` is unambiguous in
 // the slot (a record literal/update cannot sit there), and tySyn does
 // not nest the form (a nested object needs a declared record).
+slotTyArgsRef.Value <- attempt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
+
+slotTyRef.Value <- tySyn
+
 anonShapeRef.Value <-
+    // no attributes on an anonymous type [D:env-inline-type] (F#'s rule
+    // too): Default/Wire/… need a declared record
+    let attrFence: Parser<string * Ty, unit> =
+        getPosition .>> followedBy (pstring "[<")
+        >>= fun at ->
+            failFatallyAt
+                at
+                "field attributes need a named type — declare `type T = { … }` and use T (an anonymous type takes no attributes)"
+
     between
         (attempt (pstring "{|") .>> ws)
         (str_ws "|}")
-        (sepBy1 (fieldNameDecl .>> str_ws ":" .>>. tySyn) fieldSepP)
+        (sepBy1 (attrFence <|> (fieldNameDecl .>> str_ws ":" .>>. tySyn)) fieldSepP)
 
 let private caseDecl =
     // a case hosts attributes [D:attr-positions] — [<Wire>]/[<Other>]

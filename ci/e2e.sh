@@ -50,6 +50,14 @@ trap 'echo "e2e FAIL: unguarded command failed at line $LINENO: $BASH_COMMAND" >
 
 BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 
+# per-run process markers [D:e2e-run-markers]: the cells that pgrep/pkill
+# their own children find them by a sleep duration (or yes's word);
+# deriving it from this shell's pid keeps concurrent e2e runs on one
+# machine from seeing and killing each other's children. Patterns end in
+# `$` so one run's marker is never a prefix of another's.
+MK=$(( 100000 + ($$ % 400000) * 10 ))
+MK1=$((MK + 1)); MK2=$((MK + 2)); MK3=$((MK + 3)); MK4=$((MK + 4)); MK5=$((MK + 5)); MK6=$((MK + 6))
+
 # POSIX-only harnesses (os.fork, pty, zombies) get stated skips on
 # Windows — a skip echoes its reason, never silence
 IS_WINDOWS=0
@@ -258,6 +266,39 @@ out=$($BIN check "$pw3/sd.weir" 2>&1) && fail "a defaulted Secret must refuse" |
 echo "$out" | grep -qF "a Secret takes no [<Default>]" || fail "the Secret Default teaching: $out"
 rm -rf "$pw3"
 echo "e2e ok: walk cohort (defaulted-Secret teaching)"
+
+# a Secret spliced into argv reaches the child in the clear, and every
+# error that renders the command line shows it as *** [D:secret-argv-mask]
+smdir=$(mkweirtmp)
+sm_case() { # name, script body; expects a failure naming *** and never the value
+    printf '%s' "$2" > "$smdir/$1.weir"
+    local out rc=0
+    out=$(cd "$smdir" && $BIN "$1.weir" 2>&1) || rc=$?
+    [ $rc -ne 0 ] || fail "secret argv $1: expected a failure: $out"
+    echo "$out" | grep -qF "tok-e2e-123" && fail "secret argv $1: the value leaked: $out"
+    echo "$out" | grep -qF '***' || fail "secret argv $1: expected *** in: $out"
+    echo "e2e ok: secret argv masked — $1"
+}
+sm_case statement 'let s = Secret.of "tok-e2e-123"
+sh -c "test \"$0\" = tok-e2e-123" $s
+sh -c "exit 3" $s
+'
+sm_case reified 'let s = Secret.of "tok-e2e-123"
+let t = sh -c "exit 3" $s | text
+print t
+'
+sm_case chain 'let s = Secret.of "tok-e2e-123"
+let t = echo a | sh -c "exit 4" $s | line
+print t
+'
+sm_case lazy 'let s = Secret.of "tok-e2e-123"
+let xs = sh -c "echo a; exit 5" $s
+xs |> Seq.iter print
+'
+out=$(cd "$smdir" && $BIN statement.weir 2>&1) || true
+# the head renders as resolved on Windows (C:\...\sh.EXE) — pin the argv, not the path
+echo "$out" | grep -qiE 'exit code 3: (.*(/|\\))?sh(\.exe)? -c exit 3 \*\*\*' || fail "secret argv: the clear splice ran, the failing one masked: $out"
+rm -rf "$smdir"
 chmod 700 "$pwdir/locked.txt" 2>/dev/null; rm -rf "$pwdir"
 
 # BSD date has no %N — millisecond clock via python3 there (python3 is
@@ -551,9 +592,9 @@ fi
 # exit 141, no diagnostic, and `always` runs (POSIX: EPIPE is the signal)
 if [ "$IS_WINDOWS" != "1" ]; then
     epdir=$(mkweirtmp)
-    cat > "$epdir/yes.weir" <<'WEOF'
+    cat > "$epdir/yes.weir" <<WEOF
 within
-    yes epipe98763
+    yes epipe$MK
 always
     File.write "cleaned-yes" ["ok"]
 WEOF
@@ -571,13 +612,36 @@ WEOF
         [ "$(cat "$epdir/cleaned-$probe" 2>/dev/null)" = "ok" ] || fail "a closed stdout runs always ($probe)"
         [ ! -s "$epdir/err-$probe" ] || fail "a closed stdout prints no diagnostic ($probe): $(cat "$epdir/err-$probe")"
     done
-    if pgrep -f "yes epipe98763" >/dev/null 2>&1; then
-        pkill -f "yes epipe98763" 2>/dev/null || true
+    if pgrep -f "yes epipe$MK\$" >/dev/null 2>&1; then
+        pkill -f "yes epipe$MK\$" 2>/dev/null || true
         fail "a closed stdout must reap the relayed child (yes left running)"
     fi
     rm -rf "$epdir"
     echo "e2e ok: a closed stdout ends the script with 141, always runs, the child is reaped"
 fi
+
+# docs-vs-binary prose pins (SKILL.md claims no fence covers)
+dvdir=$(mkweirtmp)
+printf 'print "one"\nprinterr "two"\nprint "three"\nsh -c "echo four >&2"\nprint "five"\n' > "$dvdir/il.weir"
+$BIN "$dvdir/il.weir" > "$dvdir/il.log" 2>&1 || fail "interleave script must run"
+[ "$(cat "$dvdir/il.log")" = "one
+two
+three
+four
+five" ] || fail "> log 2>&1 keeps every stdout line in order [D:stdout-epipe]: $(cat "$dvdir/il.log")"
+printf 'no-such-cmd-zz a\n' > "$dvdir/dash.weir"
+$BIN check "$dvdir/dash.weir" >/dev/null 2>&1 || fail "check only warns on a missing command"
+out=$($BIN "$dvdir/dash.weir" 2>&1) && fail "a missing dashed command must fail the run"
+expect "a dashed missing command is named whole at run" "unknown command 'no-such-cmd-zz'" "$out"
+out=$($BIN -e 'let n = echo a | complete in n.exitCode' 2>&1) && fail "a reifier in single-line let…in must refuse"
+expect "a reifier in single-line let…in teaches \$()" "wrap the chain: \$(<command> | complete)" "$out"
+out=$($BIN -e 'echo $HOME' 2>&1) && fail "\$HOME in argv is a splice, not env expansion"
+expect "\$HOME in argv is an unbound splice" "unbound variable 'HOME'" "$out"
+mkdir -p "$dvdir/g/a/b"
+touch "$dvdir/g/x.fs" "$dvdir/g/a/y.fs" "$dvdir/g/a/b/z.fs" "$dvdir/g/a/b.fs"
+out=$(cd "$dvdir/g" && $BIN -e 'Path.glob "**/*.fs" |> Str.join ","')
+expect "Path.glob sorts per level, files before subdirectories" '"x.fs,a/b.fs,a/y.fs,a/b/z.fs"' "$out"
+rm -rf "$dvdir"
 
 # a 2-param generic union checks + evals through the binary (was the
 # prelude-Result pin; Result removed [D:no-result], the fixture is now a
@@ -766,11 +830,17 @@ out=$(cd "$scriptdir" && $BIN show.weir)
 echo "$out" | grep -qF "bytes = " || fail "show must render the builtin row: $out"
 echo "e2e ok: show renders typed rows on the AOT binary"
 
+# the same program with no sleep is the baseline (startup + spawns), so a
+# loaded machine cannot fail the parallelism claim: parallel adds ~1s
+# to it, serial ~4s
 start=$(now_ms)
-$BIN -e '[1; 2; 3; 4] |> Seq.piter (fun n -> if ($(sh -c "sleep 0.3" | complete)).exitCode > 99 then print "never")' >/dev/null 2>&1 || fail "piter probe failed"
+$BIN -e '[1; 2; 3; 4] |> Seq.piter (fun n -> if ($(sh -c "true" | complete)).exitCode > 99 then print "never")' >/dev/null 2>&1 || fail "piter baseline probe failed"
+base_ms=$(($(now_ms) - start))
+start=$(now_ms)
+$BIN -e '[1; 2; 3; 4] |> Seq.piter (fun n -> if ($(sh -c "sleep 1" | complete)).exitCode > 99 then print "never")' >/dev/null 2>&1 || fail "piter probe failed"
 elapsed_ms=$(($(now_ms) - start))
-[ "$elapsed_ms" -lt 900 ] || fail "piter must run workers in parallel (4x300ms took ${elapsed_ms}ms)"
-echo "e2e ok: piter parallelism (4x300ms in ${elapsed_ms}ms)"
+[ $((elapsed_ms - base_ms)) -lt 2500 ] || fail "piter must run workers in parallel (4x1s took ${elapsed_ms}ms over a ${base_ms}ms baseline)"
+echo "e2e ok: piter parallelism (4x1s in ${elapsed_ms}ms over a ${base_ms}ms baseline)"
 
 # temp-dir fixture, leaf pins: /tmp and /etc are POSIX-isms a native
 # weir resolves drive-relative on Windows (D:\tmp), and pwd's separator
@@ -1106,8 +1176,31 @@ for args in "--check" "--bogus $fmtdir/ugly.weir" "$fmtdir/ugly.weir $fmtdir/ugl
     echo "$out" | grep -qF "usage: weir fmt" || fail "fmt $args: usage text: $out"
     case "$out" in *"no such script: --"*) fail "fmt $args: a flag read as a script: $out" ;; esac
 done
+# a formatted file ends in exactly one newline [D:fmt-v1]
+printf 'print "a"\n\n\n' > "$fmtdir/tail.weir"
+$BIN fmt "$fmtdir/tail.weir" 2>/dev/null || fail "fmt tail.weir"
+printf 'print "a"\n' | cmp -s - "$fmtdir/tail.weir" || fail "fmt must leave exactly one final newline: $(od -c "$fmtdir/tail.weir")"
+$BIN fmt --check "$fmtdir/tail.weir" 2>/dev/null || fail "one final newline is canonical"
+# fmt keeps the file's line ending: a CRLF file reformats as CRLF, an LF
+# file as LF on every OS (the LF cell above pins Windows' half)
+printf 'if true then\r\n  print "a"\r\n' > "$fmtdir/crlf.weir"
+$BIN fmt "$fmtdir/crlf.weir" 2>/dev/null || fail "fmt crlf.weir"
+printf 'if true then\r\n    print "a"\r\n' | cmp -s - "$fmtdir/crlf.weir" || fail "fmt must keep CRLF line endings: $(od -c "$fmtdir/crlf.weir")"
+echo "e2e ok: fmt keeps the file's line ending (LF and CRLF)"
+# a file check cannot parse is refused, byte-identical [D:fmt-parse-gate]
+printf 'let d = yaml\n    a: [1\n    b:  2\nprint  (show d)\n' > "$fmtdir/bad.weir"
+cp "$fmtdir/bad.weir" "$fmtdir/bad.orig"
+rc=0; out=$($BIN fmt "$fmtdir/bad.weir" 2>&1) || rc=$?
+[ "$rc" = "3" ] || fail "fmt on a parse error exits 3, got $rc: $out"
+expect "fmt names the parse error" "cannot format: line 2:" "$out"
+cmp -s "$fmtdir/bad.weir" "$fmtdir/bad.orig" || fail "fmt rewrote a file that does not parse"
+# heredoc content and a multi-line hole are never respaced [D:fmt-respace]
+printf 'let a = 1\nlet s = $<<<\n    y  {a}\nprint s\nlet t = $"x{a +\n    1}y{a}"\nprint t\n' > "$fmtdir/holes.weir"
+cp "$fmtdir/holes.weir" "$fmtdir/holes.orig"
+$BIN fmt "$fmtdir/holes.weir" 2>/dev/null || fail "fmt holes.weir"
+cmp -s "$fmtdir/holes.weir" "$fmtdir/holes.orig" || fail "fmt respaced heredoc content or a hole: $(cat "$fmtdir/holes.weir")"
 rm -rf "$fmtdir"
-echo "e2e ok: fmt canonicalizes, --check gates, output runs; flags never read as scripts"
+echo "e2e ok: fmt canonicalizes, --check gates, output runs; flags never read as scripts; unparseable refused; holes kept"
 
 # every tracked script is already formatted — a repo-wide fmt regression
 # fails here [D:fmt-bracket-shift]; outside a git checkout (an unpacked
@@ -1155,6 +1248,13 @@ WEOF
 errout=$($BIN "$scriptdir/blockbad.weir" 2>&1) && fail "bodyless block let should be rejected"
 echo "$errout" | grep -qF "needs a body" || fail "bodyless-let error text missing: $errout"
 echo "e2e ok: bodyless block let rejected"
+
+# an assembly error is located file:line:col like every diagnostic
+# [D:assembly-col] — the column is the named line's indentation; the
+# runner and check agree, and the message drops its "line N:" lead
+expect "the runner locates an assembly error line:col" "blockbad.weir:2:5: this let needs a body" "$errout"
+errout=$($BIN check "$scriptdir/blockbad.weir" 2>&1) && fail "check must refuse the bodyless block let"
+expect "check locates the same assembly error" "blockbad.weir:2:5: error [assembly]: this let needs a body" "$errout"
 
 rm -rf "$scriptdir"
 
@@ -1843,7 +1943,7 @@ PYADP
     echo "e2e ok: repl lexical coloring, head verdicts, NO_COLOR"
 
     python3 "$(dirname "$0")/../tests/repl/repl-quality.py" "$BIN" || fail "repl quality (history/Ctrl+R)"
-    echo "e2e ok: repl history (XDG/dedup/0600), Ctrl+R fzf-stub + fallback"
+    echo "e2e ok: repl history (XDG/dedup/0600/invalid-UTF-8 kept raw), Ctrl+R fzf-stub + fallback"
 
     python3 "$(dirname "$0")/../tests/repl/waiting-indicator.py" "$BIN" || fail "waiting indicator"
     echo "e2e ok: repl waiting indicator (grace, erase, fast/piped/child-owned silent)"
@@ -1881,7 +1981,7 @@ ckdir=$(mkweirtmp)
 cat > "$ckdir/multi.weir" <<'WEOF'
 let Foo = 1
 
-nats == nats
+Seq.initInfinite id == Seq.initInfinite id
 WEOF
 out=$($BIN check "$ckdir/multi.weir") && fail "check must exit 1 on errors" || true
 echo "$out" | grep -qF "[casing-law]" || fail "casing code missing: $out"
@@ -2707,10 +2807,10 @@ if [ "$IS_WINDOWS" != "1" ] && command -v setsid >/dev/null 2>&1 && command -v p
     dtdir=$(mkweirtmp)
     # a detached supervisor: a scoped child (reaped by the proc scope) and
     # an `always` cleanup that writes a marker the sweep must reach
-    cat > "$dtdir/detached.weir" <<'WEOF'
+    cat > "$dtdir/detached.weir" <<WEOF
 let marker = Self.args |> Seq.head
 within
-    within proc child = sh -c "sleep 98761"
+    within proc child = sh -c "sleep $MK1"
         Duration.sleep 60s
 always
     ["cleaned-up"] |> File.write marker
@@ -2721,13 +2821,13 @@ WEOF
         sig="${pair%%:*}"; want="${pair##*:}"
         M="$dtdir/marker-$sig"
         rm -f "$M"
-        pkill -f "sleep 98761" 2>/dev/null || true
+        pkill -f "sleep $MK1\$" 2>/dev/null || true
         # setsid = new session, no job control -> SIG_IGN on SIGINT is
         # inherited exactly as the ring probe measured; </dev/null detaches
         setsid "$BIN" "$dtdir/detached.weir" "$M" </dev/null >/dev/null 2>&1 &
         wpid=$!
         # wait for the scoped child to be live (the thing that must be reaped)
-        for _ in $(seq 1 40); do pgrep -f "sleep 98761" >/dev/null 2>&1 && break; sleep 0.2; done
+        for _ in $(seq 1 40); do pgrep -f "sleep $MK1\$" >/dev/null 2>&1 && break; sleep 0.2; done
         kill -"$sig" "$wpid" 2>/dev/null || true
         code=timeout
         for _ in $(seq 1 40); do
@@ -2739,51 +2839,51 @@ WEOF
         [ "$code" = "$want" ] || fail "detached SIG$sig must exit $want (got $code) — the teardown never ran"
         [ "$(cat "$M" 2>/dev/null)" = "cleaned-up" ] || fail "detached SIG$sig must run the always cleanup"
         sleep 0.3
-        left=$(pgrep -cf "sleep 98761" 2>/dev/null || true); left=${left:-0}
+        left=$(pgrep -cf "sleep $MK1\$" 2>/dev/null || true); left=${left:-0}
         [ "$left" = "0" ] || fail "detached SIG$sig must reap the scoped child (orphans left: $left)"
-        pkill -f "sleep 98761" 2>/dev/null || true
+        pkill -f "sleep $MK1\$" 2>/dev/null || true
     done
     echo "e2e ok: detached SIGINT/SIGTERM tear down — always cleanup runs, child reaped, exit 130/143"
 
     # a pid-targeted SIGTERM tree-kills the FOREGROUND child too
     # [D:signal-main-unwind]: `timeout`/`docker stop` signal weir alone; an
     # unregistered foreground child outlived it, reparented to init
-    printf 'sleep 98763\n' > "$dtdir/fg.weir"
-    pkill -f "sleep 98763" 2>/dev/null || true
+    printf 'sleep %s\n' "$MK3" > "$dtdir/fg.weir"
+    pkill -f "sleep $MK3\$" 2>/dev/null || true
     setsid "$BIN" "$dtdir/fg.weir" </dev/null >/dev/null 2>&1 &
     wpid=$!
-    for _ in $(seq 1 40); do pgrep -f "sleep 98763" >/dev/null 2>&1 && break; sleep 0.2; done
+    for _ in $(seq 1 40); do pgrep -f "sleep $MK3\$" >/dev/null 2>&1 && break; sleep 0.2; done
     kill -TERM "$wpid" 2>/dev/null || true
     code=0; wait "$wpid" 2>/dev/null || code=$?
     [ "$code" = "143" ] || fail "SIGTERM to weir with a foreground child must exit 143 (got $code)"
     sleep 0.3
-    left=$(pgrep -cf "sleep 98763" 2>/dev/null || true); left=${left:-0}
-    pkill -f "sleep 98763" 2>/dev/null || true
+    left=$(pgrep -cf "sleep $MK3\$" 2>/dev/null || true); left=${left:-0}
+    pkill -f "sleep $MK3\$" 2>/dev/null || true
     [ "$left" = "0" ] || fail "SIGTERM to weir must tree-kill its foreground child (orphans left: $left)"
     echo "e2e ok: SIGTERM to weir's pid reaps the foreground child"
 
     # ...and every pmap worker's tree, exactly once, after spawning stops
     # [D:signal-main-unwind]: the kill raced the exit (a SIGSTOPped
     # grandchild left behind) — 20 runs, no `sleep` may survive
-    cat > "$dtdir/pmapterm.weir" <<'WEOF'
+    cat > "$dtdir/pmapterm.weir" <<WEOF
 within
-    [1..4] |> Seq.pmap (fun _ -> sh -c "sleep 98764; echo x" |> Seq.freeze) |> Seq.iter (fun _ -> ())
+    [1..4] |> Seq.pmap (fun _ -> sh -c "sleep $MK4; echo x" |> Seq.freeze) |> Seq.iter (fun _ -> ())
 always
     printerr "cleanup"
 WEOF
-    pkill -9 -f "^sleep 98764" 2>/dev/null || true
+    pkill -9 -f "^sleep $MK4\$" 2>/dev/null || true
     orphans=0
     for _ in $(seq 1 20); do
         setsid "$BIN" "$dtdir/pmapterm.weir" </dev/null >/dev/null 2>&1 &
         wpid=$!
-        for _ in $(seq 1 40); do [ "$(pgrep -cf "^sleep 98764" 2>/dev/null || true)" = "4" ] && break; sleep 0.1; done
+        for _ in $(seq 1 40); do [ "$(pgrep -cf "^sleep $MK4\$" 2>/dev/null || true)" = "4" ] && break; sleep 0.1; done
         kill -TERM "$wpid" 2>/dev/null || true
         code=0; wait "$wpid" 2>/dev/null || code=$?
         [ "$code" = "143" ] || fail "SIGTERM to a pmap script must exit 143 (got $code)"
         sleep 0.2
-        if pgrep -f "^sleep 98764" >/dev/null 2>&1; then
+        if pgrep -f "^sleep $MK4\$" >/dev/null 2>&1; then
             orphans=$((orphans + 1))
-            pkill -9 -f "^sleep 98764" 2>/dev/null || true
+            pkill -9 -f "^sleep $MK4\$" 2>/dev/null || true
         fi
     done
     [ "$orphans" = "0" ] || fail "SIGTERM must tree-kill every pmap worker's child ($orphans of 20 runs left orphans)"
@@ -2793,10 +2893,10 @@ WEOF
     # a slow teardown hard-exits (the shell's double-Ctrl+C), never wedging
     # on a stuck cleanup. The always sleeps 20s; the second SIGINT must land
     # the process in well under that, before the cleanup's "done" write.
-    cat > "$dtdir/slow.weir" <<'WEOF'
+    cat > "$dtdir/slow.weir" <<WEOF
 let marker = Self.args |> Seq.head
 within
-    within proc child = sh -c "sleep 98761"
+    within proc child = sh -c "sleep $MK1"
         Duration.sleep 60s
 always
     ["start"] |> File.write marker
@@ -2806,10 +2906,10 @@ WEOF
     $BIN check "$dtdir/slow.weir" >/dev/null 2>&1 || fail "double-signal probe must check"
     DM="$dtdir/dmarker"
     rm -f "$DM"
-    pkill -f "sleep 98761" 2>/dev/null || true
+    pkill -f "sleep $MK1\$" 2>/dev/null || true
     setsid "$BIN" "$dtdir/slow.weir" "$DM" </dev/null >/dev/null 2>&1 &
     dpid=$!
-    for _ in $(seq 1 40); do pgrep -f "sleep 98761" >/dev/null 2>&1 && break; sleep 0.2; done
+    for _ in $(seq 1 40); do pgrep -f "sleep $MK1\$" >/dev/null 2>&1 && break; sleep 0.2; done
     kill -INT "$dpid" 2>/dev/null || true          # first: enters the slow teardown
     for _ in $(seq 1 25); do [ "$(cat "$DM" 2>/dev/null)" = "start" ] && break; sleep 0.2; done
     [ "$(cat "$DM" 2>/dev/null)" = "start" ] || fail "the first SIGINT must enter the always cleanup"
@@ -2822,19 +2922,19 @@ WEOF
     done
     [ "$dcode" != "timeout" ] || fail "a second SIGINT must hard-exit, not wait out the cleanup"
     [ "$(cat "$DM" 2>/dev/null)" != "done" ] || fail "the hard-exit must not let the slow cleanup finish"
-    pkill -f "sleep 98761" 2>/dev/null || true
+    pkill -f "sleep $MK1\$" 2>/dev/null || true
     echo "e2e ok: a second signal mid-teardown hard-exits (the double-Ctrl+C escape)"
 
     # the main thread unwinds [D:signal-main-unwind]: no statement runs
     # after a signal — `Proc.wait` on the killed scoped child returns no
     # code and the lines after it never run, yet `always` does; a main
     # thread asleep in `Duration.sleep` wakes at once
-    cat > "$dtdir/after.weir" <<'WEOF'
+    cat > "$dtdir/after.weir" <<WEOF
 let marker = Self.args |> Seq.head
 within
-    within proc srv = sh -c "sleep 98762"
+    within proc srv = sh -c "sleep $MK2"
         let code = Proc.wait srv
-        print $"wait returned {code}"
+        print \$"wait returned {code}"
         File.append marker ["after"]
 always
     File.append marker ["cleaned-up"]
@@ -2855,7 +2955,7 @@ WEOF
             setsid "$BIN" "$dtdir/$probe.weir" "$M" </dev/null >"$dtdir/out-$probe" 2>&1 &
             wpid=$!
             if [ "$probe" = after ]; then
-                for _ in $(seq 1 40); do pgrep -f "sleep 98762" >/dev/null 2>&1 && break; sleep 0.2; done
+                for _ in $(seq 1 40); do pgrep -f "sleep $MK2\$" >/dev/null 2>&1 && break; sleep 0.2; done
             else
                 sleep 1
             fi
@@ -2868,7 +2968,7 @@ WEOF
             [ "$code" = "$want" ] || fail "$probe: SIG$sig must exit $want promptly (got $code)"
             [ "$(cat "$M" 2>/dev/null)" = "cleaned-up" ] || fail "$probe: SIG$sig runs always and no statement after it (marker: $(cat "$M" 2>/dev/null))"
             ! grep -qF "wait returned" "$dtdir/out-$probe" || fail "$probe: SIG$sig — Proc.wait must not return to the script"
-            pkill -f "sleep 98762" 2>/dev/null || true
+            pkill -f "sleep $MK2\$" 2>/dev/null || true
         done
     done
     echo "e2e ok: a signal unwinds on the main thread — no statement after it, always runs, sleeps wake"
@@ -3065,10 +3165,10 @@ WEOF
     # be visible (printed after the lines, not scrolled off the top). The
     # old shape printed `xs : seq<string> ={hint}` first (a dangling ' ='
     # too); the fix prints the lines, then `xs : seq<string> (hint)` last.
-    # `nats |> Seq.map show` is a deterministic unforced seq<string> — no
+    # `Seq.initInfinite show` is a deterministic unforced seq<string> — no
     # PATH executable. tty-only path (redirected uses the batched form),
     # so this rides the pty instrument.
-    tout=$(printf 'SLEEP 400\nSEND let xs = nats |> Seq.map (fun n -> show n)\\r\nSLEEP 1500\nSEND #quit\\r\n' | python3 "$ptyrun" 8 "$BIN")
+    tout=$(printf 'SLEEP 400\nSEND let xs = Seq.initInfinite show\\r\nSLEEP 1500\nSEND #quit\\r\n' | python3 "$ptyrun" 8 "$BIN")
     echo "$tout" | grep -qF 'seq<string> (first 100 of an unforced' \
       || fail "the let-bound unforced seq echo lost its teaching (or it is not on the meta line): $tout"
     # the dangling ' =' is gone: the meta reads `: seq<string> (…)`, never `: seq<string> =`
@@ -3079,7 +3179,7 @@ WEOF
     # ---- the binding echo states seq state [D:reenum-warning] ----------
     # a command-backed unforced bind is not run by the echo
     # [D:repl-let-echo-lazy]; a materialized bind says frozen; the
-    # pure-lazy nats cell above stays unannotated (its teaching grep pins
+    # pure-lazy Seq.initInfinite cell above stays unannotated (its teaching grep pins
     # the meta with no state joined)
     rsout=$(printf 'SLEEP 400\nSEND let pods = sh -c "echo ran-$((40+2))"\\r\nSLEEP 1200\nSEND let snap = ["a"; "b"]\\r\nSLEEP 800\nSEND #quit\\r\n' | python3 "$ptyrun" 10 "$BIN")
     # the harness echoes a bytes repr, so the em-dash rides as \xe2\x80\x94 —
@@ -3530,6 +3630,28 @@ else
     echo "e2e skip: wire-key referee (python3 absent)"
 fi
 
+# ---- whole-document Map with a value type [D:map-values] -------------------
+# from json Map<string, V> takes any V a Map field would — scalars,
+# Option, seq, nested Map — and the slot's int key teaches as a
+# declared type's does
+mvdir=$(mkweirtmp)
+printf '{"b": 2, "a": 1}' > "$mvdir/m.json"
+cat > "$mvdir/mv.weir" <<'WEOF'
+let m = File.read "m.json" |> from json Map<string, int>
+print (show (Map.get "a" m + Map.get "b" m))
+m |> to json |> Seq.iter print
+let n = ["{\"k\": {\"j\": [1, 2]}}"] |> from json Map<string, Map<string, seq<int>>>
+print (show (n |> Map.get "k" |> Map.get "j" |> Seq.length))
+WEOF
+out=$( cd "$mvdir" && $BIN mv.weir 2>&1 ) || fail "a value-type Map must read: $out"
+expect "from json Map<string, int> reads a whole document" "3" "$out"
+expect "the value-type Map round-trips" '{"a":1,"b":2}' "$out"
+expect "a nested value-type Map reads" "2" "$out"
+printf 'let m = File.read "m.json" |> from json Map<int, int>\n' > "$mvdir/mk.weir"
+out=$( cd "$mvdir" && $BIN check mk.weir 2>&1 ) && fail "Map<int, …> in the slot must refuse: $out"
+expect "the slot's int key teaches" "Map keys are strings only" "$out"
+rm -rf "$mvdir"
+
 # ---- FileRow reshape [D:filerow] --------------------------------------------
 # kind/target over a real symlink, and File.mode against the platform's
 # own stat — an external referee [D:yaml-interop]'s rule
@@ -3678,7 +3800,7 @@ rm -rf "$ckdir"
 # --- runtime errors name the failing line [D:runtime-position]: a raise
 # inside any block form reports the failing statement's file:line:col, not
 # the enclosing top-level statement's line. A command reports its own
-# column; other raises report the start of the failing line. A lazily read
+# column, a raising call its callee's; other raises the start of the failing line. A lazily read
 # command's failure blames the command, wherever it is read.
 rpdir=$(mkweirtmp)
 rp_case() { # name, expected "file:line:col: error", script body
@@ -3740,13 +3862,13 @@ rp_case lambda "lambda.weir:2:5: error: command failed with exit code 6" '[1] |>
 '
 # a parallel arm's raise is blamed where the arm raised, not on the
 # thread that rethrows it
-rp_case pmap "pmap.weir:4:9: error: arm 2" 'let ys =
+rp_case pmap "pmap.weir:4:24: error: arm 2" 'let ys =
     [1; 2; 3]
     |> Seq.pmap (fun i ->
         if i == 2 then fail $"arm {i}" else i)
 print $"{Seq.length ys}"
 '
-rp_case piter "piter.weir:3:9: error: arm 2" 'print "start"
+rp_case piter "piter.weir:3:24: error: arm 2" 'print "start"
 [1; 2; 3] |> Seq.piter (fun i ->
         if i == 2 then fail $"arm {i}")
 '
@@ -3827,10 +3949,19 @@ out=$(cd "$rpdir" && $BIN check --can can.weir 2>&1)
 echo "$out" | grep -qE 'git +can\.weir:1:9' || fail "--can: git at its own column: $out"
 echo "$out" | grep -qE 'head +can\.weir:1:19' || fail "--can: the head stage at its own column: $out"
 echo "e2e ok: unknown head names a missing program; --can columns per command"
-rp_case item "item.weir:3:5: error:" 'if true then
+rp_case item "item.weir:3:20: error:" 'if true then
     print "s"
     let x = [1] |> Seq.item 5
     print $"{x}"
+'
+# a call that raises inside a one-line form is reported at the callee's
+# column; a reifier's failure at its command [D:runtime-position-call]
+rp_case oneline "oneline.weir:2:23: error: boom" 'let x = 3
+let y = if x > 2 then fail "boom" else 1
+print $"{y}"
+'
+rp_case reified "reified.weir:1:9: error: command failed with exit code 2" 'let t = sh -c "exit 2" | text
+print t
 '
 rm -rf "$rpdir"
 
@@ -6444,7 +6575,7 @@ for shape in 'let _r = [1..10] |> Seq.map gen | HASHTOOL | line' \
     { cat "$fddir/gen.weir"; printf '%s\nprint "unreached"\n' "$shape"; } | sed "s|HASHTOOL|$HASHTOOL|" > "$fddir/prodfail.weir"
     rc=0; out=$(cd "$fddir" && timeout 10 $BIN prodfail.weir 2>&1) || rc=$?
     [ $rc -eq 1 ] || fail "producer raise into a command must fail ($shape) rc=$rc: $out"
-    echo "$out" | grep -qF "prodfail.weir:2:5: error: boom" || fail "producer raise at the producer's line ($shape): $out"
+    echo "$out" | grep -qF "prodfail.weir:2:20: error: boom" || fail "producer raise at the producer's line ($shape): $out"
     case "$out" in *unreached*) fail "no statement runs after the producer's raise ($shape): $out" ;; esac
 done
 printf 'let _r = [1..10] |> Seq.map (fun i -> if i == 3 then exit 5 else $"{i}") | cat |> Seq.length\nprint "unreached"\n' > "$fddir/prodexit.weir"
@@ -7335,6 +7466,22 @@ if [ "$IS_WINDOWS" != "1" ]; then
     expect "…and turns history off with a note" "history off for this session" "$out"
 fi
 
+# invalid UTF-8 in history is skipped, never rewritten [D:history-utf8]: the
+# duplicate makes the load rewrite the file; the bad lines come back
+# byte-for-byte in place, stay out of #history, and one located note says so
+if [ "$IS_WINDOWS" != "1" ]; then
+    hu="$cfgdir/hutf8"
+    mkdir -p "$hu/weir"
+    printf 'a\n\377\376 bad\nb\na\nlet m = "x\\nmatch\n\303(\n' > "$hu/weir/history"
+    out=$(printf '#history\n' | XDG_CONFIG_HOME="$cfgdir/none" XDG_STATE_HOME="$hu" $BIN 2>&1); rc=$?
+    [ $rc -eq 0 ] || fail "a history with invalid UTF-8 must not stop the REPL (rc $rc): $out"
+    expect "the bad lines get one located note" "weir: history: $hu/weir/history:2: invalid UTF-8 — 2 lines left out of recall, kept on disk as-is" "$out"
+    expect "…the valid entries recall, deduped" "(4 entries)" "$out"
+    echo "$out" | grep -qF "bad" && fail "an invalid-UTF-8 line must not be recalled: $out"
+    printf '\377\376 bad\nb\na\nlet m = "x\\nmatch\n\303(\n' > "$cfgdir/hutf8-expected"
+    cmp "$hu/weir/history" "$cfgdir/hutf8-expected" || fail "the load rewrite must keep invalid-UTF-8 lines byte-for-byte: $(od -c "$hu/weir/history")"
+fi
+
 # a malformed config must not affect a script — scripts never read it, so the
 # script runs clean rather than erroring on the broken JSON
 printf 'not valid json {{{\n' > "$CFGHOME/weir/config.json"
@@ -7682,7 +7829,7 @@ diff -u "$hdir/headless.txt" "$hdir/prompted.txt" >/dev/null \
 # the directive reference table [D:help-find]: docs/reference/lexical.md
 # names every dispatched directive across its three contexts (the
 # gen-lexical spirit — a new directive without a table row fails here)
-for d in help find echo infer save quit alias session sig schema; do
+for d in help find echo infer save history alias quit init session sig; do
     grep -q "\`#$d\`" "$(dirname "$0")/../docs/reference/lexical.md" \
         || fail "docs/reference/lexical.md directive table is missing #$d"
 done
@@ -8122,7 +8269,7 @@ echo "e2e ok: the hostile-byte fixture is byte-exact through check and run"
 # is the indentation error, with its column
 printf 'let t = <<<\n    abc\n    \tdef\nprint t\n' > "$hbdir/tablead.weir"
 out=$($BIN check "$hbdir/tablead.weir" 2>&1) && fail "a leading tab in block content must be refused"
-expect "a leading tab in block content is the indentation error" "line 3: tabs are not allowed in indentation (a tab at column 5)" "$out"
+expect "a leading tab in block content is the indentation error" "tablead.weir:3:5: error [assembly]: tabs are not allowed in indentation (a tab at column 5)" "$out"
 
 # CRLF [D:content-bytes]: a source file's line ending is not data —
 # normalized at read, so a CRLF-saved file behaves identically
@@ -8481,6 +8628,7 @@ for mode in "" "check" "fmt"; do
     [ "$rc" = "2" ] || fail "invalid UTF-8 ($mode) exits 2, got $rc: $out"
     expect "invalid UTF-8 is located ($mode)" "bad.weir:2:12: invalid UTF-8" "$out"
 done
+printf 'print "ok"\nprint "\303\251t\303\251 \377 x"\n' | cmp -s - "$u8dir/bad.weir" || fail "fmt rewrote a file with invalid UTF-8"
 printf 'module M\nlet x : int\nlet x = 1 // \376\n' > "$u8dir/m.weir"
 printf 'import "./m.weir"\nprint (show M.x)\n' > "$u8dir/main.weir"
 out=$($BIN "$u8dir/main.weir" 2>&1) || true
@@ -9084,6 +9232,35 @@ echo "$nout" | grep -qF "this report is incomplete: 5 opaque site" || fail "the 
 echo "$nout" | grep -qF "takes a program as its argument" && fail "the opaque section is json-only now (F5): $nout"
 echo "e2e ok: --can names literal env overlays, groups identical entries, sees through nothing weir-shaped"
 
+# env sugar [D:env-need-getor] [D:env-inline-type]: the one-var reads and the
+# inline Env.load name their literal variables like Env.get and Env.load T
+cat > "$candir/envsugar.weir" <<'WEOF'
+let t = Env.need "SUGAR_TOKEN"
+let p = Env.getOr "SUGAR_PORT" "8080"
+let e = Env.load {| SUGAR_HOST: string; SUGAR_CI: Option<string> |}
+print $"{t} {p} {e.SUGAR_HOST} {e.SUGAR_CI}"
+WEOF
+sout=$($BIN check --can "$candir/envsugar.weir" 2>&1) || fail "envsugar --can errored: $sout"
+echo "$sout" | grep -qF "reads SUGAR_TOKEN (Env.need)" || fail "Env.need names its literal: $sout"
+echo "$sout" | grep -qF "reads SUGAR_PORT (Env.getOr)" || fail "Env.getOr names its literal: $sout"
+echo "$sout" | grep -qF "reads SUGAR_HOST (Env.load" || fail "inline Env.load names its fields: $sout"
+echo "$sout" | grep -qF "reads SUGAR_CI (Env.load" || fail "inline Env.load names every field: $sout"
+srun=$(SUGAR_TOKEN=tk SUGAR_HOST=h $BIN "$candir/envsugar.weir" 2>&1) || fail "envsugar run failed: $srun"
+[ "$srun" = "tk 8080 h None" ] || fail "envsugar values: $srun"
+src=0
+sneed=$(SUGAR_HOST=h $BIN "$candir/envsugar.weir" 2>&1) || src=$?
+[ "$src" = "1" ] || fail "an unset Env.need must exit 1 (got $src): $sneed"
+echo "$sneed" | grep -qF "envsugar.weir:1:" || fail "Env.need fails AT its line: $sneed"
+echo "$sneed" | grep -qF "Env.need: SUGAR_TOKEN is not set" || fail "Env.need names the variable: $sneed"
+cat > "$candir/argsinline.weir" <<'WEOF'
+let cli = Args.load {| verbose: bool; out: Option<string> |}
+print $"{cli.verbose} {cli.out}"
+WEOF
+aout=$($BIN "$candir/argsinline.weir" -v --out x 2>&1) || fail "inline Args.load run failed: $aout"
+[ "$aout" = "true Some \"x\"" ] || fail "inline Args.load values: $aout"
+$BIN "$candir/argsinline.weir" --help 2>&1 | grep -qF -- "--verbose" || fail "inline Args.load derives --help"
+echo "e2e ok: Env.need/getOr and inline Env.load/Args.load — values, located need failure, --can names, --help"
+
 # --strict: opaque sites become a distinct nonzero for CI's choosing
 strictrc=0
 $BIN check --can --strict "$candir/cap.weir" >/dev/null 2>&1 || strictrc=$?
@@ -9505,20 +9682,20 @@ echo "$out" | grep -qF "watch= is poll's key" || fail "the retry refusal reason:
 if [ "$IS_WINDOWS" != "1" ]; then
     # the raise path kills the tree (pgrep is the POSIX spelling; the
     # Windows arm rides the exit-hook block's stated coverage)
-    printf 'within proc p = sh -c "sleep 297"\n    fail "mid-scope"\n' > "$spdir/raise.weir"
+    printf 'within proc p = sh -c "sleep %s"\n    fail "mid-scope"\n' "$MK5" > "$spdir/raise.weir"
     out=$($BIN "$spdir/raise.weir" 2>&1) && fail "the raise must propagate" || true
     echo "$out" | grep -qF "mid-scope" || fail "the raise is the scope's error: $out"
     sleep 0.3
-    pgrep -f "sleep 297" >/dev/null && { pkill -f "sleep 297" 2>/dev/null || true; fail "the raise path left an orphan"; } || true
+    pgrep -f "sleep $MK5\$" >/dev/null && { pkill -f "sleep $MK5\$" 2>/dev/null || true; fail "the raise path left an orphan"; } || true
 
     # the hard-exit sweep: a TERM'd weir leaves no registered child
-    printf 'within proc p = sh -c "sleep 298"\n    Duration.sleep 30s\n' > "$spdir/term.weir"
+    printf 'within proc p = sh -c "sleep %s"\n    Duration.sleep 30s\n' "$MK6" > "$spdir/term.weir"
     $BIN "$spdir/term.weir" & sptw=$!
     sleep 1.2
     kill -TERM $sptw 2>/dev/null || true
     wait $sptw 2>/dev/null || true
     sleep 0.5
-    pgrep -f "sleep 298" >/dev/null && { pkill -f "sleep 298" 2>/dev/null || true; fail "the TERM sweep left the scoped child"; } || true
+    pgrep -f "sleep $MK6\$" >/dev/null && { pkill -f "sleep $MK6\$" 2>/dev/null || true; fail "the TERM sweep left the scoped child"; } || true
 fi
 
 # an escaped handle (the scope's value) answers gracefully after the
@@ -11313,6 +11490,7 @@ while True:
     if not c: break
     d += c
 print('GOT-FIRST=%s' % (b'data: first' in d))
+print('TERMINATED=%s' % d.endswith(b'0\r\n\r\n'))
 PYEOF
 cat > "$svdir/stream.weir" <<WEOF
 let handler = fun req ->
@@ -11337,10 +11515,14 @@ out=$($BIN "$svdir/stream.weir" 2>&1) || fail "serve stream run failed: $out"
 # The failure-surfacing half below (streamErrors) holds on every platform.
 if [ "$IS_WINDOWS" = "0" ]; then
     echo "$out" | grep -qF "GOT-FIRST=True" || fail "F8: the client must receive the first element before the producer died: $out"
+    # the client can TELL [D:serve-stream-truncate]: the chunked body ends
+    # without its zero-length terminator, so its HTTP layer reports a
+    # truncated body — a proper terminator after a failure must not survive
+    echo "$out" | grep -qF "TERMINATED=False" || fail "F8: a producer raise must leave the chunked body unterminated: $out"
 fi
 echo "$out" | grep -qF "stream-errors=1" || fail "F8: the script must observe the producer failure via the channel: $out"
 echo "$out" | grep -qF "stream-err=producer died" || fail "F8: Server.streamErrors must carry the failure message: $out"
-echo "e2e ok: within serve — F8 a Stream producer raise surfaces via Server.streamErrors (not silent)"
+echo "e2e ok: within serve — F8 a Stream producer raise surfaces via Server.streamErrors and leaves the client an unterminated body"
 
 # (F3-serve) a response header carrying CR/LF [D:http-header-bytes]: the
 # serve face of the injection refusal. A raw socket referees the wire so
@@ -11362,11 +11544,13 @@ def get(path):
     return d
 evil = get('/crlf')
 benign = get('/ok')
+badname = get('/badname')
 status_evil = evil.split(b'\r\n', 1)[0].decode()
 print('EVIL-STATUS=%s' % status_evil)
 # the forged header/name must NOT appear anywhere in the evil response
 print('FORGED=%s' % ((b'Injected' in evil) or (b'X-Crlf' in evil)))
 print('BENIGN-ARRIVES=%s' % (b'X-Benign: present' in benign))
+print('BADNAME-STATUS=%s' % badname.split(b'\r\n', 1)[0].decode())
 PYEOF
 cat > "$svdir/hdr.weir" <<WEOF
 let crlf = Str.fromBase64 "DQo="
@@ -11374,6 +11558,7 @@ let handler = fun req ->
     match req.path with
     | "/crlf" -> HttpServerResponse { status = 200; headers = [("X-Crlf", "a" + crlf + "Injected: yes")]; body = Text "ok" }
     | "/ok" -> HttpServerResponse { status = 200; headers = [("X-Benign", "present")]; body = Text "ok" }
+    | "/badname" -> HttpServerResponse { status = 200; headers = [("Bad Name", "v")]; body = Text "ok" }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "nf" }
 
 within serve srv = { port = $svport5; maxConcurrent = 2 } handler
@@ -11391,9 +11576,25 @@ out=$($BIN "$svdir/hdr.weir" 2>&1) || fail "serve header-injection run failed: $
 echo "$out" | grep -qF "EVIL-STATUS=HTTP/1.1 500" || fail "F3-serve: an injecting response header must be refused (500), got: $out"
 echo "$out" | grep -qF "FORGED=False" || fail "F3-serve: the forged header must NOT reach the wire: $out"
 echo "$out" | grep -qF "BENIGN-ARRIVES=True" || fail "F3-serve: a clean control header must still arrive (refusal is distinguishable from headers-never-working): $out"
-echo "$out" | grep -qF "refusals=1" || fail "F3-serve: the script must observe the located refusal via Server.streamErrors: $out"
+echo "$out" | grep -qF "refusals=2" || fail "F3-serve/F11: the script must observe both located refusals via Server.streamErrors: $out"
 echo "$out" | grep -qF "response header 'X-Crlf' carries a CR byte" || fail "F3-serve: the located refusal must name the header and byte: $out"
-echo "e2e ok: within serve — F3 a CR/LF response header is refused (500, no forged header, control arrives, located via streamErrors)"
+# (F11) a header the listener cannot send is refused by name, never
+# dropped [D:http-header-unsendable]: a 500, and the reason on the channel
+echo "$out" | grep -qF "BADNAME-STATUS=HTTP/1.1 500" || fail "F11-serve: an unsendable response header must be refused (500), not dropped: $out"
+echo "$out" | grep -qF "refusal=response header 'Bad Name' cannot be sent — its name carries a space" || fail "F11-serve: the refusal must name the header and why: $out"
+echo "e2e ok: within serve — F3 a CR/LF response header is refused (500, no forged header, control arrives, located via streamErrors); F11 an unsendable one too"
+
+# (F11-client) a request header with no place on the wire is refused by
+# name before any connection [D:http-header-unsendable] — HttpClient
+# skipped it silently. Nothing need listen: the refusal precedes the send.
+for case in 'Bad Name|v|its name carries a space' 'Content-Type|application/json|it is a body header and this request has no body' 'X-U|café|its value carries the non-ASCII character'; do
+    hn=${case%%|*}; rest=${case#*|}; hv=${rest%%|*}; why=${rest#*|}
+    rc=0
+    out=$($BIN -e "print \$\"{(Http.send { Http.get \"http://127.0.0.1:9/\" with headers = [(\"$hn\", \"$hv\")] }).status}\"" 2>&1) || rc=$?
+    [ "$rc" = "1" ] || fail "F11-client: '$hn' must be refused (exit 1), got rc=$rc: $out"
+    echo "$out" | grep -qF "request header '$hn' cannot be sent — $why" || fail "F11-client: the refusal must name '$hn' and why: $out"
+done
+echo "e2e ok: Http.send — F11 a header with no place on the wire is refused by name (bad name, bodyless body header, non-ASCII)"
 
 # (F12) the request-body read timeout [D:serve-body-timeout]: a slow
 # client declaring a large Content-Length and holding the socket is
@@ -11781,5 +11982,37 @@ out=$($BIN "$s6dir/emit.weir" 2>&1) && fail "a 100k-deep value must be refused, 
 echo "$out" | grep -qF "nests deeper than 100" || fail "emitter depth cap message: $out"
 echo "e2e ok: STRIX-6 — a 100k-deep 'to yaml' hits the emitter cap (no crash)"
 rm -rf "$s6dir"
+
+# ---- W2 docs-vs-binary: GUIDE/tooling/repl claims no fence pins
+w2dir=$(mkweirtmp)
+# tooling.md: a mistyped option gets the closest one, top level and per subcommand
+out=$($BIN --hlep 2>&1) && fail "--hlep must exit 2" || true
+expect "a mistyped --help suggests it" "Did you mean '--help'?" "$out"
+out=$($BIN check --cna x.weir 2>&1) && fail "check --cna must exit 2" || true
+expect "a mistyped check flag suggests the closest" "Did you mean '--can'?" "$out"
+out=$($BIN fmt --chek x.weir 2>&1) && fail "fmt --chek must exit 2" || true
+expect "a mistyped fmt flag suggests the closest" "Did you mean '--check'?" "$out"
+# repl.md: a directive is always a single line — even right after match
+# arms or a |> chain, whose next line could still have continued them
+printf 'match 1 with\n| 1 -> "one"\n| _ -> "other"\n#echo\nlet xs =\n    [1]\n    |> Seq.map id\n#echo\n#quit\n' >"$w2dir/in.txt"
+out=$(cd "$w2dir" && XDG_CONFIG_HOME="$w2dir/cfg" XDG_STATE_HOME="$w2dir/st" "$BIN" <"$w2dir/in.txt" 2>&1)
+[ "$(echo "$out" | grep -c 'echo cap: 100')" = 2 ] || fail "a directive after a block must run as a directive: $out"
+echo "$out" | grep -qF "parse error" && fail "a directive after a block must not be parsed as code: $out"
+echo "e2e ok: piped REPL — a directive never continues the block above it"
+# GUIDE "Lazy values": the stated outputs of the within cd / within env example
+cat >"$w2dir/lazy.weir" <<'WEOF'
+Dir.create "proj/src"
+File.write "proj/a.txt" ["a"]
+File.write "proj/src/b.txt" ["b"]
+cd "proj"
+let top = ls |> Seq.map _.name
+let inside = within cd "src" (ls |> Seq.map _.name)
+let greet = within env [Env.pair "GREETING" "hi"] $(sh -c "echo ${GREETING:-unset}")
+cd "src"
+print $"{show top}|{show inside}|{show greet}"
+WEOF
+out=$(cd "$w2dir" && "$BIN" lazy.weir 2>&1) || fail "GUIDE lazy-values example: $out"
+expect "GUIDE lazy values: read late, within cd/env keep their scope" '["b.txt"]|["b.txt"]|["hi"]' "$out"
+rm -rf "$w2dir"
 
 echo "e2e battery: all green"

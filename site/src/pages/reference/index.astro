@@ -62,9 +62,16 @@ const moduleAnchor = (name) => `module-${name.toLowerCase()}`;
 // inline `code` spans rendered as literal backticks — split on the
 // backtick and wrap the odd segments in <code>.
 const inlineCode = (text) => text.split("`").map((v, i) => ({ code: i % 2 === 1, v }));
+// the prelude types, generated from the env [D:reference]: each one
+// renders as its declaration, so every constructor and field is listed
+const typeDecl = (t) =>
+  t.kind === "record"
+    ? `type ${t.name} = { ${t.fields.map((f) => `${f.name}: ${f.type}`).join("; ")} }`
+    : `type ${t.name} = ${t.cases.map((c) => (c.payload ? `${c.name} of ${c.payload}` : c.name)).join(" | ")}`;
 const groups = [
   ...ref.modules.map((m) => ({ name: m.name, members: m.members })),
   { name: "Forms", members: ref.forms },
+  { name: "Types", members: ref.types.map((t) => ({ name: t.name, signature: typeDecl(t) })) },
 ];
 
 const toc = [
@@ -110,7 +117,7 @@ const toc = [
       {g.members.map((m) => (
         <section>
           <h4 id={anchor(g.name, m.name)}>
-            <a href={`#${anchor(g.name, m.name)}`}>{g.name === "Forms" ? m.name : `${g.name}.${m.name}`}</a>
+            <a href={`#${anchor(g.name, m.name)}`}>{g.name === "Forms" || g.name === "Types" ? m.name : `${g.name}.${m.name}`}</a>
           </h4>
           {m.signature && <Code code={m.signature} lang={weirGrammar} themes={queilThemes} defaultColor={false} />}
           {m.summary && <p>{inlineCode(m.summary).map((s) => (s.code ? <code>{s.v}</code> : s.v))}</p>}

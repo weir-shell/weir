@@ -16,6 +16,10 @@ module Fuzz.Main
 //   Invariant 4 (fmt roundtrip): fmt succeeds on every generated
 //     program, is idempotent, preserves per-statement sexpr shape, and
 //     the formatted program is output-identical on the binary.
+//   Invariant 8 (the hunt-2 laws, on the binary, valid or mutated
+//     input): no exit >= 128, no "internal error", every check position
+//     inside its line, fmt idempotent, never making a checking file
+//     fail and never masking a non-layout error.
 // Seeds/counts: WEIR_FUZZ_SEED / WEIR_FUZZ_COUNT (smoke default is the
 // pinned seed; tools/fuzz.weir passes fresh seeds for deep runs).
 
@@ -231,6 +235,120 @@ let private shapesOf (lines: string list) : string list option =
                 | Error _ -> "<unparsed>")
         )
 
+// the hunt-2 invariants [D:fuzz-hunt2-invariants]: laws a black-box
+// hunt checked by hand, asserted over the BINARY on any input, valid or
+// not. The judges are pure over a run's result, so the positive controls
+// feed them synthetic failures; hunt2Violations is the one composition
+// the property runs.
+let screenRun (label: string) (r: Runner.RunResult) : string list =
+    if r.TimedOut then
+        [] // a slow input is not a crash; the time axis is invariant 2's
+    else
+        [ if r.Rc >= 128 then
+              $"{label}: exit {r.Rc} (a signal or crash)"
+          if (r.Out + r.Err).Contains "internal error" then
+              $"{label}: 'internal error' in the output" ]
+
+// every `check --json` position names a real line and sits at most one
+// past its last code point (the end-of-line slot an "expected …" points at)
+let positionViolations (label: string) (source: string[]) (json: string) : string list =
+    let width (l: string) = l.EnumerateRunes() |> Seq.length
+
+    match
+        (try
+            Some(System.Text.Json.JsonDocument.Parse json)
+         with _ ->
+             None)
+    with
+    | None -> [ $"{label}: check --json printed no JSON: %A{json}" ]
+    | Some doc ->
+        use doc = doc
+
+        [ for d in doc.RootElement.EnumerateArray() do
+              let line = d.GetProperty("line").GetInt32()
+              let col = d.GetProperty("col").GetInt32()
+
+              if line < 1 || line > source.Length then
+                  $"{label}: line {line} of a {source.Length}-line file"
+              elif col < 1 || col > width source[line - 1] + 1 then
+                  $"{label}: {line}:{col} is past the end of its line ({width source[line - 1]} wide)" ]
+
+// fmt never makes a checking file fail and never masks a non-layout
+// error; repairing a pure layout error is fmt's job
+// [D:fmt-repairs-layout]. The layout class is the checker's own codes
+// for an error fmt's re-indent removes and nothing else depends on
+let layoutCodes = set [ "doc-align" ]
+
+let private errorKeys (json: string) : (string * string) list option =
+    try
+        use doc = System.Text.Json.JsonDocument.Parse json
+
+        [ for d in doc.RootElement.EnumerateArray() do
+              if d.GetProperty("severity").GetString() = "error" then
+                  // positions move under fmt; the error is its code and words
+                  d.GetProperty("code").GetString(),
+                  System.Text.RegularExpressions.Regex.Replace(d.GetProperty("message").GetString(), "[0-9]+", "N") ]
+        |> Some
+    with _ ->
+        None
+
+let verdictViolations (rcBefore: int, jsonBefore: string) (rcAfter: int, jsonAfter: string) : string list =
+    match errorKeys jsonBefore, errorKeys jsonAfter with
+    | Some before, Some after ->
+        let masked =
+            before
+            |> List.filter (fun (code, _) -> not (layoutCodes.Contains code))
+            |> List.filter (fun k -> not (List.contains k after))
+            |> List.distinct
+
+        [ if rcBefore = 0 && rcAfter <> 0 then
+              $"fmt made a checking file fail (check rc 0 -> {rcAfter})"
+          elif rcBefore <> 0 && rcAfter = 0 && before.IsEmpty then
+              $"fmt made a failing file check (rc {rcBefore} -> 0) with no error to repair"
+          for code, msg in masked do
+              $"fmt masked a non-layout error [{code}]: {msg}" ]
+    | _ -> [] // unparsable output is the position judge's finding
+
+let hunt2Violations (lines: string list) : string list =
+    Runner.withScript lines (fun file ->
+        let source = System.IO.File.ReadAllLines file
+        let run = Runner.runOn [] file
+        let chk = Runner.runOn [ "check"; "--json" ] file
+
+        let checkPositions label (src: string[]) (r: Runner.RunResult) =
+            if r.TimedOut || r.Rc >= 128 then
+                []
+            else
+                positionViolations label src r.Out
+
+        let fmt1 = Runner.runOn [ "fmt" ] file
+
+        let afterFmt =
+            if fmt1.Rc <> 0 then
+                []
+            else
+                let once = System.IO.File.ReadAllLines file
+                let chk2 = Runner.runOn [ "check"; "--json" ] file
+                let fmt2 = Runner.runOn [ "fmt" ] file
+                let twice = System.IO.File.ReadAllLines file
+
+                [ yield! screenRun "check after fmt" chk2
+                  yield! checkPositions "check after fmt" once chk2
+                  yield! screenRun "second fmt" fmt2
+                  if not (chk.TimedOut || chk2.TimedOut || chk.Rc >= 128 || chk2.Rc >= 128) then
+                      for v in verdictViolations (chk.Rc, chk.Out) (chk2.Rc, chk2.Out) do
+                          $"{v}; formatted:\n{showProgram (List.ofArray once)}\nbefore: {chk.Out}\nafter: {chk2.Out}"
+                  if fmt2.Rc <> 0 then
+                      $"fmt refused its own output (rc {fmt2.Rc}): {fmt2.Err}"
+                  elif twice <> once then
+                      $"fmt is not idempotent; first:\n{showProgram (List.ofArray once)}\nsecond:\n{showProgram (List.ofArray twice)}" ]
+
+        [ yield! screenRun "run" run
+          yield! screenRun "check" chk
+          yield! checkPositions "check" source chk
+          yield! screenRun "fmt" fmt1
+          yield! afterFmt ])
+
 [<Tests>]
 let tests =
     testList
@@ -320,162 +438,171 @@ let tests =
               totality (Mutate.deleteLine rnd (Mutate.perturbIndent rnd lines))
               totality (Mutate.swapLines rnd (Mutate.duplicateLine rnd lines))
 
-          // Invariant 2's depth axis [D:depth-guard]: the generator
-          // favors breadth, so extreme depth is pinned here explicitly —
-          // standing fixture seeds (each name records the failure class
-          // it guards against), plus a generated sweep.
-          test "deep parens diagnose-or-bound (was SEGV ~6000)" { depthDiagnoses "parens" (deepNest "(" ")" 20000) }
-          test "long operator spine diagnoses-or-bound (was SEGV in check)" { depthDiagnoses "opspine" (opSpine 50000) }
-          test "nested brackets diagnose-or-bound (was O(2^n))" { depthDiagnoses "brackets" (deepNest "[" "]" 2000) }
-          test "nested records diagnose-or-bound" { depthDiagnoses "records" (deepNest "{a=" "}" 2000) }
+          // the depth axis runs SEQUENCED [D:fuzz-depth-sequenced]: each
+          // case is a CPU- and allocation-heavy pass bounded by wall clock,
+          // and run in parallel with its siblings the bound measures the
+          // contention — ~0.6s of work read as 15s+ on a 4-vCPU runner
+          testSequenced
+          <| testList
+              "depth axis"
+              [
+                // Invariant 2's depth axis [D:depth-guard]: the generator
+                // favors breadth, so extreme depth is pinned here explicitly —
+                // standing fixture seeds (each name records the failure class
+                // it guards against), plus a generated sweep.
+                test "deep parens diagnose-or-bound (was SEGV ~6000)" { depthDiagnoses "parens" (deepNest "(" ")" 20000) }
+                test "long operator spine diagnoses-or-bound (was SEGV in check)" { depthDiagnoses "opspine" (opSpine 50000) }
+                test "nested brackets diagnose-or-bound (was O(2^n))" { depthDiagnoses "brackets" (deepNest "[" "]" 2000) }
+                test "nested records diagnose-or-bound" { depthDiagnoses "records" (deepNest "{a=" "}" 2000) }
 
-          // the type and pattern axes, plus
-          // index/let-in/fun/elif/field/sigil — every
-          // constructor that nests, per the fuzzer-grammar-membership
-          // rule [D:depth-guard]
-          test "deep seq<> type diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses
-                  "ty-seq"
-                  ("type T = { x: "
-                   + String.replicate 20000 "seq<"
-                   + "int"
-                   + String.replicate 20000 ">"
-                   + " }")
-          }
-          test "deep Option<> type diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses
-                  "ty-opt"
-                  ("type T = { x: "
-                   + String.replicate 20000 "Option<"
-                   + "int"
-                   + String.replicate 20000 ">"
-                   + " }")
-          }
-          test "deep Map<string,> type diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses
-                  "ty-map"
-                  ("type T = { x: "
-                   + String.replicate 20000 "Map<string, "
-                   + "int"
-                   + String.replicate 20000 ">"
-                   + " }")
-          }
-          test "deep anon-shape type diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses
-                  "ty-anon"
-                  ("type T = { x: "
-                   + String.replicate 20000 "{| a: "
-                   + "int"
-                   + String.replicate 20000 " |}"
-                   + " }")
-          }
-          test "deep paren pattern diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses
-                  "pat-paren"
-                  ("let v = match 1 with | "
-                   + String.replicate 20000 "("
-                   + "0"
-                   + String.replicate 20000 ")"
-                   + " -> 0 | _ -> 1")
-          }
-          test "deep tuple pattern diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses
-                  "pat-tuple"
-                  ("let v = match (1, 1) with | "
-                   + String.replicate 20000 "(1, "
-                   + "(a, b)"
-                   + String.replicate 20000 ")"
-                   + " -> a | _ -> 1")
-          }
-          test "deep constructor pattern diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses
-                  "pat-ctor"
-                  ("let v = match 1 with | "
-                   + String.replicate 20000 "Some ("
-                   + "x"
-                   + String.replicate 20000 ")"
-                   + " -> 1 | _ -> 0")
-          }
-          test "deep list pattern diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses
-                  "pat-list"
-                  ("let v = match [1] with | "
-                   + String.replicate 20000 "["
-                   + "0"
-                   + String.replicate 20000 "]"
-                   + " -> 0 | _ -> 1")
-          }
-          test "long cons-chain pattern diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses
-                  "pat-cons"
-                  ("let v = match [1] with | "
-                   + String.replicate 20000 "a :: "
-                   + "_"
-                   + " -> 1 | _ -> 0")
-          }
-          test "deep let-binder pattern diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses "pat-let" ("let " + String.replicate 20000 "(" + "x" + String.replicate 20000 ")" + " = 1")
-          }
-          test "deep lambda-param pattern diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses
-                  "pat-lambda"
-                  ("let f = fun "
-                   + String.replicate 20000 "("
-                   + "x"
-                   + String.replicate 20000 ")"
-                   + " -> x")
-          }
-          test "deep index chain diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses "index" ("let x = " + String.replicate 20000 "a[" + "0" + String.replicate 20000 "]")
-          }
-          test "long let-in chain diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses "letin" ("let x = " + String.replicate 20000 "let a = 1 in " + "1")
-          }
-          test "long fun chain diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses "fun" ("let x = " + String.replicate 20000 "fun a -> " + "1")
-          }
-          test "long elif chain diagnoses-or-bounds (was SEGV)" {
-              // 5000 clauses: 10x the ceiling; each clause pays the full
-              // stmtElem alternative cost, and 20000 runs into the hang
-              // bound under parallel test load without adding coverage
-              depthDiagnoses "elif" ("let x = if true then 1 " + String.replicate 5000 "elif true then 1 " + "else 2")
-          }
-          test "long field chain diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses "field" ("let x = a" + String.replicate 50000 ".b")
-          }
-          test "deep sigil nest diagnoses-or-bounds (was SEGV)" {
-              depthDiagnoses "sigil" ("let x = " + String.replicate 5000 "$(echo " + "hi" + String.replicate 5000 ")")
-          }
+                // the type and pattern axes, plus
+                // index/let-in/fun/elif/field/sigil — every
+                // constructor that nests, per the fuzzer-grammar-membership
+                // rule [D:depth-guard]
+                test "deep seq<> type diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses
+                        "ty-seq"
+                        ("type T = { x: "
+                         + String.replicate 20000 "seq<"
+                         + "int"
+                         + String.replicate 20000 ">"
+                         + " }")
+                }
+                test "deep Option<> type diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses
+                        "ty-opt"
+                        ("type T = { x: "
+                         + String.replicate 20000 "Option<"
+                         + "int"
+                         + String.replicate 20000 ">"
+                         + " }")
+                }
+                test "deep Map<string,> type diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses
+                        "ty-map"
+                        ("type T = { x: "
+                         + String.replicate 20000 "Map<string, "
+                         + "int"
+                         + String.replicate 20000 ">"
+                         + " }")
+                }
+                test "deep anon-shape type diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses
+                        "ty-anon"
+                        ("type T = { x: "
+                         + String.replicate 20000 "{| a: "
+                         + "int"
+                         + String.replicate 20000 " |}"
+                         + " }")
+                }
+                test "deep paren pattern diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses
+                        "pat-paren"
+                        ("let v = match 1 with | "
+                         + String.replicate 20000 "("
+                         + "0"
+                         + String.replicate 20000 ")"
+                         + " -> 0 | _ -> 1")
+                }
+                test "deep tuple pattern diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses
+                        "pat-tuple"
+                        ("let v = match (1, 1) with | "
+                         + String.replicate 20000 "(1, "
+                         + "(a, b)"
+                         + String.replicate 20000 ")"
+                         + " -> a | _ -> 1")
+                }
+                test "deep constructor pattern diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses
+                        "pat-ctor"
+                        ("let v = match 1 with | "
+                         + String.replicate 20000 "Some ("
+                         + "x"
+                         + String.replicate 20000 ")"
+                         + " -> 1 | _ -> 0")
+                }
+                test "deep list pattern diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses
+                        "pat-list"
+                        ("let v = match [1] with | "
+                         + String.replicate 20000 "["
+                         + "0"
+                         + String.replicate 20000 "]"
+                         + " -> 0 | _ -> 1")
+                }
+                test "long cons-chain pattern diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses
+                        "pat-cons"
+                        ("let v = match [1] with | "
+                         + String.replicate 20000 "a :: "
+                         + "_"
+                         + " -> 1 | _ -> 0")
+                }
+                test "deep let-binder pattern diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses "pat-let" ("let " + String.replicate 20000 "(" + "x" + String.replicate 20000 ")" + " = 1")
+                }
+                test "deep lambda-param pattern diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses
+                        "pat-lambda"
+                        ("let f = fun "
+                         + String.replicate 20000 "("
+                         + "x"
+                         + String.replicate 20000 ")"
+                         + " -> x")
+                }
+                test "deep index chain diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses "index" ("let x = " + String.replicate 20000 "a[" + "0" + String.replicate 20000 "]")
+                }
+                test "long let-in chain diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses "letin" ("let x = " + String.replicate 20000 "let a = 1 in " + "1")
+                }
+                test "long fun chain diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses "fun" ("let x = " + String.replicate 20000 "fun a -> " + "1")
+                }
+                test "long elif chain diagnoses-or-bounds (was SEGV)" {
+                    // 5000 clauses: 10x the ceiling; each clause pays the full
+                    // stmtElem alternative cost, and 20000 runs into the hang
+                    // bound under parallel test load without adding coverage
+                    depthDiagnoses "elif" ("let x = if true then 1 " + String.replicate 5000 "elif true then 1 " + "else 2")
+                }
+                test "long field chain diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses "field" ("let x = a" + String.replicate 50000 ".b")
+                }
+                test "deep sigil nest diagnoses-or-bounds (was SEGV)" {
+                    depthDiagnoses "sigil" ("let x = " + String.replicate 5000 "$(echo " + "hi" + String.replicate 5000 ")")
+                }
 
-          // the post-parse seam [D:depth-guard]: parse depth ~1, but each
-          // line doubles the inferred type — the inference budget must
-          // convert "no answer, forever" into a located diagnostic
-          test "the inference bomb diagnoses inside the budget (was: hang, forever)" {
-              diagnosesWithinBound
-                  "infer-bomb"
-                  30000
-                  [ "let f0 x = (x, x)"
-                    "let f1 x = f0 (f0 x)"
-                    "let f2 x = f1 (f1 x)"
-                    "let f3 x = f2 (f2 x)"
-                    "let f4 x = f3 (f3 x)"
-                    "let f5 x = f4 (f4 x)"
-                    "let v = f5 1"
-                    "print \"done\"" ]
-          }
+                // the post-parse seam [D:depth-guard]: parse depth ~1, but each
+                // line doubles the inferred type — the inference budget must
+                // convert "no answer, forever" into a located diagnostic
+                test "the inference bomb diagnoses inside the budget (was: hang, forever)" {
+                    diagnosesWithinBound
+                        "infer-bomb"
+                        30000
+                        [ "let f0 x = (x, x)"
+                          "let f1 x = f0 (f0 x)"
+                          "let f2 x = f1 (f1 x)"
+                          "let f3 x = f2 (f2 x)"
+                          "let f4 x = f3 (f3 x)"
+                          "let f5 x = f4 (f4 x)"
+                          "let v = f5 1"
+                          "print \"done\"" ]
+                }
 
-          testPropertyWithConfig cfg "arbitrary over-ceiling depth diagnoses-or-bounds"
-          <| fun (NonNegativeInt s) ->
-              let rnd = Random s
-              let d = 600 + rnd.Next 4000 // above the 500 ceiling
+                testPropertyWithConfig cfg "arbitrary over-ceiling depth diagnoses-or-bounds"
+                <| fun (NonNegativeInt s) ->
+                    let rnd = Random s
+                    let d = 600 + rnd.Next 4000 // above the 500 ceiling
 
-              let line =
-                  match rnd.Next 3 with
-                  | 0 -> deepNest "(" ")" d
-                  | 1 -> deepNest "[" "]" d
-                  | _ -> opSpine d
+                    let line =
+                        match rnd.Next 3 with
+                        | 0 -> deepNest "(" ")" d
+                        | 1 -> deepNest "[" "]" d
+                        | _ -> opSpine d
 
-              depthDiagnoses "generated" line
+                    depthDiagnoses "generated" line
+              ]
 
           testPropertyWithConfig cfg "span soundness: an injected bad token is reported on its own line"
           <| fun (p: Program) (NonNegativeInt s) ->
@@ -632,6 +759,41 @@ let tests =
                                           ll.Text
                                           d.Message
                                           (showProgram lines))
+          // [D:fuzz-hunt2-invariants] over the generated program, its
+          // mutated neighbors and an injected-junk twin — valid and
+          // invalid inputs alike, since the hunt's finds were on both
+          testPropertyWithConfig
+              cfg
+              "hunt-2 invariants: no crash or internal error, positions in range, fmt idempotent and verdict-preserving"
+          <| fun (p: Program) (NonNegativeInt s) ->
+              let rnd = Random s
+              let lines = renderPlain p
+
+              let junk =
+                  let tagged = renderTagged defaultCfg p
+                  let eligible = tagged |> List.indexed |> List.filter (fun (_, (_, ok)) -> ok)
+
+                  match eligible with
+                  | [] -> lines
+                  | _ ->
+                      let idx = fst eligible[rnd.Next eligible.Length]
+                      tagged |> List.mapi (fun i (l, _) -> if i = idx then l + " ?!?" else l)
+
+              [ "generated", lines
+                "junk-injected", junk
+                "indent-perturbed", Mutate.perturbIndent rnd lines
+                "line-deleted", Mutate.deleteLine rnd (Mutate.perturbIndent rnd lines)
+                "duplicated+swapped", Mutate.swapLines rnd (Mutate.duplicateLine rnd lines) ]
+              |> List.iter (fun (label, input) ->
+                  match hunt2Violations input with
+                  | [] -> ()
+                  | vs ->
+                      failtestf
+                          "the %s input breaks a hunt-2 invariant:\n  %s\n%s"
+                          label
+                          (String.concat "\n  " vs)
+                          (showProgram input))
+
           testPropertyWithConfig cfg "fmt roundtrip: succeeds, idempotent, shape-preserving, output-neutral"
           <| fun (p: Program) ->
               let lines = renderPlain p
@@ -723,6 +885,62 @@ let positiveControls =
               | SpanNoDiag m -> Expect.stringContains m "no diagnostic" "the no-diagnostic detector names itself"
               | SpanOk -> failtest "a clean program cannot satisfy a bad-site claim"
               | SpanMiss m -> failtest $"expected no-diagnostic, got a miss: {m}"
+          }
+          test "invariant 8: a crash exit and an internal error are DETECTED, named" {
+              let r: Runner.RunResult =
+                  { Rc = 134
+                    Out = ""
+                    Err = "internal error: boom"
+                    TimedOut = false }
+
+              let vs = screenRun "control" r
+              Expect.equal vs.Length 2 "both the exit and the text fire"
+              Expect.stringContains vs[0] "exit 134" "the crash judge names the exit"
+              Expect.stringContains vs[1] "internal error" "the text judge names the phrase"
+          }
+          test "invariant 8: a position past its line's end is DETECTED, named" {
+              let json =
+                  """[{"line":1,"col":5,"severity":"error"},{"line":3,"col":1,"severity":"error"}]"""
+
+              let vs = positionViolations "control" [| "abc" |] json
+              Expect.equal vs.Length 2 "both the column and the line fire"
+              Expect.stringContains vs[0] "past the end of its line" "the column judge names itself"
+              Expect.stringContains vs[1] "line 3 of a 1-line file" "the line judge names itself"
+
+              Expect.isEmpty
+                  (positionViolations "control" [| "abc" |] """[{"line":1,"col":4}]""")
+                  "one past the end is the end-of-line slot"
+          }
+          test "invariant 8: fmt failing a file or masking a non-layout error is DETECTED, named; a layout repair is not" {
+              let err code msg =
+                  $"""{{"line":1,"col":1,"severity":"error","code":"{code}","message":"{msg}"}}"""
+
+              let docAlign = err "doc-align" "this /// doc sits at column 7"
+              let typeErr = err "check" "expected int, got string"
+
+              let fails = verdictViolations (0, "[]") (1, $"[{typeErr}]")
+              Expect.equal fails.Length 1 "0 -> 1 fires"
+              Expect.stringContains fails[0] "made a checking file fail" "the fail judge names itself"
+
+              let masked = verdictViolations (1, $"[{docAlign},{typeErr}]") (0, "[]")
+              Expect.equal masked.Length 1 "a non-layout error gone with the layout one fires"
+              Expect.stringContains masked[0] "masked a non-layout error [check]" "the mask judge names the code"
+
+              let other = err "check" "other"
+              let maskedKept = verdictViolations (1, $"[{typeErr}]") (1, $"[{other}]")
+              Expect.equal maskedKept.Length 1 "a swapped error under an unchanged verdict fires"
+
+              let blank = verdictViolations (1, "[]") (0, "[]")
+              Expect.stringContains blank[0] "no error to repair" "1 -> 0 with nothing listed fires"
+
+              Expect.isEmpty (verdictViolations (1, $"[{docAlign}]") (0, "[]")) "a pure layout repair is fmt's job"
+
+              Expect.isEmpty
+                  (verdictViolations (1, $"[{docAlign},{typeErr}]") (1, $"[{typeErr}]"))
+                  "the layout half repaired, the other kept"
+          }
+          test "invariant 8: the composed detector is clean on a clean program (not vacuously red)" {
+              Expect.isEmpty (hunt2Violations [ "let x = 1"; "print (show x)" ]) "a clean program has no violations"
           }
           test "invariant 4's shape language DISTINGUISHES (equality is not vacuous)" {
               // the fmt roundtrip compares per-statement sexpr shapes; if

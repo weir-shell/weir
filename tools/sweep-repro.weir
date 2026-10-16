@@ -148,9 +148,17 @@ let b2Lines =
       "echo a-b"
       "echo a*b"
       "echo a/b"
-      "echo a||b"
       "echo k=v"
       "echo a:b" ]
+
+// `a||b` is a parse error now ('||' teaches `| or`), so fmt refuses it
+// [D:fmt-parse-gate] — the claim is still that its bytes never change
+let b2Refused d =
+    let line = "echo a||b"
+    let p = put d "b2-refused.weir" [line]
+    let r = fmtW p
+    let after = File.read p |> Str.join "\n"
+    ($"'{line}' became '{after}' (fmt exit {codeOf r})", codeOf r == 3 && after == line)
 
 let b2 d =
     b2Lines
@@ -160,6 +168,7 @@ let b2 d =
         let r = fmtW p
         let after = File.read p |> Str.join "\n"
         ($"'{line}' became '{after}'", codeOf r == 0 && after == line))
+    |> Seq.append [ b2Refused d ]
     |> failing
 
 // ---- B3: a producer error piped into a command is swallowed ----------------
@@ -204,7 +213,7 @@ let b4Yes = <<<
 
 let b4Endless = <<<
     within
-        nats |> Seq.iter (fun i -> print $"{i}")
+        Seq.initInfinite id |> Seq.iter (fun i -> print $"{i}")
     always
         File.write "always" ["x"]
 
@@ -405,7 +414,9 @@ let b10 d =
     let h = $"{d}/no-such-home"
 
     let rMissing =
-        within env HOME=$h
+        // a runner's XDG_CONFIG_HOME would answer Path.configHome first;
+        // empty falls back to $HOME/.config, the claim under test
+        within env HOME=$h XDG_CONFIG_HOME=
             let r = runAt d "30" p
             r
 

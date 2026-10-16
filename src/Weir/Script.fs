@@ -1375,6 +1375,29 @@ let private bufToLL (b: PendBuf) : LogicalLine =
     segmentEnds.AddOrUpdate(ll, List.rev b.Ends |> List.toArray)
     ll
 
+// a line's segments re-pointed at the physical indents in `indents`
+// (line -> leading spaces): assembly recovery re-indents a misaligned
+// line, and every position map must read the source, not the repair
+// [D:recovery-physical-indent]
+let withPhysicalIndents (indents: Map<int, int>) (ll: LogicalLine) : LogicalLine =
+    if ll.Segments |> List.exists (fun (_, l, _) -> indents.ContainsKey l) then
+        let moved =
+            { ll with
+                Segments =
+                    ll.Segments
+                    |> List.map (fun (js, l, i) ->
+                        match indents.TryFind l with
+                        | Some phys -> js, l, phys
+                        | None -> js, l, i) }
+
+        match segmentEnds.TryGetValue ll with
+        | true, e -> segmentEnds.AddOrUpdate(moved, e)
+        | _ -> ()
+
+        moved
+    else
+        ll
+
 // a fresh single-line buffer (the assembler's per-statement seed)
 let private bufNew (text: string) (lineNo: int) (indent: int) : PendBuf =
     let sb = System.Text.StringBuilder(text)
@@ -2478,6 +2501,33 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
 let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
     assembleWith (fun _ _ -> ()) numbered
 
+/// an assembly error's location [D:assembly-col]: the line its message
+/// names and that line's first non-blank column, with the message's
+/// `line N: ` lead removed (the location carries it). None when the
+/// message names no line.
+let assemblyErrorAt (numbered: (int * string) list) (msg: string) : (int * int * string) option =
+    let m = Text.RegularExpressions.Regex.Match(msg, @"^line ([0-9]{1,9}): ")
+
+    if not m.Success then
+        None
+    else
+        let line = int m.Groups[1].Value
+
+        let col =
+            numbered
+            |> List.tryFind (fun (n, _) -> n = line)
+            |> Option.map (fun (_, raw: string) -> (raw |> Seq.takeWhile ((=) ' ') |> Seq.length) + 1)
+            |> Option.defaultValue 1
+
+        Some(line, col, msg.Substring m.Length)
+
+/// the located one-line spelling of an assembly error [D:assembly-col]:
+/// `<where>:<line>:<col>: msg`, the message unchanged when it names no line
+let assemblyErrorLocated (where: string) (numbered: (int * string) list) (msg: string) : string =
+    match assemblyErrorAt numbered msg with
+    | Some(l, c, rest) -> $"{where}:{l}:{c}: {rest}"
+    | None -> $"{where}: {msg}"
+
 let statementCount (bufLines: string list) : int option =
     let numbered =
         bufLines
@@ -2498,7 +2548,9 @@ let statementCount (bufLines: string list) : int option =
 /// more). Drives the piped REPL's read-ahead so a multi-line statement
 /// assembles the way a script does.
 let pipedAttaches (buf: string list) (next: string) : bool =
-    if classifyLine next <> LineKind.Code then
+    // a column-0 `#` line is a directive, one line by definition — it
+    // never continues the statement above it [D:repl-multiline]
+    if classifyLine next <> LineKind.Code || next.StartsWith "#" then
         false
     else
         match statementCount buf, statementCount (buf @ [ next ]) with
@@ -3504,7 +3556,7 @@ let private checkStatementCore
     // a command head not on PATH, named precisely: the parse path's dump
     // and the runner's "unbound variable" for an unknown statement head both
     // come down to a missing program [D:missing-command-diagnosis]
-    let missingCommandDiag (onlyName: string option) : StmtDiag option =
+    let missingCommandDiag (onlyName: (string * bool) option) : StmtDiag option =
         let missingHeads =
             match Parser.parseLineFull (assumeResolver tenv) ll.Text with
             | Error _ -> []
@@ -3529,8 +3581,15 @@ let private checkStatementCore
 
                 e |> Option.map heads |> Option.defaultValue []
 
+        // the runner reads a dashed head as subtraction (`no-such-tool` as
+        // `no - …`) and reports its first segment unbound — no weir name has
+        // a dash, so it is the program even past a near-miss suggestion
+        // [D:missing-command-diagnosis]
+        let namesHead (n: string, suggested: bool) (prog: string) =
+            (n = prog && not suggested) || prog.StartsWith(n + "-")
+
         match missingHeads with
-        | (prog, span) :: rest when (match onlyName with Some n -> n = prog | None -> true) ->
+        | (prog, span) :: rest when (match onlyName with Some n -> namesHead n prog | None -> true) ->
             let physLine, physCol = translate ll span.Start.Col
 
             let others =
@@ -3566,6 +3625,10 @@ let private checkStatementCore
                              |> List.tryHead
 
                          match reifier with
+                         // an exact reifier read as a program: the position
+                         // refuses the chain, not the spelling [D:statement-lets]
+                         | Some(c, 0) when afterPipe ->
+                             $"'{c}' is a reifier, but this position is an expression — wrap the chain: $(<command> | {c}); bare command lets belong to statement bodies (top level, if/for/match arms, within blocks)"
                          | Some(c, _) when afterPipe ->
                              $"unknown command '{prog}' — not found on PATH. Did you mean the reifier '{c}'? (`<command> | {c}`)"
                          | _ ->
@@ -3807,8 +3870,8 @@ let private checkStatementCore
                 // a near-miss binding suggestion means a likely typo of a
                 // weir name: keep it; otherwise the head is a missing program
                 let unboundName =
-                    if terr.Message.StartsWith "unbound variable '" && not (terr.Message.Contains "Did you mean") then
-                        Some(terr.Message.Substring(18).Split('\'').[0])
+                    if terr.Message.StartsWith "unbound variable '" then
+                        Some(terr.Message.Substring(18).Split('\'').[0], terr.Message.Contains "Did you mean")
                     else
                         None
 
@@ -3885,8 +3948,8 @@ let private checkStatementCore
                 // a near-miss binding suggestion means a likely typo of a
                 // weir name: keep it; otherwise the head is a missing program
                 let unboundName =
-                    if terr.Message.StartsWith "unbound variable '" && not (terr.Message.Contains "Did you mean") then
-                        Some(terr.Message.Substring(18).Split('\'').[0])
+                    if terr.Message.StartsWith "unbound variable '" then
+                        Some(terr.Message.Substring(18).Split('\'').[0], terr.Message.Contains "Did you mean")
                     else
                         None
 
@@ -4230,8 +4293,9 @@ type ReenumFinding =
       RMessage: string }
 
 type ReenumTracker() =
-    // top-level tracked binders: name -> id; id -> (command, repair)
-    let tracked = System.Collections.Generic.Dictionary<string, int>()
+    // top-level tracked names -> their pulls [D:reenum-indirect];
+    // id -> (command, repair)
+    let tracked = System.Collections.Generic.Dictionary<string, (int * string) list>()
     let info = System.Collections.Generic.Dictionary<int, string * string>()
     let counts = System.Collections.Generic.Dictionary<int, int>()
     let found = ResizeArray<ReenumFinding>()
@@ -4243,22 +4307,24 @@ type ReenumTracker() =
         nextId <- nextId + 1
         id
 
-    /// walk one statement tree: count enumerating uses of the tracked
-    /// set (top-level and any qualifying block-locals), a warning at
-    /// the second and later sites — the first pull is the binding's
-    /// point, the second is where the command silently runs again
-    let consume (ll: LogicalLine) (te: Check.TypedExpr) =
-        let tracked0 =
-            tracked |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+    let tracked0 () =
+        tracked |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
 
-        for ev in Check.reenumEvents fresh tracked0 te do
+    /// count one statement's events: enumerating uses of the tracked set
+    /// (top-level and any qualifying block-locals), a warning at the
+    /// second and later sites — the first pull is the binding's point,
+    /// the second is where the command silently runs again
+    let consume (ll: LogicalLine) (events: Check.ReenumEvent list) =
+        for ev in events do
             match ev with
             | Check.ReenumBind(id, _, cmd) ->
                 // a block-local binder has no clean one-line source to
                 // ride the repair — the generic spelling instead
-                info[id] <- (cmd, "add '|> Seq.freeze' at the binding")
+                if not (info.ContainsKey id) then
+                    info[id] <- (cmd, "add '|> Seq.freeze' at the binding")
+
                 counts[id] <- 0
-            | Check.ReenumUse(id, name, span) ->
+            | Check.ReenumUse(id, name, note, span) ->
                 let n =
                     (match counts.TryGetValue id with
                      | true, c -> c
@@ -4277,7 +4343,7 @@ type ReenumTracker() =
                           RCol = c
                           REndCol = max (c + 1) ec
                           RMessage =
-                            $"possible re-enumeration: '{name}' is command-backed and unforced — each pull re-runs '{cmd}'; snapshot one run: {repair}" }
+                            $"possible re-enumeration: '{name}'{note} is command-backed and unforced — each pull re-runs '{cmd}'; snapshot one run: {repair}" }
 
     member _.Poison() = poisoned <- true
 
@@ -4288,43 +4354,38 @@ type ReenumTracker() =
         | KModule _
         | KImport _ -> ()
         | KLet(name, _, te) ->
-            // RHS uses first (a same-name rebind reads the outer binding
-            // — no `let rec` exists); the alias rule, classified: a
-            // whole-RHS bare name neither pulls nor carries the
-            // tracking onto the alias
-            (match te.Kind with
-             | Check.TEVar _ -> ()
-             | _ -> consume ll te)
+            // RHS first (a same-name rebind reads the outer binding — no
+            // `let rec` exists)
+            let pulls, events = Check.reenumLet fresh (tracked0 ()) name te
 
+            // the binding's own command: the repair rides its source when
+            // it is one clean line (as streamed-it does); assembled
+            // (sentinel-joined) text falls back to the generic spelling
+            (match Check.commandBackedUnforced te, pulls with
+             | Some cmd, (id, n) :: _ when n = name ->
+                 let src = ll.Text.Trim()
+
+                 let repair =
+                     if src.StartsWith "let " && not (src |> Seq.exists System.Char.IsControl) then
+                         $"{src} |> Seq.freeze"
+                     else
+                         "add '|> Seq.freeze' at the binding"
+
+                 info[id] <- (cmd, repair)
+             | _ -> ())
+
+            consume ll events
             tracked.Remove name |> ignore
 
-            match Check.commandBackedUnforced te with
-            | Some cmd ->
-                let id = fresh ()
-
-                // the repair rides the binding's own source when it is
-                // one clean line (as streamed-it does); assembled
-                // (sentinel-joined) text falls back to the generic
-                // spelling
-                let repair =
-                    let src = ll.Text.Trim()
-
-                    if src.StartsWith "let " && not (src |> Seq.exists System.Char.IsControl) then
-                        $"{src} |> Seq.freeze"
-                    else
-                        "add '|> Seq.freeze' at the binding"
-
-                info[id] <- (cmd, repair)
-                counts[id] <- 0
-                tracked[name] <- id
-            | None -> ()
+            if not pulls.IsEmpty then
+                tracked[name] <- pulls
         | KLetPat(pat, _, te) ->
-            consume ll te
+            consume ll (Check.reenumEvents fresh (tracked0 ()) te)
 
             for n, _ in Check.patNameSpans pat do
                 tracked.Remove n |> ignore
         | KCmd te
-        | KExpr te -> consume ll te
+        | KExpr te -> consume ll (Check.reenumEvents fresh (tracked0 ()) te)
 
     member _.Flush() : ReenumFinding list =
         if poisoned then [] else List.ofSeq found
@@ -4753,10 +4814,11 @@ let rec loadModuleCachedWith
     | ISource rawLines ->
         let body, bodyOffset, _ = scriptBody rawLines
 
-        let assembled = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> assemble // raw lines: assemble classifies/strips internally [D:content-bytes]
+        let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
+        let assembled = numbered |> assemble // raw lines: assemble classifies/strips internally [D:content-bytes]
 
         match assembled with
-        | Error msg -> stmt $"{absPath}: {msg}"
+        | Error msg -> stmt (assemblyErrorLocated absPath numbered msg)
         | Ok [] -> notAModule
         | Ok(first :: rest) ->
             let baseTenv, _ = moduleBaseEnvs absPath
@@ -6489,15 +6551,569 @@ module SigGen =
                     with _ ->
                         ()
 
-let analyzeLines
+// ---- the init file [D:repl-init] ------------------------------------------
+// ONE home for every static init rule [D:init-check-one-home] — `weir
+// check`, the LSP and the REPL loader all run checkInit, so check refuses
+// exactly what the loader refuses. The loader keeps only what needs
+// evaluation (a cwd that exists, a logLevel that parses, an echoCap in
+// range).
+
+// a command-head alias [D:command-head-alias]: (real exe, fixed prefix
+// args). Single-hop by construction — the exe is a real program name,
+// never another alias (define-time resolution rejects alias-of-alias).
+type CommandAlias = { Exe: string; Prefix: string list }
+
+/// parse a `#alias name = cmd [args...]` directive line [D:command-head-alias].
+/// The head token maps to (exe, prefix args); argv is split on whitespace
+/// (a fixed prefix is literal words — no quoting/typed-argv machinery: an
+/// alias is a resolution-table entry, not a script line). Returns the name
+/// and its target, or a message. Single-hop is enforced later against the
+/// whole table.
+let parseAliasLine (body: string) : Result<string * CommandAlias, string> =
+    // body is the text after `#alias`
+    match
+        body.Trim()
+        |> fun s -> System.Text.RegularExpressions.Regex.Match(s, @"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$")
+    with
+    | m when m.Success && Parser.isKeyword m.Groups.[1].Value ->
+        // a keyword heads its own statement form, never a command — the
+        // alias could never resolve
+        let name = m.Groups.[1].Value
+        Error $"#alias {name}: '{name}' is a keyword — a line starting with it is never a command; pick another name"
+    | m when m.Success ->
+        let name = m.Groups.[1].Value
+
+        let rhsWords =
+            m.Groups.[2].Value.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries)
+            |> Array.toList
+
+        // an alias target is one program plus literal words — a chaining
+        // glyph there would reach the program as an argument, never chain
+        // [D:alias-no-chain]
+        let chainGlyph =
+            rhsWords |> List.tryFind (fun w -> List.contains w [ "|"; "|>"; "||"; "&&"; ";" ])
+
+        match rhsWords with
+        | [] -> Error "#alias needs a target: '#alias name = command [args...]'"
+        | _ when chainGlyph.IsSome ->
+            let g = chainGlyph.Value
+
+            Error
+                $"#alias {name}: '{g}' in an alias target is a literal argument, not a chain — an alias is one program plus fixed words; for a pipeline or a chain write a function: let {name} () = …"
+        | exe :: prefix ->
+            // `#alias ls = ls` (or `= ls --color`) is a legal shadow (bash
+            // allows it), bypassable with `^ls` — register as-is
+            Ok(name, { Exe = exe; Prefix = prefix })
+    | _ -> Error "malformed #alias — usage: '#alias name = command [args...]' (e.g. '#alias k = kubectl')"
+
+/// one wording for every consumer [D:repl-init]
+let sessionDeclRefMessage (name: string) : string =
+    $"a #session value cannot use the file's own declarations ('{name}') — settings are read before the declarations bind; only prompt may name one. Write the value inline"
+
+let knownSessionKeys = Set [ "cwd"; "env"; "logLevel"; "echoCap"; "prompt" ]
+
+let expectedFieldTypes (key: string) : Ty list =
+    match key with
+    | "cwd"
+    | "logLevel" -> [ TStr ]
+    | "echoCap" -> [ TInt ]
+    | "env" -> [ TSeq(TTuple [ TStr; TStr ]) ]
+    | "prompt" -> [ TStr; TFun(TUnit, TStr); TFun(TNamed("PromptStatus", []), TStr) ]
+    | _ -> []
+
+/// the init file split by role, physical line numbers kept: the #session
+/// fields as synthesized lets (the prompt field apart — it checks after the
+/// declarations [D:session-prompt]), the declarations with every directive
+/// line blanked (transparent, so positions stay real), the #alias bodies,
+/// and the lines the #session block spans
+type InitSplit =
+    { Fields: (int * string) list
+      PromptFields: (int * string) list
+      Decls: (int * string) list
+      Aliases: (int * string) list
+      BlockLines: Set<int> }
+
+/// the checked init: every static error (Diags — init rules and the
+/// #session values' own errors; DeclDiags — the declarations' own statement
+/// errors, kept apart because check already reports those from the full
+/// file), plus what the loader applies
+type InitCheck =
+    { Diags: Diagnostic list
+      DeclDiags: Diagnostic list
+      Split: InitSplit
+      Settings: (LogicalLine * string * Check.TypedExpr) list
+      Decls: (LogicalLine * CheckedStatement) list
+      DeclEnv: TypeEnv
+      Prompt: (LogicalLine * Check.TypedExpr) option
+      Aliases: (int * string * CommandAlias) list }
+
+let private initError (file: string) (line: int) (col: int) (endCol: int option) (code: string) (msg: string) =
+    { File = file
+      Line = line
+      Col = col
+      EndLine = endCol |> Option.map (fun _ -> line)
+      EndCol = endCol
+      Severity = "error"
+      Code = code
+      Message = msg }
+
+let splitInit (file: string) (lines: string list) : InitSplit * Diagnostic list =
+    let mutable fields: (int * string) list = []
+    // the prompt field rides separately [D:session-prompt]: its value
+    // names init declarations, so it checks after they bind — every
+    // other field checks before them (settings before names)
+    let mutable promptFields: (int * string) list = []
+    let mutable inPromptField = false
+    let mutable rest: (int * string) list = []
+    // #alias directive lines, collected with their (1-based) line number;
+    // the text is what follows `#alias` [D:command-head-alias]
+    let mutable aliases: (int * string) list = []
+    let mutable blockLines: Set<int> = Set.empty
+    let mutable inBlock = false
+    let mutable seen = false
+    let diags = ResizeArray<Diagnostic>()
+    let arr = List.toArray lines
+
+    for i in 0 .. arr.Length - 1 do
+        let l = arr.[i]
+        let t = l.Trim()
+
+        if not inBlock && t = "#init" then
+            rest <- (i + 1, "") :: rest
+        elif not inBlock && (t = "#alias" || t.StartsWith "#alias ") then
+            // a top-level directive line; kept out of the declaration
+            // stream and replaced by a blank so declaration diagnostics keep
+            // their real positions (the #session discipline)
+            aliases <- (i + 1, t.Substring("#alias".Length)) :: aliases
+            rest <- (i + 1, "") :: rest
+        elif not inBlock && t.StartsWith "#session" then
+            if seen then
+                diags.Add(initError file (i + 1) 1 None "session-shape" "a second #session block — the init takes one")
+
+            seen <- true
+
+            if t = "#session {" then
+                inBlock <- true
+                blockLines <- Set.add (i + 1) blockLines
+            else
+                diags.Add(
+                    initError
+                        file
+                        (i + 1)
+                        1
+                        None
+                        "session-shape"
+                        "malformed #session — usage: '#session {' then 'key = value' lines then '}'"
+                )
+
+            rest <- (i + 1, "") :: rest
+        elif inBlock && t = "}" then
+            inBlock <- false
+            blockLines <- Set.add (i + 1) blockLines
+            rest <- (i + 1, "") :: rest
+        elif inBlock then
+            blockLines <- Set.add (i + 1) blockLines
+
+            if t <> "" then
+                // a field-start (`key = …`) dedents 4 and gains a 'let '
+                // prefix — 4 chars out, 4 in, columns survive. Every
+                // other line (list entries, closers) passes through
+                // untouched: still indented, still a continuation of the
+                // synthesized let, columns exact
+                let fieldStart =
+                    System.Text.RegularExpressions.Regex.Match(t, "^([A-Za-z_][A-Za-z0-9_]*)\s*=")
+
+                // a continuation line belongs to the field it follows
+                if fieldStart.Success then
+                    inPromptField <- fieldStart.Groups.[1].Value = "prompt"
+
+                let synthesized =
+                    if fieldStart.Success then
+                        "let " + (if l.StartsWith "    " then l.Substring 4 else t)
+                    else
+                        l
+
+                if inPromptField then
+                    promptFields <- (i + 1, synthesized) :: promptFields
+                else
+                    fields <- (i + 1, synthesized) :: fields
+
+            rest <- (i + 1, "") :: rest
+        else
+            rest <- (i + 1, l) :: rest
+
+    if inBlock then
+        diags.Add(
+            initError file (max 1 arr.Length) 1 None "session-shape" "unclosed #session block — a lone '}' line ends it"
+        )
+
+    { Fields = List.rev fields
+      PromptFields = List.rev promptFields
+      Decls = List.rev rest
+      Aliases = List.rev aliases
+      BlockLines = blockLines },
+    List.ofSeq diags
+
+let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string list) : InitCheck =
+    let split, shapeDiags = splitInit file lines
+    // the init file is a script, not interactive use: bare module members
+    // are refused here as in any script — the session gets them, the file
+    // does not [D:init-check-one-home]
+    let strictTenv, _ = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
+    let diags = ResizeArray<Diagnostic>(shapeDiags)
+    let declDiags = ResizeArray<Diagnostic>()
+
+    // the marker is required [D:init-marker]
+    if not (isInitMarked lines) then
+        diags.Add(initError file 1 1 None "init-marker" "the init file declares itself — put #init on the first line")
+
+    // imports resolve against the init file's real location [D:init-import]
+    let importer = fileImportLoader (importAnchor file)
+
+    let stmtDiag (d: StmtDiag) =
+        { File = d.File |> Option.defaultValue file
+          Line = d.PhysLine
+          Col = d.PhysCol
+          EndLine = d.PhysEnd |> Option.map fst
+          EndCol = d.PhysEnd |> Option.map snd
+          Severity = "error"
+          Code = codeOf d.Parse d.Message
+          Message = d.Message }
+
+    let assembleOrReport (numbered: (int * string) list) (into: ResizeArray<Diagnostic>) =
+        match assemble numbered with
+        | Ok lls -> Some lls
+        | Error msg ->
+            match assemblyErrorAt numbered msg with
+            | Some(line, col, rest) -> into.Add(initError file line col None "assembly" rest)
+            | None ->
+                let line = numbered |> List.tryHead |> Option.map fst |> Option.defaultValue 1
+                into.Add(initError file line 1 None "assembly" msg)
+
+            None
+
+    // the #alias table [D:command-head-alias] — single-hop: a target naming
+    // a different alias is refused (a self-shadow, `#alias ls = ls --color`,
+    // targets the real binary and is legal)
+    let parsedAliases =
+        split.Aliases
+        |> List.choose (fun (lineNo, body) ->
+            match parseAliasLine body with
+            | Error msg ->
+                diags.Add(initError file lineNo 1 None "init-alias" msg)
+                None
+            | Ok(name, alias) -> Some(lineNo, name, alias))
+
+    let aliasNames = parsedAliases |> List.map (fun (_, n, _) -> n) |> Set.ofList
+
+    for lineNo, name, alias in parsedAliases do
+        if alias.Exe <> name && Set.contains alias.Exe aliasNames then
+            diags.Add(
+                initError
+                    file
+                    lineNo
+                    1
+                    None
+                    "init-alias"
+                    $"#alias {name} = {alias.Exe} …: an alias resolves to a program, not to another alias ('{alias.Exe}' is itself an alias) — aliases are single-hop"
+            )
+
+    // the declarations — the module rule, applied to the prompt; checking
+    // stops at the first statement error (later ones would echo it)
+    let declsChecked, declEnv, declsComplete =
+        match
+            (if shapeDiags.IsEmpty then
+                 assembleOrReport split.Decls declDiags
+             else
+                 None)
+        with
+        | None -> [], strictTenv, false
+        | Some lls ->
+            let rec go env acc rest =
+                match rest with
+                | [] -> List.rev acc, env, true
+                | (ll: LogicalLine) :: tail ->
+                    match checkStatement false None mkR importer env ll with
+                    | Error d ->
+                        declDiags.Add(stmtDiag d)
+                        List.rev acc, env, false
+                    | Ok chk -> go chk.Env ((ll, chk) :: acc) tail
+
+            go strictTenv [] lls
+
+    // a lazy command let binds and spawns nothing; forcing one at load is
+    // refused [D:lazy-command-lets]
+    let mutable cmdBindings: Map<string, int> = Map.empty
+
+    for ll, chk in declsChecked do
+        let refuse msg =
+            diags.Add(initError file ll.Head 1 None "init-decl" msg)
+
+        match chk.Kind with
+        | KType _
+        | KImport _
+        | KSig _ -> ()
+        | KLet(_, _, te)
+        | KLetPat(_, _, te) ->
+            match Check.commandRunsNow cmdBindings te, chk.Kind with
+            | Some why, _ -> refuse $"an init 'let' cannot run a command at load: {why}"
+            | None, KLet(name, _, _) -> cmdBindings <- Check.recordCommandBinding cmdBindings name te
+            | None, _ -> ()
+        | KCmd _
+        | KExpr _ -> refuse "the init file is declaration-only — 'type' and 'let'; it configures the prompt, it cannot run"
+        | KModule _ -> refuse "the init file is not a module — no 'module' marker; its names are the prompt's"
+
+    let declNames =
+        declsChecked
+        |> List.collect (fun (_, chk) ->
+            match chk.Kind with
+            | KLet(n, _, _) -> [ n ]
+            | KLetPat(p, _, _) -> Check.patNameSpans p |> List.map fst
+            | _ -> [])
+        |> Set.ofList
+
+    // an alias naming a declaration is dead on arrival
+    // [D:alias-binding-shadow]: the binding shadows the table
+    for lineNo, name, _ in parsedAliases do
+        if Set.contains name declNames then
+            diags.Add(
+                initError
+                    file
+                    lineNo
+                    1
+                    None
+                    "init-alias"
+                    $"#alias {name}: '{name}' is also declared in this file — the binding shadows the alias, so it would never resolve; pick another name"
+            )
+
+    let rawArr = List.toArray lines
+
+    let keyCol (lineNo: int) =
+        if lineNo >= 1 && lineNo <= rawArr.Length then
+            rawArr[lineNo - 1].Length - rawArr[lineNo - 1].TrimStart().Length + 1
+        else
+            1
+
+    // the value's column: past `key =` on the field's head line
+    let valCol (lineNo: int) (key: string) =
+        if lineNo >= 1 && lineNo <= rawArr.Length then
+            let m =
+                System.Text.RegularExpressions.Regex.Match(rawArr[lineNo - 1], @"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*")
+
+            if m.Success then m.Length + 1 else keyCol lineNo + key.Length
+        else
+            1
+
+    // the #session fields — settings before names: each checks in the bare
+    // env, so naming a declaration is unbound; say why
+    let settings =
+        match
+            (if shapeDiags.IsEmpty then
+                 assembleOrReport split.Fields diags
+             else
+                 None)
+        with
+        | None -> []
+        | Some lls ->
+            let mutable env = strictTenv
+            let mutable seen: Set<string> = Set.empty
+            let acc = ResizeArray<LogicalLine * string * Check.TypedExpr>()
+
+            for ll in lls do
+                match checkStatement false None mkR importer env ll with
+                | Error d ->
+                    let d' = stmtDiag d
+
+                    let unboundDecl =
+                        System.Text.RegularExpressions.Regex.Match(d.Message, @"^unbound variable '([^']+)'")
+
+                    if unboundDecl.Success && Set.contains unboundDecl.Groups[1].Value declNames then
+                        let n = unboundDecl.Groups[1].Value
+
+                        diags.Add
+                            { d' with
+                                Code = "session-decl-ref"
+                                EndLine = Some d'.Line
+                                EndCol = Some(d'.Col + n.Length)
+                                Message = sessionDeclRefMessage n }
+                    else
+                        diags.Add d'
+                | Ok chk ->
+                    env <- chk.Env
+
+                    match chk.Kind with
+                    | KLet(key, _, te) ->
+                        let kc = keyCol ll.Head
+                        let vc = valCol ll.Head key
+
+                        if not (Set.contains key knownSessionKeys) then
+                            let hint = didYouMean key knownSessionKeys
+
+                            diags.Add(
+                                initError
+                                    file
+                                    ll.Head
+                                    kc
+                                    (Some(kc + key.Length))
+                                    "session-key"
+                                    $"unknown #session key '{key}'{hint} (the keys: cwd, env, logLevel, echoCap, prompt)"
+                            )
+                        elif Set.contains key seen then
+                            diags.Add(
+                                initError
+                                    file
+                                    ll.Head
+                                    kc
+                                    (Some(kc + key.Length))
+                                    "session-key"
+                                    $"duplicate #session key '{key}'"
+                            )
+                        elif Check.runsCommandT te then
+                            diags.Add(
+                                initError
+                                    file
+                                    ll.Head
+                                    vc
+                                    None
+                                    "session-command"
+                                    "a #session value cannot run a command — settings are read, not computed by running things"
+                            )
+                        else
+                            seen <- Set.add key seen
+
+                            let typeMsg =
+                                match key, te.Ty with
+                                | ("cwd" | "logLevel"), TStr
+                                | "echoCap", TInt
+                                | "env", TSeq(TTuple [ TStr; TStr ]) -> None
+                                // a generic value (an empty list -> seq<'a>)
+                                // unifies at load — not a mismatch
+                                | _, ty when (formatTy ty).Contains "'" -> None
+                                | "cwd", ty -> Some $"cwd expects a string, got {formatTy ty}"
+                                | "logLevel", ty -> Some $"logLevel expects a string, got {formatTy ty}"
+                                | "echoCap", ty -> Some $"echoCap expects an int, got {formatTy ty}"
+                                | _, ty -> Some $"env expects seq<string * string> — pairs, order kept; got {formatTy ty}"
+
+                            match typeMsg with
+                            | Some msg -> diags.Add(initError file ll.Head vc None "session-type" msg)
+                            | None -> acc.Add(ll, key, te)
+                    | _ ->
+                        diags.Add(
+                            initError file ll.Head 1 None "session-shape" "a #session block takes 'key = value' lines only"
+                        )
+
+            List.ofSeq acc
+
+    // the prompt field last [D:session-prompt]: its value names the
+    // declarations, so it checks in their env — only once they all checked
+    // (a broken declaration would echo here as unbound)
+    let prompt =
+        if not declsComplete || split.PromptFields.IsEmpty then
+            None
+        else
+            match assembleOrReport split.PromptFields diags with
+            | None -> None
+            | Some lls ->
+                let checkedPrompt =
+                    lls
+                    |> List.map (fun ll -> ll, checkStatement false None mkR importer declEnv ll)
+
+                checkedPrompt
+                |> List.iteri (fun i (ll, r) ->
+                    match r with
+                    | Error d -> diags.Add(stmtDiag d)
+                    | Ok _ when i > 0 ->
+                        let kc = keyCol ll.Head
+
+                        diags.Add(
+                            initError file ll.Head kc (Some(kc + 6)) "session-key" "duplicate #session key 'prompt'"
+                        )
+                    | Ok chk ->
+                        match chk.Kind with
+                        | KLet("prompt", _, te) when Check.runsCommandT te ->
+                            diags.Add(
+                                initError
+                                    file
+                                    ll.Head
+                                    (valCol ll.Head "prompt")
+                                    None
+                                    "session-command"
+                                    "a #session value cannot run a command — name a function here (prompt = f); the command runs when the prompt calls f"
+                            )
+                        | KLet("prompt", _, te) ->
+                            match te.Ty with
+                            | TStr
+                            | TFun(TUnit, TStr) -> ()
+                            | TFun(dom, TStr) when promptStatusDomain dom -> ()
+                            | ty ->
+                                diags.Add(
+                                    initError
+                                        file
+                                        ll.Head
+                                        (valCol ll.Head "prompt")
+                                        None
+                                        "session-type"
+                                        $"prompt expects a string, a unit -> string, or a PromptStatus -> string function (ok + a bare command's exit code), got {formatTy ty}"
+                                )
+                        | _ ->
+                            diags.Add(
+                                initError
+                                    file
+                                    ll.Head
+                                    1
+                                    None
+                                    "session-shape"
+                                    "a #session block takes 'key = value' lines only"
+                            ))
+
+                match checkedPrompt with
+                | (ll, Ok { Kind = KLet("prompt", _, te) }) :: _ -> Some(ll, te)
+                | _ -> None
+
+    let byPosition (ds: seq<Diagnostic>) =
+        ds
+        |> List.ofSeq
+        |> List.sortWith (fun a b ->
+            let byLine = compare a.Line b.Line
+            if byLine <> 0 then byLine else compare a.Col b.Col)
+
+    { Diags = byPosition diags
+      DeclDiags = byPosition declDiags
+      Split = split
+      Settings = settings
+      Decls = declsChecked
+      DeclEnv = declEnv
+      Prompt = prompt
+      Aliases = parsedAliases }
+
+/// analyzeLines, with `asInit` forcing the init-file reading (the LSP's
+/// canonical init path, marked or not [D:init-marker])
+let analyzeLinesAs
+    (asInit: bool)
     (path: string)
     (rawLines: string list)
     : Diagnostic list * (LogicalLine * CheckedStatement) list * TypeEnv * LogicalLine list =
     // an #init-marked file checks as the init it is [D:init-marker]:
-    // directives rewritten, and its declarations are session exports —
-    // the unused-binding judgement does not apply (the loader never
-    // judges it)
-    let initMarked = isInitMarked rawLines
+    // directives rewritten for the full-file pass (hover, completion,
+    // statement errors), its declarations are session exports — the
+    // unused-binding judgement does not apply (the loader never judges
+    // it) — and checkInit adds the loader's own rules
+    let initMarked = asInit || isInitMarked rawLines
+
+    // the #session lines are checkInit's: the full-file pass checks their
+    // rewritten lets in file order, which is not the loader's (settings
+    // before names, prompt after the declarations) — its errors there give
+    // way
+    let withInitRules (ds: Diagnostic list) : Diagnostic list =
+        if initMarked then
+            let ic = checkInit assumeResolver path rawLines
+
+            (ds
+             |> List.filter (fun d ->
+                 not (d.Severity = "error" && d.File = path && Set.contains d.Line ic.Split.BlockLines)))
+            @ ic.Diags
+        else
+            ds
 
     let rawLines =
         if initMarked then stripInitDirectives rawLines else rawLines
@@ -6528,27 +7144,31 @@ let analyzeLines
     // runner keeps hard assembly failure; tooling-only.
     let assemblyDiags = ResizeArray<Diagnostic>()
 
+    let physicalIndent =
+        numbered
+        |> List.map (fun (n, raw) -> n, raw |> Seq.takeWhile ((=) ' ') |> Seq.length)
+        |> Map.ofList
+
+    // the lines a recovery attempt re-indented, at their source indent
+    let reindented = ref Map.empty
+
     let rec assembleRecovering (attempts: int) (input: (int * string) list) =
         let misaligned = ref None
 
         match assembleWith (fun l c -> misaligned.Value <- Some(l, c)) input with
         | Ok lls -> lls
         | Error msg when attempts > 0 ->
-            let line =
-                match msg.Split(' ') |> Array.tryItem 1 with
-                | Some tok ->
-                    tok.TrimEnd(':')
-                    |> fun t ->
-                        (match System.Int32.TryParse t with
-                         | true, n -> n
-                         | false, _ -> -1)
-                | None -> -1
+            let line, message =
+                match assemblyErrorAt input msg with
+                | Some(l, _, rest) -> l, rest
+                | None -> -1, msg
 
-            // the named line's content start is the column
+            // the named line's content start is the column — in the
+            // source, not in an earlier attempt's re-indent
+            // [D:recovery-physical-indent]
             let col =
-                input
-                |> List.tryFind (fun (n, _) -> n = line)
-                |> Option.map (fun (_, raw) -> (raw |> Seq.takeWhile ((=) ' ') |> Seq.length) + 1)
+                physicalIndent.TryFind line
+                |> Option.map (fun i -> i + 1)
                 |> Option.defaultValue 1
 
             assemblyDiags.Add
@@ -6559,7 +7179,7 @@ let analyzeLines
                   EndCol = None
                   Severity = "error"
                   Code = "assembly"
-                  Message = msg }
+                  Message = message }
 
             match misaligned.Value with
             | Some(l, c) when l = line ->
@@ -6568,13 +7188,18 @@ let analyzeLines
                 let fix (n, raw: string) =
                     if n = line then n, String(' ', c) + raw.TrimStart(' ') else n, raw
 
+                reindented.Value <- reindented.Value |> Map.add line physicalIndent[line]
+
                 assembleRecovering (attempts - 1) (input |> List.map fix)
             | _ when line > 0 && input |> List.exists (fun (n, _) -> n = line) ->
                 assembleRecovering (attempts - 1) (input |> List.filter (fun (n, _) -> n <> line))
             | _ -> []
         | Error _ -> []
 
-    let logicalLines = numbered |> assembleRecovering 10 // raw lines: assemble classifies/strips internally
+    let logicalLines =
+        numbered
+        |> assembleRecovering 10 // raw lines: assemble classifies/strips internally
+        |> List.map (withPhysicalIndents reindented.Value)
 
     (let diags0 = List.ofSeq assemblyDiags
      diags0 |> ignore)
@@ -6721,6 +7346,13 @@ let analyzeLines
 
             match checkStatement true sigState assumeResolver analyzeImport tenv ll with
             | Ok chk ->
+                // the statement's own minted anonymous shapes join its env
+                // now, not at the next statement's drain [D:anon-literals]:
+                // the editor reads a statement's env (completion after the
+                // last good line), and the pending table is per-thread
+                // state that would otherwise leak into the next analysis
+                // [D:lsp-analysis-cache]
+                let chk = { chk with Env = Check.withPendingAnonDefs chk.Env }
                 chk.Warnings |> List.iter warn
 
                 // a duplicate type declaration is an error, not a silent
@@ -7068,6 +7700,7 @@ let analyzeLines
          @ schemaDiagnostics path (List.ofSeq stmts)
          @ sigLoadDiags
          @ sigCmdDiagnostics path sigInfos (List.ofSeq stmts)
+         |> withInitRules
          |> List.sortWith (fun a b ->
              let byLine = compare a.Line b.Line
              if byLine <> 0 then byLine else compare a.Col b.Col)
@@ -7077,6 +7710,9 @@ let analyzeLines
         List.ofSeq stmts,
         typeEnv0,
         logicalLines
+
+let analyzeLines (path: string) (rawLines: string list) =
+    analyzeLinesAs false path rawLines
 
 /// diagnostic rendering shared by `check` and `check --can`
 /// [D:can-report] — one spelling for both consumers
@@ -7211,11 +7847,12 @@ let run (path: string) (scriptArgs: string list) : int =
             let rawByLine = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> Map.ofList
 
             // comment-only lines are transparent [D:comment-transparency]
-            let assembled = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> assemble // raw lines: assemble classifies/strips internally
+            let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
+            let assembled = numbered |> assemble // raw lines: assemble classifies/strips internally
 
             match assembled with
             | Error msg ->
-                Console.Error.WriteLine $"{path}: {msg}"
+                Console.Error.WriteLine(assemblyErrorLocated path numbered msg)
                 1
             | Ok logicalLines ->
 
@@ -7556,7 +8193,7 @@ let run (path: string) (scriptArgs: string list) : int =
                         let origin, frames =
                             match Eval.blameOf ex with
                             | Some b -> posOf b.Exact b.Node, b.Frames |> Seq.choose (posOf false) |> List.ofSeq
-                            | None -> posOf false Eval.RunPos.Current, []
+                            | None -> posOf Eval.RunPos.Exact Eval.RunPos.Current, []
 
                         // an unmapped origin falls back to the innermost frame
                         let origin, frames =
@@ -7609,6 +8246,8 @@ let run (path: string) (scriptArgs: string list) : int =
                         // an import's module code has no positions here:
                         // the statement's own line, never a stale node
                         | _ -> Eval.RunPos.Current <- null
+
+                        Eval.RunPos.Exact <- false
 
                         match stmt with
                         | CNoop -> Ok venv

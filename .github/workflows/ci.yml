@@ -31,7 +31,7 @@ env:
 jobs:
   linux:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
         with:
@@ -46,10 +46,13 @@ jobs:
           restore-keys: nuget-linux-
       - name: AOT prerequisites
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      # Debug, stated [D:repro-gates]: Debug frames are larger, so a deep
+      # recursion that Release survives overflows here — ci/local.sh runs
+      # the same configuration
       - name: unit suite (twice — flake detection, the GitLab-parity ritual)
         run: |
-          dotnet test tests/Weir.Tests/Weir.Tests.fsproj
-          dotnet test tests/Weir.Tests/Weir.Tests.fsproj
+          dotnet test tests/Weir.Tests/Weir.Tests.fsproj -c Debug
+          dotnet test tests/Weir.Tests/Weir.Tests.fsproj -c Debug
       - name: publish (AOT) + freshness gate
         run: |
           ./publish.sh
@@ -110,6 +113,14 @@ jobs:
       - name: message census
         run: ~/.local/bin/weir tools/dx-message-census.weir --bin ~/.local/bin/weir
 
+      # the bug hunts' acceptance harnesses, kept as regression gates
+      # [D:repro-gates]: one OK per probe; any REPRODUCES, failed control
+      # or SKIP exits 1
+      - name: sweep repro harness
+        run: ~/.local/bin/weir tools/sweep-repro.weir --bin ~/.local/bin/weir
+      - name: hunt2 repro harness
+        run: ~/.local/bin/weir tools/hunt2-repro.weir --bin ~/.local/bin/weir
+
       - name: F# oracle
         run: ./ci/fsharp-oracle.sh
       - name: timing
@@ -130,7 +141,7 @@ jobs:
           restore-keys: nuget-macos-
       - name: unit suite (detailed logger — a hang localizes to the last printed test)
         timeout-minutes: 20
-        run: dotnet test tests/Weir.Tests/Weir.Tests.fsproj --logger "console;verbosity=detailed"
+        run: dotnet test tests/Weir.Tests/Weir.Tests.fsproj -c Debug --logger "console;verbosity=detailed"
       - name: publish (AOT) + freshness gate
         run: |
           ./publish.sh
@@ -163,7 +174,7 @@ jobs:
           key: nuget-windows-${{ hashFiles('**/*.fsproj') }}
           restore-keys: nuget-windows-
       - name: unit suite (stated skips expected — the Skipped count is the list)
-        run: dotnet test tests/Weir.Tests/Weir.Tests.fsproj
+        run: dotnet test tests/Weir.Tests/Weir.Tests.fsproj -c Debug
       - name: publish (AOT, MSVC link) + freshness gate
         run: |
           pwsh -File ./publish.ps1
