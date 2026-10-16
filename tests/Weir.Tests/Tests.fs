@@ -27517,6 +27517,132 @@ let hunt3BehaviorTests =
                   "f5a and f5b check clean"
           } ]
 
+// ---- hunt-3 performance cliffs: semantics pinned, growth guarded ---------
+// [D:value-hash]. The growth
+// guards time one input and its 10x in process; linear work grows ~10x,
+// the quadratic forms these replaced grew ~100x. 25x is the acceptance
+// harness's rule (tools/hunt3-repro.weir), wide enough for a noisy runner.
+let private growsWithin (factor: float) (label: string) (small: unit -> unit) (big: unit -> unit) =
+    let time (f: unit -> unit) =
+        let sw = Stopwatch.StartNew()
+        f ()
+        sw.Elapsed.TotalMilliseconds
+
+    small () // warm the JIT and caches
+    let judge () = time small, time big
+    let within (ts, tb) = tb <= factor * max ts 2.0
+    let first = judge ()
+    // one re-measure absorbs a scheduler hiccup
+    let ts, tb =
+        if within first then
+            first
+        else
+            let ts2, tb2 = judge ()
+            min (fst first) ts2, min (snd first) tb2
+
+    Expect.isTrue (within (ts, tb)) $"{label}: {tb:F0}ms vs {ts:F0}ms for the small input — over {factor}x"
+
+let private growsLinearly label small big = growsWithin 25.0 label small big
+
+// the replaced Seq.distinct, kept as the reference: a list scan with
+// Value's own equality
+let private distinctReference (xs: Value list) =
+    let seen = ResizeArray<Value>()
+
+    [ for x in xs do
+          if not (seen.Contains x) then
+              seen.Add x
+              yield x ]
+
+let hunt3PerfTests =
+    let rec nest depth (leaf: Value) =
+        if depth = 0 then
+            leaf
+        else
+            VRecord("Node", [ "next", VUnion("Some", Some(nest (depth - 1) leaf)); "tag", VStr "t" ])
+
+    // a value zoo: equal-but-differently-built pairs across every Eq kind
+    let zoo =
+        [ VInt 1L
+          VInt 1L
+          VFloat 1.0
+          VStr "a"
+          VStr "a"
+          VSecret "a"
+          VSecret "a"
+          VSecret "b"
+          VBool true
+          VUnit
+          VDur 5L
+          VSize 5L
+          VInstant 5L
+          VBytes [| 1uy; 2uy |]
+          VBytes [| 1uy; 2uy |]
+          VBytes [| 2uy; 1uy |]
+          VTuple [ VStr "h"; VInt 1L ]
+          VTuple [ VStr "h"; VInt 1L ]
+          VTuple [ VInt 1L; VStr "h" ]
+          VRecord("R", [ "a", VInt 1L; "b", VStr "x" ])
+          VRecord("R", [ "b", VStr "x"; "a", VInt 1L ])
+          VRecord("R", [ "a", VInt 2L; "b", VStr "x" ])
+          VRecord("S", [ "a", VInt 1L; "b", VStr "x" ])
+          VUnion("Some", Some(VInt 1L))
+          VUnion("Some", Some(VInt 1L))
+          VUnion("None", None)
+          VMap(Map [ "k", VInt 1L; "j", VInt 2L ])
+          VMap(Map [ "j", VInt 2L; "k", VInt 1L ])
+          VMap(Map [ "k", VInt 1L ])
+          nest 7 (VInt 1L)
+          nest 7 (VInt 1L)
+          nest 7 (VInt 2L) ]
+
+    testList
+        "Hunt-3 performance cliffs"
+        [ test "Value hashes agree with Value equality across the zoo [D:value-hash]" {
+              for a in zoo do
+                  for b in zoo do
+                      if a = b then
+                          Expect.equal (a.GetHashCode()) (b.GetHashCode()) $"{formatValue a} = {formatValue b} but hashes differ"
+          }
+          test "a 200k-deep record hashes without recursion past the bound [D:value-hash] [D:eq-depth]" {
+              let rec build n acc =
+                  if n = 0 then acc else build (n - 1) (VRecord("Node", [ "next", VUnion("Some", Some acc) ]))
+
+              let a = build 200000 (VUnion("None", None))
+              let b = build 200000 (VUnion("None", None))
+              Expect.equal (a.GetHashCode()) (b.GetHashCode()) "equal deep values hash alike"
+
+              Expect.equal
+                  (runWith [ "src", VSeq [ a; b ] ] "src |> Seq.distinct |> Seq.length")
+                  (VInt 1L)
+                  "distinct collapses the equal pair"
+          }
+          test "Seq.distinct matches the list-scan reference: order, Secret, record field order, depth [D:seq-distinct]" {
+              let rng = System.Random 1789
+              let pick () = zoo[rng.Next zoo.Length]
+
+              for _ in 1..200 do
+                  let xs = List.init (rng.Next 40) (fun _ -> pick ())
+                  let got = runWith [ "src", VSeq xs ] "src |> Seq.distinct" |> forceSeq
+                  Expect.equal got (distinctReference xs) "same elements, same first-occurrence order"
+                  // structural equality is not enough here: the FIRST
+                  // spelling must survive (a record keeps its field order)
+                  List.iter2 (fun g r -> Expect.isTrue (obj.ReferenceEquals(g, r)) "the first occurrence itself") got (distinctReference xs)
+
+              Expect.equal
+                  (runWith [ "src", VSeq [ VSecret "s"; VStr "s"; VSecret "s" ] ] "src |> Seq.distinct" |> forceSeq)
+                  [ VSecret "s"; VStr "s" ]
+                  "a Secret equals only a Secret of the same text"
+          }
+          test "Seq.distinct grows linearly in its distinct count" {
+              let distinctOver n =
+                  fun () ->
+                      run $"[1..{n}] |> Seq.map (fun x -> ($\"host-{{x}}\", x %% 7)) |> Seq.distinct |> Seq.length"
+                      |> ignore
+
+              growsLinearly "Seq.distinct over tuples" (distinctOver 3000) (distinctOver 30000)
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -27688,6 +27814,7 @@ let allTests =
           tupleTests
           literalThunkTests
           typeClassTests
+          hunt3PerfTests
           typeClassBTests
           typeClassCTests
           childEnvTests

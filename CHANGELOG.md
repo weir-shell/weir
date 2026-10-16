@@ -179,6 +179,11 @@
 - **`check --can` reports a `Secret` in the argv of a reified command**
   (`… | complete`, `line`, `succeeds`, `exitCode`, `text`, `orFail`,
   `exec`), as it already did for a plain command and `$(…)`.
+- **`Seq.distinct` is fast**, and so are `Seq.distinctBy`, `countBy`,
+  `groupBy` and `except` on tuple or record keys. 25,000 distinct
+  strings took 11 s through `Seq.distinct`; 20,000 tuple keys took 44 s
+  through `distinctBy` plus `countBy`; both now take well under a
+  second. Results and their order are unchanged.
 - **`weir fmt` keeps a file's line endings.** It wrote the platform
   newline, so reformatting turned an LF file CRLF on Windows and a CRLF
   file LF elsewhere; a CRLF file now stays CRLF and an LF file LF.

@@ -157,6 +157,10 @@ type ProcHandle =
       // must see the child's final output [D:scoped-procs]
       Drain: unit -> unit }
 
+// how many container levels Value.GetHashCode mixes [D:value-hash]
+[<Literal>]
+let private hashDepth = 4
+
 [<CustomEquality; NoComparison>]
 type Value =
     | VInt of int64
@@ -296,29 +300,45 @@ type Value =
             eq
         | _ -> false
 
+    // consistent with Equals above and depth-bounded [D:value-hash]
+    // [D:eq-depth]: containers mix their children's hashes down to
+    // hashDepth levels, so a seq of tuples or same-type records spreads
+    // across buckets instead of all colliding on one length or name
     override this.GetHashCode() =
-        match this with
-        | VInt n -> hash n
-        | VFloat f -> hash f
-        | VDur n -> hash ("dur", n)
-        | VInstant n -> hash ("instant", n)
-        | VUuid g -> hash ("uuid", g)
-        | VSize b -> hash ("size", b)
-        | VBytes b -> hash ("bytes", b.Length)
-        | VStr s -> hash s
-        | VSecret s -> hash ("secret", s)
-        | VBool b -> hash b
-        | VUnit -> 17
-        | VRecord(n, _) -> hash n
-        | VUnion(c, _) -> hash c
-        | VSeq _ -> 0
-        | VMap m -> hash ("map", m.Count)
-        | VTuple items -> hash (List.length items)
-        | VClosure(p, _, _) -> hash p
-        | VClosurePat(p, _, _) -> hash p
-        | VBuiltin f -> LanguagePrimitives.PhysicalHash f
-        | VProc h -> hash ("proc", h.Proc.Id)
-        | VServer h -> hash ("server", h.Port)
+        let inline mix (h: int) (x: int) = (h * 31) + x
+
+        let rec go (depth: int) (v: Value) : int =
+            let child (x: Value) = if depth > 0 then go (depth - 1) x else 0
+
+            match v with
+            | VInt n -> hash n
+            | VFloat f -> hash f
+            | VDur n -> hash ("dur", n)
+            | VInstant n -> hash ("instant", n)
+            | VUuid g -> hash ("uuid", g)
+            | VSize b -> hash ("size", b)
+            | VBytes b -> hash ("bytes", b.Length)
+            | VStr s -> hash s
+            | VSecret s -> hash ("secret", s)
+            | VBool b -> hash b
+            | VUnit -> 17
+            // order-insensitive like record equality [D:record-order]:
+            // the field mix is a commutative sum
+            | VRecord(n, fields) -> fields |> List.fold (fun h (k, x) -> h + mix (hash k) (child x)) (hash n)
+            | VUnion(c, p) ->
+                match p with
+                | Some x -> mix (hash c) (child x)
+                | None -> hash c
+            | VSeq _ -> 0
+            | VMap m -> m |> Map.fold (fun h k x -> h + mix (hash k) (child x)) (hash ("map", m.Count))
+            | VTuple items -> items |> List.fold (fun h x -> mix h (child x)) (List.length items)
+            | VClosure(p, _, _) -> hash p
+            | VClosurePat(p, _, _) -> hash p
+            | VBuiltin f -> LanguagePrimitives.PhysicalHash f
+            | VProc h -> hash ("proc", h.Proc.Id)
+            | VServer h -> hash ("server", h.Port)
+
+        go hashDepth this
 
 and Env = Map<string, Value>
 

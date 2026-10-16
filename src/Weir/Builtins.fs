@@ -1885,20 +1885,15 @@ let private seqEqualImpl: Value =
 
 // Seq.distinct [D:seq-distinct]: lazy, first-occurrence-wins,
 // remembers only what it has yielded; equality is the checker-vetted
-// structural `=` (Eq-constrained — functions/seqs rejected at use)
+// structural `=` (Eq-constrained — functions/seqs rejected at use),
+// hashed like distinctBy [D:value-hash]
 let private distinctImpl: Value =
     VBuiltin(fun s ->
         match s with
         | VSeq items ->
             staged items (fun () ->
-                let seen = ResizeArray<Value>()
-
-                stage (fun x ->
-                    if seen.Contains x then
-                        Skip
-                    else
-                        seen.Add x
-                        Emit x))
+                let seen = System.Collections.Generic.HashSet<Value>(HashIdentity.Structural)
+                stage (fun x -> if seen.Add x then Emit x else Skip))
         | v -> unreachable $"the checker rejects 'distinct' on {formatValue v}")
 
 // weir owns its runtime messages [D:message-ownership]: FSharp.Core's
