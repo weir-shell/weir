@@ -69,6 +69,73 @@ weir does.
 weir's AOT binary is 18.8 MB, so the expected cost is ~+2.8 MB (~15%).
 Not measured yet: startup to first response, RSS, thread count.
 
+## Phase 0 results (2026-10-16, native AOT, linux-x64, 15 vCPU)
+
+A = this branch's base (80cbdf6, HttpListener), B = the Kestrel bridge
+(`KestrelServer` driven directly), both published by the same SDK
+(10.0.402) in one session. Runs alternate A/B (ABBA…), 8 each.
+
+| target | A | B | verdict |
+|---|---|---|---|
+| AOT size ≤ +4 MB | 18.84 MB | 20.55 MB | +1.71 MB — met |
+| no new IL warnings | IL2104 ×2, IL3053 (FSharp.Core, FParsec) | the same three | met |
+| startup → first 200 (spawn, `within serve`, one GET) | median 22 ms (11–26) | median 24 ms (20–41) | +2 ms — met |
+| idle RSS / threads (1 s after first response) | 24.2 MB / 10–11 | 25.8 MB / 11 | +1.6 MB, +0–1 thread |
+| under load: 64 clients × 3 s, `maxConcurrent = 16`, 300 ms handler — peak RSS / peak threads | 34.4 MB / 29 (max 30) | 29.8 MB / 31 (max 32) | −4.6 MB, +2 threads; same 208 requests served |
+| no console output, no signal handlers | — | stdout/stderr empty; `SigCgt` identical to A (0x300024486); SIGINT exit 130 as A | met |
+
+Thread use stays far inside the 2048-pid cap: Kestrel adds its
+heartbeat thread and runs on the shared pool; each in-flight handler
+is still one weir worker thread (unchanged).
+
+The direct path: `new KestrelServer(Options.Create opts,
+SocketTransportFactory(…, NullLoggerFactory.Instance),
+NullLoggerFactory.Instance)` + `StartAsync` with an
+`IHttpApplication<IFeatureCollection>` — public API, AOT-clean, no
+host, no logging, no lifetime. No DECISIONS fallback row needed.
+
+Pinned behaviours, probed raw on both (`Date` ignored):
+
+- **Port in use:** weir's prefix holds — `serve: cannot listen on
+  127.0.0.1:N — …`; the tail is the runtime's (A: "Failed to listen on
+  prefix … conflicts with an existing registration", B: "Failed to bind
+  to address http://127.0.0.1:N: address already in use"). The
+  harness-ports retry matches on "cannot listen", unaffected.
+- **IPv6-less host** (`DOTNET_SYSTEM_NET_DISABLEIPV6=1`): both serve
+  127.0.0.1 and `localhost`; `[::1]` refused on both. B binds v4 alone
+  when the OS reports no IPv6, and falls back on an
+  AddressFamilyNotSupported/AddressNotAvailable bind error.
+- **Bad method** (`G\x01T`, `BA\x01D`): 400 on both, before weir code
+  (A's body was the listener's own HTML, B's is empty); weir's
+  "malformed request method" stays for a token Kestrel admits.
+- **Oversized header:** a 20 KB header is served by both; 40 KB → A
+  400, B 431. Kestrel's 32 KB total is kept; the request line is raised
+  to 256 KiB (A served a 200 KB URL) and the header count to 1000 (A
+  served 150; Kestrel's default is 100).
+- **Oversized body:** 413 with weir's text on both. Kestrel's global
+  `MaxRequestBodySize` is NOT used: it counts chunked framing (a 3-byte
+  chunked body was refused at a 10-byte bound). A declared length is
+  enforced by Kestrel per request (its refusal closes the connection
+  at once, no drain); a chunked body is counted by weir.
+- **`Host: localhost`:** reaches the handler on B over any loopback
+  address (A answered it only on the address `localhost` resolved to).
+- **Pipelining / F10 / E6 / A3:** A answers one of two pipelined
+  requests, collapses `X-D: one/two/three` to `three`, sends an
+  unsolicited `200` after a 404/505, and 400s every `[::1]` request; B
+  answers both in order, keeps all three, one response per request,
+  and serves `[::1]`.
+- Not reproducible on B, recorded: A served `/x%00y` (as `/x%00y`), B
+  400s a NUL in the target; A refused CL+TE (400), B reads it as
+  chunked and closes after (RFC 9112 §6.3); request headers keep wire
+  order per name, but Kestrel enumerates known headers in its own order
+  before the rest (A kept full wire order).
+
+**5. Windows and macOS CI runs: not done** — no push from this
+environment. The bridge has no OS branch (Kestrel's socket transport on
+all three); the first CI run of the branch is the probe.
+
+Go: every phase-0 target met.
+
 ## Design
 
 **Dependency:** Kestrel is part of the ASP.NET Core shared framework
