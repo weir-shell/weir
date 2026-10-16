@@ -1189,9 +1189,6 @@ let private opValueLambda (op: string) (sp: Span) : Expr =
         )
       Span = sp }
 
-let private instantPlusUnknown =
-    "cannot infer this side of '+' — an Instant adds only a Duration; anchor this side as a Duration (add `+ 0s` where it is built, or pass a Duration value like 5m)"
-
 let rec private typeBinOp
     (ctx: Ctx)
     (env: TypeEnv)
@@ -1238,11 +1235,11 @@ let rec private typeBinOp
             bind ctx env l.Span TBool l.Ty
             |> Result.bind (fun () -> bind ctx env r.Span TBool r.Ty)
         )
-    // a point plus an unknown [D:instant-plus-unknown]: the unknown is
-    // not a second point — binding it to Instant would teach "two
-    // points don't add" about a side nobody wrote as one
-    | "+", TVar _, TInstant -> err l.Span instantPlusUnknown
-    | "+", TInstant, TVar _ -> err r.Span instantPlusUnknown
+    // a point plus an unknown is a shift [D:instant-plus-infer]: only a
+    // Duration adds to an Instant, so the unknown side is one — the rule
+    // the deferred `+` already applies once a side resolves to Instant
+    | "+", TVar _, TInstant -> retryAfter (bind ctx env l.Span TDur l.Ty)
+    | "+", TInstant, TVar _ -> retryAfter (bind ctx env r.Span TDur r.Ty)
     | _, TVar _, ((TInt | TFloat | TStr | TBool | TDur | TSize | TInstant | TUuid) as t) ->
         retryAfter (bind ctx env l.Span t l.Ty)
     | _, ((TInt | TFloat | TStr | TBool | TDur | TSize | TInstant | TUuid) as t), TVar _ ->

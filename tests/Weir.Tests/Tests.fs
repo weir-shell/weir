@@ -27206,7 +27206,7 @@ let hunt3BehaviorTests =
     // [D:schema-validation-keys], the bare within's always in a body
     // [D:within-always], forced calls [D:reenum-forced-call], inline
     // Env.load duplicates [D:env-inline-type], Instant + unknown
-    // [D:instant-plus-unknown]
+    // [D:instant-plus-infer]
     let text v =
         forceSeq v
         |> List.map (function
@@ -27404,14 +27404,20 @@ let hunt3BehaviorTests =
               | e :: _ -> Expect.stringContains e.Message "duplicate field 'v' in the anonymous record" "Args.load"
               | [] -> failtest "Args.load must refuse"
           }
-          test "Instant + an unknown teaches the unknown side, not two points [D:instant-plus-unknown]" {
-              for src in [ "fun d -> Instant.now () + d"; "fun d -> d + Instant.now ()"; "fun a -> fun b -> a + b + Instant.now ()" ] do
-                  let m = (checkErr src).Message
-                  Expect.stringContains m "cannot infer this side of '+'" src
-                  Expect.isFalse (m.Contains "two points") src
+          test "Instant + an unknown infers the unknown as a Duration [D:instant-plus-infer]" {
+              Expect.equal (checkOk "fun d -> Instant.now () + d").Ty (TFun(TDur, TInstant)) "point + unknown"
+              Expect.equal (checkOk "fun d -> d + Instant.now ()").Ty (TFun(TDur, TInstant)) "unknown + point"
+
+              Expect.equal
+                  (checkOk "fun a -> fun b -> a + b + Instant.now ()").Ty
+                  (TFun(TDur, TFun(TDur, TInstant)))
+                  "a deferred + decided by the point: both operands are Durations"
 
               Expect.stringContains (checkErr "Instant.now () + Instant.now ()").Message "two points don't add" "two real points"
-              Expect.equal (checkOk "fun d -> Instant.now () + (d + 0s)").Ty (TFun(TDur, TInstant)) "the anchor works"
+
+              Expect.isEmpty
+                  (errorsIn "f5.weir" [ "let at d = Instant.now () + d"; "print $\"{at 5m}\""; "let f a b = a + b + Instant.now ()"; "print $\"{f 1s 2s}\"" ])
+                  "f5a and f5b check clean"
           } ]
 
 [<Tests>]

@@ -139,8 +139,9 @@
   freezes** (`let f () = xs |> Seq.freeze` then reading `f ()` twice).
 - **`Env.load {| A: string; A: int |}` refuses the duplicate field** at
   check, as a declared record does; `Args.load` too.
-- **`Instant.now () + d` with `d` unknown says to anchor `d` as a
-  Duration** instead of "two points don't add".
+- **`Instant.now () + d` infers `d` as a Duration** — `let at d =
+  Instant.now () + d` checks and `at 5m` works; it said "two points
+  don't add" about a side nobody wrote as an Instant.
 - **`weir fmt` keeps a file's line endings.** It wrote the platform
   newline, so reformatting turned an LF file CRLF on Windows and a CRLF
   file LF elsewhere; a CRLF file now stays CRLF and an LF file LF.

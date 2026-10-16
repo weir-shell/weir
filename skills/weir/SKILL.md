@@ -543,9 +543,9 @@ print $"{key} -> {value}"
   %H %M %S %f %z`, prefix semantics (the line's tail rides free), no
   `%z` means UTC. `instant - instant` IS a `Duration`
   (`expiry - Instant.now () > 24h * 300`); `instant ± duration`
-  shifts; two points never add (teaching error); `Instant.now () + d`
-  with `d` not yet known refuses too — anchor it as a Duration
-  (`d + 0s`). Ord/Eq admit —
+  shifts; two points never add (teaching error); in `Instant.now () + d`
+  an unknown `d` infers as a Duration (`let at d = Instant.now () + d`
+  then `at 5m`). Ord/Eq admit —
   instants sort and compare. `Args.load`/`Env.load` parse ISO into
   `Instant` fields (`--since 2026-08-01`). No JSON/YAML on its own —
   declare the field's encoding [D:wire-codecs]: `[<Iso8601>] at:

@@ -9232,11 +9232,13 @@ printf 'type TR = { t: Instant }\nlet x = [""] |> from json TR\n' > "$indir/jr.w
 out=$($BIN "$indir/jr.weir" 2>&1) && fail "an Instant json field must refuse" || true
 echo "$out" | grep -qF "Instant.epochMs into an int field" || fail "the refusal names the conversions: $out"
 
-# [D:instant-plus-unknown]: the unknown side is taught, not "two points"
-printf 'let at d = Instant.now () + d\nprint $"{at 5m}"\n' > "$indir/pu.weir"
-out=$($BIN check "$indir/pu.weir" 2>&1) && fail "Instant + an unknown must refuse" || true
-echo "$out" | grep -qF "cannot infer this side of '+'" || fail "the unknown side is taught: $out"
-echo "$out" | grep -qF "two points" && fail "never 'two points' for an unknown: $out" || true
+# [D:instant-plus-infer]: Instant + an unknown infers the unknown as a Duration
+printf 'let at d = Instant.now () + d\nlet f a b = a + b + Instant.now ()\nprint $"{at 5m > f 1s 2s}"\n' > "$indir/pu.weir"
+out=$($BIN "$indir/pu.weir" 2>&1) || fail "Instant + an unknown must infer a Duration: $out"
+[ "$out" = "true" ] || fail "the inferred shifts run: $out"
+printf 'let t = Instant.now ()\nprint $"{t + t}"\n' > "$indir/pp.weir"
+out=$($BIN check "$indir/pp.weir" 2>&1) && fail "two Instants must not add" || true
+echo "$out" | grep -qF "two points don't add" || fail "two real points keep the teaching: $out"
 
 rm -rf "$indir"
 echo "e2e ok: Instant (cert-expiry via openssl enddate, log slicing by cutoff, JSON refusal teaches)"
