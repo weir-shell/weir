@@ -3566,18 +3566,23 @@ SLEEP 800
 SEND \x03
 SLEEP 500
 SEND poll timeout=60s interval=30s\x1b\r
+SLEEP 150
 SEND     false\r
 SLEEP 800
 SEND \x03
 SLEEP 500
 SEND within lock "$wdir/held.lock"\x1b\r
+SLEEP 150
 SEND     print (Str.toUpper "acquired")\r
 SLEEP 800
 SEND \x03
 SLEEP 500
 SEND within\x1b\r
+SLEEP 150
 SEND     Duration.sleep 30s\x1b\r
+SLEEP 150
 SEND always\x1b\r
+SLEEP 150
 SEND     print (Str.toUpper "cleanup-ran")\r
 SLEEP 800
 SEND \x03
@@ -9740,8 +9745,8 @@ rm -rf "$isdir"
 echo "e2e ok: if cmd | succeeds then (inline if/elif, bind-first kept, argv-then positional, checker demands bool)"
 
 # ---- Seq.pfirst [D:seq-pfirst]: the race -----------------------------------
-# the winner returns without joining the losers, and a loser's spawned
-# tree dies: its `sleep 2 && touch marker` orphan would fire at ~2s if
+# the winner returns once the losers stop [D:pfirst-join] — not when they
+# would have finished — and a loser's spawned tree dies: its `sleep 2 && touch marker` orphan would fire at ~2s if
 # the kill missed, so the absence check waits past that
 pfdir=$(mkweirtmp)
 cat > "$pfdir/pf.weir" <<'WEOF'
@@ -9800,6 +9805,31 @@ grep -qF "winner: 20" "$pfdir/pfproc.out" || fail "pfirst+proc winner: $(cat "$p
 [ -e "$pfdir/winner-ran" ] || fail "the WINNER's scoped child must run to completion"
 [ ! -e "$pfdir/loser-ran" ] || fail "the loser's SCOPED child survived the race kill"
 
+# the race joins its losers [D:pfirst-join]: a sleeping loser is cut, its
+# write never lands, and its `always` cleanup still runs before pfirst
+# returns
+cat > "$pfdir/pfjoin.weir" <<WEOF
+let racer n =
+    within
+        Duration.sleep (if n == 1 then 3s else 100ms)
+        [\$"body {n}"] |> File.append "$pfdir/join.log"
+        n
+    always
+        [\$"cleanup {n}"] |> File.append "$pfdir/join.log"
+let w = [1; 2] |> Seq.pfirst racer
+let log = File.read "$pfdir/join.log" |> Seq.sort |> Str.join ","
+print \$"winner: {w} log: {log}"
+WEOF
+start_ms=$(now_ms)
+jout=$($BIN "$pfdir/pfjoin.weir" 2>&1) || fail "pfirst join script failed: $jout"
+took=$(( $(now_ms) - start_ms ))
+[ "$jout" = "winner: 2 log: body 2,cleanup 1,cleanup 2" ] || fail "pfirst joins its losers (cut body, cleanup kept): $jout"
+[ "$took" -lt 2500 ] || fail "the loser's sleep must be cut, not waited out (took ${took}ms)"
+# exit n in an arm ends the race and the script [D:pfirst-join]
+xrc=0
+$BIN -e '[1; 2] |> Seq.pfirst (fun i -> match i with | 1 -> exit 3 ; 0 | _ -> Duration.sleep 300ms ; i)' >/dev/null 2>&1 || xrc=$?
+[ "$xrc" = "3" ] || fail "exit 3 in a pfirst arm must exit 3 (got $xrc)"
+
 out=$($BIN -e '[7; 8] |> Seq.pfirst (fun n -> match n with | 7 -> Duration.sleep 200ms ; fail "seven dies" | _ -> fail "eight dies")' 2>&1) && fail "all-failed must raise" || true
 echo "$out" | grep -qF "seven dies" || fail "first error by input order: $out"
 # empty raises and names the guard (reject-don't-guess full form) — pin the
@@ -9807,7 +9837,7 @@ echo "$out" | grep -qF "seven dies" || fail "first error by input order: $out"
 out=$($BIN -e '[] |> Seq.pfirst (fun n -> n)' 2>&1) && fail "empty must raise" || true
 echo "$out" | grep -qF "a race needs at least one arm" || fail "empty names Seq.isEmpty: $out"
 rm -rf "$pfdir"
-echo "e2e ok: Seq.pfirst (winner in ${took}ms, loser tree killed — bare AND scoped, winner's scoped child survives, first-by-order error, empty names the guard)"
+echo "e2e ok: Seq.pfirst (winner fast, loser tree killed — bare AND scoped, winner's scoped child survives, losers joined with cleanups kept, exit ends the race, first-by-order error, empty names the guard)"
 
 # a loser's within-tmp cleanup does run — the `finally` executes on the
 # loser's own (un-aborted) thread once its killed child fails; here the

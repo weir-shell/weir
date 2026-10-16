@@ -360,12 +360,16 @@ let racing (f: unit -> 'a) : 'a =
     finally
         System.Threading.Interlocked.Decrement &racesLive |> ignore
 
+// a lost race stops the body, never an `always` cleanup — the race joins
+// the loser, so its cleanup still runs before pfirst returns
+let private flowCut () =
+    System.Threading.Volatile.Read &racesLive <> 0
+    && flowCancel.Value.IsCancellationRequested
+    && not (inCleanup ())
+
 /// raise Cancelled when this flow lost a race — the effect boundary
 let checkCancelled () : unit =
-    if
-        System.Threading.Volatile.Read &racesLive <> 0
-        && flowCancel.Value.IsCancellationRequested
-    then
+    if flowCut () then
         raise (Cancelled())
 
 // the REPL's interrupt, one evaluation at a time: the first ^C cancels
@@ -426,7 +430,9 @@ let checkInterrupted () : unit =
 
 /// the tokens a runtime-owned wait honours, beyond the teardown
 let private waitTokens () : System.Threading.CancellationToken list =
-    [ flowCancel.Value; replToken () ] |> List.filter (fun t -> t.CanBeCanceled)
+    [ (if inCleanup () then System.Threading.CancellationToken.None else flowCancel.Value)
+      replToken () ]
+    |> List.filter (fun t -> t.CanBeCanceled)
 
 /// raise whichever cancel stopped this flow (the race's, then ^C's)
 let checkCancels () : unit =

@@ -691,7 +691,8 @@ print $"{key} -> {value}"
   Http send (an in-flight request is cut), and `pfirst` waits for
   every loser before returning — AFTER `pfirst` RETURNS, NO LOSER
   EFFECT RUNS [D:pfirst-join]; a loser busy in pure computation holds
-  the return until it reaches one. `exit n` in an arm ends the race
+  the return until it reaches one, and a loser's `always` cleanup
+  still runs (before the return). `exit n` in an arm ends the race
   and the script, as in `pmap`.
 - A SCOPED background process is `within proc srv = <command>` +
   an indented block [D:scoped-procs]: the scope IS the lifetime —
