@@ -96,6 +96,9 @@
   closed stdout.** Workers kept starting thousands of items during the
   teardown, and each `within proc` in them left a `weir-proc-*` temp
   dir behind. Items already running finish.
+- **A `plan` no longer sends `Http.send` with `Other "PURGE"`** (or any
+  other `Other` verb): it is captured as an `HttpSend` op like `Post`.
+  Only GET, HEAD, OPTIONS, QUERY and TRACE (any casing) count as reads.
 - **`weir fmt` keeps a file's line endings.** It wrote the platform
   newline, so reformatting turned an LF file CRLF on Windows and a CRLF
   file LF elsewhere; a CRLF file now stays CRLF and an LF file LF.

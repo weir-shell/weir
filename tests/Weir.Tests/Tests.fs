@@ -8549,6 +8549,21 @@ let effectPartitionTests =
               for m in [ "POST"; "PUT"; "DELETE"; "PATCH"; "Post"; "patch" ] do
                   Expect.equal (Weir.Effects.httpMethodClass m) M $"{m} mutates → mutation"
           }
+          test "an Other verb is mutation unless it is a safe verb, any casing [D:http-safe-verbs]" {
+              for m in [ "PURGE"; "purge"; "LINK"; "post"; "MKCOL"; "" ] do
+                  Expect.equal (Weir.Effects.httpMethodClass m) M $"Other \"{m}\" → mutation"
+
+              for m in [ "TRACE"; "trace"; "get"; "Head"; "options"; "query" ] do
+                  Expect.equal (Weir.Effects.httpMethodClass m) A $"Other \"{m}\" → ambient"
+
+              let other m =
+                  match reqWith "Get" with
+                  | VRecord(n, fs) -> VRecord(n, fs |> List.map (fun (k, v) -> if k = "method" then k, VUnion("Other", Some(VStr m)) else k, v))
+                  | v -> v
+
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ other "PURGE" ]) (Some M) "send{Other PURGE} mutates"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ other "get" ]) (Some A) "send{Other get} reads"
+          }
           test "EVAL-TIME resolution: Http.send{post} = Mutation, Http.send{get} = Ambient (probe 2)" {
               // the critical probe — plan/apply intercepts at eval; the
               // class of a builtin call must resolve where the interpreter
@@ -8894,6 +8909,18 @@ let planApplyTests =
                     "print \"ok\"" ]
 
               Expect.equal (runFile prog) 0 "a POST captures one HttpSend Op"
+          }
+          test "Http.send{Other \"PURGE\"} captures, never sends [D:http-safe-verbs]" {
+              // port 9 (discard) refuses: a send would raise "cannot reach"
+              let prog =
+                  [ "let p ="
+                    "    plan"
+                    "        let _r = Http.send { Http.defaults with method = Other \"PURGE\"; url = \"http://127.0.0.1:9/\" }"
+                    "        print \"sent\""
+                    "if (p |> Plan.ops |> Seq.length) <> 1 then fail \"not one op\""
+                    "print \"ok\"" ]
+
+              Expect.equal (runFile prog) 0 "an Other PURGE captures one HttpSend Op"
           }
           test "proc inside a plan HARD-REFUSES — a spawn is uncapturable" {
               let e = firstErr [ "let p ="; "    plan"; "        echo hi"; "print $\"{p |> Plan.isEmpty}\"" ]

@@ -2500,7 +2500,8 @@ script**:
 
 - writing files
 - running commands
-- HTTP methods that change things (POST, PUT, DELETE, PATCH)
+- HTTP methods that change things (POST, PUT, DELETE, PATCH, and any
+  `Other` method)
 - any `within` resource
 
 **Reading is allowed**:

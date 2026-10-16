@@ -608,7 +608,11 @@ print $"{key} -> {value}"
   bare GET read [D:fetch-retired]; when the error body is data to
   inspect, `Http.send` binds it instead. A mutating-method
   `Http.expect` inside a `plan` refuses (no response to return;
-  `Http.send` captures the Op). `url |> Http.withQuery [(k, v)]` percent-encodes
+  `Http.send` captures the Op). An `Other` verb counts as mutating
+  unless it is GET/HEAD/OPTIONS/QUERY/TRACE (any casing), so
+  `Other "PURGE"` is captured by `plan` (`readonly` refuses every
+  `Other`: the verb is not known at check).
+  `url |> Http.withQuery [(k, v)]` percent-encodes
   a query string. `resp |> Http.header "etag" : Option<string>` reads a
   response header case-insensitively (HTTP's own law — a hand-rolled
   pairs filter misses ETag vs etag) — the first line's value;
@@ -860,7 +864,7 @@ let pure leak p = File.write p ["x"]
   [D:pure-stage2], ONE TIER UP from `pure`: the body must reach no
   EXTERNAL MUTATION — `fs.write`/`fs.delete`, `proc` (a command or a
   Proc member), `cd`, console writes, the mutating HTTP methods
-  (POST/PUT/DELETE/PATCH), any `within` resource — but AMBIENT READS
+  (POST/PUT/DELETE/PATCH and any `Other` verb), any `within` resource — but AMBIENT READS
   are fine: `fs.read`, `Env`/`Args`, `pwd`, `Path.home`/`configHome`/
   `stateHome`/`cacheHome`, `Term`/`Color` (they read the terminal),
   the clock (`Instant.now`), the
@@ -911,7 +915,7 @@ let x =
   string * seq<string>`, `DeleteFile`, `Copy`/`Move`/`CopyDir`/`MoveDir of
   string * string`, `MakeDir`, `DeleteDir` (empty only), `DeleteTree`
   (`Dir.deleteAll`), `HttpSend of HttpRequest` (a
-  mutating method only; `show` masks the auth Secret). Content is
+  mutating method only — an `Other` verb included unless it is a safe one; `show` masks the auth Secret). Content is
   snapshotted at plan time, so `preview == apply`. The refusals:
   `proc` inside a plan (a spawned binary is uncapturable — plan covers
   weir-native mutation only), `apply` inside a plan (a capture cannot
