@@ -54,8 +54,8 @@ Ruled 2026-10-15 (PLAN-daily-driver W4): **every item below is daily-driver — 
 - **`serve` answers only the first of pipelined requests** on one
   connection. Ruled LATER (user, 2026-10-16): the managed HttpListener
   drops the pipelined bytes itself; the fix is a Kestrel move (also fixes
-  F10 and retires the F8 `_trailer_sent` stopgap) — parked, see
-  PLAN-review-fixes.md, session 2026-10-15.
+  F10 and retires the F8 `_trailer_sent` stopgap) — parked as
+  dev/plans/PLAN-kestrel.md.
 - ~~**Inference order:**~~ — done: `+` over two unknowns defers to any
   later anchor in the statement [D:plus-defer].
 - ~~**Re-enumeration warning** misses indirect pulls (through a function, a
