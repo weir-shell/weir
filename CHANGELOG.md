@@ -71,6 +71,11 @@
 - **`serve` drops a queued request whose client already left** instead
   of running the handler for it, and a `Stream` whose client
   disconnects frees its slot at once.
+- **`cd /<Tab>` completes like a shell.** It left `cd "/` — an unclosed
+  string. `cd` at the start of a line now completes its path bare, as a
+  command argument (`cd /usr/`; quoted only for a space or quote), and
+  where a path is quoted (`File.read ./<Tab>`) several matches extend
+  inside a closed literal (`File.read "./s"`, cursor inside).
 - **`weir fmt` keeps a file's line endings.** It wrote the platform
   newline, so reformatting turned an LF file CRLF on Windows and a CRLF
   file LF elsewhere; a CRLF file now stays CRLF and an LF file LF.

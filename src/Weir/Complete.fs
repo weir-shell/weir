@@ -876,11 +876,24 @@ let rec suggestScopedWith
                 || stmt.Contains '('
                 || stmt.Contains '[')
 
+        // `cd` heading a statement is the command form: its argument is
+        // an argv word, so a path completes bare like `cat ./x`
+        // [D:cd-bare-completion]; `let d = cd …`, `within cd …` and
+        // `(cd …)` are expressions and keep the quotes
+        let cdCommandArg (before: string) : bool =
+            let stmt =
+                let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
+                (if i >= 0 then before.Substring(i + 1) else before)
+
+            stmt.Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries) = [| "cd" |]
+
         let opener = openerAt text wordStart
 
         let quoteFor (before: string) (candidates: string list) : string list =
             if insideOpenQuote then
                 candidates |> List.map (escapeFor opener)
+            elif cdCommandArg before then
+                candidates |> List.map argvWord
             elif expressionSlot before then
                 candidates |> List.map stringLiteral
             else

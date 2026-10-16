@@ -1786,18 +1786,47 @@ let private readLineTty () : string option =
                  redraw ()
              | many ->
                  // extend to the common prefix; list on a second Tab-worth
-                 let prefix =
-                     many
+                 let common (xs: string list) =
+                     xs
                      |> List.reduce (fun a b ->
                          let n = Seq.zip a b |> Seq.takeWhile (fun (x, y) -> x = y) |> Seq.length
                          a.Substring(0, n))
 
-                 if prefix.Length > col - ws then
-                     let replaced = text.Substring(0, ws) + prefix + text.Substring col
+                 // every candidate a synthesized string literal
+                 // [D:repl-path-quote]: their raw common prefix is only the
+                 // opening quote plus the shared path (`"/`), an unclosed
+                 // literal — extend the CONTENT instead and close it, the
+                 // caret inside the closer as for one quoted directory
+                 let quoted =
+                     many |> List.forall (fun c -> c.Length >= 2 && c.StartsWith "\"" && c.EndsWith "\"")
+
+                 // (replacement, caret offset within it), or None to list
+                 let extension =
+                     if quoted then
+                         let inner =
+                             let p = many |> List.map (fun c -> c.Substring(1, c.Length - 2)) |> common
+                             // never cut an escape in half (`\"` → a dangling `\`)
+                             let trailing = p.Length - p.TrimEnd('\\').Length
+                             if trailing % 2 = 1 then p.Substring(0, p.Length - 1) else p
+
+                         let literal = "\"" + inner + "\""
+                         let typed = text.Substring(ws, col - ws)
+
+                         if literal <> typed && inner.Length >= typed.Length then
+                             Some(literal, literal.Length - 1)
+                         else
+                             None
+                     else
+                         let prefix = common many
+                         if prefix.Length > col - ws then Some(prefix, prefix.Length) else None
+
+                 match extension with
+                 | Some(insert, caret) ->
+                     let replaced = text.Substring(0, ws) + insert + text.Substring col
                      cur().Clear().Append(replaced) |> ignore
-                     col <- ws + prefix.Length
+                     col <- ws + caret
                      redraw ()
-                 else
+                 | None ->
                      // park at the region end so the list prints below
                      // the buffer — but the tracked (row, col) must
                      // survive: toEnd() mutates them, and without the
