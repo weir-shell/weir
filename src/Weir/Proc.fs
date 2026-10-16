@@ -59,6 +59,17 @@ let private nulRefusal (what: string) (s: string) : unit =
         failwith
             $"{what} contains a NUL byte — it would silently truncate at the process boundary (argv and env are NUL-terminated); NUL-bearing data is binary: pass it via a file or stdin, not an argument"
 
+/// an env key a child can receive [D:env-key-refusal]: never empty, never
+/// '=' (the child splits at the first one — another variable), never NUL
+let envKeyRefusal (where: string) (k: string) : unit =
+    if k = "" then
+        failwith $"{where}: an env key is empty — a child cannot receive an unnamed variable"
+    elif k.Contains '=' then
+        failwith
+            $"{where}: the env key '{k}' contains '=' — a child would read it as the variable '{k.Substring(0, k.IndexOf '=')}'; an env name has no '='"
+    elif k.Contains '\u0000' then
+        failwith $"{where}: the env key '{k.Replace('\u0000', '?')}' contains a NUL byte — an env name is NUL-free"
+
 // no command runs while a module is imported [D:module-import-no-commands]:
 // the check-time walk refuses the direct forms; a helper reached through
 // a value, a lambda or composition lands here
@@ -122,10 +133,12 @@ let private spawn
 
     for k, v in ambient do
         nulRefusal $"the env key '{k}'" k
+        envKeyRefusal "a command's environment" k
         nulRefusal $"the env value for '{k}'" v
 
     for k, v in env do
         nulRefusal $"the env key '{k}'" k
+        envKeyRefusal "a command's environment" k
         nulRefusal $"the env value for '{k}'" v
 
     Session.sigpipeForChildren.Force()
@@ -941,13 +954,19 @@ let startSpilled
         let t =
             System.Threading.Thread(fun () ->
                 try
-                    use dst =
-                        new System.IO.FileStream(
-                            path,
-                            System.IO.FileMode.Create,
-                            System.IO.FileAccess.Write,
-                            System.IO.FileShare.ReadWrite
+                    // owner-only, as the spill dir [D:private-temp]
+                    let opts =
+                        System.IO.FileStreamOptions(
+                            Mode = System.IO.FileMode.Create,
+                            Access = System.IO.FileAccess.Write,
+                            Share = System.IO.FileShare.ReadWrite
                         )
+
+                    if not (System.OperatingSystem.IsWindows()) then
+                        opts.UnixCreateMode <-
+                            System.Nullable(System.IO.UnixFileMode.UserRead ||| System.IO.UnixFileMode.UserWrite)
+
+                    use dst = new System.IO.FileStream(path, opts)
 
                     let buf = Array.zeroCreate 8192
                     let mutable n = src.Read(buf, 0, buf.Length)

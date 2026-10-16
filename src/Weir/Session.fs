@@ -206,6 +206,20 @@ let resolve (path: string) : string =
 
     System.IO.Path.GetFullPath(System.IO.Path.Combine(Cwd(), path))
 
+/// a temp dir only its owner can enter [D:private-temp] — 0700 on POSIX,
+/// mkdtemp's convention: child output and scratch content are the script's
+let createPrivateDir (dir: string) : unit =
+    if System.OperatingSystem.IsWindows() then
+        System.IO.Directory.CreateDirectory dir |> ignore
+    else
+        System.IO.Directory.CreateDirectory(
+            dir,
+            System.IO.UnixFileMode.UserRead
+            ||| System.IO.UnixFileMode.UserWrite
+            ||| System.IO.UnixFileMode.UserExecute
+        )
+        |> ignore
+
 // pfirst's loser tree-kill [D:seq-pfirst]: an arm registers its live
 // children in its race group (AsyncLocal — the registration follows
 // the arm's logical context, the same keying as cwd/env). The winner
@@ -310,9 +324,131 @@ let runningCleanup (f: unit -> 'a) : 'a =
 
 let inCleanup () = cleanupDepth.Value > 0
 
+// ---- cooperative cancellation [D:pfirst-join] [D:repl-interrupt] -------
+// Two requests stop a flow at its next runtime-owned boundary: a pfirst
+// arm that lost the race (its flow token, AsyncLocal — the arm's logical
+// context), and a ^C at the REPL (a session token, global — every wait
+// of the evaluation). Both raise an OperationCanceledException, which
+// `try` and retry pass through as they pass `exit`.
+
+/// a pfirst loser stopped at a boundary — swallowed by the race
+type Cancelled() =
+    inherit System.OperationCanceledException("a pfirst arm that lost the race was stopped")
+
+/// a ^C at the REPL cut a runtime-owned wait — the evaluation ends
+type Interrupted() =
+    inherit System.OperationCanceledException("interrupted (SIGINT — interrupted/cancelled)")
+
+let private flowCancel = System.Threading.AsyncLocal<System.Threading.CancellationToken>()
+
+// races in flight: the fast path of the per-builtin check reads this
+// alone, never the AsyncLocal
+let mutable private racesLive = 0
+
+/// the flow's cancel token (CancellationToken.None outside a race)
+let flowToken () : System.Threading.CancellationToken = flowCancel.Value
+
+let enterFlow (t: System.Threading.CancellationToken) : unit = flowCancel.Value <- t
+let exitFlow () : unit = flowCancel.Value <- System.Threading.CancellationToken.None
+
+/// run a race: the counter gates the per-builtin check
+let racing (f: unit -> 'a) : 'a =
+    System.Threading.Interlocked.Increment &racesLive |> ignore
+
+    try
+        f ()
+    finally
+        System.Threading.Interlocked.Decrement &racesLive |> ignore
+
+/// raise Cancelled when this flow lost a race — the effect boundary
+let checkCancelled () : unit =
+    if
+        System.Threading.Volatile.Read &racesLive <> 0
+        && flowCancel.Value.IsCancellationRequested
+    then
+        raise (Cancelled())
+
+// the REPL's interrupt, one evaluation at a time: the first ^C cancels
+// `replCut` (every wait outside an `always` cleanup), a further ^C also
+// `replCutCleanup` — a cleanup runs as written unless ^C is pressed again
+let mutable private replCut: System.Threading.CancellationTokenSource = null
+let mutable private replCutCleanup: System.Threading.CancellationTokenSource = null
+let mutable private replInterrupts = 0
+
+/// arm a fresh interrupt for one REPL evaluation
+let beginReplEval () : unit =
+    replInterrupts <- 0
+    replCut <- new System.Threading.CancellationTokenSource()
+    replCutCleanup <- new System.Threading.CancellationTokenSource()
+
+/// disarm after the evaluation (a late ^C then cancels nothing)
+let endReplEval () : unit =
+    let a, b = replCut, replCutCleanup
+    replCut <- null
+    replCutCleanup <- null
+
+    for c in [ a; b ] do
+        if not (isNull c) then
+            c.Dispose()
+
+/// the REPL's SIGINT handler: cancel the evaluation's waits
+let interruptRepl () : unit =
+    let n = System.Threading.Interlocked.Increment &replInterrupts
+
+    try
+        match replCut with
+        | null -> ()
+        | c -> c.Cancel()
+
+        if n >= 2 then
+            match replCutCleanup with
+            | null -> ()
+            | c -> c.Cancel()
+    with :? System.ObjectDisposedException ->
+        ()
+
+/// the REPL interrupt token for this flow's waits
+let private replToken () : System.Threading.CancellationToken =
+    let src = if inCleanup () then replCutCleanup else replCut
+
+    match src with
+    | null -> System.Threading.CancellationToken.None
+    | c ->
+        try
+            c.Token
+        with :? System.ObjectDisposedException ->
+            System.Threading.CancellationToken.None
+
+/// raise Interrupted when ^C cut this evaluation's waits
+let checkInterrupted () : unit =
+    if (replToken ()).IsCancellationRequested then
+        raise (Interrupted())
+
+/// the tokens a runtime-owned wait honours, beyond the teardown
+let private waitTokens () : System.Threading.CancellationToken list =
+    [ flowCancel.Value; replToken () ] |> List.filter (fun t -> t.CanBeCanceled)
+
+/// raise whichever cancel stopped this flow (the race's, then ^C's)
+let checkCancels () : unit =
+    checkCancelled ()
+    checkInterrupted ()
+
+/// run `f` with one token that cancels when this flow's waits are cut —
+/// for a wait the runtime hands to an API (an Http send); `checkCancels`
+/// after it names why
+let withWaitToken (f: System.Threading.CancellationToken -> 'a) : 'a =
+    match waitTokens () with
+    | [] -> f System.Threading.CancellationToken.None
+    | [ t ] -> f t
+    | ts ->
+        use linked = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(Array.ofList ts)
+        f linked.Token
+
 /// run a process start + registration inside the spawn gate; refuses once
 /// the teardown kill has run, except inside an `always` cleanup
 let gatedSpawn (start: unit -> 'a) : 'a =
+    // a spawn is an effect boundary [D:pfirst-join]
+    checkCancelled ()
     spawnGate.EnterReadLock()
 
     try
@@ -403,6 +539,9 @@ module private Libc =
     [<DllImport("libc", SetLastError = true)>]
     extern int close(int fd)
 
+    [<DllImport("libc", SetLastError = true)>]
+    extern int flock(int fd, int operation)
+
     let SIG_DFL: nativeint = nativeint 0
     let SIG_IGN: nativeint = nativeint 1
     let SIGINT = 2
@@ -432,6 +571,26 @@ module private Libc =
             // not ignored: put the real disposition back untouched
             signal (SIGINT, prev) |> ignore
             false
+
+/// an exclusive flock on an open file, without blocking [D:lock-advisory]:
+/// true when taken, false while another open file description holds it.
+/// Released when the stream closes (the kernel's, kill -9 included).
+let tryFlockExclusive (fs: System.IO.FileStream) : bool =
+    let LOCK_EX, LOCK_NB = 2, 4
+    let EINTR = 4
+    let EWOULDBLOCK = if System.OperatingSystem.IsLinux() then 11 else 35
+    let fd = int (fs.SafeFileHandle.DangerousGetHandle())
+
+    let rec go () =
+        if Libc.flock (fd, LOCK_EX ||| LOCK_NB) = 0 then
+            true
+        else
+            match System.Runtime.InteropServices.Marshal.GetLastPInvokeError() with
+            | e when e = EINTR -> go ()
+            | e when e = EWOULDBLOCK -> false
+            | e -> failwith $"within lock: cannot lock {fs.Name} (flock errno {e})"
+
+    go ()
 
 // SIGPIPE handled, not ignored, so children start at the default
 // [D:pipe-early-exit]: the runtime ignores SIGPIPE, an ignored signal
@@ -529,30 +688,62 @@ let checkTeardown () : unit =
 let private interruptible () =
     onMainThread () && System.Threading.Volatile.Read &teardownRaised = 0
 
-/// sleep, cut short on the main thread by a teardown request (which then
-/// raises)
+// what a runtime-owned wait wakes on: the teardown (main thread, not yet
+// unwinding), a lost race, a REPL ^C [D:repl-interrupt]
+let private wakeHandles () : System.Threading.WaitHandle list =
+    (if interruptible () then [ teardownWake.WaitHandle ] else [])
+    @ (waitTokens () |> List.map (fun t -> t.WaitHandle))
+
+let private raiseWoken () =
+    checkTeardown ()
+    checkCancels ()
+
+/// sleep, cut short by a teardown request on the main thread, a lost
+/// race or a REPL ^C (each then raises)
 let sleepInterruptible (span: System.TimeSpan) : unit =
-    if interruptible () then
-        teardownWake.Wait span |> ignore
-        checkTeardown ()
-    else
-        System.Threading.Thread.Sleep span
+    checkCancels ()
+
+    match wakeHandles () with
+    | [] -> System.Threading.Thread.Sleep span
+    | hs ->
+        System.Threading.WaitHandle.WaitAny(Array.ofList hs, span) |> ignore
+        raiseWoken ()
 
 /// wait `span` or until `token` cancels — true when the token cancelled
-/// first; a teardown request raises on the main thread
+/// first; a teardown request, a lost race or a REPL ^C raises
 let waitOrCancel (span: System.TimeSpan) (token: System.Threading.CancellationToken) : bool =
-    if interruptible () then
-        let i =
-            System.Threading.WaitHandle.WaitAny([| token.WaitHandle; teardownWake.WaitHandle |], span)
+    checkCancels ()
 
-        checkTeardown ()
-        i = 0
-    else
+    match wakeHandles () with
+    | [] ->
         try
             System.Threading.Tasks.Task.Delay(span, token).Wait()
             false
         with :? System.AggregateException as e when (e.InnerException :? System.OperationCanceledException) ->
             true
+    | hs ->
+        let i =
+            System.Threading.WaitHandle.WaitAny(Array.ofList (token.WaitHandle :: hs), span)
+
+        raiseWoken ()
+        i = 0
+
+/// wait for a process to exit; a lost race or a REPL ^C raises (a
+/// teardown kills the child, which ends the wait)
+let waitProcess (p: System.Diagnostics.Process) : unit =
+    checkCancels ()
+
+    match waitTokens () with
+    | [] -> p.WaitForExit()
+    | ts ->
+        let hs = ts |> List.map (fun t -> t.WaitHandle) |> Array.ofList
+
+        while not (p.WaitForExit 0) do
+            System.Threading.WaitHandle.WaitAny(hs, 50) |> ignore
+            checkCancels ()
+
+        // the no-argument form also waits for redirected streams' EOF
+        p.WaitForExit()
 
 /// join a task; a teardown request raises on the main thread without
 /// waiting for it (the abandoned task dies with the process)
@@ -639,8 +830,15 @@ let armStdout () : unit =
 // a second signal during teardown hard-exits [D:signal-teardown] — the
 // shell's double-Ctrl+C escape, so a slow or stuck cleanup can never
 // wedge a supervisor. The first signal sets this and runs the sweep;
-// default termination then carries the conventional 130/143.
+// default termination then carries the conventional 128 + signal.
 let private tearingDown = ref 0
+
+// 128 + the signal number, the shell's convention
+let private signalExitCode (s: System.Runtime.InteropServices.PosixSignal) =
+    match s with
+    | System.Runtime.InteropServices.PosixSignal.SIGTERM -> 143
+    | System.Runtime.InteropServices.PosixSignal.SIGHUP -> 129
+    | _ -> 130
 
 let private installExitHook () =
     // normal process exit — the pfirst exit-race customer: a background
@@ -667,9 +865,13 @@ let private installExitHook () =
         if not (replSurvivesSigint.Value) && not (Libc.hasControllingTty ()) then
             Libc.resetSigintIfIgnored () |> ignore
 
+        // SIGHUP joins them [D:sighup-teardown]: a closed terminal or a
+        // `kill -HUP` unwinds like INT/TERM, exit 129; an inherited
+        // SIG_IGN (nohup) stays — .NET does not install over it
         for posixSig in
             [ System.Runtime.InteropServices.PosixSignal.SIGINT
-              System.Runtime.InteropServices.PosixSignal.SIGTERM ] do
+              System.Runtime.InteropServices.PosixSignal.SIGTERM
+              System.Runtime.InteropServices.PosixSignal.SIGHUP ] do
             let reg =
                 System.Runtime.InteropServices.PosixSignalRegistration.Create(
                     posixSig,
@@ -683,13 +885,9 @@ let private installExitHook () =
                             ()
                         // a second signal mid-teardown hard-exits
                         // [D:signal-teardown] — the double-Ctrl+C escape,
-                        // 130 for SIGINT / 143 for SIGTERM
+                        // 128 + the signal
                         elif System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
-                            let code =
-                                if ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGTERM then
-                                    143
-                                else
-                                    130
+                            let code = signalExitCode ctx.Signal
 
                             System.Environment.Exit code
                         elif mainThreadId <> 0 then
@@ -699,11 +897,7 @@ let private installExitHook () =
                             // keep the process alive for the unwind
                             ctx.Cancel <- true
 
-                            let code =
-                                if ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGTERM then
-                                    143
-                                else
-                                    130
+                            let code = signalExitCode ctx.Signal
 
                             requestTeardown code
                             killLiveChildren ()
@@ -726,7 +920,7 @@ let private installExitHook () =
                         else
                             // first signal, no script main thread (the
                             // REPL): run the one teardown, then let
-                            // default termination carry 130/143 (Cancel
+                            // default termination carry 128 + signal (Cancel
                             // stays false)
                             sweepLiveTmpDirs ()
                 )
@@ -749,8 +943,8 @@ let registerProc (p: System.Diagnostics.Process) : unit =
 
     liveProcs[p.Id] <- p
 
-// a foreground child alone installs only a SIGTERM reaper
-// [D:signal-main-unwind]: a pid-targeted TERM tree-kills the live children,
+// a foreground child alone installs only a SIGTERM/SIGHUP reaper
+// [D:signal-main-unwind]: a pid-targeted TERM or HUP tree-kills the live children,
 // then default termination proceeds (weir still dies BY the signal, as
 // before any scope exists; a ^C reaches the child through the group
 // anyway). Once a scope installs the full hook, that hook does the kill
@@ -762,22 +956,26 @@ let registerForeground (p: System.Diagnostics.Process) : unit =
         not (System.OperatingSystem.IsWindows())
         && System.Threading.Interlocked.Exchange(fgHookInstalled, 1) = 0
     then
-        let reg =
-            System.Runtime.InteropServices.PosixSignalRegistration.Create(
-                System.Runtime.InteropServices.PosixSignal.SIGTERM,
-                fun _ ->
-                    // the full hook owns the signal once installed: it must
-                    // request the teardown BEFORE any child dies, or the
-                    // main thread's wait returns and runs the next statement
-                    if System.Threading.Volatile.Read &hookInstalled.contents = 0 then
-                        for kv in liveProcs do
-                            try
-                                kv.Value.Kill true
-                            with _ ->
-                                ()
-            )
+        // a pid-targeted HUP reaps the same way [D:sighup-teardown]
+        for posixSig in
+            [ System.Runtime.InteropServices.PosixSignal.SIGTERM
+              System.Runtime.InteropServices.PosixSignal.SIGHUP ] do
+            let reg =
+                System.Runtime.InteropServices.PosixSignalRegistration.Create(
+                    posixSig,
+                    fun _ ->
+                        // the full hook owns the signal once installed: it must
+                        // request the teardown BEFORE any child dies, or the
+                        // main thread's wait returns and runs the next statement
+                        if System.Threading.Volatile.Read &hookInstalled.contents = 0 then
+                            for kv in liveProcs do
+                                try
+                                    kv.Value.Kill true
+                                with _ ->
+                                    ()
+                )
 
-        hookRoots <- (reg :> obj) :: hookRoots
+            hookRoots <- (reg :> obj) :: hookRoots
 
     liveProcs[p.Id] <- p
 

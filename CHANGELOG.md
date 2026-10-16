@@ -64,6 +64,21 @@
   is one program plus fixed words, so `#alias inf = git add . | and
   git commit …` passed `|`, `and`, `git`… to `git add` as arguments.
   The error names the fix: `let inf () = …`.
+- **At the REPL, Ctrl+C stops any wait, not only a running command.**
+  `Duration.sleep`, a `poll` or `retry` wait, a `within lock` that is
+  waiting for the lock, `Proc.wait` and an Http request are cut, and
+  the prompt returns with `↳ exit 130 (SIGINT — interrupted/cancelled)`.
+  Before, the session was stuck until the wait ended. An `always`
+  cleanup runs unless Ctrl+C is pressed again; pure computation still
+  runs to its next wait.
+- **`pfirst` stops the losers and waits for them.** After the winner, a
+  loser stops at its next builtin call, command, sleep or Http send (a
+  request in flight is cut), and `pfirst` returns only once every loser
+  has stopped — so no loser's write lands after the race. A loser busy
+  in pure computation now delays the return until it reaches one.
+- **An env key that is empty or contains `=` is an error**, naming the
+  key, in `Env.pair`, `Env.ofPairs`, `within env` and `$e(…)`. The child
+  read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
 - **`serve` answers pipelined requests.** Two or three requests sent
@@ -142,6 +157,28 @@
 - **`Instant.now () + d` infers `d` as a Duration** — `let at d =
   Instant.now () + d` checks and `at 5m` works; it said "two points
   don't add" about a side nobody wrote as an Instant.
+- **SIGHUP closes every scope**, as Ctrl+C and SIGTERM do: closing the
+  terminal or `kill -HUP` now runs `always`, removes `within tmp` dirs
+  and kills `within proc` children, then exits 129. It killed weir
+  outright. `nohup weir …` still ignores it.
+- **`exit n` inside a `pfirst` arm exits**, as it does in `pmap`. The
+  race swallowed it as a failed arm and went on.
+- **`within lock "f"` no longer blocks weir's own `File.read`/`File.write`
+  of `f`** on Linux and macOS ("used by another process", even in the
+  block holding the lock). The lock is still advisory and still excludes
+  other holders. On Windows, lock a separate file such as `f.lock`.
+- **Temp dirs are owner-only.** `within tmp`, `Path.newTempDir` and the
+  `within proc` spill dir are created 0700 and the spill logs 0600; they
+  were 0755/0644, so other users could read a child's output.
+- **`File.writeAtomic` keeps a 0600 file private while writing.** The
+  temp file was created 0644 and only took the target's mode just
+  before the rename.
+- **`NO_PROXY=::1` bypasses the proxy for `http://[::1]`**, as curl
+  does; the entry `[::1]` no longer does. `Http.send` and `weir add
+  schema` both follow it.
+- **`check --can` reports a `Secret` in the argv of a reified command**
+  (`… | complete`, `line`, `succeeds`, `exitCode`, `text`, `orFail`,
+  `exec`), as it already did for a plain command and `$(…)`.
 - **`weir fmt` keeps a file's line endings.** It wrote the platform
   newline, so reformatting turned an LF file CRLF on Windows and a CRLF
   file LF elsewhere; a CRLF file now stays CRLF and an LF file LF.

@@ -172,6 +172,60 @@ let cancelAfterSliced (sliceMs: int64) (cts: Threading.CancellationTokenSource) 
 
 let private maxTimerMs = int64 Int32.MaxValue - 1L
 
+// NO_PROXY against an IPv6 literal [D:noproxy-v6]: .NET matches entries
+// against the bracketed host, so `::1` never bypassed `http://[::1]` and
+// `[::1]` did. An entry names the address as curl reads it — bracket-less,
+// compared as an address (or `*`); every other host keeps the runtime's rule.
+type private V6NoProxy(inner: Net.IWebProxy) =
+    let entries =
+        lazy
+            (let raw =
+                match Environment.GetEnvironmentVariable "no_proxy" with
+                | null
+                | "" -> Environment.GetEnvironmentVariable "NO_PROXY"
+                | v -> v
+
+             match raw with
+             | null -> []
+             | r -> r.Split(',') |> Array.map (fun e -> e.Trim()) |> Array.filter ((<>) "") |> List.ofArray)
+
+    let listed (u: Uri) =
+        match Net.IPAddress.TryParse u.DnsSafeHost with
+        | true, host ->
+            entries.Value
+            |> List.exists (fun e ->
+                e = "*"
+                || (match Net.IPAddress.TryParse e with
+                    | true, a -> a.Equals host
+                    | _ -> false))
+        | _ -> false
+
+    let isV6 (u: Uri) = u.HostNameType = UriHostNameType.IPv6
+
+    let proxyFor (u: Uri) : Uri =
+        if not (isV6 u) then
+            inner.GetProxy u
+        elif listed u then
+            null
+        else
+            // the runtime's proxy for the scheme, asked of a host no
+            // bracketed entry can match (TEST-NET-1)
+            inner.GetProxy(UriBuilder(u, Host = "192.0.2.1").Uri)
+
+    interface Net.IWebProxy with
+        member _.Credentials
+            with get () = inner.Credentials
+            and set v = inner.Credentials <- v
+
+        member _.GetProxy(u: Uri) = proxyFor u
+
+        member _.IsBypassed(u: Uri) =
+            if isV6 u then isNull (proxyFor u) else inner.IsBypassed u
+
+/// the environment's proxy for a client handler, NO_PROXY matched as above
+let useEnvProxy (handler: HttpClientHandler) : unit =
+    handler.Proxy <- V6NoProxy(HttpClient.DefaultProxy)
+
 /// send the request. Status is data — a 4xx/5xx is Ok with that status,
 /// never an Error [D:http]. Error is transport failure only, classified
 /// [D:transport-words] — the worded message plus the case, so the caller
@@ -182,7 +236,10 @@ let private maxTimerMs = int64 Int32.MaxValue - 1L
 /// (auth's Authorization + every secretHeaders name) are dropped, exactly
 /// as the BCL drops Authorization — so weir's two credential channels stop
 /// disagreeing (the review's F4). Same-origin hops keep every header.
-let send (req: Req) : Result<Resp, string * TransportError> =
+///
+/// `cancel` cuts the request (a lost pfirst race, a REPL ^C); the caller
+/// names why — the transport error then reads as a timeout.
+let send (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string * TransportError> =
     try
         // the insecure callback is set per request only — the default
         // path keeps TLS verification on [D:http-s2]. Auto-redirect is
@@ -190,6 +247,7 @@ let send (req: Req) : Result<Resp, string * TransportError> =
         // [D:secret-redirect] — the BCL would re-send secretHeaders.
         use handler = new HttpClientHandler()
         handler.AllowAutoRedirect <- false
+        useEnvProxy handler
 
         if req.Insecure then
             handler.ServerCertificateCustomValidationCallback <- (fun _ _ _ _ -> true)
@@ -201,6 +259,7 @@ let send (req: Req) : Result<Resp, string * TransportError> =
         use deadline = new Threading.CancellationTokenSource()
         use _stop = { new IDisposable with member _.Dispose() = deadline.Cancel() }
         cancelAfterSliced maxTimerMs deadline req.TimeoutMs
+        use _cut = cancel.Register(fun () -> deadline.Cancel())
 
         // build one request message for a hop: `method`/`url`, the current
         // header set (already credential-filtered by the caller loop), the

@@ -499,6 +499,7 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
         // default handler would re-send PRIVATE-TOKEN to the redirect target
         use handler = new Net.Http.HttpClientHandler()
         handler.AllowAutoRedirect <- false
+        Http.useEnvProxy handler
         use client = new Net.Http.HttpClient(handler)
         client.Timeout <- TimeSpan.FromSeconds 60.0
 

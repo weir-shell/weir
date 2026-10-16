@@ -26979,6 +26979,103 @@ let argsSecretEchoTests =
               Expect.equal (runArgs plain [ "--port=8" ]) 0 "a plain field still teaches with its value"
           } ]
 
+// the third hunt's behaviour fixes, pinned at their seams; the signal and
+// pty halves are e2e cells
+let hunt3BehaviourTests =
+    testSequenced
+    <| testList
+        "hunt-3 behaviour"
+        [ test "after pfirst returns no loser effect lands; the loser stops at its next boundary [D:pfirst-join]" {
+              withTempDir "weir-pfirst" (fun d ->
+                  let f = weirPath (Path.Combine(d, "out.txt"))
+
+                  expectValue
+                      $"[1; 2] |> Seq.pfirst (fun n -> match n with | 1 -> Duration.sleep 600ms ; File.write \"{f}\" [\"loser\"] ; 1 | _ -> File.write \"{f}\" [\"winner\"] ; 2)"
+                      (VInt 2L)
+
+                  System.Threading.Thread.Sleep 900
+                  Expect.equal (File.ReadAllText(Path.Combine(d, "out.txt")).Trim()) "winner" "the loser's write never ran")
+          }
+          test "exit n in a pfirst arm ends the race with that code [D:pfirst-join]" {
+              let ex =
+                  Expect.throwsC
+                      (fun () ->
+                          run "[1; 2] |> Seq.pfirst (fun n -> match n with | 1 -> exit 3 ; 0 | _ -> Duration.sleep 300ms ; n)"
+                          |> ignore)
+                      id
+
+              match ex with
+              | Weir.Session.ExitRequest 3 -> ()
+              | e -> failtest $"expected exit 3, got {e}"
+          }
+          test "a race cancelled by an enclosing race ends without hanging [D:pfirst-join]" {
+              expectValue
+                  "[1; 2] |> Seq.pfirst (fun i -> [10; 20] |> Seq.pfirst (fun j -> match i with | 1 -> Duration.sleep 50ms ; i * 100 + j | _ -> Duration.sleep 5s ; 0))"
+                  (VInt 110L)
+          }
+          test "a REPL ^C cuts a runtime-owned wait, through try; a cleanup's wait needs a second ^C [D:repl-interrupt]" {
+              Weir.Session.beginReplEval ()
+
+              try
+                  let sw = System.Diagnostics.Stopwatch.StartNew()
+
+                  System.Threading.Tasks.Task.Run(fun () ->
+                      System.Threading.Thread.Sleep 200
+                      Weir.Session.interruptRepl ())
+                  |> ignore
+
+                  Expect.throwsT<Weir.Session.Interrupted>
+                      (fun () -> run "Duration.sleep 10s |> try result" |> ignore)
+                      "the wait raises the interrupt and try passes it"
+
+                  Expect.isLessThan sw.ElapsedMilliseconds 5000L "cut, not waited out"
+
+                  Weir.Session.runningCleanup (fun () ->
+                      Weir.Session.sleepInterruptible (System.TimeSpan.FromMilliseconds 50.0))
+
+                  Weir.Session.interruptRepl ()
+
+                  Expect.throwsT<Weir.Session.Interrupted>
+                      (fun () ->
+                          Weir.Session.runningCleanup (fun () ->
+                              Weir.Session.sleepInterruptible (System.TimeSpan.FromSeconds 10.0)))
+                      "a second ^C cuts the cleanup's wait"
+              finally
+                  Weir.Session.endReplEval ()
+
+              expectValue "Duration.sleep 10ms" VUnit
+          }
+          test "an env key that is empty or holds '=' is refused where it is built [D:env-key-refusal]" {
+              let msg input =
+                  (Expect.throwsC (fun () -> run input |> forceSeq |> ignore) id).Message
+
+              Expect.stringContains (msg "[Env.pair \"FOO=BAR\" \"x\"]") "the env key 'FOO=BAR' contains '='" "Env.pair"
+              Expect.stringContains (msg "Env.ofPairs [(\"PATH=/x\", \"y\")]") "Env.ofPairs" "Env.ofPairs names itself"
+              Expect.stringContains (msg "Env.ofPairs [(\"\", \"y\")]") "an env key is empty" "empty"
+              Expect.equal (run "Env.ofPairs [(\"A\", \"1\")] |> Seq.length") (VInt 1L) "a plain key builds"
+          }
+          test "weir's temp dirs are owner-only [D:private-temp]" {
+              skipOnWindows ()
+
+              match run "Path.newTempDir ()" with
+              | VStr d ->
+                  let mode = File.GetUnixFileMode d
+                  Directory.Delete d
+                  Expect.equal mode (UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute) "0700"
+              | v -> failtest $"expected a path, got {v}"
+          }
+          test "the within-lock holder reads and writes the locked file [D:lock-advisory]" {
+              skipOnWindows ()
+
+              withTempDir "weir-lock" (fun d ->
+                  let f = weirPath (Path.Combine(d, "state.json"))
+                  File.WriteAllText(Path.Combine(d, "state.json"), "{}\n")
+
+                  expectValue
+                      $"within lock \"{f}\" timeout=5s (File.write \"{f}\" [\"1\"] ; File.read \"{f}\" |> Seq.head)"
+                      (VStr "1"))
+          } ]
+
 let sweepFindingTests =
     let msgs file lines = diagsIn file lines |> List.map (fun d -> d.Message)
 
@@ -27426,6 +27523,7 @@ let allTests =
         "Weir"
         [ hardeningTests
           teardownSeamTests
+          hunt3BehaviourTests
           argsSecretEchoTests
           hunt3BehaviorTests
           docsBinaryTests

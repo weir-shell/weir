@@ -687,6 +687,12 @@ print $"{key} -> {value}"
   arm to SUCCEED wins, losers' spawned processes are tree-killed and
   their failures never surface (all-failed rethrows the first by
   input order; empty raises). `Seq.pfirstWith n` sets the ceiling.
+  Losers are cancelled at their next builtin call, command, sleep or
+  Http send (an in-flight request is cut), and `pfirst` waits for
+  every loser before returning — AFTER `pfirst` RETURNS, NO LOSER
+  EFFECT RUNS [D:pfirst-join]; a loser busy in pure computation holds
+  the return until it reaches one. `exit n` in an arm ends the race
+  and the script, as in `pmap`.
 - A SCOPED background process is `within proc srv = <command>` +
   an indented block [D:scoped-procs]: the scope IS the lifetime —
   at every exit (normal or raise) the process TREE is killed and
@@ -807,16 +813,24 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   any death. Advisory means a non-cooperating process can ignore it;
   on NFS and network filesystems advisory locking is unreliable — use
   a local path. Re-acquiring a lock you already hold (nested, or via
-  a function) waits like any contender: give it a timeout.
+  a function) waits like any contender: give it a timeout. It is the
+  only lock weir takes [D:lock-advisory], so the block may read and
+  write the locked file itself (`within lock "state.json"` +
+  `File.read`/`File.write` of it) on Linux and macOS. On Windows the
+  lock is a real sharing mode and the holder's own reads fail: lock a
+  SIDECAR file there (`within lock "state.json.lock"`), which works
+  everywhere.
   pipelines and reifiers refuse (`| complete` WAITS — the opposite of
   backgrounding; compose inside `sh -c`); the block starts on the
   NEXT line (the command owns the rest of its own). THE NON-CLAIM,
-  stated: normal exit, raise, SIGINT and SIGTERM all close every
-  scope (on the script's own thread — no statement runs after the
-  signal; a reader closing weir's stdout ends the script the same way,
-  exit 141, no message) — at a tty AND detached (a `kill -INT`/`kill -TERM` on a
-  `setsid`/backgrounded weir unwinds the same way, exit 130/143; a
-  second signal mid-teardown hard-exits, the double-Ctrl+C escape).
+  stated: normal exit, raise, SIGINT, SIGTERM and SIGHUP (the
+  terminal closed, `kill -HUP`) all close every scope (on the
+  script's own thread — no statement runs after the signal; a reader
+  closing weir's stdout ends the script the same way, exit 141, no
+  message) — at a tty AND detached (a `kill -INT`/`-TERM`/`-HUP` on a
+  `setsid`/backgrounded weir unwinds the same way, exit 130/143/129; a
+  second signal mid-teardown hard-exits, the double-Ctrl+C escape)
+  [D:sighup-teardown]. `nohup weir …` keeps SIGHUP ignored.
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel) tree-kills the running foreground command too, scoped or not.
   A `pmap`/`piter` takes no new arm after the signal (or the closed
@@ -1046,7 +1060,8 @@ print first
   collapses `Option<Option<T>>` to `Option<T>`. `Path.tempRoot ()` only
   READS where temp lives (it creates nothing, but `pure` counts it a
   filesystem touch and refuses it, as it refuses `Path.glob`);
-  `Path.newTempDir ()` CREATES (cleanup is yours —
+  `Path.newTempDir ()` CREATES (owner-only, 0700, like `within tmp`'s
+  dir and `within proc`'s spill files [D:private-temp]; cleanup is yours —
   `within tmp` is the scoped-cleanup spelling). Binding a `newTempDir`
   then `Dir.delete`/`Dir.deleteAll`-ing it in the same scope is a
   checker WARNING [D:newtempdir-lint] pointing at `within tmp` (which
@@ -1333,12 +1348,17 @@ print x
   convention: `let c = Env.ofPairs [("FORCE_COLOR", "1")]` then
   `$c(cmd | complete)` — per-tool foreign conventions, deliberately
   not a weir feature.
-- At the REPL, `^C` during a foreground child is a group SIGINT
-  [D:repl-isig]: the child dies, the error names exit 130 (the script
-  path's exact message), and the SESSION returns to the prompt. At an
-  idle prompt `^C` clears the line. `^C` during a pure computation (no
-  child) interrupts nothing — the byte waits and clears the next
-  prompt.
+- At the REPL, `^C` stops what the evaluation is WAITING on and the
+  SESSION returns to the prompt with `↳ exit 130 (SIGINT —
+  interrupted/cancelled)` [D:repl-isig] [D:repl-interrupt]: a
+  foreground child dies of the group SIGINT (the script path's exact
+  message), and a wait weir owns — `Duration.sleep`, a `poll`
+  interval, a `retry` delay, a `within lock` acquire, `Proc.wait`, an
+  Http request — is cut where it stands (in a `pmap`/`piter` arm
+  too). `within`'s scopes close as on any raise; an `always` block
+  runs as written unless `^C` is pressed again. At an idle prompt
+  `^C` clears the line. Pure computation is not interrupted: it runs
+  to its next wait, which then stops.
 - A REPL foreground child hung reading stdin ends with `^D^D`: the
   first `^D` delivers the partial line (icanon's delimiter — a
   mid-line `^D` is NOT EOF), the second at the now-empty line is EOF.
@@ -2502,7 +2522,10 @@ print $"exit={r.exitCode}"
   `NAME=value cmd` prefix stays that one command's. Inside the block
   weir's own reads see the overlay too — `Env.get`/`Env.vars`/`Env.load`
   [D:env-overlay-read], as `pwd` sees `within cd`; the process env
-  itself is never written.
+  itself is never written. A key that is empty or holds `=` or NUL is
+  refused where it is built — `Env.pair`, `Env.ofPairs`, `within env`,
+  `$e(…)` — naming the key [D:env-key-refusal] (the child would read
+  `FOO=BAR` as the variable `FOO`).
 - The env capture sigil `$e(...)` (ident GLUED to glyph and paren)
   injects child-env into every spawn in the captured chain (overlay:
   set those names, inherit the rest; parent untouched). `Env.fromFile "x.env"`
@@ -2649,7 +2672,7 @@ not the teaching.
 - `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move` `stat`
 - `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
 - `Env`: `fromFile` `get` `getOr` `load` `need` `ofPairs` `pair` `vars`
-- `File`: `append` `copy` `delete` `exists` `isExecutable` `mode` `move` `read` `readBytes` `readSecret` `sha256` `size` `stat` `write` `writeAtomic` `writeBytes` — `mode` is the permissions as `Some "rwxr-xr-x"` (`None` on Windows); `stat` is one path's `FileRow` (a symlink describes the link itself); `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity]
+- `File`: `append` `copy` `delete` `exists` `isExecutable` `mode` `move` `read` `readBytes` `readSecret` `sha256` `size` `stat` `write` `writeAtomic` `writeBytes` — `mode` is the permissions as `Some "rwxr-xr-x"` (`None` on Windows); `stat` is one path's `FileRow` (a symlink describes the link itself); `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity] — the temp file is born with that mode, so a 0600 file's new content is never readable wider [D:private-temp]
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Uuid`: `fromBytes` `instant` `max` `nil` `ns` `parse` `toBytes` `toString` `tryParse` `v4` `v5` `v7` `v7At` `version`

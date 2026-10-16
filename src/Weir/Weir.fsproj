@@ -66,6 +66,14 @@
     </PropertyGroup>
   </Target>
 
+  <!-- `within lock` is the only flock weir takes [D:lock-advisory]: .NET's
+       FileShare emulation flocks every open, so weir's own File.read of a
+       locked data file failed "used by another process" even in the holder.
+       Windows share modes are real and unaffected. -->
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.IO.DisableFileLocking" Value="true" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="FParsec" Version="1.1.1" />
     <!-- pinned [D:aot-warnings]: implicit FSharp.Core floats — CI restored

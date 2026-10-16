@@ -886,7 +886,7 @@ Two more kinds round out the set.
 
 A plain `within` holds nothing. It's just a body plus an `always`
 block that runs however the body exits: normally, by an error, by
-`exit n`, or on SIGINT/SIGTERM. Only `kill -9` skips it. On a signal
+`exit n`, or on SIGINT/SIGTERM/SIGHUP. Only `kill -9` skips it. On a signal
 the body's commands stop, but the commands in `always` still run. If both the
 body and the cleanup fail, you get the body's error, and the
 cleanup's failure is printed to stderr with a marker. Cleanup of any
@@ -899,6 +899,9 @@ enclosing scopes still runs.
 - It works across processes and across parallel `pmap` workers.
 - The operating system releases it if the process dies, even with
   `kill -9`.
+- On Linux and macOS the block can read and write the locked file
+  itself. On Windows the lock blocks that too, so lock a separate
+  file there (`state.json.lock` beside `state.json`).
 
 ```weir
 within tmp d
@@ -2375,8 +2378,8 @@ a failure through `watch=` or `Proc.wait` (which returns the exit
 code). `Proc.stop` shuts a scope down early, and nested scopes are
 closed innermost first.
 
-Exactly when cleanup is guaranteed: a normal exit, an error, SIGINT
-and SIGTERM all close every scope. `kill -9` of weir itself can't,
+Exactly when cleanup is guaranteed: a normal exit, an error, SIGINT,
+SIGTERM and SIGHUP (the terminal closing) all close every scope. `kill -9` of weir itself can't,
 since nothing gets to run. A process that has to outlive the script
 is a daemon, which is a job for systemd or launchd; weir deliberately
 has no `nohup`.
@@ -2734,7 +2737,9 @@ exception: the echo shows its type and doesn't run it (`let cleanup =
 rm -rf build` deletes nothing until you type `cleanup`). An entry can span several lines: weir
 checks whether what you've typed so far is a complete statement and
 keeps reading if it isn't. `Ctrl+C` throws away the current entry,
-and `Ctrl+D` or `#quit` exits.
+and `Ctrl+D` or `#quit` exits. While an entry runs, `Ctrl+C` stops
+whatever it is waiting on (a command, a sleep, a `poll`, a lock) and
+returns to the prompt.
 
 `#help` lists the directives and the modules. `#help Seq` lists the
 members of one module, which F#'s FSI can't do. `#help Seq.collect`

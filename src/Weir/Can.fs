@@ -393,6 +393,21 @@ let rec private walkExpr
 
                       add (RunsDyn display) slot.Span)
              | None -> ()
+
+             // the argv follows the program [D:can-secret-reifier]: a Secret
+             // there reaches ps as it does for the plain statement
+             match argsOf te |> List.tryItem (progSlot + 1) with
+             | Some { Kind = TEList items } ->
+                 let prog =
+                     argsOf te
+                     |> List.tryItem progSlot
+                     |> Option.bind literalStr
+                     |> Option.defaultValue "a dynamic head"
+
+                 for a in items do
+                     if a.Ty = TSecret then
+                         add (SecretArgv prog) a.Span
+             | _ -> ()
          | _ -> ()
 
          ignore args

@@ -2846,7 +2846,8 @@ always
 WEOF
     $BIN check "$dtdir/detached.weir" >/dev/null 2>&1 || fail "detached-signal probe must check"
 
-    for pair in "INT:130" "TERM:143"; do
+    # SIGHUP joins them [D:sighup-teardown]: a closed terminal or kill -HUP
+    for pair in "INT:130" "TERM:143" "HUP:129"; do
         sig="${pair%%:*}"; want="${pair##*:}"
         M="$dtdir/marker-$sig"
         rm -f "$M"
@@ -2872,24 +2873,46 @@ WEOF
         [ "$left" = "0" ] || fail "detached SIG$sig must reap the scoped child (orphans left: $left)"
         pkill -f "sleep $MK1\$" 2>/dev/null || true
     done
-    echo "e2e ok: detached SIGINT/SIGTERM tear down — always cleanup runs, child reaped, exit 130/143"
+    echo "e2e ok: detached SIGINT/SIGTERM/SIGHUP tear down — always cleanup runs, child reaped, exit 130/143/129"
+
+    # an inherited SIGHUP ignore (nohup) is honoured [D:sighup-teardown]:
+    # the HUP does nothing, a TERM still tears down
+    M="$dtdir/marker-nohup"
+    rm -f "$M"
+    pkill -f "sleep $MK1\$" 2>/dev/null || true
+    setsid sh -c 'trap "" HUP; exec "$0" "$@"' "$BIN" "$dtdir/detached.weir" "$M" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    for _ in $(seq 1 40); do pgrep -f "sleep $MK1\$" >/dev/null 2>&1 && break; sleep 0.2; done
+    kill -HUP "$wpid" 2>/dev/null || true
+    sleep 1
+    kill -0 "$wpid" 2>/dev/null || fail "nohup: an ignored SIGHUP must not stop weir"
+    [ -f "$M" ] && fail "nohup: an ignored SIGHUP must not run the cleanup"
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" 2>/dev/null || code=$?
+    [ "$code" = "143" ] || fail "nohup: SIGTERM must still tear down (got $code)"
+    [ "$(cat "$M" 2>/dev/null)" = "cleaned-up" ] || fail "nohup: SIGTERM must run the always cleanup"
+    pkill -f "sleep $MK1\$" 2>/dev/null || true
+    echo "e2e ok: an inherited SIGHUP ignore (nohup) is honoured; SIGTERM still tears down"
 
     # a pid-targeted SIGTERM tree-kills the FOREGROUND child too
     # [D:signal-main-unwind]: `timeout`/`docker stop` signal weir alone; an
     # unregistered foreground child outlived it, reparented to init
     printf 'sleep %s\n' "$MK3" > "$dtdir/fg.weir"
-    pkill -f "sleep $MK3\$" 2>/dev/null || true
-    setsid "$BIN" "$dtdir/fg.weir" </dev/null >/dev/null 2>&1 &
-    wpid=$!
-    for _ in $(seq 1 40); do pgrep -f "sleep $MK3\$" >/dev/null 2>&1 && break; sleep 0.2; done
-    kill -TERM "$wpid" 2>/dev/null || true
-    code=0; wait "$wpid" 2>/dev/null || code=$?
-    [ "$code" = "143" ] || fail "SIGTERM to weir with a foreground child must exit 143 (got $code)"
-    sleep 0.3
-    left=$(pgrep -cf "sleep $MK3\$" 2>/dev/null || true); left=${left:-0}
-    pkill -f "sleep $MK3\$" 2>/dev/null || true
-    [ "$left" = "0" ] || fail "SIGTERM to weir must tree-kill its foreground child (orphans left: $left)"
-    echo "e2e ok: SIGTERM to weir's pid reaps the foreground child"
+    for pair in "TERM:143" "HUP:129"; do
+        sig="${pair%%:*}"; want="${pair##*:}"
+        pkill -f "sleep $MK3\$" 2>/dev/null || true
+        setsid "$BIN" "$dtdir/fg.weir" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        for _ in $(seq 1 40); do pgrep -f "sleep $MK3\$" >/dev/null 2>&1 && break; sleep 0.2; done
+        kill -"$sig" "$wpid" 2>/dev/null || true
+        code=0; wait "$wpid" 2>/dev/null || code=$?
+        [ "$code" = "$want" ] || fail "SIG$sig to weir with a foreground child must exit $want (got $code)"
+        sleep 0.3
+        left=$(pgrep -cf "sleep $MK3\$" 2>/dev/null || true); left=${left:-0}
+        pkill -f "sleep $MK3\$" 2>/dev/null || true
+        [ "$left" = "0" ] || fail "SIG$sig to weir must tree-kill its foreground child (orphans left: $left)"
+    done
+    echo "e2e ok: SIGTERM/SIGHUP to weir's pid reaps the foreground child"
 
     # ...and every pmap worker's tree, exactly once, after spawning stops
     # [D:signal-main-unwind]: the kill raced the exit (a SIGSTOPped
@@ -3530,6 +3553,57 @@ SCN
     [ -n "$gdir" ] || fail "the probe must capture the tmp dir path: $gout"
     [ ! -d "$gdir" ] || fail "the scope exit must still remove its dir: $gdir"
     echo "e2e ok: the sweep gate — a survived ^C leaves the live tmp dir; the scope's own exit removes it"
+
+    # ^C cuts a wait the runtime owns [D:repl-interrupt]: a sleep, a poll
+    # interval, a contended lock — each returns to the prompt with the
+    # ^C'd child's status; an `always` cleanup still runs
+    wdir=$(mkweirtmp)
+    touch "$wdir/held.lock"
+    cat > "$wdir/wait.scn" <<SCN
+SLEEP 700
+SEND Duration.sleep 30s\r
+SLEEP 800
+SEND \x03
+SLEEP 500
+SEND poll timeout=60s interval=30s\x1b\r
+SEND     false\r
+SLEEP 800
+SEND \x03
+SLEEP 500
+SEND within lock "$wdir/held.lock"\x1b\r
+SEND     print (Str.toUpper "acquired")\r
+SLEEP 800
+SEND \x03
+SLEEP 500
+SEND within\x1b\r
+SEND     Duration.sleep 30s\x1b\r
+SEND always\x1b\r
+SEND     print (Str.toUpper "cleanup-ran")\r
+SLEEP 800
+SEND \x03
+SLEEP 500
+SEND print (Str.toUpper "still-here")\r
+SLEEP 400
+SEND #quit\r
+SCN
+    if command -v flock >/dev/null 2>&1; then
+        flock "$wdir/held.lock" sleep 30 &
+        lockpid=$!
+        sleep 0.3
+        wstart=$(date +%s)
+        wout=$(python3 "$ptyrun" 25 "$BIN" < "$wdir/wait.scn" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
+        wend=$(date +%s)
+        kill "$lockpid" 2>/dev/null || true
+        n130=$(echo "$wout" | grep -c "exit 130 (SIGINT")
+        [ "$n130" = "4" ] || fail "each ^C'd wait must return with exit 130 (got $n130): $wout"
+        echo "$wout" | grep -q "ACQUIRED" && fail "the contended lock must not be acquired: $wout"
+        echo "$wout" | grep -q "CLEANUP-RAN" || fail "the always cleanup runs after a ^C'd wait: $wout"
+        echo "$wout" | grep -q "STILL-HERE" || fail "the session survives the ^C'd waits: $wout"
+        [ $((wend - wstart)) -lt 20 ] || fail "the ^C'd waits must not run out their 30s: $((wend - wstart))s"
+        echo "e2e ok: REPL ^C cuts a sleep, a poll interval and a lock acquire; always still runs"
+    else
+        echo "e2e skip: REPL ^C wait pins (flock(1))"
+    fi
 else
     echo "e2e skip: REPL SIGINT pty pins (POSIX + python3)"
 fi
@@ -9454,6 +9528,26 @@ kinds = {c["kind"] for c in d["capabilities"]}
 assert {"runs", "opaque", "write", "network", "secret-argv", "secret-load"} <= kinds, kinds
 assert all("file" in c and "line" in c and "col" in c for c in d["capabilities"])
 PYCAN
+
+# a Secret in a reified command's argv is reported like the plain
+# statement's [D:can-secret-reifier]
+cat > "$candir/secreif.weir" <<'WEOF'
+let s = Secret.of "x"
+let a = printf "%s" $s | complete
+let b = printf "%s" $s | line
+let c = printf "%s" $s | succeeds
+let e = printf "%s" $s | exitCode
+let t = printf "%s" $s | text
+printf "%s" $s | orFail "m"
+print $"{a.exitCode} {b} {c} {e} {t}"
+WEOF
+$BIN check --can --json "$candir/secreif.weir" > "$candir/secreif.json" 2>&1 || fail "--json failed on the reifier script"
+python3 - "$candir/secreif.json" <<'PYSR' || fail "every reifier's Secret argv is reported"
+import json, sys
+d = json.load(open(sys.argv[1]))
+lines = sorted(c["line"] for c in d["capabilities"] if c["kind"] == "secret-argv")
+assert lines == [2, 3, 4, 5, 6, 7], lines
+PYSR
 
 # a check failure suppresses the report (reporting on what cannot run)
 printf 'let x = 1 + "a"\n' > "$candir/bad.weir"

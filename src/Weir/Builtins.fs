@@ -1662,10 +1662,13 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
 
 // the race [D:seq-pfirst]: the first success wins; losers' spawned
 // process trees are killed via their RaceGroup, so their failures are
-// swallowed by construction. Loser arm threads are cooperative: the
-// kill reaches processes (what arms actually wait on); a pure-compute
-// loser finishes in the background and is discarded. All-failed
-// rethrows the first error by input order; empty input raises.
+// swallowed by construction. Losers are cancelled cooperatively
+// [D:pfirst-join]: the race's token stops each at its next boundary
+// (a builtin call, spawn, sleep, Http send), and the race joins every
+// arm before returning — after pfirst returns no loser effect runs. A
+// pure-compute loser holds the return until it reaches a boundary or
+// ends. `exit n` (or a REPL ^C) in an arm ends the race with that raise.
+// All-failed rethrows the first error by input order; empty input raises.
 let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
     if degree < 1 then
         failwith $"parallel degree must be at least 1, got {degree}"
@@ -1684,58 +1687,84 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
     let outcome =
         TaskCompletionSource<Value>(TaskCreationOptions.RunContinuationsAsynchronously)
 
+    // a nested race inherits its arm's cancellation
+    use race =
+        System.Threading.CancellationTokenSource.CreateLinkedTokenSource(Session.flowToken ())
+
     let workers = min degree arr.Length
     let mutable next = -1
     // blamed where the arm raised, as in runParallelWith
     let callNode = RunPos.Current
 
+    // the first outcome ends the race: every other arm is condemned
+    let settle (i: int) (set: unit -> unit) =
+        if System.Threading.Interlocked.CompareExchange(&won, 1, 0) = 0 then
+            for j in 0 .. arr.Length - 1 do
+                if j <> i then
+                    groups[j].Condemn()
+
+            race.Cancel()
+            set ()
+
     let worker () =
         let mutable i = System.Threading.Interlocked.Increment &next
 
-        while i < arr.Length && System.Threading.Volatile.Read &won = 0 do
+        while i < arr.Length
+              && System.Threading.Volatile.Read &won = 0
+              && not race.IsCancellationRequested do
             Session.enterWorker parentCwd
             Session.enterRace groups[i]
+            Session.enterFlow race.Token
             RunPos.Current <- callNode
 
             try
                 try
                     let v = apply f arr[i]
-
-                    if System.Threading.Interlocked.CompareExchange(&won, 1, 0) = 0 then
-                        for j in 0 .. arr.Length - 1 do
-                            if j <> i then
-                                groups[j].Condemn()
-
-                        outcome.TrySetResult v |> ignore
-                with e ->
+                    settle i (fun () -> outcome.TrySetResult v |> ignore)
+                with
+                | :? Session.Cancelled -> ()
+                | e when (e :? ExitRequest) || (e :? Session.Interrupted) ->
+                    let ex = e
+                    settle i (fun () -> outcome.TrySetException ex |> ignore)
+                | e ->
                     pinOnThread e
                     errors[i] <- e
 
                     if System.Threading.Interlocked.Increment &failedCount = arr.Length then
                         outcome.TrySetException errors[Seq.min errors.Keys] |> ignore
             finally
+                Session.exitFlow ()
                 Session.exitRace ()
                 Session.exitWorker ()
 
             i <- System.Threading.Interlocked.Increment &next
 
-    // arms are one level deeper [D:parallel-ladder] — losers that
-    // outlive the winner keep the deeper context, which is correct:
-    // they are still arms
-    let depth = Session.parallelDepthNow ()
-    Session.setParallelDepth (depth + 1)
+    Session.racing (fun () ->
+        // arms are one level deeper [D:parallel-ladder]
+        let depth = Session.parallelDepthNow ()
+        Session.setParallelDepth (depth + 1)
 
-    try
-        for _ in 1..workers do
-            Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning) |> ignore
-    finally
-        Session.setParallelDepth depth
+        let tasks =
+            try
+                Array.init workers (fun _ -> Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning))
+            finally
+                Session.setParallelDepth depth
 
-    try
-        Session.waitTask outcome.Task
-        outcome.Task.Result
-    with :? System.AggregateException as ae when ae.InnerExceptions.Count = 1 ->
-        raise ae.InnerExceptions[0]
+        let all = Task.WhenAll(tasks: Task[])
+
+        try
+            Session.waitTask (Task.WhenAny(outcome.Task, all))
+            // the losers join before the race returns [D:pfirst-join]
+            Session.waitTask all
+
+            // every arm stopped without an outcome: an enclosing race
+            // cancelled this one
+            if not outcome.Task.IsCompleted then
+                raise (Session.Cancelled())
+
+            outcome.Task.Result
+        with :? System.AggregateException as ae when ae.InnerExceptions.Count = 1 ->
+            raise ae.InnerExceptions[0])
 
 let private pfirstImpl: Value =
     VBuiltin(fun f ->
@@ -2672,7 +2701,16 @@ let private atomicReplace (r: string) (lines: Value seq) : unit =
         )
 
     try
-        (use fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None)
+        // the temp is born with the target's mode [D:private-temp]: a 0600
+        // target's new content is never readable wider before the rename
+        let opts =
+            FileStreamOptions(Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None)
+
+        match mode with
+        | Some m -> opts.UnixCreateMode <- System.Nullable m
+        | None -> ()
+
+        (use fs = new FileStream(tmp, opts)
          fs.Write(payload, 0, payload.Length)
          fs.Flush true)
 
@@ -3029,7 +3067,7 @@ let private pathMembers: (string * Ty * Value) list =
           let dir =
               System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
 
-          System.IO.Directory.CreateDirectory dir |> ignore
+          Session.createPrivateDir dir
           VStr dir) ]
 
 let private optionIterImpl: Value =
@@ -3278,9 +3316,13 @@ let private envPairImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun v ->
             match n, v with
-            | VStr n, VStr v -> recordOf envVarDef [ VStr n; VStr v ]
+            | VStr n, VStr v ->
+                Proc.envKeyRefusal "Env.pair" n
+                recordOf envVarDef [ VStr n; VStr v ]
             // the `NAME=$s` desugar admits a Secret [D:secret]
-            | VStr n, VSecret v -> recordOf envVarDef [ VStr n; VStr v ]
+            | VStr n, VSecret v ->
+                Proc.envKeyRefusal "Env.pair" n
+                recordOf envVarDef [ VStr n; VStr v ]
             | _ -> unreachable "the checker rejects 'Env.pair' on these arguments"))
 
 let private envOfPairsImpl: Value =
@@ -3291,7 +3333,9 @@ let private envOfPairsImpl: Value =
                 items
                 |> Seq.map (fun p ->
                     match p with
-                    | VTuple [ VStr n; VStr v ] -> recordOf envVarDef [ VStr n; VStr v ]
+                    | VTuple [ VStr n; VStr v ] ->
+                        Proc.envKeyRefusal "Env.ofPairs" n
+                        recordOf envVarDef [ VStr n; VStr v ]
                     | v -> unreachable $"the checker rejects 'Env.ofPairs' elements: {formatValue v}")
             )
         | v -> unreachable $"the checker rejects 'Env.ofPairs' on {formatValue v}")
@@ -4661,7 +4705,15 @@ let private runRequest (reqV: Value) : Http.Resp =
                 // error's own fallback
                 Http.redactUrl req.Url
 
-        match Waiting.during $"{req.Method} {host}" (fun () -> Http.send req) with
+        // the send is a boundary and a wait [D:pfirst-join] [D:repl-interrupt]
+        Session.checkCancels ()
+
+        let sent =
+            Waiting.during $"{req.Method} {host}" (fun () -> Session.withWaitToken (fun t -> Http.send t req))
+
+        Session.checkCancels ()
+
+        match sent with
         | Ok resp -> resp
         // the TLS case names its per-request repair [D:http-s2]
         | Error(msg, Http.TlsUntrusted) -> failwith $"{msg} (a self-signed endpoint can opt out: insecure = true)"
@@ -4971,7 +5023,7 @@ let private procMembers: (string * Ty * Value) list =
           let h = asProc "Proc.wait" v
 
           Waiting.during $"waiting for pid {h.Proc.Id}" (fun () ->
-              h.Proc.WaitForExit()
+              Session.waitProcess h.Proc
               // a child killed by a teardown returns no code
               // [D:signal-main-unwind]
               Session.checkTeardown ()
@@ -6389,7 +6441,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "n"; "f"; "xs" ]
           "Seq.pfirst",
           bd
-              "Run the function on every element in parallel and return the first successful result. Processes started by the others are killed, along with their children. If every call fails, the error of the earliest element is raised; an empty sequence raises. Errors from the calls that did not win are discarded, so if only one element can ever succeed, the others' errors stay hidden and a misconfiguration can go unnoticed."
+              "Run the function on every element in parallel and return the first successful result. Processes started by the others are killed, along with their children; each other call stops at its next builtin call, command, sleep or Http send, and pfirst returns only after they have all stopped, so nothing they do happens after it returns. `exit n` in a call ends the race and the script. If every call fails, the error of the earliest element is raised; an empty sequence raises. Errors from the calls that did not win are discarded, so if only one element can ever succeed, the others' errors stay hidden and a misconfiguration can go unnoticed."
               (Some "[3; 1; 2] |> Seq.pfirst (fun n -> n * 10)")
               (Some "A race, not a retry: for example the same download from several mirrors, where the first answer wins and the losers' processes are killed.")
           |> named [ "f"; "xs" ]
@@ -6722,7 +6774,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "()" ])
           "Path.newTempDir",
           (bd
-              "Create a new, uniquely named directory under the temp root and return its path (named the same way as `within tmp`). It is never removed automatically; deleting it is up to you or the OS. For a directory that is removed when a block exits (also on Ctrl+C or kill), use `within tmp dir`."
+              "Create a new, uniquely named directory under the temp root and return its path (named the same way as `within tmp`, and like it readable only by you). It is never removed automatically; deleting it is up to you or the OS. For a directory that is removed when a block exits (also on Ctrl+C or kill), use `within tmp dir`."
               (Some "Path.newTempDir () |> Str.startsWith (Path.tempRoot ())")
               None
            |> named [ "()" ])
@@ -6961,10 +7013,10 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "name"; "fallback" ])
           "Env.vars",bd "Every environment variable as EnvVar records." (Some "Env.vars |> Seq.freeze") None
           "Env.pair",
-          (bd "Build one EnvVar from a name and value." (Some "Env.pair \"K\" \"V\"") None
+          (bd "Build one EnvVar from a name and value. A name that is empty or contains `=` is an error." (Some "Env.pair \"K\" \"V\"") None
            |> named [ "name"; "value" ])
           "Env.ofPairs",
-          (bd "Build EnvVar records from name/value tuples." (Some "Env.ofPairs [(\"K\", \"V\")] |> Seq.freeze") None
+          (bd "Build EnvVar records from name/value tuples. A name that is empty or contains `=` is an error." (Some "Env.ofPairs [(\"K\", \"V\")] |> Seq.freeze") None
            |> named [ "pairs" ])
           "Env.fromFile",
           (bd "Read `.env` lines (`KEY=value`) as EnvVar records." None None

@@ -1881,7 +1881,10 @@ let private setupLineEditor () =
             Some(
                 Runtime.InteropServices.PosixSignalRegistration.Create(
                     Runtime.InteropServices.PosixSignal.SIGINT,
-                    fun ctx -> ctx.Cancel <- true
+                    fun ctx ->
+                        ctx.Cancel <- true
+                        // and cut the evaluation's waits [D:repl-interrupt]
+                        Session.interruptRepl ()
                 )
                 :> obj
             )
@@ -2284,6 +2287,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 Values = bindings |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
          with
          | Eval.ExitRequest _ -> reraise ()
+         | :? Session.Interrupted -> reraise ()
          | ex ->
              lastErrored <- true
              lastExit <- None
@@ -2368,6 +2372,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 Values = Map.add name v state.Values }
          with
          | Eval.ExitRequest _ -> reraise ()
+         | :? Session.Interrupted -> reraise ()
          | ex ->
              lastErrored <- true
              lastExit <- None
@@ -2406,6 +2411,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 st
              with
              | Eval.ExitRequest _ -> reraise ()
+             | :? Session.Interrupted -> reraise ()
              // a bare command statement's nonzero exit is the shell's `$?`,
              // not a weir error [D:repl-cmd-fail]: the output already
              // streamed and the session continues, so render a quiet
@@ -2496,6 +2502,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 bindIt te.Ty ev state
              with
              | Eval.ExitRequest _ -> reraise ()
+             | :? Session.Interrupted -> reraise ()
              | ex ->
                  lastErrored <- true
                  lastExit <- None
@@ -2568,9 +2575,21 @@ let private evalChecked (source: string) (state: State) (chk: Script.CheckedStat
         Console.TreatControlCAsInput <- false
         Term.restoreCooked ()
 
+    Session.beginReplEval ()
+
     try
-        evalCheckedBody source state chk
+        try
+            evalCheckedBody source state chk
+        with :? Session.Interrupted ->
+            // ^C cut a runtime-owned wait [D:repl-interrupt]: the status a
+            // ^C'd child shows, and the session goes on
+            lastErrored <- true
+            lastExit <- Some 130
+            echoMeta "↳ exit 130 (SIGINT — interrupted/cancelled)"
+            state
     finally
+        Session.endReplEval ()
+
         if ttyEval then
             Console.TreatControlCAsInput <- true
             Term.reassert ()

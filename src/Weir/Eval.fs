@@ -3367,7 +3367,7 @@ let private argvLoad (target: ArgsTarget) : Value =
 
 // the sigil env slot evaluated to overlay pairs — inside the stream's
 // delay, so Env.fromFile boundary errors keep raise-at-force semantics
-let private envPairsOf (v: Value) : (string * string) list =
+let private envPairsOf (where: string) (v: Value) : (string * string) list =
     match v with
     | VSeq items ->
         items
@@ -3375,7 +3375,9 @@ let private envPairsOf (v: Value) : (string * string) list =
             match item with
             | VRecord(_, fields) ->
                 (match recTryGet "name" fields, recTryGet "value" fields with
-                 | Some(VStr n), Some(VStr value) -> n, value
+                 | Some(VStr n), Some(VStr value) ->
+                     Proc.envKeyRefusal where n
+                     n, value
                  | _ -> unreachable "the checker rejects non-EnvVar overlay entries")
             | _ -> unreachable "the checker rejects non-EnvVar overlay entries")
         |> List.ofSeq
@@ -3397,7 +3399,7 @@ let rec private overlayOf (env: Env) (cenvO: TypedExpr option) : (string * strin
     match cenvO with
     | None -> []
     | Some ce ->
-        envPairsOf (eval env ce)
+        envPairsOf "the env capture" (eval env ce)
         |> List.map (fun (k, v) -> k, noNul $"the env value for '{k}'" v)
 
 // a NUL cannot cross the spawn hand-off [D:encoding-law]: argv and env
@@ -4161,8 +4163,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let ops = PlanMode.capturing (fun () -> eval env body |> ignore)
             VRecord("Plan", [ "ops", VSeq ops ])
         | WithinLock ->
-            // advisory file lock [D:within-lock]: FileShare.None maps
-            // to flock(2) on Unix (per-open-file-description, so pmap
+            // advisory file lock [D:within-lock]: an explicit flock(2) on
+            // POSIX [D:lock-advisory] (per-open-file-description, so pmap
             // arms exclude each other; interoperates with flock(1))
             // and native share modes on Windows. Blocking by default,
             // timeout= bounds the wait; the kernel releases on any
@@ -4213,6 +4215,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
                      | :? System.UnauthorizedAccessException ->
                          failwith $"within lock: cannot open {resolved}: permission denied"
                      | :? System.IO.IOException -> None)
+                    // POSIX: the lock is an explicit flock — .NET's own is
+                    // disabled for weir [D:lock-advisory]
+                    |> Option.filter (fun fs ->
+                        System.OperatingSystem.IsWindows()
+                        || Session.tryFlockExclusive fs
+                        || (fs.Dispose()
+                            false))
                 with
                 | Some fs -> fs
                 | None ->
@@ -4257,7 +4266,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         | WithinEnv ->
             // env pushes an ambient overlay that child spawns see;
             // weir's own Env.load is untouched [D:within-scopes]
-            Session.pushEnvOverlay (envPairsOf (eval env (argOf "env")))
+            Session.pushEnvOverlay (envPairsOf "within env" (eval env (argOf "env")))
 
             try
                 eval env body
@@ -4283,7 +4292,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // appears after the teardown kill; removed when the start
             // refuses [D:teardown-stops-arms]
             Session.gatedSpawn (fun () ->
-                System.IO.Directory.CreateDirectory spill |> ignore
+                Session.createPrivateDir spill
                 Session.registerTmpDir spill)
 
             let p, drain =
@@ -4676,7 +4685,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let dir =
                 System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
 
-            System.IO.Directory.CreateDirectory dir |> ignore
+            Session.createPrivateDir dir
             // the exit hook's backstop registration [D:exit-hook]: a hard
             // exit (pfirst exit-race, Ctrl-C) sweeps what this finally
             // could not; the clean path deregisters and the hook is idle
@@ -4897,7 +4906,10 @@ and apply (fn: Value) (arg: Value) : Value =
             inFunction (fun () -> eval env' body)
         else
             eval env' body
-    | VBuiltin f -> f arg
+    | VBuiltin f ->
+        // every builtin call is a pfirst loser's boundary [D:pfirst-join]
+        Session.checkCancelled ()
+        f arg
     | v -> unreachable $"the checker rejects application of {formatValue v}"
 
 // an application: callee, then argument, then the call — which runs with

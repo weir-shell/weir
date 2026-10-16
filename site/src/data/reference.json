@@ -346,14 +346,14 @@
         {
           "name": "ofPairs",
           "signature": "Env.ofPairs (pairs: seq\u003Cstring * string\u003E) : seq\u003CEnvVar\u003E",
-          "summary": "Build EnvVar records from name/value tuples.",
+          "summary": "Build EnvVar records from name/value tuples. A name that is empty or contains \u0060=\u0060 is an error.",
           "example": "Env.ofPairs [(\u0022K\u0022, \u0022V\u0022)] |\u003E Seq.freeze",
           "pointer": null
         },
         {
           "name": "pair",
           "signature": "Env.pair (name: string) (value: string) : EnvVar",
-          "summary": "Build one EnvVar from a name and value.",
+          "summary": "Build one EnvVar from a name and value. A name that is empty or contains \u0060=\u0060 is an error.",
           "example": "Env.pair \u0022K\u0022 \u0022V\u0022",
           "pointer": null
         },
@@ -1015,7 +1015,7 @@
         {
           "name": "newTempDir",
           "signature": "Path.newTempDir () : string",
-          "summary": "Create a new, uniquely named directory under the temp root and return its path (named the same way as \u0060within tmp\u0060). It is never removed automatically; deleting it is up to you or the OS. For a directory that is removed when a block exits (also on Ctrl\u002BC or kill), use \u0060within tmp dir\u0060.",
+          "summary": "Create a new, uniquely named directory under the temp root and return its path (named the same way as \u0060within tmp\u0060, and like it readable only by you). It is never removed automatically; deleting it is up to you or the OS. For a directory that is removed when a block exits (also on Ctrl\u002BC or kill), use \u0060within tmp dir\u0060.",
           "example": "Path.newTempDir () |\u003E Str.startsWith (Path.tempRoot ())",
           "pointer": null
         },
@@ -1496,7 +1496,7 @@
         {
           "name": "pfirst",
           "signature": "Seq.pfirst (f: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : \u0027b",
-          "summary": "Run the function on every element in parallel and return the first successful result. Processes started by the others are killed, along with their children. If every call fails, the error of the earliest element is raised; an empty sequence raises. Errors from the calls that did not win are discarded, so if only one element can ever succeed, the others\u0027 errors stay hidden and a misconfiguration can go unnoticed.",
+          "summary": "Run the function on every element in parallel and return the first successful result. Processes started by the others are killed, along with their children; each other call stops at its next builtin call, command, sleep or Http send, and pfirst returns only after they have all stopped, so nothing they do happens after it returns. \u0060exit n\u0060 in a call ends the race and the script. If every call fails, the error of the earliest element is raised; an empty sequence raises. Errors from the calls that did not win are discarded, so if only one element can ever succeed, the others\u0027 errors stay hidden and a misconfiguration can go unnoticed.",
           "example": "[3; 1; 2] |\u003E Seq.pfirst (fun n -\u003E n * 10)",
           "pointer": "A race, not a retry: for example the same download from several mirrors, where the first answer wins and the losers\u0027 processes are killed."
         },
