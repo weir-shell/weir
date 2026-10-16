@@ -37,6 +37,20 @@
 
 ### Fixed
 
+- **`from json Map<string, int>` reads a whole document.** The value
+  type can be anything a `Map` field can hold — `int`, `string`,
+  `seq<string>`, `Option<…>`, another `Map`, a record — where it had to
+  be a record (anything else was a parse error). `from json Map<int, …>`
+  now says keys must be strings, as a declared `Map<int, …>` field does.
+- **Indentation errors give a column:** `s.weir:2:5: this let needs a
+  body …` where the runner printed `s.weir: line 2: …`. `weir check`
+  and the editor drop the repeated `line 2:` from the message,
+  `weir fmt` says `line 2:5:`, and `-e` and the REPL show the line with
+  a caret.
+- **Docs:** an `import` below other statements works, from its line on
+  (the docs said imports must come first); a one-line
+  `let n = echo a b in n` runs the command (the docs said it could not).
+
 - **`weir fmt` refuses a file that does not parse** — a yaml-block error
   or an ordinary parse error is reported with its line and the file is
   left as it was (exit 3), as `weir check` would report it. Editor
@@ -100,8 +114,7 @@
 - **A mistyped `--help`, `check` flag or `fmt` flag gets a "did you
   mean"** (`weir --hlep`, `weir check --cna`); only other top-level
   options got one.
-- Docs: `-e` echoes its result with the type (`3 : int`); a
-  whole-document `from json Map<string, T>` needs a record `T`.
+- Docs: `-e` echoes its result with the type (`3 : int`).
 - **`weir s.weir > log 2>&1` keeps all of stdout.** Stdout written to a
   regular file shared with stderr overwrote stderr's lines and lost its
   own; output now lands in order.

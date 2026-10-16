@@ -2501,6 +2501,33 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
 let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
     assembleWith (fun _ _ -> ()) numbered
 
+/// an assembly error's location [D:assembly-col]: the line its message
+/// names and that line's first non-blank column, with the message's
+/// `line N: ` lead removed (the location carries it). None when the
+/// message names no line.
+let assemblyErrorAt (numbered: (int * string) list) (msg: string) : (int * int * string) option =
+    let m = Text.RegularExpressions.Regex.Match(msg, @"^line ([0-9]{1,9}): ")
+
+    if not m.Success then
+        None
+    else
+        let line = int m.Groups[1].Value
+
+        let col =
+            numbered
+            |> List.tryFind (fun (n, _) -> n = line)
+            |> Option.map (fun (_, raw: string) -> (raw |> Seq.takeWhile ((=) ' ') |> Seq.length) + 1)
+            |> Option.defaultValue 1
+
+        Some(line, col, msg.Substring m.Length)
+
+/// the located one-line spelling of an assembly error [D:assembly-col]:
+/// `<where>:<line>:<col>: msg`, the message unchanged when it names no line
+let assemblyErrorLocated (where: string) (numbered: (int * string) list) (msg: string) : string =
+    match assemblyErrorAt numbered msg with
+    | Some(l, c, rest) -> $"{where}:{l}:{c}: {rest}"
+    | None -> $"{where}: {msg}"
+
 let statementCount (bufLines: string list) : int option =
     let numbered =
         bufLines
@@ -4787,10 +4814,11 @@ let rec loadModuleCachedWith
     | ISource rawLines ->
         let body, bodyOffset, _ = scriptBody rawLines
 
-        let assembled = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> assemble // raw lines: assemble classifies/strips internally [D:content-bytes]
+        let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
+        let assembled = numbered |> assemble // raw lines: assemble classifies/strips internally [D:content-bytes]
 
         match assembled with
-        | Error msg -> stmt $"{absPath}: {msg}"
+        | Error msg -> stmt (assemblyErrorLocated absPath numbered msg)
         | Ok [] -> notAModule
         | Ok(first :: rest) ->
             let baseTenv, _ = moduleBaseEnvs absPath
@@ -6756,8 +6784,12 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
         match assemble numbered with
         | Ok lls -> Some lls
         | Error msg ->
-            let line = numbered |> List.tryHead |> Option.map fst |> Option.defaultValue 1
-            into.Add(initError file line 1 None "assembly" msg)
+            match assemblyErrorAt numbered msg with
+            | Some(line, col, rest) -> into.Add(initError file line col None "assembly" rest)
+            | None ->
+                let line = numbered |> List.tryHead |> Option.map fst |> Option.defaultValue 1
+                into.Add(initError file line 1 None "assembly" msg)
+
             None
 
     // the #alias table [D:command-head-alias] — single-hop: a target naming
@@ -7126,15 +7158,10 @@ let analyzeLinesAs
         match assembleWith (fun l c -> misaligned.Value <- Some(l, c)) input with
         | Ok lls -> lls
         | Error msg when attempts > 0 ->
-            let line =
-                match msg.Split(' ') |> Array.tryItem 1 with
-                | Some tok ->
-                    tok.TrimEnd(':')
-                    |> fun t ->
-                        (match System.Int32.TryParse t with
-                         | true, n -> n
-                         | false, _ -> -1)
-                | None -> -1
+            let line, message =
+                match assemblyErrorAt input msg with
+                | Some(l, _, rest) -> l, rest
+                | None -> -1, msg
 
             // the named line's content start is the column — in the
             // source, not in an earlier attempt's re-indent
@@ -7152,7 +7179,7 @@ let analyzeLinesAs
                   EndCol = None
                   Severity = "error"
                   Code = "assembly"
-                  Message = msg }
+                  Message = message }
 
             match misaligned.Value with
             | Some(l, c) when l = line ->
@@ -7820,11 +7847,12 @@ let run (path: string) (scriptArgs: string list) : int =
             let rawByLine = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> Map.ofList
 
             // comment-only lines are transparent [D:comment-transparency]
-            let assembled = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> assemble // raw lines: assemble classifies/strips internally
+            let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
+            let assembled = numbered |> assemble // raw lines: assemble classifies/strips internally
 
             match assembled with
             | Error msg ->
-                Console.Error.WriteLine $"{path}: {msg}"
+                Console.Error.WriteLine(assemblyErrorLocated path numbered msg)
                 1
             | Ok logicalLines ->
 

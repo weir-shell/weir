@@ -1242,6 +1242,13 @@ errout=$($BIN "$scriptdir/blockbad.weir" 2>&1) && fail "bodyless block let shoul
 echo "$errout" | grep -qF "needs a body" || fail "bodyless-let error text missing: $errout"
 echo "e2e ok: bodyless block let rejected"
 
+# an assembly error is located file:line:col like every diagnostic
+# [D:assembly-col] — the column is the named line's indentation; the
+# runner and check agree, and the message drops its "line N:" lead
+expect "the runner locates an assembly error line:col" "blockbad.weir:2:5: this let needs a body" "$errout"
+errout=$($BIN check "$scriptdir/blockbad.weir" 2>&1) && fail "check must refuse the bodyless block let"
+expect "check locates the same assembly error" "blockbad.weir:2:5: error [assembly]: this let needs a body" "$errout"
+
 rm -rf "$scriptdir"
 
 out=$($BIN -e 'print "visible"')
@@ -3615,6 +3622,28 @@ PYEOF2
 else
     echo "e2e skip: wire-key referee (python3 absent)"
 fi
+
+# ---- whole-document Map with a value type [D:map-values] -------------------
+# from json Map<string, V> takes any V a Map field would — scalars,
+# Option, seq, nested Map — and the slot's int key teaches as a
+# declared type's does
+mvdir=$(mkweirtmp)
+printf '{"b": 2, "a": 1}' > "$mvdir/m.json"
+cat > "$mvdir/mv.weir" <<'WEOF'
+let m = File.read "m.json" |> from json Map<string, int>
+print (show (Map.get "a" m + Map.get "b" m))
+m |> to json |> Seq.iter print
+let n = ["{\"k\": {\"j\": [1, 2]}}"] |> from json Map<string, Map<string, seq<int>>>
+print (show (n |> Map.get "k" |> Map.get "j" |> Seq.length))
+WEOF
+out=$( cd "$mvdir" && $BIN mv.weir 2>&1 ) || fail "a value-type Map must read: $out"
+expect "from json Map<string, int> reads a whole document" "3" "$out"
+expect "the value-type Map round-trips" '{"a":1,"b":2}' "$out"
+expect "a nested value-type Map reads" "2" "$out"
+printf 'let m = File.read "m.json" |> from json Map<int, int>\n' > "$mvdir/mk.weir"
+out=$( cd "$mvdir" && $BIN check mk.weir 2>&1 ) && fail "Map<int, …> in the slot must refuse: $out"
+expect "the slot's int key teaches" "Map keys are strings only" "$out"
+rm -rf "$mvdir"
 
 # ---- FileRow reshape [D:filerow] --------------------------------------------
 # kind/target over a real symlink, and File.mode against the platform's
@@ -8233,7 +8262,7 @@ echo "e2e ok: the hostile-byte fixture is byte-exact through check and run"
 # is the indentation error, with its column
 printf 'let t = <<<\n    abc\n    \tdef\nprint t\n' > "$hbdir/tablead.weir"
 out=$($BIN check "$hbdir/tablead.weir" 2>&1) && fail "a leading tab in block content must be refused"
-expect "a leading tab in block content is the indentation error" "line 3: tabs are not allowed in indentation (a tab at column 5)" "$out"
+expect "a leading tab in block content is the indentation error" "tablead.weir:3:5: error [assembly]: tabs are not allowed in indentation (a tab at column 5)" "$out"
 
 # CRLF [D:content-bytes]: a source file's line ending is not data —
 # normalized at read, so a CRLF-saved file behaves identically

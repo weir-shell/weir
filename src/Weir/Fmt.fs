@@ -219,7 +219,11 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
             | _ -> body
 
     match logicalAt lineOffset body with
-    | Error e -> Error $"cannot format: {e} (fix errors first)"
+    | Error e ->
+        // located as a parse refusal is, line:col [D:assembly-col]
+        match Script.assemblyErrorAt (body |> List.mapi (fun i l -> i + 1 + lineOffset, l)) e with
+        | Some(l, c, rest) -> Error $"cannot format: line {l}:{c}: {rest} (fix errors first)"
+        | None -> Error $"cannot format: {e} (fix errors first)"
     | Ok originalLogical ->
 
         // open indent levels, deepest first [D:fmt-depth-model]: any

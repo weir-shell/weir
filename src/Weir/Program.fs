@@ -76,6 +76,14 @@ let private evalOnce (input: string) : int =
 
         match assembled with
         | Error msg ->
+            // the named line under a caret at its indentation
+            // [D:assembly-col], as a parse error shows its line
+            match Script.assemblyErrorAt (srcLines |> List.mapi (fun i l -> i + 1, l)) msg with
+            | Some(l, c, _) ->
+                Console.Error.WriteLine(srcLine l)
+                Console.Error.WriteLine(Types.Color.red Types.Color.onStderr.Value (String(' ', c - 1) + "^"))
+            | None -> ()
+
             Console.Error.WriteLine msg
             1
         | Ok lls ->

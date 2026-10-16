@@ -14313,7 +14313,10 @@ let fmtTests =
           }
           test "invalid files are refused, not mangled" {
               match Weir.Fmt.formatLines [ "let x ="; "    let a = 1" ] with
-              | Error msg -> Expect.stringContains msg "cannot format" "assembler error surfaces"
+              | Error msg ->
+                  Expect.stringContains msg "cannot format" "assembler error surfaces"
+                  // located as a parse refusal is [D:assembly-col]
+                  Expect.stringContains msg "cannot format: line 2:5: this let needs a body" "line:col"
               | Ok _ -> failtest "expected refusal"
           } ]
 
@@ -14521,6 +14524,31 @@ let assemblyRecoveryTests =
                   Expect.equal d.Code "assembly" "the alignment error"
                   Expect.equal (d.Line, d.Col) (4, 11) "located at the field"
               | other -> failtest $"expected exactly one error: {other |> List.map (fun d -> d.Message)}"
+          }
+          test "an assembly error is located line:col, its message without the line lead [D:assembly-col]" {
+              let numbered = [ 1, "let x = 1"; 2, "  let y = 2" ]
+
+              match Weir.Script.assemble numbered with
+              | Ok _ -> failtest "must refuse"
+              | Error msg ->
+                  match Weir.Script.assemblyErrorAt numbered msg with
+                  | Some(l, c, rest) ->
+                      Expect.equal (l, c) (2, 3) "the named line, at its indentation"
+                      Expect.stringStarts rest "this let needs a body" "the location carries the line"
+                  | None -> failtest $"unlocated: {msg}"
+
+                  Expect.stringStarts
+                      (Weir.Script.assemblyErrorLocated "t.weir" numbered msg)
+                      "t.weir:2:3: this let needs a body"
+                      "the runner's spelling"
+
+              match diagsIn "t.weir" [ "let x = 1"; "  let y = 2" ] |> List.filter (fun d -> d.Code = "assembly") with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (2, 3) "check/LSP agree"
+                  Expect.stringStarts d.Message "this let needs a body" "no doubled line lead"
+              | other -> failtest $"expected one assembly diag: {other |> List.map (fun d -> d.Message)}"
+
+              Expect.isNone (Weir.Script.assemblyErrorAt [] "no line named") "a lineless message stays unlocated"
           } ]
 
 let closersTests =
@@ -22003,6 +22031,78 @@ let mapStringTests =
                   (checkErr "[\"\"] |> from json {| m: Map<int, string> |}").Message
                   "Map keys are strings only"
                   "jsonAdmitted mirrors validateTy"
+          }
+          test "the slot's key teaches like a declaration [D:map-values]" {
+              Expect.stringContains
+                  (checkErr "[\"\"] |> from json Map<int, JRow>").Message
+                  "Map keys are strings only (every receipt has them — JSON object keys ARE strings); got Map<int, …>"
+                  "a record value"
+
+              Expect.stringContains
+                  (checkErr "[\"\"] |> from json Map<int, int>").Message
+                  "Map keys are strings only"
+                  "a scalar value"
+          }
+          test "a whole document reads as Map<string, V> for any field-admitted V [D:map-values]" {
+              let one src code =
+                  runWith [ "src", VSeq [ VStr src ] ] code
+
+              Expect.equal
+                  (one "{\"b\": 2, \"a\": 1}" "src |> from json Map<string, int> |> Map.values" |> forceSeq)
+                  [ VInt 1L; VInt 2L ]
+                  "int values"
+
+              Expect.equal
+                  (checkOk "src |> from json Map<string, int>").Ty
+                  (TNamed("Map", [ TStr; TInt ]))
+                  "typed at check"
+
+              Expect.equal
+                  (one "{\"k\": [\"x\"], \"n\": null}" "src |> from json Map<string, Option<seq<string>>> |> Map.get \"n\"")
+                  (VUnion("None", None))
+                  "Option of seq, null is None"
+
+              Expect.equal
+                  (one "{\"k\": {\"j\": 3}}" "src |> from json Map<string, Map<string, int>> |> Map.get \"k\" |> Map.get \"j\"")
+                  (VInt 3L)
+                  "a Map nests"
+
+              Expect.equal
+                  (one "{\"k\": [{\"ip\": \"9\"}]}" "src |> from json Map<string, seq<{| ip: string |}>> |> Map.get \"k\" |> Seq.head |> _.ip")
+                  (VStr "9")
+                  "anonymous shape under seq"
+
+              Expect.equal
+                  (one "{\"b\": 2, \"a\": 1}" "src |> from json Map<string, int> |> to json" |> forceSeq)
+                  [ VStr "{\"a\":1,\"b\":2}" ]
+                  "round-trips"
+          }
+          test "a value-type Map refuses as a field would, paths through the key [D:map-values]" {
+              let m =
+                  try
+                      runWith [ "src", VSeq [ VStr "{\"k\": \"x\"}" ] ] "src |> from json Map<string, int>"
+                      |> ignore
+
+                      "no error"
+                  with e ->
+                      e.Message
+
+              Expect.stringContains m "field '[\"k\"]' expected int, got string" "the key is the path"
+
+              Expect.stringContains
+                  (checkErr "[\"\"] |> from json Map<string, int -> int>").Message
+                  "type int -> int is not admitted"
+                  "the field law"
+
+              Expect.stringContains
+                  (checkErr "[\"\"] |> from yaml Map<string, int>").Message
+                  "'from yaml' does not take Map<string, int> yet"
+                  "yaml keeps its follow-up"
+
+              Expect.stringContains
+                  (checkErr "[\"\"] |> from jsonl Map<string, int>").Message
+                  "a Map is ONE object"
+                  "jsonl keeps its refusal"
           }
           test "show renders sorted pairs and masks a Secret value" {
               Expect.equal

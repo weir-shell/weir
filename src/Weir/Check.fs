@@ -94,6 +94,9 @@ let private isSpecialMember (m: string) (field: string) : bool =
 type JsonTop =
     | TopRec of RecordDef
     | TopUnion of UnionDef
+    // a non-record Map value under `from json Map<string, V>`
+    // [D:map-values]: each key's value reads as a field of V would
+    | TopValue of Ty
 
 /// which value a slice runs on [D:range-slicing] — the type-directed
 /// choice the checker resolved, so the evaluator dispatches without
@@ -1498,6 +1501,11 @@ let private wireMono (ctx: Ctx) (env: TypeEnv) (ty: Ty) : Ty * TypeEnv =
     let ty' = go 0 ty
     ty', { env with Types = types }
 
+// one teaching for every route a non-string Map key arrives by
+// [D:map-string]: declaration, anonymous shape, the adapter slot
+let private mapKeyTeach (k: Ty) =
+    $"Map keys are strings only (every receipt has them — JSON object keys ARE strings); got Map<{formatTy k}, …>"
+
 let private jsonAdmittedSet =
     "json fields are int, float, string, bool, Uuid, Option of an admitted type, a record of admitted fields, seq of an admitted type, a seq<string * T> mapping, Map<string, T> of one, or an opaque Yaml node"
 
@@ -1531,9 +1539,7 @@ let rec private jsonAdmitted
     // a non-string key reaches here through an anonymous shape (declared
     // types validate at declaration) — same teaching as validateTy
     | TNamed("Map", [ k; _ ]) ->
-        err
-            span
-            $"{at}Map keys are strings only (every receipt has them — JSON object keys ARE strings); got Map<{formatTy k}, …>"
+        err span (at + mapKeyTeach k)
     | TNamed("Map", args) -> err span $"{at}Map takes two type arguments (Map<string, T>); got {args.Length}"
     // an opaque `Yaml` node holds any JSON subtree whole — JSON is a
     // YAML subset [D:json-yaml-field]
@@ -4502,14 +4508,28 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             // Map<string, T> in the slot [D:map-string]: peel the wrap
             // first — the inner shape then resolves through the same
             // name path a bare slot does, so anon composition is free
-            let inner, mapOf =
+            let! inner, mapOf =
                 match shape with
-                | Some(FromMap sh) -> Some sh, true
-                | sh -> sh, false
+                | Some(FromMap(TStr, sh)) ->
+                    // a value type naming a declared type (or an unknown
+                    // uppercase name) resolves through the record path
+                    // below; the built-in type names stay value types
+                    // [D:map-values]
+                    match sh with
+                    | FromTy(TNamed(n, args)) when
+                        not (List.contains n ("Option" :: "Map" :: "Yaml" :: deflessBuiltinNominals))
+                        ->
+                        Ok(Some(if args.IsEmpty then FromName n else FromApp(n, args)), true)
+                    | sh -> Ok(Some sh, true)
+                | Some(FromMap(k, _)) -> err expr.Span (mapKeyTeach k)
+                | sh -> Ok(sh, false)
 
             let! tyName =
                 match inner with
                 | None -> Ok None
+                // the label the wrap-refusal messages below print; the
+                // value-type read is its own arm [D:map-values]
+                | Some(FromTy ty) -> Ok(Some(formatTy ty))
                 | Some(FromName n) -> Ok(Some n)
                 | Some(FromApp(n, args)) ->
                     // a generic record instantiated in the slot
@@ -4530,7 +4550,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         err expr.Span $"'{n}' takes {def.Params.Length} type argument(s), got {args.Length}"
                     | Some(Union _) -> err expr.Span $"'{n}' is a union; a generic union does not cross the wire"
                     | None -> err expr.Span $"unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
-                | Some(FromMap _) -> err expr.Span "Map< > does not nest in the adapter slot"
+                // the parser reads a nested Map as a value type
+                // (FromTy) [D:map-values]
+                | Some(FromMap _) -> failwith "unreachable: a nested Map< > in the slot parses as FromTy"
                 | Some(FromAnon fields) ->
                     match firstDup (fields |> List.map fst) with
                     | Some d -> err expr.Span $"duplicate field '{d}' in the anonymous record"
@@ -4540,6 +4562,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             // below is the wire-local key [D:wire-generics]
             let slotTy, env =
                 match inner with
+                | Some(FromTy ty) -> ty, env
                 | Some(FromApp(n, args)) ->
                     let _, wenv = wireMono ctx env (TNamed(n, args))
                     TNamed(n, args), wenv
@@ -4601,6 +4624,28 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     Ok()
 
             match fmt, tyName with
+            // from json Map<string, V> with a non-record V
+            // [D:map-values]: V is admitted iff a Map<string, V> field
+            // would be — the field law, run on the value type; the
+            // wrap refusals above already turned every other format
+            | "json", _ when (match inner with
+                              | Some(FromTy _) -> true
+                              | _ -> false) ->
+                let wireTy, wenv = wireMono ctx env slotTy
+                do! jsonAdmitted true expr.Span wenv [] "" wireTy
+
+                return
+                    { Kind =
+                        TEFrom(
+                            fmt,
+                            TopValue wireTy,
+                            jsonDefsClosure wenv Map.empty wireTy,
+                            jsonUnionsClosure wenv Map.empty wireTy,
+                            false,
+                            true
+                        )
+                      Ty = TFun(TSeq TStr, TNamed("Map", [ TStr; slotTy ]))
+                      Span = expr.Span }
             // from json T reads one document -> T (pretty-printed bodies
             // pipe straight in); from json seq<T> reads one array
             // document -> seq<T> — the declared type decides what the top
@@ -6043,7 +6088,7 @@ let anonDefs (expr: Expr) : (string * TypeDef) list =
     let rec walk (e: Expr) =
         (match e.Kind with
          | EFrom(_, Some(FromAnon fields), _, _)
-         | EFrom(_, Some(FromMap(FromAnon fields)), _, _) ->
+         | EFrom(_, Some(FromMap(_, FromAnon fields)), _, _) ->
              let name = anonRecordName fields
 
              if not (acc.ContainsKey name) then
@@ -6666,9 +6711,7 @@ let rec private validateTy
     // slot refuses anything else with the narrowing's reason
     | TNamed("Map", [ TStr; v ]) -> validateTy env selfName selfArity allowed span v
     | TNamed("Map", [ k; _ ]) ->
-        err
-            span
-            $"Map keys are strings only (every receipt has them — JSON object keys ARE strings); got Map<{formatTy k}, …>"
+        err span (mapKeyTeach k)
     | TNamed("Map", args) -> err span $"Map takes two type arguments (Map<string, T>); got {List.length args}"
     | TFun(a, b) ->
         Result.bind

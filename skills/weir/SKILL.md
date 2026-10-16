@@ -1681,7 +1681,9 @@ type Bad = C of int
   ID-keyed `{ documents: Map<string, Doc> }` all read. A `Map`'s keys are DATA, not schema, and strings
   ONLY (JSON object keys ARE strings; `Map<int, …>` teaches). The
   whole document can be the map: `from json Map<string, T>` (the
-  adapter slot's third form; `{| … |}` composes in the value slot;
+  adapter slot's third form; `T` is anything a `Map` field's value
+  may be — a record, `{| … |}`, `int`, `seq<string>`, `Option<…>`,
+  another `Map` [D:map-values]; `Map<int, …>` teaches here too;
   `jsonl` refuses — a map is ONE object; `yaml` does not take it
   yet). Duplicate keys last-win. `Map` surface: `ofPairs`
   (last-wins) / `pairs` / `keys` / `values` (key-sorted) / `get`
@@ -2010,7 +2012,9 @@ conf |> Seq.iter print
   reached at import any other way — a helper passed as a value,
   composed, or in a `Seq.pmap` arm — raises at run time, located
   [D:module-import-no-commands]), not runnable. Import it with `import "./lib/x.weir"`
-  (a literal path, first in the file before declarations) or
+  (a literal path; imports go first by convention, but a later
+  `import` works — its alias is in scope from its line on,
+  [D:late-imports]) or
   `import "./lib/x.weir" as X`. Access is ALWAYS qualified:
   `X.helper`, `X.Ctx` types cross the boundary; a member named like
   a builtin (`Doc.Text`, `M.id`) exports too, reached qualified — the
@@ -2116,8 +2120,9 @@ if clean then sh -c "echo acting"
   `let r = git status | complete` binds the record. Externals only —
   builtins stay functions there (`let w = cd target` applies the
   BINDING target). The carve-outs are EXPRESSION positions: paren
-  interiors and the bare single-line `let ... in` spelling at the
-  REPL/`-e` (the `in`-swallow is structural). In a refused position a
+  interiors. The bare single-line `let ... in` is NOT one —
+  `let n = echo a b in n` runs the command, the bareword `in`
+  ending its argv [D:let-in-commands]. In a refused position a
   command-shaped RHS teaches `$()`, naming the actual context. A
   bareword `in` on a let RHS ends the command grammar; quote `"in"` to
   pass it.

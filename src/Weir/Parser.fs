@@ -2297,6 +2297,10 @@ let private bareAdapterName (w: string) : Parser<string, unit> =
 let private slotTyArgs, private slotTyArgsRef =
     createParserForwardedToRef<Ty list, unit> ()
 
+// one type in the slot's Map< > wrap [D:map-values] — the one type
+// grammar (tySyn), set after it exists
+let private slotTy, private slotTyRef = createParserForwardedToRef<Ty, unit> ()
+
 let private slotName (w: string) : Parser<FromShape, unit> =
     opt slotTyArgs
     |>> function
@@ -2314,9 +2318,10 @@ let private fromExpr =
         .>>. opt (
             // the slot takes a record name, the narrow seq<…> wrap
             // [D:from-json-seq], or an anonymous shape `{| f: ty |}`
-            // [D:anon-records] — never the general type grammar (tySyn
-            // is reachable only inside the shape's fields and a generic
-            // name's args [D:wire-generics]; the admitted set stays closed)
+            // [D:anon-records] — never the general type grammar at the
+            // top (tySyn is reachable only inside the shape's fields, a
+            // generic name's args [D:wire-generics], and the Map< > wrap's
+            // two slots [D:map-values])
             (anonShape |>> fun fs -> FromAnon fs, false)
             // the qualified spelling is recognized whole first, so the
             // fatal fires outside the slot's attempt (a fatal inside it
@@ -2353,22 +2358,30 @@ let private fromExpr =
                 identSpanned
                 >>= fun (w, _) ->
                     if w = "Map" then
-                        // Map<string, Name|{|…|}> [D:map-string]: the
-                        // key slot is literally `string` (the narrowing);
-                        // the value slot is the seq< > rule's set
+                        // Map<K, V> [D:map-string] [D:map-values]: both
+                        // slots are the one type grammar — the checker
+                        // teaches a non-string key as a declared type's
+                        // does, and V is any wire-crossable type, as a
+                        // Map field's is; `{| … |}` stays the slot's own
+                        // anon form, a dotted name the slot's teaching
                         between
                             (str_ws "<")
                             (str_ws ">")
-                            (str_ws "string"
-                             >>. str_ws ","
-                             >>. ((anonShape |>> FromAnon)
-                                  <|> (identSpanned
-                                       >>= fun (inner, _) ->
-                                           if Char.IsUpper inner[0] then
-                                               bareAdapterName inner >>= slotName
-                                           else
-                                               fail "a record name inside Map< >")))
-                        |>> fun sh -> FromMap sh, false
+                            (slotTy .>> str_ws ","
+                             .>>. ((anonShape |>> FromAnon)
+                                   <|> (attempt (
+                                            identSpanned
+                                            >>= fun (inner, _) ->
+                                                if Char.IsUpper inner[0] then
+                                                    pchar '.' >>. identSpanned |>> fun (m, _) -> (inner, m)
+                                                else
+                                                    ifail "not a qualified name"
+                                        )
+                                        >>= fun (inner, m) ->
+                                            failFatally
+                                                $"the adapter slot takes a bare record name — write '{m}', not '{inner}.{m}': imported types resolve by their plain name (they live flat; the module alias qualifies values, not types here)")
+                                   <|> (slotTy |>> FromTy)))
+                        |>> fun (k, sh) -> FromMap(k, sh), false
                     elif w = "seq" then
                         between
                             (str_ws "<")
@@ -5259,6 +5272,8 @@ let private recordBody =
 // the slot (a record literal/update cannot sit there), and tySyn does
 // not nest the form (a nested object needs a declared record).
 slotTyArgsRef.Value <- attempt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
+
+slotTyRef.Value <- tySyn
 
 anonShapeRef.Value <-
     // no attributes on an anonymous type [D:env-inline-type] (F#'s rule

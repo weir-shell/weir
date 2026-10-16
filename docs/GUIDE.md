@@ -1713,8 +1713,9 @@ make it an `Option`.
 
 When an object's keys are data rather than fixed field names, like
 objects keyed by ID, read it as a `Map<string, T>`. That works for a
-field, or for the whole document when `T` is a record (declared or
-anonymous):
+field, or for the whole document with `from json`; `T` is anything a
+field can hold — a record (declared or anonymous), `int`,
+`seq<string>`, another `Map`:
 
 ```weir
 type WDoc = { id: string }
@@ -1724,7 +1725,8 @@ docs |> Map.pairs |> Seq.iter (fun (k, d) -> print $"{k}={d.id}")
 ```
 
 Keys can only be strings, since JSON object keys are strings. A
-`Map<int, …>` field is an error that explains this. Pairs come out
+`Map<int, …>` field or `from json Map<int, …>` is an error that
+explains this. Pairs come out
 sorted by key, if a key appears twice the last one wins, and
 `to json` writes the object back. The `Map` functions:
 

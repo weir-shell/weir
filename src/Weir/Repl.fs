@@ -3721,6 +3721,14 @@ let rec private loop (state: State) =
         let next =
             match Script.assemble numbered with
             | Error msg ->
+                // the named line under a caret at its indentation
+                // [D:assembly-col], as a parse error shows its line
+                match Script.assemblyErrorAt numbered msg with
+                | Some(l, c, _) when l >= 1 && l <= srcLines.Length ->
+                    Console.WriteLine srcLines[l - 1]
+                    Console.WriteLine(String(' ', c - 1) + "^")
+                | _ -> ()
+
                 Console.WriteLine msg
                 state
             | Ok lls ->

@@ -1697,11 +1697,27 @@ let private jsonDocRead
         match top with
         | TopRec d -> d.Name
         | TopUnion u -> u.Name
+        | TopValue ty -> formatTy ty
 
     let readTopEl (prefix: string) (el: System.Text.Json.JsonElement) =
         match top with
         | TopRec d -> objRow prefix d el
         | TopUnion u -> readUnion prefix u el
+        | TopValue _ -> unreachable "the checker admits a value top only under Map< >"
+
+    match top with
+    | TopValue ty when wantMap ->
+        // a non-record value type [D:map-values]: each property reads
+        // as a Map<string, V> field's values do, paths through the key
+        match root.ValueKind with
+        | System.Text.Json.JsonValueKind.Object ->
+            root.EnumerateObject()
+            |> Seq.fold (fun m p -> Map.add p.Name (readValue $"[\"{p.Name}\"]" ty p.Value) m) Map.empty
+            |> VMap
+        | k ->
+            failwith
+                $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is Map<string, {topName}>, in: {shown}"
+    | _ ->
 
     if wantMap then
         // the ID-keyed object [D:map-string]: the top level is the map
@@ -1912,7 +1928,8 @@ let private xmlDoc
 
     match top with
     | TopRec d -> objRowXml "" d root
-    | TopUnion _ -> unreachable "the checker admits only records at the XML boundary"
+    | TopUnion _
+    | TopValue _ -> unreachable "the checker admits only records at the XML boundary"
 
 // ---- the aligned-table boundary [D:from-table] ----------------------------
 
@@ -2078,7 +2095,8 @@ let private fromAdapter
 
                 match top with
                 | TopRec def -> tableRows "from table" def strs
-                | TopUnion _ -> unreachable "the checker admits only records at the table boundary"
+                | TopUnion _
+                | TopValue _ -> unreachable "the checker admits only records at the table boundary"
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     | f -> unreachable $"the checker rejects unknown format '{f}'"
 

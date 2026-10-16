@@ -33,6 +33,30 @@ other layout errors are assembly errors, and fmt refuses those.
 Measured with a counting copy of the invariant-8 composition (the
 property stops at its first failure), same programs before and after
 (seeds 11-13 x 1,200 programs x 5 neighbors): COUNTS_TBD.
+## W2a — the audit rulings (2026-10-16)
+
+Five W2 docs-vs-binary findings, ruled by the user the same day.
+
+Scalar Map values [D:map-values]. SKILL said a whole JSON document
+reads as `Map<string, T>`; the slot's value position only took a
+record name or `{| … |}`, so `from json Map<string, int>` was a bare
+parse error while a `Map<string, int>` FIELD worked. The slot now
+parses `Map<K, V>` with tySyn and reads a non-record V through the
+field reader. Side effect: `Map<string, Map<string, R>>` reads (it
+used to be "unknown type 'Map'"). yaml was not touched — it has no
+Map wrap at all, its refusal is the stated follow-up, not the same
+path. `Map<int, …>` in the slot now teaches as a declaration does.
+
+Assembly columns [D:assembly-col]. check/LSP already carried a column
+(the recovery path computed the indentation); the runner, import,
+init, fmt, -e and the REPL printed `line N:` only. One helper now
+derives line/col from the message for every consumer.
+
+Docs only: a late `import` works from its line on [D:late-imports];
+the single-line `let … in` takes a command RHS [D:let-in-commands].
+Seen while probing, not ruled: `let x = (let n = echo a b in n)` runs
+the command in a file, while `(let n = echo a b in n)` at -e teaches
+`$()` — the paren carve-out is not uniform.
 
 ## W6 — regression automation (2026-10-15)
 

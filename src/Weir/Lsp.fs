@@ -1238,6 +1238,7 @@ let definitionTarget
                             match top with
                             | Check.TopRec d -> d.Name
                             | Check.TopUnion u -> u.Name
+                            | Check.TopValue _ -> ""
 
                         wordAt useLl.Text jcol
                         |> Option.bind (fun w -> if w = topName then typeSite topName None else None)
