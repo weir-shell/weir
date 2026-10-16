@@ -26747,6 +26747,50 @@ let teardownSeamTests =
               expectValue "[1..200] |> Seq.pmapWith 16 (fun i -> i) |> Seq.length" (VInt 200L)
           } ]
 
+let argsSecretEchoTests =
+    // Script.run sets the ambient Session.ScriptArgs — sequenced
+    let runArgs (lines: string list) (args: string list) : int =
+        let path = tempPath "weir-args-secret" + ".weir"
+        System.IO.File.WriteAllLines(path, lines)
+
+        try
+            Weir.Script.run path args
+        finally
+            System.IO.File.Delete path
+
+    testSequenced
+    <| testList
+        "Args.load secret echo"
+        [ test "Args.load never echoes a Secret's value or an unknown flag's [D:args-secret-echo]" {
+              let probe =
+                  [ "type Cli = { token: Secret; port: int }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"h3-hunter\" m -> exit 3"
+                    "| Error m when Str.contains \"--token=***\" m && Str.contains \"write '--token <value>'\" m && Str.contains \"--tokn=…\" m -> exit 0"
+                    "| Error m -> fail m"
+                    "| Ok _ -> exit 4" ]
+
+              Expect.equal (runArgs probe [ "--token=h3-hunter2"; "--tokn=h3-hunter3"; "--port"; "1" ]) 0 "masked"
+
+              let optional =
+                  [ "type Cli = { token: Option<Secret> }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"h3-hunter\" m -> exit 3"
+                    "| Error _ -> exit 0"
+                    "| Ok _ -> exit 4" ]
+
+              Expect.equal (runArgs optional [ "--token=h3-hunter2" ]) 0 "an Option<Secret> field is masked too"
+
+              let plain =
+                  [ "type Cli = { port: int }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"write '--port 8'\" m -> exit 0"
+                    "| Error m -> fail m"
+                    "| Ok _ -> exit 4" ]
+
+              Expect.equal (runArgs plain [ "--port=8" ]) 0 "a plain field still teaches with its value"
+          } ]
+
 let sweepFindingTests =
     let msgs file lines = diagsIn file lines |> List.map (fun d -> d.Message)
 
@@ -26972,6 +27016,7 @@ let allTests =
         "Weir"
         [ hardeningTests
           teardownSeamTests
+          argsSecretEchoTests
           docsBinaryTests
           hunt2CheckerTests
           sweepFindingTests

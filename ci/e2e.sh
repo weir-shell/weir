@@ -5975,7 +5975,17 @@ got=$($BIN "$odir/eq.weir" --target=prod --verbose=yes 2>&1 | tail -1 | sed 's/^
 got=$($BIN "$odir/sh.weir" --level 1 push --remote=o --depth 2 2>&1 | tail -1 | sed 's/^.*error: //' || true)
 [ "$got" = "Args.load Cli: unknown flag '--remote=o' — a flag's value is the next argument: write '--remote o'; missing required flag '--remote'" ] \
     || fail "--name=value teaching (shared twin): $got"
-echo "e2e ok: --name=value teaches '--name value'; a presence flag takes no value"
+# a Secret field's value is never echoed, nor an unknown flag's
+# [D:args-secret-echo]
+cat > "$odir/sec.weir" <<'WEOF'
+type Cli = { token: Secret; port: int }
+let cli = Args.load Cli
+print (show cli)
+WEOF
+got=$($BIN "$odir/sec.weir" --token=e2e-hunter2 --tokn=e2e-hunter3 --port 1 2>&1 | tail -1 | sed 's/^.*error: //' || true)
+[ "$got" = "Args.load Cli: unknown flag '--token=***' — a flag's value is the next argument: write '--token <value>'; unknown flag '--tokn=…'. Did you mean '--token'?; missing required flag '--token'" ] \
+    || fail "--secret=value must not echo the value: $got"
+echo "e2e ok: --name=value teaches '--name value'; a presence flag takes no value; a Secret's or unknown flag's value is never echoed"
 rm -rf "$odir"
 
 out=$($BIN "$tadir/cli.weir" --bogus --help); rc=$?

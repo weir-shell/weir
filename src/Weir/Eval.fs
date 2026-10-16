@@ -2992,16 +2992,24 @@ let private argvParseValue
     | _ -> values[f] <- wrapOpt ty (VStr raw)
 
 // an unknown long flag's message; `--name=value` for a known `--name`
-// teaches the separate-argument spelling (weir's argv has no `=` form)
-let private unknownFlagMessage (t: string) (known: string list) (presence: string -> bool) : string =
+// teaches the separate-argument spelling (weir's argv has no `=` form).
+// A value is echoed only for a known non-Secret flag [D:args-secret-echo]:
+// a Secret field's shows as ***, an unknown flag's not at all (it may be
+// a misspelled Secret).
+let private unknownFlagMessage (t: string) (known: string list) (tyOf: string -> Ty option) : string =
     match t.IndexOf '=' with
     | i when i > 2 && List.contains (t.Substring(0, i)) known ->
         let name, value = t.Substring(0, i), t.Substring(i + 1)
 
-        if presence name then
-            $"unknown flag '{t}' — '{name}' is a presence flag and takes no value"
-        else
-            $"unknown flag '{t}' — a flag's value is the next argument: write '{name} {value}'"
+        match tyOf name with
+        | Some TBool -> $"unknown flag '{t}' — '{name}' is a presence flag and takes no value"
+        | Some TSecret
+        | Some(TNamed("Option", [ TSecret ])) ->
+            $"unknown flag '{name}=***' — a flag's value is the next argument: write '{name} <value>'"
+        | _ -> $"unknown flag '{t}' — a flag's value is the next argument: write '{name} {value}'"
+    | i when i > 2 ->
+        let name = t.Substring(0, i)
+        $"unknown flag '{name}=…'{didYouMean name known}"
     | _ -> $"unknown flag '{t}'{didYouMean t known}"
 
 let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
@@ -3031,12 +3039,10 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
             match Map.tryFind t longIndex with
             | Some(f, ty, neg) -> consume f ty neg t rest
             | None ->
-                let presence n =
-                    match Map.tryFind n longIndex with
-                    | Some(_, TBool, _) -> true
-                    | _ -> false
+                let tyOf n =
+                    Map.tryFind n longIndex |> Option.map (fun (_, ty, _) -> ty)
 
-                problems.Add(unknownFlagMessage t (flagged |> List.map fst) presence)
+                problems.Add(unknownFlagMessage t (flagged |> List.map fst) tyOf)
                 go rest
         | t :: rest when t.StartsWith "-" && t.Length = 2 ->
             match Map.tryFind (t.Substring 1) shortIndex with
@@ -3186,13 +3192,13 @@ let private argvLoadShared
                      | [] -> problems.Add $"flag '{t}' needs a value")
             | Choice2Of3() ->
                 let cands = if i < caseIdx then beforeCandidates else afterCandidates
-                let presence n =
+                let tyOf n =
                     match Map.tryFind n sharedLong, Map.tryFind n payloadLong with
-                    | Some(_, TBool, _), _
-                    | None, Some(_, TBool, _) -> true
-                    | _ -> false
+                    | Some(_, ty, _), _
+                    | None, Some(_, ty, _) -> Some ty
+                    | _ -> None
 
-                problems.Add(unknownFlagMessage t cands presence)
+                problems.Add(unknownFlagMessage t cands tyOf)
                 go (i + 1) rest
             | Choice3Of3() -> go (i + 1) rest
 

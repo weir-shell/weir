@@ -2332,7 +2332,8 @@ print (f 1)
   the subcommand slot are check errors. STRICT: unknown flags (did-you-mean), unexpected
   arguments, repeats, missing requireds — all collected into ONE
   boundary error. A value is the NEXT argument (`--out x`; `--out=x`
-  is refused, teaching the spaced form). `--help` prints derived usage (short truth +
+  is refused, teaching the spaced form; the message never repeats the
+  value of a `Secret` field or of an unknown flag). `--help` prints derived usage (short truth +
   the `///` doc's first line), exit 0, even on invalid invocations; a
   field deriving `--help` is a check error (reserved). No
   positionals — spell operands as flags. The untyped floor:
