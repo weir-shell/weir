@@ -14,6 +14,11 @@ skill lines and targeted hints).
   (H3-B5..B8), and a directory watcher fast enough to catch
   File.writeAtomic's temp file (H3-E10); H3-C3 needs `ulimit -c 0`
   (`sh -c`) so the crash leaves no core.
+- 2026-10-16 | hunt3 cross-platform kit (tools/hunt3-xplat.weir) -> a
+  pwsh helper (Add-Type C#) on Windows only | Ctrl+C/Ctrl+Break and typed
+  REPL keys need GenerateConsoleCtrlEvent/WriteConsoleInput against the
+  child's own console, and the locked-file probe needs a FileShare.None
+  holder; weir has no console-event, console-input or share-mode surface.
 - 2026-10-14 | hunt2 repro gate (tools/hunt2-repro.weir) -> python3 via
   value-headed pipes, `sh -c` once | the REPL line editor needs a
   pseudo-terminal (H24/H25/H27/H34), the LSP items need raw JSON-RPC

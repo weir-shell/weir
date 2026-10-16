@@ -1,0 +1,1516 @@
+#!/usr/bin/env weir
+// Cross-platform probe kit for dev/plans/PLAN-hunt3.md brief A (Windows and
+// macOS, via CI). One probe per documented claim; each prints
+// `OK <id>` or `FAIL <id>: <detail> [claim]`.
+//
+//     weir tools/hunt3-xplat.weir --bin <the weir under test> [--os linux|macos|windows]
+//
+// Run it ON the binary under test, and pass that same binary as --bin (the
+// probes spawn, copy and pipe into it). Linux is the control: a FAIL on
+// windows/macos that is OK on linux is the finding.
+//
+// - Where the docs state a per-OS behaviour, the probe asserts THAT OS's half
+//   (the claim tag names the doc source: a SKILL section or a [D:key]).
+// - `instrument:` in a FAIL detail means the probe's own tooling broke (a
+//   missing pwsh, a symlink the runner refused), not weir.
+// - An `OK <id> (note)` carries an observation for triage (a wording, which
+//   of two documented outcomes happened), never a hidden failure.
+// - Tools that exist on one OS only (pwsh, cmd) are dynamic heads, so the
+//   script checks and runs everywhere; sh/kill/chmod/ln/env/curl/uname exist
+//   on all three runners (Git-for-Windows' usr/bin on Windows).
+// - Windows console events (Ctrl+C, Ctrl+Break, typed REPL keys) go through
+//   a pwsh helper that attaches to the child's console: weir cannot raise a
+//   console control event or write console input itself.
+// - Ports come from a block below every OS's ephemeral range
+//   [D:harness-ports]; servers bind loopback only.
+
+type Cli = {
+    /// the weir binary under test (a path; probes copy and spawn it)
+    [<Default "weir">]
+    bin: string
+    /// the runner OS as CI names it (Linux, macOS, Windows); detected when absent
+    os: Option<string>
+}
+
+let cli = Args.load Cli
+
+let detectedOs =
+    if Path.combine "a" "b" == @"a\b" then
+        "windows"
+    else
+        let u = uname -s | complete
+        if (u.stdout |> Str.join "") == "Darwin" then "macos" else "linux"
+
+let os = cli.os |> Option.map Str.toLower |> Option.defaultValue detectedOs
+let isWin = os == "windows"
+let isMac = os == "macos"
+
+let bin =
+    if (cli.bin |> Str.contains "/") || (cli.bin |> Str.contains @"\") then Path.combine pwd cli.bin else cli.bin
+
+let pwshExe = "pwsh"
+let cmdExe = "cmd"
+let cr = Str.fromBase64 "DQ=="
+let crlf = Str.fromBase64 "DQo="
+let esc = Str.fromBase64 "Gw=="
+let tab = Str.fromBase64 "CQ=="
+let pathSep = if isWin then ";" else ":"
+
+// ---- helpers ---------------------------------------------------------------
+
+let fwd s = Str.replace @"\" "/" s
+let samePath a b = Str.toLower (fwd a) == Str.toLower (fwd b)
+let check cond detail = (cond, if cond then "" else detail)
+
+let allOf checks =
+    let bad = checks |> Seq.where (fun (c, _) -> not c) |> Seq.map snd |> Seq.freeze
+    (Seq.isEmpty bad, bad |> Str.join "; ")
+
+let withNote note (ok, detail) = if ok then (true, note) else (false, detail)
+
+let oneLine s = s |> Str.replace crlf " | " |> Str.replace "\n" " | " |> Str.replace cr " "
+let clip n s = if Str.length s > n then Str.sub 0 n s + "…" else s
+let textOf r = (r.stdout |> Str.join "\n") + "\n" + (r.stderr |> Str.join "\n")
+
+let fixture d name lines =
+    let p = Path.combine d name
+    lines |> File.write p
+    p
+
+let crlfFile p lines = File.writeBytes p (Str.toUtf8 ((lines |> Str.join crlf) + crlf))
+let hexOf p = Bytes.toHex (File.readBytes p)
+let rawText p = Str.fromUtf8 (File.readBytes p)
+
+let factOf name r =
+    r.stdout
+    |> Seq.tryPick (fun l ->
+        match Str.trySplitOnce "=" l with
+        | Some (k, v) when k == name -> Some v
+        | _ -> None)
+    |> Option.defaultValue "<missing>"
+
+let awaitFile p w =
+    poll timeout=20s interval=100ms watch=w
+        File.exists p
+
+// a heartbeat file that stops growing means its writer is dead
+let stopped hb =
+    if not (File.exists hb) then
+        true
+    else
+        let s1 = File.size hb |> Size.toBytes
+        Duration.sleep 800ms
+        let s2 = File.size hb |> Size.toBytes
+        s1 == s2
+
+let freePort start = [start..(start + 60)] |> Seq.find (fun p -> not (Net.portOpen p))
+
+// ---- fixtures (plain blocks; parameters ride argv, never templating) --------
+
+let argsFixture = <<<
+    Self.args |> Seq.map (fun a -> {| v = a |}) |> to jsonl |> Seq.iter print
+
+let factsFixture = <<<
+    print $"home={Path.home ()}"
+    print $"config={Path.configHome ()}"
+    print $"state={Path.stateHome ()}"
+
+let envFixture = <<<
+    Self.args |> Seq.iter (fun n -> print $"{n}={Env.get n |> Option.defaultValue "<unset>"}")
+
+let envVarsFixture = <<<
+    let want = Self.args |> Seq.head
+    Env.vars |> Seq.where (fun e -> Str.toLower e.name == want) |> Seq.iter (fun e -> print $"{e.name}={e.value}")
+
+let wireFixture = <<<
+    type C = {
+        [<Wire "weir_h3_wire">]
+        v: Option<string>
+    }
+    let c = Env.load C
+    print $"v={c.v |> Option.defaultValue "<none>"}"
+
+// the scope fixture: a tmp dir, a scoped heartbeat child, an always block,
+// then the mode — sleep (await a signal), fail, or exit 3
+let scopeFixture = <<<
+    let a = Self.args |> Seq.freeze
+    let md = a[0]
+    let hb = Str.replace @"\" "/" $"{md}/hb"
+    let mode = a[1]
+    within tmp t
+        [t] |> File.write $"{md}/tmp-path"
+        within proc beat = sh -c $"while :; do echo x >> '{hb}'; sleep 0.1; done"
+            within
+                Duration.sleep 400ms
+                ["ready"] |> File.write $"{md}/ready"
+                match mode with
+                | "fail" -> fail "boom"
+                | "exit3" -> exit 3
+                | _ -> Duration.sleep 30s
+            always
+                ["ran"] |> File.write $"{md}/always"
+
+let tmpCwdFixture = <<<
+    let md = Self.args |> Seq.head
+    within tmp t
+        within cd t
+            [t] |> File.write $"{md}/tmp-path"
+            within proc s = sh -c "sleep 30"
+                Duration.sleep 300ms
+
+let lockFixture = <<<
+    let a = Self.args |> Seq.freeze
+    let lf = a[0]
+    let ready = a[1]
+    let secs = Str.toInt a[2]
+    within lock lf
+        ["held"] |> File.write ready
+        Duration.sleep (Duration.s secs)
+
+let appendFixture = <<<
+    let a = Self.args |> Seq.freeze
+    let p = a[0]
+    let tag = a[1]
+    [1..50] |> Seq.iter (fun i -> File.append p [$"{tag}-{i}-xxxxxxxxxxxxxxxxxxxxxxxx"])
+
+let serveHoldFixture = <<<
+    let a = Self.args |> Seq.freeze
+    let port = Str.toInt a[0]
+    let md = a[1]
+    let h = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "holder" }
+    within serve srv = { port = port; maxConcurrent = 1 } h
+        ["up"] |> File.write $"{md}/ready"
+        Duration.sleep 8s
+
+let stdinFixture = <<<
+    type Doc = { name: string; n: int }
+    let cr = Str.fromBase64 "DQ=="
+    let lines = Self.stdin |> Seq.freeze
+    print $"crs={lines |> Seq.where (Str.contains cr) |> Seq.length}"
+    let doc = lines |> from yaml Doc
+    print $"name=[{doc.name}] n={doc.n}"
+
+let crlfScriptFixture = <<<
+    // saved with CRLF line endings by the probe
+    let cr = Str.fromBase64 "DQ=="
+    let xs = <<<
+        alpha
+        beta
+    let n =
+        match xs |> Seq.length with
+        | 2 -> "two"
+        | _ -> "other"
+    print n
+    xs |> Seq.iter (fun l -> print $"{l} cr={Str.contains cr l}")
+    let t = $<<<
+        n is {n}
+    t |> Seq.iter (fun l -> print $"{l} cr={Str.contains cr l}")
+
+let fmtFixture = <<<
+    let f x =
+      x + 1
+    print (show (f 1))
+
+let printFixture = <<<
+    print "a"
+    print "b"
+    printerr "e"
+
+// the Windows console helper: start a child in its OWN (hidden) console,
+// then attach to it to raise Ctrl+C / Ctrl+Break or type keys; results go
+// to -Out because the helper detaches from its own console to do it
+let conHelper = <<<
+    param(
+        [string]$Mode,
+        [string]$Exe,
+        [string]$ArgLine = "none",
+        [string]$Ready = "none",
+        [string]$Keys = "none",
+        [string]$Out,
+        [int]$TimeoutMs = 20000,
+        [switch]$NoColor
+    )
+    $ErrorActionPreference = 'Stop'
+    Add-Type -TypeDefinition @'
+    using System;
+    using System.Collections.Generic;
+    using System.Runtime.InteropServices;
+    public static class H3Con {
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool FreeConsole();
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool AttachConsole(uint pid);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleCtrlHandler(IntPtr handler, bool add);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GenerateConsoleCtrlEvent(uint ev, uint group);
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool WriteConsoleInputW(IntPtr h, KeyRecord[] recs, uint n, out uint written);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool CloseHandle(IntPtr h);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern short VkKeyScanW(char c);
+
+        [StructLayout(LayoutKind.Explicit, Size = 20, CharSet = CharSet.Unicode)]
+        public struct KeyRecord {
+            [FieldOffset(0)] public ushort EventType;
+            [FieldOffset(4)] public int KeyDown;
+            [FieldOffset(8)] public ushort RepeatCount;
+            [FieldOffset(10)] public ushort VirtualKeyCode;
+            [FieldOffset(12)] public ushort VirtualScanCode;
+            [FieldOffset(14)] public char UnicodeChar;
+            [FieldOffset(16)] public uint ControlKeyState;
+        }
+
+        static KeyRecord Rec(bool down, ushort vk, char ch, uint ctrl) {
+            var r = new KeyRecord();
+            r.EventType = 1; r.KeyDown = down ? 1 : 0; r.RepeatCount = 1;
+            r.VirtualKeyCode = vk; r.UnicodeChar = ch; r.ControlKeyState = ctrl;
+            return r;
+        }
+
+        static string Attach(uint pid) {
+            FreeConsole();
+            if (!AttachConsole(pid)) return "AttachConsole failed: " + Marshal.GetLastWin32Error();
+            SetConsoleCtrlHandler(IntPtr.Zero, true);
+            return "";
+        }
+
+        public static string Ctrl(uint pid, uint ev) {
+            string e = Attach(pid);
+            if (e != "") return e;
+            bool ok = GenerateConsoleCtrlEvent(ev, 0);
+            int err = Marshal.GetLastWin32Error();
+            System.Threading.Thread.Sleep(300);
+            FreeConsole();
+            return ok ? "" : "GenerateConsoleCtrlEvent failed: " + err;
+        }
+
+        // one action per line: TEXT:<chars>, ENTER, CTRL:<letter>, SLEEP:<ms>
+        public static string Keys(uint pid, string[] actions) {
+            string e = Attach(pid);
+            if (e != "") return e;
+            IntPtr h = CreateFileW("CONIN$", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+            if (h == new IntPtr(-1)) { FreeConsole(); return "CONIN$ open failed: " + Marshal.GetLastWin32Error(); }
+            string result = "";
+            foreach (var a in actions) {
+                var recs = new List<KeyRecord>();
+                if (a.StartsWith("TEXT:")) {
+                    foreach (char c in a.Substring(5)) {
+                        short scan = VkKeyScanW(c);
+                        ushort vk = (ushort)(scan & 0xff);
+                        uint st = ((scan >> 8) & 1) != 0 ? 0x0010u : 0u;
+                        recs.Add(Rec(true, vk, c, st)); recs.Add(Rec(false, vk, c, st));
+                    }
+                } else if (a == "ENTER") {
+                    recs.Add(Rec(true, 0x0D, '\r', 0)); recs.Add(Rec(false, 0x0D, '\r', 0));
+                } else if (a.StartsWith("CTRL:")) {
+                    char L = char.ToUpperInvariant(a[5]);
+                    char cc = (char)(L - 'A' + 1);
+                    recs.Add(Rec(true, (ushort)L, cc, 0x0008)); recs.Add(Rec(false, (ushort)L, cc, 0x0008));
+                } else if (a.StartsWith("SLEEP:")) {
+                    System.Threading.Thread.Sleep(int.Parse(a.Substring(6)));
+                    continue;
+                }
+                uint w;
+                if (recs.Count > 0 && !WriteConsoleInputW(h, recs.ToArray(), (uint)recs.Count, out w)) {
+                    result = "WriteConsoleInput failed: " + Marshal.GetLastWin32Error();
+                    break;
+                }
+            }
+            CloseHandle(h);
+            FreeConsole();
+            return result;
+        }
+    }
+    '@
+    function Say($s) { Add-Content -LiteralPath $Out -Value $s }
+    if ($NoColor) { $env:NO_COLOR = '1' } else { Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue }
+    $sp = @{ FilePath = $Exe; PassThru = $true; WindowStyle = 'Hidden' }
+    if ($ArgLine -ne 'none') { $sp.ArgumentList = $ArgLine }
+    $p = Start-Process @sp
+    $null = $p.Handle
+    Say "PID $($p.Id)"
+    if ($Ready -ne 'none') {
+        $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
+        while (-not (Test-Path -LiteralPath $Ready)) {
+            if ($p.HasExited) { Say "EARLY-EXIT $($p.ExitCode)"; exit 0 }
+            if ((Get-Date) -gt $deadline) { Say "READY-TIMEOUT"; & taskkill /T /F /PID $p.Id | Out-Null; exit 0 }
+            Start-Sleep -Milliseconds 100
+        }
+    } else {
+        Start-Sleep -Milliseconds 2000
+    }
+    $err = switch ($Mode) {
+        'ctrlc' { [H3Con]::Ctrl([uint32]$p.Id, 0) }
+        'ctrlbreak' { [H3Con]::Ctrl([uint32]$p.Id, 1) }
+        'keys' { [H3Con]::Keys([uint32]$p.Id, [string[]](Get-Content -LiteralPath $Keys)) }
+        default { "unknown mode $Mode" }
+    }
+    if ($err -ne '') { Say "HELPER-ERROR $err" }
+    if ($p.WaitForExit($TimeoutMs)) { Say "EXIT $($p.ExitCode)" } else { Say "TIMEOUT"; & taskkill /T /F /PID $p.Id | Out-Null }
+
+let shareNoneHolder = <<<
+    param([string]$Path, [string]$Ready, [int]$HoldMs)
+    $fs = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
+    Set-Content -LiteralPath $Ready -Value 'held'
+    Start-Sleep -Milliseconds $HoldMs
+    $fs.Close()
+
+// run the console helper; the result is the helper's -Out lines
+let conRun d mode argLine ready keys noColor =
+    let ps = fixture d "h3con.ps1" conHelper
+    let out = Path.combine d $"con-{mode}.out"
+    let extra = if noColor then ["-NoColor"] else []
+    if File.exists out then File.delete out
+    let r = ^$pwshExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ps -Mode $mode -Exe $bin -ArgLine $argLine -Ready $ready -Keys $keys -Out $out $@extra | complete
+    if File.exists out then
+        File.read out |> Seq.freeze
+    else
+        [$"instrument: pwsh helper wrote nothing (exit {r.exitCode}): {textOf r |> oneLine |> clip 300}"]
+
+let conExit lines =
+    lines
+    |> Seq.tryPick (function
+        | Regex @"^EXIT (-?\d+)$" c -> Some (Str.toInt c)
+        | _ -> None)
+
+// ============================================================================
+// the probes: each takes its own scratch dir and returns (passed, detail)
+// ============================================================================
+
+// X0 — instrument control: the kit's OS detection agrees with the runner's label
+let x0 d = check (os == detectedOs) $"--os says {os}, the binary looks like {detectedOs}"
+
+// ---- paths -----------------------------------------------------------------
+
+// X1 — Path members are platform-native; pwd is a native absolute path [D:windows-v1] [D:pwd-string]
+let x1 d =
+    let c = Path.combine "a" "b"
+    let want = if isWin then @"a\b" else "a/b"
+    let p = pwd
+    let absOk = if isWin then Str.isMatch @"^[A-Za-z]:\\" p else Str.startsWith "/" p
+    allOf [ check (c == want) $"Path.combine a b = {c}, want {want}"; check absOk $"pwd is not a native absolute path: {p}" ]
+
+// X2 — path INPUT stays liberal: forward slashes work on every OS [D:windows-v1]
+let x2 d =
+    let p = "a/b/c.txt"
+    allOf [
+        check (Path.fileName p == "c.txt") $"fileName = {Path.fileName p}"
+        check (Path.stem p == "c") $"stem = {Path.stem p}"
+        check (Path.extension p == ".txt") $"extension = {Path.extension p}"
+        check (fwd (Path.dir p) == "a/b") $"dir = {Path.dir p}"
+    ]
+
+// X3 — a backslash is a separator on Windows and a filename byte on POSIX (System.IO semantics, SKILL Paths; [D:path-under] separators are never rewritten)
+let x3 d =
+    let p = @"a\b\c.txt"
+    let f = Path.fileName p
+    let want = if isWin then "c.txt" else p
+    check (f == want) $"Path.fileName {p} = {f}, want {want}"
+
+// X4 — drive letters: an absolute second arg wins in Path.combine (SKILL Paths), and `C:/` is a root only on Windows; normalize swallows `..` at a root (SKILL Paths)
+let x4 d =
+    let c = Path.combine "C:/x" "D:/y"
+    let wantC = if isWin then "D:/y" else "C:/x/D:/y"
+    let n = fwd (Path.normalize "C:/../y")
+    let wantN = if isWin then "C:/y" else "y"
+    allOf [ check (fwd c == wantC) $"Path.combine C:/x D:/y = {c}, want {wantC}"; check (n == wantN) $"Path.normalize C:/../y = {n}, want {wantN}" ]
+
+// X5 — Path.under refuses /x, \x, C:x, C:\x and UNC on EVERY platform; ..\..\etc escapes on Windows, one segment on POSIX [D:path-under] [D:pty-coverage]
+let x5 d =
+    let base = if isWin then @"C:\safe" else "/safe"
+    let shapes = ["/x"; @"\x"; "C:x"; @"C:\x"; "C:/x"; @"\\server\share\x"; "//server/share/x"]
+    let leaked = shapes |> Seq.where (fun s -> (Path.under base s |> try) <> None) |> Seq.freeze
+    let dotdot = Path.under base @"..\..\etc" |> try
+    let dotOk = if isWin then dotdot == None else dotdot <> None
+    allOf [
+        check (Seq.isEmpty leaked) $"joined instead of refusing: {leaked |> Str.join ", "}"
+        check dotOk $"Path.under {base} ..\\..\\etc = {show dotdot}"
+    ]
+
+// X6 — UNC paths decompose with System.IO semantics on Windows; on POSIX the whole string is one name [D:surface-path]
+let x6 d =
+    let u = @"\\server\share\f.txt"
+    if isWin then
+        allOf [
+            check (Path.fileName u == "f.txt") $"fileName = {Path.fileName u}"
+            check (Path.dir u == @"\\server\share") $"dir = {Path.dir u}"
+            check (Path.combine @"\\server\share" "x" == @"\\server\share\x") $"combine = {Path.combine @"\\server\share" "x"}"
+        ]
+    else
+        check (Path.fileName u == u) $"fileName = {Path.fileName u}"
+
+// X7 — a typed word-leading ~ in a command line is Path.home at run time; quoted stays literal [D:tilde]
+let x7 d =
+    let fx = fixture d "args.weir" argsFixture
+    let r = ^$bin $fx ~/x ~ "~/q" | complete
+    let got = r.stdout |> from jsonl {| v: string |} |> Seq.map (fun x -> x.v) |> Seq.freeze
+    let h = Path.home ()
+    let want = [h + "/x"; h; "~/q"]
+    check (Seq.equal got want) $"argv = {show got}, want {show want}"
+
+// X8 — home is $HOME verbatim on POSIX [D:home-verbatim]; on Windows the user profile, which no env var moves [D:tilde] (e2e tilde cell)
+let x8 d =
+    let fx = fixture d "facts.weir" factsFixture
+    let fake = Path.combine d "fakehome"
+    let r = HOME=$fake ^$bin $fx | complete
+    let home = factOf "home" r
+    if isWin then
+        let prof = Env.get "USERPROFILE" |> Option.defaultValue "<unset>"
+        check (samePath home prof) $"Path.home = {home} under HOME={fake}, want the profile {prof}"
+    else
+        check (home == fake) $"Path.home = {home}, want HOME verbatim {fake}"
+
+// X9 — config/state dirs: POSIX follows XDG_* else ~/.config / ~/.local/state; Windows is %APPDATA% / %LOCALAPPDATA% and ignores XDG [D:path-home] [D:windows-v1]
+let x9 d =
+    let fx = fixture d "facts.weir" factsFixture
+    let c = Path.combine d "xc"
+    let s = Path.combine d "xs"
+    let r = XDG_CONFIG_HOME=$c XDG_STATE_HOME=$s ^$bin $fx | complete
+    let gotC = factOf "config" r
+    let gotS = factOf "state" r
+    if isWin then
+        let ad = Env.get "APPDATA" |> Option.defaultValue "<unset>"
+        let lad = Env.get "LOCALAPPDATA" |> Option.defaultValue "<unset>"
+        allOf [ check (samePath gotC ad) $"configHome = {gotC}, want %APPDATA% {ad}"; check (samePath gotS lad) $"stateHome = {gotS}, want %LOCALAPPDATA% {lad}" ]
+    else
+        let fake = Path.combine d "h"
+        let u = env -u XDG_CONFIG_HOME -u XDG_STATE_HOME $"HOME={fake}" $bin $fx | complete
+        let uC = factOf "config" u
+        let uS = factOf "state" u
+        allOf [
+            check (gotC == c) $"configHome = {gotC}, want XDG_CONFIG_HOME {c}"
+            check (gotS == s) $"stateHome = {gotS}, want XDG_STATE_HOME {s}"
+            check (uC == fake + "/.config") $"configHome (XDG unset) = {uC}"
+            check (uS == fake + "/.local/state") $"stateHome (XDG unset) = {uS}"
+        ]
+
+// X10 — a case-variant name: exists follows the filesystem (case-insensitive on Windows/macOS), and File.copy REFUSES an existing destination, never clobbering the source [D:fs-members]
+let x10 d =
+    let a = Path.combine d "cs.txt"
+    ["orig"] |> File.write a
+    let insens = isWin || isMac
+    let ex = File.exists (Path.combine d "CS.TXT")
+    let cp = File.copy a (Path.combine d "CS.txt") |> try
+    let intact = Seq.equal (File.read a) ["orig"]
+    allOf [
+        check (ex == insens) $"File.exists CS.TXT = {ex} beside cs.txt"
+        check ((cp == None) == insens) $"File.copy cs.txt CS.txt {if cp == None then "refused" else "copied"}"
+        check intact "cs.txt lost its content (data loss)"
+    ]
+
+// X11 — a case-only File.move never loses the file: renamed or refused, the content survives under one name [D:fs-members]
+let x11 d =
+    let a = Path.combine d "mv.txt"
+    ["payload"] |> File.write a
+    let mv = File.move a (Path.combine d "MV.txt") |> try
+    let survivors = Dir.list d |> Seq.where (fun p -> Str.toLower (Path.fileName p) == "mv.txt") |> Seq.freeze
+    let names = survivors |> Seq.map Path.fileName |> Str.join ","
+    let res =
+        allOf [
+            check ((survivors |> Seq.length) == 1) $"after the move: [{names}]"
+            check (survivors |> Seq.forall (fun p -> Seq.equal (File.read p) ["payload"])) "content changed"
+        ]
+    withNote $"case-only move {if mv == None then "refused" else "renamed"} -> {names}" res
+
+// X12 — listings are ORDINAL on every OS (uppercase first, never the locale): Dir.list, Dir.stat, Path.glob agree (SKILL Commands: ls rows sorted)
+let x12 d =
+    ["Zeta.txt"; "alpha.txt"; "Beta.txt"] |> Seq.iter (fun n -> ["x"] |> File.write (Path.combine d n))
+    let want = ["Beta.txt"; "Zeta.txt"; "alpha.txt"]
+    let viaList = Dir.list d |> Seq.map Path.fileName |> Seq.freeze
+    let viaStat = Dir.stat d |> Seq.map (fun r -> r.name) |> Seq.freeze
+    let viaGlob = Path.glob $"{d}/*.txt" |> Seq.map Path.fileName |> Seq.freeze
+    allOf [
+        check (Seq.equal viaList want) $"Dir.list order {show viaList}"
+        check (Seq.equal viaStat want) $"Dir.stat order {show viaStat}"
+        check (Seq.equal viaGlob want) $"Path.glob order {show viaGlob}"
+    ]
+
+// X13 — Path.glob takes a native directory prefix: interpolated, built with Path.combine (native separators), or forward-slashed (SKILL Paths: Path.glob; [D:windows-v1] native members)
+let x13 d =
+    ["g1.txt"; "g2.txt"] |> Seq.iter (fun n -> ["x"] |> File.write (Path.combine d n))
+    let viaInterp = Path.glob $"{d}/*.txt" |> Seq.length
+    let viaCombine = Path.glob (Path.combine d "*.txt") |> Seq.length
+    let viaFwd = Path.glob $"{fwd d}/*.txt" |> Seq.length
+    allOf [
+        check (viaInterp == 2) $"glob {d}/*.txt found {viaInterp}"
+        check (viaCombine == 2) $"glob (Path.combine d \"*.txt\") found {viaCombine}"
+        check (viaFwd == 2) $"glob {fwd d}/*.txt found {viaFwd}"
+    ]
+
+// ---- line endings ----------------------------------------------------------
+
+// X14 — a CRLF-saved script checks and runs byte-identically to its LF twin; heredoc lines carry no CR [D:content-bytes]
+let x14 d =
+    let lf = fixture d "lf.weir" crlfScriptFixture
+    let cp = Path.combine d "crlf.weir"
+    crlfFile cp crlfScriptFixture
+    let hasCr = hexOf cp |> Str.contains "0d0a"
+    let rl = ^$bin $lf | complete
+    let rc = ^$bin $cp | complete
+    let ck = ^$bin check $cp | complete
+    allOf [
+        check hasCr "instrument: the CRLF twin has no CR"
+        check (ck.exitCode == 0) $"check on the CRLF file exited {ck.exitCode}: {textOf ck |> oneLine |> clip 300}"
+        check (rc.exitCode == 0 && rl.exitCode == 0) $"exits lf={rl.exitCode} crlf={rc.exitCode}: {textOf rc |> oneLine |> clip 300}"
+        check (Seq.equal rl.stdout rc.stdout) $"stdout differs: lf={show rl.stdout} crlf={show rc.stdout}"
+        check (not (rc.stdout |> Seq.exists (Str.contains "cr=True"))) $"a heredoc line kept its CR: {show rc.stdout}"
+    ]
+
+// X15 — weir fmt keeps a file's line endings (LF stays LF, CRLF stays CRLF), ends in exactly one newline, and --check passes the result (CHANGELOG Unreleased: fmt keeps line endings)
+let x15 d =
+    let lf = fixture d "lf.weir" fmtFixture
+    let cp = Path.combine d "crlf.weir"
+    crlfFile cp fmtFixture
+    let fl = ^$bin fmt $lf | complete
+    let fc = ^$bin fmt $cp | complete
+    let tl = rawText lf
+    let tc = rawText cp
+    let ckc = ^$bin fmt --check $cp | complete
+    let ckl = ^$bin fmt --check $lf | complete
+    allOf [
+        check (fl.exitCode == 0 && fc.exitCode == 0) $"fmt exits lf={fl.exitCode} crlf={fc.exitCode}: {textOf fc |> oneLine |> clip 200}"
+        check (tl |> Str.contains "    x + 1") "fmt did not reindent the LF file"
+        check (tc |> Str.contains "    x + 1") "fmt did not reindent the CRLF file"
+        check (not (tl |> Str.contains cr)) "the LF file gained a CR"
+        check ((tl |> Str.endsWith "\n") && not (tl |> Str.endsWith "\n\n")) "the LF file does not end in exactly one newline"
+        check (not (tc |> Str.replace crlf "" |> Str.contains "\n")) "the CRLF file has a bare LF"
+        check ((tc |> Str.endsWith crlf) && not (tc |> Str.endsWith (crlf + crlf))) "the CRLF file does not end in exactly one CRLF"
+        check (ckc.exitCode == 0 && ckl.exitCode == 0) $"fmt --check on fmt output: lf={ckl.exitCode} crlf={ckc.exitCode}"
+    ]
+
+// X16 — File.write/File.append always write LF: a written file is data [D:lf-output]
+let x16 d =
+    let p = Path.combine d "w.txt"
+    ["a"; "b"] |> File.write p
+    let h1 = hexOf p
+    File.append p ["c"]
+    let h2 = hexOf p
+    allOf [ check (h1 == "610a620a") $"File.write bytes {h1}"; check (h2 == "610a620a630a") $"File.append bytes {h2}" ]
+
+// X17 — redirected stdout/stderr and a child's stdin are LF on every OS [D:lf-output]
+let x17 d =
+    let fx = fixture d "pr.weir" printFixture
+    let out = Path.combine d "out.bin"
+    let err = Path.combine d "err.bin"
+    let fed = Path.combine d "fed.bin"
+    let r = sh -c $"'{fwd bin}' '{fwd fx}' > '{fwd out}' 2> '{fwd err}'" | complete
+    let _f = ["a"; "b"] | sh -c $"cat > '{fwd fed}'" | complete
+    allOf [
+        check (r.exitCode == 0) $"instrument: the redirect run exited {r.exitCode}: {textOf r |> oneLine |> clip 200}"
+        check (File.exists out && hexOf out == "610a620a") $"redirected stdout bytes {if File.exists out then hexOf out else "<none>"}"
+        check (File.exists err && hexOf err == "650a") $"redirected stderr bytes {if File.exists err then hexOf err else "<none>"}"
+        check (File.exists fed && hexOf fed == "610a620a") $"a child's stdin bytes {if File.exists fed then hexOf fed else "<none>"}"
+    ]
+
+// X18 — REPL history: `#history` names the file at <state>/weir/history (POSIX XDG_STATE_HOME; Windows %LOCALAPPDATA%\weir\), reads CRLF lines without CR, and a piped session saves nothing [D:repl-history] (SECURITY history, docs/repl.md History) [D:lf-output]
+let x18 d =
+    let sd = Path.combine d "state"
+    let stateBase = if isWin then Path.stateHome () else sd
+    let hdir = Path.combine stateBase "weir"
+    let hfile = Path.combine hdir "history"
+    let backup = if isWin && File.exists hfile then Some (File.readBytes hfile) else None
+    let seed = Str.toUtf8 ("seed-one" + crlf + "seed-two" + crlf)
+    let body () =
+        Dir.create hdir
+        File.writeBytes hfile seed
+        let r =
+            within env XDG_STATE_HOME=$sd
+                let rr = ["#history"] | ^$bin | complete
+                rr
+        let header =
+            r.stdout
+            |> Seq.tryPick (function
+                | Regex @"history at (.*) \(\d+ entries\)" p -> Some p
+                | _ -> None)
+            |> Option.defaultValue "<no header>"
+        let after = File.readBytes hfile
+        allOf [
+            check (r.exitCode == 0) $"piped REPL exited {r.exitCode}"
+            check (samePath header hfile) $"#history names {header}, want {hfile}"
+            check (r.stdout |> Seq.exists (Str.contains "seed-one")) $"seeded CRLF entry missing: {r.stdout |> Str.join " | " |> clip 300}"
+            check (not (r.stdout |> Seq.exists (Str.contains cr))) "an entry kept its CR"
+            check (after == seed) "the piped session rewrote the history file"
+        ]
+    let res = body () |> try result
+    match backup with
+    | Some b -> File.writeBytes hfile b
+    | None -> if isWin then File.delete hfile
+    match res with
+    | Ok v -> v
+    | Error m -> (false, $"probe raised: {oneLine m}")
+
+type CYaml = { name: string; replicas: int; s: string }
+type CJson = { name: string; n: int }
+type CSub = { k: string }
+type CToml = { name: string; n: int; sub: CSub }
+type CXml = { Name: string }
+type CRow = { name: string; status: string }
+type CL = { v: string }
+
+// X19 — the typed adapters read CRLF documents from File.read: yaml (incl. a | block), json, toml, xml, table, jsonl, and Env.fromFile dotenv; no value keeps a CR [D:content-bytes] [D:format-surface-json] [D:format-surface-dotenv]
+let x19 d =
+    let w name lines =
+        let p = Path.combine d name
+        crlfFile p lines
+        File.read p |> Seq.freeze
+    let y = w "a.yaml" ["name: web"; "replicas: 3"; "s: |"; "  l1"; "  l2"] |> from yaml CYaml
+    let j = w "a.json" ["{"; "  \"name\": \"web\","; "  \"n\": 3"; "}"] |> from json CJson
+    let t = w "a.toml" ["name = \"web\""; "n = 3"; "[sub]"; "k = \"v\""] |> from toml CToml
+    let x = w "a.xml" ["<Project>"; "  <Name>web</Name>"; "</Project>"] |> from xml CXml
+    let rows = w "a.txt" ["NAME   STATUS"; "web-1  Running"] |> from table CRow |> Seq.freeze
+    let ls = w "a.jsonl" ["{\"v\":\"a\"}"; "{\"v\":\"b\"}"] |> from jsonl CL |> Seq.map (fun l -> l.v) |> Seq.freeze
+    let envp = Path.combine d "a.env"
+    crlfFile envp ["A=1"; "B=two"]
+    let ev = Env.fromFile envp |> Seq.map (fun e -> e.value) |> Seq.freeze
+    allOf [
+        check (y.name == "web" && y.replicas == 3) $"yaml {show y}"
+        check (y.s == "l1\nl2\n") $"yaml block scalar {show y.s}"
+        check (j.name == "web" && j.n == 3) $"json {show j}"
+        check (t.name == "web" && t.n == 3 && t.sub.k == "v") $"toml {show t}"
+        check (x.Name == "web") $"xml {show x}"
+        check ((rows |> Seq.map (fun r -> r.status) |> Str.join ",") == "Running") $"table {show rows}"
+        check (Seq.equal ls ["a"; "b"]) $"jsonl {show ls}"
+        check (Seq.equal ev ["1"; "two"]) $"dotenv {show ev}"
+    ]
+
+// X20 — CRLF on a pipe: a script's Self.stdin and a command's captured stdout carry no CR, so from yaml reads them [D:content-bytes] [D:windows-viability] (stdout capture handles CRLF)
+let x20 d =
+    let fx = fixture d "stdin.weir" stdinFixture
+    let r = ["name: web" + cr; "n: 3" + cr] | ^$bin $fx | complete
+    let cmdLines = sh -c "printf 'name: web\\r\\nn: 3\\r\\n'" |> Seq.freeze
+    let doc = cmdLines |> from yaml CJson
+    allOf [
+        check (r.exitCode == 0) $"stdin fixture exited {r.exitCode}: {textOf r |> oneLine |> clip 300}"
+        check (factOf "crs" r == "0") $"Self.stdin lines carrying CR: {factOf "crs" r}"
+        check (r.stdout |> Seq.exists (fun l -> l == "name=[web] n=3")) $"from yaml over Self.stdin: {show r.stdout}"
+        check (not (cmdLines |> Seq.exists (Str.contains cr))) $"captured stdout kept CR: {show cmdLines}"
+        check (doc.name == "web" && doc.n == 3) $"from yaml over command stdout: {show doc}"
+    ]
+
+// ---- process spawn ---------------------------------------------------------
+
+// X21 — argv reaches a native executable verbatim, one element per word: spaces, quotes, backslashes before quotes, a trailing backslash, the empty arg, metacharacters [D:windows-s2] (SKILL Commands: `$@xs` never re-split)
+let x21 d =
+    let fx = fixture d "args.weir" argsFixture
+    let tricky = [
+        "plain"
+        "two words"
+        ""
+        " lead"
+        "trail "
+        "a\"b"
+        "\"quoted\""
+        @"back\slash"
+        @"trail\"
+        @"two\\"
+        @"a\""b"
+        @"a\\""b"
+        "tab" + tab + "in"
+        "%PATH%"
+        "^caret"
+        "a&b|c<d>e"
+        "*"
+        "?"
+        "-dash"
+        "--flag=v"
+        "é😀"
+        "semi;colon"
+        "$HOME"
+        "'single'"
+    ]
+    let r = ^$bin $fx $@tricky | complete
+    let got = r.stdout |> from jsonl {| v: string |} |> Seq.map (fun x -> x.v) |> Seq.freeze
+    let diffs =
+        Seq.zip tricky got
+        |> Seq.where (fun (a, b) -> a <> b)
+        |> Seq.map (fun (a, b) -> $"sent {show a} got {show b}")
+        |> Seq.freeze
+    allOf [
+        check ((got |> Seq.length) == (tricky |> Seq.length)) $"sent {tricky |> Seq.length} args, got {got |> Seq.length}: {show got}"
+        check (Seq.isEmpty diffs) (diffs |> Str.join "; ")
+    ]
+
+let tool d name lines =
+    let p = Path.combine d name
+    if isWin then crlfFile p lines else lines |> File.write p
+    p
+
+// X22 — bare names resolve .bat/.cmd through PATHEXT on Windows (exit code carried); on POSIX the extension list is empty: a bare name finds only an executable file [D:windows-v1] [D:windows-ci-fixes] round 18
+let x22 d =
+    let td = Path.combine d "bin"
+    Dir.create td
+    let _b = tool td "h3bat.bat" ["@echo off"; "echo bat-ok"; "exit /b 7"]
+    let _c = tool td "h3cmd.cmd" ["@echo off"; "echo cmd-ok"]
+    let np = td + pathSep + (Env.get "PATH" |> Option.defaultValue "")
+    if isWin then
+        let fx = fixture d "bat.weir" [
+            "let b = h3bat | complete"
+            "print $\"bat={b.stdout |> Str.join \",\"} code={b.exitCode}\""
+            "let c = h3cmd | complete"
+            "print $\"cmd={c.stdout |> Str.join \",\"} code={c.exitCode}\""
+        ]
+        let r = PATH=$np ^$bin $fx | complete
+        allOf [
+            check (factOf "bat" r == "bat-ok code=7") $"h3bat: {textOf r |> oneLine |> clip 300}"
+            check (factOf "cmd" r == "cmd-ok code=0") $"h3cmd: {textOf r |> oneLine |> clip 300}"
+        ]
+    else
+        let sh1 = tool td "h3sh" ["#!/bin/sh"; "echo sh-ok"]
+        let _m = chmod 755 $sh1 | complete
+        let okFx = fixture d "sh.weir" ["let s = h3sh | complete"; "print $\"sh={s.stdout |> Str.join \",\"}\""]
+        let badFx = fixture d "bad.weir" ["h3bat"]
+        let r1 = PATH=$np ^$bin $okFx | complete
+        let r2 = PATH=$np ^$bin $badFx | complete
+        allOf [
+            check (factOf "sh" r1 == "sh-ok") $"h3sh: {textOf r1 |> oneLine |> clip 300}"
+            check (r2.exitCode <> 0 && (textOf r2 |> Str.contains "not found")) $"bare h3bat beside h3bat.bat: exit {r2.exitCode}: {textOf r2 |> oneLine |> clip 300}"
+        ]
+
+// X23 — PATHEXT is read from the environment, in its order (Windows); POSIX ignores PATHEXT entirely [D:windows-s2] [D:format-surface-platform]
+let x23 d =
+    let td = Path.combine d "bin"
+    Dir.create td
+    let np = td + pathSep + (Env.get "PATH" |> Option.defaultValue "")
+    if isWin then
+        let _b = tool td "h3dup.bat" ["@echo off"; "echo from-bat"]
+        let _c = tool td "h3dup.cmd" ["@echo off"; "echo from-cmd"]
+        let fx = fixture d "dup.weir" ["h3dup"]
+        let r1 = PATH=$np PATHEXT=".COM;.EXE;.BAT;.CMD" ^$bin $fx | complete
+        let r2 = PATH=$np PATHEXT=".COM;.EXE;.CMD;.BAT" ^$bin $fx | complete
+        allOf [
+            check (Seq.equal r1.stdout ["from-bat"]) $"PATHEXT .BAT first: {textOf r1 |> oneLine |> clip 200}"
+            check (Seq.equal r2.stdout ["from-cmd"]) $"PATHEXT .CMD first: {textOf r2 |> oneLine |> clip 200}"
+        ]
+    else
+        let x = tool td "h3x.sh" ["#!/bin/sh"; "echo ran"]
+        let _m = chmod 755 $x | complete
+        let fx = fixture d "x.weir" ["h3x"]
+        let r = PATH=$np PATHEXT=".SH" ^$bin $fx | complete
+        check (r.exitCode <> 0) $"PATHEXT=.SH resolved h3x to h3x.sh on POSIX: {textOf r |> oneLine |> clip 200}"
+
+// X24 — a bare name resolves NAME.exe on Windows (and an executable NAME on POSIX), argv intact [D:windows-v1]
+let x24 d =
+    if not (File.exists bin) then
+        (false, $"instrument: --bin must be a path to copy, got {bin}")
+    else
+        let td = Path.combine d "bin"
+        Dir.create td
+        let dst = Path.combine td (if isWin then "h3w.exe" else "h3w")
+        File.copy bin dst
+        if not isWin then chmod 755 $dst
+        let afx = fixture d "args.weir" argsFixture
+        let fx = fixture d "w.weir" ["let p = Self.args |> Seq.head"; "h3w $p hello \"two words\""]
+        let np = td + pathSep + (Env.get "PATH" |> Option.defaultValue "")
+        let r = PATH=$np ^$bin $fx $afx | complete
+        check (Seq.equal r.stdout ["{\"v\":\"hello\"}"; "{\"v\":\"two words\"}"]) $"h3w: {textOf r |> oneLine |> clip 300}"
+
+// X25 — exit codes: `exit n` is n (0..255), `fail` is 1, a child's code is data, and `| exec` exits with the child's code (Windows: foreground then hard exit) [D:exit-range] [D:exec]
+let x25 d =
+    let code lines name =
+        let fx = fixture d name lines
+        let r = ^$bin $fx | complete
+        r.exitCode
+    let e3 = code ["exit 3"] "e3.weir"
+    let e255 = code ["exit 255"] "e255.weir"
+    let ef = code ["fail \"boom\""] "ef.weir"
+    let ex = code ["sh -c \"exit 7\" | exec"] "ex.weir"
+    let child = sh -c "exit 42" | exitCode
+    allOf [
+        check (e3 == 3) $"exit 3 -> {e3}"
+        check (e255 == 255) $"exit 255 -> {e255}"
+        check (ef == 1) $"fail -> {ef}"
+        check (ex == 7) $"sh -c \"exit 7\" | exec -> {ex}"
+        check (child == 42) $"sh -c \"exit 42\" | exitCode -> {child}"
+    ]
+
+// ---- signals and scoped cleanup --------------------------------------------
+
+// the shared judgement over the scope fixture's marker dir
+let scopeVerdict md =
+    let tmpPath = if File.exists $"{md}/tmp-path" then File.read $"{md}/tmp-path" |> Seq.head else "<never written>"
+    let hb = Path.combine md "hb"
+    let started = File.exists hb
+    let dead = stopped hb
+    let tmpGone = not (Dir.exists tmpPath)
+    let alw = File.exists $"{md}/always"
+    (started, dead, tmpGone, alw, tmpPath)
+
+// POSIX: a signal to weir's pid alone unwinds every scope, exit 130/143; Windows: the console event
+let signalProbe d posixSig winMode wantCode =
+    let fx = fixture d "scope.weir" scopeFixture
+    let md = Path.combine d "m"
+    Dir.create md
+    if isWin then
+        if (fx |> Str.contains " ") || (md |> Str.contains " ") then
+            (false, $"instrument: a space in the scratch path breaks -ArgLine: {md}")
+        else
+            let lines = conRun d winMode $"{fx} {md} sleep" (Path.combine md "ready") "none" false
+            let (started, dead, tmpGone, alw, tmpPath) = scopeVerdict md
+            let ex = conExit lines
+            let all = lines |> Str.join " | "
+            if winMode == "ctrlc" then
+                allOf [
+                    check (ex <> None) $"no exit seen: {all}"
+                    check (ex <> Some 0) $"exit 0 after Ctrl+C: {all}"
+                    check started "instrument: the heartbeat never started"
+                    check alw $"the always block did not run on Ctrl+C ({all})"
+                    check tmpGone $"the tmp dir survived Ctrl+C: {tmpPath}"
+                    check dead "the scoped child outlived Ctrl+C"
+                ]
+                |> withNote $"Ctrl+C exit {show ex}"
+            else
+                allOf [ check (ex <> None) $"weir did not end on Ctrl+Break: {all}"; check dead "the scoped child outlived Ctrl+Break" ]
+                |> withNote $"Ctrl+Break: exit {show ex}, always ran={alw}, tmp removed={tmpGone}"
+    else
+        within proc w = ^$bin $fx $md sleep
+            awaitFile (Path.combine md "ready") w
+            let pid = Proc.pid w
+            let _k = kill $posixSig $pid | complete
+            let code = Proc.wait w
+            let (started, dead, tmpGone, alw, tmpPath) = scopeVerdict md
+            allOf [
+                check (code == wantCode) $"exit {code}, want {wantCode}"
+                check started "instrument: the heartbeat never started"
+                check alw $"the always block did not run on {posixSig}"
+                check tmpGone $"the tmp dir survived {posixSig}: {tmpPath}"
+                check dead $"the scoped child outlived {posixSig}"
+            ]
+
+// X26 — SIGINT (POSIX) / Ctrl+C (Windows) closes every scope: always runs, tmp removed, scoped child killed; exit 130 on POSIX (SKILL scopes: THE NON-CLAIM) [D:signal-teardown] [D:within-always]
+let x26 d = signalProbe d "-INT" "ctrlc" 130
+
+// X27 — SIGTERM (POSIX) closes every scope, exit 143; Windows Ctrl+Break ends weir without leaving the scoped child (Windows claims Ctrl+C only) [D:signal-teardown]
+let x27 d = signalProbe d "-TERM" "ctrlbreak" 143
+
+// X28 — a raise inside nested scopes: exit 1, always runs, the scoped child (an sh tree) is killed, tmp removed (SKILL scopes) [D:scoped-procs] [D:within-always]
+let x28 d =
+    let fx = fixture d "scope.weir" scopeFixture
+    let md = Path.combine d "m"
+    Dir.create md
+    let r = ^$bin $fx $md fail | complete
+    let (started, dead, tmpGone, alw, tmpPath) = scopeVerdict md
+    allOf [
+        check (r.exitCode == 1) $"exit {r.exitCode}: {textOf r |> oneLine |> clip 200}"
+        check started "instrument: the heartbeat never started"
+        check alw "always did not run on a raise"
+        check tmpGone $"tmp dir survived a raise: {tmpPath}"
+        check dead "the scoped sh child outlived the raise"
+    ]
+
+// X29 — `exit 3` inside scopes keeps code 3 and still runs always and every release [D:within-always]
+let x29 d =
+    let fx = fixture d "scope.weir" scopeFixture
+    let md = Path.combine d "m"
+    Dir.create md
+    let r = ^$bin $fx $md exit3 | complete
+    let (_started, dead, tmpGone, alw, tmpPath) = scopeVerdict md
+    allOf [
+        check (r.exitCode == 3) $"exit {r.exitCode}"
+        check alw "always did not run on exit 3"
+        check tmpGone $"tmp dir survived exit 3: {tmpPath}"
+        check dead "the scoped child outlived exit 3"
+    ]
+
+// X30 — Seq.pfirst tree-kills the losers, sh grandchildren included (Windows: MSYS sh) (SKILL: pfirst; [D:windows-ci-fixes] round 29)
+let x30 d =
+    let marker = Path.combine d "loser-ran"
+    let m = fwd marker
+    let winner =
+        [0; 1]
+        |> Seq.pfirst (fun i ->
+            if i == 0 then
+                let _r = sh -c "sleep 0.3" | complete
+                "fast"
+            else
+                let _r = sh -c $"sleep 2; echo x > '{m}'" | complete
+                "slow")
+    Duration.sleep 3s
+    allOf [
+        check (winner == "fast") $"winner {winner}"
+        check (not (File.exists marker)) "the losing arm's sh survived the tree-kill (it wrote its marker)"
+    ]
+
+// ---- environment -----------------------------------------------------------
+
+// X31 — process env names: case-insensitive on Windows, exact on POSIX — the platform's rule, pinned both ways [D:windows-v1] [D:wire-env]
+let x31 d =
+    let fx = fixture d "env.weir" envFixture
+    let r = WeirH3Mixed=v ^$bin $fx WEIRH3MIXED WeirH3Mixed weirh3mixed | complete
+    let want = if isWin then ["v"; "v"; "v"] else ["<unset>"; "v"; "<unset>"]
+    let got = ["WEIRH3MIXED"; "WeirH3Mixed"; "weirh3mixed"] |> Seq.map (fun n -> factOf n r) |> Seq.freeze
+    check (Seq.equal got want) $"Env.get WEIRH3MIXED/WeirH3Mixed/weirh3mixed = {show got}, want {show want}"
+
+// X32 — a `within env` overlay reads by the platform's rule too: Env.get in-process and the child both resolve a differently-cased name on Windows only [D:env-overlay-read] [D:windows-v1]
+let x32 d =
+    let fx = fixture d "env.weir" envFixture
+    let (inProc, child) =
+        within env WeirH3Ov=v
+            let r = ^$bin $fx WEIRH3OV | complete
+            (Env.get "WEIRH3OV", factOf "WEIRH3OV" r)
+    let wantIn = if isWin then Some "v" else None
+    let wantChild = if isWin then "v" else "<unset>"
+    allOf [
+        check (inProc == wantIn) $"in-process Env.get WEIRH3OV = {show inProc}, want {show wantIn}"
+        check (child == wantChild) $"child Env.get WEIRH3OV = {child}, want {wantChild}"
+    ]
+
+// X33 — `within env` with BOTH cases of a name: POSIX keeps two variables; Windows has one, the later word wins, in-process and in the child alike [D:windows-v1] [D:env-prefix] [D:env-overlay-read]
+let x33 d =
+    let fx = fixture d "vars.weir" envVarsFixture
+    let (inProc, child, getLower) =
+        within env WeirH3Both=lower WEIRH3BOTH=upper
+            let r = ^$bin $fx weirh3both | complete
+            let mine =
+                Env.vars
+                |> Seq.where (fun e -> Str.toLower e.name == "weirh3both")
+                |> Seq.map (fun e -> $"{e.name}={e.value}")
+                |> Seq.freeze
+            (mine, r.stdout |> Seq.freeze, Env.get "weirh3both")
+    if isWin then
+        allOf [
+            check ((child |> Seq.length) == 1 && (child |> Seq.forall (Str.endsWith "=upper"))) $"child sees {show child}"
+            check ((inProc |> Seq.length) == 1 && (inProc |> Seq.forall (Str.endsWith "=upper"))) $"Env.vars in-process sees {show inProc}"
+            check (getLower == Some "upper") $"Env.get weirh3both = {show getLower}"
+        ]
+    else
+        let want = ["WEIRH3BOTH=upper"; "WeirH3Both=lower"]
+        allOf [
+            check (Seq.equal child want) $"child sees {show child}"
+            check (Seq.equal inProc want) $"Env.vars in-process sees {show inProc}"
+            check (getLower == None) $"Env.get weirh3both = {show getLower}"
+        ]
+
+// X34 — Env.vars is sorted ordinally and carries the overlay (SKILL Commands: Env.vars sorts) [D:env-overlay-read]; the note counts case-duplicate names (Windows triage data, not a claim)
+let x34 d =
+    let names =
+        within env WEIR_H3_OVERLAY=1
+            Env.vars |> Seq.map (fun e -> e.name) |> Seq.freeze
+    let sorted = Seq.equal names (names |> Seq.sort)
+    let hasOverlay = names |> Seq.contains "WEIR_H3_OVERLAY"
+    let lowered = names |> Seq.map Str.toLower |> Seq.freeze
+    let dups = (lowered |> Seq.length) - (lowered |> Seq.distinct |> Seq.length)
+    allOf [
+        check sorted "Env.vars is not in ordinal order"
+        check hasOverlay "the within env overlay is missing from Env.vars"
+    ]
+    |> withNote $"{dups} case-duplicate name(s) in Env.vars"
+
+// X35 — Env.load's wire name is exact, so the observable is platform-split: `[<Wire "weir_h3_wire">]` matches WEIR_H3_WIRE on Windows only — two-sided [D:wire-env]
+let x35 d =
+    let fx = fixture d "wire.weir" wireFixture
+    let r = WEIR_H3_WIRE=x ^$bin $fx | complete
+    let want = if isWin then "x" else "<none>"
+    check (factOf "v" r == want) $"v = {factOf "v" r}, want {want}: {textOf r |> oneLine |> clip 200}"
+
+// X36 — a PATH overlay is THE path on Windows (`Path` and `PATH` are one variable); children resolve through it [D:windows-v1] [D:env-prefix]
+let x36 d =
+    let td = Path.combine d "pbin"
+    Dir.create td
+    let fx = fixture d "env.weir" envFixture
+    let np = td + pathSep + (Env.get "PATH" |> Option.defaultValue "")
+    let r =
+        within env PATH=$np
+            let rr = ^$bin $fx PATH Path | complete
+            rr
+    let p1 = factOf "PATH" r
+    let p2 = factOf "Path" r
+    allOf [
+        check (p1 |> Str.startsWith td) $"child PATH = {clip 120 p1}"
+        check ((not isWin) || (p2 |> Str.startsWith td)) $"child Path = {clip 120 p2}"
+    ]
+
+// ---- files -----------------------------------------------------------------
+
+// X37 — File.mode is Some "rw-…" on POSIX and None on Windows (the platform limit stated) (SKILL Commands: File.mode) [D:filerow]
+let x37 d =
+    let p = Path.combine d "m.txt"
+    ["x"] |> File.write p
+    if isWin then
+        check (File.mode p == None) $"File.mode = {show (File.mode p)} on Windows"
+    else
+        let _a = chmod 644 $p | complete
+        let m1 = File.mode p
+        let _b = chmod 600 $p | complete
+        let m2 = File.mode p
+        allOf [ check (m1 == Some "rw-r--r--") $"after chmod 644: {show m1}"; check (m2 == Some "rw-------") $"after chmod 600: {show m2}" ]
+
+// X38 — File.isExecutable: the owner execute bit on POSIX; by extension (.exe/.bat/.cmd/.com) on Windows [D:port-members]
+let x38 d =
+    let mk n =
+        let p = Path.combine d n
+        ["x"] |> File.write p
+        p
+    if isWin then
+        let yes = ["a.exe"; "a.bat"; "a.cmd"; "a.com"] |> Seq.map mk |> Seq.where (fun p -> not (File.isExecutable p)) |> Seq.map Path.fileName |> Seq.freeze
+        let no = ["a.sh"; "a.txt"; "a.ps1"] |> Seq.map mk |> Seq.where File.isExecutable |> Seq.map Path.fileName |> Seq.freeze
+        allOf [ check (Seq.isEmpty yes) $"not executable: {show yes}"; check (Seq.isEmpty no) $"executable: {show no}" ]
+    else
+        let p = mk "t.sh"
+        let _a = chmod 755 $p | complete
+        let e1 = File.isExecutable p
+        let _b = chmod 644 $p | complete
+        let e2 = File.isExecutable p
+        allOf [ check e1 "755 is not executable"; check (not e2) "644 is executable" ]
+
+// X39 — File.writeAtomic replaces content and preserves the mode on POSIX (0600 stays 0600) [D:write-integrity]
+let x39 d =
+    let p = Path.combine d "a.txt"
+    ["old"] |> File.write p
+    if isWin then
+        File.writeAtomic p ["new"]
+        check (Seq.equal (File.read p) ["new"]) "writeAtomic did not replace the content"
+    else
+        let _a = chmod 600 $p | complete
+        File.writeAtomic p ["new"]
+        allOf [ check (Seq.equal (File.read p) ["new"]) "content not replaced"; check (File.mode p == Some "rw-------") $"mode after writeAtomic: {show (File.mode p)}" ]
+
+// X40 — symlinks (Windows: mklink file links and /J junctions): the row says Symlink with a target, reads follow the link, `**` does not descend a linked dir (SKILL Commands: FileRow, File.stat; SKILL Paths: glob) [D:filerow] [D:file-stat]
+let x40 d =
+    ["content"] |> File.write (Path.combine d "plain.txt")
+    Dir.create (Path.combine d "sub")
+    ["in"] |> File.write (Path.combine d "sub/inner.txt")
+    let (r1, r2) =
+        within cd d
+            if isWin then
+                let a = ^$cmdExe /c mklink link.txt plain.txt | complete
+                let b = ^$cmdExe /c mklink /J sublink sub | complete
+                (a, b)
+            else
+                let a = ln -s plain.txt link.txt | complete
+                let b = ln -s sub sublink | complete
+                (a, b)
+    if r1.exitCode <> 0 || r2.exitCode <> 0 then
+        (false, $"instrument: link creation failed: {textOf r1 |> oneLine |> clip 150} / {textOf r2 |> oneLine |> clip 150}")
+    else
+        let fl = File.stat (Path.combine d "link.txt")
+        let dl = Dir.stat d |> Seq.find (fun r -> r.name == "sublink")
+        let through = File.read (Path.combine d "link.txt") |> Seq.freeze
+        let viaSub = File.read (Path.combine d "sublink/inner.txt") |> Seq.freeze
+        let globbed = Path.glob $"{fwd d}/**/inner.txt" |> Seq.map (fun p -> fwd p |> Str.replace (fwd d) "") |> Seq.freeze
+        allOf [
+            check (fl.kind == Symlink) $"file link kind {show fl.kind}"
+            check (fl.target |> Option.map (Str.endsWith "plain.txt") |> Option.defaultValue false) $"file link target {show fl.target}"
+            check (dl.kind == Symlink) $"dir link kind {show dl.kind}"
+            check (dl.target <> None) "dir link has no target"
+            check (Seq.equal through ["content"]) $"read through the file link: {show through}"
+            check (Seq.equal viaSub ["in"]) $"read through the dir link: {show viaSub}"
+            check (Seq.equal globbed ["/sub/inner.txt"]) $"** over a linked dir: {show globbed}"
+        ]
+
+// X41 — a file another process holds open without sharing (Windows) / an unreadable file (POSIX): File.read and File.write raise naming the path — never an internal error — and work again after (SKILL: every failure names its path) [D:fs-members] [D:write-integrity]
+let x41 d =
+    let p = Path.combine d "held.txt"
+    ["orig"] |> File.write p
+    let judge () =
+        let rd = File.read p |> Seq.freeze |> try result
+        let wr = File.write p ["new"] |> try result
+        let named res =
+            match res with
+            | Error m -> (m |> Str.contains "held.txt") && not (m |> Str.contains "internal error")
+            | Ok _ -> false
+        let msg res =
+            match res with
+            | Error m -> oneLine m |> clip 200
+            | Ok _ -> "succeeded"
+        allOf [ check (named rd) $"File.read: {msg rd}"; check (named wr) $"File.write: {msg wr}" ]
+    if isWin then
+        let ps = fixture d "hold.ps1" shareNoneHolder
+        let ready = Path.combine d "ready"
+        let res =
+            within proc h = ^$pwshExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ps -Path $p -Ready $ready -HoldMs 6000
+                awaitFile ready h
+                let v = judge ()
+                let _w = Proc.wait h
+                v
+        allOf [ res; check (Seq.equal (File.read p) ["orig"]) "content changed or unreadable after the holder exited" ]
+    else
+        let _a = chmod 000 $p | complete
+        let probeRead = sh -c $"cat '{p}' >/dev/null 2>&1" | succeeds
+        let res = if probeRead then (true, "n/a: chmod 000 did not take (root?)") else judge ()
+        let _b = chmod 644 $p | complete
+        allOf [ res; check (Seq.equal (File.read p) ["orig"]) "content changed after the denial" ] |> withNote (snd res)
+
+let lockOnce lf t =
+    within lock lf timeout = t
+        print ()
+
+// X42 — `within lock` excludes a cooperating locker in another process until the holder releases (SKILL scopes: within lock) [D:within-lock]
+let x42 d =
+    let lf = Path.combine d "x.lock"
+    let fx = fixture d "lock.weir" lockFixture
+    let ready = Path.combine d "ready"
+    let contended =
+        within proc h = ^$bin $fx $lf $ready 3
+            awaitFile ready h
+            let c = lockOnce lf 300ms |> try
+            let _w = Proc.wait h
+            c
+    let after = lockOnce lf 5s |> try
+    allOf [
+        check (contended == None) "a second locker got in while the lock was held"
+        check (after <> None) "the lock was not free after the holder exited"
+    ]
+
+let show2 res =
+    match res with
+    | Ok _ -> "ok"
+    | Error m -> oneLine m |> clip 160
+
+// X55 — `within lock` is ADVISORY: a non-cooperating process (sh's cat — not weir) still reads the locked file while it is held (SKILL scopes: within lock — "a non-cooperating process can ignore it") [D:within-lock]
+let x55 d =
+    let lf = Path.combine d "data.json"
+    ["payload"] |> File.write lf
+    let fx = fixture d "lock.weir" lockFixture
+    let ready = Path.combine d "ready"
+    let catRead =
+        within proc h = ^$bin $fx $lf $ready 3
+            awaitFile ready h
+            let c = sh -c $"cat '{fwd lf}'" | complete
+            let _w = Proc.wait h
+            c
+    check (catRead.exitCode == 0 && Seq.equal catRead.stdout ["payload"]) $"cat while held: exit {catRead.exitCode} {textOf catRead |> oneLine |> clip 200}"
+
+// X56 — locking a data file does not stop weir's own File.read/File.write on it — in the holder (lock the file you edit, then edit it) or in another weir process; advisory means only lockers are excluded (SKILL scopes: within lock) [D:within-lock]
+let x56 d =
+    let lf = Path.combine d "data.json"
+    ["payload"] |> File.write lf
+    let selfRw =
+        within lock lf timeout=5s
+            let w = File.write lf ["payload"] |> try result
+            let r = File.read lf |> Seq.freeze |> try result
+            (w, r)
+    let fx = fixture d "lock.weir" lockFixture
+    let ready = Path.combine d "ready"
+    let other =
+        within proc h = ^$bin $fx $lf $ready 3
+            awaitFile ready h
+            let o = File.read lf |> Seq.freeze |> try result
+            let _w = Proc.wait h
+            o
+    allOf [
+        check (fst selfRw |> Result.isOk) $"the holder's own File.write: {show2 (fst selfRw)}"
+        check (snd selfRw |> Result.isOk) $"the holder's own File.read: {show2 (snd selfRw)}"
+        check (other |> Result.isOk) $"another weir's File.read while held: {show2 other}"
+    ]
+
+// X43 — the kernel releases a `within lock` on any death: a hard-killed holder frees it [D:within-lock]
+let x43 d =
+    let lf = Path.combine d "k.lock"
+    let fx = fixture d "lock.weir" lockFixture
+    let ready = Path.combine d "ready"
+    let after =
+        within proc h = ^$bin $fx $lf $ready 30
+            awaitFile ready h
+            Proc.stop h
+            lockOnce lf 5s |> try
+    check (after <> None) "the lock stayed held after the holder was killed"
+
+// X44 — `within tmp` is removed even when a scoped child (an sh tree) has its cwd inside: procs are killed before the dir goes [D:scoped-procs]
+let x44 d =
+    let fx = fixture d "tc.weir" tmpCwdFixture
+    let r = ^$bin $fx $d | complete
+    let tp = if File.exists $"{d}/tmp-path" then File.read $"{d}/tmp-path" |> Seq.head else "<never written>"
+    allOf [
+        check (r.exitCode == 0) $"exit {r.exitCode}: {textOf r |> oneLine |> clip 200}"
+        check (not (Dir.exists tp)) $"tmp dir survived: {tp}"
+    ]
+
+// X45 — concurrent File.append from 4 processes: every line lands whole, none lost (SKILL File: append is kernel-atomic for concurrent appenders) [D:append-oappend]
+let x45 d =
+    let fx = fixture d "app.weir" appendFixture
+    let p = Path.combine d "log.txt"
+    ["w1"; "w2"; "w3"; "w4"] |> Seq.piterWith 4 (fun tag ->
+        let _r = ^$bin $fx $p $tag | complete
+        print ())
+    let lines = File.read p |> Seq.freeze
+    let good = lines |> Seq.where (Str.isMatch @"^w[1-4]-\d+-x{24}$") |> Seq.length
+    let distinct = lines |> Seq.distinct |> Seq.length
+    allOf [
+        check ((lines |> Seq.length) == 200) $"{lines |> Seq.length} lines, want 200"
+        check (good == 200) $"{good} intact lines of {lines |> Seq.length}"
+        check (distinct == 200) $"{distinct} distinct lines"
+    ]
+
+// ---- serve -----------------------------------------------------------------
+
+let probeHandler = fun req ->
+    match req.path with
+    | "/who" -> HttpServerResponse { status = 200; headers = []; body = Text "weir-handler" }
+    | "/half" ->
+        HttpServerResponse {
+            status = 200
+            headers = []
+            body = Stream ([1; 2] |> Seq.map (fun i -> if i == 1 then "first" else fail "producer died"))
+        }
+    | "/badname" -> HttpServerResponse { status = 200; headers = [("Bad Name", "v")]; body = Text "ok" }
+    | "/crlfhdr" -> HttpServerResponse { status = 200; headers = [("X-Crlf", "a" + crlf + "Injected: yes")]; body = Text "ok" }
+    | "/crlfbody" -> HttpServerResponse { status = 200; headers = []; body = Text ("name: web" + crlf + "n: 3" + crlf) }
+    | _ -> HttpServerResponse { status = 404; headers = []; body = Text "nf" }
+
+let hit url =
+    match Http.send (Http.get url) |> try result with
+    | Ok resp -> (resp.status, resp.body |> Str.join "\n")
+    | Error m -> (0, oneLine m)
+
+// curl as the referee for the listener's names: --noproxy keeps a runner's proxy env out of a loopback probe; -g lets [::1] through
+let curlHit d url =
+    let outf = Path.combine d "curl.out"
+    let r = curl -s -g --noproxy "*" -o $outf -w "%{http_code}" $url | complete
+    let body = if File.exists outf then File.read outf |> Str.join "\n" else ""
+    (r.exitCode, r.stdout |> Str.join "", body)
+
+// X46 — `within serve` answers 127.0.0.1 and localhost on one port, reaching the handler (docs/reference/scopes.md serve) [D:serve-loopback-names]
+let x46 d =
+    let port = freePort 18431
+    within serve srv = { port = port; maxConcurrent = 4 } probeHandler
+        let (e1, c1, b1) = curlHit d $"http://127.0.0.1:{port}/who"
+        let (e2, c2, b2) = curlHit d $"http://localhost:{port}/who"
+        allOf [
+            check (c1 == "200" && b1 == "weir-handler") $"127.0.0.1: curl exit {e1} status {c1} {clip 120 b1}"
+            check (c2 == "200" && b2 == "weir-handler") $"localhost: curl exit {e2} status {c2} {clip 120 b2}"
+        ]
+        |> withNote $"port {Server.port srv}"
+
+// X54 — `within serve` answers [::1] on the same port, reaching the handler — or skips it quietly on a host without IPv6 loopback (connect refused), never a non-handler response (docs/reference/scopes.md serve) [D:serve-loopback-names]
+let x54 d =
+    let port = freePort 18461
+    within serve srv = { port = port; maxConcurrent = 4 } probeHandler
+        let (e, c, b) = curlHit d $"http://[::1]:{port}/who"
+        let served = c == "200" && b == "weir-handler"
+        let skipped = c == "000"
+        check (served || skipped) $"[::1]: curl exit {e} status {c} {clip 160 b}"
+        |> withNote $"[::1] {if skipped then "skipped (connect failed, curl exit " + show e + ")" else "served"} on port {Server.port srv}"
+
+// X47 — F8: a Stream producer that raises is reported on Server.streamErrors, and the client sees a truncated body (curl 18) — off Windows; http.sys may keep the terminator (graceful degrade) [D:serve-stream] [D:serve-stream-truncate]
+let x47 d =
+    let port = freePort 18501
+    within serve srv = { port = port; maxConcurrent = 4 } probeHandler
+        let outf = Path.combine d "half.out"
+        let rc = curl -s -N -o $outf $"http://127.0.0.1:{port}/half" | exitCode
+        let weirClient = Http.send (Http.get $"http://127.0.0.1:{port}/half") |> try result
+        Duration.sleep 300ms
+        let recorded = Server.streamErrors srv |> Seq.exists (Str.contains "producer died")
+        let clientRaised =
+            match weirClient with
+            | Ok _ -> false
+            | Error _ -> true
+        let truncOk = if isWin then rc == 18 || rc == 0 else rc == 18 && clientRaised
+        allOf [
+            check recorded $"Server.streamErrors missed the raise: {show (Server.streamErrors srv)}"
+            check truncOk $"curl exit {rc} (18 = truncated), weir client raised={clientRaised}"
+        ]
+        |> withNote $"curl exit {rc}, weir client raised={clientRaised}"
+
+// X48 — F11: a response header the wire cannot carry is refused, never dropped — the client gets a 500 and Server.streamErrors names the header [D:http-header-bytes] [D:http-header-unsendable]
+let x48 d =
+    let port = freePort 18561
+    within serve srv = { port = port; maxConcurrent = 4 } probeHandler
+        let (s1, _b1) = hit $"http://127.0.0.1:{port}/badname"
+        let (s2, _b2) = hit $"http://127.0.0.1:{port}/crlfhdr"
+        Duration.sleep 200ms
+        let errs = Server.streamErrors srv |> Seq.freeze
+        allOf [
+            check (s1 == 500) $"Bad Name -> status {s1}"
+            check (s2 == 500) $"CRLF header -> status {s2}"
+            check (errs |> Seq.exists (Str.contains "'Bad Name'")) $"streamErrors: {show errs}"
+            check (errs |> Seq.exists (Str.contains "'X-Crlf'")) $"streamErrors: {show errs}"
+        ]
+
+// X49 — maxBody: a request body over the bound is answered 413 [D:serve-max-body]; and an HTTP body with CRLF reads as clean lines [D:http-body-lines]
+let x49 d =
+    let port = freePort 18621
+    within serve srv = { port = port; maxConcurrent = 4; maxBody = 1KiB } probeHandler
+        let big = Http.send { Http.post $"http://127.0.0.1:{port}/who" with body = Text (Str.replicate 4096 "a") } |> try result
+        let crlfResp = Http.send (Http.get $"http://127.0.0.1:{port}/crlfbody")
+        let lines = crlfResp.body |> Seq.freeze
+        let doc = lines |> from yaml CJson
+        let bigStatus =
+            match big with
+            | Ok r -> show r.status
+            | Error m -> $"raised: {oneLine m |> clip 160}"
+        allOf [
+            check (bigStatus == "413") $"4 KiB body over maxBody 1KiB -> {bigStatus}"
+            check (not (lines |> Seq.exists (Str.contains cr))) $"CRLF body lines kept CR: {show lines}"
+            check (doc.name == "web" && doc.n == 3) $"from yaml over the body: {show doc}"
+        ]
+        |> withNote $"port {Server.port srv}"
+
+let bindOnce port =
+    within serve s = { port = port; maxConcurrent = 1 } probeHandler
+        Server.port s
+
+// X50 — port in use: a second listener on a held port (another process, or a nested scope) raises naming the port — no internal error — and the port frees when the holder goes (SKILL: within serve; [D:http-serve] [D:harness-ports])
+let x50 d =
+    let port = freePort 18681
+    let fx = fixture d "hold.weir" serveHoldFixture
+    let md = Path.combine d "m"
+    Dir.create md
+    let crossMsg =
+        within proc h = ^$bin $fx $port $md
+            awaitFile (Path.combine md "ready") h
+            let second = bindOnce port |> try result
+            Proc.stop h
+            match second with
+            | Ok _ -> "<bound twice>"
+            | Error m -> oneLine m
+    Duration.sleep 300ms
+    let freed = bindOnce port |> try result
+    let port2 = freePort 18741
+    let nestedMsg =
+        within serve s = { port = port2; maxConcurrent = 1 } probeHandler
+            match bindOnce (Server.port s) |> try result with
+            | Ok _ -> "<bound twice>"
+            | Error m -> oneLine m
+    let sane m p = (m |> Str.contains (show p)) && not (m |> Str.contains "internal error") && m <> "<bound twice>"
+    allOf [
+        check (sane crossMsg port) $"cross-process: {clip 240 crossMsg}"
+        check (sane nestedMsg port2) $"nested: {clip 240 nestedMsg}"
+        check (freed == Ok port) $"the port did not free after the holder died: {show freed}"
+    ]
+    |> withNote $"wording: {clip 160 crossMsg}"
+
+// ---- REPL ------------------------------------------------------------------
+
+// X51 — a piped REPL session evaluates, exits 0 at EOF (the redirected-input Ctrl+D), and is plain with or without NO_COLOR (docs/repl.md: piped sessions are uncoloured)
+let x51 d =
+    let sd = Path.combine d "state"
+    let (plain, noColor) =
+        within env XDG_STATE_HOME=$sd
+            let a = ["40 + 2"] | ^$bin | complete
+            let b =
+                within env NO_COLOR=1
+                    let bb = ["40 + 2"] | ^$bin | complete
+                    bb
+            (a, b)
+    let has42 r = r.stdout |> Seq.exists (Str.contains "42")
+    let hasEsc r = (textOf r) |> Str.contains esc
+    allOf [
+        check (plain.exitCode == 0 && noColor.exitCode == 0) $"exits {plain.exitCode}/{noColor.exitCode}"
+        check (has42 plain && has42 noColor) $"40 + 2 did not echo 42: {show plain.stdout}"
+        check (not (hasEsc plain || hasEsc noColor)) "a piped session emitted an escape byte"
+    ]
+
+// the Windows console REPL: type one line that writes Color.red's result to a file, then Ctrl+D
+let replConsole d tag noColor =
+    let marker = Path.combine d $"color-{tag}.txt"
+    let keys = fixture d $"keys-{tag}.txt" [$"TEXT:[Color.red \"x\"] |> File.write \"{fwd marker}\""; "ENTER"; "SLEEP:1500"; "CTRL:D"]
+    let lines = conRun d "keys" "none" "none" keys noColor
+    let content = if File.exists marker then rawText marker else "<no marker>"
+    (lines, content)
+
+// X52 — the REPL at a real Windows console: typed input evaluates, Ctrl+D on an empty buffer exits 0, Color is on at the console and off under NO_COLOR, and the session lands in %LOCALAPPDATA%\weir\history; POSIX consoles are the tests/repl pty harnesses' job (docs/repl.md: key bindings, History; SKILL Color) [D:windows-v1] [D:repl-history]
+let x52 d =
+    if not isWin then
+        (true, "n/a: the POSIX pty REPL is covered by tests/repl; piped half is X51")
+    elif (d |> Str.contains " ") then
+        (false, $"instrument: a space in the scratch path: {d}")
+    else
+        let hfile = Path.combine (Path.combine (Path.stateHome ()) "weir") "history"
+        let backup = if File.exists hfile then Some (File.readBytes hfile) else None
+        let (onLines, onText) = replConsole d "on" false
+        let histHas = File.exists hfile && (File.read hfile |> Seq.exists (Str.contains "Color.red"))
+        let (offLines, offText) = replConsole d "off" true
+        match backup with
+        | Some b -> File.writeBytes hfile b
+        | None -> if File.exists hfile then File.delete hfile
+        allOf [
+            check (conExit onLines == Some 0) $"colour run: {onLines |> Str.join " | "}"
+            check (conExit offLines == Some 0) $"NO_COLOR run: {offLines |> Str.join " | "}"
+            check (onText |> Str.contains esc) $"Color.red at the console: {show onText}"
+            check ((offText |> Str.contains "x") && not (offText |> Str.contains esc)) $"Color.red under NO_COLOR: {show offText}"
+            check histHas $"the typed line is not in {hfile}"
+        ]
+
+// X53 — Ctrl+Z at the Windows console REPL neither crashes nor hangs it: the session still ends 0 on Ctrl+D (Windows convention; docs/repl.md names Ctrl+D only)
+let x53 d =
+    if not isWin then
+        (true, "n/a: Ctrl+Z is job control on POSIX, not an editor key")
+    else
+        let keys = fixture d "keys-z.txt" ["CTRL:Z"; "ENTER"; "SLEEP:2000"; "CTRL:D"]
+        let lines = conRun d "keys" "none" "none" keys false
+        check (conExit lines == Some 0) $"after Ctrl+Z Enter, Ctrl+D: {lines |> Str.join " | "}"
+        |> withNote (lines |> Str.join " | ")
+
+// ============================================================================
+// the run
+// ============================================================================
+
+let probes = [
+    ("X0", "the kit's OS detection agrees with --os", x0)
+    ("X1", "Path members are platform-native [D:windows-v1]", x1)
+    ("X2", "forward-slash path input works everywhere [D:windows-v1]", x2)
+    ("X3", "backslash: separator on Windows, filename byte on POSIX (SKILL Paths)", x3)
+    ("X4", "drive letters: absolute second arg wins; C:/ is a root on Windows only (SKILL Paths)", x4)
+    ("X5", "Path.under refuses Windows shapes everywhere [D:path-under]", x5)
+    ("X6", "UNC decomposes on Windows [D:surface-path]", x6)
+    ("X7", "typed ~ is Path.home in argv [D:tilde]", x7)
+    ("X8", "home: $HOME on POSIX, the profile on Windows [D:home-verbatim] [D:tilde]", x8)
+    ("X9", "config/state dirs per OS; Windows ignores XDG [D:path-home]", x9)
+    ("X10", "case-variant names follow the FS; copy refuses existing destinations [D:fs-members]", x10)
+    ("X11", "a case-only move never loses the file [D:fs-members]", x11)
+    ("X12", "listings are ordinal on every OS (SKILL Commands)", x12)
+    ("X13", "Path.glob takes native directory prefixes (SKILL Paths)", x13)
+    ("X14", "a CRLF script runs like its LF twin [D:content-bytes]", x14)
+    ("X15", "fmt keeps line endings (CHANGELOG Unreleased)", x15)
+    ("X16", "File.write/append write LF [D:lf-output]", x16)
+    ("X17", "redirected stdout/stderr and child stdin are LF [D:lf-output]", x17)
+    ("X18", "history location per OS, CRLF entries read clean [D:repl-history]", x18)
+    ("X19", "adapters read CRLF documents [D:content-bytes]", x19)
+    ("X20", "Self.stdin and captured stdout drop CR [D:content-bytes]", x20)
+    ("X21", "argv reaches a native exe verbatim [D:windows-s2]", x21)
+    ("X22", ".bat/.cmd resolve via PATHEXT on Windows only [D:windows-v1]", x22)
+    ("X23", "PATHEXT is read from the env, in order [D:windows-s2]", x23)
+    ("X24", "bare NAME resolves NAME.exe on Windows [D:windows-v1]", x24)
+    ("X25", "exit codes and | exec [D:exit-range] [D:exec]", x25)
+    ("X26", "SIGINT / Ctrl+C closes every scope [D:signal-teardown]", x26)
+    ("X27", "SIGTERM closes every scope; Ctrl+Break ends weir [D:signal-teardown]", x27)
+    ("X28", "a raise closes every scope [D:scoped-procs]", x28)
+    ("X29", "exit n keeps its code and runs always [D:within-always]", x29)
+    ("X30", "Seq.pfirst tree-kills sh losers (SKILL: pfirst)", x30)
+    ("X31", "env names: case-insensitive on Windows only [D:windows-v1]", x31)
+    ("X32", "within env overlay reads by the platform's case rule [D:env-overlay-read]", x32)
+    ("X33", "within env with both cases of a name [D:windows-v1]", x33)
+    ("X34", "Env.vars ordinal and overlaid [D:env-overlay-read]", x34)
+    ("X35", "Env.load wire names are exact; Windows matches any case [D:wire-env]", x35)
+    ("X36", "a PATH overlay is the one PATH on Windows [D:windows-v1]", x36)
+    ("X37", "File.mode: Some on POSIX, None on Windows [D:filerow]", x37)
+    ("X38", "File.isExecutable: x bit / extension [D:port-members]", x38)
+    ("X39", "writeAtomic preserves mode [D:write-integrity]", x39)
+    ("X40", "symlinks and junctions in rows, reads and glob [D:filerow]", x40)
+    ("X41", "locked/denied files raise naming the path [D:fs-members]", x41)
+    ("X42", "within lock excludes a locker in another process [D:within-lock]", x42)
+    ("X55", "within lock is advisory: a non-weir reader reads the held file [D:within-lock]", x55)
+    ("X56", "weir's own File.read/write work on a locked data file [D:within-lock]", x56)
+    ("X43", "a killed lock holder releases the lock [D:within-lock]", x43)
+    ("X44", "within tmp goes even with a child's cwd inside [D:scoped-procs]", x44)
+    ("X45", "concurrent File.append lands whole [D:append-oappend]", x45)
+    ("X46", "serve answers 127.0.0.1 and localhost [D:serve-loopback-names]", x46)
+    ("X54", "serve answers [::1] or skips it quietly [D:serve-loopback-names]", x54)
+    ("X47", "F8: stream raise reported and truncated [D:serve-stream-truncate]", x47)
+    ("X48", "F11: unsendable headers refused by name [D:http-header-unsendable]", x48)
+    ("X49", "maxBody 413; CRLF bodies read clean [D:serve-max-body] [D:http-body-lines]", x49)
+    ("X50", "port in use: named error, freed after [D:http-serve]", x50)
+    ("X51", "piped REPL: evaluates, EOF exits 0, plain (docs/repl.md)", x51)
+    ("X52", "Windows console REPL: input, Ctrl+D, colour, history (docs/repl.md)", x52)
+    ("X53", "Windows console REPL survives Ctrl+Z", x53)
+]
+
+print $"hunt3-xplat: os={os} (detected {detectedOs}) bin={bin}"
+let version = ^$bin --version | complete
+print $"  version: {version.stdout |> Str.join " "}"
+
+within tmp root
+    let vfile = Path.combine root "verdicts"
+    [] |> File.write vfile
+    for (id, claim, f) in probes do
+        let d = Path.combine root id
+        Dir.create d
+        let line =
+            match f d |> try result with
+            | Ok (true, "") -> $"OK {id}"
+            | Ok (true, note) -> $"OK {id} ({oneLine note |> clip 300})"
+            | Ok (_, detail) -> $"FAIL {id}: {oneLine detail |> clip 600} [{claim}]"
+            | Error m -> $"FAIL {id}: probe raised: {oneLine m |> clip 600} [{claim}]"
+        print line
+        File.append vfile [line]
+    let verdicts = File.read vfile |> Seq.freeze
+    let fails = verdicts |> Seq.where (Str.startsWith "FAIL") |> Seq.length
+    let oks = verdicts |> Seq.where (Str.startsWith "OK") |> Seq.length
+    print $"hunt3-xplat: {oks} OK, {fails} FAIL on {os}"
+    if fails > 0 then exit 1
