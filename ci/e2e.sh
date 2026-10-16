@@ -11885,7 +11885,9 @@ let handler = fun req ->
 within serve srv = { port = $svport14; maxConcurrent = 2 } handler
     poll timeout=8s interval=50ms
         Net.portOpen $svport14
-    let _gone = sh -c "for i in 1 2 3 4 5 6; do curl -s -o /dev/null --max-time 0.5 http://127.0.0.1:$svport14/ & done; wait" | complete
+    // two clients hold both slots; four more queue behind them and leave
+    // long before the holders do, so they are gone when a slot frees
+    let _gone = sh -c "for i in 1 2; do curl -s -o /dev/null --max-time 1.5 http://127.0.0.1:$svport14/ & done; sleep 0.3; for i in 1 2 3 4; do curl -s -o /dev/null --max-time 0.3 http://127.0.0.1:$svport14/ & done; wait" | complete
     let t0 = Instant.now ()
     let f = curl -s --max-time 10 http://127.0.0.1:$svport14/fast | complete
     let took = Instant.now () - t0
@@ -11894,7 +11896,7 @@ within serve srv = { port = $svport14; maxConcurrent = 2 } handler
 WEOF
 out=$($BIN "$svdir/lows.weir" 2>&1) || fail "serve lows run failed: $out"
 echo "$out" | grep -qF "fast=fast quick=true" || fail "lows: an aborted Stream must free its slot: $out"
-echo "$out" | grep -qF "starts=2" || fail "lows: queued requests whose clients left must never start (2 slots, 6 clients gone): $out"
+echo "$out" | grep -qF "starts=2" || fail "lows: queued requests whose clients left must never start (2 slots held, 4 queued clients gone): $out"
 echo "e2e ok: within serve — lows: a gone client's queued request never starts; an aborted Stream frees its slot"
 
 # (shutdown) SIGINT and SIGTERM inside `within serve` with a request in
