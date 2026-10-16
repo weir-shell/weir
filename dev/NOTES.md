@@ -32,7 +32,12 @@ other layout errors are assembly errors, and fmt refuses those.
 
 Measured with a counting copy of the invariant-8 composition (the
 property stops at its first failure), same programs before and after
-(seeds 11-13 x 1,200 programs x 5 neighbors): COUNTS_TBD.
+(seeds 11-13 x 1,200 programs x 5 neighbors): positions past the
+line end 23 -> 0 (parse 19, assembly 2, cmd-not-found 1, seq-unit 1 — all
+gone); verdict flips 14 -> 14, every one a pure `doc-align` repair,
+so 0 under the ruled law. Fresh seeds 21-22 (2,400 programs) on the
+fixed binary with the ruled law: 0 violations (2 exempt doc-align
+repairs).
 ## W2a — the audit rulings (2026-10-16)
 
 Five W2 docs-vs-binary findings, ruled by the user the same day.
