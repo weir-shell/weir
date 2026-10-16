@@ -64,33 +64,18 @@ Ruled 2026-10-15 (PLAN-daily-driver W4): **every item below is daily-driver — 
   both ways and `gen types` drafts a cyclic field as `Yaml`
   [D:json-yaml-field].
 - **`serve` answers only the first of pipelined requests** on one
-  connection. Needs a ruling (2026-10-15): the managed HttpListener drops
-  the pipelined bytes itself, so the fix is replacing the listener (see
-  PLAN-review-fixes.md, session 2026-10-15).
-- **Inference order:** `a + b + 0` doesn't infer while `0 + a + b` does.
-  connection.
+  connection. Ruled LATER (user, 2026-10-16): the managed HttpListener
+  drops the pipelined bytes itself; the fix is a Kestrel move (also fixes
+  F10 and retires the F8 `_trailer_sent` stopgap) — parked, see
+  PLAN-review-fixes.md, session 2026-10-15.
 - ~~**Inference order:**~~ — done: `+` over two unknowns defers to any
   later anchor in the statement [D:plus-defer].
-- **Re-enumeration warning** misses indirect pulls (through a function, a
-  loop, a derived binding).
-- ~~**User generic types at the wire**~~ — done: `from json B<int>` /
-  `seq<B<int>>` and instances inside records cross json/jsonl/yaml;
-  SKILL documents user generics [D:wire-generics].
-- **Runtime error positions** are statement-granular inside a one-line
-  `if … then fail … else …`.
-- **LSP re-analyzes a large file per hover** (20k lines ≈ 3s).
-- **A Secret spliced into argv shows in clear in "command failed" errors**
-  (SECURITY.md non-claim; CI logs make it worth revisiting).
-- **`from xml` mixed content** (`<N>a<b/>c</N>`) is silently concatenated.
-- ~~**fmt** formats a file with a yaml-district parse error, and spaces inside
-  multi-line interpolation holes.~~ done: fmt refuses any file check cannot
-  parse; respace skips district content and lines inside a hole [D:fmt-parse-gate].
 - ~~**Re-enumeration warning** misses indirect pulls (through a function, a
   loop, a derived binding).~~ — done: carriers replay their pulls, a
   loop read counts twice [D:reenum-indirect].
-- **User generic types at the wire:** generic records are refused at the
-  json/yaml boundary and `from json seq<B<int>>` is a parse error; user
-  generics are undocumented in SKILL.md.
+- ~~**User generic types at the wire**~~ — done: `from json B<int>` /
+  `seq<B<int>>` and instances inside records cross json/jsonl/yaml;
+  SKILL documents user generics [D:wire-generics].
 - ~~**Runtime error positions** are statement-granular inside a one-line
   `if … then fail … else …`.~~ — done: a raising call reports its
   callee's column [D:runtime-position-call].
@@ -102,9 +87,11 @@ Ruled 2026-10-15 (PLAN-daily-driver W4): **every item below is daily-driver — 
   argv-rendering messages mask it as `***` [D:secret-argv-mask].
 - ~~**`from xml` mixed content** (`<N>a<b/>c</N>`) is silently concatenated.~~
   — done: a text field over mixed content refuses [D:from-xml-mixed].
-- **fmt** formats a file with a yaml-district parse error, and spaces inside
-  multi-line interpolation holes.
+- ~~**fmt** formats a file with a yaml-district parse error, and spaces inside
+  multi-line interpolation holes.~~ done: fmt refuses any file check cannot
+  parse; respace skips district content and lines inside a hole [D:fmt-parse-gate].
 - **History file and fmt rewrite invalid UTF-8** as U+FFFD ([D:source-utf8]
   covers source files only). fmt half done: fmt reads through the entry
-  read, refuses located and leaves the file untouched (e2e pins the bytes);
-  the history half awaits a ruling (PLAN-hunt2-backlog-fmt.md).
+  read, refuses located and leaves the file untouched (e2e pins the bytes).
+  History half ruled (b) SKIP (user, 2026-10-16): valid entries load, bad
+  lines stay out of recall and are written back byte-for-byte.
