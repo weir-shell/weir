@@ -36,6 +36,9 @@
   The error names the fix: `let inf () = …`.
 
 ### Fixed
+- **`weir fmt` keeps a file's line endings.** It wrote the platform
+  newline, so reformatting turned an LF file CRLF on Windows and a CRLF
+  file LF elsewhere; a CRLF file now stays CRLF and an LF file LF.
 
 - **`from json Map<string, int>` reads a whole document.** The value
   type can be anything a `Map` field can hold — `int`, `string`,

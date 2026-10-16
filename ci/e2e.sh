@@ -1181,6 +1181,12 @@ printf 'print "a"\n\n\n' > "$fmtdir/tail.weir"
 $BIN fmt "$fmtdir/tail.weir" 2>/dev/null || fail "fmt tail.weir"
 printf 'print "a"\n' | cmp -s - "$fmtdir/tail.weir" || fail "fmt must leave exactly one final newline: $(od -c "$fmtdir/tail.weir")"
 $BIN fmt --check "$fmtdir/tail.weir" 2>/dev/null || fail "one final newline is canonical"
+# fmt keeps the file's line ending: a CRLF file reformats as CRLF, an LF
+# file as LF on every OS (the LF cell above pins Windows' half)
+printf 'if true then\r\n  print "a"\r\n' > "$fmtdir/crlf.weir"
+$BIN fmt "$fmtdir/crlf.weir" 2>/dev/null || fail "fmt crlf.weir"
+printf 'if true then\r\n    print "a"\r\n' | cmp -s - "$fmtdir/crlf.weir" || fail "fmt must keep CRLF line endings: $(od -c "$fmtdir/crlf.weir")"
+echo "e2e ok: fmt keeps the file's line ending (LF and CRLF)"
 # a file check cannot parse is refused, byte-identical [D:fmt-parse-gate]
 printf 'let d = yaml\n    a: [1\n    b:  2\nprint  (show d)\n' > "$fmtdir/bad.weir"
 cp "$fmtdir/bad.weir" "$fmtdir/bad.orig"

@@ -834,7 +834,9 @@ let formatFile (checkOnly: bool) (path: string) : int =
     | Ok _ ->
         // the entry read validated the file [D:source-utf8]; the formatter
         // takes the raw text so a BOM and the shebang survive verbatim
-        match formatSource path (System.IO.File.ReadAllText path) with
+        let text = System.IO.File.ReadAllText path
+
+        match formatSource path text with
         | Error msg ->
             System.Console.Error.WriteLine $"weir fmt: {msg}"
             3
@@ -856,7 +858,15 @@ let formatFile (checkOnly: bool) (path: string) : int =
                         let head = Array.zeroCreate<byte> 3
                         f.Read(head, 0, 3) = 3 && head = [| 0xEFuy; 0xBBuy; 0xBFuy |]
 
-                    System.IO.File.WriteAllLines(path, result, System.Text.UTF8Encoding(bom))
+                    // the file's own line ending is kept: CRLF reads as LF, so
+                    // writing the platform newline would turn an LF file CRLF on
+                    // Windows (churn fmt --check never asked for)
+                    let nl = if text.Contains "\r\n" then "\r\n" else "\n"
+
+                    let out =
+                        if List.isEmpty result then "" else String.concat nl result + nl
+
+                    System.IO.File.WriteAllText(path, out, System.Text.UTF8Encoding(bom))
                     System.Console.Error.WriteLine $"weir fmt: formatted {path}"
                     0
                 with
