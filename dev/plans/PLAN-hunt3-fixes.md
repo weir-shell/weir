@@ -1,6 +1,6 @@
 # PLAN — fixing the third bug hunt (H3-*)
 
-Status: APPROVED (user, 2026-10-16) — R1–R10 all as recommended.
+Status: LANDED on plan/hunt3 (2026-10-16) — R1–R10 as recommended, F5 ruled "infer Duration"; all 37 probes OK (5 serve items via PLAN-kestrel); tools/hunt3-repro.weir gates CI.
 
 Source: PLAN-hunt3.md round 1 — briefs B (formats/plan/gen), C (concurrency),
 D (perf), E (trust boundaries), F (regressions since v0.0.74), A (Linux half

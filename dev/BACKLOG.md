@@ -142,3 +142,4 @@ Performance (brief D)
 - **`Seq.fold` string concatenation is quadratic** (inherent; name `Str.join` in the docs).
 - **LSP `semanticTokens/full` re-analyzes after formatting** (the cache is skipped).
 - **`fmt` on realistic files is 2.7× slower than v0.0.74** — the parse gate; same root as H3-D2/D3.
+- **e2e flake, F3-serve cell (once, 2026-10-16):** `echo "$out" | grep -qF "FORGED=False"` failed while the printed `$out` held `FORGED=False`; the re-run on the same binary was green (882). Unexplained — watch for a recurrence before chasing (a pipefail/SIGPIPE race on `echo | grep -q` is the first suspect).
