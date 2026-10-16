@@ -29,8 +29,22 @@
     <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3053</WarningsNotAsErrors>
     <StripSymbols>true</StripSymbols>
     <OptimizationPreference>Speed</OptimizationPreference>
+    <!-- binary size, no throughput cost [D:binary-size]: no frame names
+         (weir prints located diagnostics, never a .NET stack trace; implies
+         identical-body folding), no FSharp.Core satellites (invariant
+         culture never loads them), no traceparent injection, no XML
+         network resolver (weir's reader sets XmlResolver = null) -->
+    <StackTraceSupport>false</StackTraceSupport>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <HttpActivityPropagationSupport>false</HttpActivityPropagationSupport>
+    <XmlResolverIsNetworkingEnabledByDefault>false</XmlResolverIsNetworkingEnabledByDefault>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
+
+  <!-- ILC-only substitutions [D:binary-size]; build/test never run ILC -->
+  <ItemGroup>
+    <IlcArg Include="--substitution:$(MSBuildThisFileDirectory)ILLink.Substitutions.xml" />
+  </ItemGroup>
 
   <!-- the stamp lives in the BUILD, not publish.sh [D:windows-v1]: every
        publish path (dotnet publish, a future .ps1, CI) must stamp

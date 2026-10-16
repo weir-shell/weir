@@ -50,7 +50,8 @@ let areaOfSrc p =
     | "src/Weir/SchemaTypes.fs" | "src/Weir/Table.fs" | "src/Weir/Toml.fs" -> Some "adapters"
     | "src/Weir/Version.fs" | "src/Weir/Program.fs" | "src/Weir/Can.fs" | "src/Weir/Argv.fs"
     | "src/Weir/Extern.fs" | "src/Weir/Contracts.fs" | "src/Weir/Diagnose.fs" -> Some "cli"
-    | p when Str.endsWith ".fsproj" p -> None
+    // the ILC substitutions are build config, the .fsproj's sibling [D:binary-size]
+    | p when Str.endsWith ".fsproj" p || p == "src/Weir/ILLink.Substitutions.xml" -> None
     | p when Str.startsWith "src/Weir/" p -> Some "UNMAPPED"
     | _ -> None
 
@@ -63,7 +64,7 @@ let areaOfOther p =
         "site"
     elif Str.startsWith "ci/" p || Str.startsWith ".github/" p || Str.startsWith "tools/" p || Str.startsWith "tests/pty/" p then
         "ci"
-    elif Str.startsWith "publish." p || Str.startsWith "install." p || p == "Dockerfile" || p == "weir.slnx" || p == ".gitignore" || p == ".dockerignore" || p == ".gitattributes" || Str.endsWith ".fsproj" p then
+    elif Str.startsWith "publish." p || Str.startsWith "install." p || p == "Dockerfile" || p == "weir.slnx" || p == ".gitignore" || p == ".dockerignore" || p == ".gitattributes" || Str.endsWith ".fsproj" p || p == "src/Weir/ILLink.Substitutions.xml" then
         // a .fsproj with no accompanying .fs change is build config (it
         // rides the src it configures via areaOfSrc when both move; alone,
         // it is ci, never the docs fallback) [D:commit-areas]

@@ -1,0 +1,41 @@
+<!-- ILC body/resource substitutions for the AOT publish [D:binary-size]:
+     each entry removes code or data weir provably never reaches. A
+     framework rename fails the publish loudly (IL2009 under warnaserror),
+     never silently. Edits here do not invalidate ILC's incremental
+     inputs: touch Weir.fsproj or clean obj/ to republish. -->
+<linker>
+  <!-- F# signature/optimization data: read by the F# compiler, never at run time -->
+  <assembly fullname="Weir">
+    <resource name="FSharpSignatureCompressedData.Weir" action="remove" />
+    <resource name="FSharpSignatureCompressedDataB.Weir" action="remove" />
+    <resource name="FSharpOptimizationCompressedData.Weir" action="remove" />
+    <resource name="FSharpOptimizationCompressedDataB.Weir" action="remove" />
+  </assembly>
+  <assembly fullname="FParsec">
+    <resource name="FSharpSignatureData.FParsec" action="remove" />
+    <resource name="FSharpOptimizationData.FParsec" action="remove" />
+  </assembly>
+  <!-- XmlPreloadedResolver's DTDs: weir's reader prohibits DTDs and has no resolver [D:xml-no-dtd] -->
+  <assembly fullname="System.Private.Xml">
+    <resource name="xhtml1-frameset.dtd" action="remove" />
+    <resource name="xhtml1-transitional.dtd" action="remove" />
+    <resource name="xhtml1-strict.dtd" action="remove" />
+    <resource name="xhtml-symbol.ent" action="remove" />
+    <resource name="xhtml-lat1.ent" action="remove" />
+    <resource name="xhtml-special.ent" action="remove" />
+    <resource name="rss-0.91.dtd" action="remove" />
+  </assembly>
+  <!-- the NonBacktracking engine: weir never passes RegexOptions.NonBacktracking
+       (it would forbid lookbehind); passing it after this stub fails at match time -->
+  <assembly fullname="System.Text.RegularExpressions">
+    <type fullname="System.Text.RegularExpressions.Symbolic.SymbolicRegexRunnerFactory">
+      <method signature="System.Void .ctor(System.Text.RegularExpressions.RegexTree,System.Text.RegularExpressions.RegexOptions,System.TimeSpan)" body="stub" />
+    </type>
+  </assembly>
+  <!-- HTTP/2 and HTTP/3: `within serve` listens HttpProtocols.Http1 only [D:serve-kestrel] -->
+  <assembly fullname="Microsoft.AspNetCore.Server.Kestrel.Core">
+    <type fullname="Microsoft.AspNetCore.Server.Kestrel.Core.Internal.HttpConnection">
+      <method signature="Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols SelectProtocol()" body="stub" value="1" />
+    </type>
+  </assembly>
+</linker>
