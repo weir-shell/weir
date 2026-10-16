@@ -22,7 +22,11 @@
 //   a pwsh helper that attaches to the child's console: weir cannot raise a
 //   console control event or write console input itself.
 // - Ports come from a block below every OS's ephemeral range
-//   [D:harness-ports]; servers bind loopback only.
+//   [D:harness-ports]; servers bind loopback only. A serve probe's bind is
+//   its claim: a candidate lost to another process moves to the next one.
+// - The serve wire probes (pipelining, repeated headers, odd request lines,
+//   the IPv6-loopback check) need raw bytes on a socket: a python3 client
+//   (`python` where only that exists), as the e2e cells do.
 
 type Cli = {
     /// the weir binary under test (a path; probes copy and spawn it)
@@ -105,6 +109,13 @@ let stopped hb =
 
 let freePort start = [start..(start + 60)] |> Seq.find (fun p -> not (Net.portOpen p))
 
+let pyWorks exe =
+    match $(^$exe -c "print('py-ok')") |> try with
+    | Some out -> Seq.equal out ["py-ok"]
+    | None -> false
+
+let pyExe = ["python3"; "python"] |> Seq.tryFind pyWorks
+
 // ---- fixtures (plain blocks; parameters ride argv, never templating) --------
 
 let argsFixture = <<<
@@ -181,6 +192,52 @@ let serveHoldFixture = <<<
     within serve srv = { port = port; maxConcurrent = 1 } h
         ["up"] |> File.write $"{md}/ready"
         Duration.sleep 8s
+
+// the raw-socket client: `wire.py <host> <port> <mode>` prints NAME=<statuses>;<bodies>
+// per exchange — every status line and every `<…>` handler body the wire carried
+let wireClient = <<<
+    import re, socket, sys, time
+    host, port, mode = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+    H = b"Host: 127.0.0.1:%d\r\n" % port
+    def exchange(payload, then=None):
+        s = socket.create_connection((host, port), timeout=5)
+        s.sendall(payload)
+        d = b""
+        try:
+            if then:
+                time.sleep(0.3)
+                s.sendall(then)
+            while True:
+                x = s.recv(65536)
+                if not x:
+                    break
+                d += x
+        except OSError:
+            pass
+        s.close()
+        return d
+    def fact(name, d):
+        st = " ".join(m.decode()[9:] for m in re.findall(rb"HTTP/1\.1 [0-9]{3}", d))
+        bs = " ".join(m.decode() for m in re.findall(rb"<[^>]*>", d))
+        print("%s=%s;%s" % (name, st, bs))
+    def g(p, close=False):
+        return b"GET " + p + b" HTTP/1.1\r\n" + H + (b"Connection: close\r\n" if close else b"") + b"\r\n"
+    if mode == "v6":
+        try:
+            socket.socket(socket.AF_INET6).bind(("::1", 0))
+            print("v6=yes")
+        except OSError as e:
+            print("v6=no (%s)" % e)
+    elif mode == "pipe":
+        fact("PIPE2", exchange(g(b"/p1") + g(b"/p2", True)))
+        fact("PIPE3", exchange(g(b"/q1") + b"POST /q2 HTTP/1.1\r\n" + H + b"Content-Length: 2\r\n\r\nhi" + g(b"/q3", True)))
+    elif mode == "xff":
+        xff = b"".join(b"X-Forwarded-For: " + v + b"\r\n" for v in (b"one", b"two", b"three"))
+        fact("XFF", exchange(b"GET /xff HTTP/1.1\r\n" + H + xff + b"Connection: close\r\n\r\n"))
+    elif mode == "e6":
+        fact("HOST", exchange(b"GET /a HTTP/1.1\r\nHost: example.com\r\n\r\n", g(b"/after-host", True)))
+        fact("ABS", exchange(b"GET http://evil.example/x HTTP/1.1\r\n" + H + b"\r\n", g(b"/after-abs", True)))
+        fact("VERSION", exchange(b"GET / HTTP/9.9\r\n" + H + b"\r\n", g(b"/after-version", True)))
 
 let stdinFixture = <<<
     type Doc = { name: string; n: int }
@@ -1166,28 +1223,41 @@ let x55 d =
             c
     check (catRead.exitCode == 0 && Seq.equal catRead.stdout ["payload"]) $"cat while held: exit {catRead.exitCode} {textOf catRead |> oneLine |> clip 200}"
 
-// X56 — locking a data file does not stop weir's own File.read/File.write on it — in the holder (lock the file you edit, then edit it) or in another weir process; advisory means only lockers are excluded (SKILL scopes: within lock) [D:within-lock]
+// X56 — `within lock` is the only lock weir takes, so on POSIX the holder's own File.read/File.write of the locked file work, and another weir reads it while held [D:lock-advisory] [D:within-lock]; on Windows the lock is a sharing mode: the holder's own read raises naming the path, and a sidecar lock leaves the data file free to both (SKILL scopes: within lock) [D:lock-advisory]
 let x56 d =
     let lf = Path.combine d "data.json"
     ["payload"] |> File.write lf
+    let fx = fixture d "lock.weir" lockFixture
+    let ready = Path.combine d "ready"
+    let lockPath = if isWin then lf + ".lock" else lf
     let selfRw =
-        within lock lf timeout=5s
+        within lock lockPath timeout=5s
             let w = File.write lf ["payload"] |> try result
             let r = File.read lf |> Seq.freeze |> try result
             (w, r)
-    let fx = fixture d "lock.weir" lockFixture
-    let ready = Path.combine d "ready"
     let other =
-        within proc h = ^$bin $fx $lf $ready 3
+        within proc h = ^$bin $fx $lockPath $ready 3
             awaitFile ready h
             let o = File.read lf |> Seq.freeze |> try result
             let _w = Proc.wait h
             o
-    allOf [
-        check (fst selfRw |> Result.isOk) $"the holder's own File.write: {show2 (fst selfRw)}"
-        check (snd selfRw |> Result.isOk) $"the holder's own File.read: {show2 (snd selfRw)}"
-        check (other |> Result.isOk) $"another weir's File.read while held: {show2 other}"
-    ]
+    let shared =
+        allOf [
+            check (fst selfRw |> Result.isOk) $"the holder's own File.write: {show2 (fst selfRw)}"
+            check (snd selfRw |> Result.isOk) $"the holder's own File.read: {show2 (snd selfRw)}"
+            check (other |> Result.isOk) $"another weir's File.read while held: {show2 other}"
+        ]
+    if isWin then
+        let held =
+            within lock lf timeout=5s
+                File.read lf |> Seq.freeze |> try result
+        let named =
+            match held with
+            | Error m -> (m |> Str.contains "data.json") && not (m |> Str.contains "internal error")
+            | Ok _ -> false
+        allOf [ check named $"the holder's own File.read of the locked file (Windows: raises naming it): {show2 held}"; shared ]
+    else
+        shared
 
 // X43 — the kernel releases a `within lock` on any death: a hard-killed holder frees it [D:within-lock]
 let x43 d =
@@ -1251,14 +1321,50 @@ let hit url =
 // curl as the referee for the listener's names: --noproxy keeps a runner's proxy env out of a loopback probe; -g lets [::1] through
 let curlHit d url =
     let outf = Path.combine d "curl.out"
-    let r = curl -s -g --noproxy "*" -o $outf -w "%{http_code}" $url | complete
+    let r = curl -s -g --noproxy "*" --max-time 10 -o $outf -w "%{http_code}" $url | complete
     let body = if File.exists outf then File.read outf |> Str.join "\n" else ""
     (r.exitCode, r.stdout |> Str.join "", body)
 
+let serveAt port mb h body =
+    within serve srv = { port = port; maxConcurrent = 4; maxBody = mb } h
+        body srv port
+
+// the bind is the claim [D:harness-ports]: a candidate another process took between the check and the bind moves on to the next one; any other failure is the probe's
+let serveOn start mb h body =
+    let attempt p =
+        if Net.portOpen p then
+            None
+        else
+            match serveAt p mb h body |> try result with
+            | Ok v -> Some v
+            | Error m when m |> Str.contains $"cannot listen on 127.0.0.1:{p}" -> None
+            | Error m -> Some (false, $"probe raised: {oneLine m}")
+    [start..(start + 40)]
+    |> Seq.tryPick attempt
+    |> Option.defaultValue (false, $"instrument: no bindable port in {start}..{start + 40}")
+
+// the wire probes' handler: `<path>`, and `/xff` answers `<count:v1|v2|…>` over the X-Forwarded-For pairs it got
+let wireHandler = fun req ->
+    match req.path with
+    | "/xff" ->
+        let hops = req.headers |> Seq.where (fun (k, _) -> Str.toLower k == "x-forwarded-for") |> Seq.map snd |> Seq.freeze
+        HttpServerResponse { status = 200; headers = []; body = Text $"<{hops |> Seq.length}:{hops |> Str.join "|"}>" }
+    | p -> HttpServerResponse { status = 200; headers = []; body = Text $"<{p}>" }
+
+let wireRun d host port mode =
+    match pyExe with
+    | None -> Error "instrument: neither python3 nor python runs on PATH"
+    | Some py ->
+        let script = fixture d "wire.py" wireClient
+        let r = ^$py -I $script $host $port $mode | complete
+        if r.exitCode == 0 then
+            Ok r
+        else
+            Error $"instrument: the python client exited {r.exitCode}: {textOf r |> oneLine |> clip 300}"
+
 // X46 — `within serve` answers 127.0.0.1 and localhost on one port, reaching the handler (docs/reference/scopes.md serve) [D:serve-loopback-names]
 let x46 d =
-    let port = freePort 18431
-    within serve srv = { port = port; maxConcurrent = 4 } probeHandler
+    let body srv port =
         let (e1, c1, b1) = curlHit d $"http://127.0.0.1:{port}/who"
         let (e2, c2, b2) = curlHit d $"http://localhost:{port}/who"
         allOf [
@@ -1266,23 +1372,28 @@ let x46 d =
             check (c2 == "200" && b2 == "weir-handler") $"localhost: curl exit {e2} status {c2} {clip 120 b2}"
         ]
         |> withNote $"port {Server.port srv}"
+    serveOn 18431 16MiB probeHandler body
 
-// X54 — `within serve` answers [::1] on the same port, reaching the handler — or skips it quietly on a host without IPv6 loopback (connect refused), never a non-handler response (docs/reference/scopes.md serve) [D:serve-loopback-names]
+// X54 — `within serve` answers [::1] on the same port with the HANDLER's response wherever the host has an IPv6 loopback (Kestrel binds ::1 beside 127.0.0.1); only a host without one skips, and that is decided by a python bind, never by curl failing [D:serve-kestrel] [D:serve-loopback-names]
 let x54 d =
-    let port = freePort 18461
-    within serve srv = { port = port; maxConcurrent = 4 } probeHandler
-        let (e, c, b) = curlHit d $"http://[::1]:{port}/who"
-        let served = c == "200" && b == "weir-handler"
-        let skipped = c == "000"
-        check (served || skipped) $"[::1]: curl exit {e} status {c} {clip 160 b}"
-        |> withNote $"[::1] {if skipped then "skipped (connect failed, curl exit " + show e + ")" else "served"} on port {Server.port srv}"
+    match wireRun d "127.0.0.1" "0" "v6" with
+    | Error m -> (false, m)
+    | Ok v6r ->
+        let v6 = factOf "v6" v6r
+        let body srv port =
+            if v6 == "yes" then
+                let (e, c, b) = curlHit d $"http://[::1]:{port}/who"
+                check (c == "200" && b == "weir-handler") $"[::1]: curl exit {e} status {c} body {clip 160 b}, want 200 weir-handler"
+                |> withNote $"[::1] served on port {Server.port srv}"
+            else
+                (true, $"n/a: no IPv6 loopback on this host: {v6}")
+        serveOn 18461 16MiB probeHandler body
 
-// X47 — F8: a Stream producer that raises is reported on Server.streamErrors, and the client sees a truncated body (curl 18) — off Windows; http.sys may keep the terminator (graceful degrade) [D:serve-stream] [D:serve-stream-truncate]
+// X47 — F8: a Stream producer that raises is reported on Server.streamErrors, and the client sees a truncated body on EVERY OS — curl exits 18, weir's client raises: weir frames the chunks itself on the one server all three OSes run [D:serve-stream-truncate] [D:serve-kestrel] [D:serve-stream]
 let x47 d =
-    let port = freePort 18501
-    within serve srv = { port = port; maxConcurrent = 4 } probeHandler
+    let body srv port =
         let outf = Path.combine d "half.out"
-        let rc = curl -s -N -o $outf $"http://127.0.0.1:{port}/half" | exitCode
+        let rc = curl -s -N --noproxy "*" --max-time 10 -o $outf $"http://127.0.0.1:{port}/half" | exitCode
         let weirClient = Http.send (Http.get $"http://127.0.0.1:{port}/half") |> try result
         Duration.sleep 300ms
         let recorded = Server.streamErrors srv |> Seq.exists (Str.contains "producer died")
@@ -1290,12 +1401,47 @@ let x47 d =
             match weirClient with
             | Ok _ -> false
             | Error _ -> true
-        let truncOk = if isWin then rc == 18 || rc == 0 else rc == 18 && clientRaised
         allOf [
             check recorded $"Server.streamErrors missed the raise: {show (Server.streamErrors srv)}"
-            check truncOk $"curl exit {rc} (18 = truncated), weir client raised={clientRaised}"
+            check (rc == 18) $"curl exit {rc}, want 18 (truncated chunked body)"
+            check clientRaised "weir's Http client read the truncated stream as a clean end"
         ]
-        |> withNote $"curl exit {rc}, weir client raised={clientRaised}"
+    serveOn 18501 16MiB probeHandler body
+
+// X57 — pipelining: two, then three requests (a POST with a body in the middle) written at once on one connection are all answered, in order [D:serve-kestrel] [D:serve-pipelining-later]
+let x57 d =
+    let body _srv port =
+        match wireRun d "127.0.0.1" (show port) "pipe" with
+        | Error m -> (false, m)
+        | Ok r ->
+            allOf [
+                check (factOf "PIPE2" r == "200 200;</p1> </p2>") $"two pipelined: {factOf "PIPE2" r}, want 200 200;</p1> </p2>"
+                check (factOf "PIPE3" r == "200 200 200;</q1> </q2> </q3>") $"three pipelined: {factOf "PIPE3" r}, want 200 200 200;</q1> </q2> </q3>"
+            ]
+    serveOn 18801 16MiB wireHandler body
+
+// X58 — F10: three `X-Forwarded-For` lines reach the handler as three pairs, in wire order (SKILL: within serve headers) [D:serve-kestrel] [D:serve-header-limit]
+let x58 d =
+    let body _srv port =
+        match wireRun d "127.0.0.1" (show port) "xff" with
+        | Error m -> (false, m)
+        | Ok r -> check (factOf "XFF" r == "200;<3:one|two|three>") $"the handler got {factOf "XFF" r}, want 200;<3:one|two|three>"
+    serveOn 18861 16MiB wireHandler body
+
+// X59 — H3-E6: one response per request — a foreign Host gets one 404 and the follow-up its own 200; an absolute-form foreign URI one 4xx and never an unsolicited 200; HTTP/9.9 exactly one 505 (SKILL: within serve) [D:serve-kestrel]
+let x59 d =
+    let body _srv port =
+        match wireRun d "127.0.0.1" (show port) "e6" with
+        | Error m -> (false, m)
+        | Ok r ->
+            let abs = factOf "ABS" r
+            allOf [
+                check (factOf "HOST" r == "404 200;</after-host>") $"foreign Host: {factOf "HOST" r}, want 404 200;</after-host>"
+                check (Str.isMatch @"^4\d\d( 200;</after-abs>|;)$" abs) $"absolute-form: {abs}, want one 4xx (then 200;</after-abs> or a close)"
+                check (factOf "VERSION" r == "505;") $"HTTP/9.9: {factOf "VERSION" r}, want 505;"
+            ]
+            |> withNote $"absolute-form: {abs}"
+    serveOn 18921 16MiB wireHandler body
 
 // X48 — F11: a response header the wire cannot carry is refused, never dropped — the client gets a 500 and Server.streamErrors names the header [D:http-header-bytes] [D:http-header-unsendable]
 let x48 d =
@@ -1476,13 +1622,16 @@ let probes = [
     ("X41", "locked/denied files raise naming the path [D:fs-members]", x41)
     ("X42", "within lock excludes a locker in another process [D:within-lock]", x42)
     ("X55", "within lock is advisory: a non-weir reader reads the held file [D:within-lock]", x55)
-    ("X56", "weir's own File.read/write work on a locked data file [D:within-lock]", x56)
+    ("X56", "weir's own File.read/write on a locked data file; Windows: sidecar [D:lock-advisory]", x56)
     ("X43", "a killed lock holder releases the lock [D:within-lock]", x43)
     ("X44", "within tmp goes even with a child's cwd inside [D:scoped-procs]", x44)
     ("X45", "concurrent File.append lands whole [D:append-oappend]", x45)
     ("X46", "serve answers 127.0.0.1 and localhost [D:serve-loopback-names]", x46)
-    ("X54", "serve answers [::1] or skips it quietly [D:serve-loopback-names]", x54)
-    ("X47", "F8: stream raise reported and truncated [D:serve-stream-truncate]", x47)
+    ("X54", "serve answers [::1] from the handler where IPv6 loopback exists [D:serve-kestrel]", x54)
+    ("X47", "F8: stream raise reported and truncated on every OS (curl 18) [D:serve-stream-truncate]", x47)
+    ("X57", "pipelining: 2 and 3 requests on one connection, in order [D:serve-kestrel]", x57)
+    ("X58", "F10: three X-Forwarded-For reach the handler in order [D:serve-kestrel]", x58)
+    ("X59", "E6: one response per request (foreign Host, absolute-form, HTTP/9.9) [D:serve-kestrel]", x59)
     ("X48", "F11: unsendable headers refused by name [D:http-header-unsendable]", x48)
     ("X49", "maxBody 413; CRLF bodies read clean [D:serve-max-body] [D:http-body-lines]", x49)
     ("X50", "port in use: named error, freed after [D:http-serve]", x50)

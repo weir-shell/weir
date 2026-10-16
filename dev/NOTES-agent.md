@@ -19,6 +19,10 @@ skill lines and targeted hints).
   REPL keys need GenerateConsoleCtrlEvent/WriteConsoleInput against the
   child's own console, and the locked-file probe needs a FileShare.None
   holder; weir has no console-event, console-input or share-mode surface.
+  The serve wire probes (X54, X57-X59) use a python3 raw-socket client on
+  every OS: pipelined requests, repeated request headers, a foreign
+  Host/absolute-form/HTTP/9.9 request line and an IPv6-loopback bind check
+  are bytes weir's Http client cannot send.
 - 2026-10-14 | hunt2 repro gate (tools/hunt2-repro.weir) -> python3 via
   value-headed pipes, `sh -c` once | the REPL line editor needs a
   pseudo-terminal (H24/H25/H27/H34), the LSP items need raw JSON-RPC
