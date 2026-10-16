@@ -1,6 +1,6 @@
 # PLAN — fixing the third bug hunt (H3-*)
 
-Status: DRAFT — rulings R1–R10 owed before implementation.
+Status: APPROVED (user, 2026-10-16) — R1–R10 all as recommended.
 
 Source: PLAN-hunt3.md round 1 — briefs B (formats/plan/gen), C (concurrency),
 D (perf), E (trust boundaries), F (regressions since v0.0.74), A (Linux half
@@ -29,7 +29,7 @@ harness joins ci.yml / ci/local.sh beside hunt2-repro once all 37 are OK.
 At most three heavy agents at once (pids cap 2048); D items are measured
 alone.
 
-## Rulings owed BEFORE implementation (recommendation first)
+## Rulings (all ruled as recommended, user 2026-10-16)
 
 - **R1 — REPL `^C` during a child-less wait (H3-C6).** Today `^C` at the
   REPL interrupts only a foreground child; `Duration.sleep 20s`, a `poll`
