@@ -199,27 +199,47 @@ let wireClient = <<<
     import re, socket, sys, time
     host, port, mode = sys.argv[1], int(sys.argv[2]), sys.argv[3]
     H = b"Host: 127.0.0.1:%d\r\n" % port
+    # read until the peer closes, errs, or goes quiet (`first` s for the
+    # first byte, `quiet` s between later ones); returns the bytes and how
+    # the read ended — an error after data keeps the data
+    def drain(s, d, first, quiet):
+        s.settimeout(first)
+        while True:
+            try:
+                x = s.recv(65536)
+            except socket.timeout:
+                return d, "quiet"
+            except OSError as e:
+                return d, type(e).__name__
+            if not x:
+                return d, "eof"
+            d += x
+            s.settimeout(quiet)
+    # `then` is sent only once the first reply has gone quiet on an open
+    # connection: writing into one the server closed draws a RST, and a
+    # Windows client then drops the reply it had not read yet
     def exchange(payload, then=None):
         s = socket.create_connection((host, port), timeout=5)
         s.sendall(payload)
-        d = b""
-        try:
-            if then:
-                time.sleep(0.3)
+        d, end = drain(s, b"", 5, 1.0 if then else 5)
+        ends = [end]
+        if then and end == "quiet":
+            try:
                 s.sendall(then)
-            while True:
-                x = s.recv(65536)
-                if not x:
-                    break
-                d += x
-        except OSError:
-            pass
+                d, end = drain(s, d, 5, 5)
+            except OSError as e:
+                end = "send " + type(e).__name__
+            ends.append(end)
+        elif then:
+            ends.append("then unsent")
         s.close()
-        return d
-    def fact(name, d):
+        return d, ends
+    def fact(name, r):
+        d, ends = r
         st = " ".join(m.decode()[9:] for m in re.findall(rb"HTTP/1\.1 [0-9]{3}", d))
         bs = " ".join(m.decode() for m in re.findall(rb"<[^>]*>", d))
         print("%s=%s;%s" % (name, st, bs))
+        print("%s.diag=%d bytes, reads ended %s, head %r" % (name, len(d), "/".join(ends), d[:60]))
     def g(p, close=False):
         return b"GET " + p + b" HTTP/1.1\r\n" + H + (b"Connection: close\r\n" if close else b"") + b"\r\n"
     if mode == "v6":
@@ -275,7 +295,12 @@ let printFixture = <<<
 
 // the Windows console helper: start a child in its OWN (hidden) console,
 // then attach to it to raise Ctrl+C / Ctrl+Break or type keys; results go
-// to -Out because the helper detaches from its own console to do it
+// to -Out because the helper detaches from its own console to do it.
+// The ctrl modes spawn through CreateProcess with CREATE_NEW_CONSOLE alone
+// and the helper's inherited Ctrl+C-ignore cleared first: a child in a new
+// process group, or one inheriting the ignore, drops CTRL_C_EVENT. While
+// attached, the helper's own handler swallows both events (a NULL handler
+// ignores Ctrl+C only, so Ctrl+Break would end the helper).
 let conHelper = <<<
     param(
         [string]$Mode,
@@ -296,11 +321,56 @@ let conHelper = <<<
         [DllImport("kernel32.dll", SetLastError = true)] public static extern bool FreeConsole();
         [DllImport("kernel32.dll", SetLastError = true)] public static extern bool AttachConsole(uint pid);
         [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleCtrlHandler(IntPtr handler, bool add);
+        public delegate bool HandlerRoutine(uint ev);
+        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "SetConsoleCtrlHandler")] public static extern bool SetConsoleCtrlRoutine(HandlerRoutine handler, bool add);
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] public static extern bool CreateProcessW(string app, System.Text.StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref StartupInfo si, out ProcInfo pi);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern uint WaitForSingleObject(IntPtr h, uint ms);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetExitCodeProcess(IntPtr h, out uint code);
         [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GenerateConsoleCtrlEvent(uint ev, uint group);
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
         [DllImport("kernel32.dll", SetLastError = true)] public static extern bool WriteConsoleInputW(IntPtr h, KeyRecord[] recs, uint n, out uint written);
         [DllImport("kernel32.dll", SetLastError = true)] public static extern bool CloseHandle(IntPtr h);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern short VkKeyScanW(char c);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct StartupInfo {
+            public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
+            public int dwX; public int dwY; public int dwXSize; public int dwYSize;
+            public int dwXCountChars; public int dwYCountChars; public int dwFillAttribute; public int dwFlags;
+            public short wShowWindow; public short cbReserved2; public IntPtr lpReserved2;
+            public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct ProcInfo { public IntPtr hProcess; public IntPtr hThread; public int dwProcessId; public int dwThreadId; }
+
+        static readonly HandlerRoutine Swallow = ev => true;
+        static IntPtr child = IntPtr.Zero;
+
+        // CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT, hidden; never
+        // CREATE_NEW_PROCESS_GROUP (it disables Ctrl+C in the child)
+        public static string Spawn(string exe, string argLine) {
+            bool cleared = SetConsoleCtrlHandler(IntPtr.Zero, false);
+            var si = new StartupInfo();
+            si.cb = Marshal.SizeOf(typeof(StartupInfo));
+            si.dwFlags = 1;
+            si.wShowWindow = 0;
+            var cmd = new System.Text.StringBuilder("\"" + exe + "\"" + (argLine == "none" ? "" : " " + argLine));
+            ProcInfo pi;
+            if (!CreateProcessW(null, cmd, IntPtr.Zero, IntPtr.Zero, false, 0x10u | 0x400u, IntPtr.Zero, null, ref si, out pi))
+                return "ERR CreateProcess failed: " + Marshal.GetLastWin32Error();
+            CloseHandle(pi.hThread);
+            child = pi.hProcess;
+            return pi.dwProcessId + " (CreateProcess flags 0x410, inherited Ctrl+C ignore cleared=" + cleared + ")";
+        }
+
+        // "" while the child runs, else its exit code
+        public static string WaitExit(int ms) {
+            if (WaitForSingleObject(child, (uint)ms) != 0) return "";
+            uint code;
+            GetExitCodeProcess(child, out code);
+            return ((int)code).ToString();
+        }
 
         [StructLayout(LayoutKind.Explicit, Size = 20, CharSet = CharSet.Unicode)]
         public struct KeyRecord {
@@ -324,6 +394,7 @@ let conHelper = <<<
             FreeConsole();
             if (!AttachConsole(pid)) return "AttachConsole failed: " + Marshal.GetLastWin32Error();
             SetConsoleCtrlHandler(IntPtr.Zero, true);
+            SetConsoleCtrlRoutine(Swallow, true);
             return "";
         }
 
@@ -377,29 +448,41 @@ let conHelper = <<<
     '@
     function Say($s) { Add-Content -LiteralPath $Out -Value $s }
     if ($NoColor) { $env:NO_COLOR = '1' } else { Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue }
-    $sp = @{ FilePath = $Exe; PassThru = $true; WindowStyle = 'Hidden' }
-    if ($ArgLine -ne 'none') { $sp.ArgumentList = $ArgLine }
-    $p = Start-Process @sp
-    $null = $p.Handle
-    Say "PID $($p.Id)"
+    if ($Mode -eq 'keys') {
+        $sp = @{ FilePath = $Exe; PassThru = $true; WindowStyle = 'Hidden' }
+        if ($ArgLine -ne 'none') { $sp.ArgumentList = $ArgLine }
+        $p = Start-Process @sp
+        $null = $p.Handle
+        $id = $p.Id
+        $exitOf = { param($ms) if ($p.WaitForExit($ms)) { "$($p.ExitCode)" } else { '' } }
+    } else {
+        $sp = [H3Con]::Spawn($Exe, $ArgLine)
+        if ($sp.StartsWith('ERR ')) { Say "HELPER-ERROR $sp"; exit 0 }
+        Say "SPAWN $sp"
+        $id = [int]($sp.Split(' ')[0])
+        $exitOf = { param($ms) [H3Con]::WaitExit($ms) }
+    }
+    Say "PID $id"
     if ($Ready -ne 'none') {
         $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
         while (-not (Test-Path -LiteralPath $Ready)) {
-            if ($p.HasExited) { Say "EARLY-EXIT $($p.ExitCode)"; exit 0 }
-            if ((Get-Date) -gt $deadline) { Say "READY-TIMEOUT"; & taskkill /T /F /PID $p.Id | Out-Null; exit 0 }
+            $e = & $exitOf 0
+            if ($e -ne '') { Say "EARLY-EXIT $e"; exit 0 }
+            if ((Get-Date) -gt $deadline) { Say "READY-TIMEOUT"; & taskkill /T /F /PID $id | Out-Null; exit 0 }
             Start-Sleep -Milliseconds 100
         }
     } else {
         Start-Sleep -Milliseconds 2000
     }
     $err = switch ($Mode) {
-        'ctrlc' { [H3Con]::Ctrl([uint32]$p.Id, 0) }
-        'ctrlbreak' { [H3Con]::Ctrl([uint32]$p.Id, 1) }
-        'keys' { [H3Con]::Keys([uint32]$p.Id, [string[]](Get-Content -LiteralPath $Keys)) }
+        'ctrlc' { [H3Con]::Ctrl([uint32]$id, 0) }
+        'ctrlbreak' { [H3Con]::Ctrl([uint32]$id, 1) }
+        'keys' { [H3Con]::Keys([uint32]$id, [string[]](Get-Content -LiteralPath $Keys)) }
         default { "unknown mode $Mode" }
     }
-    if ($err -ne '') { Say "HELPER-ERROR $err" }
-    if ($p.WaitForExit($TimeoutMs)) { Say "EXIT $($p.ExitCode)" } else { Say "TIMEOUT"; & taskkill /T /F /PID $p.Id | Out-Null }
+    if ($err -ne '') { Say "HELPER-ERROR $err" } else { Say "SENT $Mode" }
+    $e = & $exitOf $TimeoutMs
+    if ($e -ne '') { Say "EXIT $e" } else { Say "TIMEOUT"; & taskkill /T /F /PID $id | Out-Null }
 
 let shareNoneHolder = <<<
     param([string]$Path, [string]$Ready, [int]$HoldMs)
@@ -460,7 +543,7 @@ let x3 d =
     let want = if isWin then "c.txt" else p
     check (f == want) $"Path.fileName {p} = {f}, want {want}"
 
-// X4 — drive letters: an absolute second arg wins in Path.combine (SKILL Paths), and `C:/` is a root only on Windows; normalize swallows `..` at a root (SKILL Paths)
+// X4 — drive letters: an absolute second arg wins in Path.combine (SKILL Paths), and `C:/` is a root only on Windows; normalize swallows `..` at a root (SKILL Paths) [D:path-drive-root]
 let x4 d =
     let c = Path.combine "C:/x" "D:/y"
     let wantC = if isWin then "D:/y" else "C:/x/D:/y"
@@ -501,17 +584,22 @@ let x7 d =
     let want = [h + "/x"; h; "~/q"]
     check (Seq.equal got want) $"argv = {show got}, want {show want}"
 
-// X8 — home is $HOME verbatim on POSIX [D:home-verbatim]; on Windows the user profile, which no env var moves [D:tilde] (e2e tilde cell)
+// X8 — home is $HOME verbatim when set, on every OS, and the OS lookup when unset — the profile on Windows (SKILL Paths: `Path` inventory; Path.home's doc) [D:home-verbatim]
 let x8 d =
     let fx = fixture d "facts.weir" factsFixture
     let fake = Path.combine d "fakehome"
     let r = HOME=$fake ^$bin $fx | complete
     let home = factOf "home" r
-    if isWin then
-        let prof = Env.get "USERPROFILE" |> Option.defaultValue "<unset>"
-        check (samePath home prof) $"Path.home = {home} under HOME={fake}, want the profile {prof}"
-    else
-        check (home == fake) $"Path.home = {home}, want HOME verbatim {fake}"
+    let u = HOME=$fake env -u HOME $bin $fx | complete
+    let unsetHome = factOf "home" u
+    let unsetOk =
+        if isWin then
+            let prof = Env.get "USERPROFILE" |> Option.defaultValue "<unset>"
+            check (samePath unsetHome prof) $"Path.home with HOME unset = {unsetHome}, want the profile {prof} (exit {u.exitCode} {textOf u |> oneLine |> clip 160})"
+        else
+            check (Str.startsWith "/" unsetHome && unsetHome <> fake) $"Path.home with HOME unset = {unsetHome}, want the passwd home (exit {u.exitCode} {textOf u |> oneLine |> clip 160})"
+    allOf [ check (home == fake) $"Path.home = {home}, want HOME verbatim {fake}"; unsetOk ]
+    |> withNote $"HOME unset: {unsetHome}"
 
 // X9 — config/state dirs: POSIX follows XDG_* else ~/.config / ~/.local/state; Windows is %APPDATA% / %LOCALAPPDATA% and ignores XDG [D:path-home] [D:windows-v1]
 let x9 d =
@@ -578,17 +666,19 @@ let x12 d =
         check (Seq.equal viaGlob want) $"Path.glob order {show viaGlob}"
     ]
 
-// X13 — Path.glob takes a native directory prefix: interpolated, built with Path.combine (native separators), or forward-slashed (SKILL Paths: Path.glob; [D:windows-v1] native members)
+// X13 — Path.glob takes a native directory prefix: interpolated, built with Path.combine (native separators), or forward-slashed (SKILL Paths: Path.glob; [D:windows-v1] native members) [D:path-drive-root]
 let x13 d =
     ["g1.txt"; "g2.txt"] |> Seq.iter (fun n -> ["x"] |> File.write (Path.combine d n))
     let viaInterp = Path.glob $"{d}/*.txt" |> Seq.length
     let viaCombine = Path.glob (Path.combine d "*.txt") |> Seq.length
     let viaFwd = Path.glob $"{fwd d}/*.txt" |> Seq.length
+    let shown = Path.glob (Path.combine d "*.txt") |> Seq.freeze
     allOf [
         check (viaInterp == 2) $"glob {d}/*.txt found {viaInterp}"
         check (viaCombine == 2) $"glob (Path.combine d \"*.txt\") found {viaCombine}"
         check (viaFwd == 2) $"glob {fwd d}/*.txt found {viaFwd}"
     ]
+    |> withNote $"shown as {show shown}"
 
 // ---- line endings ----------------------------------------------------------
 
@@ -1209,19 +1299,30 @@ let show2 res =
     | Ok _ -> "ok"
     | Error m -> oneLine m |> clip 160
 
-// X55 — `within lock` is ADVISORY: a non-cooperating process (sh's cat — not weir) still reads the locked file while it is held (SKILL scopes: within lock — "a non-cooperating process can ignore it") [D:within-lock]
+// X55 — `within lock` is ADVISORY on POSIX: a non-cooperating process (sh's cat — not weir) still reads the locked file while it is held (SKILL scopes: within lock — "a non-cooperating process can ignore it") [D:within-lock]; on Windows the lock is a real sharing mode, so cat of the held file fails and a SIDECAR lock leaves the data file readable (SKILL scopes: within lock) [D:lock-advisory]
 let x55 d =
     let lf = Path.combine d "data.json"
     ["payload"] |> File.write lf
     let fx = fixture d "lock.weir" lockFixture
-    let ready = Path.combine d "ready"
-    let catRead =
-        within proc h = ^$bin $fx $lf $ready 3
+    let catWhile lockPath tag =
+        let ready = Path.combine d $"ready-{tag}"
+        within proc h = ^$bin $fx $lockPath $ready 3
             awaitFile ready h
             let c = sh -c $"cat '{fwd lf}'" | complete
             let _w = Proc.wait h
             c
-    check (catRead.exitCode == 0 && Seq.equal catRead.stdout ["payload"]) $"cat while held: exit {catRead.exitCode} {textOf catRead |> oneLine |> clip 200}"
+    let gotPayload c = c.exitCode == 0 && Seq.equal c.stdout ["payload"]
+    let held = catWhile lf "held"
+    let heldText = $"exit {held.exitCode} {textOf held |> oneLine |> clip 200}"
+    if isWin then
+        let side = catWhile (lf + ".lock") "sidecar"
+        allOf [
+            check (held.exitCode <> 0) $"cat of the held file read it (Windows: a sharing mode refuses it): {heldText}"
+            check (gotPayload side) $"cat while a sidecar lock is held: exit {side.exitCode} {textOf side |> oneLine |> clip 200}"
+        ]
+        |> withNote $"held: {heldText}"
+    else
+        check (gotPayload held) $"cat while held: {heldText}"
 
 // X56 — `within lock` is the only lock weir takes, so on POSIX the holder's own File.read/File.write of the locked file work, and another weir reads it while held [D:lock-advisory] [D:within-lock]; on Windows the lock is a sharing mode: the holder's own read raises naming the path, and a sidecar lock leaves the data file free to both (SKILL scopes: within lock) [D:lock-advisory]
 let x56 d =
@@ -1435,10 +1536,11 @@ let x59 d =
         | Error m -> (false, m)
         | Ok r ->
             let abs = factOf "ABS" r
+            let diag name = factOf $"{name}.diag" r
             allOf [
-                check (factOf "HOST" r == "404 200;</after-host>") $"foreign Host: {factOf "HOST" r}, want 404 200;</after-host>"
-                check (Str.isMatch @"^4\d\d( 200;</after-abs>|;)$" abs) $"absolute-form: {abs}, want one 4xx (then 200;</after-abs> or a close)"
-                check (factOf "VERSION" r == "505;") $"HTTP/9.9: {factOf "VERSION" r}, want 505;"
+                check (factOf "HOST" r == "404 200;</after-host>") $"foreign Host: {factOf "HOST" r}, want 404 200;</after-host> ({diag "HOST"})"
+                check (Str.isMatch @"^4\d\d( 200;</after-abs>|;)$" abs) $"absolute-form: {abs}, want one 4xx (then 200;</after-abs> or a close) ({diag "ABS"})"
+                check (factOf "VERSION" r == "505;") $"HTTP/9.9: {factOf "VERSION" r}, want 505; ({diag "VERSION"})"
             ]
             |> withNote $"absolute-form: {abs}"
     serveOn 18921 16MiB wireHandler body
@@ -1582,16 +1684,16 @@ let probes = [
     ("X1", "Path members are platform-native [D:windows-v1]", x1)
     ("X2", "forward-slash path input works everywhere [D:windows-v1]", x2)
     ("X3", "backslash: separator on Windows, filename byte on POSIX (SKILL Paths)", x3)
-    ("X4", "drive letters: absolute second arg wins; C:/ is a root on Windows only (SKILL Paths)", x4)
+    ("X4", "drive letters: absolute second arg wins; C:/ is a root on Windows only (SKILL Paths) [D:path-drive-root]", x4)
     ("X5", "Path.under refuses Windows shapes everywhere [D:path-under]", x5)
     ("X6", "UNC decomposes on Windows [D:surface-path]", x6)
     ("X7", "typed ~ is Path.home in argv [D:tilde]", x7)
-    ("X8", "home: $HOME on POSIX, the profile on Windows [D:home-verbatim] [D:tilde]", x8)
+    ("X8", "home: $HOME verbatim when set on every OS, the OS lookup (Windows: the profile) when unset [D:home-verbatim]", x8)
     ("X9", "config/state dirs per OS; Windows ignores XDG [D:path-home]", x9)
     ("X10", "case-variant names follow the FS; copy refuses existing destinations [D:fs-members]", x10)
     ("X11", "a case-only move never loses the file [D:fs-members]", x11)
     ("X12", "listings are ordinal on every OS (SKILL Commands)", x12)
-    ("X13", "Path.glob takes native directory prefixes (SKILL Paths)", x13)
+    ("X13", "Path.glob takes native directory prefixes (SKILL Paths) [D:path-drive-root]", x13)
     ("X14", "a CRLF script runs like its LF twin [D:content-bytes]", x14)
     ("X15", "fmt keeps line endings (CHANGELOG Unreleased)", x15)
     ("X16", "File.write/append write LF [D:lf-output]", x16)
@@ -1621,7 +1723,7 @@ let probes = [
     ("X40", "symlinks and junctions in rows, reads and glob [D:filerow]", x40)
     ("X41", "locked/denied files raise naming the path [D:fs-members]", x41)
     ("X42", "within lock excludes a locker in another process [D:within-lock]", x42)
-    ("X55", "within lock is advisory: a non-weir reader reads the held file [D:within-lock]", x55)
+    ("X55", "within lock: a non-weir reader reads the held file on POSIX; on Windows it is refused and a sidecar lock frees the file [D:within-lock] [D:lock-advisory]", x55)
     ("X56", "weir's own File.read/write on a locked data file; Windows: sidecar [D:lock-advisory]", x56)
     ("X43", "a killed lock holder releases the lock [D:within-lock]", x43)
     ("X44", "within tmp goes even with a child's cwd inside [D:scoped-procs]", x44)
