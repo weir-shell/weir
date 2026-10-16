@@ -511,14 +511,27 @@ module PlanMode =
         let t = System.IO.Path.TrimEndingDirectorySeparator p
         if t = "" then p else t
 
-    // `p` equals `root` or lies below it (both normalized)
+    /// `p` equals `root` or lies below it, segment-wise. On Windows both
+    /// separators count and case folds — the filesystem's own rules, so
+    /// `C:\a/B` is under `c:\A` [D:plan-guard-windows]
+    let pathWithinOn (windows: bool) (root: string) (p: string) =
+        let key (s: string) =
+            let s = if windows then s.Replace('/', '\\') else s
+            let sep = if windows then '\\' else '/'
+            if s.Length > 1 && s[s.Length - 1] = sep then s.TrimEnd sep else s
+
+        let cmp =
+            if windows then System.StringComparison.OrdinalIgnoreCase
+            else System.StringComparison.Ordinal
+
+        let r, p = key root, key p
+        let sep = if windows then "\\" else "/"
+
+        System.String.Equals(p, r, cmp)
+        || p.StartsWith((if r.EndsWith sep then r else r + sep), cmp)
+
     let private within (root: string) (p: string) =
-        p = root
-        || p.StartsWith(
-            (if System.IO.Path.EndsInDirectorySeparator root then root
-             else root + string System.IO.Path.DirectorySeparatorChar),
-            System.StringComparison.Ordinal
-        )
+        pathWithinOn (System.OperatingSystem.IsWindows()) root p
 
     /// run f while a fresh capture frame is on top; returns the captured
     /// Ops in capture order (the frame is popped on every exit)

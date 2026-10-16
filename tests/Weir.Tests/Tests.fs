@@ -9546,6 +9546,18 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(root, true)
           }
+          test "stale reads: on Windows the guard ignores separator spelling and case [D:plan-guard-windows]" {
+              let w = Weir.Eval.PlanMode.pathWithinOn true
+              Expect.isTrue (w @"C:\r\sb/tree" @"C:\r\sb/tree/f") "a Path.Combine'd mixed path"
+              Expect.isTrue (w @"C:\r\sb\tree" "C:/r/sb/tree/f") "forward slashes under a native root"
+              Expect.isTrue (w @"C:\R\SB\a.txt" @"c:\r\sb\a.txt\") "case and a trailing separator"
+              Expect.isFalse (w @"C:\r\sb\tree" @"C:\r\sb\treehouse") "a sibling sharing the prefix"
+              Expect.isTrue (w @"C:\" @"C:\x") "under a drive root"
+              let p = Weir.Eval.PlanMode.pathWithinOn false
+              Expect.isFalse (p "/r/SB" "/r/sb/f") "POSIX compares case"
+              Expect.isFalse (p "/r/sb" @"/r/sb\f") "on POSIX a backslash is a name byte"
+              Expect.isTrue (p "/r/sb/" "/r/sb/f") "POSIX, a trailing slash"
+          }
           test "stale reads: every fs read builtin refuses after a captured mutation; a move's source too" {
               let root = td ()
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "sb", "tree")) |> ignore

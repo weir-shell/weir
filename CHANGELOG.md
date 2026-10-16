@@ -89,6 +89,10 @@
   a `C:/…` pattern was walked from the drive's current directory; `\`
   now separates and a drive or UNC prefix roots the pattern. Matches
   are shown with `/`.
+- **A `plan`'s stale-read guard sees Windows paths spelled either way.**
+  On Windows a read under a captured target escaped the
+  known-after-apply refusal when the two spelled separators or letter
+  case differently; both now compare as the filesystem does.
 - **`serve` answers pipelined requests.** Two or three requests sent
   back to back on one connection got one answer; each now gets its
   own, in order.
