@@ -6035,6 +6035,28 @@ WEOF
     done
     echo "e2e ok: a cut stdin read takes no line; Self.stdin and FIFO losers never hold the race"
 
+    # a cut prompt never splits a line [D:prompt-cut-whole-line]: the cut
+    # lands while the prompt is inside a 300000-byte line fd 0 already
+    # holds — the line is finished and stays buffered, so the child reads
+    # the NEXT line, never the tail of the cut one
+    python3 -c 'import sys; sys.stdout.write("X" * 300000 + "\nNEXT\n")' > "$pdir/long.in"
+    cat > "$pdir/longcut.weir" <<'WEOF'
+let a = ["ask"; "to"] |> Seq.pfirst (fun k ->
+    if k == "to" then
+        Duration.sleep 20ms
+        "timeout"
+    else
+        Self.prompt "q?")
+print $"race={a}"
+let c = sh -c "read x; echo $x" |> Seq.head
+print $"child={c}"
+let p = Self.prompt "p?"
+print $"prompt={Str.length p}"
+WEOF
+    out=$(timeout 20 $BIN "$pdir/longcut.weir" < "$pdir/long.in" 2>/dev/null) || fail "the long-line cut script failed: $out"
+    [ "$out" = "$(printf 'race=timeout\nchild=NEXT\nprompt=300000')" ] || fail "a cut Self.prompt split a line: $out"
+    echo "e2e ok: a cut Self.prompt finishes a begun line and leaves it whole for the next weir reader"
+
     # an abandoned FIFO read never takes a later writer's data
     # [D:fifo-read-polled]: the loser's fd is closed by the cut, so the
     # next File.read gets both lines. Linux (a polled FIFO)

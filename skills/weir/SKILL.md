@@ -78,7 +78,9 @@ print (show 1)
   to stderr so piped stdout stays data, EOF refuses; it consumes nothing
   past its newline, so later children read the rest; a read cut short —
   a `pfirst` loser, a REPL `^C` — takes no line, the next read gets it
-  [D:stdin-reader]), `Self.pid : int` (the process id),
+  [D:stdin-reader], and never splits one: a line it had begun is
+  finished from the bytes already waiting and stays for the next weir
+  read [D:prompt-cut-whole-line]), `Self.pid : int` (the process id),
   `Self.scriptPath : string` (the FILE'S OWN absolute path, resolved
   at startup before any `cd`; symlinks unresolved like bash's `$0` —
   an imported module sees its own), and `Self.entryPath : string`

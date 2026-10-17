@@ -1119,6 +1119,22 @@ module Stdin =
             while not (Libc.readable 0 50) do
                 raiseWoken ()
 
+    // one read(2) of up to `n` bytes at buf[hi]: the count, or -errno
+    let private readRaw (n: int) : int =
+        let h =
+            System.Runtime.InteropServices.GCHandle.Alloc(buf, System.Runtime.InteropServices.GCHandleType.Pinned)
+
+        try
+            let r = int (Libc.read (0, h.AddrOfPinnedObject() + nativeint hi, unativeint n))
+
+            if r >= 0 then
+                hi <- hi + r
+                r
+            else
+                -System.Runtime.InteropServices.Marshal.GetLastPInvokeError()
+        finally
+            h.Free()
+
     // read up to `n` more bytes into the buffer; 0 at end of input (a
     // read error is the end too)
     let private fill (n: int) : int =
@@ -1145,31 +1161,45 @@ module Stdin =
             let rec go () =
                 awaitReadable ()
 
-                let r =
-                    let h =
-                        System.Runtime.InteropServices.GCHandle.Alloc(
-                            buf,
-                            System.Runtime.InteropServices.GCHandleType.Pinned
-                        )
-
-                    try
-                        int (Libc.read (0, h.AddrOfPinnedObject() + nativeint hi, unativeint n))
-                    finally
-                        h.Free()
-
-                if r >= 0 then
-                    hi <- hi + r
-                    r
-                else
-                    match System.Runtime.InteropServices.Marshal.GetLastPInvokeError() with
-                    | e when e = Libc.EINTR -> go ()
-                    | e when e = Libc.EAGAIN ->
-                        // an inherited non-blocking fd 0
-                        Libc.readable 0 50 |> ignore
-                        go ()
-                    | _ -> 0
+                match readRaw n with
+                | r when r >= 0 -> r
+                | e when -e = Libc.EINTR -> go ()
+                | e when -e = Libc.EAGAIN ->
+                    // an inherited non-blocking fd 0
+                    Libc.readable 0 50 |> ignore
+                    go ()
+                | _ -> 0
 
             go ()
+
+    // a cut landing with a line begun in the buffer [D:prompt-cut-whole-line]:
+    // the bytes fd 0 already holds finish that line, so a child spawned next
+    // never starts mid-line; the line stays buffered, unconsumed. Bytes not
+    // yet written are not waited for
+    let private finishBegunLine (stream: bool) =
+        if not (System.OperatingSystem.IsWindows()) && hi > lo then
+            let ended () =
+                let span = System.ReadOnlySpan<byte>(buf, lo, hi - lo)
+
+                if stream then
+                    System.MemoryExtensions.IndexOfAny(span, 10uy, 13uy) >= 0
+                else
+                    System.MemoryExtensions.IndexOf(span, 10uy) >= 0
+
+            let mutable go = not (ended ())
+
+            while go && Libc.readable 0 0 do
+                if hi + 1 > buf.Length then
+                    let bigger = Array.zeroCreate (buf.Length * 2)
+                    System.Buffer.BlockCopy(buf, 0, bigger, 0, hi)
+                    buf <- bigger
+
+                match readRaw 1 with
+                | 1 -> go <- not (ended ())
+                | e when -e = Libc.EINTR -> ()
+                | _ -> go <- false
+
+        scanned <- lo
 
     // the next whole line in the buffer: a stream read breaks at \n, \r
     // and \r\n (a StreamReader's lines), a prompt at \n with one \r before
@@ -1230,7 +1260,14 @@ module Stdin =
                 while line.IsNone && not atEnd do
                     waited <- true
 
-                    if fill chunk = 0 then
+                    let got =
+                        try
+                            fill chunk
+                        with _ ->
+                            finishBegunLine stream
+                            reraise ()
+
+                    if got = 0 then
                         atEnd <- true
 
                     start <- lo
