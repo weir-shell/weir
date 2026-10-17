@@ -24,11 +24,19 @@ type private ScanMode =
     | InterpTriple
     | Hole of depth: int
 
-let private stringScan (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a * bool =
+// the scanner's state between chunks: the open modes, innermost first
+type StringState = private StringState of ScanMode list
+
+let private stringScanFrom
+    (modes0: ScanMode list)
+    (f: 'a -> int -> char -> 'a)
+    (init: 'a)
+    (s: string)
+    : 'a * ScanMode list =
     let mutable st = init
     let mutable i = 0
     // innermost first; empty = top-level code
-    let mutable modes: ScanMode list = []
+    let mutable modes: ScanMode list = modes0
 
     let tripleAt (j: int) =
         j + 2 < s.Length && s[j] = '"' && s[j + 1] = '"' && s[j + 2] = '"'
@@ -102,6 +110,10 @@ let private stringScan (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a 
 
         i <- i + 1
 
+    st, modes
+
+let private stringScan (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a * bool =
+    let st, modes = stringScanFrom [] f init s
     st, not modes.IsEmpty
 
 let private foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a = fst (stringScan f init s)
@@ -111,6 +123,17 @@ let private foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: strin
 // such a buffer instead of growing it [D:repl-multiline]
 let endsInsideString (s: string) : bool =
     snd (stringScan (fun () _ _ -> ()) () s)
+
+// endsInsideString over a text fed in chunks, linear in the total
+// [D:one-scanner]: the state after `a` then `b` is the state after
+// `a + b` whenever `b` starts with a newline (no lookahead or lookbehind
+// matches across one)
+let stringStart: StringState = StringState []
+
+let stringStep (StringState modes) (chunk: string) : StringState =
+    StringState(snd (stringScanFrom modes (fun () _ _ -> ()) () chunk))
+
+let isInsideString (StringState modes) : bool = not modes.IsEmpty
 
 let stripComment (line: string) : string =
     // comment only at line start or after whitespace: bareword URLs
@@ -536,6 +559,9 @@ let classifyPiece (piece: string) : PieceClass =
         piece.StartsWith "if "
         || piece.StartsWith "match "
         || piece.StartsWith "within "
+        // the bare within [D:within-always] — its `always` closes the
+        // body like an else, and a dedented sibling statement closes both
+        || piece = "within"
         || piece.StartsWith "for "
         // the bounded-loop pair [D:retry-poll] — the machine's 5th and
         // 6th members, still no stack
@@ -872,16 +898,38 @@ let private markerOpener (m: MarkerKind) : (string * int * bool) option =
     // the text district joins exactly as yaml does [D:text-block]
     | MarkerKind.Heredoc -> Some("", 0, true)
 
+// translate's per-line data rides the line itself [D:line-pos-cache]:
+// a ConditionalWeakTable entry per line is a GC dependent handle, and one
+// per statement made every collection walk them all. Equality is the
+// line's text and segments only, as before the fields moved here.
+[<CustomEquality; NoComparison>]
 type LogicalLine =
     { Text: string
       Head: int
-      Segments: (int * int * int) list }
+      Segments: (int * int * int) list
+      // where each segment's own text ends, aligned with Segments (the
+      // join text after it is no physical column); empty for a line not
+      // from the assembler
+      Ends: int[]
+      // translate's index, built on first use; it names the Text,
+      // Segments and Ends it was built from, so a copy never reads a
+      // stale one
+      mutable PosIndex: obj }
+
+    override this.Equals(other) =
+        match other with
+        | :? LogicalLine as o -> this.Text = o.Text && this.Head = o.Head && this.Segments = o.Segments
+        | _ -> false
+
+    override this.GetHashCode() = hash (this.Text, this.Head, this.Segments)
 
 // a one-physical-line LogicalLine — the REPL's and -e's spelling
 let singleLine (text: string) : LogicalLine =
     { Text = text
       Head = 1
-      Segments = [ (0, 1, 0) ] }
+      Segments = [ (0, 1, 0) ]
+      Ends = [||]
+      PosIndex = null }
 
 // Block lets — F# light syntax at the assembly layer, the same way F#'s own
 // lexer implements it (token insertion at offside boundaries): a continuation
@@ -1142,11 +1190,6 @@ let bracketFold
 //   LastSegStart — index just past the last sibling sentinel (or 0): the
 //                 proc/serve binder-head scan runs over the last segment
 //                 only, never the whole growing text (LastIndexOf was O(N)).
-// each assembled line's segment ends, aligned with its Segments — set at
-// statement close (bufToLL), read by translate
-let private segmentEnds =
-    System.Runtime.CompilerServices.ConditionalWeakTable<LogicalLine, int[]>()
-
 type private PendBuf =
     { Sb: System.Text.StringBuilder
       // the statement's first physical line (LogicalLine.Head)
@@ -1367,13 +1410,11 @@ let private bufEndsInEnvHead (b: PendBuf) : bool =
 // materialize a LogicalLine from a finished pending buffer (segments are
 // reversed at the boundary exactly as before)
 let private bufToLL (b: PendBuf) : LogicalLine =
-    let ll =
-        { Text = b.Sb.ToString()
-          Head = b.Head
-          Segments = List.rev b.Segments }
-
-    segmentEnds.AddOrUpdate(ll, List.rev b.Ends |> List.toArray)
-    ll
+    { Text = b.Sb.ToString()
+      Head = b.Head
+      Segments = List.rev b.Segments
+      Ends = List.rev b.Ends |> List.toArray
+      PosIndex = null }
 
 // a line's segments re-pointed at the physical indents in `indents`
 // (line -> leading spaces): assembly recovery re-indents a misaligned
@@ -1381,20 +1422,14 @@ let private bufToLL (b: PendBuf) : LogicalLine =
 // [D:recovery-physical-indent]
 let withPhysicalIndents (indents: Map<int, int>) (ll: LogicalLine) : LogicalLine =
     if ll.Segments |> List.exists (fun (_, l, _) -> indents.ContainsKey l) then
-        let moved =
-            { ll with
-                Segments =
-                    ll.Segments
-                    |> List.map (fun (js, l, i) ->
-                        match indents.TryFind l with
-                        | Some phys -> js, l, phys
-                        | None -> js, l, i) }
-
-        match segmentEnds.TryGetValue ll with
-        | true, e -> segmentEnds.AddOrUpdate(moved, e)
-        | _ -> ()
-
-        moved
+        { ll with
+            Segments =
+                ll.Segments
+                |> List.map (fun (js, l, i) ->
+                    match indents.TryFind l with
+                    | Some phys -> js, l, phys
+                    | None -> js, l, i)
+            PosIndex = null }
     else
         ll
 
@@ -2567,10 +2602,11 @@ type private SegIndex =
       Indents: int[]
       // where each segment's own text ends — the synthetic join text
       // between it and the next segment is no physical column
-      Ends: int[] }
-
-let private segIndexes =
-    System.Runtime.CompilerServices.ConditionalWeakTable<LogicalLine, SegIndex>()
+      Ends: int[]
+      // what it was built from [D:line-pos-cache]
+      ForText: string
+      ForSegments: (int * int * int) list
+      ForEnds: int[] }
 
 let private buildSegIndex (ll: LogicalLine) : SegIndex =
     let segs = List.toArray ll.Segments
@@ -2578,17 +2614,34 @@ let private buildSegIndex (ll: LogicalLine) : SegIndex =
 
     // a line not from the assembler has no join text to step over
     let ends =
-        match segmentEnds.TryGetValue ll with
-        | true, e when e.Length = starts.Length -> e
-        | _ -> Array.init starts.Length (fun i -> if i + 1 < starts.Length then starts[i + 1] else ll.Text.Length)
+        if ll.Ends.Length = starts.Length then
+            ll.Ends
+        else
+            Array.init starts.Length (fun i -> if i + 1 < starts.Length then starts[i + 1] else ll.Text.Length)
 
     { Starts = starts
       Lines = segs |> Array.map (fun (_, l, _) -> l)
       Indents = segs |> Array.map (fun (_, _, i) -> i)
-      Ends = ends }
+      Ends = ends
+      ForText = ll.Text
+      ForSegments = ll.Segments
+      ForEnds = ll.Ends }
+
+let private segIndexOf (ll: LogicalLine) : SegIndex =
+    match ll.PosIndex with
+    | :? SegIndex as ix when
+        obj.ReferenceEquals(ix.ForText, ll.Text)
+        && obj.ReferenceEquals(ix.ForSegments, ll.Segments)
+        && obj.ReferenceEquals(ix.ForEnds, ll.Ends)
+        ->
+        ix
+    | _ ->
+        let ix = buildSegIndex ll
+        ll.PosIndex <- ix
+        ix
 
 let translate (ll: LogicalLine) (col: int) : int * int =
-    let ix = segIndexes.GetValue(ll, buildSegIndex)
+    let ix = segIndexOf ll
     let joinedIdx = col - 1
 
     // the last segment starting at or before the index
@@ -3771,8 +3824,7 @@ let private checkStatementCore
                     Ok
                         { Kind = KLetPat(pat, schemes, te)
                           Env =
-                            { tenv with
-                                Values = schemes |> List.fold (fun vs (n, sch) -> Map.add n sch vs) tenv.Values }
+                            schemes |> List.fold (fun e (n, sch) -> bindValue n sch e) tenv
                           Warnings = warningsOf te }
         | Ok(SLet(name, e)) ->
             // SLet carries the name as a bare string, so re-derive its own
@@ -3830,8 +3882,7 @@ let private checkStatementCore
                         Ok
                             { Kind = KLet(name, scheme, te)
                               Env =
-                                { tenv with
-                                    Values = Map.add name scheme tenv.Values }
+                                bindValue name scheme tenv
                               Warnings = warningsOf te }
             | None ->
                 match sigCtx with
@@ -3859,8 +3910,7 @@ let private checkStatementCore
                         Ok
                             { Kind = KLet(name, scheme, te)
                               Env =
-                                { tenv with
-                                    Values = Map.add name scheme tenv.Values }
+                                bindValue name scheme tenv
                               Warnings = warningsOf te }
         | Ok(SCmd e) ->
             let tenv = Check.withAnonDefs tenv e
@@ -4295,7 +4345,7 @@ type ReenumFinding =
 type ReenumTracker() =
     // top-level tracked names -> their pulls [D:reenum-indirect];
     // id -> (command, repair)
-    let tracked = System.Collections.Generic.Dictionary<string, (int * string) list>()
+    let tracked = System.Collections.Generic.Dictionary<string, Check.ReenumCarry>()
     let info = System.Collections.Generic.Dictionary<int, string * string>()
     let counts = System.Collections.Generic.Dictionary<int, int>()
     let found = ResizeArray<ReenumFinding>()
@@ -4356,12 +4406,12 @@ type ReenumTracker() =
         | KLet(name, _, te) ->
             // RHS first (a same-name rebind reads the outer binding — no
             // `let rec` exists)
-            let pulls, events = Check.reenumLet fresh (tracked0 ()) name te
+            let carry, events = Check.reenumLet fresh (tracked0 ()) name te
 
             // the binding's own command: the repair rides its source when
             // it is one clean line (as streamed-it does); assembled
             // (sentinel-joined) text falls back to the generic spelling
-            (match Check.commandBackedUnforced te, pulls with
+            (match Check.commandBackedUnforced te, carry.Pulls with
              | Some cmd, (id, n) :: _ when n = name ->
                  let src = ll.Text.Trim()
 
@@ -4377,8 +4427,8 @@ type ReenumTracker() =
             consume ll events
             tracked.Remove name |> ignore
 
-            if not pulls.IsEmpty then
-                tracked[name] <- pulls
+            if not carry.Pulls.IsEmpty || carry.Forced then
+                tracked[name] <- carry
         | KLetPat(pat, _, te) ->
             consume ll (Check.reenumEvents fresh (tracked0 ()) te)
 
@@ -7541,9 +7591,7 @@ let analyzeLinesAs
                       | _ -> ())
 
                      for n in bound do
-                         tenv <-
-                             { tenv with
-                                 Values = Map.add n holeScheme tenv.Values }
+                         tenv <- bindValue n holeScheme tenv
                  | Error _ ->
                      // a statement that does not parse still names its
                      // binder [D:parse-error-binds]: harvested lexically, a
@@ -7554,16 +7602,14 @@ let analyzeLinesAs
 
                      if m.Success && not (Parser.keywords.Contains m.Groups[1].Value) then
                          tenv <-
-                             { tenv with
-                                 Values =
-                                     Map.add
-                                         m.Groups[1].Value
-                                         { Forall = Set.singleton "__hole"
-                                           Cs = Map.empty
-                                           Ty = TVar "__hole"
-                                           RowOrigins = Map.empty
-                                           HoleDefaults = [] }
-                                         tenv.Values })
+                             bindValue
+                                 m.Groups[1].Value
+                                 { Forall = Set.singleton "__hole"
+                                   Cs = Map.empty
+                                   Ty = TVar "__hole"
+                                   RowOrigins = Map.empty
+                                   HoleDefaults = [] }
+                                 tenv)
 
                 let echoesFailedImport =
                     failedImports

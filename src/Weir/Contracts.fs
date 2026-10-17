@@ -499,6 +499,7 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
         // default handler would re-send PRIVATE-TOKEN to the redirect target
         use handler = new Net.Http.HttpClientHandler()
         handler.AllowAutoRedirect <- false
+        Http.useEnvProxy handler
         use client = new Net.Http.HttpClient(handler)
         client.Timeout <- TimeSpan.FromSeconds 60.0
 
@@ -823,7 +824,9 @@ let vendorFile
 type Schema =
     | SAny
     | SScalar of kinds: Set<string> // "string" | "integer" | "number" | "boolean" | "null"
-    | SEnum of values: string list
+    // `integer`: every value is a JSON integer (an int enum drafts int)
+    // [D:schema-int-enum]
+    | SEnum of values: string list * integer: bool
     | SObject of props: (string * Schema) list * required: string list * additional: AdditionalProps
     | SArray of items: Schema
     // an in-document reference, resolved via SchemaDoc.Defs — the name
@@ -844,7 +847,11 @@ and AdditionalProps =
 /// definitions in-document $ref resolves against [D:schema-types]
 type SchemaDoc =
     { Root: Schema
-      Defs: Map<string, Schema> }
+      Defs: Map<string, Schema>
+      // validation keywords read but not enforced [D:schema-validation-keys]:
+      // (definition key — None for the root tree, keyword, node path
+      // within that tree); the generator notes the ones it drafts
+      Unenforced: (string option * string * string) list }
 
 let private annotationKeys =
     set
@@ -852,9 +859,32 @@ let private annotationKeys =
           "format"
           "title"
           "$schema"
+          "$comment"
           "example"
           "examples"
           "default" ]
+
+// keywords that only VALIDATE a value — admitted, never enforced, each
+// noted by the generator [D:schema-validation-keys]; a keyword that
+// changes the shape stays refused
+let private validationKeys =
+    set
+        [ "minLength"
+          "maxLength"
+          "pattern"
+          "minimum"
+          "maximum"
+          "exclusiveMinimum"
+          "exclusiveMaximum"
+          "multipleOf"
+          "minItems"
+          "maxItems"
+          "uniqueItems"
+          "minProperties"
+          "maxProperties"
+          "readOnly"
+          "writeOnly"
+          "deprecated" ]
 
 let private rejectedTeaching (path: string) (kw: string) : string =
     let where = if path = "" then "the schema root" else path
@@ -893,7 +923,13 @@ let private annotationOnly (el: Text.Json.JsonElement) : bool =
     && el.EnumerateObject()
        |> Seq.forall (fun p -> annotationKeys.Contains p.Name || p.Name.StartsWith "x-")
 
-let rec private parseNode (path: string) (el: Text.Json.JsonElement) : Result<Schema, string> =
+let rec private parseNode
+    (unenforced: Collections.Generic.List<string * string>)
+    (path: string)
+    (el: Text.Json.JsonElement)
+    : Result<Schema, string> =
+    let parseNode = parseNode unenforced
+    let objectNode = objectNode unenforced
     let where = if path = "" then "the schema root" else path
 
     if el.ValueKind <> Text.Json.JsonValueKind.Object then
@@ -921,6 +957,10 @@ let rec private parseNode (path: string) (el: Text.Json.JsonElement) : Result<Sc
                 || (path = "" && (k = "definitions" || k = "$defs" || k = "components"))
                 || annotationKeys.Contains k
                 || k.StartsWith "x-"
+                || validationKeys.Contains k
+
+            if validationKeys.Contains k then
+                unenforced.Add((k, path))
 
             if not known && rejection.IsNone then
                 rejection <- Some(rejectedTeaching path k)
@@ -1014,7 +1054,14 @@ let rec private parseNode (path: string) (el: Text.Json.JsonElement) : Result<Sc
                                 | _ -> v.GetRawText())
                             |> List.ofSeq
 
-                        applyNullable (Ok(SEnum values))
+                        let integer =
+                            e.GetArrayLength() > 0
+                            && e.EnumerateArray()
+                               |> Seq.forall (fun v ->
+                                   v.ValueKind = Text.Json.JsonValueKind.Number
+                                   && fst (v.TryGetInt64()))
+
+                        applyNullable (Ok(SEnum(values, integer)))
                     | None ->
 
                         match getProp "oneOf" with
@@ -1074,10 +1121,26 @@ let rec private parseNode (path: string) (el: Text.Json.JsonElement) : Result<Sc
                                       | None -> Ok(SArray SAny))
                                      |> wrapNullListed
                                  | Some kinds when not kinds.IsEmpty -> Ok(SScalar kinds)
+                                 // the k8s int-or-string marker alone, no
+                                 // type: the anyOf idiom's own kinds
+                                 // [D:schema-int-or-string]
+                                 | None when
+                                     (match getProp "x-kubernetes-int-or-string" with
+                                      | Some m -> m.ValueKind = Text.Json.JsonValueKind.True
+                                      | None -> false)
+                                     ->
+                                     Ok(SScalar(Set.ofList [ "integer"; "string" ]))
                                  | _ -> Ok SAny)
                                 |> applyNullable
 
-and private objectNode (path: string) (el: Text.Json.JsonElement) (getProp: string -> Text.Json.JsonElement option) =
+and private objectNode
+    (unenforced: Collections.Generic.List<string * string>)
+    (path: string)
+    (el: Text.Json.JsonElement)
+    (getProp: string -> Text.Json.JsonElement option)
+    =
+    let parseNode = parseNode unenforced
+
     let required =
         match getProp "required" with
         | Some r when r.ValueKind = Text.Json.JsonValueKind.Array ->
@@ -1135,8 +1198,20 @@ let rec private refsOf (s: Schema) : string list =
 /// checked to resolve here, so consumers never meet a dangling name.
 /// Errors carry the schema name and the JSON path of the offender.
 let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
+    match parseJsonBounded (fun o -> Text.Json.JsonDocument.Parse(text, o)) with
+    | Error(Some why) -> Error $"schema {name}: valid JSON, but {why}"
+    | Error None ->
+        let why =
+            try
+                Text.Json.JsonDocument.Parse(text).Dispose()
+                ""
+            with ex ->
+                ex.Message
+
+        Error $"schema {name}: not valid JSON — {why}"
+    | Ok parsed ->
     try
-        use doc = Text.Json.JsonDocument.Parse text
+        use doc = parsed
         let root = doc.RootElement
 
         let holders =
@@ -1158,6 +1233,18 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
                 |> List.choose id
                 |> List.filter (fun h -> h.ValueKind = Text.Json.JsonValueKind.Object)
 
+        let unenforced = ResizeArray<string option * string * string>()
+
+        // one tree's unenforced keywords, paths relative to that tree
+        let parseTree (key: string option) (prefix: string) (el: Text.Json.JsonElement) =
+            let acc = Collections.Generic.List<string * string>()
+            let r = parseNode acc prefix el
+
+            for kw, p in acc do
+                unenforced.Add((key, kw, p.Substring prefix.Length))
+
+            r
+
         let defs =
             holders
             |> List.collect (fun h -> h.EnumerateObject() |> List.ofSeq)
@@ -1166,14 +1253,14 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
                     match acc with
                     | Error e -> Error e
                     | Ok m ->
-                        parseNode $"definitions.{p.Name}." p.Value
+                        parseTree (Some p.Name) $"definitions.{p.Name}." p.Value
                         |> Result.map (fun s -> Map.add p.Name s m))
                 (Ok Map.empty)
 
         (match defs with
          | Error e -> Error e
          | Ok defs ->
-             match parseNode "" root with
+             match parseTree None "" root with
              | Error e -> Error e
              | Ok rootSchema ->
                  let dangling =
@@ -1183,7 +1270,11 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
                  match dangling with
                  | Some n ->
                      Error $"'$ref' to '{n}' does not resolve — no such definition in the document's root holders"
-                 | None -> Ok { Root = rootSchema; Defs = defs })
+                 | None ->
+                     Ok
+                         { Root = rootSchema
+                           Defs = defs
+                           Unenforced = List.ofSeq unenforced })
         |> Result.mapError (fun e -> $"schema {name}: {e}")
     with ex ->
         Error $"schema {name}: not valid JSON — {ex.Message}"
@@ -1235,10 +1326,10 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
         let ct = contentType |> Option.defaultValue "unknown"
 
         let parsed =
-            try
-                Ok(Text.Json.JsonDocument.Parse bytes)
-            with _ ->
-                Error $"the response is not JSON (Content-Type: {ct}){rawUrlHint url}; nothing was written"
+            match parseJsonBounded (fun o -> Text.Json.JsonDocument.Parse(ReadOnlyMemory<byte> bytes, o)) with
+            | Ok d -> Ok d
+            | Error(Some why) -> Error $"the response is valid JSON, but {why}; nothing was written"
+            | Error None -> Error $"the response is not JSON (Content-Type: {ct}){rawUrlHint url}; nothing was written"
 
         match parsed with
         | Error e -> Error e
@@ -1761,12 +1852,12 @@ let rec validateTpl
             [ span, $"schema {name}: {fieldName path} expects {kindsText kinds}, got a block scalar (string)" ]
     | SScalar _, Check.TYtMap(_, span) -> [ span, $"schema {name}: {fieldName path} expects a scalar, got a mapping" ]
     | SScalar _, Check.TYtSeq(_, span) -> [ span, $"schema {name}: {fieldName path} expects a scalar, got a sequence" ]
-    | SEnum values, Check.TYtScalar(raw, _, span) ->
+    | SEnum(values, _), Check.TYtScalar(raw, _, span) ->
         if List.contains raw values then
             []
         else
             [ span, $"schema {name}: {fieldName path} expects {enumText values}, got '{raw}'" ]
-    | SEnum values, Check.TYtBlock(text, span) ->
+    | SEnum(values, _), Check.TYtBlock(text, span) ->
         if List.contains text values then
             []
         else

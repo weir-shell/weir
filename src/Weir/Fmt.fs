@@ -564,16 +564,16 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                     let mask = Script.districtContentMask formatted
 
                     for ll in formattedLogical do
-                        let mutable prefix = ""
+                        let mutable prefix = Script.stringStart
 
                         for (_, pl, _) in ll.Segments do
                             let i = pl - 1 - lineOffset
 
                             if i >= 0 && i < arr.Length then
-                                if Script.endsInsideString prefix then
+                                if Script.isInsideString prefix then
                                     mask[i] <- true
 
-                                prefix <- prefix + "\n" + Script.stripComment arr[i]
+                                prefix <- Script.stringStep prefix ("\n" + Script.stripComment arr[i])
 
                     mask
 

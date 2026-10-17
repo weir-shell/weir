@@ -1,0 +1,83 @@
+# The third bug hunt's brief A (dev/plans/PLAN-hunt3.md): the cross-platform
+# probe kit, tools/hunt3-xplat.weir, on the AOT build of all three OSes.
+# Findings-shaped, not a gate (not required for merge). Runs on dispatch
+# and on a pull request that touches the kit or this file: GitHub lists a
+# workflow_dispatch workflow only once it is on the default branch, so the
+# PR trigger is what runs it before then.
+#
+# ubuntu is the CONTROL: a FAIL on windows/macos that is OK on ubuntu is the
+# finding; a FAIL everywhere is a platform-independent one. fail-fast is off
+# so every OS reports fully, and each OS's output is uploaded as an artifact
+# (hunt3-xplat-<os>) whatever the probe exit was.
+#
+# Each runner publishes AOT exactly as ci.yml does (publish.sh / publish.ps1)
+# and runs the kit ON that binary, passing it as --bin too. Windows runs under
+# Git Bash like ci.yml, so `sh` resolves to Git-for-Windows' MSYS sh.
+name: hunt3-xplat
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - tools/hunt3-xplat.weir
+      - .github/workflows/hunt3-xplat.yml
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+
+jobs:
+  probes:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            slug: linux
+          - os: windows-latest
+            slug: windows
+          - os: macos-latest
+            slug: macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ matrix.slug }}-${{ hashFiles('**/*.fsproj') }}
+          restore-keys: nuget-${{ matrix.slug }}-
+      - name: AOT prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - name: publish (AOT, as ci.yml) + freshness gate
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh -File ./publish.ps1
+            weir="$LOCALAPPDATA/Programs/weir/weir.exe"
+          else
+            ./publish.sh
+            weir="$HOME/.local/bin/weir"
+          fi
+          ./ci/check-fresh.sh "$weir"
+          echo "WEIR=$weir" >> "$GITHUB_ENV"
+      - name: probe kit (every probe prints OK or FAIL; exit 1 on any FAIL)
+        run: |
+          set -o pipefail
+          "$WEIR" tools/hunt3-xplat.weir --bin "$WEIR" --os "$RUNNER_OS" 2>&1 | tee "hunt3-xplat-${{ matrix.slug }}.txt"
+      - name: upload the probe output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hunt3-xplat-${{ matrix.slug }}
+          path: hunt3-xplat-${{ matrix.slug }}.txt
+          if-no-files-found: warn

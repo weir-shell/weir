@@ -3006,8 +3006,8 @@ let boundaryTests =
                   "allOf of two substantive schemas rejected"
 
               Expect.stringContains
-                  (errOf """{ "type": "object", "properties": { "p": { "pattern": "^x" } } }""")
-                  "at properties.p.: 'pattern'"
+                  (errOf """{ "type": "object", "properties": { "p": { "patternProperties": {} } } }""")
+                  "at properties.p.: 'patternProperties'"
                   "unknown keyword named WITH its JSON path"
 
               Expect.stringContains
@@ -3144,9 +3144,10 @@ let boundaryTests =
               // enum → string + a note listing the values
               Expect.stringContains g.Text "phase: Option<string>" "enum drafts string"
               Expect.stringContains g.Text "an enum of 'Pending', 'Running'" "the enum note lists the values"
-              // anyOf scalar alternatives → string + the convert note
-              Expect.stringContains g.Text "port: Option<string>" "IntOrString drafts string"
-              Expect.stringContains g.Text "allows integer/string" "the IntOrString note names both kinds"
+              // anyOf int-or-string → the opaque node + a note naming the cases
+              // [D:schema-int-or-string]
+              Expect.stringContains g.Text "port: Option<Yaml>" "IntOrString drafts Yaml"
+              Expect.stringContains g.Text "allows integer/string — drafted Yaml" "the IntOrString note names both kinds"
               // a keyword wire key rides the sanitizer
               Expect.stringContains g.Text "[<Wire \"type\">]\n    kind: Option<string>" "keyword keys ride [<Wire>]"
               // scalars
@@ -8549,6 +8550,21 @@ let effectPartitionTests =
               for m in [ "POST"; "PUT"; "DELETE"; "PATCH"; "Post"; "patch" ] do
                   Expect.equal (Weir.Effects.httpMethodClass m) M $"{m} mutates → mutation"
           }
+          test "an Other verb is mutation unless it is a safe verb, any casing [D:http-safe-verbs]" {
+              for m in [ "PURGE"; "purge"; "LINK"; "post"; "MKCOL"; "" ] do
+                  Expect.equal (Weir.Effects.httpMethodClass m) M $"Other \"{m}\" → mutation"
+
+              for m in [ "TRACE"; "trace"; "get"; "Head"; "options"; "query" ] do
+                  Expect.equal (Weir.Effects.httpMethodClass m) A $"Other \"{m}\" → ambient"
+
+              let other m =
+                  match reqWith "Get" with
+                  | VRecord(n, fs) -> VRecord(n, fs |> List.map (fun (k, v) -> if k = "method" then k, VUnion("Other", Some(VStr m)) else k, v))
+                  | v -> v
+
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ other "PURGE" ]) (Some M) "send{Other PURGE} mutates"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ other "get" ]) (Some A) "send{Other get} reads"
+          }
           test "EVAL-TIME resolution: Http.send{post} = Mutation, Http.send{get} = Ambient (probe 2)" {
               // the critical probe — plan/apply intercepts at eval; the
               // class of a builtin call must resolve where the interpreter
@@ -8894,6 +8910,18 @@ let planApplyTests =
                     "print \"ok\"" ]
 
               Expect.equal (runFile prog) 0 "a POST captures one HttpSend Op"
+          }
+          test "Http.send{Other \"PURGE\"} captures, never sends [D:http-safe-verbs]" {
+              // port 9 (discard) refuses: a send would raise "cannot reach"
+              let prog =
+                  [ "let p ="
+                    "    plan"
+                    "        let _r = Http.send { Http.defaults with method = Other \"PURGE\"; url = \"http://127.0.0.1:9/\" }"
+                    "        print \"sent\""
+                    "if (p |> Plan.ops |> Seq.length) <> 1 then fail \"not one op\""
+                    "print \"ok\"" ]
+
+              Expect.equal (runFile prog) 0 "an Other PURGE captures one HttpSend Op"
           }
           test "proc inside a plan HARD-REFUSES — a spawn is uncapturable" {
               let e = firstErr [ "let p ="; "    plan"; "        echo hi"; "print $\"{p |> Plan.isEmpty}\"" ]
@@ -9474,6 +9502,154 @@ let planApplyTests =
                   Expect.isFalse (System.IO.File.Exists marker) "the captured write did not run"
               finally
                   System.IO.Directory.Delete(dir, true)
+          }
+          // [D:plan-stale-reads]: one guard on every fs read — a point
+          // read conflicts with a target it equals or lies under (and one
+          // below a path that does not exist yet); a listing also with
+          // every target below it; a move changes its source too
+          test "stale reads: the guard matches by path prefix, listings see targets below" {
+              let root = td ()
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "sb", "tree")) |> ignore
+              let at (p: string) = System.IO.Path.Combine(root, p)
+
+              let refused (f: unit -> unit) =
+                  try
+                      f ()
+                      false
+                  with Failure m ->
+                      Expect.stringContains m "known-after-apply" "the refusal names the law"
+                      true
+
+              let inPlan (targets: string list) (read: unit -> unit) =
+                  let mutable r = false
+
+                  Weir.Eval.PlanMode.capturing (fun () ->
+                      for t in targets do
+                          Weir.Eval.PlanMode.capture (VUnion("DeleteFile", Some(VStr t))) [ t ]
+
+                      r <- refused read)
+                  |> ignore
+
+                  r
+
+              try
+                  let rd p () = Weir.Eval.PlanMode.checkRead "File.read" (at p)
+                  let tree p () = Weir.Eval.PlanMode.checkTree "Dir.list" (at p)
+                  Expect.isTrue (inPlan [ at "sb/a.txt" ] (rd "sb/a.txt")) "the exact path"
+                  Expect.isTrue (inPlan [ at "sb/a.txt" ] (rd "sb/a.txt/")) "a trailing slash is the same path"
+                  Expect.isTrue (inPlan [ at "sb/tree" ] (rd "sb/tree/f")) "a read under a captured dir op"
+                  Expect.isFalse (inPlan [ at "sb/tree" ] (rd "sb/treehouse")) "a sibling sharing the prefix runs"
+                  Expect.isFalse (inPlan [ at "sb/new.txt" ] (rd "sb")) "an existing dir's own facts run"
+                  Expect.isTrue (inPlan [ at "fresh/x" ] (rd "fresh")) "a path a captured write would create"
+                  Expect.isTrue (inPlan [ at "sb/new.txt" ] (tree "sb")) "a listing sees a target below it"
+                  Expect.isFalse (inPlan [ at "other/x" ] (tree "sb")) "a listing elsewhere runs"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          test "stale reads: on Windows the guard ignores separator spelling and case [D:plan-guard-windows]" {
+              let w = Weir.Eval.PlanMode.pathWithinOn true
+              Expect.isTrue (w @"C:\r\sb/tree" @"C:\r\sb/tree/f") "a Path.Combine'd mixed path"
+              Expect.isTrue (w @"C:\r\sb\tree" "C:/r/sb/tree/f") "forward slashes under a native root"
+              Expect.isTrue (w @"C:\R\SB\a.txt" @"c:\r\sb\a.txt\") "case and a trailing separator"
+              Expect.isFalse (w @"C:\r\sb\tree" @"C:\r\sb\treehouse") "a sibling sharing the prefix"
+              Expect.isTrue (w @"C:\" @"C:\x") "under a drive root"
+              let p = Weir.Eval.PlanMode.pathWithinOn false
+              Expect.isFalse (p "/r/SB" "/r/sb/f") "POSIX compares case"
+              Expect.isFalse (p "/r/sb" @"/r/sb\f") "on POSIX a backslash is a name byte"
+              Expect.isTrue (p "/r/sb/" "/r/sb/f") "POSIX, a trailing slash"
+          }
+          test "stale reads: every fs read builtin refuses after a captured mutation; a move's source too" {
+              let root = td ()
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "sb", "tree")) |> ignore
+              System.IO.File.WriteAllText(System.IO.Path.Combine(root, "sb", "a.txt"), "a\n")
+              System.IO.File.WriteAllText(System.IO.Path.Combine(root, "sb", "tree", "f"), "t\n")
+              let d = weirPath root
+
+              let prog (mutation: string) (read: string) =
+                  [ "let p ="; "    plan"; $"        {mutation}"; $"        {read}"; "print $\"{p |> Plan.isEmpty}\"" ]
+
+              try
+                  for mutation, read in
+                      [ $"File.delete \"{d}/sb/a.txt\"", $"print (show (File.exists \"{d}/sb/a.txt\"))"
+                        $"File.write \"{d}/sb/a.txt\" [\"n\"]", $"print (File.sha256 \"{d}/sb/a.txt\")"
+                        $"File.write \"{d}/sb/a.txt\" [\"n\"]", $"print $\"{{File.readBytes \"{d}/sb/a.txt\" |> Bytes.length}}\""
+                        $"File.write \"{d}/sb/new.txt\" [\"n\"]", $"print $\"{{Path.glob \"{d}/sb/*.txt\" |> Seq.length}}\""
+                        $"File.write \"{d}/sb/new.txt\" [\"n\"]", $"print $\"{{Dir.list \"{d}/sb\" |> Seq.length}}\""
+                        $"Dir.deleteAll \"{d}/sb/tree\"", $"File.read \"{d}/sb/tree/f\" |> Seq.iter print"
+                        $"File.move \"{d}/sb/a.txt\" \"{d}/sb/b.txt\"", $"File.read \"{d}/sb/a.txt\" |> Seq.iter print" ] do
+                      Expect.notEqual (runFile (prog mutation read)) 0 $"refused: {read} after {mutation}"
+
+                  Expect.equal
+                      (runFile (prog $"File.write \"{d}/sb/new.txt\" [\"n\"]" $"print (show (Dir.exists \"{d}/sb\"))"))
+                      0
+                      "an existing parent's existence is not stale"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-writeatomic]: writeAtomic captures its own op and
+          // applies through the atomic path — the inode is replaced
+          test "writeAtomic in a plan captures WriteFileAtomic and applies atomically (a hardlink keeps the old)" {
+              skipOnWindows ()
+              let root = td ()
+              System.IO.Directory.CreateDirectory root |> ignore
+              let d = weirPath root
+
+              try
+                  let code =
+                      runFile
+                          [ $"File.write \"{d}/a.txt\" [\"old\"]"
+                            $"ln \"{d}/a.txt\" \"{d}/link.txt\""
+                            "let p ="
+                            "    plan"
+                            $"        File.writeAtomic \"{d}/a.txt\" [\"new\"]"
+                            $"if (p |> Plan.ops |> Seq.exactlyOne) <> WriteFileAtomic(\"{d}/a.txt\", [\"new\"]) then fail \"the op\""
+                            "if not ((p |> Plan.preview |> Seq.exactlyOne) |> Str.contains \"atomically\") then fail \"the preview\""
+                            "p |> Plan.apply" ]
+
+                  Expect.equal code 0 "captured and applied"
+                  Expect.equal (System.IO.File.ReadAllText(System.IO.Path.Combine(root, "a.txt"))) "new\n" "the target is new"
+                  Expect.equal (System.IO.File.ReadAllText(System.IO.Path.Combine(root, "link.txt"))) "old\n" "the hardlink split"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-within-tmp]: an op under a `within tmp` dir opened
+          // inside the plan refuses at capture — nothing reaches apply
+          test "within tmp inside a plan: a captured op under its dir refuses before anything applies" {
+              let root = td ()
+              System.IO.Directory.CreateDirectory root |> ignore
+              let d = weirPath root
+
+              try
+                  for inner in
+                      [ [ "            File.write $\"{t}/x\" [\"y\"]" ]
+                        [ $"            File.copy $\"{{t}}/missing\" \"{d}/x\"" ] ] do
+                      let code =
+                          runFile (
+                              [ "let p ="
+                                "    plan"
+                                $"        File.write \"{d}/first.txt\" [\"a\"]"
+                                "        within tmp t" ]
+                              @ inner
+                              @ [ "p |> Plan.apply" ]
+                          )
+
+                      Expect.notEqual code 0 $"refused: {inner}"
+
+                  Expect.isFalse (System.IO.File.Exists(System.IO.Path.Combine(root, "first.txt"))) "nothing applied"
+
+                  // a tmp scope around the plan outlives the apply inside it
+                  let code =
+                      runFile
+                          [ "within tmp t"
+                            "    let p ="
+                            "        plan"
+                            "            File.write $\"{t}/x\" [\"y\"]"
+                            "    p |> Plan.apply"
+                            "    if not (File.exists $\"{t}/x\") then fail \"not applied\"" ]
+
+                  Expect.equal code 0 "a tmp dir opened outside the plan is a fine target"
+              finally
+                  System.IO.Directory.Delete(root, true)
           } ]
 
 let withinKindsTests =
@@ -13942,6 +14118,26 @@ let agentFindingsTests =
               expectValue "Path.normalize \"/a/../../b\"" (VStr "/b")
               expectValue "Path.combine \"/repo/src/App\" \"../Core/Core.csproj\" |> Path.normalize" (VStr "/repo/src/Core/Core.csproj")
           }
+          test "Path.normalize and Path.glob root a Windows drive on Windows only [D:path-drive-root]" {
+              let norm = Weir.Builtins.pathNormalizeOn
+              Expect.equal (norm true "C:/../y") "C:/y" "a drive root swallows '..'"
+              Expect.equal (norm true @"C:\a\..\..\b") "C:/b" "backslashes, past the root"
+              Expect.equal (norm true "C:/..") "C:/" "the drive root itself"
+              Expect.equal (norm true @"\a\..\b") "/b" "a leading backslash roots"
+              Expect.equal (norm true "../x") "../x" "a relative path keeps its '..'"
+              Expect.equal (norm false "C:/../y") "y" "on POSIX C: is an ordinary segment"
+              Expect.equal (norm false @"a\..\b") @"a\..\b" "on POSIX a backslash is a name byte"
+
+              let split = Weir.Builtins.globSplit
+              Expect.equal (split true @"C:\Users\me\X13\*.txt") (Some(@"C:\", "C:/"), [ "Users"; "me"; "X13"; "*.txt" ]) "a native prefix"
+              Expect.equal (split true @"C:\Users\me/*.txt") (Some(@"C:\", "C:/"), [ "Users"; "me"; "*.txt" ]) "mixed separators"
+              Expect.equal (split true "c:/x/*") (Some(@"c:\", "c:/"), [ "x"; "*" ]) "a forward-slashed drive"
+              Expect.equal (split true @"\\host\share\d\*") (Some(@"\\host\share\", "//host/share/"), [ "d"; "*" ]) "a UNC share"
+              Expect.equal (split true @"\d\*") (Some(@"\", "/"), [ "d"; "*" ]) "the current drive's root"
+              Expect.equal (split true @"src\*.fs") (None, [ "src"; "*.fs" ]) "relative"
+              Expect.equal (split false @"C:\x\*.txt") (None, [ @"C:\x\*.txt" ]) "on POSIX one segment"
+              Expect.equal (split false "/a//b/*") (Some("/", "/"), [ "a"; "b"; "*" ]) "POSIX absolute"
+          }
           test "Path.home + XDG dirs resolve — the typed stand-in for ~/$HOME [D:path-home]" {
               // each is unit -> string, non-empty; the XDG dirs live under
               // home (POSIX default / Windows profile), and stateHome is
@@ -17790,8 +17986,8 @@ let formatSurfaceTests =
 
               Expect.stringContains m "got a decimal number — declare it float" ""
           }
-          test "over-deep nesting rejects with the teaching, never a raw parser word" {
-              let deep = String.replicate 100 "{\"a\":" + "1" + String.replicate 100 "}"
+          test "over-deep nesting rejects with the teaching, never a raw parser word [D:json-depth]" {
+              let deep = String.replicate 101 "{\"a\":" + "1" + String.replicate 101 "}"
 
               let m =
                   try
@@ -17801,7 +17997,7 @@ let formatSurfaceTests =
                   with e ->
                       e.Message
 
-              Expect.stringContains m "from json: not valid JSON" ""
+              Expect.stringContains m "from json: valid JSON, but it nests deeper than 100 levels" ""
               Expect.isFalse (m.Contains "MaxDepth") "no System.Text.Json words"
           } ]
 
@@ -23124,16 +23320,19 @@ let serveTests =
     let okHandler =
         "let h = fun req -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }"
 
-    // drive the Serve leg over a real loopback socket: `answer` maps the
-    // read request to a response, each raw request is sent in turn on ONE
-    // kept-alive connection, and each reply's raw bytes (Date dropped)
-    // come back — the wire view a unit can pin
-    let wireWith (maxBody: int64) (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (raws: string list) : string list =
+    let freePort () =
         let probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0)
         probe.Start()
         let port = (probe.LocalEndpoint :?> System.Net.IPEndPoint).Port
         probe.Stop()
-        let h = Weir.Serve.start port
+        port
+
+    let limits (maxBody: int64) : Weir.Serve.Limits = { BodyTimeoutMs = 5000; MaxBody = maxBody }
+
+    // serve `answer` on a fresh port for the duration of `f port`
+    let serving (maxBody: int64) (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (f: int -> 'a) : 'a =
+        let port = freePort ()
+        let h = Weir.Serve.start port (limits maxBody)
 
         let loop () =
             let mutable go = true
@@ -23144,11 +23343,9 @@ let serveTests =
                 | Some ctx ->
                     let resp =
                         try
-                            answer (Weir.Serve.readRequest ctx 5000 maxBody)
+                            answer (Weir.Serve.readRequest ctx)
                         with
                         | Weir.Serve.BodyTooLarge ->
-                            ctx.Response.KeepAlive <- false
-
                             { Status = 413
                               Headers = []
                               Body = Weir.Serve.RText "too large" }
@@ -23158,40 +23355,78 @@ let serveTests =
                               Body = Weir.Serve.RText ex.Message }
 
                     Weir.Serve.writeResponse ctx resp ignore
+                    Weir.Serve.finish ctx
 
         let t = System.Threading.Thread(loop)
         t.IsBackground <- true
         t.Start()
 
         try
+            f port
+        finally
+            Weir.Serve.stop h 0
+
+    // read until `fin` holds on what arrived, the peer closes, or it goes
+    // quiet: the first byte may wait on a cold server (JIT, a loaded CI
+    // runner); once a reply flows, a `quietMs` gap ends it. Readiness
+    // is polled, never a receive timeout — a timed-out recv leaves a
+    // Windows socket indeterminate for the next exchange. Date dropped.
+    let readUntil (quietMs: int) (fin: string -> bool) (c: System.Net.Sockets.TcpClient) : string =
+        let buf = Array.zeroCreate<byte> 65536
+        let sb = System.Text.StringBuilder()
+        let mutable wait = 10000
+
+        (try
+            let mutable go = true
+
+            while go && not (fin (sb.ToString())) do
+                if c.Client.Poll(wait * 1000, System.Net.Sockets.SelectMode.SelectRead) then
+                    let n = c.Client.Receive buf
+
+                    if n = 0 then
+                        go <- false
+                    else
+                        sb.Append(System.Text.Encoding.Latin1.GetString(buf, 0, n)) |> ignore
+                        wait <- quietMs
+                else
+                    go <- false
+         with _ ->
+             ())
+
+        System.Text.RegularExpressions.Regex.Replace(sb.ToString(), "Date: [^\r]*\r\n", "")
+
+    let readQuiet = readUntil 700 (fun _ -> false)
+
+    let send (c: System.Net.Sockets.TcpClient) (raw: string) =
+        let b = System.Text.Encoding.Latin1.GetBytes raw
+        c.GetStream().Write(b, 0, b.Length)
+
+    // drive the Serve leg over a real loopback socket: `answer` maps the
+    // read request to a response, each raw request is sent in turn on ONE
+    // kept-alive connection, and each reply's raw bytes (Date dropped)
+    // come back — the wire view a unit can pin
+    // each exchange's read ends early once its `fin` holds on the reply
+    let wireFor (maxBody: int64) (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (exchanges: (string * (string -> bool)) list) : string list =
+        serving maxBody answer (fun port ->
             use c = new System.Net.Sockets.TcpClient("127.0.0.1", port)
-            c.ReceiveTimeout <- 700
-            let st = c.GetStream()
+
+            [ for raw, fin in exchanges do
+                  send c raw
+                  yield readUntil 10000 fin c ])
+
+    let wireWith (maxBody: int64) (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (raws: string list) : string list =
+        serving maxBody answer (fun port ->
+            use c = new System.Net.Sockets.TcpClient("127.0.0.1", port)
 
             [ for raw in raws do
-                  let b = System.Text.Encoding.Latin1.GetBytes(raw: string)
-                  st.Write(b, 0, b.Length)
-                  let buf = Array.zeroCreate<byte> 65536
-                  let sb = System.Text.StringBuilder()
+                  send c raw
+                  yield readQuiet c ])
 
-                  // the first byte may wait on a cold listener (JIT, a loaded
-                  // CI runner); once a reply flows, a short quiet gap ends it
-                  c.ReceiveTimeout <- 10000
-
-                  (try
-                      let mutable n = st.Read(buf, 0, buf.Length)
-                      c.ReceiveTimeout <- 700
-
-                      while n > 0 do
-                          sb.Append(System.Text.Encoding.Latin1.GetString(buf, 0, n)) |> ignore
-                          n <- st.Read(buf, 0, buf.Length)
-                   with _ ->
-                       ())
-
-                  yield
-                      System.Text.RegularExpressions.Regex.Replace(sb.ToString(), "Date: [^\r]*\r\n", "") ]
-        finally
-            Weir.Serve.stop h
+    // the status lines of a raw exchange, in wire order
+    let statusLines (reply: string) : string list =
+        System.Text.RegularExpressions.Regex.Matches(reply, "HTTP/1\\.[01] [0-9]{3}[^\r]*")
+        |> Seq.map (fun m -> m.Value)
+        |> List.ofSeq
 
     let wire = wireWith (16L * 1024L * 1024L)
 
@@ -23263,36 +23498,157 @@ let serveTests =
                   "a Stream response body"
           }
           test "Serve.start binds the port; stop frees it; stop is idempotent" {
-              let h = Weir.Serve.start 8199
+              let lim = limits (16L * 1024L * 1024L)
+              let h = Weir.Serve.start 8199 lim
               Expect.equal h.Port 8199 "the handle carries the port"
               Expect.isFalse h.Closed "open after start"
 
-              // the loopback names are registered beside each other so a
-              // Host: localhost request reaches the handler, not .NET's
-              // prefix-miss 404 [D:serve-loopback-names]; the posture stays
-              // loopback — never a +/* all-interfaces bind
-              let prefixes = h.Listener.Prefixes |> List.ofSeq
-              Expect.contains prefixes "http://127.0.0.1:8199/" "the v4 loopback name"
-              Expect.contains prefixes "http://localhost:8199/" "the localhost name"
+              // loopback only [D:serve-loopback-names]: 127.0.0.1, and ::1
+              // where the host has it — never an all-interfaces bind
+              Expect.contains h.Bound "127.0.0.1" "the v4 loopback address"
 
-              Expect.isFalse
-                  (prefixes |> List.exists (fun p -> p.Contains "+" || p.Contains "*"))
-                  "no all-interfaces bind — the loopback posture holds"
+              Expect.isTrue
+                  (h.Bound |> List.forall (fun a -> a = "127.0.0.1" || a = "::1"))
+                  $"no all-interfaces bind — the loopback posture holds: {h.Bound}"
 
               // a second bind on the held port fails (the socket is taken)
-              Expect.throwsC (fun () -> Weir.Serve.start 8199 |> ignore) (fun ex ->
-                  Expect.stringContains ex.Message "8199" "the bind error names the port")
+              Expect.throwsC (fun () -> Weir.Serve.start 8199 lim |> ignore) (fun ex ->
+                  Expect.stringContains ex.Message "serve: cannot listen on 127.0.0.1:8199" "the bind error names the port")
               |> ignore
 
-              Weir.Serve.stop h
+              Weir.Serve.stop h 0
               Expect.isTrue h.Closed "closed after stop"
               // idempotent: a second stop is benign
-              Weir.Serve.stop h
+              Weir.Serve.stop h 0
 
               // the port frees — a fresh bind on it now succeeds
-              let h2 = Weir.Serve.start 8199
+              let h2 = Weir.Serve.start 8199 lim
               Expect.isFalse h2.Closed "the second bind succeeds after the first freed"
-              Weir.Serve.stop h2
+              Weir.Serve.stop h2 0
+          }
+          test "pipelined requests on one connection are each answered, in order [D:serve-kestrel]" {
+              let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  { Status = 200
+                    Headers = []
+                    Body = Weir.Serve.RText $"<{r.Path.TrimStart('/')}>" }
+
+              let two = get "GET" "/p1" + get "GET" "/p2"
+              let three = get "GET" "/q1" + get "POST" "/q2" + get "GET" "/q3"
+
+              // each read waits for its last body (or a close), so responses
+              // arriving in separate segments with gaps all count
+              let has (tag: string) (r: string) = r.Contains tag
+
+              match wireFor (16L * 1024L * 1024L) answer [ two, has "<p2>"; three, has "<q3>" ] with
+              | [ a; b ] ->
+                  Expect.equal (statusLines a |> List.length) 2 $"two responses for two pipelined requests: {a}"
+                  Expect.isTrue (a.IndexOf "<p1>" >= 0 && a.IndexOf "<p1>" < a.IndexOf "<p2>") $"p1 then p2: {a}"
+                  Expect.equal (statusLines b |> List.length) 3 $"three responses for three: {b}"
+
+                  Expect.isTrue
+                      (b.IndexOf "<q1>" >= 0 && b.IndexOf "<q1>" < b.IndexOf "<q2>" && b.IndexOf "<q2>" < b.IndexOf "<q3>")
+                      $"q1, q2, q3 in order: {b}"
+              | other -> failtest $"two exchanges expected: {other}"
+          }
+          test "three duplicate request headers reach the handler as three pairs in wire order (F10) [D:serve-kestrel]" {
+              // three, not two: two cannot tell last-wins from a merge
+              let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  let xs =
+                      r.Headers
+                      |> List.filter (fun (k, _) -> k.ToLowerInvariant() = "x-forwarded-for")
+                      |> List.map snd
+
+                  { Status = 200
+                    Headers = []
+                    Body = Weir.Serve.RText(String.concat "," xs) }
+
+              let req =
+                  "GET /d HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Forwarded-For: 10.0.0.1\r\nX-Forwarded-For: 10.0.0.2\r\nX-Forwarded-For: 10.0.0.3\r\n\r\n"
+
+              match wire answer [ req ] with
+              | [ r ] -> Expect.isTrue (r.EndsWith "10.0.0.1,10.0.0.2,10.0.0.3") $"all three, in order: {r}"
+              | other -> failtest $"{other}"
+          }
+          test "a refused request gets exactly one response; the next request on the connection pairs with its own (H3-E6)" {
+              let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  { Status = 200
+                    Headers = []
+                    Body = Weir.Serve.RText $"<{r.Path.TrimStart('/')}>" }
+
+              // a foreign Host and an absolute-form URI naming a foreign
+              // host are refused before the handler [D:serve-kestrel]; the
+              // connection stays in frame, so the follow-up reads its own
+              // answer, never an unsolicited one
+              let foreign = "GET /a HTTP/1.1\r\nHost: example.com\r\n\r\n"
+              let absForeign = "GET http://evil.example/x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+
+              for bad in [ foreign; absForeign ] do
+                  match wire answer [ bad; get "GET" "/next" ] with
+                  | [ r1; r2 ] ->
+                      Expect.equal (statusLines r1 |> List.length) 1 $"one response to the refused request: {r1}"
+                      Expect.isFalse (r1.StartsWith "HTTP/1.1 200") $"refused, not served: {r1}"
+                      Expect.isFalse (r1.Contains "<") $"the handler did not run: {r1}"
+
+                      if r2 <> "" then
+                          Expect.equal (statusLines r2) [ "HTTP/1.1 200 OK" ] $"the follow-up gets its own answer: {r2}"
+                          Expect.isTrue (r2.EndsWith "<next>") r2
+                  | other -> failtest $"{other}"
+
+              // a version the server does not speak: one 505, then the
+              // connection closes — no unsolicited 200 behind it
+              serving (16L * 1024L * 1024L) answer (fun port ->
+                  use c = new System.Net.Sockets.TcpClient("127.0.0.1", port)
+                  send c "GET / HTTP/9.9\r\nHost: 127.0.0.1\r\n\r\n"
+                  let r = readQuiet c
+                  Expect.equal (statusLines r |> List.map (fun l -> l.Substring(0, 12))) [ "HTTP/1.1 505" ] $"exactly one 505: {r}")
+
+              // the loopback names all reach the handler [D:serve-loopback-names]
+              for host in [ "localhost"; "127.0.0.1"; "[::1]" ] do
+                  serving (16L * 1024L * 1024L) answer (fun port ->
+                      use c = new System.Net.Sockets.TcpClient("127.0.0.1", port)
+                      send c $"GET /n HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n"
+                      let r = readQuiet c
+                      Expect.isTrue (r.EndsWith "<n>") $"Host: {host} reaches the handler: {r}")
+          }
+          test "a request over [::1] reaches the handler (H3-A3) [D:serve-loopback-names]" {
+              let answer (_: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  { Status = 200
+                    Headers = []
+                    Body = Weir.Serve.RText "weir-handler" }
+
+              let port = freePort ()
+              let h = Weir.Serve.start port (limits 1024L)
+              let v6 = h.Bound |> List.contains "::1"
+              Weir.Serve.stop h 0
+
+              // a host without IPv6 loopback binds 127.0.0.1 alone
+              if v6 then
+                  serving 1024L answer (fun port ->
+                      use c = new System.Net.Sockets.TcpClient(System.Net.Sockets.AddressFamily.InterNetworkV6)
+                      c.Connect(System.Net.IPAddress.IPv6Loopback, port)
+                      send c $"GET / HTTP/1.1\r\nHost: [::1]:{port}\r\n\r\n"
+                      let r = readQuiet c
+                      Expect.isTrue (r.StartsWith "HTTP/1.1 200" && r.EndsWith "weir-handler") $"[::1] reaches the handler: {r}")
+          }
+          test "a slow request body is read before the request is accepted — a fast request overtakes it (H3-E5) [D:serve-kestrel]" {
+              let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  { Status = 200
+                    Headers = []
+                    Body = Weir.Serve.RText $"<{r.Path.TrimStart('/')}>" }
+
+              // the harness accepts one request at a time, like a single
+              // handler slot: a body still arriving must not hold it
+              serving 1024L answer (fun port ->
+                  use slow = new System.Net.Sockets.TcpClient("127.0.0.1", port)
+                  send slow "POST /slow HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100\r\n\r\na"
+                  System.Threading.Thread.Sleep 300
+                  let clock = System.Diagnostics.Stopwatch.StartNew()
+                  use fast = new System.Net.Sockets.TcpClient("127.0.0.1", port)
+                  send fast (get "GET" "/fast")
+                  let r = readQuiet fast
+                  Expect.isTrue (r.EndsWith "<fast>") $"the fast request is served: {r}"
+                  // readQuiet's own quiet gap is 700ms
+                  Expect.isLessThan clock.ElapsedMilliseconds 3000L "served without waiting out the slow body")
           }
           test "no body on 204, 304 or HEAD — a kept-alive connection stays in frame (H16)" {
               let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp =
@@ -23509,7 +23865,7 @@ let serveTests =
           }
           // ---- F8: the stream-producer failure channel [D:serve-stream] ----
           test "a Stream producer raise records on the handle, not a raise out of the handler" {
-              let h = Weir.Serve.start 8207
+              let h = Weir.Serve.start 8207 (limits 1024L)
               Expect.isEmpty (Weir.Serve.streamErrors h) "no errors before a failure"
               Weir.Serve.recordStreamError h "producer died"
               Weir.Serve.recordStreamError h "another"
@@ -23519,37 +23875,32 @@ let serveTests =
                   [ "producer died"; "another" ]
                   "the designated channel records failures in order"
 
-              Weir.Serve.stop h
+              Weir.Serve.stop h 0
           }
           // ---- F8: the client sees the truncation [D:serve-stream-truncate] ----
           test "a Stream producer raise ends the chunked body WITHOUT its terminator; a clean stream keeps it [D:serve-stream-truncate]" {
-              // http.sys (Windows) owns its own framing; the latch is the
-              // managed listener's
-              if not (System.OperatingSystem.IsWindows()) then
-                  Expect.isTrue (Weir.Serve.canTruncate ()) "the managed listener's terminator latch is reachable"
+              let stream (lines: seq<string>) : Weir.Serve.SReq -> Weir.Serve.SResp =
+                  fun _ ->
+                      { Status = 200
+                        Headers = []
+                        Body = Weir.Serve.RStream lines }
 
-                  let stream (lines: seq<string>) : Weir.Serve.SReq -> Weir.Serve.SResp =
-                      fun _ ->
-                          { Status = 200
-                            Headers = []
-                            Body = Weir.Serve.RStream lines }
+              let dead =
+                  wire
+                      (stream (
+                          seq {
+                              yield "first"
+                              failwith "producer died"
+                          }
+                      ))
+                      [ get "GET" "/" ]
+                  |> List.head
 
-                  let dead =
-                      wire
-                          (stream (
-                              seq {
-                                  yield "first"
-                                  failwith "producer died"
-                              }
-                          ))
-                          [ get "GET" "/" ]
-                      |> List.head
+              Expect.stringContains dead "data: first" "the element before the raise was sent"
+              Expect.isFalse (dead.EndsWith "0\r\n\r\n") $"no terminating chunk after a producer raise: {dead}"
 
-                  Expect.stringContains dead "data: first" "the element before the raise was sent"
-                  Expect.isFalse (dead.EndsWith "0\r\n\r\n") $"no terminating chunk after a producer raise: {dead}"
-
-                  let whole = wire (stream [ "a"; "b" ]) [ get "GET" "/" ] |> List.head
-                  Expect.isTrue (whole.EndsWith "0\r\n\r\n") $"a clean stream ends with its terminator: {whole}"
+              let whole = wire (stream [ "a"; "b" ]) [ get "GET" "/" ] |> List.head
+              Expect.isTrue (whole.EndsWith "0\r\n\r\n") $"a clean stream ends with its terminator: {whole}"
           }
           // ---- F11: an unsendable header is refused by name [D:http-header-unsendable] ----
           test "headerUnsendable names a non-token name, a control or non-ASCII value byte; a clean pair passes [D:http-header-unsendable]" {
@@ -23564,10 +23915,34 @@ let serveTests =
               Expect.stringContains (reason ("X", "a\u0007b")) "control character U+0007" "a control byte in the value"
               Expect.stringContains (reason ("X", "café")) "non-ASCII character 'é'" "a non-ASCII value"
           }
+          test "a secret header value is located by byte offset, its character never named [D:secret-header-offset]" {
+              let secret pair =
+                  Weir.Http.headerUnsendableWith true pair |> Option.defaultValue "<none>"
+
+              let r = secret ("X-Tok", "aéßb")
+              Expect.stringContains r "a non-ASCII character at byte offset 1 of the secret value" "UTF-8 offset of the first offender"
+              Expect.isFalse (r.Contains "é" || r.Contains "ß") $"no character of the secret: {r}"
+              Expect.stringContains (secret ("X-Tok", "ab\u0007")) "a control character at byte offset 2 of the secret value" "a control byte too"
+              Expect.isFalse ((secret ("X-Tok", "ab\u0007")).Contains "U+0007") "the control code is not named"
+              Expect.stringContains (secret ("X-Tok", "üb\u0001")) "control character at byte offset 3" "offset counts UTF-8 bytes"
+
+              let refused =
+                  Expect.throwsC
+                      (fun () ->
+                          Weir.Http.refuseUnsendableRequestHeader
+                              failwith
+                              false
+                              (Set.ofList [ "x-tok" ])
+                              [ ("X-Plain", "ok"); ("X-TOK", "sßcret") ])
+                      (fun ex -> ex.Message)
+
+              Expect.stringContains refused "request header 'X-TOK'" "the header is named"
+              Expect.isFalse (refused.Contains "ß") "the name match is case-insensitive"
+          }
           test "a request header is refused by name, never skipped — a body header needs a body [D:http-header-unsendable]" {
               let refuse hasBody headers =
                   Expect.throwsC
-                      (fun () -> Weir.Http.refuseUnsendableRequestHeader failwith hasBody headers)
+                      (fun () -> Weir.Http.refuseUnsendableRequestHeader failwith hasBody Set.empty headers)
                       (fun ex -> ex.Message)
 
               Expect.equal
@@ -23581,8 +23956,8 @@ let serveTests =
                   "a body header on a bodyless request has no place"
 
               // with a body the content header lands on the content
-              Weir.Http.refuseUnsendableRequestHeader failwith true [ ("Content-Type", "application/json"); ("Expires", "0") ]
-              Weir.Http.refuseUnsendableRequestHeader failwith false [ ("X-A", "1"); ("Host", "h") ]
+              Weir.Http.refuseUnsendableRequestHeader failwith true Set.empty [ ("Content-Type", "application/json"); ("Expires", "0") ]
+              Weir.Http.refuseUnsendableRequestHeader failwith false Set.empty [ ("X-A", "1"); ("Host", "h") ]
           }
           test "a response header the listener cannot send is refused by name; framing headers stay the listener's" {
               let refused headers =
@@ -26585,6 +26960,177 @@ let runsCommandReifierTests =
           } ]
 
 // the GUIDE sweep's findings, pinned [D:sweep-findings]
+let teardownSeamTests =
+    // signal-path behaviour (a teardown requested by SIGINT/SIGTERM/EPIPE)
+    // is process-global and one-way, so its pins are e2e cells; these pin
+    // the seams it rests on
+    testList
+        "teardown seams"
+        [ test "runningCleanup marks the flow, nests, restores on a raise, and reaches tasks [D:teardown-always-spawns]" {
+              Expect.isFalse (Weir.Session.inCleanup ()) "outside any always"
+
+              let inner =
+                  Weir.Session.runningCleanup (fun () ->
+                      Weir.Session.runningCleanup (fun () -> ()) |> ignore
+                      let viaTask = System.Threading.Tasks.Task.Run(fun () -> Weir.Session.inCleanup ()).Result
+                      Weir.Session.inCleanup (), viaTask)
+
+              Expect.equal inner (true, true) "inside, after a nested cleanup, and on a worker task"
+
+              Expect.throws
+                  (fun () -> Weir.Session.runningCleanup (fun () -> failwith "boom") |> ignore)
+                  "the cleanup's raise propagates"
+
+              Expect.isFalse (Weir.Session.inCleanup ()) "restored after a raise"
+          }
+          test "without a teardown, workers take every arm and spawns start [D:teardown-stops-arms]" {
+              Expect.isFalse (Weir.Session.stopTakingArms ()) "no teardown requested"
+              Expect.equal (Weir.Session.teardownRequested ()) 0 "no code"
+              Expect.equal (Weir.Session.gatedSpawn (fun () -> 7)) 7 "the gate is open"
+              expectValue "[1..200] |> Seq.pmapWith 16 (fun i -> i) |> Seq.length" (VInt 200L)
+          } ]
+
+let argsSecretEchoTests =
+    // Script.run sets the ambient Session.ScriptArgs — sequenced
+    let runArgs (lines: string list) (args: string list) : int =
+        let path = tempPath "weir-args-secret" + ".weir"
+        System.IO.File.WriteAllLines(path, lines)
+
+        try
+            Weir.Script.run path args
+        finally
+            System.IO.File.Delete path
+
+    testSequenced
+    <| testList
+        "Args.load secret echo"
+        [ test "Args.load never echoes a Secret's value or an unknown flag's [D:args-secret-echo]" {
+              let probe =
+                  [ "type Cli = { token: Secret; port: int }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"h3-hunter\" m -> exit 3"
+                    "| Error m when Str.contains \"--token=***\" m && Str.contains \"write '--token <value>'\" m && Str.contains \"--tokn=…\" m -> exit 0"
+                    "| Error m -> fail m"
+                    "| Ok _ -> exit 4" ]
+
+              Expect.equal (runArgs probe [ "--token=h3-hunter2"; "--tokn=h3-hunter3"; "--port"; "1" ]) 0 "masked"
+
+              let optional =
+                  [ "type Cli = { token: Option<Secret> }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"h3-hunter\" m -> exit 3"
+                    "| Error _ -> exit 0"
+                    "| Ok _ -> exit 4" ]
+
+              Expect.equal (runArgs optional [ "--token=h3-hunter2" ]) 0 "an Option<Secret> field is masked too"
+
+              let plain =
+                  [ "type Cli = { port: int }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"write '--port 8'\" m -> exit 0"
+                    "| Error m -> fail m"
+                    "| Ok _ -> exit 4" ]
+
+              Expect.equal (runArgs plain [ "--port=8" ]) 0 "a plain field still teaches with its value"
+          } ]
+
+// the third hunt's behaviour fixes, pinned at their seams; the signal and
+// pty halves are e2e cells
+let hunt3BehaviourTests =
+    testSequenced
+    <| testList
+        "hunt-3 behaviour"
+        [ test "after pfirst returns no loser effect lands; the loser stops at its next boundary [D:pfirst-join]" {
+              withTempDir "weir-pfirst" (fun d ->
+                  let f = weirPath (Path.Combine(d, "out.txt"))
+
+                  expectValue
+                      $"[1; 2] |> Seq.pfirst (fun n -> match n with | 1 -> Duration.sleep 600ms ; File.write \"{f}\" [\"loser\"] ; 1 | _ -> File.write \"{f}\" [\"winner\"] ; 2)"
+                      (VInt 2L)
+
+                  System.Threading.Thread.Sleep 900
+                  Expect.equal (File.ReadAllText(Path.Combine(d, "out.txt")).Trim()) "winner" "the loser's write never ran")
+          }
+          test "exit n in a pfirst arm ends the race with that code [D:pfirst-join]" {
+              let ex =
+                  Expect.throwsC
+                      (fun () ->
+                          run "[1; 2] |> Seq.pfirst (fun n -> match n with | 1 -> exit 3 ; 0 | _ -> Duration.sleep 300ms ; n)"
+                          |> ignore)
+                      id
+
+              match ex with
+              | Weir.Session.ExitRequest 3 -> ()
+              | e -> failtest $"expected exit 3, got {e}"
+          }
+          test "a race cancelled by an enclosing race ends without hanging [D:pfirst-join]" {
+              expectValue
+                  "[1; 2] |> Seq.pfirst (fun i -> [10; 20] |> Seq.pfirst (fun j -> match i with | 1 -> (if j == 10 then Duration.sleep 50ms else Duration.sleep 2s) ; i * 100 + j | _ -> Duration.sleep 5s ; 0))"
+                  (VInt 110L)
+          }
+          test "a REPL ^C cuts a runtime-owned wait, through try; a cleanup's wait needs a second ^C [D:repl-interrupt]" {
+              Weir.Session.beginReplEval ()
+
+              try
+                  let sw = System.Diagnostics.Stopwatch.StartNew()
+
+                  System.Threading.Tasks.Task.Run(fun () ->
+                      System.Threading.Thread.Sleep 200
+                      Weir.Session.interruptRepl ())
+                  |> ignore
+
+                  Expect.throwsT<Weir.Session.Interrupted>
+                      (fun () -> run "Duration.sleep 10s |> try result" |> ignore)
+                      "the wait raises the interrupt and try passes it"
+
+                  Expect.isLessThan sw.ElapsedMilliseconds 5000L "cut, not waited out"
+
+                  Weir.Session.runningCleanup (fun () ->
+                      Weir.Session.sleepInterruptible (System.TimeSpan.FromMilliseconds 50.0))
+
+                  Weir.Session.interruptRepl ()
+
+                  Expect.throwsT<Weir.Session.Interrupted>
+                      (fun () ->
+                          Weir.Session.runningCleanup (fun () ->
+                              Weir.Session.sleepInterruptible (System.TimeSpan.FromSeconds 10.0)))
+                      "a second ^C cuts the cleanup's wait"
+              finally
+                  Weir.Session.endReplEval ()
+
+              expectValue "Duration.sleep 10ms" VUnit
+          }
+          test "an env key that is empty or holds '=' is refused where it is built [D:env-key-refusal]" {
+              let msg input =
+                  (Expect.throwsC (fun () -> run input |> forceSeq |> ignore) id).Message
+
+              Expect.stringContains (msg "[Env.pair \"FOO=BAR\" \"x\"]") "the env key 'FOO=BAR' contains '='" "Env.pair"
+              Expect.stringContains (msg "Env.ofPairs [(\"PATH=/x\", \"y\")]") "Env.ofPairs" "Env.ofPairs names itself"
+              Expect.stringContains (msg "Env.ofPairs [(\"\", \"y\")]") "an env key is empty" "empty"
+              Expect.equal (run "Env.ofPairs [(\"A\", \"1\")] |> Seq.length") (VInt 1L) "a plain key builds"
+          }
+          test "weir's temp dirs are owner-only [D:private-temp]" {
+              skipOnWindows ()
+
+              match run "Path.newTempDir ()" with
+              | VStr d ->
+                  let mode = File.GetUnixFileMode d
+                  Directory.Delete d
+                  Expect.equal mode (UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute) "0700"
+              | v -> failtest $"expected a path, got {v}"
+          }
+          test "the within-lock holder reads and writes the locked file [D:lock-advisory]" {
+              skipOnWindows ()
+
+              withTempDir "weir-lock" (fun d ->
+                  let f = weirPath (Path.Combine(d, "state.json"))
+                  File.WriteAllText(Path.Combine(d, "state.json"), "{}\n")
+
+                  expectValue
+                      $"within lock \"{f}\" timeout=5s (File.write \"{f}\" [\"1\"] ; File.read \"{f}\" |> Seq.head)"
+                      (VStr "1"))
+          } ]
+
 let sweepFindingTests =
     let msgs file lines = diagsIn file lines |> List.map (fun d -> d.Message)
 
@@ -26804,11 +27350,435 @@ let hunt2CheckerTests =
               | v -> failtest $"null is a YNull node (as from yaml reads it), a missing Option<Yaml> is None: {formatValue v}"
           } ]
 
+let hunt3BehaviorTests =
+    // the third hunt's formats / generators / checker items: JSON depth
+    // [D:json-depth], TOML local date-times [D:toml-local-instant],
+    // duplicate JSON keys into Yaml [D:json-yaml-dupkeys], schema drafting
+    // [D:schema-int-or-string] [D:schema-int-enum]
+    // [D:schema-validation-keys], the bare within's always in a body
+    // [D:within-always], forced calls [D:reenum-forced-call], inline
+    // Env.load duplicates [D:env-inline-type], Instant + unknown
+    // [D:instant-plus-infer]
+    let text v =
+        forceSeq v
+        |> List.map (function
+            | VStr s -> s
+            | v -> failtest $"expected text, got {formatValue v}")
+        |> String.concat "\n"
+
+    let henv =
+        env
+        |> declare "type HN = { a: Yaml }"
+        |> declare "type HT = { [<Iso8601>] start: Instant }"
+        |> declare "type HS = { start: string }"
+
+    let doc (json: string) =
+        "[\"" + json.Replace("\"", "\\\"") + "\"]"
+
+    let deep n =
+        String.replicate n "{\"a\":" + "1" + String.replicate n "}"
+
+    let gen src =
+        match Weir.Contracts.parseSchema "t" src with
+        | Error e -> failtest e
+        | Ok d ->
+            match Weir.SchemaTypes.moduleText Weir.Parser.keywords Set.empty "t" None "0123456789abcdef" "http://src" d with
+            | Ok g -> g.Text
+            | Error e -> failtest e
+
+    testList
+        "hunt3 behaviour"
+        [ test "from json reads a document up to weir's 100-level bound; past it names the depth [D:json-depth]" {
+              Expect.equal (runUnder henv (doc (deep 99) + " |> from json HN |> fun _ -> 1")) (VInt 1L) "99 deep reads"
+
+              let msg =
+                  (Expect.throwsC (fun () -> runUnder henv (doc (deep 101) + " |> from json HN") |> ignore) id).Message
+
+              Expect.stringContains msg "nests deeper than 100 levels" "the depth named"
+              Expect.isFalse (msg.Contains "not valid JSON") "never 'not valid JSON' for valid JSON"
+
+              let bad =
+                  (Expect.throwsC (fun () -> runUnder henv (doc "{\"a\": " + " |> from json HN") |> ignore) id).Message
+
+              Expect.stringContains bad "not valid JSON" "invalid JSON keeps its own error"
+          }
+          test "a schema nested past 64 JSON levels parses [D:json-depth]" {
+              let schema =
+                  String.replicate 32 "{\"type\":\"object\",\"properties\":{\"c\":"
+                  + "{\"type\":\"integer\"}"
+                  + String.replicate 32 "}}"
+
+              match Weir.Contracts.parseSchema "t" schema with
+              | Ok _ -> ()
+              | Error e -> failtest e
+          }
+          test "from toml refuses an offset-less datetime into an Instant; an offset reads [D:toml-local-instant]" {
+              let read v =
+                  $"[\"start = {v}\"] |> from toml HT |> fun r -> show r.start"
+
+              Expect.equal (runUnder henv (read "2024-03-01T10:00:00+02:00")) (VStr "2024-03-01T08:00:00Z") "offset"
+              Expect.equal (runUnder henv (read "2024-03-01T10:00:00Z")) (VStr "2024-03-01T10:00:00Z") "Z"
+
+              for v, what in
+                  [ "2024-03-01T10:00:00", "a local date-time"
+                    "2024-03-01 10:00:00", "a local date-time"
+                    "2024-03-01", "a local date"
+                    "10:00:00", "a local time" ] do
+                  let msg = (Expect.throwsC (fun () -> runUnder henv (read v) |> ignore) id).Message
+                  Expect.stringContains msg $"{v} is {what}" $"refused: {v}"
+                  Expect.stringContains msg "from toml: line 1" "located, toml-labelled"
+
+              Expect.equal
+                  (runUnder henv "[\"start = 2024-03-01T10:00:00\"] |> from toml HS |> fun r -> r.start")
+                  (VStr "2024-03-01T10:00:00")
+                  "a string field keeps the text"
+          }
+          test "duplicate JSON keys into a Yaml field last-win at the first position [D:json-yaml-dupkeys]" {
+              let src = doc """{"a": {"x": 1, "y": 2, "x": 3}}"""
+              Expect.equal (runUnder henv $"{src} |> from json HN |> to json" |> text) """{"a":{"x":3,"y":2}}""" "json"
+
+              Expect.equal
+                  (runUnder henv $"{src} |> from json HN |> to yaml |> from yaml HN |> to yaml" |> text)
+                  "a:\n  x: 3\n  y: 2"
+                  "the yaml round trip holds"
+          }
+          test "schema drafting: int-or-string is Yaml, an integer enum is int [D:schema-int-or-string][D:schema-int-enum]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["level"],
+                           "properties": {
+                             "port": { "anyOf": [{ "type": "integer" }, { "type": "string" }], "x-kubernetes-int-or-string": true },
+                             "bare": { "x-kubernetes-int-or-string": true },
+                             "level": { "type": "integer", "enum": [1, 2, 3] },
+                             "mixed": { "enum": [1, "two"] } } }"""
+
+              Expect.stringContains g "port: Option<Yaml>" "anyOf int/string → Yaml"
+              Expect.stringContains g "bare: Option<Yaml>" "the marker alone → Yaml"
+              Expect.stringContains g "YInt n, a string as YStr s" "the note names the cases"
+              Expect.stringContains g "\n    level: int\n" "an integer enum drafts int"
+              Expect.stringContains g "an enum of 1, 2, 3 — drafted int" "its values in the note"
+              Expect.stringContains g "mixed: Option<string>" "a mixed enum stays string"
+          }
+          test "schema validation keywords are admitted and noted, never enforced [D:schema-validation-keys]" {
+              let g =
+                  gen
+                      """{ "type": "object", "$comment": "c",
+                           "properties": {
+                             "name": { "type": "string", "minLength": 1, "maxLength": 9, "pattern": "^a" },
+                             "n": { "type": "integer", "minimum": 0, "readOnly": true },
+                             "tags": { "type": "array", "items": { "type": "string", "minLength": 2 }, "maxItems": 3, "uniqueItems": true, "deprecated": true } } }"""
+
+              Expect.stringContains g "name: Option<string>" "drafts as without the keywords"
+              Expect.stringContains g "// note: not enforced: minLength on name, tags[]" "one note per keyword, every place"
+              Expect.stringContains g "// note: not enforced: pattern on name" "pattern"
+              Expect.stringContains g "// note: not enforced: readOnly on n" "readOnly"
+              Expect.stringContains g "// note: not enforced: uniqueItems on tags" "uniqueItems"
+              Expect.isFalse (g.Contains "$comment") "a comment is documentation, not noted"
+
+              // shape-changing keywords still refuse
+              match Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "p": { "const": 1 } } }""" with
+              | Error e -> Expect.stringContains e "'const'" "const refuses"
+              | Ok _ -> failtest "const must refuse"
+          }
+          test "schema validation notes cover only the definitions the module drafts [D:schema-validation-keys]" {
+              let g =
+                  gen
+                      """{ "$ref": "#/definitions/a.v1.Used",
+                           "definitions": {
+                             "a.v1.Used": { "type": "object", "properties": { "s": { "type": "string", "maxLength": 3 } } },
+                             "a.v1.Unused": { "type": "object", "properties": { "t": { "type": "string", "pattern": "x" } } } } }"""
+
+              Expect.stringContains g "// note: not enforced: maxLength on Used.s" "a reached definition's keyword"
+              Expect.isFalse (g.Contains "pattern") "an unreached definition stays quiet"
+          }
+          test "an indented bare within … always followed by a statement assembles [D:within-always]" {
+              errorsCleanIn
+                  "wa.weir"
+                  [ "let f () ="
+                    "    within"
+                    "        print \"body\""
+                    "    always"
+                    "        print \"cleanup\""
+                    "    print \"after\""
+                    "f ()"
+                    "if true then"
+                    "    within"
+                    "        within"
+                    "            print \"inner\""
+                    "        always"
+                    "            print \"ic\""
+                    "        print \"mid\""
+                    "    always"
+                    "        print \"oc\""
+                    "    print \"after\"" ]
+                  "nested and sibling statements"
+          }
+          test "a call of a function that freezes carries nothing [D:reenum-forced-call]" {
+              let reenum lines =
+                  diagsIn "re.weir" lines |> List.filter (fun d -> d.Message.Contains "re-enumeration")
+
+              Expect.isEmpty
+                  (reenum
+                      [ "let xs = git ls-files"
+                        "let f () = xs |> Seq.freeze"
+                        "let a = f ()"
+                        "print $\"{a |> Seq.length}\""
+                        "print $\"{a |> Seq.length}\"" ])
+                  "the result is a snapshot"
+
+              Expect.isEmpty
+                  (reenum
+                      [ "let xs = git ls-files"
+                        "let g n = xs |> Seq.take n |> Seq.freeze"
+                        "let a = 2 |> g"
+                        "print $\"{a |> Seq.length}\""
+                        "print $\"{a |> Seq.length}\"" ])
+                  "a piped call too"
+
+              // each call still pulls once
+              Expect.equal
+                  (reenum
+                      [ "let xs = git ls-files"
+                        "let f () = xs |> Seq.freeze"
+                        "let a = f ()"
+                        "let b = f ()"
+                        "print $\"{a |> Seq.length}\"" ]
+                   |> List.length)
+                  1
+                  "two calls are two pulls"
+          }
+          test "inline Env.load / Args.load refuse a duplicate field [D:env-inline-type]" {
+              match errorsIn "e.weir" [ "let e = Env.load {| H3F_P: string; H3F_P: int |}"; "print e.H3F_P" ] with
+              | e :: _ -> Expect.stringContains e.Message "duplicate field 'H3F_P' in the anonymous record" "Env.load"
+              | [] -> failtest "Env.load must refuse"
+
+              match errorsIn "a.weir" [ "let a = Args.load {| v: bool; v: string |}"; "print a.v" ] with
+              | e :: _ -> Expect.stringContains e.Message "duplicate field 'v' in the anonymous record" "Args.load"
+              | [] -> failtest "Args.load must refuse"
+          }
+          test "Instant + an unknown infers the unknown as a Duration [D:instant-plus-infer]" {
+              Expect.equal (checkOk "fun d -> Instant.now () + d").Ty (TFun(TDur, TInstant)) "point + unknown"
+              Expect.equal (checkOk "fun d -> d + Instant.now ()").Ty (TFun(TDur, TInstant)) "unknown + point"
+
+              Expect.equal
+                  (checkOk "fun a -> fun b -> a + b + Instant.now ()").Ty
+                  (TFun(TDur, TFun(TDur, TInstant)))
+                  "a deferred + decided by the point: both operands are Durations"
+
+              Expect.stringContains (checkErr "Instant.now () + Instant.now ()").Message "two points don't add" "two real points"
+
+              Expect.isEmpty
+                  (errorsIn "f5.weir" [ "let at d = Instant.now () + d"; "print $\"{at 5m}\""; "let f a b = a + b + Instant.now ()"; "print $\"{f 1s 2s}\"" ])
+                  "f5a and f5b check clean"
+          } ]
+
+// ---- hunt-3 performance cliffs: semantics pinned, growth guarded ---------
+// [D:value-hash] [D:env-open-index] [D:one-scanner]. The growth
+// guards time one input and its 10x in process; linear work grows ~10x,
+// the quadratic forms these replaced grew ~100x. 25x is the acceptance
+// harness's rule (tools/hunt3-repro.weir), wide enough for a noisy runner.
+let private growsWithin (factor: float) (label: string) (small: unit -> unit) (big: unit -> unit) =
+    let time (f: unit -> unit) =
+        let sw = Stopwatch.StartNew()
+        f ()
+        sw.Elapsed.TotalMilliseconds
+
+    small () // warm the JIT and caches
+    // best of three each, and the small side floored at 10ms: a few-ms
+    // baseline is all GC pause and tier-up noise on a shared runner, while
+    // the quadratic forms these guard against overshoot the floor 70x+
+    let best (f: unit -> unit) = List.init 3 (fun _ -> time f) |> List.min
+    let within (ts, tb) = tb <= factor * max ts 10.0
+    let ts, tb = best small, best big
+
+    Expect.isTrue (within (ts, tb)) $"{label}: {tb:F0}ms vs {ts:F0}ms for the small input — over {factor}x"
+
+let private growsLinearly label small big = growsWithin 25.0 label small big
+
+// the replaced Seq.distinct, kept as the reference: a list scan with
+// Value's own equality
+let private distinctReference (xs: Value list) =
+    let seen = ResizeArray<Value>()
+
+    [ for x in xs do
+          if not (seen.Contains x) then
+              seen.Add x
+              yield x ]
+
+let hunt3PerfTests =
+    let rec nest depth (leaf: Value) =
+        if depth = 0 then
+            leaf
+        else
+            VRecord("Node", [ "next", VUnion("Some", Some(nest (depth - 1) leaf)); "tag", VStr "t" ])
+
+    // a value zoo: equal-but-differently-built pairs across every Eq kind
+    let zoo =
+        [ VInt 1L
+          VInt 1L
+          VFloat 1.0
+          VStr "a"
+          VStr "a"
+          VSecret "a"
+          VSecret "a"
+          VSecret "b"
+          VBool true
+          VUnit
+          VDur 5L
+          VSize 5L
+          VInstant 5L
+          VBytes [| 1uy; 2uy |]
+          VBytes [| 1uy; 2uy |]
+          VBytes [| 2uy; 1uy |]
+          VTuple [ VStr "h"; VInt 1L ]
+          VTuple [ VStr "h"; VInt 1L ]
+          VTuple [ VInt 1L; VStr "h" ]
+          VRecord("R", [ "a", VInt 1L; "b", VStr "x" ])
+          VRecord("R", [ "b", VStr "x"; "a", VInt 1L ])
+          VRecord("R", [ "a", VInt 2L; "b", VStr "x" ])
+          VRecord("S", [ "a", VInt 1L; "b", VStr "x" ])
+          VUnion("Some", Some(VInt 1L))
+          VUnion("Some", Some(VInt 1L))
+          VUnion("None", None)
+          VMap(Map [ "k", VInt 1L; "j", VInt 2L ])
+          VMap(Map [ "j", VInt 2L; "k", VInt 1L ])
+          VMap(Map [ "k", VInt 1L ])
+          nest 7 (VInt 1L)
+          nest 7 (VInt 1L)
+          nest 7 (VInt 2L) ]
+
+    testList
+        "Hunt-3 performance cliffs"
+        [ test "Value hashes agree with Value equality across the zoo [D:value-hash]" {
+              for a in zoo do
+                  for b in zoo do
+                      if a = b then
+                          Expect.equal (a.GetHashCode()) (b.GetHashCode()) $"{formatValue a} = {formatValue b} but hashes differ"
+          }
+          test "a 200k-deep record hashes without recursion past the bound [D:value-hash] [D:eq-depth]" {
+              let rec build n acc =
+                  if n = 0 then acc else build (n - 1) (VRecord("Node", [ "next", VUnion("Some", Some acc) ]))
+
+              let a = build 200000 (VUnion("None", None))
+              let b = build 200000 (VUnion("None", None))
+              Expect.equal (a.GetHashCode()) (b.GetHashCode()) "equal deep values hash alike"
+
+              Expect.equal
+                  (runWith [ "src", VSeq [ a; b ] ] "src |> Seq.distinct |> Seq.length")
+                  (VInt 1L)
+                  "distinct collapses the equal pair"
+          }
+          test "Seq.distinct matches the list-scan reference: order, Secret, record field order, depth [D:seq-distinct]" {
+              let rng = System.Random 1789
+              let pick () = zoo[rng.Next zoo.Length]
+
+              for _ in 1..200 do
+                  let xs = List.init (rng.Next 40) (fun _ -> pick ())
+                  let got = runWith [ "src", VSeq xs ] "src |> Seq.distinct" |> forceSeq
+                  Expect.equal got (distinctReference xs) "same elements, same first-occurrence order"
+                  // structural equality is not enough here: the FIRST
+                  // spelling must survive (a record keeps its field order)
+                  List.iter2 (fun g r -> Expect.isTrue (obj.ReferenceEquals(g, r)) "the first occurrence itself") got (distinctReference xs)
+
+              Expect.equal
+                  (runWith [ "src", VSeq [ VSecret "s"; VStr "s"; VSecret "s" ] ] "src |> Seq.distinct" |> forceSeq)
+                  [ VSecret "s"; VStr "s" ]
+                  "a Secret equals only a Secret of the same text"
+          }
+          test "Seq.distinct grows linearly in its distinct count" {
+              let distinctOver n =
+                  fun () ->
+                      run $"[1..{n}] |> Seq.map (fun x -> ($\"host-{{x}}\", x %% 7)) |> Seq.distinct |> Seq.length"
+                      |> ignore
+
+              growsLinearly "Seq.distinct over tuples" (distinctOver 3000) (distinctOver 30000)
+          }
+          test "the chunked string state equals a rescan of the whole prefix [D:one-scanner]" {
+              let rng = System.Random 1790
+              let alphabet = [| "\""; "'"; "@"; "$"; "{"; "}"; "{{"; "\\"; "\"\"\""; "a"; " "; "//"; "$\"" |]
+
+              for _ in 1..3000 do
+                  let lines =
+                      List.init (1 + rng.Next 5) (fun _ -> String.concat "" (List.init (rng.Next 8) (fun _ -> alphabet[rng.Next alphabet.Length])))
+
+                  let mutable prefix = ""
+                  let mutable state = Weir.Script.stringStart
+
+                  for l in lines do
+                      Expect.equal (Weir.Script.isInsideString state) (Weir.Script.endsInsideString prefix) $"after {prefix}"
+                      prefix <- prefix + "\n" + l
+                      state <- Weir.Script.stringStep state ("\n" + l)
+
+                  Expect.equal (Weir.Script.isInsideString state) (Weir.Script.endsInsideString prefix) $"after {prefix}"
+          }
+          test "fmt grows linearly in a statement's physical line count" {
+              let heredoc n =
+                  fun () ->
+                      let src =
+                          [ "let h = <<<" ] @ List.init n (fun i -> $"    line {i} text {{x}} \"q\"") @ [ "h |> Seq.iter print" ]
+
+                      match Weir.Fmt.formatLines src with
+                      | Ok out -> Expect.equal out src "already formatted"
+                      | Error e -> failtest e
+
+              growsLinearly "fmt of a heredoc" (heredoc 600) (heredoc 6000)
+          }
+          test "the env's open-scheme index equals a full filter through adds and shadowing [D:env-open-index]" {
+              let closed = generalize (TFun(TVar "a", TVar "a"))
+              let opened = mono (TVar "t9")
+              let isOpen (sch: Scheme) = not (Set.isEmpty (tyVars sch.Ty - sch.Forall))
+              let rng = System.Random 1791
+              let mutable env = Weir.Builtins.typeEnv
+
+              for _ in 1..2000 do
+                  let name = $"v{rng.Next 50}"
+                  env <- bindValue name (if rng.Next 3 = 0 then opened else closed) env
+                  Expect.isTrue (env.OpenIndex |> Option.exists (fun ix -> obj.ReferenceEquals(ix.For, env.Values))) "bindValue leaves a current index"
+                  Expect.equal (openSchemes env) (env.Values |> Map.filter (fun _ s -> isOpen s)) "index = filter"
+
+              // Values moved without bindValue: the stale index is ignored
+              let other = { env with Values = Map.add "w" opened env.Values }
+              Expect.equal (openSchemes other) (other.Values |> Map.filter (fun _ s -> isOpen s)) "stale index rescans"
+              Expect.equal (openSchemes (indexed other)) (openSchemes other) "indexed agrees"
+          }
+          test "a statement's check cost does not grow with the env's size [D:env-open-index]" {
+              // the script fold's shape: each top-level binding extends
+              // the env through bindValue, then the next statement checks
+              let envOf n =
+                  [ 1..n ] |> List.fold (fun e i -> bindValue $"a{i}" (generalize TInt) e) Weir.Builtins.typeEnv
+
+              let checks (tenv: TypeEnv) =
+                  let e = parse "fun x -> (x, a1 + 1)"
+                  fun () ->
+                      for _ in 1..1000 do
+                          match typecheck tenv e with
+                          | Ok _ -> ()
+                          | Error terr -> failtest (formatError terr)
+
+              growsWithin 6.0 "1000 checks against a 100x larger env" (checks (envOf 500)) (checks (envOf 50000))
+          }
+          test "a line's position index follows its own segments; equality ignores it [D:line-pos-cache]" {
+              match Weir.Script.assemble [ 1, "let x ="; 2, "    ls"; 3, "    |> Seq.map _.name" ] with
+              | Ok [ ll ] ->
+                  Expect.equal (Weir.Script.translate ll 9) (2, 5) "col 9 is line 2 col 5"
+                  // re-pointed indents: the copy must not read the original's index
+                  let moved = Weir.Script.withPhysicalIndents (Map [ 2, 8 ]) ll
+                  Expect.equal (Weir.Script.translate moved 9) (2, 9) "the moved line reads its own indents"
+                  Expect.equal (Weir.Script.translate ll 9) (2, 5) "the original is untouched"
+                  Expect.notEqual moved ll "different segments, different lines"
+                  Expect.equal { ll with Ends = [||]; PosIndex = null } ll "equality is text, head and segments"
+              | other -> failtest $"unexpected: {other}"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
         [ hardeningTests
+          teardownSeamTests
+          hunt3BehaviourTests
+          argsSecretEchoTests
+          hunt3BehaviorTests
           docsBinaryTests
           hunt2CheckerTests
           sweepFindingTests
@@ -26971,6 +27941,7 @@ let allTests =
           tupleTests
           literalThunkTests
           typeClassTests
+          hunt3PerfTests
           typeClassBTests
           typeClassCTests
           childEnvTests

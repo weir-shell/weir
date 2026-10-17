@@ -482,8 +482,10 @@ no `package.json`.
 `Seq.pmap` runs a bounded number of calls at once (`Seq.pmapWith n`
 sets the limit) and returns results in input order; if calls fail, you
 get the first failure in input order. `Seq.pfirst` returns the first
-call to succeed. The rest are stopped (their process trees killed) and
-their failures ignored; `Seq.pfirstWith n` sets the limit.
+call to succeed. The rest are stopped (their process trees killed,
+their requests cut, each halted at its next step) and their failures
+ignored; nothing they do lands after `pfirst` returns.
+`Seq.pfirstWith n` sets the limit.
 
 ```weir
 let target = "seed.txt"

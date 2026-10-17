@@ -26,6 +26,36 @@
 
 ### Changed
 
+- **`serve` runs on Kestrel** (ASP.NET Core's server, part of the .NET
+  SDK) instead of `HttpListener` — one server on Linux, macOS and
+  Windows, and the binary is about 1.7 MB larger. What a client can
+  notice: responses carry `Date` and no `Server` header; request
+  headers over 32 KiB get 431 (was 400); a NUL byte in the request
+  target gets 400; a request whose `Host` is not `127.0.0.1`,
+  `localhost` or `[::1]` gets a plain `404 unknown host`; a repeated
+  header's values keep their order, but different header names may
+  reach the handler in another order than sent. Closing the block
+  frees the port at once and gives running handlers two seconds,
+  together, to finish.
+- **`weir add schema` accepts validation keywords.** `minLength`,
+  `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`,
+  `exclusiveMaximum`, `multipleOf`, `minItems`, `maxItems`,
+  `uniqueItems`, `minProperties`, `maxProperties`, `readOnly`,
+  `writeOnly`, `deprecated` and `$comment` no longer refuse the whole
+  schema (real GitHub workflow and Kubernetes schemas use them). They
+  are not enforced; `weir gen types` writes one
+  `// note: not enforced: …` line per keyword.
+- **`weir gen types` drafts an int-or-string field as `Yaml`** (a
+  Kubernetes port, `x-kubernetes-int-or-string`), so `from json` reads
+  `8080` and `to yaml` writes it back unquoted; it was `string`. An
+  enum of integers drafts `int` instead of `string`.
+- **`File.writeAtomic` inside a `plan` records a `WriteFileAtomic` op**
+  and `Plan.apply` replaces the file atomically, as the direct call
+  does; it recorded `WriteFile` and applied an in-place write, so a
+  hard link saw the new content.
+- **`from toml` refuses a date-time without an offset into an
+  `[<Iso8601>] Instant`** — `start = 2024-03-01T10:00:00` read as
+  10:00 UTC. Add an offset, or read it into a `string` field.
 - **The init file refuses bare names.** It is a script, not typing at
   the prompt: `let evens () = xs |> where …` loaded before and now
   needs `Seq.where`, as in any script. Bare names still work at the
@@ -34,8 +64,146 @@
   is one program plus fixed words, so `#alias inf = git add . | and
   git commit …` passed `|`, `and`, `git`… to `git add` as arguments.
   The error names the fix: `let inf () = …`.
+- **At the REPL, Ctrl+C stops any wait, not only a running command.**
+  `Duration.sleep`, a `poll` or `retry` wait, a `within lock` that is
+  waiting for the lock, `Proc.wait` and an Http request are cut, and
+  the prompt returns with `↳ exit 130 (SIGINT — interrupted/cancelled)`.
+  Before, the session was stuck until the wait ended. An `always`
+  cleanup runs unless Ctrl+C is pressed again; pure computation still
+  runs to its next wait.
+- **`pfirst` stops the losers and waits for them.** After the winner, a
+  loser stops at its next builtin call, command, sleep or Http send (a
+  request in flight is cut), and `pfirst` returns only once every loser
+  has stopped — so no loser's write lands after the race. A loser busy
+  in pure computation now delays the return until it reaches one.
+- **An env key that is empty or contains `=` is an error**, naming the
+  key, in `Env.pair`, `Env.ofPairs`, `within env` and `$e(…)`. The child
+  read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **`Path.normalize` treats a Windows drive root as a root.** On
+  Windows, `Path.normalize "C:/../y"` gave `C:/../y`; it is now `C:/y`,
+  as `/../y` is `/y`.
+- **`Path.glob` takes a native Windows directory prefix.** On Windows,
+  `Path.glob (Path.combine d "*.txt")` (backslashes) found nothing, and
+  a `C:/…` pattern was walked from the drive's current directory; `\`
+  now separates and a drive or UNC prefix roots the pattern. Matches
+  are shown with `/`.
+- **A `plan`'s stale-read guard sees Windows paths spelled either way.**
+  On Windows a read under a captured target escaped the
+  known-after-apply refusal when the two spelled separators or letter
+  case differently; both now compare as the filesystem does.
+- **`serve` answers pipelined requests.** Two or three requests sent
+  back to back on one connection got one answer; each now gets its
+  own, in order.
+- **`serve` keeps every value of a repeated request header.** Three
+  `X-Forwarded-For` lines reached the handler as the last one only;
+  they now arrive as three pairs, in the order sent.
+- **`serve` sends one response per request.** After refusing a request
+  (a foreign `Host`, an absolute URL, `HTTP/9.9`) it also sent an
+  unasked-for `200 OK` that a keep-alive client paired with its next
+  request.
+- **`serve` answers requests to `[::1]`.** They all got `400 Bad
+  Request (Invalid url …)` and never reached the handler.
+- **A slow request body no longer holds a `serve` handler slot.** The
+  body is read before a slot is taken, so `maxConcurrent` slow uploads
+  cannot shut out other clients for the whole `bodyTimeout`.
+- **A `serve` handler still running when the block closes no longer
+  crashes weir** (exit 134); its response is discarded. Closing waits
+  two seconds in total, not two seconds per running handler.
+- **A raising `serve` handler is recorded.** It answered `500 internal
+  error` with no trace for the script; it, and a status outside
+  100–999, now also add a line to `Server.streamErrors`.
+- **`serve` drops a queued request whose client already left** instead
+  of running the handler for it, and a `Stream` whose client
+  disconnects frees its slot at once.
+- **`cd /<Tab>` completes like a shell.** It left `cd "/` — an unclosed
+  string. `cd` at the start of a line now completes its path bare, as a
+  command argument (`cd /usr/`; quoted only for a space or quote), and
+  where a path is quoted (`File.read ./<Tab>`) several matches extend
+  inside a closed literal (`File.read "./s"`, cursor inside).
+- **`printerr`, `Log.*`, the `Self.prompt` message and the `-e` echo
+  neutralize terminal escapes at a tty**, as `print` does: a value
+  carrying an OSC 52 (clipboard write), a title change or a screen
+  clear shows as visible `\x1b…` text instead of driving the terminal.
+  Redirected output is unchanged.
+- **`Args.load` no longer echoes a secret given as `--token=VALUE`.**
+  The message reads `unknown flag '--token=***' — … write '--token
+  <value>'` for a `Secret` field, and an unknown `--name=value` flag is
+  shown as `'--name=…'` (it may be a misspelled secret).
+- **A non-ASCII or control character in a secret header value is no
+  longer printed.** For `auth` and `secretHeaders`, the refusal names
+  the header and the byte offset (`at byte offset 8 of the secret
+  value`); plain headers still name the character.
+- **Commands inside `always` run on Ctrl+C and SIGTERM.** They were
+  refused ("no new command starts"), so cleanups were skipped. The
+  body's commands still stop, and a second signal still exits at once.
+- **`pmap`/`piter` stop taking new items after Ctrl+C, SIGTERM or a
+  closed stdout.** Workers kept starting thousands of items during the
+  teardown, and each `within proc` in them left a `weir-proc-*` temp
+  dir behind. Items already running finish.
+- **A `plan` no longer sends `Http.send` with `Other "PURGE"`** (or any
+  other `Other` verb): it is captured as an `HttpSend` op like `Post`.
+  Only GET, HEAD, OPTIONS, QUERY and TRACE (any casing) count as reads.
+- **A `plan` refuses every stale read.** `File.exists`, `File.sha256`,
+  `File.readBytes`, `Path.glob`, `ls` and the rest of the file reads
+  now refuse after a captured change they would not see, as
+  `File.read` did; a listing refuses after a write inside it, a read
+  under a captured `Dir.deleteAll` or move refuses, and `a.txt/` is
+  `a.txt`.
+- **A `plan` refuses an op inside a `within tmp` opened in it.** That
+  directory is deleted before `Plan.apply`, which then failed midway
+  after earlier ops had run.
+- **`from json` reads documents nested up to 100 levels** (it stopped
+  at 64 and said "not valid JSON"); deeper documents say so by depth.
+  `weir add schema` likewise.
+- **A `Yaml` field read from JSON keeps one of a repeated key** — the
+  last value, at the first position — so `to yaml` no longer writes
+  YAML weir refuses.
+- **An indented `within … always` followed by another statement
+  parses**; it failed with "dedents below the open block".
+- **No re-enumeration warning on the result of a function that
+  freezes** (`let f () = xs |> Seq.freeze` then reading `f ()` twice).
+- **`Env.load {| A: string; A: int |}` refuses the duplicate field** at
+  check, as a declared record does; `Args.load` too.
+- **`Instant.now () + d` infers `d` as a Duration** — `let at d =
+  Instant.now () + d` checks and `at 5m` works; it said "two points
+  don't add" about a side nobody wrote as an Instant.
+- **SIGHUP closes every scope**, as Ctrl+C and SIGTERM do: closing the
+  terminal or `kill -HUP` now runs `always`, removes `within tmp` dirs
+  and kills `within proc` children, then exits 129. It killed weir
+  outright. `nohup weir …` still ignores it.
+- **`exit n` inside a `pfirst` arm exits**, as it does in `pmap`. The
+  race swallowed it as a failed arm and went on.
+- **`within lock "f"` no longer blocks weir's own `File.read`/`File.write`
+  of `f`** on Linux and macOS ("used by another process", even in the
+  block holding the lock). The lock is still advisory and still excludes
+  other holders. On Windows, lock a separate file such as `f.lock`.
+- **Temp dirs are owner-only.** `within tmp`, `Path.newTempDir` and the
+  `within proc` spill dir are created 0700 and the spill logs 0600; they
+  were 0755/0644, so other users could read a child's output.
+- **`File.writeAtomic` keeps a 0600 file private while writing.** The
+  temp file was created 0644 and only took the target's mode just
+  before the rename.
+- **`NO_PROXY=::1` bypasses the proxy for `http://[::1]`**, as curl
+  does; the entry `[::1]` no longer does. `Http.send` and `weir add
+  schema` both follow it.
+- **`check --can` reports a `Secret` in the argv of a reified command**
+  (`… | complete`, `line`, `succeeds`, `exitCode`, `text`, `orFail`,
+  `exec`), as it already did for a plain command and `$(…)`.
+- **`weir fmt` is fast on long statements again.** A 5,000-line heredoc
+  took 9 s (time grew with the square of the line count; yaml blocks and
+  multi-line lists too, and editor formatting); it takes 0.2 s.
+- **`weir check`, `weir <script>` and editor diagnostics are fast on
+  long scripts.** Each top-level `let` cost time in proportion to the
+  lets before it: checking 30,000 lets took 12 s and now takes 2 s, and
+  an edit in a 40,000-line file re-checks in 2 s instead of 21 s.
+  Formatting such a file takes 7 s instead of 22 s.
+- **`Seq.distinct` is fast**, and so are `Seq.distinctBy`, `countBy`,
+  `groupBy` and `except` on tuple or record keys. 25,000 distinct
+  strings took 11 s through `Seq.distinct`; 20,000 tuple keys took 44 s
+  through `distinctBy` plus `countBy`; both now take well under a
+  second. Results and their order are unchanged.
 - **`weir fmt` keeps a file's line endings.** It wrote the platform
   newline, so reformatting turned an LF file CRLF on Windows and a CRLF
   file LF elsewhere; a CRLF file now stays CRLF and an LF file LF.

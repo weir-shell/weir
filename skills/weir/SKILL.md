@@ -536,13 +536,16 @@ print $"{key} -> {value}"
   (`t + 1d`-style "next day same wall time" does not exist; a shift is
   exact physical time — `t + 24h` means exactly 24 hours). `Instant.now ()`;
   `Instant.parse` reads ISO 8601 (`Z` or numeric offsets, normalized
-  to UTC; a bare date is midnight UTC; RFC 3339's space separator and
+  to UTC; a bare date is midnight UTC, and a time with no offset is
+  read as UTC — the json/yaml `[<Iso8601>]` codec too; RFC 3339's space separator and
   fractions past 7 digits read, truncated); `Instant.parseWith`/`tryParseWith`
   read NAMED formats for log lines and cert dates — `%Y %m %d %e %b
   %H %M %S %f %z`, prefix semantics (the line's tail rides free), no
   `%z` means UTC. `instant - instant` IS a `Duration`
   (`expiry - Instant.now () > 24h * 300`); `instant ± duration`
-  shifts; two points never add (teaching error). Ord/Eq admit —
+  shifts; two points never add (teaching error); in `Instant.now () + d`
+  an unknown `d` infers as a Duration (`let at d = Instant.now () + d`
+  then `at 5m`). Ord/Eq admit —
   instants sort and compare. `Args.load`/`Env.load` parse ISO into
   `Instant` fields (`--since 2026-08-01`). No JSON/YAML on its own —
   declare the field's encoding [D:wire-codecs]: `[<Iso8601>] at:
@@ -608,7 +611,11 @@ print $"{key} -> {value}"
   bare GET read [D:fetch-retired]; when the error body is data to
   inspect, `Http.send` binds it instead. A mutating-method
   `Http.expect` inside a `plan` refuses (no response to return;
-  `Http.send` captures the Op). `url |> Http.withQuery [(k, v)]` percent-encodes
+  `Http.send` captures the Op). An `Other` verb counts as mutating
+  unless it is GET/HEAD/OPTIONS/QUERY/TRACE (any casing), so
+  `Other "PURGE"` is captured by `plan` (`readonly` refuses every
+  `Other`: the verb is not known at check).
+  `url |> Http.withQuery [(k, v)]` percent-encodes
   a query string. `resp |> Http.header "etag" : Option<string>` reads a
   response header case-insensitively (HTTP's own law — a hand-rolled
   pairs filter misses ETag vs etag) — the first line's value;
@@ -635,7 +642,9 @@ print $"{key} -> {value}"
   header the wire cannot carry raises before anything is sent, naming
   the header — a CR/LF/NUL byte, a non-token name (`"Bad Name"`), a
   control or non-ASCII value byte, or a body header (`Content-Type`,
-  `Expires`) on a `NoBody` request. On a
+  `Expires`) on a `NoBody` request; for a secret value (`auth`,
+  `secretHeaders`) the message gives the byte offset, never the
+  character. On a
   cross-origin redirect `auth`, every `secretHeaders` name and a plain
   `Authorization`/`Proxy-Authorization`/`Cookie` header are dropped. The
   body is `NoBody`/`Json`/`Text of string`/`Form of seq<string * string>`
@@ -678,6 +687,13 @@ print $"{key} -> {value}"
   arm to SUCCEED wins, losers' spawned processes are tree-killed and
   their failures never surface (all-failed rethrows the first by
   input order; empty raises). `Seq.pfirstWith n` sets the ceiling.
+  Losers are cancelled at their next builtin call, command, sleep or
+  Http send (an in-flight request is cut), and `pfirst` waits for
+  every loser before returning — AFTER `pfirst` RETURNS, NO LOSER
+  EFFECT RUNS [D:pfirst-join]; a loser busy in pure computation holds
+  the return until it reaches one, and a loser's `always` cleanup
+  still runs (before the return). `exit n` in an arm ends the race
+  and the script, as in `pmap`.
 - A SCOPED background process is `within proc srv = <command>` +
   an indented block [D:scoped-procs]: the scope IS the lifetime —
   at every exit (normal or raise) the process TREE is killed and
@@ -714,9 +730,9 @@ print $"{key} -> {value}"
   `match` — weir's union dispatch, not a routing framework.
   `HttpServerRequest` carries `method`/`path`/`query` (the raw string,
   no leading `?` — `Str.trySplitOnce "=" req.query`)/`headers` (pairs,
-  wire order — but the platform listener collapses REPEATED request
-  headers to the last value, so a proxied `X-Forwarded-For` chain reads
-  the last hop only, a stated non-claim)/`body` (request text;
+  one per value: a repeated header such as a proxied `X-Forwarded-For`
+  chain arrives whole, in wire order within the name; compare names
+  case-insensitively)/`body` (request text;
   request-body streaming is out of scope v1). `method` is `HttpMethod`:
   a well-formed verb the union does not name (`TRACE`, a proxy's own)
   reads as `Other of string` so a handler can route on it (`| Other v ->
@@ -734,14 +750,19 @@ print $"{key} -> {value}"
   without the final empty chunk (curl exits 18), never a clean end. A
   response header the wire cannot carry (a non-token name, a control or
   non-ASCII value byte, CR/LF) is refused, never dropped: a 500 to the
-  client, the header and reason on `Server.streamErrors`. A HEAD, 1xx, 204 or 304 reply carries no body bytes
+  client, the header and reason on `Server.streamErrors`. A handler
+  that RAISES (or returns a status outside 100–999) answers 500 and is
+  recorded there too (`serve handler on GET /x failed: …`). A HEAD, 1xx, 204 or 304 reply carries no body bytes
   whatever the handler returned (HEAD still declares the GET length).
   Framing and hop-by-hop headers a handler returns (`Transfer-Encoding`,
   `Content-Length`, `Connection`, `Keep-Alive`, `TE`, `Trailer`,
-  `Upgrade`) are dropped — the listener frames the response.
+  `Upgrade`) are dropped — the server frames the response.
   `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
-  excess queues. `bodyTimeout` (a `Duration`, OPTIONAL — default 30s)
-  bounds the request-body read so a slow client cannot park a slot;
+  excess queues; pipelined requests are answered in order. A request
+  whose `Host` is not a loopback name (`127.0.0.1`, `localhost`,
+  `[::1]`) gets a 404 before any handler runs. The body is read before a
+  handler slot is taken, so a slow upload never holds one: `bodyTimeout`
+  (a `Duration`, OPTIONAL — default 30s) bounds that read (408);
   `maxBody` (a `Size`, OPTIONAL — default 16MiB) bounds its size, a
   larger body answered 413 without being buffered [D:serve-max-body].
   The config is `{ port; maxConcurrent }` plus either optional field
@@ -768,7 +789,9 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
 - A bare `within` (no kind) + `always` is the exit discipline alone
   [D:within-always]: the indented body runs, then the `always` block
   runs on EVERY exit — normal, `fail`, `exit n`, SIGINT/SIGTERM (not
-  `kill -9`, the standing carve-out). The rulings: a cleanup raise on
+  `kill -9`, the standing carve-out). On a signal the body's commands
+  stop, but the `always` block's commands (and fan-outs) run — teardown
+  commands are what it is for. The rulings: a cleanup raise on
   a CLEAN exit propagates (always is never where a raise disappears);
   when already unwinding, the ORIGINAL error wins and the cleanup's
   own failure goes to stderr with a marker; a failed inner cleanup
@@ -791,18 +814,28 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   any death. Advisory means a non-cooperating process can ignore it;
   on NFS and network filesystems advisory locking is unreliable — use
   a local path. Re-acquiring a lock you already hold (nested, or via
-  a function) waits like any contender: give it a timeout.
+  a function) waits like any contender: give it a timeout. It is the
+  only lock weir takes [D:lock-advisory], so the block may read and
+  write the locked file itself (`within lock "state.json"` +
+  `File.read`/`File.write` of it) on Linux and macOS. On Windows the
+  lock is a real sharing mode and the holder's own reads fail: lock a
+  SIDECAR file there (`within lock "state.json.lock"`), which works
+  everywhere.
   pipelines and reifiers refuse (`| complete` WAITS — the opposite of
   backgrounding; compose inside `sh -c`); the block starts on the
   NEXT line (the command owns the rest of its own). THE NON-CLAIM,
-  stated: normal exit, raise, SIGINT and SIGTERM all close every
-  scope (on the script's own thread — no statement runs after the
-  signal; a reader closing weir's stdout ends the script the same way,
-  exit 141, no message) — at a tty AND detached (a `kill -INT`/`kill -TERM` on a
-  `setsid`/backgrounded weir unwinds the same way, exit 130/143; a
-  second signal mid-teardown hard-exits, the double-Ctrl+C escape).
+  stated: normal exit, raise, SIGINT, SIGTERM and SIGHUP (the
+  terminal closed, `kill -HUP`) all close every scope (on the
+  script's own thread — no statement runs after the signal; a reader
+  closing weir's stdout ends the script the same way, exit 141, no
+  message) — at a tty AND detached (a `kill -INT`/`-TERM`/`-HUP` on a
+  `setsid`/backgrounded weir unwinds the same way, exit 130/143/129; a
+  second signal mid-teardown hard-exits, the double-Ctrl+C escape)
+  [D:sighup-teardown]. `nohup weir …` keeps SIGHUP ignored.
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel) tree-kills the running foreground command too, scoped or not.
+  A `pmap`/`piter` takes no new arm after the signal (or the closed
+  stdout); arms already running finish.
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
   definition — no userspace design closes that hole; and a weir
   BACKGROUNDED IN AN INTERACTIVE SHELL (`weir … &`/`nohup`, which
@@ -849,7 +882,7 @@ let pure leak p = File.write p ["x"]
   [D:pure-stage2], ONE TIER UP from `pure`: the body must reach no
   EXTERNAL MUTATION — `fs.write`/`fs.delete`, `proc` (a command or a
   Proc member), `cd`, console writes, the mutating HTTP methods
-  (POST/PUT/DELETE/PATCH), any `within` resource — but AMBIENT READS
+  (POST/PUT/DELETE/PATCH and any `Other` verb), any `within` resource — but AMBIENT READS
   are fine: `fs.read`, `Env`/`Args`, `pwd`, `Path.home`/`configHome`/
   `stateHome`/`cacheHome`, `Term`/`Color` (they read the terminal),
   the clock (`Instant.now`), the
@@ -897,15 +930,22 @@ let x =
   so compare plans or ops, not the seq).
   `Plan.preview` renders human lines (wrote nothing), `Plan.isEmpty`,
   and `Plan.apply` performs in capture order. The Op arms are the mutation surface: `WriteFile of
-  string * seq<string>`, `DeleteFile`, `Copy`/`Move`/`CopyDir`/`MoveDir of
+  string * seq<string>`, `WriteFileAtomic` (`File.writeAtomic`; apply
+  replaces the file atomically too), `DeleteFile`, `Copy`/`Move`/`CopyDir`/`MoveDir of
   string * string`, `MakeDir`, `DeleteDir` (empty only), `DeleteTree`
   (`Dir.deleteAll`), `HttpSend of HttpRequest` (a
-  mutating method only; `show` masks the auth Secret). Content is
+  mutating method only — an `Other` verb included unless it is a safe one; `show` masks the auth Secret). Content is
   snapshotted at plan time, so `preview == apply`. The refusals:
   `proc` inside a plan (a spawned binary is uncapturable — plan covers
   weir-native mutation only), `apply` inside a plan (a capture cannot
-  be captured — apply OUTSIDE), and a known-after-apply read (reading
-  a path an earlier captured mutation targets would see stale state).
+  be captured — apply OUTSIDE), a known-after-apply read (any file
+  read, existence check or listing at, under, or over a path an
+  earlier captured mutation changes would see stale state — a write in
+  `d` makes `Dir.list d` and `Path.glob "d/*"` refuse; a captured
+  `Dir.deleteAll d` makes every read under `d` refuse), and a captured
+  op under a `within tmp` dir opened inside the plan (the dir is gone
+  before apply — build the content in memory, or do the tmp work
+  outside the plan).
   `apply` is NOT transactional: it stops at the first failing op with
   prior ops done, no rollback (that is the IaC line weir does not
   cross). `confirm` is your own branch on a Plan value, not a builtin.
@@ -1021,7 +1061,8 @@ print first
   collapses `Option<Option<T>>` to `Option<T>`. `Path.tempRoot ()` only
   READS where temp lives (it creates nothing, but `pure` counts it a
   filesystem touch and refuses it, as it refuses `Path.glob`);
-  `Path.newTempDir ()` CREATES (cleanup is yours —
+  `Path.newTempDir ()` CREATES (owner-only, 0700, like `within tmp`'s
+  dir and `within proc`'s spill files [D:private-temp]; cleanup is yours —
   `within tmp` is the scoped-cleanup spelling). Binding a `newTempDir`
   then `Dir.delete`/`Dir.deleteAll`-ing it in the same scope is a
   checker WARNING [D:newtempdir-lint] pointing at `within tmp` (which
@@ -1308,12 +1349,17 @@ print x
   convention: `let c = Env.ofPairs [("FORCE_COLOR", "1")]` then
   `$c(cmd | complete)` — per-tool foreign conventions, deliberately
   not a weir feature.
-- At the REPL, `^C` during a foreground child is a group SIGINT
-  [D:repl-isig]: the child dies, the error names exit 130 (the script
-  path's exact message), and the SESSION returns to the prompt. At an
-  idle prompt `^C` clears the line. `^C` during a pure computation (no
-  child) interrupts nothing — the byte waits and clears the next
-  prompt.
+- At the REPL, `^C` stops what the evaluation is WAITING on and the
+  SESSION returns to the prompt with `↳ exit 130 (SIGINT —
+  interrupted/cancelled)` [D:repl-isig] [D:repl-interrupt]: a
+  foreground child dies of the group SIGINT (the script path's exact
+  message), and a wait weir owns — `Duration.sleep`, a `poll`
+  interval, a `retry` delay, a `within lock` acquire, `Proc.wait`, an
+  Http request — is cut where it stands (in a `pmap`/`piter` arm
+  too). `within`'s scopes close as on any raise; an `always` block
+  runs as written unless `^C` is pressed again. At an idle prompt
+  `^C` clears the line. Pure computation is not interrupted: it runs
+  to its next wait, which then stops.
 - A REPL foreground child hung reading stdin ends with `^D^D`: the
   first `^D` delivers the partial line (icanon's delimiter — a
   mid-line `^D` is NOT EOF), the second at the now-empty line is EOF.
@@ -1675,7 +1721,7 @@ type Bad = C of int
   ONE object; an empty mapping writes `[]` and reads back empty),
   a `Map<string, T>` of one, or an opaque `Yaml` node — any subtree
   read whole (JSON is a YAML subset: object -> `YMap` in document
-  order, `null` -> `YNull`) and written back as the JSON it denotes
+  order, a repeated key last-wins, `null` -> `YNull`) and written back as the JSON it denotes
   [D:json-yaml-field] — so `{ entityids: Entity }`,
   `{ items: seq<Item> }`, `{ labels: seq<string * string> }`, and an
   ID-keyed `{ documents: Map<string, Doc> }` all read. A `Map`'s keys are DATA, not schema, and strings
@@ -1780,7 +1826,12 @@ type Bad = C of int
   user-owned decl-only module at `.weir/types/<name>.weir` from the
   locked schema, where `required` decides plain-vs-`Option`,
   `additionalProperties` becomes the `seq<string * V>` mapping, and
-  `$ref` definition names become type names; import it with
+  `$ref` definition names become type names; an int-or-string field
+  (a k8s port) drafts `Yaml` (8080 stays `YInt`, `"25%"` `YStr`), an
+  integer `enum` drafts `int`; validation keywords (`minLength`,
+  `pattern`, `minimum`, `maxItems`, `uniqueItems`, `readOnly`, …) are
+  accepted but NOT enforced — each gets a `// note: not enforced:`
+  line; import it with
   `import "weir:<name>" as X` (type names resolve bare in the
   adapter slot). `from table` stays the tier for tools with no
   schema at all. The generated file is yours — regeneration is an
@@ -1861,7 +1912,8 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   the YAML field law (records, seqs, `Option`, `[<Wire "key">]`,
   codecs); `seq`/`stream`/`Map` tops refuse (the document is a table).
   Arrays of tables (`[[bin]]`) are `seq<record>`. A date/time reads as
-  its TEXT (`[<Iso8601>]` takes an offset date-time into `Instant`);
+  its TEXT (`[<Iso8601>]` takes an offset date-time into `Instant`; a
+  local date-time, date or time has no offset and refuses there);
   `inf`/`nan` parse but refuse into a `float` field. Duplicate keys and
   re-defined tables are located errors. No `to toml`.
 - XML is a READ-ONLY typed boundary [D:from-xml]: `from xml T` reads
@@ -2232,7 +2284,8 @@ print (f 1)
   the third spelling — a lexical `..`/`.` collapse (no filesystem
   touch, no cwd, symlinks never followed) for the legitimate escape
   both siblings decline: combine keeps `..`, under raises. A relative
-  path keeps its leading `..`s; at an absolute root `..` swallows.
+  path keeps its leading `..`s; at an absolute root `..` swallows
+  (on Windows a drive root `C:/` is a root too: `C:/../y` is `C:/y`).
   `under` is purely
   TEXTUAL — it confines the PATH, never the resolved target, so a
   symlink inside `base` pointing out is textually under and is NOT
@@ -2252,7 +2305,10 @@ print (f 1)
   echo relative and resolve against the cwd AT ENUMERATION —
   `|> Seq.freeze` pins the answer before a `cd`. No matches = the
   empty seq (`match ... with | [] -> fail "no matches"`).
-  Unreadable dirs skip (discovery, not assertion).
+  Unreadable dirs skip (discovery, not assertion). On Windows `\`
+  separates too (never a class member there) and a `C:/`,
+  `\\host\share` or leading-separator prefix roots the pattern, so
+  `Path.glob (Path.combine d "*.txt")` works; matches are shown with `/`.
 - Editor mode-coloring (LSP semantic tokens) is for humans — agents
   read `weir check`; colors carry no information the checker does
   not already report.
@@ -2323,7 +2379,8 @@ print (f 1)
   the subcommand slot are check errors. STRICT: unknown flags (did-you-mean), unexpected
   arguments, repeats, missing requireds — all collected into ONE
   boundary error. A value is the NEXT argument (`--out x`; `--out=x`
-  is refused, teaching the spaced form). `--help` prints derived usage (short truth +
+  is refused, teaching the spaced form; the message never repeats the
+  value of a `Secret` field or of an unknown flag). `--help` prints derived usage (short truth +
   the `///` doc's first line), exit 0, even on invalid invocations; a
   field deriving `--help` is a check error (reserved). No
   positionals — spell operands as flags. The untyped floor:
@@ -2470,7 +2527,10 @@ print $"exit={r.exitCode}"
   `NAME=value cmd` prefix stays that one command's. Inside the block
   weir's own reads see the overlay too — `Env.get`/`Env.vars`/`Env.load`
   [D:env-overlay-read], as `pwd` sees `within cd`; the process env
-  itself is never written.
+  itself is never written. A key that is empty or holds `=` or NUL is
+  refused where it is built — `Env.pair`, `Env.ofPairs`, `within env`,
+  `$e(…)` — naming the key [D:env-key-refusal] (the child would read
+  `FOO=BAR` as the variable `FOO`).
 - The env capture sigil `$e(...)` (ident GLUED to glyph and paren)
   injects child-env into every spawn in the captured chain (overlay:
   set those names, inherit the rest; parent untouched). `Env.fromFile "x.env"`
@@ -2560,7 +2620,10 @@ let port = match Some 8080 with | Some p -> p | None -> fail "absent"
 print (show port)
 ```
 - `printerr` is `print` to stderr (same argument rule) — diagnostics
-  there, data on stdout, so `weir script | next` stays clean.
+  there, data on stdout, so `weir script | next` stays clean. Like
+  `print`, at a tty it neutralizes terminal-driving escapes in the
+  text (so do `Log.*`, the `Self.prompt` message and the `-e` echo);
+  redirected, the bytes pass unchanged.
 - `Log.trace/debug/info/warn "msg"` — levelled diagnostics, ALWAYS to
   stderr (stdout is data; there is no stream knob). `WEIR_LOG=level`
   selects (`trace|debug|info|warn|off`; default `info`; invalid
@@ -2614,7 +2677,7 @@ not the teaching.
 - `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move` `stat`
 - `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
 - `Env`: `fromFile` `get` `getOr` `load` `need` `ofPairs` `pair` `vars`
-- `File`: `append` `copy` `delete` `exists` `isExecutable` `mode` `move` `read` `readBytes` `readSecret` `sha256` `size` `stat` `write` `writeAtomic` `writeBytes` — `mode` is the permissions as `Some "rwxr-xr-x"` (`None` on Windows); `stat` is one path's `FileRow` (a symlink describes the link itself); `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity]
+- `File`: `append` `copy` `delete` `exists` `isExecutable` `mode` `move` `read` `readBytes` `readSecret` `sha256` `size` `stat` `write` `writeAtomic` `writeBytes` — `mode` is the permissions as `Some "rwxr-xr-x"` (`None` on Windows); `stat` is one path's `FileRow` (a symlink describes the link itself); `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity] — the temp file is born with that mode, so a 0600 file's new content is never readable wider [D:private-temp]
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Uuid`: `fromBytes` `instant` `max` `nil` `ns` `parse` `toBytes` `toString` `tryParse` `v4` `v5` `v7` `v7At` `version`
@@ -2661,7 +2724,7 @@ the checker's own environment [D:surface-gate] — same contract as above:
 - type `HttpResponse`: { `status` `headers` `body` }
 - type `HttpServerRequest`: { `method` `path` `query` `headers` `body` }
 - type `HttpServerResponse`: { `status` `headers` `body` }
-- type `Op`: `WriteFile` `DeleteFile` `Copy` `Move` `CopyDir` `MoveDir` `MakeDir` `DeleteDir` `DeleteTree` `HttpSend`
+- type `Op`: `WriteFile` `WriteFileAtomic` `DeleteFile` `Copy` `Move` `CopyDir` `MoveDir` `MakeDir` `DeleteDir` `DeleteTree` `HttpSend`
 - type `Option`: `Some` `None`
 - type `Poll`: { `timeout` `interval` }
 - type `PromptStatus`: { `ok` `exit` }

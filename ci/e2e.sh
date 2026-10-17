@@ -192,6 +192,17 @@ WEOF
 fout=$($BIN check "$redir/forced.weir" 2>&1) || fail "forced must check clean: $fout"
 echo "$fout" | grep -q "re-enumeration" && fail "a forced binding must not warn: $fout" || true
 echo "e2e ok: re-enumeration warning on the second pull, exit 0; Seq.freeze silences it"
+# [D:reenum-forced-call]: a call of a function that freezes is a snapshot
+cat > "$redir/fcall.weir" <<'WEOF'
+let files = git ls-files
+let snap () = files |> Seq.freeze
+let a = snap ()
+print $"{a |> Seq.length}"
+a |> Seq.iter print
+WEOF
+fout=$($BIN check "$redir/fcall.weir" 2>&1) || fail "fcall must check clean: $fout"
+echo "$fout" | grep -q "re-enumeration" && fail "a frozen call result must not warn: $fout" || true
+echo "e2e ok: re-enumeration — a call of a freezing function carries nothing"
 
 # walk candidates: exit codes exact; File.readSecret (never covered); Dir.copy success
 pw2=$(mkweirtmp)
@@ -311,6 +322,14 @@ else
     now_ms() { echo $(($(date +%s%N) / 1000000)); }
 fi
 
+# every python3 here loads ci/py/sitecustomize.py: a local HTTPServer
+# resolves its own FQDN between bind and listen, which a macOS runner
+# answers in ~35s while awaitTcp waits
+pyfix="$PWD/ci/py"
+command -v cygpath >/dev/null 2>&1 && pyfix=$(cygpath -w "$pyfix")
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) pysep=';' ;; *) pysep=':' ;; esac
+export PYTHONPATH="$pyfix${PYTHONPATH:+$pysep$PYTHONPATH}"
+
 # macOS ships no GNU timeout — a background-watchdog polyfill (same
 # contract: run the command, kill it after N seconds, nonzero on kill).
 # `<&0` keeps the caller's stdin: without job control an `&` command's
@@ -322,10 +341,14 @@ if ! command -v timeout >/dev/null 2>&1; then
         shift
         "$@" <&0 &
         local pid=$!
+        # the watchdog's sleep dies with it and holds no caller fd: a
+        # surviving sleep kept a `$(timeout N …)` open for the full N
         (
-            sleep "$secs"
+            trap 'kill $! 2>/dev/null; exit 0' TERM
+            sleep "$secs" &
+            wait $!
             kill -9 "$pid" 2>/dev/null || true
-        ) &
+        ) >/dev/null 2>&1 &
         local wd=$!
         local rc=0
         wait "$pid" || rc=$?
@@ -2772,6 +2795,24 @@ fi
 rm -rf "$aadir"
 echo "e2e ok: always after any within — cleanup inside the scope on every exit path; cd/env/lock/proc held"
 
+# [D:within-always]: an indented bare within/always, then a sibling statement
+wadir=$(mkweirtmp)
+cat > "$wadir/body.weir" <<'WEOF'
+let f () =
+    within
+        print "body"
+    always
+        print "cleanup"
+    print "after"
+f ()
+WEOF
+out=$($BIN "$wadir/body.weir" 2>&1) || fail "an indented within/always + statement must run: $out"
+[ "$out" = "body
+cleanup
+after" ] || fail "body, cleanup, after: $out"
+rm -rf "$wadir"
+echo "e2e ok: an indented within … always followed by a statement assembles and runs"
+
 # ---- within env NAME=value [D:within-env-pairs] ----------------------------
 # the env-prefix words scope a block; a body line's own prefix stays its
 # command's (the head joins sentineled); the parent stays clean
@@ -2817,7 +2858,8 @@ always
 WEOF
     $BIN check "$dtdir/detached.weir" >/dev/null 2>&1 || fail "detached-signal probe must check"
 
-    for pair in "INT:130" "TERM:143"; do
+    # SIGHUP joins them [D:sighup-teardown]: a closed terminal or kill -HUP
+    for pair in "INT:130" "TERM:143" "HUP:129"; do
         sig="${pair%%:*}"; want="${pair##*:}"
         M="$dtdir/marker-$sig"
         rm -f "$M"
@@ -2843,24 +2885,46 @@ WEOF
         [ "$left" = "0" ] || fail "detached SIG$sig must reap the scoped child (orphans left: $left)"
         pkill -f "sleep $MK1\$" 2>/dev/null || true
     done
-    echo "e2e ok: detached SIGINT/SIGTERM tear down — always cleanup runs, child reaped, exit 130/143"
+    echo "e2e ok: detached SIGINT/SIGTERM/SIGHUP tear down — always cleanup runs, child reaped, exit 130/143/129"
+
+    # an inherited SIGHUP ignore (nohup) is honoured [D:sighup-teardown]:
+    # the HUP does nothing, a TERM still tears down
+    M="$dtdir/marker-nohup"
+    rm -f "$M"
+    pkill -f "sleep $MK1\$" 2>/dev/null || true
+    setsid sh -c 'trap "" HUP; exec "$0" "$@"' "$BIN" "$dtdir/detached.weir" "$M" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    for _ in $(seq 1 40); do pgrep -f "sleep $MK1\$" >/dev/null 2>&1 && break; sleep 0.2; done
+    kill -HUP "$wpid" 2>/dev/null || true
+    sleep 1
+    kill -0 "$wpid" 2>/dev/null || fail "nohup: an ignored SIGHUP must not stop weir"
+    [ -f "$M" ] && fail "nohup: an ignored SIGHUP must not run the cleanup"
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" 2>/dev/null || code=$?
+    [ "$code" = "143" ] || fail "nohup: SIGTERM must still tear down (got $code)"
+    [ "$(cat "$M" 2>/dev/null)" = "cleaned-up" ] || fail "nohup: SIGTERM must run the always cleanup"
+    pkill -f "sleep $MK1\$" 2>/dev/null || true
+    echo "e2e ok: an inherited SIGHUP ignore (nohup) is honoured; SIGTERM still tears down"
 
     # a pid-targeted SIGTERM tree-kills the FOREGROUND child too
     # [D:signal-main-unwind]: `timeout`/`docker stop` signal weir alone; an
     # unregistered foreground child outlived it, reparented to init
     printf 'sleep %s\n' "$MK3" > "$dtdir/fg.weir"
-    pkill -f "sleep $MK3\$" 2>/dev/null || true
-    setsid "$BIN" "$dtdir/fg.weir" </dev/null >/dev/null 2>&1 &
-    wpid=$!
-    for _ in $(seq 1 40); do pgrep -f "sleep $MK3\$" >/dev/null 2>&1 && break; sleep 0.2; done
-    kill -TERM "$wpid" 2>/dev/null || true
-    code=0; wait "$wpid" 2>/dev/null || code=$?
-    [ "$code" = "143" ] || fail "SIGTERM to weir with a foreground child must exit 143 (got $code)"
-    sleep 0.3
-    left=$(pgrep -cf "sleep $MK3\$" 2>/dev/null || true); left=${left:-0}
-    pkill -f "sleep $MK3\$" 2>/dev/null || true
-    [ "$left" = "0" ] || fail "SIGTERM to weir must tree-kill its foreground child (orphans left: $left)"
-    echo "e2e ok: SIGTERM to weir's pid reaps the foreground child"
+    for pair in "TERM:143" "HUP:129"; do
+        sig="${pair%%:*}"; want="${pair##*:}"
+        pkill -f "sleep $MK3\$" 2>/dev/null || true
+        setsid "$BIN" "$dtdir/fg.weir" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        for _ in $(seq 1 40); do pgrep -f "sleep $MK3\$" >/dev/null 2>&1 && break; sleep 0.2; done
+        kill -"$sig" "$wpid" 2>/dev/null || true
+        code=0; wait "$wpid" 2>/dev/null || code=$?
+        [ "$code" = "$want" ] || fail "SIG$sig to weir with a foreground child must exit $want (got $code)"
+        sleep 0.3
+        left=$(pgrep -cf "sleep $MK3\$" 2>/dev/null || true); left=${left:-0}
+        pkill -f "sleep $MK3\$" 2>/dev/null || true
+        [ "$left" = "0" ] || fail "SIG$sig to weir must tree-kill its foreground child (orphans left: $left)"
+    done
+    echo "e2e ok: SIGTERM/SIGHUP to weir's pid reaps the foreground child"
 
     # ...and every pmap worker's tree, exactly once, after spawning stops
     # [D:signal-main-unwind]: the kill raced the exit (a SIGSTOPped
@@ -2972,6 +3036,76 @@ WEOF
         done
     done
     echo "e2e ok: a signal unwinds on the main thread — no statement after it, always runs, sleeps wake"
+
+    # the teardown stops the body's spawns, never a cleanup's
+    # [D:teardown-always-spawns]: commands (and a fan-out) inside `always`
+    # run on SIGINT/SIGTERM
+    cat > "$dtdir/alcmd.weir" <<'WEOF'
+let marker = Self.args |> Seq.head
+within
+    Duration.sleep 60s
+always
+    let n = [1; 2; 3] |> Seq.pmap (fun i -> echo $i | line) |> Seq.length
+    let m = $"{marker}-{n}"
+    touch $m
+WEOF
+    for pair in "INT:130" "TERM:143"; do
+        sig="${pair%%:*}"; want="${pair##*:}"
+        M="$dtdir/alcmd-$sig"
+        rm -f "$M-3"
+        setsid "$BIN" "$dtdir/alcmd.weir" "$M" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        sleep 1
+        kill -"$sig" "$wpid" 2>/dev/null || true
+        code=0; wait "$wpid" 2>/dev/null || code=$?
+        [ "$code" = "$want" ] || fail "always-cmd: SIG$sig must exit $want (got $code)"
+        [ -f "$M-3" ] || fail "always-cmd: SIG$sig must run the always block's commands and fan-out"
+    done
+    echo "e2e ok: on SIGINT/SIGTERM the always block's commands and fan-out run"
+
+    # a teardown stops parallel workers taking arms [D:teardown-stops-arms]:
+    # after SIGTERM no new piter arm starts, and no scoped spill dir leaks
+    cat > "$dtdir/arms.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within
+    [1..100000] |> Seq.piterWith 16 (fun i ->
+        Duration.sleep 10ms
+        File.append log [$"arm {i}"])
+always
+    let a = File.read log |> Seq.length
+    Duration.sleep 1s
+    let b = File.read log |> Seq.length
+    [$"{b - a}"] |> File.write $"{log}.grew"
+WEOF
+    cat > "$dtdir/spill.weir" <<WEOF
+[1..5000] |> Seq.piterWith 16 (fun i ->
+    within proc p = sleep $MK4
+        Duration.sleep 1ms)
+WEOF
+    rm -f "$dtdir/arms.log" "$dtdir/arms.log.grew"
+    setsid "$BIN" "$dtdir/arms.weir" "$dtdir/arms.log" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    sleep 1
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" 2>/dev/null || code=$?
+    [ "$code" = "143" ] || fail "arms: SIGTERM must exit 143 (got $code)"
+    grew=$(cat "$dtdir/arms.log.grew" 2>/dev/null || echo missing)
+    [ "$grew" -le 16 ] 2>/dev/null || fail "arms: piter kept taking arms after SIGTERM (grew: $grew)"
+    sptmp="$dtdir/spilltmp"
+    mkdir -p "$sptmp"
+    pkill -9 -f "^sleep $MK4\$" 2>/dev/null || true
+    TMPDIR="$sptmp" setsid "$BIN" "$dtdir/spill.weir" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    sleep 1
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" 2>/dev/null || code=$?
+    [ "$code" = "143" ] || fail "spill: SIGTERM must exit 143 (got $code)"
+    sleep 0.3
+    leaked=$(find "$sptmp" -mindepth 1 -maxdepth 1 | wc -l)
+    left=$(pgrep -cf "^sleep $MK4\$" 2>/dev/null || true); left=${left:-0}
+    pkill -9 -f "^sleep $MK4\$" 2>/dev/null || true
+    [ "$leaked" = "0" ] && [ "$left" = "0" ] || fail "spill: SIGTERM leaked $leaked weir-proc dir(s), $left orphan(s)"
+    echo "e2e ok: a teardown stops piter taking arms; no spill dir or child leaks"
 else
     echo "e2e skip: detached-signal pins (POSIX + setsid + pgrep)"
 fi
@@ -3431,6 +3565,62 @@ SCN
     [ -n "$gdir" ] || fail "the probe must capture the tmp dir path: $gout"
     [ ! -d "$gdir" ] || fail "the scope exit must still remove its dir: $gdir"
     echo "e2e ok: the sweep gate — a survived ^C leaves the live tmp dir; the scope's own exit removes it"
+
+    # ^C cuts a wait the runtime owns [D:repl-interrupt]: a sleep, a poll
+    # interval, a contended lock — each returns to the prompt with the
+    # ^C'd child's status; an `always` cleanup still runs
+    wdir=$(mkweirtmp)
+    touch "$wdir/held.lock"
+    cat > "$wdir/wait.scn" <<SCN
+SLEEP 700
+SEND Duration.sleep 30s\r
+SLEEP 800
+SEND \x03
+SLEEP 500
+SEND poll timeout=60s interval=30s\x1b\r
+SLEEP 150
+SEND     false\r
+SLEEP 800
+SEND \x03
+SLEEP 500
+SEND within lock "$wdir/held.lock"\x1b\r
+SLEEP 150
+SEND     print (Str.toUpper "acquired")\r
+SLEEP 800
+SEND \x03
+SLEEP 500
+SEND within\x1b\r
+SLEEP 150
+SEND     Duration.sleep 30s\x1b\r
+SLEEP 150
+SEND always\x1b\r
+SLEEP 150
+SEND     print (Str.toUpper "cleanup-ran")\r
+SLEEP 800
+SEND \x03
+SLEEP 500
+SEND print (Str.toUpper "still-here")\r
+SLEEP 400
+SEND #quit\r
+SCN
+    if command -v flock >/dev/null 2>&1; then
+        flock "$wdir/held.lock" sleep 30 &
+        lockpid=$!
+        sleep 0.3
+        wstart=$(date +%s)
+        wout=$(python3 "$ptyrun" 25 "$BIN" < "$wdir/wait.scn" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
+        wend=$(date +%s)
+        kill "$lockpid" 2>/dev/null || true
+        n130=$(echo "$wout" | grep -c "exit 130 (SIGINT")
+        [ "$n130" = "4" ] || fail "each ^C'd wait must return with exit 130 (got $n130): $wout"
+        echo "$wout" | grep -q "ACQUIRED" && fail "the contended lock must not be acquired: $wout"
+        echo "$wout" | grep -q "CLEANUP-RAN" || fail "the always cleanup runs after a ^C'd wait: $wout"
+        echo "$wout" | grep -q "STILL-HERE" || fail "the session survives the ^C'd waits: $wout"
+        [ $((wend - wstart)) -lt 20 ] || fail "the ^C'd waits must not run out their 30s: $((wend - wstart))s"
+        echo "e2e ok: REPL ^C cuts a sleep, a poll interval and a lock acquire; always still runs"
+    else
+        echo "e2e skip: REPL ^C wait pins (flock(1))"
+    fi
 else
     echo "e2e skip: REPL SIGINT pty pins (POSIX + python3)"
 fi
@@ -5100,8 +5290,38 @@ expect "from toml: arrays of tables" "cli,srv" "$out"
 expect "from toml: [<Wire>] and [<Iso8601>]" ">=3.11 2024-03-01T10:00:00Z" "$out"
 terr=$(cd "$tdir" && $BIN -e 'File.read "dup.toml" |> from toml {| a: int |} |> _.a |> show |> print' 2>&1) && fail "a duplicate key must fail: $terr" || true
 echo "$terr" | grep -qF "from toml: line 3: the key 'a' is defined twice" || fail "the duplicate key is located: $terr"
-echo "e2e ok: from toml — Cargo/pyproject on disk, Wire, Iso8601, located duplicate key"
+# [D:toml-local-instant]: an offset-less datetime names no instant
+lerr=$($BIN -e '["start = 2024-03-01T10:00:00"] |> from toml {| start: string |} |> _.start |> print' 2>&1) || fail "a local date-time reads into a string: $lerr"
+[ "$lerr" = "2024-03-01T10:00:00" ] || fail "the string keeps the text: $lerr"
+printf 'type LR = { [<Iso8601>] start: Instant }\nlet r = ["start = 2024-03-01T10:00:00"] |> from toml LR\nprint $"{r.start}"\n' > "$tdir/local.weir"
+lerr=$($BIN "$tdir/local.weir" 2>&1) && fail "a local date-time into an Instant must refuse: $lerr" || true
+echo "$lerr" | grep -qF "from toml: line 1: 2024-03-01T10:00:00 is a local date-time" || fail "the local date-time refusal: $lerr"
+echo "e2e ok: from toml — Cargo/pyproject on disk, Wire, Iso8601, located duplicate key, a local date-time refuses an Instant"
 rm -rf "$tdir"
+
+# [D:json-depth] [D:json-yaml-dupkeys]: a valid document past 64 levels
+# reads; past 100 it names the depth; a repeated key into a Yaml node
+# last-wins, so to yaml writes YAML weir reads back
+jdir=$(mkweirtmp)
+python3 -I - "$jdir" <<'PYEOF'
+import sys
+d = lambda n: '{\\"a\\":' * n + '1' + '}' * n
+for n in (65, 101):
+    open(sys.argv[1] + '/d%d.weir' % n, 'w').write('type N = { a: Yaml }\nlet _r = ["' + d(n) + '"] |> from json N\nprint "read"\n')
+PYEOF
+out=$($BIN "$jdir/d65.weir" 2>&1) || fail "a 65-deep JSON document must read: $out"
+[ "$out" = "read" ] || fail "the 65-deep read: $out"
+out=$($BIN "$jdir/d101.weir" 2>&1) && fail "a 101-deep document must refuse" || true
+echo "$out" | grep -qF "valid JSON, but it nests deeper than 100 levels" || fail "the depth is named: $out"
+cat > "$jdir/dup.weir" <<'WEOF'
+type R = { v: Yaml }
+let r = ["{\"v\": {\"a\": 1, \"b\": 2, \"a\": 3}}"] |> from json R
+r |> to yaml |> from yaml R |> to json |> Seq.iter print
+WEOF
+out=$($BIN "$jdir/dup.weir" 2>&1) || fail "a repeated key into Yaml must round-trip: $out"
+[ "$out" = '{"v":{"a":3,"b":2}}' ] || fail "last value, first position: $out"
+rm -rf "$jdir"
+echo "e2e ok: from json — 65-deep reads, 101-deep names the depth, a repeated key into Yaml last-wins"
 
 # |> try [D:try-form]: a failure as a value — a real missing file and a
 # malformed document become None / Error; exit passes through the capture
@@ -5905,7 +6125,17 @@ got=$($BIN "$odir/eq.weir" --target=prod --verbose=yes 2>&1 | tail -1 | sed 's/^
 got=$($BIN "$odir/sh.weir" --level 1 push --remote=o --depth 2 2>&1 | tail -1 | sed 's/^.*error: //' || true)
 [ "$got" = "Args.load Cli: unknown flag '--remote=o' — a flag's value is the next argument: write '--remote o'; missing required flag '--remote'" ] \
     || fail "--name=value teaching (shared twin): $got"
-echo "e2e ok: --name=value teaches '--name value'; a presence flag takes no value"
+# a Secret field's value is never echoed, nor an unknown flag's
+# [D:args-secret-echo]
+cat > "$odir/sec.weir" <<'WEOF'
+type Cli = { token: Secret; port: int }
+let cli = Args.load Cli
+print (show cli)
+WEOF
+got=$($BIN "$odir/sec.weir" --token=e2e-hunter2 --tokn=e2e-hunter3 --port 1 2>&1 | tail -1 | sed 's/^.*error: //' || true)
+[ "$got" = "Args.load Cli: unknown flag '--token=***' — a flag's value is the next argument: write '--token <value>'; unknown flag '--tokn=…'. Did you mean '--token'?; missing required flag '--token'" ] \
+    || fail "--secret=value must not echo the value: $got"
+echo "e2e ok: --name=value teaches '--name value'; a presence flag takes no value; a Secret's or unknown flag's value is never echoed"
 rm -rf "$odir"
 
 out=$($BIN "$tadir/cli.weir" --bogus --help); rc=$?
@@ -8801,6 +9031,13 @@ awaitHttp "http://127.0.0.1:$gtport/pod-v1-trimmed.json" || { kill $gtsrv 2>/dev
 # anyOf IntOrString, nullable, x-kubernetes-*) vendors clean
 ( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/pod-v1-trimmed.json --as pod ) | grep -q "added schema pod" || fail "add schema on the ref-heavy pod fixture"
 ( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/scalar.json --as scalar ) >/dev/null || fail "add schema scalar"
+# [D:schema-validation-keys] [D:schema-int-or-string] [D:schema-int-enum]:
+# validation keywords vendor; int-or-string and an integer enum draft
+# types the document's own values read into
+cat > "$gtdir/serve/svc.json" <<'JEOF'
+{"type":"object","$comment":"c","required":["level"],"properties":{"name":{"type":"string","minLength":1,"pattern":"^a"},"port":{"anyOf":[{"type":"integer"},{"type":"string"}],"x-kubernetes-int-or-string":true},"level":{"type":"integer","enum":[1,2,3]},"tags":{"type":"array","items":{"type":"string"},"maxItems":3,"uniqueItems":true}}}
+JEOF
+( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/svc.json --as svc ) >/dev/null || fail "add schema over validation keywords"
 kill $gtsrv 2>/dev/null || true
 wait $gtsrv 2>/dev/null || true
 
@@ -8878,6 +9115,24 @@ echo "$out" | grep -qF "no locked schema 'nope' — add it: weir add schema <url
 out=$( cd "$gtdir/proj" && $BIN gen types --schema pod --as lowercase 2>&1 ) && fail "a lowercase --as must refuse" || true
 echo "$out" | grep -qF "must be a type name: an uppercase letter first" || fail "--as teaches the type-name rule: $out"
 echo "e2e ok: gen types refusals — scalar top, unlocked name, lowercase --as"
+
+( cd "$gtdir/proj" && $BIN gen types --schema svc ) >/dev/null || fail "gen types svc"
+svcmod="$gtdir/proj/.weir/types/svc.weir"
+grep -qF "port: Option<Yaml>" "$svcmod" || fail "int-or-string drafts Yaml: $(cat "$svcmod")"
+grep -qF "level: int" "$svcmod" || fail "an integer enum drafts int: $(cat "$svcmod")"
+grep -qF "// note: not enforced: minLength on name" "$svcmod" || fail "the minLength note: $(cat "$svcmod")"
+grep -qF "// note: not enforced: uniqueItems on tags" "$svcmod" || fail "the uniqueItems note: $(cat "$svcmod")"
+cat > "$gtdir/proj/svc.weir" <<'WEOF'
+import "weir:svc" as S
+let j = ["{\"port\": 8080, \"level\": 2}"] |> from json Svc
+j |> to json |> Seq.iter print
+let y = ["port: 8080"; "level: 1"] |> from yaml Svc
+y |> to yaml |> Seq.iter print
+WEOF
+out=$( cd "$gtdir/proj" && $BIN svc.weir 2>&1 ) || fail "the svc types read json and yaml: $out"
+echo "$out" | grep -qF '"port":8080' || fail "json keeps 8080 an int: $out"
+echo "$out" | grep -qxF "port: 8080" || fail "yaml writes 8080 unquoted: $out"
+echo "e2e ok: gen types — validation keywords noted, int-or-string as Yaml, an integer enum as int"
 
 # --out -: stdout, nothing written; --as renames the top type
 ( cd "$gtdir/proj" && $BIN gen types --schema pod --as Manifest --out - ) | grep -qF "type Manifest = {" || fail "--as + --out - streams the renamed module"
@@ -9067,6 +9322,14 @@ out=$($BIN "$indir/slice.weir") || fail "log-slice acceptance failed: $out"
 printf 'type TR = { t: Instant }\nlet x = [""] |> from json TR\n' > "$indir/jr.weir"
 out=$($BIN "$indir/jr.weir" 2>&1) && fail "an Instant json field must refuse" || true
 echo "$out" | grep -qF "Instant.epochMs into an int field" || fail "the refusal names the conversions: $out"
+
+# [D:instant-plus-infer]: Instant + an unknown infers the unknown as a Duration
+printf 'let at d = Instant.now () + d\nlet f a b = a + b + Instant.now ()\nprint $"{at 5m > f 1s 2s}"\n' > "$indir/pu.weir"
+out=$($BIN "$indir/pu.weir" 2>&1) || fail "Instant + an unknown must infer a Duration: $out"
+[ "$out" = "true" ] || fail "the inferred shifts run: $out"
+printf 'let t = Instant.now ()\nprint $"{t + t}"\n' > "$indir/pp.weir"
+out=$($BIN check "$indir/pp.weir" 2>&1) && fail "two Instants must not add" || true
+echo "$out" | grep -qF "two points don't add" || fail "two real points keep the teaching: $out"
 
 rm -rf "$indir"
 echo "e2e ok: Instant (cert-expiry via openssl enddate, log slicing by cutoff, JSON refusal teaches)"
@@ -9260,6 +9523,10 @@ aout=$($BIN "$candir/argsinline.weir" -v --out x 2>&1) || fail "inline Args.load
 [ "$aout" = "true Some \"x\"" ] || fail "inline Args.load values: $aout"
 $BIN "$candir/argsinline.weir" --help 2>&1 | grep -qF -- "--verbose" || fail "inline Args.load derives --help"
 echo "e2e ok: Env.need/getOr and inline Env.load/Args.load — values, located need failure, --can names, --help"
+printf 'let e = Env.load {| DUP_X: string; DUP_X: int |}\nprint e.DUP_X\n' > "$candir/envdup.weir"
+dout=$($BIN check "$candir/envdup.weir" 2>&1) && fail "a duplicate inline field must refuse at check: $dout" || true
+echo "$dout" | grep -qF "duplicate field 'DUP_X' in the anonymous record" || fail "the duplicate is named: $dout"
+echo "e2e ok: inline Env.load refuses a duplicate field at check"
 
 # --strict: opaque sites become a distinct nonzero for CI's choosing
 strictrc=0
@@ -9278,6 +9545,26 @@ kinds = {c["kind"] for c in d["capabilities"]}
 assert {"runs", "opaque", "write", "network", "secret-argv", "secret-load"} <= kinds, kinds
 assert all("file" in c and "line" in c and "col" in c for c in d["capabilities"])
 PYCAN
+
+# a Secret in a reified command's argv is reported like the plain
+# statement's [D:can-secret-reifier]
+cat > "$candir/secreif.weir" <<'WEOF'
+let s = Secret.of "x"
+let a = printf "%s" $s | complete
+let b = printf "%s" $s | line
+let c = printf "%s" $s | succeeds
+let e = printf "%s" $s | exitCode
+let t = printf "%s" $s | text
+printf "%s" $s | orFail "m"
+print $"{a.exitCode} {b} {c} {e} {t}"
+WEOF
+$BIN check --can --json "$candir/secreif.weir" > "$candir/secreif.json" 2>&1 || fail "--json failed on the reifier script"
+python3 - "$candir/secreif.json" <<'PYSR' || fail "every reifier's Secret argv is reported"
+import json, sys
+d = json.load(open(sys.argv[1]))
+lines = sorted(c["line"] for c in d["capabilities"] if c["kind"] == "secret-argv")
+assert lines == [2, 3, 4, 5, 6, 7], lines
+PYSR
 
 # a check failure suppresses the report (reporting on what cannot run)
 printf 'let x = 1 + "a"\n' > "$candir/bad.weir"
@@ -9470,8 +9757,8 @@ rm -rf "$isdir"
 echo "e2e ok: if cmd | succeeds then (inline if/elif, bind-first kept, argv-then positional, checker demands bool)"
 
 # ---- Seq.pfirst [D:seq-pfirst]: the race -----------------------------------
-# the winner returns without joining the losers, and a loser's spawned
-# tree dies: its `sleep 2 && touch marker` orphan would fire at ~2s if
+# the winner returns once the losers stop [D:pfirst-join] — not when they
+# would have finished — and a loser's spawned tree dies: its `sleep 2 && touch marker` orphan would fire at ~2s if
 # the kill missed, so the absence check waits past that
 pfdir=$(mkweirtmp)
 cat > "$pfdir/pf.weir" <<'WEOF'
@@ -9497,6 +9784,30 @@ out=$(cat "$pfdir/pf.out")
 [ "$took" -lt 1800 ] || fail "pfirst waited for the loser (took ${took}ms; marker=$([ -e "$pfdir/marker" ] && echo present || echo absent))"
 sleep 2.5
 [ ! -e "$pfdir/marker" ] || fail "the loser's child survived the kill"
+
+# a pipe the kill cannot close [D:pfirst-join]: `(sleep 2 &)` reparents an
+# orphan that holds the loser's stdout — no tree kill reaches it — so a
+# loser reading to EOF would hold the race ~2s; the cut abandons the read
+# (statement, capture, chain capture, chain reifier)
+for body in 'sh -c "(sleep 2 &) ; sleep 3"' \
+    'let _n = sh -c "(sleep 2 &) ; sleep 3" |> Seq.length' \
+    'let _n = sh -c "(sleep 2 &) ; sleep 3" | cat |> Seq.length' \
+    'let _c = sh -c "(sleep 2 &) ; sleep 3" | cat | exitCode'; do
+    cat > "$pfdir/pforph.weir" <<WEOF
+let racer n =
+    if n == 1 then
+        $body
+        ()
+    Duration.sleep 200ms
+    n * 10
+print \$"winner: {[1; 2] |> Seq.pfirst racer}"
+WEOF
+    start_ms=$(now_ms)
+    $BIN "$pfdir/pforph.weir" > "$pfdir/pforph.out" 2>&1
+    took=$(( $(now_ms) - start_ms ))
+    [ "$(cat "$pfdir/pforph.out")" = "winner: 20" ] || fail "pfirst orphan-pipe winner ($body): $(cat "$pfdir/pforph.out")"
+    [ "$took" -lt 1800 ] || fail "pfirst waited on an orphan's pipe (took ${took}ms): $body"
+done
 
 # a scoped child joins its arm's race group too [D:seq-pfirst]: the spill
 # path spawns through the one starter, so `within proc` obeys the same
@@ -9530,6 +9841,31 @@ grep -qF "winner: 20" "$pfdir/pfproc.out" || fail "pfirst+proc winner: $(cat "$p
 [ -e "$pfdir/winner-ran" ] || fail "the WINNER's scoped child must run to completion"
 [ ! -e "$pfdir/loser-ran" ] || fail "the loser's SCOPED child survived the race kill"
 
+# the race joins its losers [D:pfirst-join]: a sleeping loser is cut, its
+# write never lands, and its `always` cleanup still runs before pfirst
+# returns
+cat > "$pfdir/pfjoin.weir" <<WEOF
+let racer n =
+    within
+        Duration.sleep (if n == 1 then 3s else 100ms)
+        [\$"body {n}"] |> File.append "$pfdir/join.log"
+        n
+    always
+        [\$"cleanup {n}"] |> File.append "$pfdir/join.log"
+let w = [1; 2] |> Seq.pfirst racer
+let log = File.read "$pfdir/join.log" |> Seq.sort |> Str.join ","
+print \$"winner: {w} log: {log}"
+WEOF
+start_ms=$(now_ms)
+jout=$($BIN "$pfdir/pfjoin.weir" 2>&1) || fail "pfirst join script failed: $jout"
+took=$(( $(now_ms) - start_ms ))
+[ "$jout" = "winner: 2 log: body 2,cleanup 1,cleanup 2" ] || fail "pfirst joins its losers (cut body, cleanup kept): $jout"
+[ "$took" -lt 2500 ] || fail "the loser's sleep must be cut, not waited out (took ${took}ms)"
+# exit n in an arm ends the race and the script [D:pfirst-join]
+xrc=0
+$BIN -e '[1; 2] |> Seq.pfirst (fun i -> match i with | 1 -> exit 3 ; 0 | _ -> Duration.sleep 300ms ; i)' >/dev/null 2>&1 || xrc=$?
+[ "$xrc" = "3" ] || fail "exit 3 in a pfirst arm must exit 3 (got $xrc)"
+
 out=$($BIN -e '[7; 8] |> Seq.pfirst (fun n -> match n with | 7 -> Duration.sleep 200ms ; fail "seven dies" | _ -> fail "eight dies")' 2>&1) && fail "all-failed must raise" || true
 echo "$out" | grep -qF "seven dies" || fail "first error by input order: $out"
 # empty raises and names the guard (reject-don't-guess full form) — pin the
@@ -9537,7 +9873,7 @@ echo "$out" | grep -qF "seven dies" || fail "first error by input order: $out"
 out=$($BIN -e '[] |> Seq.pfirst (fun n -> n)' 2>&1) && fail "empty must raise" || true
 echo "$out" | grep -qF "a race needs at least one arm" || fail "empty names Seq.isEmpty: $out"
 rm -rf "$pfdir"
-echo "e2e ok: Seq.pfirst (winner in ${took}ms, loser tree killed — bare AND scoped, winner's scoped child survives, first-by-order error, empty names the guard)"
+echo "e2e ok: Seq.pfirst (winner fast, loser tree killed — bare AND scoped, winner's scoped child survives, losers joined with cleanups kept, exit ends the race, first-by-order error, empty names the guard)"
 
 # a loser's within-tmp cleanup does run — the `finally` executes on the
 # loser's own (un-aborted) thread once its killed child fails; here the
@@ -11193,6 +11529,61 @@ out=$($BIN "$padir/kaa.weir" 2>&1) && fail "a known-after-apply read must refuse
 echo "$out" | grep -qF "known-after-apply" || fail "the known-after-apply teaching must fire: $out"
 echo "e2e ok: plan/apply — a known-after-apply read refuses (located)"
 
+# [D:plan-stale-reads]: every fs read is guarded — a listing after a
+# captured write inside it, a read under a captured deleteAll
+mkdir -p "$padir/sr/tree" && printf 't\n' > "$padir/sr/tree/f"
+cat > "$padir/sr1.weir" <<WEOF
+let p =
+    plan
+        File.write "$padir/sr/new.txt" ["n"]
+        print \$"{Path.glob "$padir/sr/*.txt" |> Seq.length}"
+print \$"{p |> Plan.isEmpty}"
+WEOF
+out=$($BIN "$padir/sr1.weir" 2>&1) && fail "a glob over a dir with a captured write must refuse" || true
+echo "$out" | grep -qF "Path.glob: known-after-apply" || fail "the glob refusal: $out"
+cat > "$padir/sr2.weir" <<WEOF
+let p =
+    plan
+        Dir.deleteAll "$padir/sr/tree"
+        print \$"{File.exists "$padir/sr/tree/f"}"
+print \$"{p |> Plan.isEmpty}"
+WEOF
+out=$($BIN "$padir/sr2.weir" 2>&1) && fail "File.exists under a captured deleteAll must refuse" || true
+echo "$out" | grep -qF "File.exists: known-after-apply" || fail "the exists refusal: $out"
+echo "e2e ok: plan/apply — stale reads refuse: a listing over a captured write, a read under a captured deleteAll"
+
+# [D:plan-within-tmp]: an op under a within tmp opened in the plan refuses
+# before anything applies
+cat > "$padir/wt.weir" <<WEOF
+let p =
+    plan
+        File.write "$padir/wt-first.txt" ["a"]
+        within tmp t
+            File.write \$"{t}/x" ["y"]
+p |> Plan.apply
+WEOF
+out=$($BIN "$padir/wt.weir" 2>&1) && fail "an op under a plan's within tmp must refuse" || true
+echo "$out" | grep -qF "opened inside the plan" || fail "the within-tmp refusal: $out"
+[ -f "$padir/wt-first.txt" ] && fail "nothing may apply after the refusal"
+echo "e2e ok: plan/apply — an op under a within tmp opened in the plan refuses, nothing applied"
+
+# [D:plan-writeatomic]: writeAtomic applies atomically — a hardlink keeps the old inode
+if [ "$IS_WINDOWS" != "1" ]; then
+    printf 'old\n' > "$padir/wa.txt" && ln "$padir/wa.txt" "$padir/wa-link.txt"
+    cat > "$padir/wa.weir" <<WEOF
+let p =
+    plan
+        File.writeAtomic "$padir/wa.txt" ["new"]
+p |> Plan.preview |> Seq.iter print
+p |> Plan.apply
+WEOF
+    out=$($BIN "$padir/wa.weir" 2>&1) || fail "a planned writeAtomic must apply: $out"
+    echo "$out" | grep -qF "atomically" || fail "the preview names the atomic write: $out"
+    [ "$(cat "$padir/wa.txt")" = "new" ] || fail "the target holds the new content"
+    [ "$(cat "$padir/wa-link.txt")" = "old" ] || fail "an applied writeAtomic must split the hardlink"
+    echo "e2e ok: plan/apply — File.writeAtomic applies atomically (the hardlink keeps the old content)"
+fi
+
 # DA-01 [D:plan-parallel-refusal]: a parallel/race callback runs on a
 # worker thread without the (thread-local) plan capture frame — a native
 # mutation there would escape capture and run for real. The combinator
@@ -11509,17 +11900,13 @@ within serve srv = { port = $svport5; maxConcurrent = 2 } handler
 print "stream-done"
 WEOF
 out=$($BIN "$svdir/stream.weir" 2>&1) || fail "serve stream run failed: $out"
-# the incremental-delivery half is a POSIX property: Windows HttpListener
-# buffers the chunked body, so an early chunk is not on the wire when the
-# producer's later raise aborts the response (a verified platform wall).
-# The failure-surfacing half below (streamErrors) holds on every platform.
-if [ "$IS_WINDOWS" = "0" ]; then
-    echo "$out" | grep -qF "GOT-FIRST=True" || fail "F8: the client must receive the first element before the producer died: $out"
-    # the client can TELL [D:serve-stream-truncate]: the chunked body ends
-    # without its zero-length terminator, so its HTTP layer reports a
-    # truncated body — a proper terminator after a failure must not survive
-    echo "$out" | grep -qF "TERMINATED=False" || fail "F8: a producer raise must leave the chunked body unterminated: $out"
-fi
+# one server on every OS [D:serve-kestrel]: the early chunk is on the wire
+# before the producer's later raise, everywhere
+echo "$out" | grep -qF "GOT-FIRST=True" || fail "F8: the client must receive the first element before the producer died: $out"
+# the client can TELL [D:serve-stream-truncate]: the chunked body ends
+# without its zero-length terminator, so its HTTP layer reports a
+# truncated body — a proper terminator after a failure must not survive
+echo "$out" | grep -qF "TERMINATED=False" || fail "F8: a producer raise must leave the chunked body unterminated: $out"
 echo "$out" | grep -qF "stream-errors=1" || fail "F8: the script must observe the producer failure via the channel: $out"
 echo "$out" | grep -qF "stream-err=producer died" || fail "F8: Server.streamErrors must carry the failure message: $out"
 echo "e2e ok: within serve — F8 a Stream producer raise surfaces via Server.streamErrors and leaves the client an unterminated body"
@@ -11595,6 +11982,18 @@ for case in 'Bad Name|v|its name carries a space' 'Content-Type|application/json
     echo "$out" | grep -qF "request header '$hn' cannot be sent — $why" || fail "F11-client: the refusal must name '$hn' and why: $out"
 done
 echo "e2e ok: Http.send — F11 a header with no place on the wire is refused by name (bad name, bodyless body header, non-ASCII)"
+# a Secret's offending character is never printed [D:secret-header-offset]:
+# secretHeaders and auth = Bearer name the header and the byte offset
+for req in 'secretHeaders = [("X-Tok", Secret.of "sßcret")]|X-Tok|at byte offset 1 of the secret value' \
+           'auth = Bearer (Secret.of "tØken")|Authorization|at byte offset 8 of the secret value'; do
+    rf=${req%%|*}; rest=${req#*|}; hn=${rest%%|*}; why=${rest#*|}
+    rc=0
+    out=$($BIN -e "print \$\"{(Http.send { Http.get \"http://127.0.0.1:9/\" with $rf }).status}\"" 2>&1) || rc=$?
+    [ "$rc" = "1" ] || fail "secret-header: '$hn' must be refused (exit 1), got rc=$rc: $out"
+    echo "$out" | grep -qF "request header '$hn' cannot be sent — its value carries a non-ASCII character $why" || fail "secret-header: '$hn' must name the offset: $out"
+    echo "$out" | grep -qE 'ß|Ø' && fail "secret-header: the secret's character leaked: $out" || true
+done
+echo "e2e ok: Http.send — a secret header's non-ASCII byte is located by offset, never printed"
 
 # (F12) the request-body read timeout [D:serve-body-timeout]: a slow
 # client declaring a large Content-Length and holding the socket is
@@ -11657,6 +12056,303 @@ out=$($BIN "$svdir/maxbody.weir" 2>&1) || fail "serve maxBody run failed: $out"
 echo "$out" | grep -qF "status=HTTP/1.1 200 OK body=len=16" || fail "H20: a body of exactly maxBody must reach the handler: $out"
 echo "$out" | grep -qF "status=HTTP/1.1 413" || fail "H20: a body past maxBody must be 413: $out"
 echo "e2e ok: within serve — H20 maxBody answers 413 past the bound"
+
+# ---- serve on Kestrel [D:serve-kestrel]: the wire, end to end ----------
+# Pipelining, repeated headers (F10) and one-response-per-request (H3-E6)
+# on the AOT binary through a weir handler; a raw socket referees the
+# bytes, so the assertion is what the wire carried.
+svport8=8478
+cat > "$svdir/wire.py" <<'PYEOF'
+import socket, sys, re, time
+port = int(sys.argv[1]); H = b"Host: 127.0.0.1:%d\r\n" % port
+def drain(s, d, first, quiet):
+    s.settimeout(first)
+    while True:
+        try:
+            x = s.recv(65536)
+        except socket.timeout:
+            return d, "quiet"
+        except OSError:
+            return d, "reset"
+        if not x:
+            return d, "eof"
+        d += x
+        s.settimeout(quiet)
+# `then` is sent only once the first reply has gone quiet on an open
+# connection: writing into one the server closed draws a RST, and the
+# client then loses the reply it had not read yet (as hunt3-xplat X59)
+def exchange(payload, then=None):
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s.sendall(payload)
+    d, end = drain(s, b"", 5, 1.0 if then else 5)
+    if then and end == "quiet":
+        try:
+            s.sendall(then)
+            d, _ = drain(s, d, 5, 5)
+        except OSError:
+            pass
+    s.close()
+    return d
+def statuses(d): return [m.decode() for m in re.findall(rb"HTTP/1\.1 [0-9]{3}", d)]
+def bodies(d): return [m.decode() for m in re.findall(rb"<[^>]*>", d)]
+g = lambda p, close=False: b"GET %s HTTP/1.1\r\n" % p + H + (b"Connection: close\r\n" if close else b"") + b"\r\n"
+d = exchange(g(b"/p1") + g(b"/p2", True))
+print("PIPE2 %s %s" % (statuses(d), bodies(d)))
+d = exchange(g(b"/q1") + b"POST /q2 HTTP/1.1\r\n" + H + b"Content-Length: 2\r\n\r\nhi" + g(b"/q3", True))
+print("PIPE3 %s %s" % (statuses(d), bodies(d)))
+d = exchange(b"GET /xff HTTP/1.1\r\n" + H + b"X-Forwarded-For: 10.0.0.1\r\nX-Forwarded-For: 10.0.0.2\r\nX-Forwarded-For: 10.0.0.3\r\nConnection: close\r\n\r\n")
+print("XFF %s" % bodies(d))
+d = exchange(b"GET /a HTTP/1.1\r\nHost: example.com\r\n\r\n", g(b"/after-host", True))
+print("E6-HOST %s %s" % (statuses(d), bodies(d)))
+d = exchange(b"GET http://evil.example/x HTTP/1.1\r\n" + H + b"\r\n", g(b"/after-abs", True))
+print("E6-ABS %s %s" % (statuses(d), bodies(d)))
+d = exchange(b"GET / HTTP/9.9\r\n" + H + b"\r\n", g(b"/after-version", True))
+print("E6-VERSION %s %s" % (statuses(d), bodies(d)))
+PYEOF
+cat > "$svdir/wire.weir" <<WEOF
+let handler = fun req ->
+    match req.path with
+    | "/xff" ->
+        let hops = req.headers |> Seq.where (fun (k, _) -> Str.toLower k == "x-forwarded-for") |> Seq.map snd |> Str.join ","
+        HttpServerResponse { status = 200; headers = []; body = Text \$"<{hops}>" }
+    | p -> HttpServerResponse { status = 200; headers = []; body = Text \$"<{p}>" }
+
+within serve srv = { port = $svport8; maxConcurrent = 4 } handler
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport8
+    let out = sh -c "python3 '$svdir/wire.py' $svport8" | complete
+    out.stdout |> Seq.iter print
+WEOF
+out=$($BIN "$svdir/wire.weir" 2>&1) || fail "serve wire run failed: $out"
+echo "$out" | grep -qF "PIPE2 ['HTTP/1.1 200', 'HTTP/1.1 200'] ['</p1>', '</p2>']" || fail "pipelining: two requests on one connection must both be answered, in order: $out"
+echo "$out" | grep -qF "PIPE3 ['HTTP/1.1 200', 'HTTP/1.1 200', 'HTTP/1.1 200'] ['</q1>', '</q2>', '</q3>']" || fail "pipelining: three requests on one connection must all be answered, in order: $out"
+echo "$out" | grep -qF "XFF ['<10.0.0.1,10.0.0.2,10.0.0.3>']" || fail "F10: three X-Forwarded-For lines must reach the handler as three pairs in wire order: $out"
+# H3-E6: a refused request gets one response and the follow-up its own —
+# never an unsolicited 200 a keep-alive client would pair with its next
+echo "$out" | grep -qF "E6-HOST ['HTTP/1.1 404', 'HTTP/1.1 200'] ['</after-host>']" || fail "E6: a foreign Host gets one 404 and the next request its own answer: $out"
+echo "$out" | grep -qE "E6-ABS \['HTTP/1.1 4[0-9]{2}'(, 'HTTP/1.1 200'\] \['</after-abs>'\]|\] \[\])" || fail "E6: an absolute-form foreign URI gets one refusal and no unsolicited 200: $out"
+echo "$out" | grep -qF "E6-VERSION ['HTTP/1.1 505'] []" || fail "E6: an unsupported version gets exactly one 505: $out"
+echo "e2e ok: within serve — pipelining (2 and 3 in order), F10 three duplicates in wire order, E6 one response per request"
+
+# (F8 on Kestrel) curl's own HTTP layer sees the truncation: exit 18, not
+# a clean end — the connection aborts mid-body, no reflection
+# [D:serve-stream-truncate]
+svport9=8479
+cat > "$svdir/f8curl.weir" <<WEOF
+let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Stream ([1; 2] |> Seq.map (fun i -> if i == 1 then "first" else fail "producer died")) }
+within serve srv = { port = $svport9; maxConcurrent = 2 } handler
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport9
+    let r = curl -s --max-time 5 http://127.0.0.1:$svport9/ | complete
+    print \$"curl-exit={r.exitCode}"
+    let ok = curl -s --max-time 5 http://127.0.0.1:$svport9/ | complete
+    print \$"second-exit={ok.exitCode}"
+WEOF
+out=$($BIN "$svdir/f8curl.weir" 2>&1) || fail "serve F8 curl run failed: $out"
+echo "$out" | grep -qF "curl-exit=18" || fail "F8: curl must exit 18 (truncated chunked body) after a producer raise: $out"
+echo "e2e ok: within serve — F8 a producer raise leaves curl exit 18"
+
+# (H3-A3) [::1] reaches the handler, not a listener 400 — where the host
+# has an IPv6 loopback at all
+svport10=8480
+if python3 -c "import socket; s=socket.socket(socket.AF_INET6); s.bind(('::1', 0))" 2>/dev/null; then
+    cat > "$svdir/v6.weir" <<WEOF
+within serve srv = { port = $svport10; maxConcurrent = 2 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "weir-handler" })
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport10
+    let v6 = curl -s -g --noproxy "*" --max-time 5 -w " status=%{http_code}" "http://[::1]:$svport10/" | complete
+    print \$"v6={v6.stdout |> Str.join " "}"
+WEOF
+    out=$($BIN "$svdir/v6.weir" 2>&1) || fail "serve [::1] run failed: $out"
+    echo "$out" | grep -qF "v6=weir-handler status=200" || fail "A3: a [::1] request must reach the handler: $out"
+    echo "e2e ok: within serve — A3 [::1] reaches the handler"
+else
+    echo "e2e skip: within serve [::1] (no IPv6 loopback on this host)"
+fi
+
+# (H3-E5) a slow request body never holds a handler slot: with ONE slot
+# and a client dribbling its body under a 10s bodyTimeout, a fast
+# request is still answered at once
+svport11=8481
+cat > "$svdir/loris.py" <<'PYEOF'
+import socket, sys, time
+port = int(sys.argv[1]); H = b"Host: 127.0.0.1:%d\r\n" % port
+slow = [socket.create_connection(("127.0.0.1", port)) for _ in range(3)]
+for s in slow:
+    s.sendall(b"POST /slow HTTP/1.1\r\n" + H + b"Content-Length: 1000\r\n\r\nab")
+time.sleep(0.5)
+t = time.time()
+c = socket.create_connection(("127.0.0.1", port), timeout=10)
+c.sendall(b"GET /fast HTTP/1.1\r\n" + H + b"Connection: close\r\n\r\n")
+d = b""
+while True:
+    x = c.recv(4096)
+    if not x: break
+    d += x
+print("FAST %s in %.2fs" % (d.split(b"\r\n", 1)[0].decode(), time.time() - t))
+PYEOF
+cat > "$svdir/loris.weir" <<WEOF
+within serve srv = { port = $svport11; maxConcurrent = 1; bodyTimeout = 10s } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "ok" })
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport11
+    let out = sh -c "python3 '$svdir/loris.py' $svport11" | complete
+    out.stdout |> Seq.iter print
+WEOF
+out=$($BIN "$svdir/loris.weir" 2>&1) || fail "serve slow-body run failed: $out"
+fastline=$(echo "$out" | grep "^FAST " || true)
+echo "$fastline" | grep -qF "FAST HTTP/1.1 200 OK" || fail "E5: a fast request must be served beside slow bodies: $out"
+fastsecs=$(echo "$fastline" | sed -E 's/.* in ([0-9.]+)s/\1/')
+awk -v s="$fastsecs" 'BEGIN{exit !(s < 2.0)}' || fail "E5: slow bodies held the only slot — the fast request waited ${fastsecs}s: $out"
+echo "e2e ok: within serve — E5 slow request bodies never hold a handler slot (fast request in ${fastsecs}s)"
+
+# (H3-E7) a raising handler and an invalid status answer 500 AND reach
+# the script on Server.streamErrors [D:serve-handler-errors]
+svport12=8482
+cat > "$svdir/e7.weir" <<WEOF
+let handler = fun req ->
+    match req.path with
+    | "/raise" -> fail "handler boom"
+    | "/status0" -> HttpServerResponse { status = 0; headers = []; body = Text "x" }
+    | _ -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+
+within serve srv = { port = $svport12; maxConcurrent = 2 } handler
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport12
+    let a = curl -s --max-time 5 -w " %{http_code}" http://127.0.0.1:$svport12/raise | complete
+    let b = curl -s --max-time 5 -w " %{http_code}" http://127.0.0.1:$svport12/status0 | complete
+    print \$"raise={a.stdout |> Str.join ""}"
+    print \$"status0={b.stdout |> Str.join ""}"
+    Server.streamErrors srv |> Seq.iter (fun e -> print \$"recorded={e}")
+WEOF
+out=$($BIN "$svdir/e7.weir" 2>&1) || fail "serve E7 run failed: $out"
+echo "$out" | grep -qF "raise=internal error 500" || fail "E7: a raising handler still answers 500 internal error: $out"
+echo "$out" | grep -qF "status0=internal error 500" || fail "E7: an invalid status answers 500: $out"
+echo "$out" | grep -qF "recorded=serve handler on GET /raise failed: handler boom" || fail "E7: the raise must be recorded for the script: $out"
+echo "$out" | grep -qF "recorded=serve handler on GET /status0 failed: status 0 is not an HTTP status (100 to 999)" || fail "E7: the invalid status must be recorded: $out"
+echo "e2e ok: within serve — E7 a raising handler and an invalid status are recorded on Server.streamErrors"
+
+# (H3-C3) a handler outliving the scope never crashes weir: the late
+# handler's result is discarded, `always` runs, and the port is free at
+# once; with eight handlers stuck the scope still closes after ONE
+# bounded drain, not 2s per handler [D:serve-drain]
+svport13=8483
+cat > "$svdir/c3a.weir" <<WEOF
+let handler = fun req ->
+    Duration.sleep 3s
+    HttpServerResponse { status = 200; headers = []; body = Text "late" }
+
+within
+    within serve srv = { port = $svport13; maxConcurrent = 4 } handler
+        poll timeout=8s interval=50ms
+            Net.portOpen $svport13
+        within proc client = curl -s --max-time 10 http://127.0.0.1:$svport13/
+            Duration.sleep 300ms
+    print \$"port-open-after-close={Net.portOpen $svport13}"
+    within serve again = { port = $svport13; maxConcurrent = 1 } handler
+        print "rebind ok"
+    Duration.sleep 3s
+    print "after work"
+always
+    print "always ran"
+WEOF
+code=0; out=$($BIN "$svdir/c3a.weir" 2>&1) || code=$?
+[ "$code" = "0" ] || fail "C3: a handler finishing after the scope closed must not crash weir (exit $code): $out"
+echo "$out" | grep -qF "port-open-after-close=false" || fail "C3: the port must be free right after the scope closes: $out"
+echo "$out" | grep -qF "rebind ok" || fail "C3: a second bind on the port must succeed after close: $out"
+echo "$out" | grep -qF "after work" || fail "C3: the script must keep running past the late handler: $out"
+echo "$out" | grep -qF "always ran" || fail "C3: always must run: $out"
+cat > "$svdir/c3b.weir" <<WEOF
+let handler = fun req ->
+    Duration.sleep 30s
+    HttpServerResponse { status = 200; headers = []; body = Text "late" }
+
+within serve srv = { port = $svport13; maxConcurrent = 8 } handler
+    poll timeout=8s interval=50ms
+        Net.portOpen $svport13
+    within proc client = sh -c "for i in 1 2 3 4 5 6 7 8; do curl -s --max-time 40 http://127.0.0.1:$svport13/ & done; wait"
+        Duration.sleep 500ms
+print "closed"
+WEOF
+t0=$(date +%s)
+code=0; out=$($BIN "$svdir/c3b.weir" 2>&1) || code=$?
+t1=$(date +%s)
+[ "$code" = "0" ] || fail "C3: eight stuck handlers at scope close must not crash weir (exit $code): $out"
+# 0.5s body + one 2s drain + startup slack (a serial join is 2s x 8)
+[ $((t1 - t0)) -le 6 ] || fail "C3: closing with 8 stuck handlers took $((t1 - t0))s — the drain is not bounded and parallel: $out"
+echo "e2e ok: within serve — C3 a late handler never crashes; one bounded drain; port free at once"
+
+# (H3 lows) a queued request whose client already left is never started,
+# and a Stream whose client aborts frees its slot [D:serve-drain]
+svport14=8484
+rm -f "$svdir/starts.txt"
+cat > "$svdir/lows.weir" <<WEOF
+let streamer = fun req ->
+    File.append "$svdir/starts.txt" ["start"]
+    let elems = [1..30] |> Seq.map (fun i ->
+        Duration.sleep 100ms
+        \$"chunk-{i}")
+    HttpServerResponse { status = 200; headers = []; body = Stream elems }
+
+let handler = fun req ->
+    match req.path with
+    | "/fast" -> HttpServerResponse { status = 200; headers = []; body = Text "fast" }
+    | _ -> streamer req
+
+within serve srv = { port = $svport14; maxConcurrent = 2 } handler
+    poll timeout=8s interval=50ms
+        Net.portOpen $svport14
+    // two clients hold both slots; four more queue behind them and leave
+    // long before the holders do, so they are gone when a slot frees
+    let _gone = sh -c "for i in 1 2; do curl -s -o /dev/null --max-time 1.5 http://127.0.0.1:$svport14/ & done; sleep 0.3; for i in 1 2 3 4; do curl -s -o /dev/null --max-time 0.3 http://127.0.0.1:$svport14/ & done; wait" | complete
+    let t0 = Instant.now ()
+    let f = curl -s --max-time 10 http://127.0.0.1:$svport14/fast | complete
+    let took = Instant.now () - t0
+    print \$"fast={f.stdout |> Str.join ""} quick={took < 1s}"
+    print \$"starts={File.read "$svdir/starts.txt" |> Seq.length}"
+WEOF
+out=$($BIN "$svdir/lows.weir" 2>&1) || fail "serve lows run failed: $out"
+echo "$out" | grep -qF "fast=fast quick=true" || fail "lows: an aborted Stream must free its slot: $out"
+echo "$out" | grep -qF "starts=2" || fail "lows: queued requests whose clients left must never start (2 slots held, 4 queued clients gone): $out"
+echo "e2e ok: within serve — lows: a gone client's queued request never starts; an aborted Stream frees its slot"
+
+# (shutdown) SIGINT and SIGTERM inside `within serve` with a request in
+# flight: the exit code is the signal's, `always` runs, the port is free
+# the moment weir is gone
+svport15=8485
+if [ "$IS_WINDOWS" != "1" ] && command -v setsid >/dev/null 2>&1; then
+    cat > "$svdir/sig.weir" <<WEOF
+let marker = Self.args |> Seq.head
+let handler = fun req ->
+    Duration.sleep 20s
+    HttpServerResponse { status = 200; headers = []; body = Text "late" }
+within
+    within serve srv = { port = $svport15; maxConcurrent = 2 } handler
+        Duration.sleep 60s
+always
+    ["cleaned-up"] |> File.write marker
+WEOF
+    for pair in "INT:130" "TERM:143"; do
+        sig="${pair%%:*}"; want="${pair##*:}"
+        M="$svdir/sig-$sig"; rm -f "$M"
+        setsid "$BIN" "$svdir/sig.weir" "$M" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        awaitTcp $svport15 || { kill -9 "$wpid" 2>/dev/null || true; fail "shutdown: the server never came up"; }
+        curl -s -o /dev/null --max-time 30 "http://127.0.0.1:$svport15/" &
+        cpid=$!
+        sleep 0.5
+        kill -"$sig" "$wpid" 2>/dev/null || true
+        code=timeout
+        for _ in $(seq 1 40); do
+            if ! kill -0 "$wpid" 2>/dev/null; then code=0; wait "$wpid" 2>/dev/null || code=$?; break; fi
+            sleep 0.1
+        done
+        kill "$cpid" 2>/dev/null || true; wait "$cpid" 2>/dev/null || true
+        [ "$code" = "$want" ] || { kill -9 "$wpid" 2>/dev/null || true; fail "shutdown: SIG$sig inside within serve must exit $want (got $code)"; }
+        [ "$(cat "$M" 2>/dev/null)" = "cleaned-up" ] || fail "shutdown: SIG$sig must run the always cleanup"
+        $BIN -e "Net.portOpen $svport15" | grep -qF "false" || fail "shutdown: port $svport15 still up after SIG$sig"
+    done
+    echo "e2e ok: within serve — SIGINT/SIGTERM with a request in flight: exit 130/143, always runs, port free"
+fi
 
 # (F13) tty data sanitize [D:binary-echo]/[D:tty-color]: a data value's
 # terminal-DRIVING escapes (OSC title/clipboard, cursor/screen CSI, CR
@@ -11792,6 +12488,23 @@ $BIN check --can "$svdir/c$jname" >> "$svdir/j2.out" 2>/dev/null || true
 python3 -c "import sys; a=open('$svdir/j1.out','rb').read(); b=open('$svdir/j2.out','rb').read(); n=b'r\xe2\x80\xaeq\xc2\x9b.weir'; sys.exit(0 if (n in a and n in b and b'\\\\u' not in a + b and b'\\\\x9b' not in a + b) else 1)" \
     || fail "tty-bidi: redirected check --json / --can (json and human) must stay byte-faithful (raw RLO/C1 in the path)"
 echo "e2e ok: tty-bidi check --json and --can (json and human) sanitized at a tty, byte-faithful when redirected"
+# every console sink rides the tty sanitizer [D:tty-sink-sanitize]:
+# printerr, Log.*, the Self.prompt message and the -e echo neutralize an
+# OSC at a tty (the pty harness reprs a raw ESC as \x1b, a defanged one
+# as \\x1b), and stay byte-faithful when redirected
+sinkrun="$(dirname "$0")/../tests/pty/pty-run.py"
+for sink in 'printerr ((Str.fromBase64 "Gw==") + "]52;c;SINK")' \
+            'Log.warn ((Str.fromBase64 "Gw==") + "]52;c;SINK")' \
+            'Self.prompt ((Str.fromBase64 "Gw==") + "]52;c;SINK")' \
+            'Some ((Str.fromBase64 "Gw==") + "]52;c;SINK")'; do
+    sout=$(printf 'SLEEP 300\nSEND ans\\n\nSLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" -e "$sink" 2>&1)
+    echo "$sout" | grep -qF '\\x1b]52;c;SINK' || fail "tty-sink: $sink must render the OSC visible at a tty: $sout"
+    echo "$sout" | grep -q '[^\\]\\x1b\]52' && fail "tty-sink: $sink put a raw OSC on the tty: $sout" || true
+done
+printf 'ans\n' | $BIN -e 'Log.warn ((Str.fromBase64 "Gw==") + "]52;c;SINK")' 2> "$svdir/sink.err" || true
+python3 -c "import sys; sys.exit(0 if b'\x1b]52;c;SINK' in open('$svdir/sink.err','rb').read() else 1)" \
+    || fail "tty-sink: a redirected stderr must stay byte-faithful"
+echo "e2e ok: tty-sink printerr, Log, Self.prompt and the -e echo sanitized at a tty, byte-faithful when redirected"
 else
     echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"
 fi

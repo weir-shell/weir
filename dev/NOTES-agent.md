@@ -6,6 +6,28 @@ weekly: self-correction rate (stranded = failures), fallback ranking
 skill lines and targeted hints).
 
 ## fallbacks
+- 2026-10-16 | ci/e2e-timing.py -> python3 | the e2e cost report must not depend on the weir binary it is timing (a broken build would lose its own timings).
+- 2026-10-16 | binary-size study (PLAN-binary-size.md, scratch scripts
+  outside the repo) -> F# script + python3 | the ILC mstat is a
+  metadata/IL blob needing System.Reflection.Metadata, and the startup
+  medians need sub-millisecond timing (weir's Duration is integer ms).
+- 2026-10-16 | hunt3 repro gate (tools/hunt3-repro.weir) -> python3 helpers,
+  `sh -c` once | a pseudo-terminal (H3-E1 escapes at a tty, H3-C6 REPL ^C),
+  raw request bytes and a socket client weir's own client cannot be (the
+  serve probes, an IPv6 `[::1]` client), servers that record what weir sent
+  or answer from `[::1]`/as a proxy (H3-B1, H3-A1), a static schema host
+  (H3-B5..B8), and a directory watcher fast enough to catch
+  File.writeAtomic's temp file (H3-E10); H3-C3 needs `ulimit -c 0`
+  (`sh -c`) so the crash leaves no core.
+- 2026-10-16 | hunt3 cross-platform kit (tools/hunt3-xplat.weir) -> a
+  pwsh helper (Add-Type C#) on Windows only | Ctrl+C/Ctrl+Break and typed
+  REPL keys need GenerateConsoleCtrlEvent/WriteConsoleInput against the
+  child's own console, and the locked-file probe needs a FileShare.None
+  holder; weir has no console-event, console-input or share-mode surface.
+  The serve wire probes (X54, X57-X59) use a python3 raw-socket client on
+  every OS: pipelined requests, repeated request headers, a foreign
+  Host/absolute-form/HTTP/9.9 request line and an IPv6-loopback bind check
+  are bytes weir's Http client cannot send.
 - 2026-10-14 | hunt2 repro gate (tools/hunt2-repro.weir) -> python3 via
   value-headed pipes, `sh -c` once | the REPL line editor needs a
   pseudo-terminal (H24/H25/H27/H34), the LSP items need raw JSON-RPC

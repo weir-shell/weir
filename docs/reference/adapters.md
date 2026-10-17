@@ -140,7 +140,8 @@ names a key that isn't a weir name, such as `requires-python`.
   is an error, since weir floats are finite.
 - A date or time is read as its text. An offset date-time such as
   `2024-03-01T10:00:00Z` reads into an `Instant` field marked
-  `[<Iso8601>]`.
+  `[<Iso8601>]`; a local date-time, date or time (no offset) is an
+  error there, since it names no instant.
 - Duplicate keys and tables defined twice are errors, reported with
   the line, as the TOML spec requires.
 
@@ -303,7 +304,8 @@ both directions, with the same messages.
   encode them: an epoch number and a text form are both reasonable,
   and weir won't guess which one the other side expects. Put a codec
   attribute on the field, or convert explicitly; the error message
-  offers both.
+  offers both. `[<Iso8601>]` reads a JSON or YAML time without an
+  offset as UTC.
 
 | Type | Codecs | Written as |
 |---|---|---|

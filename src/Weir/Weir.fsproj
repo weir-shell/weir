@@ -29,8 +29,22 @@
     <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3053</WarningsNotAsErrors>
     <StripSymbols>true</StripSymbols>
     <OptimizationPreference>Speed</OptimizationPreference>
+    <!-- binary size, no throughput cost [D:binary-size]: no frame names
+         (weir prints located diagnostics, never a .NET stack trace; implies
+         identical-body folding), no FSharp.Core satellites (invariant
+         culture never loads them), no traceparent injection, no XML
+         network resolver (weir's reader sets XmlResolver = null) -->
+    <StackTraceSupport>false</StackTraceSupport>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <HttpActivityPropagationSupport>false</HttpActivityPropagationSupport>
+    <XmlResolverIsNetworkingEnabledByDefault>false</XmlResolverIsNetworkingEnabledByDefault>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
+
+  <!-- ILC-only substitutions [D:binary-size]; build/test never run ILC -->
+  <ItemGroup>
+    <IlcArg Include="--substitution:$(MSBuildThisFileDirectory)ILLink.Substitutions.xml" />
+  </ItemGroup>
 
   <!-- the stamp lives in the BUILD, not publish.sh [D:windows-v1]: every
        publish path (dotnet publish, a future .ps1, CI) must stamp
@@ -66,11 +80,26 @@
     </PropertyGroup>
   </Target>
 
+  <!-- `within lock` is the only flock weir takes [D:lock-advisory]: .NET's
+       FileShare emulation flocks every open, so weir's own File.read of a
+       locked data file failed "used by another process" even in the holder.
+       Windows share modes are real and unaffected. -->
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.IO.DisableFileLocking" Value="true" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="FParsec" Version="1.1.1" />
     <!-- pinned [D:aot-warnings]: implicit FSharp.Core floats — CI restored
          10.1.302 while local built 10.1.301, two silently different binaries -->
     <PackageReference Update="FSharp.Core" Version="10.1.302" />
+  </ItemGroup>
+
+  <!-- Kestrel for `within serve` [D:serve-kestrel]: the ASP.NET Core shared
+       framework that ships with the SDK — no NuGet package; AOT publish
+       links the runtime pack version-locked to the SDK -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <ItemGroup>
@@ -94,7 +123,7 @@
     <!-- after Check: the schema validator walks the TYPED template;
          before Script: check-time schema resolution [D:contracts-spine] -->
     <Compile Include="Http.fs" />
-    <!-- the server twin of Http.fs [D:http-serve]: the listener leg,
+    <!-- the server twin of Http.fs [D:http-serve]: the Kestrel leg,
          primitives in/out, no Value dependency (Builtins translates).
          After Http.fs so the shared boundary reads top-to-bottom;
          before Eval, which the within-serve scope drives. -->

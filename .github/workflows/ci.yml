@@ -96,7 +96,11 @@ jobs:
           # the add-module live cell resolves a ref via api.github.com —
           # authenticated, so shared runner IPs cannot rate-limit it
           WEIR_TOKEN_GITHUB_COM: ${{ github.token }}
-        run: ./ci/e2e.sh
+        run: |
+          # per-check cost report (ci/e2e-timing.py); pipefail keeps e2e's exit
+          set -o pipefail
+          py=python3; "$py" -c 1 2>/dev/null || py=python
+          ./ci/e2e.sh 2>&1 | "$py" ci/e2e-timing.py
       - name: fuzz smoke (pinned seed)
         run: dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj
       - name: doc-tests
@@ -120,6 +124,8 @@ jobs:
         run: ~/.local/bin/weir tools/sweep-repro.weir --bin ~/.local/bin/weir
       - name: hunt2 repro harness
         run: ~/.local/bin/weir tools/hunt2-repro.weir --bin ~/.local/bin/weir
+      - name: hunt3 repro harness
+        run: ~/.local/bin/weir tools/hunt3-repro.weir --bin ~/.local/bin/weir
 
       - name: F# oracle
         run: ./ci/fsharp-oracle.sh
@@ -149,7 +155,11 @@ jobs:
       - name: PyYAML — the interop referee runs here too (weir refereeing itself missed four emitter defects; doubling the referee's platforms is one line)
         run: python3 -m pip install --break-system-packages pyyaml || python3 -m pip install pyyaml
       - name: e2e battery — the GNU-ism sweep's real signal (reds are findings)
-        run: ./ci/e2e.sh
+        run: |
+          # per-check cost report (ci/e2e-timing.py); pipefail keeps e2e's exit
+          set -o pipefail
+          py=python3; "$py" -c 1 2>/dev/null || py=python
+          ./ci/e2e.sh 2>&1 | "$py" ci/e2e-timing.py
       - name: doc-tests
         run: ./ci/skill-doc.sh
       - name: timing (advisory off-linux — the script states it)
@@ -180,7 +190,11 @@ jobs:
           pwsh -File ./publish.ps1
           WEIR_BIN="$LOCALAPPDATA/Programs/weir/weir.exe" ./ci/check-fresh.sh
       - name: e2e battery (HTTP is the one never-run-here surface — watch it)
-        run: WEIR_BIN="$LOCALAPPDATA/Programs/weir/weir.exe" ./ci/e2e.sh
+        run: |
+          # per-check cost report (ci/e2e-timing.py); pipefail keeps e2e's exit
+          set -o pipefail
+          py=python3; "$py" -c 1 2>/dev/null || py=python
+          WEIR_BIN="$LOCALAPPDATA/Programs/weir/weir.exe" ./ci/e2e.sh 2>&1 | "$py" ci/e2e-timing.py
       - name: doc-tests
         run: WEIR_BIN="$LOCALAPPDATA/Programs/weir/weir.exe" ./ci/skill-doc.sh
       - name: timing (advisory off-linux — the script states it)

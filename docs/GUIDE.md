@@ -886,7 +886,8 @@ Two more kinds round out the set.
 
 A plain `within` holds nothing. It's just a body plus an `always`
 block that runs however the body exits: normally, by an error, by
-`exit n`, or on SIGINT/SIGTERM. Only `kill -9` skips it. If both the
+`exit n`, or on SIGINT/SIGTERM/SIGHUP. Only `kill -9` skips it. On a signal
+the body's commands stop, but the commands in `always` still run. If both the
 body and the cleanup fail, you get the body's error, and the
 cleanup's failure is printed to stderr with a marker. Cleanup of any
 enclosing scopes still runs.
@@ -898,6 +899,9 @@ enclosing scopes still runs.
 - It works across processes and across parallel `pmap` workers.
 - The operating system releases it if the process dies, even with
   `kill -9`.
+- On Linux and macOS the block can read and write the locked file
+  itself. On Windows the lock blocks that too, so lock a separate
+  file there (`state.json.lock` beside `state.json`).
 
 ```weir
 within tmp d
@@ -2374,8 +2378,8 @@ a failure through `watch=` or `Proc.wait` (which returns the exit
 code). `Proc.stop` shuts a scope down early, and nested scopes are
 closed innermost first.
 
-Exactly when cleanup is guaranteed: a normal exit, an error, SIGINT
-and SIGTERM all close every scope. `kill -9` of weir itself can't,
+Exactly when cleanup is guaranteed: a normal exit, an error, SIGINT,
+SIGTERM and SIGHUP (the terminal closing) all close every scope. `kill -9` of weir itself can't,
 since nothing gets to run. A process that has to outlive the script
 is a daemon, which is a job for systemd or launchd; weir deliberately
 has no `nohup`.
@@ -2499,7 +2503,8 @@ script**:
 
 - writing files
 - running commands
-- HTTP methods that change things (POST, PUT, DELETE, PATCH)
+- HTTP methods that change things (POST, PUT, DELETE, PATCH, and any
+  `Other` method)
 - any `within` resource
 
 **Reading is allowed**:
@@ -2566,7 +2571,8 @@ checks it (the parentheses are needed, and a recorded operation holds
 the absolute path). Preview and diff come for free.
 
 These are the operations a plan can hold (the `Op` union):
-`WriteFile`, `DeleteFile`, `Copy`, `Move` (files), `CopyDir`,
+`WriteFile`, `WriteFileAtomic` (from `File.writeAtomic`; `apply`
+replaces the file atomically too), `DeleteFile`, `Copy`, `Move` (files), `CopyDir`,
 `MoveDir`, `MakeDir`, `DeleteDir` (`Dir.delete`, empty only),
 `DeleteTree` (`Dir.deleteAll`), and `HttpSend` (only for HTTP
 methods that change things; `show` masks the auth Secret). Reads still **happen** inside a plan, since a
@@ -2586,8 +2592,15 @@ Where the guarantee stops:
   Nested `plan` blocks are fine; each returns its own plan.
 - **Reading something the plan has already changed is an error**,
   pointing at the line. The change hasn't been made yet, so the read
-  would see old data. Rearrange the code so the read doesn't depend
-  on a recorded write.
+  would see old data. That covers any read of the file or anything
+  under a changed directory, an existence check, and a listing
+  (`Dir.list`, `Path.glob`, `ls`) of a directory the plan writes
+  into. Rearrange the code so the read doesn't depend on a recorded
+  write.
+- **A recorded change inside a `within tmp` directory opened in the
+  plan is an error**: that directory is deleted when the block ends,
+  before `apply` could use it. Build the content in memory, or do the
+  temp-dir work outside the plan.
 - **`apply` is not a transaction.** It performs operations in the
   order they were recorded and **stops at the first failure, leaving
   earlier operations done. There's no rollback.** Weir deliberately
@@ -2724,7 +2737,9 @@ exception: the echo shows its type and doesn't run it (`let cleanup =
 rm -rf build` deletes nothing until you type `cleanup`). An entry can span several lines: weir
 checks whether what you've typed so far is a complete statement and
 keeps reading if it isn't. `Ctrl+C` throws away the current entry,
-and `Ctrl+D` or `#quit` exits.
+and `Ctrl+D` or `#quit` exits. While an entry runs, `Ctrl+C` stops
+whatever it is waiting on (a command, a sleep, a `poll`, a lock) and
+returns to the prompt.
 
 `#help` lists the directives and the modules. `#help Seq` lists the
 members of one module, which F#'s FSI can't do. `#help Seq.collect`

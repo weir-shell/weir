@@ -149,21 +149,22 @@ let rec effectfulName (n: string) =
 let fsWriteMembers =
     Set [ "write"; "writeAtomic"; "append"; "copy"; "create"; "delete"; "deleteAll"; "move" ]
 
-// the mutating HTTP methods — the per-method net split's source of truth,
+// the safe HTTP methods — the per-method net split's source of truth,
 // shared by the check-time literal path and eval-time resolution. Method
 // names are the union case names uppercased (Builtins.httpMethodName's
-// shape): Get/Head/Options/Query → Ambient; Post/Put/Delete/Patch →
-// Mutation.
-let httpMutatingMethods = Set [ "POST"; "PUT"; "DELETE"; "PATCH" ]
+// shape) or an `Other` verb as written, compared case-insensitively:
+// GET/HEAD/OPTIONS/QUERY/TRACE are Ambient; every other verb — the
+// mutating cases and any other `Other` — is Mutation [D:http-safe-verbs].
+let httpSafeMethods = Set [ "GET"; "HEAD"; "OPTIONS"; "QUERY"; "TRACE" ]
 
-/// class of an `Http.send` call from its method case name (Get/Post/…,
-/// any casing) — the per-method net split. Idempotent methods are
-/// ambient; the mutating verbs are mutation.
+/// class of an `Http.send` call from its method name (Get/Post/…, or an
+/// `Other` verb, any casing) — the per-method net split. The safe verbs
+/// are ambient; everything else is mutation.
 let httpMethodClass (methodCase: string) : EffectClass =
-    if httpMutatingMethods.Contains(methodCase.ToUpperInvariant()) then
-        Mutation
-    else
+    if httpSafeMethods.Contains(methodCase.ToUpperInvariant()) then
         Ambient
+    else
+        Mutation
 
 /// class of an effectful name. `Http.send` is method-dependent and
 /// returns None here (the caller resolves it from the request value —

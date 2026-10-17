@@ -215,6 +215,11 @@ A passing check doesn't mean every value was validated:
   constraint, because its value is only known at run time
 - content generated with `for` is not checked against the schema's
   structure
+- validation keywords — `minLength`, `maxLength`, `pattern`,
+  `minimum`, `maximum`, `multipleOf`, `minItems`, `maxItems`,
+  `uniqueItems`, `minProperties`, `maxProperties`, `readOnly`,
+  `writeOnly`, `deprecated` — are accepted in a schema but not
+  enforced
 
 In short, the schema checks what weir can see before the script runs.
 Templates, block scalars and splices are explained in the
@@ -253,7 +258,13 @@ More of the mapping:
 - an `allOf` of one `$ref` plus annotations is flattened (a common
   pattern in Kubernetes schemas)
 - an `enum` becomes `string` plus a `//` note listing the values
-  (string unions are planned)
+  (string unions are planned); an enum of integers becomes `int`
+- a field that can be an integer or a string (`anyOf` of the two, or
+  `x-kubernetes-int-or-string`, as Kubernetes ports are) becomes
+  `Yaml`: `8080` reads as `YInt 8080` and `"25%"` as `YStr "25%"`,
+  and both write back unchanged to JSON and YAML
+- each validation keyword the schema uses gets one
+  `// note: not enforced: …` line naming where it appears
 - `anyOf` uses the first variant, with a note asking you to check it
 - a field that refers back to its own definition becomes `Yaml`, with
   a note — a weir record is a finite tree, so the subtree is read

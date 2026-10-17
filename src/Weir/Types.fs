@@ -527,8 +527,18 @@ type TypeDef =
     | Record of RecordDef
     | Union of UnionDef
 
+// The non-closed schemes of one value map [D:env-open-index] — valid only
+// while `For` is the env's own Values instance
+type OpenIndex =
+    { For: Map<string, Scheme>
+      Open: Map<string, Scheme> }
+
+[<NoEquality; NoComparison>]
 type TypeEnv =
     { Values: Map<string, Scheme>
+      // generalization walks only these [D:env-open-index]; an env whose
+      // Values moved without bindValue has a stale index and is rescanned
+      OpenIndex: OpenIndex option
       // purity of earlier top-level bindings [D:pure-stage1]: written by
       // the checked-statement pipeline's post-check layer (the classifier
       // lives after Builtins, so Check.fs itself never computes it),
@@ -569,6 +579,38 @@ type TypeEnv =
       // persists it into Types proper. Replaced fresh per typecheck
       // entry — one run is one thread.
       AnonLitDefs: System.Collections.Generic.Dictionary<string, TypeDef> }
+
+let private schemeIsClosed (sch: Scheme) : bool = Set.isEmpty (tyVars sch.Ty - sch.Forall)
+
+/// The env's non-closed schemes [D:env-open-index]: generalization needs
+/// only the schemes with free vars, and scanning the whole env per let
+/// made checking quadratic in the top-level binding count. Read from the
+/// env's index when it is current, else by one scan.
+let openSchemes (env: TypeEnv) : Map<string, Scheme> =
+    match env.OpenIndex with
+    | Some ix when obj.ReferenceEquals(ix.For, env.Values) -> ix.Open
+    | _ -> env.Values |> Map.filter (fun _ sch -> not (schemeIsClosed sch))
+
+/// The env with a fresh, current index [D:env-open-index]
+let indexed (env: TypeEnv) : TypeEnv =
+    match env.OpenIndex with
+    | Some ix when obj.ReferenceEquals(ix.For, env.Values) -> env
+    | _ ->
+        { env with
+            OpenIndex = Some { For = env.Values; Open = openSchemes env } }
+
+/// Bind one value name, keeping the index current in O(log n)
+/// [D:env-open-index]
+let bindValue (name: string) (sch: Scheme) (env: TypeEnv) : TypeEnv =
+    let values = Map.add name sch env.Values
+    let opened = openSchemes env
+
+    { env with
+        Values = values
+        OpenIndex =
+            Some
+                { For = values
+                  Open = if schemeIsClosed sch then Map.remove name opened else Map.add name sch opened } }
 
 /// The single type-name lookup [D:anon-literals]: declared/registered
 /// types first, then the mid-statement anonymous-literal table —
@@ -1213,3 +1255,30 @@ type RawBmpEncoder() =
 
 let rawJsonWriterOptions =
     System.Text.Json.JsonWriterOptions(Encoder = RawBmpEncoder())
+
+// The JSON reading depth [D:json-depth]: weir's own value bound (show,
+// equality, to yaml all stop at 100), not System.Text.Json's default 64
+// — a valid document between the two read as "not valid JSON". Past the
+// bound the refusal names the depth; invalid JSON stays its own error.
+let jsonMaxDepth = 100
+
+/// parse one JSON document under the bound: Error (Some why) for a
+/// valid document nested past it, Error None for text that is not JSON
+let parseJsonBounded
+    (parse: System.Text.Json.JsonDocumentOptions -> System.Text.Json.JsonDocument)
+    : Result<System.Text.Json.JsonDocument, string option> =
+    try
+        Ok(parse (System.Text.Json.JsonDocumentOptions(MaxDepth = jsonMaxDepth)))
+    with :? System.Text.Json.JsonException ->
+        // telling the two failures apart: the reader is iterative, so an
+        // unbounded re-read of the rejected text costs memory, not stack
+        match
+            (try
+                Some(parse (System.Text.Json.JsonDocumentOptions(MaxDepth = System.Int32.MaxValue)))
+             with :? System.Text.Json.JsonException ->
+                 None)
+        with
+        | Some doc ->
+            doc.Dispose()
+            Error(Some $"it nests deeper than {jsonMaxDepth} levels, weir's bound for a value")
+        | None -> Error None

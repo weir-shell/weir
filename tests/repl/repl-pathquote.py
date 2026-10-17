@@ -159,8 +159,8 @@ def pty_steps(steps, settle=0.6):
     return re.sub(r"\x1b\[[0-9;]*[A-Za-z]|\x1b=|\x1b\][^\x07]*\x07", "", painted.decode(errors="replace"))
 
 
-t = pty_steps(["cd %s/su" % work, "\t", "d", "\t"])
-if ('cd "%s/sub/deep.txt"' % work) not in t:
+t = pty_steps(["File.read %s/su" % work, "\t", "d", "\t"])
+if ('File.read "%s/sub/deep.txt"' % work) not in t:
     failures.append(f"a quoted dir completion must leave the caret inside the quote (re-Tab must nest): {t[-400:]!r}")
 
 # (5) an argv path a bare word cannot hold comes back as one string
@@ -186,9 +186,35 @@ for prefix, want in (("cat my", "SPACE-OK"), ("cat qu", "QUOTE-OK")):
     finally:
         r.close()
 
+# (6) several quoted candidates share only a prefix: the completion
+# extends their CONTENT and closes the literal, caret inside the closer
+# [D:repl-path-quote] — `File.read ./<Tab>` over {somefile.txt, sub/}
+# (shared content `./s`) must hold `File.read "./s"`, never the raw
+# common prefix `File.read "./s` (an unclosed literal); typing continues
+# inside the string, and a re-Tab on a prefix that can't grow lists.
+t = pty_steps([cd_line + "\r", "File.read ./", "\t", "u", "\t"])
+if 'File.read "./s"' not in t:
+    failures.append(f"a shared quoted prefix must close its literal (File.read \"./s\"): {t[-400:]!r}")
+if 'File.read "./sub/"' not in t:
+    failures.append(f"typing after the closed prefix must continue inside the string: {t[-400:]!r}")
+t = pty_steps([cd_line + "\r", "File.read ./", "\t", "\t"])
+if "./somefile.txt" not in t or "./sub/" not in t:
+    failures.append(f"a re-Tab on the closed prefix must list the entries: {t[-400:]!r}")
+
+# (7) `cd` heading a statement is the command form [D:cd-bare-completion]:
+# its path is an argv word, completed bare like `cat ./x` — `cd ./<Tab>`
+# extends to `cd ./s`, then `cd ./sub/`; never quoted. As an expression
+# (`let d = cd …`) a bare path doesn't parse, so it stays quoted.
+t = pty_steps([cd_line + "\r", "cd ./", "\t", "u", "\t"])
+if "cd ./sub/" not in t or 'cd "./' in t:
+    failures.append(f"statement-head cd must complete BARE (cd ./sub/): {t[-400:]!r}")
+t = pty_complete(cd_line, "let d = cd ./su")
+if 'let d = cd "./sub/"' not in t:
+    failures.append(f"cd in an expression must stay QUOTED (let d = cd \"./sub/\"): {t[-400:]!r}")
+
 if failures:
     for f in failures:
         print("repl-pathquote FAIL:", f)
     sys.exit(1)
 
-print("repl-pathquote: expression-slot path completes quoted (File.read \"./somefile.txt\"), command-argv stays bare unless a space/quote needs one literal, an open quote is not doubled, a quoted dir keeps the caret inside so a re-Tab nests")
+print("repl-pathquote: expression-slot path completes quoted (File.read \"./somefile.txt\"), command-argv stays bare unless a space/quote needs one literal, an open quote is not doubled, a quoted dir keeps the caret inside so a re-Tab nests, a shared quoted prefix closes its literal, statement-head cd completes bare")

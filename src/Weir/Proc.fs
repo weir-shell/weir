@@ -59,6 +59,17 @@ let private nulRefusal (what: string) (s: string) : unit =
         failwith
             $"{what} contains a NUL byte — it would silently truncate at the process boundary (argv and env are NUL-terminated); NUL-bearing data is binary: pass it via a file or stdin, not an argument"
 
+/// an env key a child can receive [D:env-key-refusal]: never empty, never
+/// '=' (the child splits at the first one — another variable), never NUL
+let envKeyRefusal (where: string) (k: string) : unit =
+    if k = "" then
+        failwith $"{where}: an env key is empty — a child cannot receive an unnamed variable"
+    elif k.Contains '=' then
+        failwith
+            $"{where}: the env key '{k}' contains '=' — a child would read it as the variable '{k.Substring(0, k.IndexOf '=')}'; an env name has no '='"
+    elif k.Contains '\u0000' then
+        failwith $"{where}: the env key '{k.Replace('\u0000', '?')}' contains a NUL byte — an env name is NUL-free"
+
 // no command runs while a module is imported [D:module-import-no-commands]:
 // the check-time walk refuses the direct forms; a helper reached through
 // a value, a lambda or composition lands here
@@ -122,10 +133,12 @@ let private spawn
 
     for k, v in ambient do
         nulRefusal $"the env key '{k}'" k
+        envKeyRefusal "a command's environment" k
         nulRefusal $"the env value for '{k}'" v
 
     for k, v in env do
         nulRefusal $"the env key '{k}'" k
+        envKeyRefusal "a command's environment" k
         nulRefusal $"the env value for '{k}'" v
 
     Session.sigpipeForChildren.Force()
@@ -232,6 +245,16 @@ let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process * 
 
     p, rethrowFault
 
+// pipe reads a lost race or a REPL ^C cuts [D:pfirst-join]
+let private readLine (r: System.IO.StreamReader) : string =
+    Session.cutRead r.ReadLine (fun t -> r.ReadLineAsync t)
+
+let private readChars (r: System.IO.StreamReader) (buf: char[]) : int =
+    Session.cutRead (fun () -> r.Read(buf, 0, buf.Length)) (fun t -> r.ReadAsync(System.Memory<char>(buf), t))
+
+let private readBytes (s: System.IO.Stream) (buf: byte[]) (off: int) (len: int) : int =
+    Session.cutRead (fun () -> s.Read(buf, off, len)) (fun t -> s.ReadAsync(System.Memory<byte>(buf, off, len), t))
+
 // tree-kill then reap — the lifecycle tail shared by the streaming
 // consumers (complete disposes without killing: it has already read
 // both pipes to the end)
@@ -287,11 +310,11 @@ let linesOf (s: Spec) : seq<string> =
 
         try
             let out = p.StandardOutput
-            let mutable line = out.ReadLine()
+            let mutable line = readLine out
 
             while line <> null do
                 yield line
-                line <- out.ReadLine()
+                line <- readLine out
 
             p.WaitForExit()
             producerFault ()
@@ -322,7 +345,7 @@ let streamSegmentsOf (s: Spec) (onText: string -> unit) (onBreak: unit -> unit) 
                 seg.Clear() |> ignore
 
         let mutable pendingCR = false
-        let mutable n = out.Read(buf, 0, buf.Length)
+        let mutable n = readChars out buf
 
         while n > 0 do
             for i in 0 .. n - 1 do
@@ -343,7 +366,7 @@ let streamSegmentsOf (s: Spec) (onText: string -> unit) (onBreak: unit -> unit) 
                     seg.Append c |> ignore
 
             flushSeg ()
-            n <- out.Read(buf, 0, buf.Length)
+            n <- readChars out buf
 
         p.WaitForExit()
         producerFault ()
@@ -464,11 +487,11 @@ let streamCodeOf (s: Spec) : int =
 
     try
         let out = p.StandardOutput
-        let mutable line = out.ReadLine()
+        let mutable line = readLine out
 
         while line <> null do
             System.Console.Out.WriteLine line
-            line <- out.ReadLine()
+            line <- readLine out
 
         p.WaitForExit()
         producerFault ()
@@ -505,7 +528,7 @@ let private readAllBytes (stream: System.IO.Stream) : Segments =
     let mutable total = 0
     let mutable seg = Array.zeroCreate<byte> segSize
     let mutable fill = 0
-    let mutable n = stream.Read(seg, fill, segSize - fill)
+    let mutable n = readBytes stream seg fill (segSize - fill)
 
     while n > 0 do
         fill <- fill + n
@@ -515,7 +538,7 @@ let private readAllBytes (stream: System.IO.Stream) : Segments =
             seg <- Array.zeroCreate segSize
             fill <- 0
 
-        n <- stream.Read(seg, fill, segSize - fill)
+        n <- readBytes stream seg fill (segSize - fill)
 
     total <- segs.Count * segSize + fill
 
@@ -654,7 +677,7 @@ let completedOf (s: Spec) : int * seq<string> * seq<string> =
         System.Threading.Tasks.Task.Run(fun () -> readAllBytes (p.StandardError.BaseStream))
 
     let outBytes = readAllBytes (p.StandardOutput.BaseStream)
-    let errBytes = stderrTask.Result
+    let errBytes = Session.cutJoin stderrTask
     p.WaitForExit()
     producerFault ()
     p.ExitCode, linesView outBytes true, linesView errBytes false
@@ -745,7 +768,7 @@ let private startChain (tailOut: bool) (allErr: bool) (specs: Spec list) =
 let private chainFailure (procs: (Spec * Process) list) (pumps: System.Threading.Tasks.Task<bool> list) =
     procs
     |> List.mapi (fun i (sp, p) -> i, sp, p.ExitCode)
-    |> List.tryFind (fun (i, _, code) -> code <> 0 && not (i < pumps.Length && pumps[i].Result))
+    |> List.tryFind (fun (i, _, code) -> code <> 0 && not (i < pumps.Length && Session.cutJoin pumps[i]))
     |> Option.map (fun (_, sp, code) -> sp, code)
 
 let chainLinesOf (specs: Spec list) : seq<string> =
@@ -761,11 +784,11 @@ let chainLinesOf (specs: Spec list) : seq<string> =
                 // as a single command
                 let _, last = List.last procs
                 let out = last.StandardOutput
-                let mutable line = out.ReadLine()
+                let mutable line = readLine out
 
                 while line <> null do
                     yield line
-                    line <- out.ReadLine()
+                    line <- readLine out
 
                 for _, p in procs do
                     p.WaitForExit()
@@ -809,7 +832,7 @@ let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
             producerFault ()
 
             let errLines =
-                errTasks |> List.map (fun t -> linesView t.Result false |> List.ofSeq) |> List.concat
+                errTasks |> List.map (fun t -> linesView (Session.cutJoin t) false |> List.ofSeq) |> List.concat
 
             chainCode procs pumps, linesView outBytes true, (errLines :> seq<string>)
         finally
@@ -828,11 +851,11 @@ let chainStreamCodeOf (specs: Spec list) : int =
         try
             let _, last = List.last procs
             let out = last.StandardOutput
-            let mutable line = out.ReadLine()
+            let mutable line = readLine out
 
             while line <> null do
                 System.Console.Out.WriteLine line
-                line <- out.ReadLine()
+                line <- readLine out
 
             for _, p in procs do
                 p.WaitForExit()
@@ -941,13 +964,19 @@ let startSpilled
         let t =
             System.Threading.Thread(fun () ->
                 try
-                    use dst =
-                        new System.IO.FileStream(
-                            path,
-                            System.IO.FileMode.Create,
-                            System.IO.FileAccess.Write,
-                            System.IO.FileShare.ReadWrite
+                    // owner-only, as the spill dir [D:private-temp]
+                    let opts =
+                        System.IO.FileStreamOptions(
+                            Mode = System.IO.FileMode.Create,
+                            Access = System.IO.FileAccess.Write,
+                            Share = System.IO.FileShare.ReadWrite
                         )
+
+                    if not (System.OperatingSystem.IsWindows()) then
+                        opts.UnixCreateMode <-
+                            System.Nullable(System.IO.UnixFileMode.UserRead ||| System.IO.UnixFileMode.UserWrite)
+
+                    use dst = new System.IO.FileStream(path, opts)
 
                     let buf = Array.zeroCreate 8192
                     let mutable n = src.Read(buf, 0, buf.Length)

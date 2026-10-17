@@ -73,11 +73,12 @@ it, by design):
 - **Temp-dir cleanup ends at SIGKILL** [D:exit-hook]. `within tmp`
   directories are removed by the scope's own `finally`, and a
   process-exit hook sweeps the registered leftovers on normal exit,
-  SIGINT, and SIGTERM (per-process registration — never a scan of the
+  SIGINT, SIGTERM and SIGHUP (per-process registration — never a scan of the
   temp root, so concurrent weirs cannot delete each other's dirs).
   SIGKILL / `TerminateProcess` runs no user-mode code, so a killed-9
   weir leaves its live temp dirs behind; the `weir-tmp-` prefix keeps
-  them identifiable for external cleanup. `Dir.newTempDir` is exempt
+  them identifiable for external cleanup. The dirs are created 0700
+  and `within proc`'s spill logs 0600 [D:private-temp]. `Dir.newTempDir` is exempt
   by contract (it exists to outlive the scope).
 - **`within proc` does not run your child's cleanup.** The scope's
   tree-kill lands as SIGKILL (the BCL's kill; measured wait = 137),

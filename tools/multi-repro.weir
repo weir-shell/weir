@@ -262,8 +262,9 @@ let serveFixture port dir = $<<<
         print (if verb |> Str.contains "method=Get" then "F9 REPRODUCES (an unrepresentable verb arrives as Get)" else "F9 OK")
 
         let dup = send "GET /echo HTTP/1.1\nHost: 127.0.0.1:{port}\nX-D: one\nX-D: two\nX-D: three\nConnection: close\n\n"
-        let kept = (dup |> Str.contains "X-D=one") && (dup |> Str.contains "X-D=three")
-        print (if kept then "F10 OK" else "F10 REPRODUCES (duplicate request headers collapsed)")
+        // three, in wire order: two cannot tell last-wins from a merge
+        let kept = dup |> Str.contains "X-D=one X-D=two X-D=three"
+        print (if kept then "F10 OK" else "F10 REPRODUCES (duplicate request headers collapsed or reordered)")
 
 // ---- the HTTP client fixtures: F3, F4 -------------------------------------
 // F3 runs alone: its fix REFUSES the send (exit 1, a message naming the

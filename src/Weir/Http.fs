@@ -172,6 +172,60 @@ let cancelAfterSliced (sliceMs: int64) (cts: Threading.CancellationTokenSource) 
 
 let private maxTimerMs = int64 Int32.MaxValue - 1L
 
+// NO_PROXY against an IPv6 literal [D:noproxy-v6]: .NET matches entries
+// against the bracketed host, so `::1` never bypassed `http://[::1]` and
+// `[::1]` did. An entry names the address as curl reads it — bracket-less,
+// compared as an address (or `*`); every other host keeps the runtime's rule.
+type private V6NoProxy(inner: Net.IWebProxy) =
+    let entries =
+        lazy
+            (let raw =
+                match Environment.GetEnvironmentVariable "no_proxy" with
+                | null
+                | "" -> Environment.GetEnvironmentVariable "NO_PROXY"
+                | v -> v
+
+             match raw with
+             | null -> []
+             | r -> r.Split(',') |> Array.map (fun e -> e.Trim()) |> Array.filter ((<>) "") |> List.ofArray)
+
+    let listed (u: Uri) =
+        match Net.IPAddress.TryParse u.DnsSafeHost with
+        | true, host ->
+            entries.Value
+            |> List.exists (fun e ->
+                e = "*"
+                || (match Net.IPAddress.TryParse e with
+                    | true, a -> a.Equals host
+                    | _ -> false))
+        | _ -> false
+
+    let isV6 (u: Uri) = u.HostNameType = UriHostNameType.IPv6
+
+    let proxyFor (u: Uri) : Uri =
+        if not (isV6 u) then
+            inner.GetProxy u
+        elif listed u then
+            null
+        else
+            // the runtime's proxy for the scheme, asked of a host no
+            // bracketed entry can match (TEST-NET-1)
+            inner.GetProxy(UriBuilder(u, Host = "192.0.2.1").Uri)
+
+    interface Net.IWebProxy with
+        member _.Credentials
+            with get () = inner.Credentials
+            and set v = inner.Credentials <- v
+
+        member _.GetProxy(u: Uri) = proxyFor u
+
+        member _.IsBypassed(u: Uri) =
+            if isV6 u then isNull (proxyFor u) else inner.IsBypassed u
+
+/// the environment's proxy for a client handler, NO_PROXY matched as above
+let useEnvProxy (handler: HttpClientHandler) : unit =
+    handler.Proxy <- V6NoProxy(HttpClient.DefaultProxy)
+
 /// send the request. Status is data — a 4xx/5xx is Ok with that status,
 /// never an Error [D:http]. Error is transport failure only, classified
 /// [D:transport-words] — the worded message plus the case, so the caller
@@ -182,7 +236,10 @@ let private maxTimerMs = int64 Int32.MaxValue - 1L
 /// (auth's Authorization + every secretHeaders name) are dropped, exactly
 /// as the BCL drops Authorization — so weir's two credential channels stop
 /// disagreeing (the review's F4). Same-origin hops keep every header.
-let send (req: Req) : Result<Resp, string * TransportError> =
+///
+/// `cancel` cuts the request (a lost pfirst race, a REPL ^C); the caller
+/// names why — the transport error then reads as a timeout.
+let send (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string * TransportError> =
     try
         // the insecure callback is set per request only — the default
         // path keeps TLS verification on [D:http-s2]. Auto-redirect is
@@ -190,6 +247,7 @@ let send (req: Req) : Result<Resp, string * TransportError> =
         // [D:secret-redirect] — the BCL would re-send secretHeaders.
         use handler = new HttpClientHandler()
         handler.AllowAutoRedirect <- false
+        useEnvProxy handler
 
         if req.Insecure then
             handler.ServerCertificateCustomValidationCallback <- (fun _ _ _ _ -> true)
@@ -201,6 +259,7 @@ let send (req: Req) : Result<Resp, string * TransportError> =
         use deadline = new Threading.CancellationTokenSource()
         use _stop = { new IDisposable with member _.Dispose() = deadline.Cancel() }
         cancelAfterSliced maxTimerMs deadline req.TimeoutMs
+        use _cut = cancel.Register(fun () -> deadline.Cancel())
 
         // build one request message for a hop: `method`/`url`, the current
         // header set (already credential-filtered by the caller loop), the
@@ -438,8 +497,16 @@ let private describeChar (c: char) : string =
 /// with a control character or a non-ASCII one. Both crossings refused
 /// these by dropping the header (the server) or skipping it (a client
 /// name); CR/LF/NUL are the injection class, checked first with their
-/// own message [D:http-header-bytes].
-let headerUnsendable (name: string, value: string) : string option =
+/// own message [D:http-header-bytes]. A secret value is described by the
+/// UTF-8 byte offset of the offending character, never the character
+/// [D:secret-header-offset].
+let headerUnsendableWith (secret: bool) (name: string, value: string) : string option =
+    let which (kind: string) (i: int) =
+        if secret then
+            $"a {kind} character at byte offset {System.Text.Encoding.UTF8.GetByteCount(value.AsSpan(0, i))} of the secret value"
+        else
+            $"the {kind} character {describeChar value[i]}"
+
     if name = "" then
         Some "its name is empty"
     else
@@ -447,13 +514,19 @@ let headerUnsendable (name: string, value: string) : string option =
         | Some c ->
             Some $"its name carries {describeChar c}, which a header name cannot (letters, digits and !#$%%&'*+-.^_`|~ only)"
         | None ->
-            match value |> Seq.tryFind (fun c -> (c < ' ' && c <> '\t') || c = '\127') with
-            | Some c -> Some $"its value carries the control character {describeChar c}"
+            match value |> Seq.tryFindIndex (fun c -> (c < ' ' && c <> '\t') || c = '\127') with
+            | Some i -> Some("its value carries " + which "control" i)
             | None ->
-                match value |> Seq.tryFind (fun c -> c > '\127') with
-                | Some c ->
-                    Some $"its value carries the non-ASCII character {describeChar c} (header values are ASCII; percent-encode or base64 it)"
+                match value |> Seq.tryFindIndex (fun c -> c > '\127') with
+                | Some i ->
+                    Some(
+                        "its value carries "
+                        + which "non-ASCII" i
+                        + " (header values are ASCII; percent-encode or base64 it)"
+                    )
                 | None -> None
+
+let headerUnsendable (pair: string * string) : string option = headerUnsendableWith false pair
 
 /// the located refusal for an unsendable header [D:http-header-unsendable],
 /// the injection message's shape: the crossing, the header, the reason
@@ -478,9 +551,14 @@ let requestHeaderHasNoPlace (hasBody: bool) (name: string, value: string) : bool
 /// refuse the first unsendable request header, or pass
 /// [D:http-header-unsendable] — the client crossing; runs after the
 /// injection walk, so CR/LF/NUL keep their own message
-let refuseUnsendableRequestHeader (fail: string -> unit) (hasBody: bool) (headers: (string * string) list) : unit =
+let refuseUnsendableRequestHeader
+    (fail: string -> unit)
+    (hasBody: bool)
+    (secretNames: Set<string>)
+    (headers: (string * string) list)
+    : unit =
     for (k, v) in headers do
-        match headerUnsendable (k, v) with
+        match headerUnsendableWith (secretNames.Contains(k.ToLowerInvariant())) (k, v) with
         | Some reason -> fail (headerUnsendableMessage "request header" k reason)
         | None ->
             if requestHeaderHasNoPlace hasBody (k, v) then

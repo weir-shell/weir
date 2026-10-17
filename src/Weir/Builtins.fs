@@ -107,6 +107,7 @@ let private lsRow (info: FileSystemInfo) : Value =
           VStr info.FullName ]
 
 let private lsEnumerate (cwd: string) : seq<Value> =
+    PlanMode.checkTree "ls" cwd
     // the whole directory — files and subdirectories (GetFiles
     // silently halved the listing for a month) [D:ls-truth]
     let infos =
@@ -912,13 +913,39 @@ let private globSegRegex (seg: string) : System.Text.RegularExpressions.Regex =
     sb.Append "$" |> ignore
     System.Text.RegularExpressions.Regex(sb.ToString())
 
+/// a glob pattern's root and segments [D:path-glob]: `Some (fsRoot,
+/// shownRoot)` for an absolute pattern, None for a relative one. `/`
+/// separates everywhere; on Windows `\` separates too (no Windows name
+/// holds one, so it is never a literal there) and a drive (`C:/`), a
+/// UNC share (`\\host\share`) or a leading separator roots the pattern;
+/// matches below the root are shown with `/` [D:path-drive-root].
+let globSplit (windows: bool) (pattern: string) : (string * string) option * string list =
+    let seps = if windows then [| '/'; '\\' |] else [| '/' |]
+    let isSep c = Array.contains c seps
+    let segsOf (s: string) =
+        s.Split(seps, System.StringSplitOptions.RemoveEmptyEntries) |> Array.toList
+
+    let n = pattern.Length
+
+    if windows && n >= 3 && System.Char.IsAsciiLetter pattern[0] && pattern[1] = ':' && isSep pattern[2] then
+        let d = pattern.Substring(0, 2)
+        Some(d + "\\", d + "/"), segsOf (pattern.Substring 3)
+    else
+        match segsOf pattern with
+        | host :: share :: rest when windows && n >= 2 && isSep pattern[0] && isSep pattern[1] ->
+            Some($"\\\\{host}\\{share}\\", $"//{host}/{share}/"), rest
+        | segs when n >= 1 && isSep pattern[0] -> Some((if windows then "\\" else "/"), "/"), segs
+        | segs -> None, segs
+
 let private globWalk (rootFs: string) (pattern: string) : seq<string> =
     seq {
-        let isAbs = pattern.StartsWith "/"
+        let windows = System.OperatingSystem.IsWindows()
+        let root, segs = globSplit windows pattern
 
-        let segs = pattern.Split('/') |> Array.filter (fun s -> s <> "") |> Array.toList
-
-        let rootDisplay = if isAbs then "/" else ""
+        let rootDisplay =
+            match root with
+            | Some(_, shown) -> shown
+            | None -> ""
 
         let entriesOf (dirFs: string) =
             try
@@ -992,7 +1019,7 @@ let private globWalk (rootFs: string) (pattern: string) : seq<string> =
 
         // a trailing `/` matches directories only, each shown with its
         // slash — bash's law (`*/` is `a/`, never a file) [D:path-glob]
-        if pattern.Length > 1 && pattern.EndsWith "/" then
+        if pattern.Length > 1 && (pattern.EndsWith "/" || (windows && pattern.EndsWith "\\")) then
             for m in walk rootFs rootDisplay segs do
                 if System.IO.Directory.Exists(System.IO.Path.Combine(rootFs, m)) then
                     yield m + "/"
@@ -1010,14 +1037,24 @@ let private globImpl: Value =
             // cwd). The walk stays lazy.
             let scoped = Session.scopedCwd ()
 
-            VSeq(
-                Seq.delay (fun () ->
-                    let rootFs =
-                        if pat.StartsWith "/" then "/"
-                        else scoped |> Option.defaultWith Session.Cwd
+            let root, segs = globSplit (System.OperatingSystem.IsWindows()) pat
 
-                    globWalk rootFs pat |> Seq.map VStr)
-            )
+            let rootOf () =
+                match root with
+                | Some(fsRoot, _) -> fsRoot
+                | None -> scoped |> Option.defaultWith Session.Cwd
+
+            // inside a plan the walk's literal prefix is a listing root
+            // [D:plan-stale-reads], judged where glob is called
+            if PlanMode.active () then
+                let literal =
+                    segs
+                    |> List.toArray
+                    |> Array.takeWhile (fun seg -> not (seg |> Seq.exists (fun c -> c = '*' || c = '?' || c = '[')))
+
+                PlanMode.checkTree "Path.glob" (System.IO.Path.GetFullPath(System.IO.Path.Combine(Array.append [| rootOf () |] literal)))
+
+            VSeq(Seq.delay (fun () -> globWalk (rootOf ()) pat |> Seq.map VStr))
         | _ -> unreachable "the checker rejects 'glob' on this argument")
 
 let private str1 (name: string) (f: string -> string) : Value =
@@ -1532,7 +1569,12 @@ let private logTint (code: string) (label: string) =
 
 let private logAt (level: int) (code: string) (label: string) (msg: string) =
     if level >= logThreshold then
-        System.Console.Error.WriteLine(logTint code label + " " + msg)
+        // the message is data bound for stderr [D:tty-sink-sanitize]
+        System.Console.Error.WriteLine(
+            logTint code label
+            + " "
+            + sanitizeIfTty System.Console.IsErrorRedirected msg
+        )
 
 
 let private parallelCeiling = 64
@@ -1596,7 +1638,15 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     let callNode = RunPos.Current
 
     let worker () =
-        let mutable i = System.Threading.Interlocked.Increment &next
+        // a teardown stops new arms; in-flight ones finish (their children
+        // die with the teardown kill) [D:teardown-stops-arms]
+        let take () =
+            if Session.stopTakingArms () then
+                arr.Length
+            else
+                System.Threading.Interlocked.Increment &next
+
+        let mutable i = take ()
 
         while i < arr.Length do
             Session.enterWorker parentCwd
@@ -1614,7 +1664,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
             finally
                 Session.exitWorker ()
 
-            i <- System.Threading.Interlocked.Increment &next
+            i <- take ()
 
     // arms are one level deeper [D:parallel-ladder]: set before
     // StartNew so the workers capture depth+1, restored after the join
@@ -1629,6 +1679,11 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     finally
         Session.setParallelDepth depth
 
+    // arms skipped by a teardown leave no result: the fan-out ends with
+    // the teardown's code, never a partial array [D:teardown-stops-arms]
+    if Session.stopTakingArms () then
+        raise (ExitRequest(Session.teardownRequested ()))
+
     if not errors.IsEmpty then
         raise errors[Seq.min errors.Keys]
 
@@ -1636,10 +1691,13 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
 
 // the race [D:seq-pfirst]: the first success wins; losers' spawned
 // process trees are killed via their RaceGroup, so their failures are
-// swallowed by construction. Loser arm threads are cooperative: the
-// kill reaches processes (what arms actually wait on); a pure-compute
-// loser finishes in the background and is discarded. All-failed
-// rethrows the first error by input order; empty input raises.
+// swallowed by construction. Losers are cancelled cooperatively
+// [D:pfirst-join]: the race's token stops each at its next boundary
+// (a builtin call, spawn, sleep, Http send), and the race joins every
+// arm before returning — after pfirst returns no loser effect runs. A
+// pure-compute loser holds the return until it reaches a boundary or
+// ends. `exit n` (or a REPL ^C) in an arm ends the race with that raise.
+// All-failed rethrows the first error by input order; empty input raises.
 let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
     if degree < 1 then
         failwith $"parallel degree must be at least 1, got {degree}"
@@ -1658,58 +1716,84 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
     let outcome =
         TaskCompletionSource<Value>(TaskCreationOptions.RunContinuationsAsynchronously)
 
+    // a nested race inherits its arm's cancellation
+    use race =
+        System.Threading.CancellationTokenSource.CreateLinkedTokenSource(Session.flowToken ())
+
     let workers = min degree arr.Length
     let mutable next = -1
     // blamed where the arm raised, as in runParallelWith
     let callNode = RunPos.Current
 
+    // the first outcome ends the race: every other arm is condemned
+    let settle (i: int) (set: unit -> unit) =
+        if System.Threading.Interlocked.CompareExchange(&won, 1, 0) = 0 then
+            for j in 0 .. arr.Length - 1 do
+                if j <> i then
+                    groups[j].Condemn()
+
+            race.Cancel()
+            set ()
+
     let worker () =
         let mutable i = System.Threading.Interlocked.Increment &next
 
-        while i < arr.Length && System.Threading.Volatile.Read &won = 0 do
+        while i < arr.Length
+              && System.Threading.Volatile.Read &won = 0
+              && not race.IsCancellationRequested do
             Session.enterWorker parentCwd
             Session.enterRace groups[i]
+            Session.enterFlow race.Token
             RunPos.Current <- callNode
 
             try
                 try
                     let v = apply f arr[i]
-
-                    if System.Threading.Interlocked.CompareExchange(&won, 1, 0) = 0 then
-                        for j in 0 .. arr.Length - 1 do
-                            if j <> i then
-                                groups[j].Condemn()
-
-                        outcome.TrySetResult v |> ignore
-                with e ->
+                    settle i (fun () -> outcome.TrySetResult v |> ignore)
+                with
+                | :? Session.Cancelled -> ()
+                | e when (e :? ExitRequest) || (e :? Session.Interrupted) ->
+                    let ex = e
+                    settle i (fun () -> outcome.TrySetException ex |> ignore)
+                | e ->
                     pinOnThread e
                     errors[i] <- e
 
                     if System.Threading.Interlocked.Increment &failedCount = arr.Length then
                         outcome.TrySetException errors[Seq.min errors.Keys] |> ignore
             finally
+                Session.exitFlow ()
                 Session.exitRace ()
                 Session.exitWorker ()
 
             i <- System.Threading.Interlocked.Increment &next
 
-    // arms are one level deeper [D:parallel-ladder] — losers that
-    // outlive the winner keep the deeper context, which is correct:
-    // they are still arms
-    let depth = Session.parallelDepthNow ()
-    Session.setParallelDepth (depth + 1)
+    Session.racing (fun () ->
+        // arms are one level deeper [D:parallel-ladder]
+        let depth = Session.parallelDepthNow ()
+        Session.setParallelDepth (depth + 1)
 
-    try
-        for _ in 1..workers do
-            Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning) |> ignore
-    finally
-        Session.setParallelDepth depth
+        let tasks =
+            try
+                Array.init workers (fun _ -> Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning))
+            finally
+                Session.setParallelDepth depth
 
-    try
-        Session.waitTask outcome.Task
-        outcome.Task.Result
-    with :? System.AggregateException as ae when ae.InnerExceptions.Count = 1 ->
-        raise ae.InnerExceptions[0]
+        let all = Task.WhenAll(tasks: Task[])
+
+        try
+            Session.waitTask (Task.WhenAny(outcome.Task, all))
+            // the losers join before the race returns [D:pfirst-join]
+            Session.waitTask all
+
+            // every arm stopped without an outcome: an enclosing race
+            // cancelled this one
+            if not outcome.Task.IsCompleted then
+                raise (Session.Cancelled())
+
+            outcome.Task.Result
+        with :? System.AggregateException as ae when ae.InnerExceptions.Count = 1 ->
+            raise ae.InnerExceptions[0])
 
 let private pfirstImpl: Value =
     VBuiltin(fun f ->
@@ -1830,20 +1914,15 @@ let private seqEqualImpl: Value =
 
 // Seq.distinct [D:seq-distinct]: lazy, first-occurrence-wins,
 // remembers only what it has yielded; equality is the checker-vetted
-// structural `=` (Eq-constrained — functions/seqs rejected at use)
+// structural `=` (Eq-constrained — functions/seqs rejected at use),
+// hashed like distinctBy [D:value-hash]
 let private distinctImpl: Value =
     VBuiltin(fun s ->
         match s with
         | VSeq items ->
             staged items (fun () ->
-                let seen = ResizeArray<Value>()
-
-                stage (fun x ->
-                    if seen.Contains x then
-                        Skip
-                    else
-                        seen.Add x
-                        Emit x))
+                let seen = System.Collections.Generic.HashSet<Value>(HashIdentity.Structural)
+                stage (fun x -> if seen.Add x then Emit x else Skip))
         | v -> unreachable $"the checker rejects 'distinct' on {formatValue v}")
 
 // weir owns its runtime messages [D:message-ownership]: FSharp.Core's
@@ -2646,7 +2725,16 @@ let private atomicReplace (r: string) (lines: Value seq) : unit =
         )
 
     try
-        (use fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None)
+        // the temp is born with the target's mode [D:private-temp]: a 0600
+        // target's new content is never readable wider before the rename
+        let opts =
+            FileStreamOptions(Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None)
+
+        match mode with
+        | Some m -> opts.UnixCreateMode <- System.Nullable m
+        | None -> ()
+
+        (use fs = new FileStream(tmp, opts)
          fs.Write(payload, 0, payload.Length)
          fs.Flush true)
 
@@ -2884,28 +2972,27 @@ let private pathUnderImpl: Value =
 // collapses the text — for the legitimate escape (a project reference
 // leaving its own directory) both siblings decline. A relative path
 // keeps its leading '..'s; at an absolute root '..' swallows.
-let private pathNormalize (p: string) : string =
-    let seps =
-        [| System.IO.Path.DirectorySeparatorChar
-           System.IO.Path.AltDirectorySeparatorChar |]
+let pathNormalizeOn (windows: bool) (p: string) : string =
+    let seps = if windows then [| '\\'; '/' |] else [| '/' |]
 
-    let rooted = p.Length > 0 && Array.contains p[0] seps
+    // a Windows drive root ("C:/", "C:\\") is a root like "/" — platform-
+    // gated so a POSIX file literally named "c:" stays an ordinary segment
+    // [D:path-drive-root]
+    let drive =
+        windows
+        && p.Length >= 3
+        && System.Char.IsAsciiLetter p[0]
+        && p[1] = ':'
+        && Array.contains p[2] seps
 
-    // a Windows drive head ("C:") never pops — platform-gated so a
-    // POSIX file literally named "c:" stays an ordinary segment
-    let driveHead (out: ResizeArray<string>) =
-        System.OperatingSystem.IsWindows()
-        && out.Count = 1
-        && out[0].Length = 2
-        && out[0][1] = ':'
-
+    let rooted = drive || (p.Length > 0 && Array.contains p[0] seps)
     let out = ResizeArray<string>()
 
-    for s in p.Split(seps, System.StringSplitOptions.RemoveEmptyEntries) do
+    for s in (if drive then p.Substring 3 else p).Split(seps, System.StringSplitOptions.RemoveEmptyEntries) do
         match s with
         | "." -> ()
         | ".." ->
-            if out.Count > 0 && out[out.Count - 1] <> ".." && not (driveHead out) then
+            if out.Count > 0 && out[out.Count - 1] <> ".." then
                 out.RemoveAt(out.Count - 1)
             elif not rooted then
                 out.Add ".."
@@ -2916,9 +3003,13 @@ let private pathNormalize (p: string) : string =
     // normalize to it (the originals do .Replace('\\', "/"))
     let body = String.concat "/" (List.ofSeq out)
 
-    if rooted then "/" + body
+    if drive then p.Substring(0, 2) + "/" + body
+    elif rooted then "/" + body
     elif body = "" then "."
     else body
+
+let private pathNormalize (p: string) : string =
+    pathNormalizeOn (System.OperatingSystem.IsWindows()) p
 
 // home + XDG dirs [D:path-home], the one implementation the REPL's
 // config/state paths also use: Windows maps to SpecialFolder
@@ -3003,7 +3094,7 @@ let private pathMembers: (string * Ty * Value) list =
           let dir =
               System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
 
-          System.IO.Directory.CreateDirectory dir |> ignore
+          Session.createPrivateDir dir
           VStr dir) ]
 
 let private optionIterImpl: Value =
@@ -3219,6 +3310,7 @@ let private envFromFileImpl: Value =
             VSeq(
                 Seq.delay (fun () ->
                     let resolved = Session.resolve path
+                    PlanMode.checkRead "Env.fromFile" resolved
 
                     // the File-family guards, in Env.fromFile's own words —
                     // a missing .env must not leak
@@ -3251,9 +3343,13 @@ let private envPairImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun v ->
             match n, v with
-            | VStr n, VStr v -> recordOf envVarDef [ VStr n; VStr v ]
+            | VStr n, VStr v ->
+                Proc.envKeyRefusal "Env.pair" n
+                recordOf envVarDef [ VStr n; VStr v ]
             // the `NAME=$s` desugar admits a Secret [D:secret]
-            | VStr n, VSecret v -> recordOf envVarDef [ VStr n; VStr v ]
+            | VStr n, VSecret v ->
+                Proc.envKeyRefusal "Env.pair" n
+                recordOf envVarDef [ VStr n; VStr v ]
             | _ -> unreachable "the checker rejects 'Env.pair' on these arguments"))
 
 let private envOfPairsImpl: Value =
@@ -3264,7 +3360,9 @@ let private envOfPairsImpl: Value =
                 items
                 |> Seq.map (fun p ->
                     match p with
-                    | VTuple [ VStr n; VStr v ] -> recordOf envVarDef [ VStr n; VStr v ]
+                    | VTuple [ VStr n; VStr v ] ->
+                        Proc.envKeyRefusal "Env.ofPairs" n
+                        recordOf envVarDef [ VStr n; VStr v ]
                     | v -> unreachable $"the checker rejects 'Env.ofPairs' elements: {formatValue v}")
             )
         | v -> unreachable $"the checker rejects 'Env.ofPairs' on {formatValue v}")
@@ -3381,14 +3479,16 @@ let private ioGuarded (op: string) (r: string) (f: unit -> 'a) : 'a =
 // plan's own frame (a nested mutation in the content is
 // captured/refused).
 
-/// capture a WriteFile op (File.write): force the content seq to data now.
+/// capture a WriteFile op (File.write) or WriteFileAtomic (File.writeAtomic,
+/// applied through the atomic path [D:plan-writeatomic]): force the
+/// content seq to data now.
 /// The captured path is the resolved absolute path [D:plan-path-bound]:
 /// the target is fixed at capture, so apply writes exactly the previewed
 /// location regardless of the apply-time cwd.
-let private capWrite (resolved: string) (lines: Value seq) : Value option =
+let private capWrite (case: string) (resolved: string) (lines: Value seq) : Value option =
     if PlanMode.active () then
         let snapshot = lines |> List.ofSeq // FORCE: snapshot content at plan time
-        PlanMode.capture (VUnion("WriteFile", Some(VTuple [ VStr resolved; VSeq snapshot ]))) [ resolved ]
+        PlanMode.capture (VUnion(case, Some(VTuple [ VStr resolved; VSeq snapshot ]))) [ resolved ]
         Some VUnit
     else
         None
@@ -3403,12 +3503,20 @@ let private capPath1 (case: string) (resolved: string) : Value option =
         None
 
 /// capture a two-path op (Copy / Move): the destination is the target a
-/// later read would see stale (the source is read, not written). Both
+/// later read would see stale, and a move's source (a copy's is only
+/// read). Both
 /// paths are stored resolved absolute [D:plan-path-bound] — apply
 /// replays the exact captured source and destination, cwd-independent.
 let private capPath2 (case: string) (resolvedSrc: string) (resolvedDst: string) : Value option =
     if PlanMode.active () then
-        PlanMode.capture (VUnion(case, Some(VTuple [ VStr resolvedSrc; VStr resolvedDst ]))) [ resolvedDst ]
+        // a move also changes its source (gone after apply) [D:plan-stale-reads]
+        let targets =
+            match case with
+            | "Move"
+            | "MoveDir" -> [ resolvedSrc; resolvedDst ]
+            | _ -> [ resolvedDst ]
+
+        PlanMode.capture (VUnion(case, Some(VTuple [ VStr resolvedSrc; VStr resolvedDst ]))) targets
         Some VUnit
     else
         None
@@ -3585,7 +3693,7 @@ let private fileMembers: (string * Ty * Value) list =
               | VStr path, VSeq lines ->
                   let r = Session.resolve path
 
-                  match capWrite r lines with
+                  match capWrite "WriteFile" r lines with
                   | Some captured -> captured
                   | None ->
                   writeGuard "File.write" r
@@ -3620,7 +3728,7 @@ let private fileMembers: (string * Ty * Value) list =
               | VStr path, VSeq lines ->
                   let r = Session.resolve path
 
-                  match capWrite r lines with
+                  match capWrite "WriteFileAtomic" r lines with
                   | Some captured -> captured
                   | None ->
                   writeGuard "File.writeAtomic" r
@@ -3656,7 +3764,10 @@ let private fileMembers: (string * Ty * Value) list =
       TFun(TStr, TBool),
       VBuiltin(fun v ->
           match v with
-          | VStr path -> VBool(File.Exists(Session.resolve path))
+          | VStr path ->
+              let r = Session.resolve path
+              PlanMode.checkRead "File.exists" r
+              VBool(File.Exists r)
           | v -> unreachable $"the checker rejects 'File.exists' on {formatValue v}") ]
 
 // fail keeps exit-1 (message-carrying); `exit n` is the propagation
@@ -3742,6 +3853,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+              PlanMode.checkRead "File.mode" r
 
               if not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
                   failwith $"File.mode: no such path: {r}"
@@ -3788,6 +3900,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+              PlanMode.checkRead "File.isExecutable" r
 
               // "" is a no-such-path, not the cwd [D:isexecutable-empty]:
               // Session.resolve "" folds to the cwd, which exists and
@@ -3819,6 +3932,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+              PlanMode.checkRead "File.readBytes" r
               readGuard "File.readBytes" r
               VBytes(ioGuarded "File.readBytes" r (fun () -> readBytesShared r))
           | v -> unreachable $"the checker rejects 'File.readBytes' on {formatValue v}")
@@ -3846,6 +3960,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+              PlanMode.checkRead "File.sha256" r
               readGuard "File.sha256" r
 
               VStr(
@@ -3981,7 +4096,7 @@ let private dirMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
-              PlanMode.checkRead "Dir.list" r
+              PlanMode.checkTree "Dir.list" r
 
               if not (System.IO.Directory.Exists r) then
                   failwith $"Dir.list: no such directory: {r}"
@@ -4001,6 +4116,7 @@ let private dirMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+              PlanMode.checkTree "Dir.stat" r
 
               if not (System.IO.Directory.Exists r) then
                   failwith $"Dir.stat: no such directory: {r}"
@@ -4601,7 +4717,11 @@ let private runRequest (reqV: Value) : Http.Resp =
         // a header with no place on the wire is refused, never skipped
         // [D:http-header-unsendable]: a non-token name, a control or
         // non-ASCII value byte, a body header on a bodyless request
-        Http.refuseUnsendableRequestHeader failwith req.Body.IsSome req.Headers
+        Http.refuseUnsendableRequestHeader
+            failwith
+            req.Body.IsSome
+            ((auth @ secret) |> List.map (fun (k, _) -> k.ToLowerInvariant()) |> Set.ofList)
+            req.Headers
 
         let host =
             try
@@ -4612,7 +4732,15 @@ let private runRequest (reqV: Value) : Http.Resp =
                 // error's own fallback
                 Http.redactUrl req.Url
 
-        match Waiting.during $"{req.Method} {host}" (fun () -> Http.send req) with
+        // the send is a boundary and a wait [D:pfirst-join] [D:repl-interrupt]
+        Session.checkCancels ()
+
+        let sent =
+            Waiting.during $"{req.Method} {host}" (fun () -> Session.withWaitToken (fun t -> Http.send t req))
+
+        Session.checkCancels ()
+
+        match sent with
         | Ok resp -> resp
         // the TLS case names its per-request repair [D:http-s2]
         | Error(msg, Http.TlsUntrusted) -> failwith $"{msg} (a self-signed endpoint can opt out: insecure = true)"
@@ -4808,6 +4936,8 @@ let private previewOp (op: Value) : string =
     match op with
     | VUnion("WriteFile", Some(VTuple [ VStr p; VSeq lines ])) ->
         $"write {p} ({lines |> Seq.length} line(s))"
+    | VUnion("WriteFileAtomic", Some(VTuple [ VStr p; VSeq lines ])) ->
+        $"write {p} atomically ({lines |> Seq.length} line(s))"
     | VUnion("DeleteFile", Some(VStr p)) -> $"delete file {p}"
     | VUnion("MakeDir", Some(VStr p)) -> $"make dir {p}"
     | VUnion("DeleteDir", Some(VStr p)) -> $"delete dir {p}"
@@ -4840,6 +4970,9 @@ let private applyOp (op: Value) : unit =
             fs.SetLength 0L
             fs.Seek(0L, SeekOrigin.Begin) |> ignore
             fs.Write(payload, 0, payload.Length))
+    | VUnion("WriteFileAtomic", Some(VTuple [ VStr r; VSeq lines ])) ->
+        writeGuard "Plan.apply (WriteFileAtomic)" r
+        ioGuarded "Plan.apply (WriteFileAtomic)" r (fun () -> atomicReplace r lines)
     | VUnion("DeleteFile", Some(VStr r)) -> doFileDelete "Plan.apply (DeleteFile)" r
     | VUnion("MakeDir", Some(VStr r)) -> doDirCreate "Plan.apply (MakeDir)" r
     | VUnion("DeleteDir", Some(VStr r)) -> doDirDelete "Plan.apply (DeleteDir)" r
@@ -4917,7 +5050,7 @@ let private procMembers: (string * Ty * Value) list =
           let h = asProc "Proc.wait" v
 
           Waiting.during $"waiting for pid {h.Proc.Id}" (fun () ->
-              h.Proc.WaitForExit()
+              Session.waitProcess h.Proc
               // a child killed by a teardown returns no code
               // [D:signal-main-unwind]
               Session.checkTeardown ()
@@ -5681,7 +5814,8 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
         VBuiltin(fun v ->
             match v with
             | VStr msg ->
-                eprintf "%s " msg
+                // [D:tty-sink-sanitize]
+                eprintf "%s " (sanitizeIfTty System.Console.IsErrorRedirected msg)
                 System.Console.Error.Flush()
 
                 match readPromptLine () with
@@ -5988,7 +6122,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "srv" ]
           "Server.streamErrors",
           bd
-              "Error messages from Stream response bodies that raised partway through (the client received a truncated body for each), and from response headers that could not be sent (the client received a 500). Empty until one fails. These errors are reported here instead of being raised out of the handler."
+              "Error messages from Stream response bodies that raised partway through (the client received a truncated body for each), from response headers that could not be sent, and from handlers that raised or returned an invalid status (the client received a 500 for each). Empty until one fails. These errors are reported here instead of being raised out of the handler."
               None
               (Some "When a Stream body raises, the client's response is cut off and the error is recorded here.")
           |> named [ "srv" ]
@@ -6334,7 +6468,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "n"; "f"; "xs" ]
           "Seq.pfirst",
           bd
-              "Run the function on every element in parallel and return the first successful result. Processes started by the others are killed, along with their children. If every call fails, the error of the earliest element is raised; an empty sequence raises. Errors from the calls that did not win are discarded, so if only one element can ever succeed, the others' errors stay hidden and a misconfiguration can go unnoticed."
+              "Run the function on every element in parallel and return the first successful result. Processes started by the others are killed, along with their children; each other call stops at its next builtin call, command, sleep or Http send, and pfirst returns only after they have all stopped, so nothing they do happens after it returns. `exit n` in a call ends the race and the script. If every call fails, the error of the earliest element is raised; an empty sequence raises. Errors from the calls that did not win are discarded, so if only one element can ever succeed, the others' errors stay hidden and a misconfiguration can go unnoticed."
               (Some "[3; 1; 2] |> Seq.pfirst (fun n -> n * 10)")
               (Some "A race, not a retry: for example the same download from several mirrors, where the first answer wins and the losers' processes are killed.")
           |> named [ "f"; "xs" ]
@@ -6655,7 +6789,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "base"; "name" ])
           "Path.normalize",
           (bd
-              "Resolve '.' and '..' segments in the text of a path, without touching the filesystem, using the current directory, or following symlinks. combine leaves '..' in place and under rejects paths that leave the base; use normalize when going up out of a directory is intended. A relative path keeps its leading '..' segments; at the root of an absolute path, '..' is dropped."
+              "Resolve '.' and '..' segments in the text of a path, without touching the filesystem, using the current directory, or following symlinks. combine leaves '..' in place and under rejects paths that leave the base; use normalize when going up out of a directory is intended. A relative path keeps its leading '..' segments; at the root of an absolute path, '..' is dropped (on Windows a drive root such as C:/ counts as a root)."
               (Some "Path.normalize \"src/App/../Core/Core.csproj\"")
               None
            |> named [ "path" ])
@@ -6667,7 +6801,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "()" ])
           "Path.newTempDir",
           (bd
-              "Create a new, uniquely named directory under the temp root and return its path (named the same way as `within tmp`). It is never removed automatically; deleting it is up to you or the OS. For a directory that is removed when a block exits (also on Ctrl+C or kill), use `within tmp dir`."
+              "Create a new, uniquely named directory under the temp root and return its path (named the same way as `within tmp`, and like it readable only by you). It is never removed automatically; deleting it is up to you or the OS. For a directory that is removed when a block exits (also on Ctrl+C or kill), use `within tmp dir`."
               (Some "Path.newTempDir () |> Str.startsWith (Path.tempRoot ())")
               None
            |> named [ "()" ])
@@ -6815,7 +6949,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path"; "lines" ])
           "File.writeAtomic",
           (bd
-              "Write a sequence of lines by replacing the whole file at once: the content goes to a temp file in the same directory, is flushed to disk, and is then renamed over the target. Readers see either the complete old file or the complete new one, and a failed write leaves the original intact. For a symlink, the file it points to is replaced, not the link; the file's permissions and any existing BOM are kept. Because the file is a new inode, hard links are separated, open handles and tail -f keep seeing the old file, and a single-file bind mount into a container stops updating; use File.write when you need an in-place write. Inside a plan it records the same WriteFile op as File.write, and apply then does an in-place write."
+              "Write a sequence of lines by replacing the whole file at once: the content goes to a temp file in the same directory, is flushed to disk, and is then renamed over the target. Readers see either the complete old file or the complete new one, and a failed write leaves the original intact. For a symlink, the file it points to is replaced, not the link; the file's permissions and any existing BOM are kept. Because the file is a new inode, hard links are separated, open handles and tail -f keep seeing the old file, and a single-file bind mount into a container stops updating; use File.write when you need an in-place write. Inside a plan it records a WriteFileAtomic op, and apply replaces the file the same way."
               None
               None
            |> named [ "path"; "lines" ])
@@ -6906,10 +7040,10 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "name"; "fallback" ])
           "Env.vars",bd "Every environment variable as EnvVar records." (Some "Env.vars |> Seq.freeze") None
           "Env.pair",
-          (bd "Build one EnvVar from a name and value." (Some "Env.pair \"K\" \"V\"") None
+          (bd "Build one EnvVar from a name and value. A name that is empty or contains `=` is an error." (Some "Env.pair \"K\" \"V\"") None
            |> named [ "name"; "value" ])
           "Env.ofPairs",
-          (bd "Build EnvVar records from name/value tuples." (Some "Env.ofPairs [(\"K\", \"V\")] |> Seq.freeze") None
+          (bd "Build EnvVar records from name/value tuples. A name that is empty or contains `=` is an error." (Some "Env.ofPairs [(\"K\", \"V\")] |> Seq.freeze") None
            |> named [ "pairs" ])
           "Env.fromFile",
           (bd "Read `.env` lines (`KEY=value`) as EnvVar records." None None
@@ -7494,7 +7628,10 @@ let private printerrImpl: Value =
             writeLinesTo System.Console.Error items
             VUnit
         | (VStr _ | VInt _ | VFloat _ | VBool _ | VUuid _) as scalar ->
-            System.Console.Error.WriteLine(scalarString "printerr argument" scalar)
+            // the print rule on stderr [D:tty-sink-sanitize]
+            System.Console.Error.WriteLine(
+                sanitizeIfTty System.Console.IsErrorRedirected (scalarString "printerr argument" scalar)
+            )
             VUnit
         | v -> unreachable $"the checker rejects 'printerr' on {formatValue v}")
 
@@ -7871,6 +8008,7 @@ let typeEnv: TypeEnv =
       ModulePrivate = Map.empty
       PureBindings = Map.empty
       PlanRefused = Map.empty
+      OpenIndex = None
       AnonLitDefs = System.Collections.Generic.Dictionary() }
 
 let typeEnvStrict: TypeEnv =
