@@ -196,8 +196,10 @@ body too slowly gets a 408, and a body larger than `maxBody` gets a
 
 When the block exits, the port is freed at once and requests still
 waiting in the queue are dropped. Handlers already running get two
-seconds, together, to finish their responses; a handler still running
-after that keeps running, but its response is discarded.
+seconds, together, to finish their responses. A handler still running
+after that is stopped at its next builtin call, command, sleep or
+request (its commands are killed) and its response is discarded, so
+none of its effects happens after the block has exited.
 
 `HttpServerRequest` carries:
 

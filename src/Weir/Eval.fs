@@ -4800,7 +4800,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let gate = new System.Threading.SemaphoreSlim(maxConcurrent, maxConcurrent)
             let closing = new System.Threading.CancellationTokenSource()
             let parentCwd = Session.Cwd()
-            let inflight = System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, unit>()
+            // each running handler with its race group [D:serve-cut]
+            let inflight =
+                System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, Session.RaceGroup>()
+
+            let cut = new System.Threading.CancellationTokenSource()
 
             // a handler failure the client sees as a 500 is recorded for
             // the script too [D:serve-handler-errors], on the stream-error
@@ -4824,6 +4828,105 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 with _ ->
                     ()
 
+            // one request on its own thread. Past the drain a handler still
+            // running is cut at its next effect boundary [D:serve-cut]: the
+            // scope's flow token (the pfirst loser's mechanism) and the
+            // request's race group, whose children die with the cut
+            let runHandler (ctx: Serve.SCtx) (group: Session.RaceGroup) =
+                let mutable seen = None
+
+                try
+                    // fork the session like a pmap arm — the
+                    // handler sees the scope's cwd, worker-local
+                    Session.enterWorker parentCwd
+                    Session.enterFlow cut.Token
+                    Session.enterRace group
+
+                    try
+                        // the body was read before the slot
+                        // [D:serve-body-timeout]: a slow body
+                        // arrives here as its 408 signal
+                        let req = Serve.readRequest ctx
+                        seen <- Some req
+
+                        // a malformed method token is refused
+                        // at the boundary [D:serve-method]:
+                        // 400 before the handler, the same
+                        // byte-class refusal Bundle C's
+                        // guard performs
+                        if not (Serve.methodTokenOk req.Method) then
+                            Serve.writeResponse
+                                ctx
+                                { Status = 400
+                                  Headers = []
+                                  Body = Serve.RText "malformed request method" }
+                                ignore
+                        else
+                            let resp = responseOf (apply handler (requestValue req))
+                            // a Stream producer raising mid-body
+                            // goes through the designated
+                            // channel [D:serve-stream]: record
+                            // it on the handle, do not raise
+                            Serve.writeResponse ctx resp (Serve.recordStreamError handle)
+                    with
+                    | Serve.BodyReadTimeout ->
+                        // the client dribbled its body past the
+                        // bound [D:serve-body-timeout] — refuse
+                        // rather than park unboundedly
+                        (try
+                            Serve.writeResponse
+                                ctx
+                                { Status = 408
+                                  Headers = []
+                                  Body = Serve.RText "request body read timed out" }
+                                ignore
+                         with _ ->
+                             ())
+                    | Serve.BodyTooLarge ->
+                        // past maxBody [D:serve-max-body]: the
+                        // rest of the body is never read, so the
+                        // connection closes after the 413
+                        (try
+                            Serve.writeResponse
+                                ctx
+                                { Status = 413
+                                  Headers = []
+                                  Body = Serve.RText $"request body exceeds maxBody ({formatSize maxBody})" }
+                                ignore
+                         with _ ->
+                             ())
+                    | Serve.ResponseHeaderRefused msg ->
+                        // a handler returned a header carrying
+                        // CR/LF/NUL [D:http-header-bytes] or one
+                        // the wire cannot carry
+                        // [D:http-header-unsendable]: refuse
+                        // the response without the offending
+                        // header (never a silent drop) — a 500
+                        // to the client, and the located message
+                        // to the script via the stream-error
+                        // channel so the author learns which
+                        // header and byte the handler bug carried
+                        Serve.recordStreamError handle msg
+                        internalError ctx
+                    | Serve.ResponseStatusRefused n ->
+                        recordHandlerError seen $"status {n} is not an HTTP status (100 to 999)"
+                        internalError ctx
+                    // cut past the scope: detached, nothing to answer
+                    | :? Session.Cancelled -> ()
+                    | ex ->
+                        // a handler raise is a 500 — the server
+                        // survives one bad request, and the
+                        // script hears of it
+                        recordHandlerError seen ex.Message
+                        internalError ctx
+                finally
+                    Serve.finish ctx
+                    Session.exitRace ()
+                    Session.exitFlow ()
+                    Session.exitWorker ()
+                    gate.Release() |> ignore
+                    inflight.TryRemove(System.Threading.Thread.CurrentThread) |> ignore
+
             // the accept loop on its own thread: it takes a slot, then
             // blocks in accept until a request is parked or stop() closes
             // the queue (accept then yields None and the loop ends) — a
@@ -4843,98 +4946,16 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         match Serve.accept handle with
                         | None -> gate.Release() |> ignore // the server closed — shut down
                         | Some ctx ->
+                            let group = Session.RaceGroup()
+
                             let worker =
                                 System.Threading.Thread(fun () ->
-                                    let mutable seen = None
-
-                                    try
-                                        // fork the session like a pmap arm — the
-                                        // handler sees the scope's cwd, worker-local
-                                        Session.enterWorker parentCwd
-
-                                        try
-                                            // the body was read before the slot
-                                            // [D:serve-body-timeout]: a slow body
-                                            // arrives here as its 408 signal
-                                            let req = Serve.readRequest ctx
-                                            seen <- Some req
-
-                                            // a malformed method token is refused
-                                            // at the boundary [D:serve-method]:
-                                            // 400 before the handler, the same
-                                            // byte-class refusal Bundle C's
-                                            // guard performs
-                                            if not (Serve.methodTokenOk req.Method) then
-                                                Serve.writeResponse
-                                                    ctx
-                                                    { Status = 400
-                                                      Headers = []
-                                                      Body = Serve.RText "malformed request method" }
-                                                    ignore
-                                            else
-                                                let resp = responseOf (apply handler (requestValue req))
-                                                // a Stream producer raising mid-body
-                                                // goes through the designated
-                                                // channel [D:serve-stream]: record
-                                                // it on the handle, do not raise
-                                                Serve.writeResponse ctx resp (Serve.recordStreamError handle)
-                                        with
-                                        | Serve.BodyReadTimeout ->
-                                            // the client dribbled its body past the
-                                            // bound [D:serve-body-timeout] — refuse
-                                            // rather than park unboundedly
-                                            (try
-                                                Serve.writeResponse
-                                                    ctx
-                                                    { Status = 408
-                                                      Headers = []
-                                                      Body = Serve.RText "request body read timed out" }
-                                                    ignore
-                                             with _ ->
-                                                 ())
-                                        | Serve.BodyTooLarge ->
-                                            // past maxBody [D:serve-max-body]: the
-                                            // rest of the body is never read, so the
-                                            // connection closes after the 413
-                                            (try
-                                                Serve.writeResponse
-                                                    ctx
-                                                    { Status = 413
-                                                      Headers = []
-                                                      Body = Serve.RText $"request body exceeds maxBody ({formatSize maxBody})" }
-                                                    ignore
-                                             with _ ->
-                                                 ())
-                                        | Serve.ResponseHeaderRefused msg ->
-                                            // a handler returned a header carrying
-                                            // CR/LF/NUL [D:http-header-bytes] or one
-                                            // the wire cannot carry
-                                            // [D:http-header-unsendable]: refuse
-                                            // the response without the offending
-                                            // header (never a silent drop) — a 500
-                                            // to the client, and the located message
-                                            // to the script via the stream-error
-                                            // channel so the author learns which
-                                            // header and byte the handler bug carried
-                                            Serve.recordStreamError handle msg
-                                            internalError ctx
-                                        | Serve.ResponseStatusRefused n ->
-                                            recordHandlerError seen $"status {n} is not an HTTP status (100 to 999)"
-                                            internalError ctx
-                                        | ex ->
-                                            // a handler raise is a 500 — the server
-                                            // survives one bad request, and the
-                                            // script hears of it
-                                            recordHandlerError seen ex.Message
-                                            internalError ctx
-                                    finally
-                                        Serve.finish ctx
-                                        Session.exitWorker ()
-                                        gate.Release() |> ignore
-                                        inflight.TryRemove(System.Threading.Thread.CurrentThread) |> ignore)
+                                    // the counter keeps the per-builtin check
+                                    // live while a handler runs [D:serve-cut]
+                                    Session.racing (fun () -> runHandler ctx group))
 
                             worker.IsBackground <- true
-                            inflight[worker] <- ()
+                            inflight[worker] <- group
                             worker.Start()
                             go ()
 
@@ -4952,15 +4973,23 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 // close the server — frees the port, drops queued requests,
                 // gives in-flight handlers the drain together; idempotent
                 // with the signal sweep [D:serve-drain]
-                let clock = System.Diagnostics.Stopwatch.StartNew()
                 Serve.stop handle drainMs
                 closing.Cancel()
                 Session.deregisterAlways hooked |> ignore
                 loopThread.Join 500 |> ignore
 
-                // a handler still running past the drain is left to finish
-                // on its own: its writes are dropped and its result
-                // discarded, never raised [D:serve-drain]
+                // a handler still running past the drain is cut at its next
+                // effect boundary and joined, so none of its effects lands
+                // after the scope [D:serve-cut]; its writes are dropped and
+                // its result discarded, never raised [D:serve-drain]. Pure
+                // compute may outlive the join — its next boundary is cut
+                cut.Cancel()
+
+                for kv in inflight do
+                    kv.Value.Condemn()
+
+                let clock = System.Diagnostics.Stopwatch.StartNew()
+
                 for kv in inflight do
                     kv.Key.Join(max 0 (drainMs - int clock.ElapsedMilliseconds)) |> ignore
         | WithinTmp ->

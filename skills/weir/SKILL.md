@@ -770,6 +770,12 @@ print $"{key} -> {value}"
   Framing and hop-by-hop headers a handler returns (`Transfer-Encoding`,
   `Content-Length`, `Connection`, `Keep-Alive`, `TE`, `Trailer`,
   `Upgrade`) are dropped — the server frames the response.
+  When the scope closes, handlers still running get 2s together to
+  finish; past that each is cut at its next builtin call, command,
+  sleep or Http send (the `pfirst` loser's cut, its children killed),
+  so NO HANDLER EFFECT LANDS AFTER `within serve` RETURNS [D:serve-cut]
+  (its late response is dropped; pure computation may run on, to its
+  next cut).
   `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
   excess queues; pipelined requests are answered in order. A request
   whose `Host` is not a loopback name (`127.0.0.1`, `localhost`,

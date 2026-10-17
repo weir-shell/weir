@@ -12665,6 +12665,34 @@ t1=$(date +%s)
 [ $((t1 - t0)) -le 6 ] || fail "C3: closing with 8 stuck handlers took $((t1 - t0))s — the drain is not bounded and parallel: $out"
 echo "e2e ok: within serve — C3 a late handler never crashes; one bounded drain; port free at once"
 
+# a handler still running past the drain is cut at its next effect boundary
+# [D:serve-cut]: neither its write nor its command lands after `within
+# serve` returns (the script sleeps past the handler's natural end)
+svport16=8486
+rm -f "$svdir/late.log"
+cat > "$svdir/late.weir" <<WEOF
+let log = "$svdir/late.log"
+let handler = fun req ->
+    File.append log ["handler started"]
+    Duration.sleep 4s
+    File.append log ["handler late"]
+    sh -c "echo handler-late-cmd >> $svdir/late.log"
+    HttpServerResponse { status = 200; headers = []; body = Text "slow" }
+
+within serve srv = { port = $svport16; maxConcurrent = 2 } handler
+    poll timeout=8s interval=50ms
+        Net.portOpen $svport16
+    within proc client = curl -s --max-time 10 http://127.0.0.1:$svport16/
+        poll timeout=8s interval=50ms
+            File.exists log
+File.append log ["scope closed"]
+Duration.sleep 4s
+File.append log ["script end"]
+WEOF
+out=$($BIN "$svdir/late.weir" 2>&1) || fail "serve late-handler run failed: $out"
+[ "$(tr '\n' ',' < "$svdir/late.log")" = "handler started,scope closed,script end," ] || fail "a late serve handler's effects landed after the scope: $(tr '\n' ',' < "$svdir/late.log")"
+echo "e2e ok: within serve — a handler past the drain is cut; no effect after the scope returns"
+
 # (H3 lows) a queued request whose client already left is never started,
 # and a Stream whose client aborts frees its slot [D:serve-drain]
 svport14=8484

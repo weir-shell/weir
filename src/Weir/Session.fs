@@ -384,12 +384,12 @@ let requestTeardown (code: int) : unit =
 
 // ---- cooperative cancellation [D:pfirst-join] [D:repl-interrupt] -------
 // Three requests stop a flow at its next runtime-owned boundary: a pfirst
-// arm that lost the race (its flow token, AsyncLocal — the arm's logical
-// context), a ^C at the REPL (a session token, global — every wait of the
-// evaluation), and a requested teardown for every flow off the main
-// thread [D:teardown-joins-arms]. Each raises an
-// OperationCanceledException, which `try` and retry pass through as they
-// pass `exit`.
+// arm that lost the race or a serve handler past its scope (its flow
+// token, AsyncLocal — the logical context), a ^C at the REPL (a session
+// token, global — every wait of the evaluation), and a requested teardown
+// for every flow off the main thread [D:teardown-joins-arms]. Each raises
+// an OperationCanceledException, which `try` and retry pass through as
+// they pass `exit`.
 
 /// a pfirst loser stopped at a boundary — swallowed by the race
 type Cancelled() =
@@ -411,7 +411,8 @@ let flowToken () : System.Threading.CancellationToken = flowCancel.Value
 let enterFlow (t: System.Threading.CancellationToken) : unit = flowCancel.Value <- t
 let exitFlow () : unit = flowCancel.Value <- System.Threading.CancellationToken.None
 
-/// run a race: the counter gates the per-builtin check
+/// run a race (or a serve scope's handlers): the counter gates the
+/// per-builtin check
 let racing (f: unit -> 'a) : 'a =
     System.Threading.Interlocked.Increment &racesLive |> ignore
 

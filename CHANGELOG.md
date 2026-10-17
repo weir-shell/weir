@@ -197,6 +197,10 @@
 - **A signal during `pfirst` races leaves no stopped processes.** A
   loser's child could be left SIGSTOPped, orphaned and holding the
   terminal.
+- **A `serve` handler still running after the block exits stops.** Past
+  the two-second drain it is stopped at its next builtin call, command
+  or sleep, so it no longer writes files or runs commands after
+  `within serve` returned.
 - **`Args.load` no longer echoes a secret given as `--token=VALUE`.**
   The message reads `unknown flag '--token=***' — … write '--token
   <value>'` for a `Secret` field, and an unknown `--name=value` flag is
