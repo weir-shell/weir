@@ -324,12 +324,52 @@ let runningCleanup (f: unit -> 'a) : 'a =
 
 let inCleanup () = cleanupDepth.Value > 0
 
+// ---- the main-thread teardown [D:signal-main-unwind] [D:stdout-epipe] --
+// A signal or a closed stdout ends the script, but the teardown — every
+// `always`, every scope's release — runs on the MAIN thread, never in the
+// signal handler: the handler records the exit code, kills the scoped
+// children (what the main thread waits on) and wakes interruptible waits;
+// the main thread raises ExitRequest at its next evaluation or wait
+// boundary and unwinds through its scopes, so no statement runs after the
+// request. Registered by the script runner and -e; without a registered
+// main thread (the REPL) the handler keeps the in-handler sweep.
+
+let mutable private mainThreadId = 0
+let mutable private teardownCode = 0
+let mutable private teardownRaised = 0
+
+/// interruptible waits block on this; set when a teardown is requested
+let teardownWake = new System.Threading.ManualResetEventSlim(false)
+
+let registerMainThread () : unit =
+    mainThreadId <- System.Threading.Thread.CurrentThread.ManagedThreadId
+
+let private onMainThread () =
+    mainThreadId <> 0
+    && System.Threading.Thread.CurrentThread.ManagedThreadId = mainThreadId
+
+// what a worker's waits hand to an API (an Http send) once a teardown is
+// requested [D:teardown-joins-arms]
+let private teardownCut = new System.Threading.CancellationTokenSource()
+
+/// record a teardown's exit code — the first request wins
+let requestTeardown (code: int) : unit =
+    System.Threading.Interlocked.CompareExchange(&teardownCode, code, 0) |> ignore
+    teardownWake.Set()
+
+    try
+        teardownCut.Cancel()
+    with _ ->
+        ()
+
 // ---- cooperative cancellation [D:pfirst-join] [D:repl-interrupt] -------
-// Two requests stop a flow at its next runtime-owned boundary: a pfirst
+// Three requests stop a flow at its next runtime-owned boundary: a pfirst
 // arm that lost the race (its flow token, AsyncLocal — the arm's logical
-// context), and a ^C at the REPL (a session token, global — every wait
-// of the evaluation). Both raise an OperationCanceledException, which
-// `try` and retry pass through as they pass `exit`.
+// context), a ^C at the REPL (a session token, global — every wait of the
+// evaluation), and a requested teardown for every flow off the main
+// thread [D:teardown-joins-arms]. Each raises an
+// OperationCanceledException, which `try` and retry pass through as they
+// pass `exit`.
 
 /// a pfirst loser stopped at a boundary — swallowed by the race
 type Cancelled() =
@@ -367,9 +407,19 @@ let private flowCut () =
     && flowCancel.Value.IsCancellationRequested
     && not (inCleanup ())
 
-/// raise Cancelled when this flow lost a race — the effect boundary
+// a requested teardown cuts every flow off the main thread outside an
+// `always` cleanup [D:teardown-joins-arms] — the main thread unwinds by
+// ExitRequest, joining the arms first
+let private teardownCuts () =
+    mainThreadId <> 0 && not (onMainThread ()) && not (inCleanup ())
+
+/// raise Cancelled when this flow lost a race or is torn down — the effect
+/// boundary
 let checkCancelled () : unit =
-    if flowCut () then
+    if
+        flowCut ()
+        || (System.Threading.Volatile.Read &teardownCode <> 0 && teardownCuts ())
+    then
         raise (Cancelled())
 
 // the REPL's interrupt, one evaluation at a time: the first ^C cancels
@@ -439,11 +489,17 @@ let checkCancels () : unit =
     checkCancelled ()
     checkInterrupted ()
 
+// the wait tokens plus, off the main thread, the teardown's
+// [D:teardown-joins-arms]
+let private cutTokens () : System.Threading.CancellationToken list =
+    waitTokens ()
+    @ (if teardownCuts () then [ teardownCut.Token ] else [])
+
 /// run `f` with one token that cancels when this flow's waits are cut —
 /// for a wait the runtime hands to an API (an Http send); `checkCancels`
 /// after it names why
 let withWaitToken (f: System.Threading.CancellationToken -> 'a) : 'a =
-    match waitTokens () with
+    match cutTokens () with
     | [] -> f System.Threading.CancellationToken.None
     | [ t ] -> f t
     | ts ->
@@ -626,35 +682,6 @@ let sigpipeForChildren: Lazy<unit> =
                  | _ -> ()
              | None -> ())
 
-// ---- the main-thread teardown [D:signal-main-unwind] [D:stdout-epipe] --
-// A signal or a closed stdout ends the script, but the teardown — every
-// `always`, every scope's release — runs on the MAIN thread, never in the
-// signal handler: the handler records the exit code, kills the scoped
-// children (what the main thread waits on) and wakes interruptible waits;
-// the main thread raises ExitRequest at its next evaluation or wait
-// boundary and unwinds through its scopes, so no statement runs after the
-// request. Registered by the script runner and -e; without a registered
-// main thread (the REPL) the handler keeps the in-handler sweep.
-
-let mutable private mainThreadId = 0
-let mutable private teardownCode = 0
-let mutable private teardownRaised = 0
-
-/// interruptible waits block on this; set when a teardown is requested
-let teardownWake = new System.Threading.ManualResetEventSlim(false)
-
-let registerMainThread () : unit =
-    mainThreadId <- System.Threading.Thread.CurrentThread.ManagedThreadId
-
-let private onMainThread () =
-    mainThreadId <> 0
-    && System.Threading.Thread.CurrentThread.ManagedThreadId = mainThreadId
-
-/// record a teardown's exit code — the first request wins
-let requestTeardown (code: int) : unit =
-    System.Threading.Interlocked.CompareExchange(&teardownCode, code, 0) |> ignore
-    teardownWake.Set()
-
 /// the requested exit code, or `code` when none was requested — the
 /// runner's result, so a request racing a statement's normal end still
 /// exits with the request's code
@@ -695,10 +722,11 @@ let private interruptible () =
     onMainThread () && System.Threading.Volatile.Read &teardownRaised = 0
 
 // what a runtime-owned wait wakes on: the teardown (main thread, not yet
-// unwinding), a lost race, a REPL ^C [D:repl-interrupt]
+// unwinding; any other flow outside a cleanup [D:teardown-joins-arms]), a
+// lost race, a REPL ^C [D:repl-interrupt]
 let private wakeHandles () : System.Threading.WaitHandle list =
     (if interruptible () then [ teardownWake.WaitHandle ] else [])
-    @ (waitTokens () |> List.map (fun t -> t.WaitHandle))
+    @ (cutTokens () |> List.map (fun t -> t.WaitHandle))
 
 let private raiseWoken () =
     checkTeardown ()
@@ -787,14 +815,28 @@ let cutRead
 let cutJoin (task: System.Threading.Tasks.Task<'a>) : 'a =
     cutRead (fun () -> task.Result) (fun _ -> System.Threading.Tasks.ValueTask<'a>(task))
 
-/// join a task; a teardown request raises on the main thread without
-/// waiting for it (the abandoned task dies with the process)
+// the main thread is joining arms for a teardown: it unwinds next, so the
+// signal watchdog stands down [D:teardown-joins-arms]
+let mutable private mainJoining = 0
+
+/// join a task; a teardown request raises on the main thread once the
+/// task's arms, cut at their next boundary, have joined
+/// [D:teardown-joins-arms] — before any enclosing scope closes (pure
+/// compute holds the join; a second signal hard-exits)
 let waitTask (t: System.Threading.Tasks.Task) : unit =
     if interruptible () then
         System.Threading.WaitHandle.WaitAny(
             [| (t :> System.IAsyncResult).AsyncWaitHandle; teardownWake.WaitHandle |]
         )
         |> ignore
+
+        if teardownRequested () <> 0 then
+            System.Threading.Volatile.Write(&mainJoining, 1)
+
+            try
+                t.Wait()
+            with _ ->
+                ()
 
         checkTeardown ()
 
@@ -948,12 +990,16 @@ let private installExitHook () =
                             // no boundary comes (a stdin read, a network
                             // call) cannot unwind — after a grace period
                             // the old in-handler teardown runs and the
-                            // process exits; it runs no statement either
+                            // process exits; it runs no statement either.
+                            // One joining arms unwinds next and is left be
                             let watchdog =
                                 System.Threading.Thread(fun () ->
                                     System.Threading.Thread.Sleep 1000
 
-                                    if System.Threading.Volatile.Read &teardownRaised = 0 then
+                                    if
+                                        System.Threading.Volatile.Read &teardownRaised = 0
+                                        && System.Threading.Volatile.Read &mainJoining = 0
+                                    then
                                         sweepLiveTmpDirs ()
                                         System.Environment.Exit code)
 

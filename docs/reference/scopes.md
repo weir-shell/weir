@@ -7,8 +7,10 @@ SIGINT or SIGTERM. This works both in a terminal and detached: a
 cleans up the same way, exiting with 130/143. The cleanup runs on the
 script's own thread, and no statement after the signal runs: a sleep
 or a wait on a scoped process is cut short, and the block unwinds from
-there. A reader closing weir's stdout (`weir s.weir | head -1`) ends
-the script the same way, exiting with 141 (bash's SIGPIPE status) and
+there. Running `pmap`, `piter` and `pfirst` arms stop at their next
+builtin call, command or sleep, and the script waits for them before
+any scope releases its resource. A reader closing weir's stdout
+(`weir s.weir | head -1`) ends the script the same way, exiting with 141 (bash's SIGPIPE status) and
 no message. A second signal during cleanup exits immediately, so
 pressing Ctrl+C twice gets you out. There are two exceptions, both by design. `kill -9` of weir
 itself skips cleanup (only a lock is still released, by the kernel).

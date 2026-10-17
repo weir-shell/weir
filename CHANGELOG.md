@@ -177,6 +177,11 @@
   `invalid base64: "<the secret>"`; it now says `fromBase64: failed
   inside Secret.map — the message is withheld (it may carry the
   secret)`.
+- **A signal waits for running `pmap`, `piter` and `pfirst` arms.**
+  After SIGINT, SIGTERM or SIGHUP, arms kept writing files after a
+  `within lock` was released and an `always` had begun; each now stops
+  at its next builtin call, command or sleep, and the script waits for
+  them before closing any scope.
 - **`Args.load` no longer echoes a secret given as `--token=VALUE`.**
   The message reads `unknown flag '--token=***' — … write '--token
   <value>'` for a `Secret` field, and an unknown `--name=value` flag is

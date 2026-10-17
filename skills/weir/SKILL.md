@@ -844,8 +844,12 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   [D:sighup-teardown]. `nohup weir …` keeps SIGHUP ignored.
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel) tree-kills the running foreground command too, scoped or not.
-  A `pmap`/`piter` takes no new arm after the signal (or the closed
-  stdout); arms already running finish.
+  A `pmap`/`piter`/`pfirst` takes no new arm after the signal (or the
+  closed stdout), and arms already running are cut at their next
+  builtin call, command, sleep or wait and JOINED before any
+  enclosing scope closes [D:teardown-joins-arms] — no arm effect lands
+  after a lock is released or an `always` begins; an arm busy in pure
+  computation holds the teardown (a second signal hard-exits).
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
   definition — no userspace design closes that hole; and a weir
   BACKGROUNDED IN AN INTERACTIVE SHELL (`weir … &`/`nohup`, which

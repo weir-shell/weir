@@ -3111,6 +3111,54 @@ WEOF
     pkill -9 -f "^sleep $MK4\$" 2>/dev/null || true
     [ "$leaked" = "0" ] && [ "$left" = "0" ] || fail "spill: SIGTERM leaked $leaked weir-proc dir(s), $left orphan(s)"
     echo "e2e ok: a teardown stops piter taking arms; no spill dir or child leaks"
+
+    # a teardown cuts in-flight arms at their next boundary and joins them
+    # before any enclosing scope closes [D:teardown-joins-arms]: the arms
+    # sleep past the signal, `always` runs 1.5s from it, so an unjoined arm
+    # would write between "always start" and "always end"; a piter under
+    # within tmp leaves no dir behind
+    for fan in '[1..4] |> Seq.piterWith 4 (fun i -> Duration.sleep 2s; File.append log [$"arm {i}"])' \
+        '[1..4] |> Seq.pmap (fun i -> Duration.sleep 2s; File.append log [$"arm {i}"]; i) |> Seq.length |> show |> print' \
+        '[1..4] |> Seq.pfirst (fun i -> Duration.sleep 2s; File.append log [$"arm {i}"]; i) |> show |> print'; do
+        cat > "$dtdir/join.weir" <<WEOF
+let log = Self.args |> Seq.head
+within
+    $fan
+always
+    File.append log ["always start"]
+    Duration.sleep 1500ms
+    File.append log ["always end"]
+WEOF
+        rm -f "$dtdir/join.log"
+        setsid "$BIN" "$dtdir/join.weir" "$dtdir/join.log" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        sleep 1
+        kill -TERM "$wpid" 2>/dev/null || true
+        code=0; wait "$wpid" 2>/dev/null || code=$?
+        [ "$code" = "143" ] || fail "join ($fan): SIGTERM must exit 143 (got $code)"
+        sleep 1.5
+        [ "$(cat "$dtdir/join.log" 2>/dev/null | tr '\n' ',')" = "always start,always end," ] || fail "join ($fan): an arm effect landed after the teardown began: $(cat "$dtdir/join.log" 2>/dev/null | tr '\n' ',')"
+    done
+    cat > "$dtdir/jointmp.weir" <<'WEOF'
+within
+    within tmp d
+        [1..4] |> Seq.piterWith 4 (fun i ->
+            Duration.sleep 2s
+            Dir.create $"{d}/arm{i}")
+always
+    Duration.sleep 1500ms
+WEOF
+    jtmp="$dtdir/jointmp"
+    mkdir -p "$jtmp"
+    TMPDIR="$jtmp" setsid "$BIN" "$dtdir/jointmp.weir" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    sleep 1
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" 2>/dev/null || code=$?
+    sleep 1.5
+    [ "$code" = "143" ] || fail "jointmp: SIGTERM must exit 143 (got $code)"
+    [ "$(find "$jtmp" -mindepth 1 -maxdepth 1 | wc -l)" = "0" ] || fail "jointmp: an arm recreated the within-tmp dir after the teardown: $(find "$jtmp")"
+    echo "e2e ok: a teardown cuts and joins in-flight piter/pmap/pfirst arms before always runs; within tmp leaves nothing"
 else
     echo "e2e skip: detached-signal pins (POSIX + setsid + pgrep)"
 fi

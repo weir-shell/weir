@@ -1712,8 +1712,8 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     let callNode = RunPos.Current
 
     let worker () =
-        // a teardown stops new arms; in-flight ones finish (their children
-        // die with the teardown kill) [D:teardown-stops-arms]
+        // a teardown stops new arms [D:teardown-stops-arms] and cuts the
+        // in-flight ones at their next boundary [D:teardown-joins-arms]
         let take () =
             if Session.stopTakingArms () then
                 arr.Length
@@ -1814,7 +1814,8 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
         while i < arr.Length
               && System.Threading.Volatile.Read &won = 0
-              && not race.IsCancellationRequested do
+              && not race.IsCancellationRequested
+              && not (Session.stopTakingArms ()) do
             Session.enterWorker parentCwd
             Session.enterRace groups[i]
             Session.enterFlow race.Token
