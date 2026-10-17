@@ -81,6 +81,36 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **`weir gen types` drafts number-or-string fields and `format:
+  int-or-string` as `Yaml`.** Kubernetes `resources.limits`, an HPA
+  `target.value` and swagger's IntOrString drafted `string`, which
+  refused `cpu: 1` on read.
+- **`weir gen types` drafts an enum as its type.** An enum under
+  `type: boolean` or `number` drafted `string` and refused `true` and
+  `0.5`; it now drafts `bool`/`float`. An enum mixing kinds drafts
+  `Yaml`, with a note.
+- **`weir add schema` accepts a root `$id`, `const`,
+  `contentEncoding` and `contentMediaType`.** Each refused the whole
+  schema; `$id` is ignored, and the others (and `format`) get a
+  `// note: not enforced:` line.
+- **`to yaml` writes an all-`None` record as `{}` and an empty
+  top-level seq as `[]`.** Both wrote nothing, so `to yaml stream`
+  dropped the document and the text read back as something else.
+- **Duplicate mapping keys.** A repeated key read into a
+  `seq<string * T>` from JSON kept both pairs; it now last-wins at its
+  first position. `to json` and `to yaml` refuse a pair-seq or `YMap`
+  holding a key twice, naming the key, instead of writing a document
+  weir then refuses.
+- **A `plan`'s stale-read guard follows symlinks and nested plans.**
+  A read through a symlink alias of a captured target (either way
+  round) saw stale state; on macOS a different letter case did too.
+  An inner `plan` now also refuses a read an enclosing plan's ops
+  changed.
+- **A `plan` read no longer slows with every captured op.** A
+  30,000-file write-if-absent loop took 31 s; it is linear again.
+- **Refusing JSON nested past 100 levels is linear.** A 100,000-deep
+  document took 11 s to refuse (`from json`, `from jsonl`,
+  `inferShape`); it now takes milliseconds.
 - **`Path.normalize` treats a Windows drive root as a root.** On
   Windows, `Path.normalize "C:/../y"` gave `C:/../y`; it is now `C:/y`,
   as `/../y` is `/y`.
@@ -127,6 +157,50 @@
   carrying an OSC 52 (clipboard write), a title change or a screen
   clear shows as visible `\x1b…` text instead of driving the terminal.
   Redirected output is unchanged.
+- **weir's own error messages neutralize terminal escapes at a tty.**
+  `weir check` and the runner echoed a script's bytes raw — the source
+  line under a parse or type error, an unresolved import's path, an
+  invalid regex, a `#sig` name, `no such script: …` — so checking an
+  untrusted script could write the clipboard (OSC 52) or set the
+  window title. They now show as visible `\x1b…` text; colour and
+  redirected output are unchanged.
+- **A carriage return passes `print`, `printerr`, `Log.*` and the
+  prompt at a tty** instead of showing as `\x0d`, so progress lines
+  overwrite themselves again. Other control characters stay visible.
+- **A `from json`/`jsonl`/`toml` error no longer prints a `Secret`.**
+  When the type holds a `Secret` anywhere, `field 'ttl' expected int,
+  got string in: …` cites `<excerpt withheld: the type holds a
+  Secret>` instead of the document, and a TOML parse error keeps its
+  line but withholds the detail.
+- **A function failing inside `Secret.map` no longer prints the
+  secret.** `Secret.map Str.fromBase64 s` on bad input said
+  `invalid base64: "<the secret>"`; it now says `fromBase64: failed
+  inside Secret.map — the message is withheld (it may carry the
+  secret)`.
+- **A `Self.prompt` cut short no longer eats a line.** A `pfirst` arm
+  waiting in `Self.prompt` (the "prompt with a timeout default" shape)
+  held the race at a terminal and, piped, took the next line when it
+  arrived; the race now returns at once and the next prompt gets the
+  line. Ctrl+C during `Self.prompt` at the REPL returns to the prompt
+  instead of taking the next typed line as the answer. A `pfirst` arm
+  reading `Self.stdin` or a FIFO no longer holds the race.
+- **A signal waits for running `pmap`, `piter` and `pfirst` arms.**
+  After SIGINT, SIGTERM or SIGHUP, arms kept writing files after a
+  `within lock` was released and an `always` had begun; each now stops
+  at its next builtin call, command or sleep, and the script waits for
+  them before closing any scope.
+- **A `pfirst` loser's `always` commands run.** They were killed as
+  they started (exit 137) and the rest of the cleanup was skipped.
+- **Ctrl+C at the REPL stops a `pmap`/`piter` whose arms run
+  commands.** Every remaining arm ran and the prompt came back only
+  after all of them; no new arm starts now.
+- **A signal during `pfirst` races leaves no stopped processes.** A
+  loser's child could be left SIGSTOPped, orphaned and holding the
+  terminal.
+- **A `serve` handler still running after the block exits stops.** Past
+  the two-second drain it is stopped at its next builtin call, command
+  or sleep, so it no longer writes files or runs commands after
+  `within serve` returned.
 - **`Args.load` no longer echoes a secret given as `--token=VALUE`.**
   The message reads `unknown flag '--token=***' — … write '--token
   <value>'` for a `Secret` field, and an unknown `--name=value` flag is

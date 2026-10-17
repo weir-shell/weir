@@ -493,6 +493,9 @@ let private contractSensitiveHeaders: Set<string> =
     Set.ofList [ "authorization"; "private-token" ]
 
 let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte[] * string option, string> =
+    // the hop in flight: a transport failure names the host that failed
+    let mutable curUrl = url
+
     try
         // auto-redirect off so the contract client controls the
         // credential-drop on an origin change [D:contract-redirect] — the
@@ -508,7 +511,6 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
         // filtered per hop), dropping the credential headers on a
         // cross-origin change. Covers both the API-resolution request and the
         // artifact download — every fetchBytesWith caller.
-        let mutable curUrl = url
         let mutable curHeaders = headers
         let mutable hops = 0
         let mutable result: Net.Http.HttpResponseMessage = null
@@ -557,16 +559,9 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
 
             Ok(resp.Content.ReadAsByteArrayAsync().Result, ct)
     with ex ->
-        let host, port =
-            try
-                let u = Uri(url)
-                u.Host, u.Port
-            with _ ->
-                url, 0
-
         // the shared transport classifier [D:transport-words] — 60s is
         // this fetch's own client timeout above
-        Error(Http.transportMessage host (Http.classifyTransport 60000L port ex))
+        Error(Http.transportMessage (Http.failingHost curUrl) (Http.classifyTransport 60000L (Http.failingPort curUrl) ex))
 
 let fetchBytes (url: string) : Result<byte[] * string option, string> = fetchBytesWith [] url
 
@@ -817,16 +812,19 @@ let vendorFile
 // $ref-with-description idiom), and in-document $ref
 // (#/definitions/<name>, #/$defs/<name>, #/components/schemas/<name>)
 // resolved against root-level holders. Annotations accepted and
-// ignored: description, format, title, $schema, x-*. Everything else
+// ignored: description, title, $schema, a root $id, x-*; format, const
+// and the content keywords are noted, never checked
+// [D:schema-const-format]. Everything else
 // rejects with a teaching error naming the keyword and its JSON path —
 // a cross-file $ref's teaching names the standalone variants (refs
 // inlined at publish).
 type Schema =
     | SAny
     | SScalar of kinds: Set<string> // "string" | "integer" | "number" | "boolean" | "null"
-    // `integer`: every value is a JSON integer (an int enum drafts int)
-    // [D:schema-int-enum]
-    | SEnum of values: string list * integer: bool
+    // `kind`: the declared scalar type, else the values' one JSON kind
+    // ("integer" | "number" | "boolean" | "string"), "mixed" when they
+    // differ [D:schema-int-enum] [D:schema-enum-kind]
+    | SEnum of values: string list * kind: string
     | SObject of props: (string * Schema) list * required: string list * additional: AdditionalProps
     | SArray of items: Schema
     // an in-document reference, resolved via SchemaDoc.Defs — the name
@@ -837,6 +835,9 @@ type Schema =
     // `nullable: true` on a non-scalar (a scalar folds "null" into its
     // kind set instead) [D:schema-types]
     | SNullable of Schema
+    // `format: int-or-string` on a string: the scalar is widened to
+    // integer/string; the generator notes the format [D:schema-num-or-string]
+    | SIntOrStringFormat of Schema
 
 and AdditionalProps =
     | Closed
@@ -884,7 +885,11 @@ let private validationKeys =
           "maxProperties"
           "readOnly"
           "writeOnly"
-          "deprecated" ]
+          "deprecated"
+          // the base type drafts; the value is not checked [D:schema-const-format]
+          "const"
+          "contentEncoding"
+          "contentMediaType" ]
 
 let private rejectedTeaching (path: string) (kw: string) : string =
     let where = if path = "" then "the schema root" else path
@@ -955,11 +960,23 @@ let rec private parseNode
                 || k = "$ref"
                 || k = "nullable"
                 || (path = "" && (k = "definitions" || k = "$defs" || k = "components"))
+                // a root $id names the document, ignored: refs resolve
+                // in-document [D:schema-const-format]
+                || (path = "" && k = "$id")
                 || annotationKeys.Contains k
                 || k.StartsWith "x-"
                 || validationKeys.Contains k
 
             if validationKeys.Contains k then
+                unenforced.Add((k, path))
+
+            // a format is never checked [D:schema-const-format];
+            // int-or-string changes the draft and carries its own note
+            let intOrString =
+                p.Value.ValueKind = Text.Json.JsonValueKind.String
+                && p.Value.GetString() = "int-or-string"
+
+            if k = "format" && not intOrString then
                 unenforced.Add((k, path))
 
             if not known && rejection.IsNone then
@@ -985,9 +1002,23 @@ let rec private parseNode
                         | s -> SNullable s)
                 | _ -> r
 
+            // a value's JSON kind in the subset's type words
+            let jsonKind (v: Text.Json.JsonElement) =
+                match v.ValueKind with
+                | Text.Json.JsonValueKind.String -> Some "string"
+                | Text.Json.JsonValueKind.Number when fst (v.TryGetInt64()) -> Some "integer"
+                | Text.Json.JsonValueKind.Number -> Some "number"
+                | Text.Json.JsonValueKind.True
+                | Text.Json.JsonValueKind.False -> Some "boolean"
+                | Text.Json.JsonValueKind.Null -> Some "null"
+                | _ -> None
+
             let typeKinds =
                 match getProp "type" with
-                | None -> None
+                | None ->
+                    // an untyped const drafts its value's scalar kind
+                    // [D:schema-const-format]
+                    getProp "const" |> Option.bind jsonKind |> Option.map Set.singleton
                 | Some t when t.ValueKind = Text.Json.JsonValueKind.String -> Some(Set.singleton (t.GetString()))
                 | Some t when t.ValueKind = Text.Json.JsonValueKind.Array ->
                     Some(t.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Set.ofSeq)
@@ -1054,14 +1085,34 @@ let rec private parseNode
                                 | _ -> v.GetRawText())
                             |> List.ofSeq
 
-                        let integer =
-                            e.GetArrayLength() > 0
-                            && e.EnumerateArray()
-                               |> Seq.forall (fun v ->
-                                   v.ValueKind = Text.Json.JsonValueKind.Number
-                                   && fst (v.TryGetInt64()))
+                        // the declared scalar type wins; else the values'
+                        // own kind (integers inside a number enum count as
+                        // numbers), "mixed" when they disagree
+                        // [D:schema-enum-kind]
+                        let declared =
+                            typeKinds
+                            |> Option.map (Set.remove "null")
+                            |> Option.filter (fun ks -> ks.Count = 1)
+                            |> Option.map Set.minElement
+                            |> Option.filter (fun k -> List.contains k [ "string"; "integer"; "number"; "boolean" ])
 
-                        applyNullable (Ok(SEnum(values, integer)))
+                        let kind =
+                            match declared with
+                            | Some k -> k
+                            | None ->
+                                let kinds =
+                                    e.EnumerateArray()
+                                    |> Seq.map (fun v -> jsonKind v |> Option.defaultValue "mixed")
+                                    |> Set.ofSeq
+                                    |> Set.remove "null"
+
+                                match Set.toList kinds with
+                                | [ k ] -> k
+                                | [ "integer"; "number" ] -> "number"
+                                | [] -> "string"
+                                | _ -> "mixed"
+
+                        applyNullable (Ok(SEnum(values, kind)))
                     | None ->
 
                         match getProp "oneOf" with
@@ -1120,6 +1171,16 @@ let rec private parseNode
                                       | Some items -> parseNode (path + "items.") items |> Result.map SArray
                                       | None -> Ok(SArray SAny))
                                      |> wrapNullListed
+                                 // `format: int-or-string` on a string field
+                                 // (swagger's IntOrString) [D:schema-num-or-string]
+                                 | Some kinds when
+                                     kinds.Contains "string"
+                                     && Set.isSubset kinds (set [ "string"; "integer"; "null" ])
+                                     && (match getProp "format" with
+                                         | Some f -> f.ValueKind = Text.Json.JsonValueKind.String && f.GetString() = "int-or-string"
+                                         | None -> false)
+                                     ->
+                                     Ok(SIntOrStringFormat(SScalar(Set.add "integer" kinds)))
                                  | Some kinds when not kinds.IsEmpty -> Ok(SScalar kinds)
                                  // the k8s int-or-string marker alone, no
                                  // type: the anyOf idiom's own kinds
@@ -1186,7 +1247,8 @@ let rec private refsOf (s: Schema) : string list =
            | Vals v -> refsOf v
            | _ -> [])
     | SArray items -> refsOf items
-    | SNullable inner -> refsOf inner
+    | SNullable inner
+    | SIntOrStringFormat inner -> refsOf inner
     | SChoice alts -> alts |> List.collect refsOf
     | SAny
     | SScalar _
@@ -1198,7 +1260,7 @@ let rec private refsOf (s: Schema) : string list =
 /// checked to resolve here, so consumers never meet a dangling name.
 /// Errors carry the schema name and the JSON path of the offender.
 let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
-    match parseJsonBounded (fun o -> Text.Json.JsonDocument.Parse(text, o)) with
+    match parseJsonBounded text with
     | Error(Some why) -> Error $"schema {name}: valid JSON, but {why}"
     | Error None ->
         let why =
@@ -1326,7 +1388,7 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
         let ct = contentType |> Option.defaultValue "unknown"
 
         let parsed =
-            match parseJsonBounded (fun o -> Text.Json.JsonDocument.Parse(ReadOnlyMemory<byte> bytes, o)) with
+            match parseJsonBytesBounded bytes with
             | Ok d -> Ok d
             | Error(Some why) -> Error $"the response is valid JSON, but {why}; nothing was written"
             | Error None -> Error $"the response is not JSON (Content-Type: {ct}){rawUrlHint url}; nothing was written"
@@ -1780,6 +1842,7 @@ let rec validateTpl
     // nullable: a null scalar passes; anything else validates the inner
     | SNullable _, Check.TYtScalar(raw, quoted, _) when literalKind raw quoted = "null" -> []
     | SNullable inner, tpl -> validateTpl name defs path inner tpl
+    | SIntOrStringFormat inner, tpl -> validateTpl name defs path inner tpl
     | SObject(props, required, additional), Check.TYtMap(entries, mspan) ->
         let hasDynamic =
             entries
@@ -1884,7 +1947,8 @@ and private spliceCheck
     // [D:schema-types]
     | SRef _ -> spliceCheck name defs path (deref defs Set.empty schema) te
     | SChoice _ -> []
-    | SNullable inner -> spliceCheck name defs path inner te
+    | SNullable inner
+    | SIntOrStringFormat inner -> spliceCheck name defs path inner te
     | SScalar kinds ->
         match te.Ty with
         | TSeq _ ->

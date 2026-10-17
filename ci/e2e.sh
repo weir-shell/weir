@@ -57,6 +57,7 @@ BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 # `$` so one run's marker is never a prefix of another's.
 MK=$(( 100000 + ($$ % 400000) * 10 ))
 MK1=$((MK + 1)); MK2=$((MK + 2)); MK3=$((MK + 3)); MK4=$((MK + 4)); MK5=$((MK + 5)); MK6=$((MK + 6))
+MK7=$((MK + 7))
 
 # POSIX-only harnesses (os.fork, pty, zombies) get stated skips on
 # Windows — a skip echoes its reason, never silence
@@ -3111,6 +3112,88 @@ WEOF
     pkill -9 -f "^sleep $MK4\$" 2>/dev/null || true
     [ "$leaked" = "0" ] && [ "$left" = "0" ] || fail "spill: SIGTERM leaked $leaked weir-proc dir(s), $left orphan(s)"
     echo "e2e ok: a teardown stops piter taking arms; no spill dir or child leaks"
+
+    # a teardown cuts in-flight arms at their next boundary and joins them
+    # before any enclosing scope closes [D:teardown-joins-arms]: the arms
+    # sleep past the signal, `always` runs 1.5s from it, so an unjoined arm
+    # would write between "always start" and "always end"; a piter under
+    # within tmp leaves no dir behind
+    for fan in '[1..4] |> Seq.piterWith 4 (fun i -> Duration.sleep 2s; File.append log [$"arm {i}"])' \
+        '[1..4] |> Seq.pmap (fun i -> Duration.sleep 2s; File.append log [$"arm {i}"]; i) |> Seq.length |> show |> print' \
+        '[1..4] |> Seq.pfirst (fun i -> Duration.sleep 2s; File.append log [$"arm {i}"]; i) |> show |> print'; do
+        cat > "$dtdir/join.weir" <<WEOF
+let log = Self.args |> Seq.head
+within
+    $fan
+always
+    File.append log ["always start"]
+    Duration.sleep 1500ms
+    File.append log ["always end"]
+WEOF
+        rm -f "$dtdir/join.log"
+        setsid "$BIN" "$dtdir/join.weir" "$dtdir/join.log" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        sleep 1
+        kill -TERM "$wpid" 2>/dev/null || true
+        code=0; wait "$wpid" 2>/dev/null || code=$?
+        [ "$code" = "143" ] || fail "join ($fan): SIGTERM must exit 143 (got $code)"
+        sleep 1.5
+        [ "$(cat "$dtdir/join.log" 2>/dev/null | tr '\n' ',')" = "always start,always end," ] || fail "join ($fan): an arm effect landed after the teardown began: $(cat "$dtdir/join.log" 2>/dev/null | tr '\n' ',')"
+    done
+    cat > "$dtdir/jointmp.weir" <<'WEOF'
+within
+    within tmp d
+        [1..4] |> Seq.piterWith 4 (fun i ->
+            Duration.sleep 2s
+            Dir.create $"{d}/arm{i}")
+always
+    Duration.sleep 1500ms
+WEOF
+    jtmp="$dtdir/jointmp"
+    mkdir -p "$jtmp"
+    TMPDIR="$jtmp" setsid "$BIN" "$dtdir/jointmp.weir" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    sleep 1
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" 2>/dev/null || code=$?
+    sleep 1.5
+    [ "$code" = "143" ] || fail "jointmp: SIGTERM must exit 143 (got $code)"
+    [ "$(find "$jtmp" -mindepth 1 -maxdepth 1 | wc -l)" = "0" ] || fail "jointmp: an arm recreated the within-tmp dir after the teardown: $(find "$jtmp")"
+    echo "e2e ok: a teardown cuts and joins in-flight piter/pmap/pfirst arms before always runs; within tmp leaves nothing"
+
+    # a signal during pfirst races never leaves SIGSTOPped orphans
+    # [D:kill-settle]: .NET's tree kill stops, then kills, so every
+    # exit settles the race kills in flight first
+    cat > "$dtdir/stopped.weir" <<WEOF
+within
+    [1..500] |> Seq.iter (fun i ->
+        let _w =
+            [0..8] |> Seq.pfirstWith 9 (fun k ->
+                if k == 0 then
+                    Duration.sleep 20ms
+                    k
+                else
+                    let _c = sh -c "sleep $MK7; echo x" | exitCode
+                    k)
+        ())
+always
+    print "always"
+WEOF
+    stopped=0
+    for r in 1 2 3 4 5 6 7 8 9; do
+        case $((r % 3)) in 0) sig=INT ;; 1) sig=TERM ;; *) sig=HUP ;; esac
+        setsid "$BIN" "$dtdir/stopped.weir" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        sleep "0.$((3 + r % 7))"
+        kill -"$sig" "$wpid" 2>/dev/null || true
+        wait "$wpid" 2>/dev/null || true
+        sleep 0.5
+        n=$(ps -eo stat=,args= | awk -v m="sleep $MK7" '$1 ~ /T/ && ($2 " " $3) == m' | wc -l)
+        stopped=$((stopped + n))
+        pkill -9 -f "^sleep $MK7\$" 2>/dev/null || true
+    done
+    [ "$stopped" = "0" ] || fail "a signal during pfirst races left $stopped SIGSTOPped orphan(s)"
+    echo "e2e ok: signals during pfirst races leave no SIGSTOPped orphan (9 runs)"
 else
     echo "e2e skip: detached-signal pins (POSIX + setsid + pgrep)"
 fi
@@ -3626,6 +3709,37 @@ SCN
     else
         echo "e2e skip: REPL ^C wait pins (flock(1))"
     fi
+
+    # ^C during Self.prompt cuts the read and takes no line [D:stdin-reader]:
+    # the next typed line reaches the REPL, not the cancelled prompt; ^C
+    # during a command fan-out is the interrupt, not an arm failure — no new
+    # arm starts and the prompt returns [D:repl-interrupt-fanout]
+    idir=$(mkweirtmp)
+    cat > "$idir/int.scn" <<SCN
+SLEEP 700
+SEND Self.prompt "name? "\r
+SLEEP 800
+SEND \x03
+SLEEP 500
+SEND print (Str.toUpper "after-prompt")\r
+SLEEP 400
+SEND [1..30] |> Seq.piterWith 3 (fun i -> sh -c \$"echo start {i} >> $idir/arms.log; sleep 2")\r
+SLEEP 1200
+SEND \x03
+SLEEP 1500
+SEND print (Str.toUpper "after-fanout")\r
+SLEEP 400
+SEND #quit\r
+SCN
+    iout=$(python3 "$ptyrun" 20 "$BIN" < "$idir/int.scn" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
+    sleep 2.5
+    started=$(wc -l < "$idir/arms.log" 2>/dev/null || echo 0)
+    n130=$(echo "$iout" | grep -c "exit 130 (SIGINT")
+    [ "$n130" = "2" ] || fail "^C during Self.prompt and a fan-out must each return with exit 130 (got $n130): $iout"
+    echo "$iout" | grep -q "AFTER-PROMPT" || fail "the line after a ^C'd Self.prompt must reach the REPL: $iout"
+    echo "$iout" | grep -q "AFTER-FANOUT" || fail "the prompt must return after a ^C'd fan-out: $iout"
+    [ "$started" -le 6 ] || fail "a ^C'd fan-out kept taking arms ($started of 30 started, 3 in flight at ^C)"
+    echo "e2e ok: REPL ^C cuts Self.prompt without taking a line, and stops a command fan-out"
 else
     echo "e2e skip: REPL SIGINT pty pins (POSIX + python3)"
 fi
@@ -5328,6 +5442,36 @@ out=$($BIN "$jdir/dup.weir" 2>&1) || fail "a repeated key into Yaml must round-t
 rm -rf "$jdir"
 echo "e2e ok: from json — 65-deep reads, 101-deep names the depth, a repeated key into Yaml last-wins"
 
+# [D:yaml-empty-doc] [D:mapping-dupkeys]: an all-None record writes {},
+# an empty top-level seq [], and the stream keeps every document; a
+# repeated key into seq<string * _> last-wins, and the writers refuse a
+# mapping holding a key twice
+ydir=$(mkweirtmp)
+cat > "$ydir/ye.weir" <<'WEOF'
+type Res = { cpu: Option<string> }
+let xs = [{ cpu = Some "1" }; { cpu = None }; { cpu = Some "2" }]
+let y = xs |> to yaml stream |> Seq.freeze
+print (Str.join "|" y)
+y |> from yaml stream Res |> Seq.iter (fun r -> print (show r.cpu))
+let none = xs |> Seq.where (fun r -> r.cpu == Some "9")
+print (Str.join "|" (none |> to yaml))
+print $"{none |> to yaml |> from yaml seq<Res> |> Seq.length}"
+WEOF
+out=$($BIN "$ydir/ye.weir" 2>&1) || fail "the empty-document writes must run: $out"
+[ "$out" = "$(printf 'cpu: "1"|---|{}|---|cpu: "2"\nSome "1"\nNone\nSome "2"\n[]\n0')" ] || fail "{} and [] documents round-trip: $out"
+cat > "$ydir/dup.weir" <<'WEOF'
+type P = { labels: seq<string * string> }
+let p = ["{\"labels\": {\"a\": \"1\", \"b\": \"x\", \"a\": \"2\"}}"] |> from json P
+p |> to json |> Seq.iter print
+let w = { labels = [("k", "1"); ("k", "2")] }
+w |> to yaml |> Seq.iter print
+WEOF
+out=$($BIN "$ydir/dup.weir" 2>&1) && fail "a duplicate key must refuse on write: $out" || true
+echo "$out" | grep -qxF '{"labels":{"a":"2","b":"x"}}' || fail "a repeated key last-wins at its first position: $out"
+echo "$out" | grep -qF "to yaml: the mapping holds the key 'k' twice" || fail "the writer names the key: $out"
+rm -rf "$ydir"
+echo "e2e ok: to yaml — {} and [] documents, the stream keeps every document; mappings last-win on read, refuse duplicates on write"
+
 # |> try [D:try-form]: a failure as a value — a real missing file and a
 # malformed document become None / Error; exit passes through the capture
 ydir=$(mkweirtmp)
@@ -5696,6 +5840,50 @@ WEOF
 out=$(timeout 10 $BIN "$pdir/ahead2.weir" < "$pdir/ahead2.in" 2>/dev/null)
 [ "$out" = "$(printf 'got x\ny\nz')" ] || fail "Self.prompt then Self.stdin reads the rest: $out"
 echo "e2e ok: Self.prompt reads no further than its newline (pipe + file, CRLF trimmed)"
+# a cut read takes no line [D:stdin-reader]: a pfirst loser waiting in
+# Self.prompt is cut when the timer wins, the next prompt gets the first
+# line and a child the rest; a Self.stdin loser on an open, silent pipe
+# and a File.read loser on a FIFO nobody opens never hold the race.
+# Windows reads block, uncut — POSIX only
+if [ "$IS_WINDOWS" != "1" ] && command -v mkfifo >/dev/null 2>&1; then
+    cat > "$pdir/cut.weir" <<'WEOF'
+let a = ["ask"; "default"] |> Seq.pfirst (fun k ->
+    if k == "default" then
+        Duration.sleep 300ms
+        "timed-out"
+    else
+        Self.prompt "continue?")
+print $"answer={a}"
+let b = Self.prompt "name?"
+print $"next={b}"
+cat
+WEOF
+    out=$( (sleep 1.5; printf 'first\nsecond\n') | timeout 10 $BIN "$pdir/cut.weir" 2>/dev/null) || fail "the cut prompt script failed: $out"
+    [ "$out" = "$(printf 'answer=timed-out\nnext=first\nsecond')" ] || fail "a cut Self.prompt must leave its line for the next reader: $out"
+    for body in 'Self.stdin |> Seq.length |> show' 'File.read "ff" |> Seq.length |> show'; do
+        cat > "$pdir/cutw.weir" <<WEOF
+let r = [1; 2] |> Seq.pfirst (fun i ->
+    if i == 1 then
+        Duration.sleep 300ms
+        "timer"
+    else
+        $body)
+print \$"winner={r}"
+WEOF
+        rm -f "$pdir/ff" "$pdir/in"
+        mkfifo "$pdir/ff" "$pdir/in"
+        # stdin open and silent: a background writer the capture never waits on
+        sleep 4 > "$pdir/in" &
+        wpid=$!
+        start_ms=$(now_ms)
+        out=$(cd "$pdir" && timeout 10 $BIN cutw.weir 2>&1 < "$pdir/in") || true
+        took=$(( $(now_ms) - start_ms ))
+        kill "$wpid" 2>/dev/null || true
+        [ "$out" = "winner=timer" ] || fail "a blocked loser ($body) must lose: $out"
+        [ "$took" -lt 2500 ] || fail "a loser blocked in ($body) held the race (${took}ms)"
+    done
+    echo "e2e ok: a cut stdin read takes no line; Self.stdin and FIFO losers never hold the race"
+fi
 rm -rf "$pdir"
 
 # anonymous record types [D:anon-records]: the shape inline in the
@@ -7071,7 +7259,55 @@ elapsed=$(($(now_ms) - start))
 expect "glob: 10k files counted" "10000" "$out"
 [ "$elapsed" -lt 2000 ] || fail "glob 10k ceiling: ${elapsed}ms"
 echo "e2e ok: glob 10k-file tree under the ceiling (${elapsed}ms)"
+
+# a segment matches with a linear wildcard matcher, no regex
+# [D:glob-linear]: a 7-star miss against one 239-char name with 79
+# dashes ran past 100s as a regex; a repeated `**` yields each path once
+mkdir -p "$big/p" "$big/r/a/b"
+(cd "$big/p" && touch "$(printf 'ab-%.0s' $(seq 1 79))ab.txt")
+touch "$big/r/x.gz" "$big/r/a/y.gz" "$big/r/a/b/z.gz"
+cat > "$big/patho.weir" <<'WEOF'
+within cd "p"
+    print $"miss={Path.glob "*-*-*-*-*-*-*.gz" |> Seq.length} hit={Path.glob "*-*-*-*-*-*-*.txt" |> Seq.length}"
+print $"twice={Path.glob "r/**/**/*.gz" |> Str.join ","}"
+print $"apart={Path.glob "r/**/a/**/*.gz" |> Str.join ","}"
+WEOF
+start=$(now_ms)
+out=$(cd "$big" && timeout 60 $BIN patho.weir 2>&1) || fail "glob pathological pattern: $out"
+elapsed=$(($(now_ms) - start))
+expect "glob: the 7-star miss is empty, its .txt twin matches" "miss=0 hit=1" "$out"
+expect "glob: a repeated ** yields each path once" "twice=r/x.gz,r/a/y.gz,r/a/b/z.gz" "$out"
+expect "glob: ** apart yields each path once" "apart=r/a/y.gz,r/a/b/z.gz" "$out"
+[ "$elapsed" -lt 5000 ] || fail "glob pathological-pattern ceiling: ${elapsed}ms"
+echo "e2e ok: glob segments match linearly (7-star miss in ${elapsed}ms) and a repeated ** dedupes"
 rm -rf "$pgdir" "$big"
+
+# frozen seqs know their length and index [D:seq-index-o1], and a long
+# string's code points are indexed once [D:str-code-points]: each loop
+# below was quadratic at 100k (16-54s each); a generous ceiling catches
+# the regression without flaking on load
+o1dir=$(mkweirtmp)
+cat > "$o1dir/o1.weir" <<'WEOF'
+let n = 100000
+let xs = [1..n] |> Seq.freeze
+let a = [1..n] |> Seq.map (fun _ -> Seq.length xs) |> Seq.sum
+let b = [0..(n - 1)] |> Seq.map (fun i -> xs[i] + Seq.item i xs) |> Seq.sum
+let c = [1..n] |> Seq.map (fun _ -> xs[^1] + Seq.last xs) |> Seq.sum
+let d = [0..(n - 1)] |> Seq.choose (fun i -> Seq.tryItem i xs) |> Seq.length
+let s = Str.replicate n "a"
+let e = [1..n] |> Seq.map (fun _ -> Str.length s) |> Seq.sum
+let f = [0..(n - 1)] |> Seq.map (fun i -> Str.sub i 1 s + s[i..i]) |> Seq.where (fun t -> t == "aa") |> Seq.length
+let w = Str.replicate (n / 2) "a😀"
+let g = [0..(n - 1)] |> Seq.map (fun i -> Str.sub i 1 w) |> Str.join ""
+print $"{a} {b} {c} {d} {e} {f} {Str.length w} {g == w}"
+WEOF
+start=$(now_ms)
+out=$(timeout 120 $BIN "$o1dir/o1.weir" 2>&1) || fail "O(1) length/index loops: $out"
+elapsed=$(($(now_ms) - start))
+expect "frozen length/index and string positions" "10000000000 10000100000 20000000000 100000 10000000000 100000 100000 true" "$out"
+[ "$elapsed" -lt 10000 ] || fail "frozen-seq / string-position loops ceiling: ${elapsed}ms (quadratic regression?)"
+echo "e2e ok: frozen seqs index in O(1), long strings index code points once (${elapsed}ms for 9 x 100k)"
+rm -rf "$o1dir"
 
 # ---- Seq.distinct [D:seq-distinct]: dedupe as a pipeline stage ----
 
@@ -9043,6 +9279,13 @@ cat > "$gtdir/serve/svc.json" <<'JEOF'
 {"type":"object","$comment":"c","required":["level"],"properties":{"name":{"type":"string","minLength":1,"pattern":"^a"},"port":{"anyOf":[{"type":"integer"},{"type":"string"}],"x-kubernetes-int-or-string":true},"level":{"type":"integer","enum":[1,2,3]},"tags":{"type":"array","items":{"type":"string"},"maxItems":3,"uniqueItems":true}}}
 JEOF
 ( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/svc.json --as svc ) >/dev/null || fail "add schema over validation keywords"
+# [D:schema-num-or-string] [D:schema-enum-kind] [D:schema-const-format]:
+# number-or-string and format int-or-string draft Yaml, a typed enum its
+# type, a mixed enum Yaml; a root $id, const and contentEncoding vendor
+cat > "$gtdir/serve/r2.json" <<'JEOF'
+{"$id":"https://example.com/r2.json","type":"object","required":["on","ratio"],"properties":{"cpu":{"oneOf":[{"type":["string","null"]},{"type":["number","null"]}]},"port":{"type":"string","format":"int-or-string"},"on":{"type":"boolean","enum":[true]},"ratio":{"type":"number","enum":[0.5,1.5]},"mode":{"enum":["a",1]},"kind":{"type":"string","const":"Deployment"},"blob":{"type":"string","contentEncoding":"base64","format":"byte"}}}
+JEOF
+( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/r2.json --as r2 ) >/dev/null || fail "add schema over \$id/const/contentEncoding"
 kill $gtsrv 2>/dev/null || true
 wait $gtsrv 2>/dev/null || true
 
@@ -9138,6 +9381,21 @@ out=$( cd "$gtdir/proj" && $BIN svc.weir 2>&1 ) || fail "the svc types read json
 echo "$out" | grep -qF '"port":8080' || fail "json keeps 8080 an int: $out"
 echo "$out" | grep -qxF "port: 8080" || fail "yaml writes 8080 unquoted: $out"
 echo "e2e ok: gen types — validation keywords noted, int-or-string as Yaml, an integer enum as int"
+( cd "$gtdir/proj" && $BIN gen types --schema r2 ) >/dev/null || fail "gen types r2"
+r2mod="$gtdir/proj/.weir/types/r2.weir"
+for want in "cpu: Option<Yaml>" "port: Option<Yaml>" "on: bool" "ratio: float" "mode: Option<Yaml>" "kind: Option<string>" \
+    "// note: port: format int-or-string — drafted Yaml" "// note: not enforced: const on kind" \
+    "// note: not enforced: contentEncoding on blob" "// note: not enforced: format on blob"; do
+    grep -qF "$want" "$r2mod" || fail "r2 drafts '$want': $(cat "$r2mod")"
+done
+cat > "$gtdir/proj/r2.weir" <<'WEOF'
+import "weir:r2" as R
+let j = ["{\"cpu\": 1.5, \"port\": 8080, \"on\": true, \"ratio\": 0.5, \"mode\": 1}"] |> from json R2
+j |> to json |> Seq.iter print
+WEOF
+out=$( cd "$gtdir/proj" && $BIN r2.weir 2>&1 ) || fail "the r2 types read the document's own values: $out"
+[ "$out" = '{"cpu":1.5,"mode":1,"on":true,"port":8080,"ratio":0.5}' ] || fail "the r2 round trip: $out"
+echo "e2e ok: gen types — number-or-string and format int-or-string as Yaml, typed and mixed enums, \$id/const/content keywords noted"
 
 # --out -: stdout, nothing written; --as renames the top type
 ( cd "$gtdir/proj" && $BIN gen types --schema pod --as Manifest --out - ) | grep -qF "type Manifest = {" || fail "--as + --out - streams the renamed module"
@@ -9866,6 +10124,26 @@ jout=$($BIN "$pfdir/pfjoin.weir" 2>&1) || fail "pfirst join script failed: $jout
 took=$(( $(now_ms) - start_ms ))
 [ "$jout" = "winner: 2 log: body 2,cleanup 1,cleanup 2" ] || fail "pfirst joins its losers (cut body, cleanup kept): $jout"
 [ "$took" -lt 2500 ] || fail "the loser's sleep must be cut, not waited out (took ${took}ms)"
+# a loser's cleanup runs whole [D:teardown-always-spawns]: a command its
+# `always` starts after the loss is exempt from the race kill, and the race
+# joins it before returning
+cat > "$pfdir/pfalw.weir" <<WEOF
+let w = ["lose"; "win"] |> Seq.pfirst (fun k ->
+    if k == "win" then
+        Duration.sleep 300ms
+        k
+    else
+        within
+            Duration.sleep 10s
+        always
+            sh -c "sleep 0.3; echo cleanup-cmd >> $pfdir/alw.log"
+            File.append "$pfdir/alw.log" ["cleanup end"]
+        "lose")
+let log = File.read "$pfdir/alw.log" |> Str.join ","
+print \$"winner={w} log={log}"
+WEOF
+aout=$($BIN "$pfdir/pfalw.weir" 2>&1) || fail "pfirst loser-cleanup script failed: $aout"
+[ "$aout" = "winner=win log=cleanup-cmd,cleanup end" ] || fail "a pfirst loser's always command must run, not die with the race kill: $aout"
 # exit n in an arm ends the race and the script [D:pfirst-join]
 xrc=0
 $BIN -e '[1; 2] |> Seq.pfirst (fun i -> match i with | 1 -> exit 3 ; 0 | _ -> Duration.sleep 300ms ; i)' >/dev/null 2>&1 || xrc=$?
@@ -9878,7 +10156,7 @@ echo "$out" | grep -qF "seven dies" || fail "first error by input order: $out"
 out=$($BIN -e '[] |> Seq.pfirst (fun n -> n)' 2>&1) && fail "empty must raise" || true
 echo "$out" | grep -qF "a race needs at least one arm" || fail "empty names Seq.isEmpty: $out"
 rm -rf "$pfdir"
-echo "e2e ok: Seq.pfirst (winner fast, loser tree killed — bare AND scoped, winner's scoped child survives, losers joined with cleanups kept, exit ends the race, first-by-order error, empty names the guard)"
+echo "e2e ok: Seq.pfirst (winner fast, loser tree killed — bare AND scoped, winner's scoped child survives, losers joined with cleanups kept — their commands too, exit ends the race, first-by-order error, empty names the guard)"
 
 # a loser's within-tmp cleanup does run — the `finally` executes on the
 # loser's own (un-aborted) thread once its killed child fails; here the
@@ -10690,6 +10968,25 @@ WEOF
     echo "$out" | grep -qF "control-status=200" || { kill $hsrv 2>/dev/null || true; fail "F3: a clean header must send fine: $out"; }
     echo "e2e ok: Http F3 outbound header injection refused (CR/LF/NUL in a request header, located, control sends clean)"
 
+    # NO_PROXY=* bypasses the proxy for every host [D:noproxy-star], not
+    # only an IPv6 literal: the proxy is a dead port, so a request that
+    # went through it fails. The control (an unrelated NO_PROXY entry)
+    # must fail — else this host ignores the proxy env and the pin proves
+    # nothing.
+    cat > "$hdir/star.weir" <<WEOF
+let r = Http.send (Http.get "http://127.0.0.1:$hport/x")
+print \$"star-status={r.status}"
+WEOF
+    viaDead() { env HTTP_PROXY=http://127.0.0.1:1 http_proxy=http://127.0.0.1:1 NO_PROXY="$1" no_proxy="$1" "$BIN" "$hdir/star.weir" 2>&1; }
+    if ctl=$(viaDead example.invalid); then
+        echo "e2e SKIP: this host ignores HTTP_PROXY ($ctl) — NO_PROXY=* pin not run" >&2
+    else
+        out=$(viaDead '*') || { kill $hsrv 2>/dev/null || true; fail "NO_PROXY=* must bypass the proxy for 127.0.0.1: $out"; }
+        echo "$out" | grep -qF "star-status=200" || { kill $hsrv 2>/dev/null || true; fail "NO_PROXY=* direct send: $out"; }
+        out=$(viaDead 'example.invalid,*') || { kill $hsrv 2>/dev/null || true; fail "a * entry in a list must bypass too: $out"; }
+        echo "e2e ok: Http NO_PROXY=* bypasses the proxy for every host (control routes through it)"
+    fi
+
     kill $hsrv 2>/dev/null || true
 
     # transport failure raises, in its own words per case [D:transport-words];
@@ -10759,8 +11056,30 @@ print \$"insecure-status={r.status}"
 WEOF
         out=$($BIN "$hdir/ins.weir" 2>&1) || { kill $tsrv 2>/dev/null || true; fail "insecure=true must accept the self-signed cert: $out"; }
         echo "$out" | grep -qF "insecure-status=200" || { kill $tsrv 2>/dev/null || true; fail "insecure did not connect: $out"; }
-        kill $tsrv 2>/dev/null || true
-        echo "e2e ok: Http insecure (default rejects a self-signed cert, insecure=true accepts — per-request)"
+        # a redirect whose TARGET fails names the target's host, not the
+        # healthy origin — the TLS repair included (localhost here is the
+        # self-signed server, 127.0.0.1 the redirector)
+        rtls=$((23000 + RANDOM % 100))
+        cat > "$hdir/tredir.py" <<REOF
+import http.server
+class A(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(302)
+        self.send_header('Location', 'https://localhost:$tport/' if self.path == '/tls' else 'http://localhost:1/')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', $rtls), A).serve_forever()
+REOF
+        python3 "$hdir/tredir.py" & trsrv=$!
+        awaitTcp $rtls || { kill $tsrv $trsrv 2>/dev/null || true; fail "the TLS redirector never came up on $rtls"; }
+        out=$($BIN -e 'Http.send (Http.get "http://127.0.0.1:'"$rtls"'/tls")' 2>&1) && { kill $tsrv $trsrv 2>/dev/null || true; fail "a redirect to a self-signed target must raise"; } || true
+        echo "$out" | grep -qF "cannot establish TLS with localhost" || { kill $tsrv $trsrv 2>/dev/null || true; fail "the TLS error must name the redirect target's host: $out"; }
+        echo "$out" | grep -qF "insecure = true" || { kill $tsrv $trsrv 2>/dev/null || true; fail "the redirected TLS error keeps its repair: $out"; }
+        out=$($BIN -e 'Http.send (Http.get "http://127.0.0.1:'"$rtls"'/dead")' 2>&1) && { kill $tsrv $trsrv 2>/dev/null || true; fail "a redirect to a dead port must raise"; } || true
+        echo "$out" | grep -qF "localhost:1 refused the connection" || { kill $tsrv $trsrv 2>/dev/null || true; fail "the refusal must name the redirect target's host and port: $out"; }
+        kill $tsrv $trsrv 2>/dev/null || true
+        echo "e2e ok: Http insecure (default rejects a self-signed cert, insecure=true accepts — per-request); a failing redirect target is the host named"
     else
         echo "e2e SKIP: openssl absent — Http insecure TLS pin not run" >&2
     fi
@@ -11557,6 +11876,66 @@ out=$($BIN "$padir/sr2.weir" 2>&1) && fail "File.exists under a captured deleteA
 echo "$out" | grep -qF "File.exists: known-after-apply" || fail "the exists refusal: $out"
 echo "e2e ok: plan/apply — stale reads refuse: a listing over a captured write, a read under a captured deleteAll"
 
+# [D:plan-guard-links]: the guard compares symlink-resolved paths, both
+# directions — a read through a dir alias of a written file, a read of a
+# file a captured delete reached through the alias; and an inner plan's
+# read sees an enclosing plan's pending ops
+if [ "$IS_WINDOWS" != "1" ]; then
+    mkdir -p "$padir/sl/real" && printf 'old\n' > "$padir/sl/real/a.txt"
+    ln -s real "$padir/sl/alias" && ln -s a.txt "$padir/sl/real/lnk.txt"
+    cat > "$padir/sl1.weir" <<WEOF
+let p =
+    plan
+        File.write "$padir/sl/real/a.txt" ["new"]
+        File.read "$padir/sl/alias/a.txt" |> Seq.iter print
+print \$"{p |> Plan.isEmpty}"
+WEOF
+    out=$($BIN "$padir/sl1.weir" 2>&1) && fail "a read through a dir symlink alias must refuse: $out" || true
+    echo "$out" | grep -qF "File.read: known-after-apply" || fail "the alias read refusal: $out"
+    cat > "$padir/sl2.weir" <<WEOF
+let p =
+    plan
+        File.write "$padir/sl/real/a.txt" ["new"]
+        File.read "$padir/sl/real/lnk.txt" |> Seq.iter print
+print \$"{p |> Plan.isEmpty}"
+WEOF
+    out=$($BIN "$padir/sl2.weir" 2>&1) && fail "a read through a file symlink must refuse: $out" || true
+    echo "$out" | grep -qF "File.read: known-after-apply" || fail "the file-link read refusal: $out"
+    cat > "$padir/sl3.weir" <<WEOF
+let p =
+    plan
+        File.delete "$padir/sl/alias/a.txt"
+        print \$"{File.exists "$padir/sl/real/a.txt"}"
+print \$"{p |> Plan.isEmpty}"
+WEOF
+    out=$($BIN "$padir/sl3.weir" 2>&1) && fail "a real-path read after a delete via the alias must refuse: $out" || true
+    echo "$out" | grep -qF "File.exists: known-after-apply" || fail "the reverse alias refusal: $out"
+    cat > "$padir/sl4.weir" <<WEOF
+let p =
+    plan
+        File.delete "$padir/sl/real/lnk.txt"
+        print \$"{File.exists "$padir/sl/real/a.txt"}"
+print \$"{p |> Plan.isEmpty}"
+WEOF
+    out=$($BIN "$padir/sl4.weir" 2>&1) || fail "deleting a link leaves its target readable: $out"
+    [ "$out" = "$(printf 'true\nfalse')" ] || fail "the link's target reads: $out"
+    echo "e2e ok: plan/apply — the stale-read guard resolves symlinks, both directions; a deleted link's target reads"
+fi
+mkdir -p "$padir/np"
+cat > "$padir/np.weir" <<WEOF
+let outer =
+    plan
+        File.write "$padir/np/cfg" ["v2"]
+        let inner =
+            plan
+                print \$"{File.exists "$padir/np/cfg"}"
+        print \$"{inner |> Plan.isEmpty}"
+print \$"{outer |> Plan.isEmpty}"
+WEOF
+out=$($BIN "$padir/np.weir" 2>&1) && fail "an inner plan's read of an outer-captured path must refuse: $out" || true
+echo "$out" | grep -qF "an enclosing 'plan'" || fail "the nested refusal names the enclosing plan: $out"
+echo "e2e ok: plan/apply — a nested plan checks every enclosing frame"
+
 # [D:plan-within-tmp]: an op under a within tmp opened in the plan refuses
 # before anything applies
 cat > "$padir/wt.weir" <<WEOF
@@ -12286,6 +12665,34 @@ t1=$(date +%s)
 [ $((t1 - t0)) -le 6 ] || fail "C3: closing with 8 stuck handlers took $((t1 - t0))s — the drain is not bounded and parallel: $out"
 echo "e2e ok: within serve — C3 a late handler never crashes; one bounded drain; port free at once"
 
+# a handler still running past the drain is cut at its next effect boundary
+# [D:serve-cut]: neither its write nor its command lands after `within
+# serve` returns (the script sleeps past the handler's natural end)
+svport16=8486
+rm -f "$svdir/late.log"
+cat > "$svdir/late.weir" <<WEOF
+let log = "$svdir/late.log"
+let handler = fun req ->
+    File.append log ["handler started"]
+    Duration.sleep 4s
+    File.append log ["handler late"]
+    sh -c "echo handler-late-cmd >> $svdir/late.log"
+    HttpServerResponse { status = 200; headers = []; body = Text "slow" }
+
+within serve srv = { port = $svport16; maxConcurrent = 2 } handler
+    poll timeout=8s interval=50ms
+        Net.portOpen $svport16
+    within proc client = curl -s --max-time 10 http://127.0.0.1:$svport16/
+        poll timeout=8s interval=50ms
+            File.exists log
+File.append log ["scope closed"]
+Duration.sleep 4s
+File.append log ["script end"]
+WEOF
+out=$($BIN "$svdir/late.weir" 2>&1) || fail "serve late-handler run failed: $out"
+[ "$(tr '\n' ',' < "$svdir/late.log")" = "handler started,scope closed,script end," ] || fail "a late serve handler's effects landed after the scope: $(tr '\n' ',' < "$svdir/late.log")"
+echo "e2e ok: within serve — a handler past the drain is cut; no effect after the scope returns"
+
 # (H3 lows) a queued request whose client already left is never started,
 # and a Stream whose client aborts frees its slot [D:serve-drain]
 svport14=8484
@@ -12360,10 +12767,10 @@ WEOF
 fi
 
 # (F13) tty data sanitize [D:binary-echo]/[D:tty-color]: a data value's
-# terminal-DRIVING escapes (OSC title/clipboard, cursor/screen CSI, CR
-# name-hiding, BEL) render sanitized at a tty, while SGR colour passes
-# (display-only, cannot hijack) and weir's own colour is unaffected;
-# redirected output stays byte-faithful. Driven through a pty.
+# terminal-DRIVING escapes (OSC title/clipboard, cursor/screen CSI, BEL)
+# render sanitized at a tty, while SGR colour and a bare CR pass
+# (display-only / cursor return [D:tty-cr-pass]) and weir's own colour
+# is unaffected; redirected output stays byte-faithful. Driven through a pty.
 # Bidi controls (RLO here) render as visible \uXXXX [D:tty-bidi-sanitize].
 cat > "$svdir/f13.weir" <<'WEOF'
 let esc = Str.fromBase64 "Gw=="
@@ -12377,7 +12784,7 @@ WEOF
 cat > "$svdir/f13err.weir" <<'WEOF'
 let esc = Str.fromBase64 "Gw=="
 let cr = Str.fromBase64 "DQ=="
-let bad = esc + "[31mhidden" + cr + "evil"
+let bad = esc + "[31mhidden" + cr + "evil" + esc + "]0;PWN"
 fail $"file: {bad}"
 WEOF
 # F13 is driven through a real pty; Windows Python has no termios/pty
@@ -12407,8 +12814,8 @@ else:
     sgr_kept = b'\x1b[32mok' in data          # display colour survives
     osc_raw = b'\x1b]' in data                # raw OSC introducer must NOT appear
     osc_vis = b'\\x1b]0;PWN' in data          # OSC defanged to visible text
-    cr_raw = b'mid\rend' in data              # the name-hiding CR must NOT appear raw
-    cr_vis = b'\\x0d' in data                 # CR visible as \x0d
+    cr_raw = b'mid\rend' in data              # a bare CR passes raw [D:tty-cr-pass]
+    cr_vis = b'\\x0d' in data                 # and never renders as \x0d
     bidi_raw = b'\xe2\x80\xae' in data         # a raw RLO must NOT appear
     bidi_vis = b'bidi\\u202Etxt' in data       # RLO visible as \u202E
     print('SGR_KEPT=%s OSC_RAW=%s OSC_VIS=%s CR_RAW=%s CR_VIS=%s BIDI_RAW=%s BIDI_VIS=%s' % (sgr_kept, osc_raw, osc_vis, cr_raw, cr_vis, bidi_raw, bidi_vis))
@@ -12417,8 +12824,8 @@ PYEOF
 echo "$sanit" | grep -qF "SGR_KEPT=True" || fail "F13: SGR colour from data should reach the tty (display-only): $sanit"
 echo "$sanit" | grep -qF "OSC_RAW=False" || fail "F13: a raw OSC from data must not reach the tty: $sanit"
 echo "$sanit" | grep -qF "OSC_VIS=True" || fail "F13: an OSC must render as visible \\x1b] at a tty: $sanit"
-echo "$sanit" | grep -qF "CR_RAW=False" || fail "F13: a name-hiding CR must not reach the tty: $sanit"
-echo "$sanit" | grep -qF "CR_VIS=True" || fail "F13: CR must render as visible \\x0d at a tty: $sanit"
+echo "$sanit" | grep -qF "CR_RAW=True" || fail "F13: a bare CR must pass raw at a tty [D:tty-cr-pass]: $sanit"
+echo "$sanit" | grep -qF "CR_VIS=False" || fail "F13: a bare CR must not render as \\x0d at a tty: $sanit"
 echo "$sanit" | grep -qF "BIDI_RAW=False" || fail "F13: a raw bidi control must not reach the tty: $sanit"
 echo "$sanit" | grep -qF "BIDI_VIS=True" || fail "F13: a bidi control must render as visible \\u202E at a tty: $sanit"
 # weir's own colour survives: the error word stays coloured while the
@@ -12441,13 +12848,14 @@ else:
     data = b''.join(out)
     before_data = data.split(b'file:')[0]
     weir_colour = b'\x1b[' in before_data   # weir's own error colour, raw
-    # the data's name-hiding CR is neutralized (its SGR is cosmetic, kept)
-    cr_safe = (b'hidden\revil' not in data) and (b'\\x0d' in data)
+    # the data's OSC is neutralized (its SGR is cosmetic and its CR a
+    # cursor return, both kept [D:tty-cr-pass])
+    cr_safe = (b'hidden\revil\\x1b]0;PWN' in data) and (b'\x1b]0;PWN' not in data)
     print('WEIR_COLOUR=%s DATA_SANITIZED=%s' % (weir_colour, cr_safe))
 PYEOF
 )
 echo "$colour" | grep -qF "WEIR_COLOUR=True" || fail "F13: weir's own colour must be unaffected: $colour"
-echo "$colour" | grep -qF "DATA_SANITIZED=True" || fail "F13: the name-hiding CR in error text must be sanitized: $colour"
+echo "$colour" | grep -qF "DATA_SANITIZED=True" || fail "F13: the OSC in error text must be sanitized, its CR kept: $colour"
 # redirected (piped) output stays byte-faithful — every raw byte survives
 $BIN "$svdir/f13.weir" > "$svdir/f13.out" 2>/dev/null || true
 python3 -c "import sys; d=open('$svdir/f13.out','rb').read(); sys.exit(0 if (b'\x1b[32mok\x1b]0;PWN\x07mid\rend' in d and b'bidi\xe2\x80\xaetxt' in d) else 1)" \
@@ -12510,6 +12918,35 @@ printf 'ans\n' | $BIN -e 'Log.warn ((Str.fromBase64 "Gw==") + "]52;c;SINK")' 2> 
 python3 -c "import sys; sys.exit(0 if b'\x1b]52;c;SINK' in open('$svdir/sink.err','rb').read() else 1)" \
     || fail "tty-sink: a redirected stderr must stay byte-faithful"
 echo "e2e ok: tty-sink printerr, Log, Self.prompt and the -e echo sanitized at a tty, byte-faithful when redirected"
+# a bare CR passes every sink [D:tty-cr-pass]: printerr keeps the
+# progress-line rewrite while its OSC stays visible
+crout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" -e 'printerr ("50%" + (Str.fromBase64 "DQ==") + "100%" + (Str.fromBase64 "Gw==") + "]0;CR")' 2>&1)
+echo "$crout" | grep -qF '50%\r100%\\x1b]0;CR' || fail "tty-cr: printerr must pass a bare CR raw and defang the OSC: $crout"
+echo "e2e ok: tty-cr a bare CR passes printerr at a tty, the OSC beside it stays visible"
+# every diagnostic sink rides the tty sanitizer [D:tty-diag-sanitize]:
+# check's import path, the run's parse/type source echo, the invalid-regex
+# message, the #sig name and `no such script` render an OSC visible at a
+# tty, while weir's own colour stays; redirected output stays raw
+dg="$svdir/diag"; mkdir -p "$dg"
+printf 'import "./x\033]52;c;DIAG\007.weir" as M\nprint "x"\n' > "$dg/imp.weir"
+printf 'let x = "a\033]52;c;DIAG\007b" + 1\nprint x\n' > "$dg/src.weir"
+printf 'let x = "a\033]52;c;DIAG\007b" +\nprint x\n' > "$dg/parse.weir"
+printf 'let f s =\n    match s with\n    | Regex @"(\033]52;c;DIAG\007" x -> x\n    | _ -> ""\nprint (f "a")\n' > "$dg/rx.weir"
+printf '#sig zz\033]52;c;DIAG\007\nprint "x"\n' > "$dg/sig.weir"
+for args in "check $dg/imp.weir" "$dg/imp.weir" "$dg/src.weir" "$dg/parse.weir" "check $dg/rx.weir" "$dg/rx.weir" \
+            "check $dg/sig.weir" "$dg/sig.weir" "$(printf "$dg/nope\033]52;c;DIAG\007.weir")"; do
+    # shellcheck disable=SC2086
+    dout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" $args 2>&1)
+    echo "$dout" | grep -qF '\\x1b]52;c;DIAG' || fail "tty-diag: weir $args must render the OSC visible at a tty: $dout"
+    echo "$dout" | grep -q '[^\\]\\x1b\]52' && fail "tty-diag: weir $args put a raw OSC on the tty: $dout" || true
+done
+dout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" "$dg/src.weir" 2>&1)
+echo "$dout" | grep -qF '\x1b[31mtype error' || fail "tty-diag: weir's own colour must survive the sanitizer: $dout"
+$BIN check "$dg/imp.weir" > "$dg/imp.out" 2>&1 || true
+$BIN "$dg/src.weir" 2> "$dg/src.err" || true
+python3 -c "import sys; sys.exit(0 if all(b'\x1b]52;c;DIAG\x07' in open(f,'rb').read() for f in sys.argv[1:]) else 1)" "$dg/imp.out" "$dg/src.err" \
+    || fail "tty-diag: redirected diagnostics must stay byte-faithful"
+echo "e2e ok: tty-diag check/run diagnostics (import path, source echo, regex, #sig, no such script) sanitized at a tty, byte-faithful when redirected"
 else
     echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"
 fi

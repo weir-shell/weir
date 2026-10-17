@@ -220,46 +220,6 @@ let createPrivateDir (dir: string) : unit =
         )
         |> ignore
 
-// pfirst's loser tree-kill [D:seq-pfirst]: an arm registers its live
-// children in its race group (AsyncLocal — the registration follows
-// the arm's logical context, the same keying as cwd/env). The winner
-// condemns every other group: registered trees die, and a child
-// spawned after condemnation dies at registration (the race window a
-// plain bag would leak).
-type RaceGroup() =
-    let procs =
-        System.Collections.Concurrent.ConcurrentBag<System.Diagnostics.Process>()
-
-    let mutable condemned = false
-
-    member _.Register(p: System.Diagnostics.Process) =
-        if condemned then
-            try
-                p.Kill true
-            with _ ->
-                ()
-        else
-            procs.Add p
-
-    member _.Condemn() =
-        condemned <- true
-
-        for p in procs do
-            try
-                p.Kill true
-            with _ ->
-                ()
-
-let private raceGroup = System.Threading.AsyncLocal<RaceGroup option>()
-
-let enterRace (g: RaceGroup) : unit = raceGroup.Value <- Some g
-let exitRace () : unit = raceGroup.Value <- None
-
-let registerChild (p: System.Diagnostics.Process) : unit =
-    match raceGroup.Value with
-    | Some g -> g.Register p
-    | None -> ()
-
 // script argv, for the Args module scanners (script-only semantics:
 // the REPL leaves this empty)
 let mutable ScriptArgs: string list = []
@@ -324,12 +284,112 @@ let runningCleanup (f: unit -> 'a) : 'a =
 
 let inCleanup () = cleanupDepth.Value > 0
 
+// a tree kill in flight [D:kill-settle]: .NET's Kill(true) on Unix
+// stops the tree, then kills it, so a process exiting between the two
+// leaves SIGSTOPped orphans — every exit path settles the kills in flight
+let mutable private killsInFlight = 0
+
+/// tree-kill `p` (a dead or reaped process is no error)
+let killTree (p: System.Diagnostics.Process) : unit =
+    System.Threading.Interlocked.Increment &killsInFlight |> ignore
+
+    try
+        try
+            p.Kill true
+        with _ ->
+            ()
+    finally
+        System.Threading.Interlocked.Decrement &killsInFlight |> ignore
+
+/// wait (bounded) for every tree kill in flight to finish
+let settleKills () : unit =
+    let clock = System.Diagnostics.Stopwatch.StartNew()
+
+    while System.Threading.Volatile.Read &killsInFlight > 0
+          && clock.ElapsedMilliseconds < 2000L do
+        System.Threading.Thread.Sleep 5
+
+// pfirst's loser tree-kill [D:seq-pfirst]: an arm registers its live
+// children in its race group (AsyncLocal — the registration follows
+// the arm's logical context, the same keying as cwd/env). The winner
+// condemns every other group: registered trees die, and a child
+// spawned after condemnation dies at registration (the race window a
+// plain bag would leak). A child an `always` cleanup starts never joins
+// the group — the cut stops the body, never its cleanup
+// [D:teardown-always-spawns]; the race joins the arm, so it joins them.
+type RaceGroup() =
+    let procs =
+        System.Collections.Concurrent.ConcurrentBag<System.Diagnostics.Process>()
+
+    let mutable condemned = false
+
+    member _.Register(p: System.Diagnostics.Process) =
+        if inCleanup () then ()
+        elif condemned then killTree p
+        else procs.Add p
+
+    member _.Condemn() =
+        condemned <- true
+
+        for p in procs do
+            killTree p
+
+let private raceGroup = System.Threading.AsyncLocal<RaceGroup option>()
+
+let enterRace (g: RaceGroup) : unit = raceGroup.Value <- Some g
+let exitRace () : unit = raceGroup.Value <- None
+
+let registerChild (p: System.Diagnostics.Process) : unit =
+    match raceGroup.Value with
+    | Some g -> g.Register p
+    | None -> ()
+
+// ---- the main-thread teardown [D:signal-main-unwind] [D:stdout-epipe] --
+// A signal or a closed stdout ends the script, but the teardown — every
+// `always`, every scope's release — runs on the MAIN thread, never in the
+// signal handler: the handler records the exit code, kills the scoped
+// children (what the main thread waits on) and wakes interruptible waits;
+// the main thread raises ExitRequest at its next evaluation or wait
+// boundary and unwinds through its scopes, so no statement runs after the
+// request. Registered by the script runner and -e; without a registered
+// main thread (the REPL) the handler keeps the in-handler sweep.
+
+let mutable private mainThreadId = 0
+let mutable private teardownCode = 0
+let mutable private teardownRaised = 0
+
+/// interruptible waits block on this; set when a teardown is requested
+let teardownWake = new System.Threading.ManualResetEventSlim(false)
+
+let registerMainThread () : unit =
+    mainThreadId <- System.Threading.Thread.CurrentThread.ManagedThreadId
+
+let private onMainThread () =
+    mainThreadId <> 0
+    && System.Threading.Thread.CurrentThread.ManagedThreadId = mainThreadId
+
+// what a worker's waits hand to an API (an Http send) once a teardown is
+// requested [D:teardown-joins-arms]
+let private teardownCut = new System.Threading.CancellationTokenSource()
+
+/// record a teardown's exit code — the first request wins
+let requestTeardown (code: int) : unit =
+    System.Threading.Interlocked.CompareExchange(&teardownCode, code, 0) |> ignore
+    teardownWake.Set()
+
+    try
+        teardownCut.Cancel()
+    with _ ->
+        ()
+
 // ---- cooperative cancellation [D:pfirst-join] [D:repl-interrupt] -------
-// Two requests stop a flow at its next runtime-owned boundary: a pfirst
-// arm that lost the race (its flow token, AsyncLocal — the arm's logical
-// context), and a ^C at the REPL (a session token, global — every wait
-// of the evaluation). Both raise an OperationCanceledException, which
-// `try` and retry pass through as they pass `exit`.
+// Three requests stop a flow at its next runtime-owned boundary: a pfirst
+// arm that lost the race or a serve handler past its scope (its flow
+// token, AsyncLocal — the logical context), a ^C at the REPL (a session
+// token, global — every wait of the evaluation), and a requested teardown
+// for every flow off the main thread [D:teardown-joins-arms]. Each raises
+// an OperationCanceledException, which `try` and retry pass through as
+// they pass `exit`.
 
 /// a pfirst loser stopped at a boundary — swallowed by the race
 type Cancelled() =
@@ -351,7 +411,8 @@ let flowToken () : System.Threading.CancellationToken = flowCancel.Value
 let enterFlow (t: System.Threading.CancellationToken) : unit = flowCancel.Value <- t
 let exitFlow () : unit = flowCancel.Value <- System.Threading.CancellationToken.None
 
-/// run a race: the counter gates the per-builtin check
+/// run a race (or a serve scope's handlers): the counter gates the
+/// per-builtin check
 let racing (f: unit -> 'a) : 'a =
     System.Threading.Interlocked.Increment &racesLive |> ignore
 
@@ -367,9 +428,19 @@ let private flowCut () =
     && flowCancel.Value.IsCancellationRequested
     && not (inCleanup ())
 
-/// raise Cancelled when this flow lost a race — the effect boundary
+// a requested teardown cuts every flow off the main thread outside an
+// `always` cleanup [D:teardown-joins-arms] — the main thread unwinds by
+// ExitRequest, joining the arms first
+let private teardownCuts () =
+    mainThreadId <> 0 && not (onMainThread ()) && not (inCleanup ())
+
+/// raise Cancelled when this flow lost a race or is torn down — the effect
+/// boundary
 let checkCancelled () : unit =
-    if flowCut () then
+    if
+        flowCut ()
+        || (System.Threading.Volatile.Read &teardownCode <> 0 && teardownCuts ())
+    then
         raise (Cancelled())
 
 // the REPL's interrupt, one evaluation at a time: the first ^C cancels
@@ -423,9 +494,12 @@ let private replToken () : System.Threading.CancellationToken =
         with :? System.ObjectDisposedException ->
             System.Threading.CancellationToken.None
 
+/// has ^C cut this evaluation's waits? (a fan-out stops taking arms)
+let interruptRequested () : bool = (replToken ()).IsCancellationRequested
+
 /// raise Interrupted when ^C cut this evaluation's waits
 let checkInterrupted () : unit =
-    if (replToken ()).IsCancellationRequested then
+    if interruptRequested () then
         raise (Interrupted())
 
 /// the tokens a runtime-owned wait honours, beyond the teardown
@@ -439,11 +513,17 @@ let checkCancels () : unit =
     checkCancelled ()
     checkInterrupted ()
 
+// the wait tokens plus, off the main thread, the teardown's
+// [D:teardown-joins-arms]
+let private cutTokens () : System.Threading.CancellationToken list =
+    waitTokens ()
+    @ (if teardownCuts () then [ teardownCut.Token ] else [])
+
 /// run `f` with one token that cancels when this flow's waits are cut —
 /// for a wait the runtime hands to an API (an Http send); `checkCancels`
 /// after it names why
 let withWaitToken (f: System.Threading.CancellationToken -> 'a) : 'a =
-    match waitTokens () with
+    match cutTokens () with
     | [] -> f System.Threading.CancellationToken.None
     | [ t ] -> f t
     | ts ->
@@ -453,8 +533,9 @@ let withWaitToken (f: System.Threading.CancellationToken -> 'a) : 'a =
 /// run a process start + registration inside the spawn gate; refuses once
 /// the teardown kill has run, except inside an `always` cleanup
 let gatedSpawn (start: unit -> 'a) : 'a =
-    // a spawn is an effect boundary [D:pfirst-join]
-    checkCancelled ()
+    // a spawn is an effect boundary [D:pfirst-join] — for a REPL ^C too,
+    // so a fan-out's next arm starts nothing [D:repl-interrupt-fanout]
+    checkCancels ()
     spawnGate.EnterReadLock()
 
     try
@@ -474,10 +555,7 @@ let private killLiveChildren () : unit =
 
         for kv in liveProcs do
             if killedProcs.Add kv.Value then
-                try
-                    kv.Value.Kill true
-                with _ ->
-                    ()
+                killTree kv.Value
     finally
         spawnGate.ExitWriteLock()
 
@@ -505,15 +583,16 @@ let private sweepLiveTmpDirs () =
         | _ -> ()
 
     for kv in liveProcs do
-        try
-            kv.Value.Kill true
-        with _ ->
-            ()
+        killTree kv.Value
 
         try
             kv.Value.WaitForExit()
         with _ ->
             ()
+
+    // a race's kill still walking a tree on another thread finishes
+    // before the process does [D:kill-settle]
+    settleKills ()
 
     for kv in liveTmpDirs do
         try
@@ -547,6 +626,29 @@ module private Libc =
 
     [<DllImport("libc", SetLastError = true)>]
     extern int flock(int fd, int operation)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern nativeint read(int fd, nativeint buf, unativeint count)
+
+    [<Struct; StructLayout(LayoutKind.Sequential)>]
+    type PollFd =
+        val mutable fd: int
+        val mutable events: int16
+        val mutable revents: int16
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int poll(PollFd& fds, unativeint nfds, int timeout)
+
+    let EINTR = 4
+    let EAGAIN = if System.OperatingSystem.IsLinux() then 11 else 35
+
+    /// wait up to `ms` for fd to be readable (data, EOF or an error —
+    /// whatever the next read reports); EINTR is a timeout
+    let readable (fd: int) (ms: int) : bool =
+        let mutable p = PollFd()
+        p.fd <- fd
+        p.events <- 1s // POLLIN
+        poll (&p, 1un, ms) > 0
 
     let SIG_DFL: nativeint = nativeint 0
     let SIG_IGN: nativeint = nativeint 1
@@ -626,35 +728,6 @@ let sigpipeForChildren: Lazy<unit> =
                  | _ -> ()
              | None -> ())
 
-// ---- the main-thread teardown [D:signal-main-unwind] [D:stdout-epipe] --
-// A signal or a closed stdout ends the script, but the teardown — every
-// `always`, every scope's release — runs on the MAIN thread, never in the
-// signal handler: the handler records the exit code, kills the scoped
-// children (what the main thread waits on) and wakes interruptible waits;
-// the main thread raises ExitRequest at its next evaluation or wait
-// boundary and unwinds through its scopes, so no statement runs after the
-// request. Registered by the script runner and -e; without a registered
-// main thread (the REPL) the handler keeps the in-handler sweep.
-
-let mutable private mainThreadId = 0
-let mutable private teardownCode = 0
-let mutable private teardownRaised = 0
-
-/// interruptible waits block on this; set when a teardown is requested
-let teardownWake = new System.Threading.ManualResetEventSlim(false)
-
-let registerMainThread () : unit =
-    mainThreadId <- System.Threading.Thread.CurrentThread.ManagedThreadId
-
-let private onMainThread () =
-    mainThreadId <> 0
-    && System.Threading.Thread.CurrentThread.ManagedThreadId = mainThreadId
-
-/// record a teardown's exit code — the first request wins
-let requestTeardown (code: int) : unit =
-    System.Threading.Interlocked.CompareExchange(&teardownCode, code, 0) |> ignore
-    teardownWake.Set()
-
 /// the requested exit code, or `code` when none was requested — the
 /// runner's result, so a request racing a statement's normal end still
 /// exits with the request's code
@@ -662,8 +735,10 @@ let exitCodeOr (code: int) : int =
     match System.Threading.Volatile.Read &teardownCode with
     | 0 -> code
     | c ->
-        // a requested teardown's kill completes before the exit
+        // a requested teardown's kill completes before the exit, every
+        // other tree kill in flight with it [D:kill-settle]
         killLiveChildren ()
+        settleKills ()
         c
 
 /// a parallel worker stops taking arms once a teardown is requested
@@ -695,10 +770,11 @@ let private interruptible () =
     onMainThread () && System.Threading.Volatile.Read &teardownRaised = 0
 
 // what a runtime-owned wait wakes on: the teardown (main thread, not yet
-// unwinding), a lost race, a REPL ^C [D:repl-interrupt]
+// unwinding; any other flow outside a cleanup [D:teardown-joins-arms]), a
+// lost race, a REPL ^C [D:repl-interrupt]
 let private wakeHandles () : System.Threading.WaitHandle list =
     (if interruptible () then [ teardownWake.WaitHandle ] else [])
-    @ (waitTokens () |> List.map (fun t -> t.WaitHandle))
+    @ (cutTokens () |> List.map (fun t -> t.WaitHandle))
 
 let private raiseWoken () =
     checkTeardown ()
@@ -787,8 +863,31 @@ let cutRead
 let cutJoin (task: System.Threading.Tasks.Task<'a>) : 'a =
     cutRead (fun () -> task.Result) (fun _ -> System.Threading.Tasks.ValueTask<'a>(task))
 
-/// join a task; a teardown request raises on the main thread without
-/// waiting for it (the abandoned task dies with the process)
+/// a blocking call a lost race or a REPL ^C abandons — a FIFO's open or
+/// read, which no kill reaches [D:stdin-reader]: under a cancel it runs off
+/// the flow and the wait raises; the abandoned call's result is never used
+let cutBlocking (f: unit -> 'a) : 'a =
+    match waitTokens () with
+    | [] -> f ()
+    | _ ->
+        let task = System.Threading.Tasks.Task.Run<'a>(System.Func<'a> f)
+
+        try
+            cutJoin task
+        with :? System.AggregateException as ae when
+            ae.InnerExceptions.Count = 1
+            && not (ae.InnerException :? System.OperationCanceledException) ->
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ae.InnerException).Throw()
+            Unchecked.defaultof<'a>
+
+// the main thread is joining arms for a teardown: it unwinds next, so the
+// signal watchdog stands down [D:teardown-joins-arms]
+let mutable private mainJoining = 0
+
+/// join a task; a teardown request raises on the main thread once the
+/// task's arms, cut at their next boundary, have joined
+/// [D:teardown-joins-arms] — before any enclosing scope closes (pure
+/// compute holds the join; a second signal hard-exits)
 let waitTask (t: System.Threading.Tasks.Task) : unit =
     if interruptible () then
         System.Threading.WaitHandle.WaitAny(
@@ -796,9 +895,191 @@ let waitTask (t: System.Threading.Tasks.Task) : unit =
         )
         |> ignore
 
+        if teardownRequested () <> 0 then
+            System.Threading.Volatile.Write(&mainJoining, 1)
+
+            try
+                t.Wait()
+            with _ ->
+                ()
+
         checkTeardown ()
 
     t.Wait()
+
+// ---- weir's one stdin reader [D:stdin-reader] --------------------------
+// Self.prompt, Self.stdin and the piped REPL read fd 0 through one buffer,
+// so no reader hides input from another, and bytes are read only while a
+// reader waits. A prompt takes one byte at a time and stops at its
+// newline, so a child spawned later reads the rest; a stream read
+// (Self.stdin, the piped REPL) takes what is there. A wait the runtime
+// cuts (a lost race, a REPL ^C, a teardown) polls beside its tokens and
+// raises without reading further: a line it had begun stays buffered
+// for the next weir reader, and a cut never consumes a line. Windows
+// reads block, uncut.
+module Stdin =
+    // one reader at a time; a waiting one stays cuttable
+    let private gate = obj ()
+    // fd 0's bytes read, not yet handed out: buf[lo..hi)
+    let mutable private buf: byte[] = Array.zeroCreate 4096
+    let mutable private lo = 0
+    let mutable private hi = 0
+    // where the terminator scan resumes, so a long line scans once
+    let mutable private scanned = 0
+
+    let private winStdin = lazy (System.Console.OpenStandardInput())
+
+    let private winTty () =
+        System.OperatingSystem.IsWindows() && not System.Console.IsInputRedirected
+
+    // wait until fd 0 is readable, raising when the wait is cut
+    let private awaitReadable () =
+        if not (System.OperatingSystem.IsWindows()) && not (List.isEmpty (wakeHandles ())) then
+            raiseWoken ()
+
+            while not (Libc.readable 0 50) do
+                raiseWoken ()
+
+    // read up to `n` more bytes into the buffer; 0 at end of input (a
+    // read error is the end too)
+    let private fill (n: int) : int =
+        if lo = hi then
+            lo <- 0
+            hi <- 0
+            scanned <- 0
+        elif hi + n > buf.Length && lo > 0 then
+            System.Buffer.BlockCopy(buf, lo, buf, 0, hi - lo)
+            hi <- hi - lo
+            scanned <- scanned - lo
+            lo <- 0
+
+        if hi + n > buf.Length then
+            let bigger = Array.zeroCreate (max (buf.Length * 2) (hi + n))
+            System.Buffer.BlockCopy(buf, 0, bigger, 0, hi)
+            buf <- bigger
+
+        if System.OperatingSystem.IsWindows() then
+            let got = winStdin.Force().Read(buf, hi, n)
+            hi <- hi + got
+            got
+        else
+            let rec go () =
+                awaitReadable ()
+
+                let r =
+                    let h =
+                        System.Runtime.InteropServices.GCHandle.Alloc(
+                            buf,
+                            System.Runtime.InteropServices.GCHandleType.Pinned
+                        )
+
+                    try
+                        int (Libc.read (0, h.AddrOfPinnedObject() + nativeint hi, unativeint n))
+                    finally
+                        h.Free()
+
+                if r >= 0 then
+                    hi <- hi + r
+                    r
+                else
+                    match System.Runtime.InteropServices.Marshal.GetLastPInvokeError() with
+                    | e when e = Libc.EINTR -> go ()
+                    | e when e = Libc.EAGAIN ->
+                        // an inherited non-blocking fd 0
+                        Libc.readable 0 50 |> ignore
+                        go ()
+                    | _ -> 0
+
+            go ()
+
+    // the next whole line in the buffer: a stream read breaks at \n, \r
+    // and \r\n (a StreamReader's lines), a prompt at \n with one \r before
+    // it dropped. None when more bytes are needed (at the end, the rest)
+    let private takeLine (stream: bool) (atEnd: bool) : string option =
+        let span = System.ReadOnlySpan<byte>(buf, scanned, hi - scanned)
+
+        let at =
+            if stream then
+                System.MemoryExtensions.IndexOfAny(span, 10uy, 13uy)
+            else
+                System.MemoryExtensions.IndexOf(span, 10uy)
+
+        let decode (n: int) =
+            System.Text.Encoding.UTF8.GetString(buf, lo, n)
+
+        if at >= 0 then
+            let j = scanned + at
+
+            if buf[j] = 13uy && j + 1 = hi && not atEnd then
+                // a \r at the end may begin a \r\n: read on
+                scanned <- j
+                None
+            else
+                let line =
+                    if not stream && j > lo && buf[j - 1] = 13uy then
+                        decode (j - 1 - lo)
+                    else
+                        decode (j - lo)
+
+                lo <- if buf[j] = 13uy && j + 1 < hi && buf[j + 1] = 10uy then j + 2 else j + 1
+                scanned <- lo
+                Some line
+        elif atEnd && lo < hi then
+            let line = decode (hi - lo)
+            lo <- hi
+            scanned <- hi
+            Some line
+        else
+            scanned <- hi
+            None
+
+    let private readWith (stream: bool) : string =
+        if winTty () then
+            System.Console.In.ReadLine()
+        else
+            while not (System.Threading.Monitor.TryEnter(gate, 50)) do
+                raiseWoken ()
+
+            try
+                let chunk = if stream then 65536 else 1
+                // where the line taken begins (a fill may move the buffer)
+                let mutable start = lo
+                let mutable line = takeLine stream false
+                let mutable atEnd = false
+                let mutable waited = false
+
+                while line.IsNone && not atEnd do
+                    waited <- true
+
+                    if fill chunk = 0 then
+                        atEnd <- true
+
+                    start <- lo
+                    line <- takeLine stream atEnd
+
+                match line with
+                | Some l when waited ->
+                    // a cut landing as the line completes leaves it too
+                    try
+                        raiseWoken ()
+                    with _ ->
+                        lo <- start
+                        scanned <- start
+                        reraise ()
+
+                    l
+                | Some l -> l
+                | None -> null
+            finally
+                System.Threading.Monitor.Exit gate
+
+    /// one line for Self.prompt [D:prompt], reading nothing past its
+    /// newline; null at the end of input
+    let readPromptLine () : string = readWith false
+
+    /// the next line of the stream (Self.stdin, the piped REPL); null at
+    /// the end of input
+    let readLine () : string = readWith true
 
 // weir's own stdout, when it is a pipe or file [D:stdout-epipe]: .NET's
 // Unix console stream drops EPIPE, so a closed reader went unnoticed and
@@ -945,15 +1226,19 @@ let private installExitHook () =
                             killLiveChildren ()
 
                             // the backstop: a main thread blocked where
-                            // no boundary comes (a stdin read, a network
-                            // call) cannot unwind — after a grace period
-                            // the old in-handler teardown runs and the
-                            // process exits; it runs no statement either
+                            // no boundary comes (a network call) cannot
+                            // unwind — after a grace period the old
+                            // in-handler teardown runs and the process
+                            // exits; it runs no statement either. One
+                            // joining arms unwinds next and is left be
                             let watchdog =
                                 System.Threading.Thread(fun () ->
                                     System.Threading.Thread.Sleep 1000
 
-                                    if System.Threading.Volatile.Read &teardownRaised = 0 then
+                                    if
+                                        System.Threading.Volatile.Read &teardownRaised = 0
+                                        && System.Threading.Volatile.Read &mainJoining = 0
+                                    then
                                         sweepLiveTmpDirs ()
                                         System.Environment.Exit code)
 
@@ -1011,10 +1296,9 @@ let registerForeground (p: System.Diagnostics.Process) : unit =
                         // main thread's wait returns and runs the next statement
                         if System.Threading.Volatile.Read &hookInstalled.contents = 0 then
                             for kv in liveProcs do
-                                try
-                                    kv.Value.Kill true
-                                with _ ->
-                                    ()
+                                killTree kv.Value
+
+                            settleKills ()
                 )
 
             hookRoots <- (reg :> obj) :: hookRoots

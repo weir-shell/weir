@@ -491,12 +491,17 @@ let formatValue (v: Value) : string = formatWith showLimits 0 v
 // existing Value machinery [D:secret].
 type private PlanFrame =
     { Ops: ResizeArray<Value>
-      // the target paths captured mutations change [D:plan-apply]
-      // (normalized, no trailing separator); a later read at, under,
-      // or — for a listing — above one is known-after-apply and
-      // refused [D:plan-stale-reads]. Session-resolved so a relative
+      // the target paths captured mutations change [D:plan-apply]: a
+      // later read at, under, or — for a listing — above one is
+      // known-after-apply and refused [D:plan-stale-reads]. Indexed
+      // [D:plan-guard-index]: Targets maps each target's comparison
+      // keys (as written, and through symlinks [D:plan-guard-links]) to
+      // the path a refusal names, Above maps every proper ancestor of a
+      // key to a target below it, so a read costs O(depth) lookups,
+      // never a scan of the captured ops. Session-resolved so a relative
       // read matches an earlier relative write.
-      Targets: ResizeArray<string>
+      Targets: System.Collections.Generic.Dictionary<string, string>
+      Above: System.Collections.Generic.Dictionary<string, string>
       // `within tmp` dirs opened inside this plan [D:plan-within-tmp]:
       // deleted when their scope closes, before any apply
       TmpRoots: ResizeArray<string> }
@@ -530,15 +535,98 @@ module PlanMode =
         System.String.Equals(p, r, cmp)
         || p.StartsWith((if r.EndsWith sep then r else r + sep), cmp)
 
-    let private within (root: string) (p: string) =
-        pathWithinOn (System.OperatingSystem.IsWindows()) root p
+    let private windows = System.OperatingSystem.IsWindows()
+
+    let private within (root: string) (p: string) = pathWithinOn windows root p
+
+    let private sep = if windows then '\\' else '/'
+
+    // case folds where the filesystem does [D:plan-guard-links]: Windows,
+    // and macOS, whose default volumes are case-insensitive — a
+    // case-sensitive macOS volume over-refuses, it never misses
+    let private comparer =
+        if windows || System.OperatingSystem.IsMacOS() then
+            System.StringComparer.OrdinalIgnoreCase
+        else
+            System.StringComparer.Ordinal
+
+    // the comparison key: one separator spelling, no trailing separator
+    let private keyOf (p: string) =
+        let s = if windows then p.Replace('/', '\\') else p
+        if s.Length > 1 && s[s.Length - 1] = sep then s.TrimEnd sep else s
+
+    // every proper ancestor of a key, the root included
+    let private ancestors (k: string) : string list =
+        let mutable acc = []
+        let mutable i = k.LastIndexOf sep
+
+        while i >= 0 do
+            let a = if i = 0 then string sep else k.Substring(0, i)
+
+            if a <> k then
+                acc <- a :: acc
+
+            i <- if i = 0 then -1 else k.LastIndexOf(sep, i - 1)
+
+        acc
+
+    // the symlink a path names, or None (absent, not a link, unreadable)
+    let private linkOf (p: string) : string option =
+        try
+            match System.IO.FileInfo(p).LinkTarget with
+            | null -> None
+            | t -> Some t
+        with _ ->
+            None
+
+    /// `p` (absolute) with the symlinks among its existing components
+    /// resolved [D:plan-guard-links]; components that do not exist stay
+    /// as written. `followLeaf = false` keeps the last component as is
+    /// — a delete or move acts on a link itself. A loop stops resolving
+    /// after 40 links (the kernel's own bound).
+    let private resolveLinks (followLeaf: bool) (p: string) : string =
+        let rec go (hops: int) (cur: string) (rest: string list) =
+            match rest with
+            | [] -> cur
+            | part :: more ->
+                let next = System.IO.Path.Combine(cur, part)
+
+                match (if more.IsEmpty && not followLeaf then None else linkOf next) with
+                | Some target when hops < 40 ->
+                    let full = System.IO.Path.GetFullPath(System.IO.Path.Combine(cur, target))
+                    let root = System.IO.Path.GetPathRoot full
+                    go (hops + 1) root (split (full.Substring root.Length) @ more)
+                | _ -> go hops next more
+
+        and split (s: string) =
+            s.Split([| '/'; sep |], System.StringSplitOptions.RemoveEmptyEntries) |> List.ofArray
+
+        let full = System.IO.Path.GetFullPath p
+        let root = System.IO.Path.GetPathRoot full
+        go 0 root (split (full.Substring root.Length))
+
+    // the keys a path compares under: as written, its directory resolved,
+    // and — for an op or read that follows a final link — fully resolved
+    let private keysOf (followLeaf: bool) (p: string) : string list =
+        let lexical = keyOf (norm p)
+
+        let resolved =
+            try
+                [ keyOf (resolveLinks false p)
+                  if followLeaf then
+                      keyOf (resolveLinks true p) ]
+            with _ ->
+                []
+
+        List.distinct (lexical :: resolved)
 
     /// run f while a fresh capture frame is on top; returns the captured
     /// Ops in capture order (the frame is popped on every exit)
     let capturing (f: unit -> unit) : Value list =
         let frame =
             { Ops = ResizeArray()
-              Targets = ResizeArray()
+              Targets = System.Collections.Generic.Dictionary(comparer)
+              Above = System.Collections.Generic.Dictionary(comparer)
               TmpRoots = ResizeArray() }
 
         stack.Value <- frame :: stack.Value
@@ -597,16 +685,72 @@ module PlanMode =
                 | None -> ()
 
             frame.Ops.Add op
-            targets |> List.iter (fun p -> frame.Targets.Add(norm p))
+
+            // a write lands where a final symlink points; a delete or
+            // move changes the link itself [D:plan-guard-links]
+            let followLeaf = case = "WriteFile" || case = "WriteFileAtomic"
+
+            for p in targets do
+                let shown = norm p
+
+                for k in keysOf followLeaf p do
+                    frame.Targets.TryAdd(k, shown) |> ignore
+
+                    for a in ancestors k do
+                        frame.Above.TryAdd(a, shown) |> ignore
         | [] -> unreachable "PlanMode.capture with no active frame"
 
-    let private refuse (op: string) (resolvedPath: string) (target: string) =
+    let private refuse (op: string) (resolvedPath: string) (enclosing: bool, target: string) =
+        let where = if enclosing then "an enclosing 'plan'" else "this 'plan'"
+
         let what =
             if target = norm resolvedPath then "targets it"
             else $"targets '{target}'"
 
         failwith
-            $"{op}: known-after-apply — this reads '{resolvedPath}', but an earlier captured mutation in this 'plan' {what}; the read would see stale state (the mutation is a pending Op, not yet applied). Restructure so the read does not depend on a captured write, or move it out of the plan"
+            $"{op}: known-after-apply — this reads '{resolvedPath}', but an earlier captured mutation in {where} {what}; the read would see stale state (the mutation is a pending Op, not yet applied). Restructure so the read does not depend on a captured write, or move it out of the plan"
+
+    // the target a key equals or lies under, in one frame
+    let private targetAtOrAbove (frame: PlanFrame) (k: string) : string option =
+        match frame.Targets.TryGetValue k with
+        | true, t -> Some t
+        | _ ->
+            ancestors k
+            |> List.tryPick (fun a ->
+                match frame.Targets.TryGetValue a with
+                | true, t -> Some t
+                | _ -> None)
+
+    // the target below a key, in one frame
+    let private targetBelow (frame: PlanFrame) (k: string) : string option =
+        match frame.Above.TryGetValue k with
+        | true, t -> Some t
+        | _ -> None
+
+    // the guard's walk [D:plan-guard-links]: every enclosing frame — an
+    // inner plan's read sees an outer plan's pending ops as stale too —
+    // under every key of the read path; `below` decides a hit for a
+    // target below the path
+    let private guard (op: string) (resolvedPath: string) (below: unit -> bool) =
+        match stack.Value with
+        | [] -> ()
+        | frames when frames |> List.forall (fun f -> f.Targets.Count = 0) -> ()
+        | frames ->
+            let keys = keysOf true resolvedPath
+
+            frames
+            |> List.indexed
+            |> List.tryPick (fun (i, frame) ->
+                keys
+                |> List.tryPick (fun k ->
+                    match targetAtOrAbove frame k with
+                    | Some t -> Some t
+                    | None ->
+                        match targetBelow frame k with
+                        | Some t when below () -> Some t
+                        | _ -> None)
+                |> Option.map (fun t -> i > 0, t))
+            |> Option.iter (refuse op resolvedPath)
 
     /// a read builtin's known-after-apply gate [D:plan-apply]
     /// [D:plan-stale-reads]: inside a plan, reading a path an earlier
@@ -617,28 +761,11 @@ module PlanMode =
     /// below a path that does not exist yet (a captured write would
     /// create it). Other reads run. `op`/`path` name the offender.
     let checkRead (op: string) (resolvedPath: string) =
-        match stack.Value with
-        | frame :: _ ->
-            let r = norm resolvedPath
-
-            frame.Targets
-            |> Seq.tryFind (fun t ->
-                within t r
-                || (within r t && not (System.IO.Directory.Exists r)))
-            |> Option.iter (refuse op resolvedPath)
-        | [] -> ()
+        guard op resolvedPath (fun () -> not (System.IO.Directory.Exists resolvedPath))
 
     /// the listing gate (Dir.list/stat, Path.glob, ls) [D:plan-stale-reads]:
     /// a listing of `root` also sees every captured target below it
-    let checkTree (op: string) (resolvedRoot: string) =
-        match stack.Value with
-        | frame :: _ ->
-            let r = norm resolvedRoot
-
-            frame.Targets
-            |> Seq.tryFind (fun t -> within t r || within r t)
-            |> Option.iter (refuse op resolvedRoot)
-        | [] -> ()
+    let checkTree (op: string) (resolvedRoot: string) = guard op resolvedRoot (fun () -> true)
 
 // The REPL/-e echo [D:repl-echo]: bounded render plus the way-out
 // hint. The count shows only when already known (a materialized list)
@@ -758,14 +885,14 @@ let private sgrLenAt (s: string) (i: int) : int =
 // this is the same rule one class wider, covering the data a renderer
 // prints. A filename or field carrying OSC/DCS escapes, a bare ESC, a
 // cursor/screen CSI, or C0/C1 controls can clear the screen, set the
-// window title, write the clipboard, or — quietest of all — use CR so
-// the name the user reads is not the name on disk. So tty-bound data
-// renderers neutralize those bytes: the ESC introducer, C0 controls
-// except \t and \n, DEL, and the C1 range render as a visible \xNN
-// escape so the text stays honest. SGR sequences are the one exception
-// [D:tty-color]: display-only, so intentional colour (the Color module,
-// a coloured prompt) survives while every terminal-driving family stays
-// neutralized. Applied only at a tty and only to data — redirected
+// window title, or write the clipboard. So tty-bound data renderers
+// neutralize those bytes: the ESC introducer, C0 controls except \t,
+// \n and a bare CR, DEL, and the C1 range render as a visible \xNN
+// escape so the text stays honest. CR passes [D:tty-cr-pass]: it only
+// returns the cursor, and progress lines rewrite themselves with it.
+// SGR sequences are the other exception [D:tty-color]: display-only,
+// so intentional colour (the Color module, a coloured prompt) survives
+// while every terminal-driving family stays neutralized. Applied only at a tty and only to data — redirected
 // output is byte-faithful.
 // Bidi controls render as a visible \uXXXX too [D:tty-bidi-sanitize]:
 // the text the user reads must match the bytes (Trojan Source).
@@ -777,10 +904,15 @@ let sanitizeTtyData (s: string) : string =
         (n >= 0x202A && n <= 0x202E) || (n >= 0x2066 && n <= 0x2069) || n = 0x200E || n = 0x200F || n = 0x061C
 
     // hostile = ESC (0x1B) the introducer, DEL (0x7F), any C0 control
-    // (< 0x20) except TAB and LF, and the C1 range (0x80..0x9F)
+    // (< 0x20) except TAB, LF and CR [D:tty-cr-pass], and the C1 range
+    // (0x80..0x9F)
     let hostile (c: char) =
         let n = int c
-        n = 0x1B || n = 0x7F || (n < 0x20 && c <> '\t' && c <> '\n') || (n >= 0x80 && n <= 0x9F)
+
+        n = 0x1B
+        || n = 0x7F
+        || (n < 0x20 && c <> '\t' && c <> '\n' && c <> '\r')
+        || (n >= 0x80 && n <= 0x9F)
 
     if not (s |> Seq.exists (fun c -> hostile c || bidi c)) then
         s
@@ -830,6 +962,33 @@ let sanitizeTtyData (s: string) : string =
 /// gets the safe rendering
 let sanitizeIfTty (redirected: bool) (s: string) : string =
     if redirected then s else sanitizeTtyData s
+
+/// stderr at a tty [D:tty-diag-sanitize]: every write rides the data
+/// sanitizer, so a diagnostic echoing source, a path or a pattern
+/// cannot drive the terminal; weir's own SGR colouring passes
+type TtyErrWriter(inner: System.IO.TextWriter) =
+    inherit System.IO.TextWriter()
+    override _.Encoding = inner.Encoding
+
+    override _.NewLine
+        with get () = inner.NewLine
+        and set v = inner.NewLine <- v
+
+    override _.Write(c: char) = inner.Write(sanitizeTtyData (string c))
+
+    override _.Write(s: string) =
+        if not (isNull s) then
+            inner.Write(sanitizeTtyData s)
+
+    override _.Write(buffer: char[], index: int, count: int) =
+        inner.Write(sanitizeTtyData (System.String(buffer, index, count)))
+
+    override _.WriteLine() = inner.WriteLine()
+
+    override _.WriteLine(s: string) =
+        inner.WriteLine(if isNull s then s else sanitizeTtyData s)
+
+    override _.Flush() = inner.Flush()
 
 // binary content must not reach a terminal [D:binary-echo]: a NUL in
 // the echo's pulled prefix marks the value binary, and the echo —
@@ -1375,6 +1534,17 @@ let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) :
             | Error _ -> failwith $"{where}: number {raw} is out of float range"
     | _ -> VUnion("YNull", None)
 
+// a mapping's keys are unique on the wire [D:mapping-dupkeys]: a pair
+// seq or YMap holding a key twice would write a document weir reads
+// last-wins (json) or refuses (yaml) — the writer refuses, naming it
+let private refuseDupKeys (who: string) (keys: string seq) =
+    let seen = System.Collections.Generic.HashSet<string>()
+
+    for k in keys do
+        if not (seen.Add k) then
+            failwith
+                $"{who}: the mapping holds the key '{k}' twice — a document's keys are unique; keep one pair per key before writing"
+
 let private jsonLine
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, string * string * bool>)
@@ -1440,9 +1610,11 @@ let private jsonLine
                     | _ -> None)
 
             if not items.IsEmpty && asPairs |> List.forall Option.isSome then
+                let pairs = asPairs |> List.map Option.get
+                refuseDupKeys "to json" (List.map fst pairs)
                 writer.WriteStartObject()
 
-                for (k, v) in asPairs |> List.map Option.get do
+                for (k, v) in pairs do
                     writer.WritePropertyName k
                     write v
 
@@ -1468,6 +1640,12 @@ let private jsonLine
         // a `Yaml` node writes as the JSON it denotes [D:json-yaml-field]
         // — after the tagged arm, which owns any user case names
         | VUnion("YMap", Some(VSeq entries)) ->
+            entries
+            |> Seq.choose (function
+                | VTuple [ VStr k; _ ] -> Some k
+                | _ -> None)
+            |> refuseDupKeys "to json"
+
             writer.WriteStartObject()
 
             for e in entries do
@@ -1552,7 +1730,7 @@ let private jsonDocRead
     (text: string)
     : Value =
     use doc =
-        match parseJsonBounded (fun o -> System.Text.Json.JsonDocument.Parse(text, o)) with
+        match parseJsonBounded text with
         | Ok d -> d
         // never System.Text.Json's words [D:json-boundary]
         | Error(Some why) -> failwith $"{who}: valid JSON, but {why}: {shown}"
@@ -1630,10 +1808,15 @@ let private jsonDocRead
                 failwith
                     $"{who}: field '{name}' expected an object ({formatTy ty}), got {jsonKindName prop.ValueKind} in: {shown}"
             else
-                // forced before the document disposes
-                prop.EnumerateObject()
-                |> Seq.map (fun p -> VTuple [ VStr p.Name; readValue $"{name}[\"{p.Name}\"]" v p.Value ])
-                |> List.ofSeq
+                // forced before the document disposes; a repeated key
+                // last-wins at its first position [D:mapping-dupkeys]
+                let props = prop.EnumerateObject() |> List.ofSeq
+                let last = props |> List.map (fun p -> p.Name, p.Value) |> Map.ofList
+
+                props
+                |> List.map (fun p -> p.Name)
+                |> List.distinct
+                |> List.map (fun k -> VTuple [ VStr k; readValue $"{name}[\"{k}\"]" v last[k] ])
                 |> List.toSeq
                 |> VSeq
         | TSeq elem ->
@@ -1909,6 +2092,46 @@ let private jsonSnippet (text: string) : string =
     let t = text.Trim()
     if t.Length <= 120 then t else t.Substring(0, 117) + "..."
 
+// what an error cites in place of the document when the declared shape
+// holds a Secret [D:from-secret-excerpt]: any excerpt may carry it
+let private secretExcerpt = "<excerpt withheld: the type holds a Secret>"
+
+/// does the declared shape hold a Secret anywhere — fields, payloads,
+/// type arguments, at any depth [D:from-secret-excerpt]
+let private jsonTopHoldsSecret (top: JsonTop) (defs: Map<string, RecordDef>) (udefs: Map<string, UnionDef>) =
+    let seen = System.Collections.Generic.HashSet<string>()
+
+    let rec ty (t: Ty) =
+        match t with
+        | TSecret -> true
+        | TSeq e -> ty e
+        | TTuple ts -> List.exists ty ts
+        | TFun(a, b) -> ty a || ty b
+        | TRowVar(_, fs) -> fs |> List.exists (snd >> ty)
+        | TNamed(n, args) -> List.exists ty args || named n
+        | _ -> false
+
+    and named (n: string) =
+        seen.Add n
+        && (match Map.tryFind n defs with
+            | Some d -> record d
+            | None ->
+                match Map.tryFind n udefs with
+                | Some u -> union u
+                | None -> false)
+
+    and record (d: RecordDef) = d.Fields |> List.exists (snd >> ty)
+    and union (u: UnionDef) = u.Cases |> List.exists (snd >> Option.exists ty)
+
+    match top with
+    | TopRec d ->
+        seen.Add d.Name |> ignore
+        record d
+    | TopUnion u ->
+        seen.Add u.Name |> ignore
+        union u
+    | TopValue t -> ty t
+
 // ---- the read-only XML boundary [D:from-xml] ------------------------------
 
 /// read one XML document under the declared shape [D:from-xml]: the root
@@ -2140,6 +2363,9 @@ let private fromAdapter
     (defs: Map<string, RecordDef>)
     (udefs: Map<string, UnionDef>)
     : Value =
+    let holdsSecret = jsonTopHoldsSecret top defs udefs
+    let cite (excerpt: string) = if holdsSecret then secretExcerpt else excerpt
+
     match fmt with
     // one document -> T: join the elements back into the text they
     // came from (a pretty-printed body pipes straight in) [D:from-jsonl]
@@ -2158,7 +2384,7 @@ let private fromAdapter
                 if text.Trim() = "" then
                     failwith "from json: empty input — expected one JSON document"
 
-                jsonDoc "from json" seqOf mapOf top defs udefs (jsonSnippet text) text
+                jsonDoc "from json" seqOf mapOf top defs udefs (cite (jsonSnippet text)) text
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     // one document per element -> seq<T> (NDJSON, `to json`'s shape)
     | "jsonl" ->
@@ -2172,7 +2398,7 @@ let private fromAdapter
                     |> Seq.choose (fun l ->
                         match l with
                         | VStr s when s.Trim() = "" -> None
-                        | VStr s -> Some(jsonDoc "from jsonl" false false top defs udefs s s)
+                        | VStr s -> Some(jsonDoc "from jsonl" false false top defs udefs (cite s) s)
                         | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
                 )
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
@@ -2193,7 +2419,7 @@ let private fromAdapter
                 if text.Trim() = "" then
                     failwith "from xml: empty input — expected one XML document"
 
-                xmlDoc "from xml" top defs (jsonSnippet text) text
+                xmlDoc "from xml" top defs (cite (jsonSnippet text)) text
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     // header-aligned rows -> seq<T> [D:from-table]: the header must be
     // read before any row slices, so the input materializes here
@@ -2466,6 +2692,17 @@ let private yamlFromImpl (shape: Yaml.Shape) (stream: bool) : Value =
                     $"from yaml: reads one document; this input has {List.length docs} documents — read a stream with 'from yaml stream T'"
         | v -> unreachable $"the checker rejects 'from yaml' on {formatValue v}")
 
+/// does a yaml/toml shape hold a Secret anywhere [D:from-secret-excerpt]
+let rec private shapeHoldsSecret (shape: Yaml.Shape) : bool =
+    match shape with
+    | Yaml.SSecret -> true
+    | Yaml.SOpt s
+    | Yaml.SSeq s
+    | Yaml.SPairs s -> shapeHoldsSecret s
+    | Yaml.SRec(_, fields) -> fields |> List.exists (fun (_, _, s) -> shapeHoldsSecret s)
+    | Yaml.SUnion(_, _, cases, _) -> cases |> List.exists (fun (_, _, p) -> Option.exists shapeHoldsSecret p)
+    | _ -> false
+
 // from toml T [D:from-toml]: the toml parser builds the yaml node tree and
 // the yaml binder converts it — the binder's messages are relabelled
 let private tomlFromImpl (shape: Yaml.Shape) : Value =
@@ -2480,8 +2717,11 @@ let private tomlFromImpl (shape: Yaml.Shape) : Value =
                     | v -> unreachable $"the checker rejects 'from toml' on non-string elements: {formatValue v}")
                 |> String.concat "\n"
 
-            match Toml.parseDoc text with
-            | Error msg -> failwith $"from toml: {msg}"
+            match Toml.parseDocAt text with
+            // a parse detail quotes the document [D:from-secret-excerpt]
+            | Error(line, _) when shapeHoldsSecret shape ->
+                failwith $"from toml: line {line}: not a valid TOML document (detail withheld: the type holds a Secret)"
+            | Error(line, msg) -> failwith $"from toml: line {line}: {msg}"
             | Ok doc ->
                 try
                     yamlConvertWith (fun line raw -> doc.LocalDates.Contains((line, raw))) shape doc.Root
@@ -2587,6 +2827,12 @@ let rec private yamlRender
                 | first :: rest -> ($"- {first}") :: (rest |> List.map (fun l -> "  " + l))
             | BlockScalar(h, content) -> ($"- {h}") :: indent2 content)
 
+    // a mapping whose every entry is omitted (an all-None record) is the
+    // empty flow mapping — never no text at all, which reads back as
+    // null and drops a stream document [D:yaml-empty-doc]
+    let mapping (lines: string list) =
+        if lines.IsEmpty then Inline "{}" else Block lines
+
     match v with
     | VInt n -> Inline(string n)
     | VFloat f -> Inline(formatFloat f)
@@ -2607,16 +2853,16 @@ let rec private yamlRender
     | VUnion("YMap", Some(VSeq pairs)) when Seq.isEmpty pairs -> Inline "{}"
     | VUnion("YSeq", Some(VSeq items)) -> Block(renderSeq (List.ofSeq items))
     | VUnion("YMap", Some(VSeq pairs)) ->
-        Block(
-            renderMap (
-                pairs
-                |> Seq.map (fun p ->
-                    match p with
-                    | VTuple [ VStr k; v ] -> k, v
-                    | v -> unreachable $"the checker rejects YMap over {formatValue v}")
-                |> List.ofSeq
-            )
-        )
+        let entries =
+            pairs
+            |> Seq.map (fun p ->
+                match p with
+                | VTuple [ VStr k; v ] -> k, v
+                | v -> unreachable $"the checker rejects YMap over {formatValue v}")
+            |> List.ofSeq
+
+        refuseDupKeys "to yaml" (List.map fst entries)
+        Block(renderMap entries)
     | VUnion("Some", Some inner) -> yamlRender renames unions (depth + 1) inner
     | VUnion("None", None) -> Inline "null" // element position; fields omit above
     // a tagged case renders its payload with the tag entry first
@@ -2644,7 +2890,7 @@ let rec private yamlRender
         // wire keys on the yaml wire too [D:wire-keys]
         let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
 
-        Block(
+        mapping (
             renderMap (
                 fields
                 |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv)
@@ -2662,7 +2908,13 @@ let rec private yamlRender
                 | _ -> None)
 
         if not items.IsEmpty && asPairs |> List.forall Option.isSome then
-            Block(renderMap (asPairs |> List.map Option.get))
+            let entries = asPairs |> List.map Option.get
+            refuseDupKeys "to yaml" (List.map fst entries)
+            mapping (renderMap entries)
+        elif items.IsEmpty && depth = 0 then
+            // an empty top-level seq is the empty flow sequence, as an
+            // empty Yaml node is [D:yaml-empty-doc]
+            Inline "[]"
         else
             Block(renderSeq items)
     | v -> unreachable $"the checker rejects 'to yaml' on {formatValue v}"
@@ -2757,7 +3009,7 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
         (match compileRegex pat with
          | Error msg -> unreachable $"the checker rejects invalid regex literals: {msg}"
          | Ok rx ->
-             let m = regexGuarded pat (fun () -> rx.Match s)
+             let m = regexGuarded pat s (fun () -> rx.Match s)
 
              if not m.Success then
                  None
@@ -3819,8 +4071,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
             match eval env target with
             | VSeq items ->
                 if loFromEnd || hiFromEnd then
-                    // a from-end bound needs the length — force the seq
-                    let arr = Seq.toArray items
+                    // a from-end bound needs the length — force the seq,
+                    // unless it is already an array [D:seq-index-o1]
+                    let arr =
+                        match items with
+                        | :? (Value[]) as a -> a
+                        | _ -> Seq.toArray items
                     let a = max 0L (absLo arr.Length)
                     let b = absHi arr.Length
                     if a > b then VSeq Seq.empty else VSeq(Array.sub arr (int a) (int (b - a + 1L)))
@@ -4544,7 +4800,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let gate = new System.Threading.SemaphoreSlim(maxConcurrent, maxConcurrent)
             let closing = new System.Threading.CancellationTokenSource()
             let parentCwd = Session.Cwd()
-            let inflight = System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, unit>()
+            // each running handler with its race group [D:serve-cut]
+            let inflight =
+                System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, Session.RaceGroup>()
+
+            let cut = new System.Threading.CancellationTokenSource()
 
             // a handler failure the client sees as a 500 is recorded for
             // the script too [D:serve-handler-errors], on the stream-error
@@ -4568,6 +4828,105 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 with _ ->
                     ()
 
+            // one request on its own thread. Past the drain a handler still
+            // running is cut at its next effect boundary [D:serve-cut]: the
+            // scope's flow token (the pfirst loser's mechanism) and the
+            // request's race group, whose children die with the cut
+            let runHandler (ctx: Serve.SCtx) (group: Session.RaceGroup) =
+                let mutable seen = None
+
+                try
+                    // fork the session like a pmap arm — the
+                    // handler sees the scope's cwd, worker-local
+                    Session.enterWorker parentCwd
+                    Session.enterFlow cut.Token
+                    Session.enterRace group
+
+                    try
+                        // the body was read before the slot
+                        // [D:serve-body-timeout]: a slow body
+                        // arrives here as its 408 signal
+                        let req = Serve.readRequest ctx
+                        seen <- Some req
+
+                        // a malformed method token is refused
+                        // at the boundary [D:serve-method]:
+                        // 400 before the handler, the same
+                        // byte-class refusal Bundle C's
+                        // guard performs
+                        if not (Serve.methodTokenOk req.Method) then
+                            Serve.writeResponse
+                                ctx
+                                { Status = 400
+                                  Headers = []
+                                  Body = Serve.RText "malformed request method" }
+                                ignore
+                        else
+                            let resp = responseOf (apply handler (requestValue req))
+                            // a Stream producer raising mid-body
+                            // goes through the designated
+                            // channel [D:serve-stream]: record
+                            // it on the handle, do not raise
+                            Serve.writeResponse ctx resp (Serve.recordStreamError handle)
+                    with
+                    | Serve.BodyReadTimeout ->
+                        // the client dribbled its body past the
+                        // bound [D:serve-body-timeout] — refuse
+                        // rather than park unboundedly
+                        (try
+                            Serve.writeResponse
+                                ctx
+                                { Status = 408
+                                  Headers = []
+                                  Body = Serve.RText "request body read timed out" }
+                                ignore
+                         with _ ->
+                             ())
+                    | Serve.BodyTooLarge ->
+                        // past maxBody [D:serve-max-body]: the
+                        // rest of the body is never read, so the
+                        // connection closes after the 413
+                        (try
+                            Serve.writeResponse
+                                ctx
+                                { Status = 413
+                                  Headers = []
+                                  Body = Serve.RText $"request body exceeds maxBody ({formatSize maxBody})" }
+                                ignore
+                         with _ ->
+                             ())
+                    | Serve.ResponseHeaderRefused msg ->
+                        // a handler returned a header carrying
+                        // CR/LF/NUL [D:http-header-bytes] or one
+                        // the wire cannot carry
+                        // [D:http-header-unsendable]: refuse
+                        // the response without the offending
+                        // header (never a silent drop) — a 500
+                        // to the client, and the located message
+                        // to the script via the stream-error
+                        // channel so the author learns which
+                        // header and byte the handler bug carried
+                        Serve.recordStreamError handle msg
+                        internalError ctx
+                    | Serve.ResponseStatusRefused n ->
+                        recordHandlerError seen $"status {n} is not an HTTP status (100 to 999)"
+                        internalError ctx
+                    // cut past the scope: detached, nothing to answer
+                    | :? Session.Cancelled -> ()
+                    | ex ->
+                        // a handler raise is a 500 — the server
+                        // survives one bad request, and the
+                        // script hears of it
+                        recordHandlerError seen ex.Message
+                        internalError ctx
+                finally
+                    Serve.finish ctx
+                    Session.exitRace ()
+                    Session.exitFlow ()
+                    Session.exitWorker ()
+                    gate.Release() |> ignore
+                    inflight.TryRemove(System.Threading.Thread.CurrentThread) |> ignore
+
             // the accept loop on its own thread: it takes a slot, then
             // blocks in accept until a request is parked or stop() closes
             // the queue (accept then yields None and the loop ends) — a
@@ -4587,98 +4946,16 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         match Serve.accept handle with
                         | None -> gate.Release() |> ignore // the server closed — shut down
                         | Some ctx ->
+                            let group = Session.RaceGroup()
+
                             let worker =
                                 System.Threading.Thread(fun () ->
-                                    let mutable seen = None
-
-                                    try
-                                        // fork the session like a pmap arm — the
-                                        // handler sees the scope's cwd, worker-local
-                                        Session.enterWorker parentCwd
-
-                                        try
-                                            // the body was read before the slot
-                                            // [D:serve-body-timeout]: a slow body
-                                            // arrives here as its 408 signal
-                                            let req = Serve.readRequest ctx
-                                            seen <- Some req
-
-                                            // a malformed method token is refused
-                                            // at the boundary [D:serve-method]:
-                                            // 400 before the handler, the same
-                                            // byte-class refusal Bundle C's
-                                            // guard performs
-                                            if not (Serve.methodTokenOk req.Method) then
-                                                Serve.writeResponse
-                                                    ctx
-                                                    { Status = 400
-                                                      Headers = []
-                                                      Body = Serve.RText "malformed request method" }
-                                                    ignore
-                                            else
-                                                let resp = responseOf (apply handler (requestValue req))
-                                                // a Stream producer raising mid-body
-                                                // goes through the designated
-                                                // channel [D:serve-stream]: record
-                                                // it on the handle, do not raise
-                                                Serve.writeResponse ctx resp (Serve.recordStreamError handle)
-                                        with
-                                        | Serve.BodyReadTimeout ->
-                                            // the client dribbled its body past the
-                                            // bound [D:serve-body-timeout] — refuse
-                                            // rather than park unboundedly
-                                            (try
-                                                Serve.writeResponse
-                                                    ctx
-                                                    { Status = 408
-                                                      Headers = []
-                                                      Body = Serve.RText "request body read timed out" }
-                                                    ignore
-                                             with _ ->
-                                                 ())
-                                        | Serve.BodyTooLarge ->
-                                            // past maxBody [D:serve-max-body]: the
-                                            // rest of the body is never read, so the
-                                            // connection closes after the 413
-                                            (try
-                                                Serve.writeResponse
-                                                    ctx
-                                                    { Status = 413
-                                                      Headers = []
-                                                      Body = Serve.RText $"request body exceeds maxBody ({formatSize maxBody})" }
-                                                    ignore
-                                             with _ ->
-                                                 ())
-                                        | Serve.ResponseHeaderRefused msg ->
-                                            // a handler returned a header carrying
-                                            // CR/LF/NUL [D:http-header-bytes] or one
-                                            // the wire cannot carry
-                                            // [D:http-header-unsendable]: refuse
-                                            // the response without the offending
-                                            // header (never a silent drop) — a 500
-                                            // to the client, and the located message
-                                            // to the script via the stream-error
-                                            // channel so the author learns which
-                                            // header and byte the handler bug carried
-                                            Serve.recordStreamError handle msg
-                                            internalError ctx
-                                        | Serve.ResponseStatusRefused n ->
-                                            recordHandlerError seen $"status {n} is not an HTTP status (100 to 999)"
-                                            internalError ctx
-                                        | ex ->
-                                            // a handler raise is a 500 — the server
-                                            // survives one bad request, and the
-                                            // script hears of it
-                                            recordHandlerError seen ex.Message
-                                            internalError ctx
-                                    finally
-                                        Serve.finish ctx
-                                        Session.exitWorker ()
-                                        gate.Release() |> ignore
-                                        inflight.TryRemove(System.Threading.Thread.CurrentThread) |> ignore)
+                                    // the counter keeps the per-builtin check
+                                    // live while a handler runs [D:serve-cut]
+                                    Session.racing (fun () -> runHandler ctx group))
 
                             worker.IsBackground <- true
-                            inflight[worker] <- ()
+                            inflight[worker] <- group
                             worker.Start()
                             go ()
 
@@ -4696,15 +4973,23 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 // close the server — frees the port, drops queued requests,
                 // gives in-flight handlers the drain together; idempotent
                 // with the signal sweep [D:serve-drain]
-                let clock = System.Diagnostics.Stopwatch.StartNew()
                 Serve.stop handle drainMs
                 closing.Cancel()
                 Session.deregisterAlways hooked |> ignore
                 loopThread.Join 500 |> ignore
 
-                // a handler still running past the drain is left to finish
-                // on its own: its writes are dropped and its result
-                // discarded, never raised [D:serve-drain]
+                // a handler still running past the drain is cut at its next
+                // effect boundary and joined, so none of its effects lands
+                // after the scope [D:serve-cut]; its writes are dropped and
+                // its result discarded, never raised [D:serve-drain]. Pure
+                // compute may outlive the join — its next boundary is cut
+                cut.Cancel()
+
+                for kv in inflight do
+                    kv.Value.Condemn()
+
+                let clock = System.Diagnostics.Stopwatch.StartNew()
+
                 for kv in inflight do
                     kv.Key.Join(max 0 (drainMs - int clock.ElapsedMilliseconds)) |> ignore
         | WithinTmp ->

@@ -1023,6 +1023,23 @@ let streamingTests =
               Expect.stringContains ex.Message "regex timeout" ""
               Expect.equal Weir.Check.regexTimeout (System.TimeSpan.FromSeconds 5.0) "the documented bound"
           }
+          test "a timeout on a large input names its size and the per-line spelling [D:regex-timeout-size]" {
+              let timedOut input =
+                  Expect.throwsC
+                      (fun () ->
+                          Weir.Check.regexGuarded "a|b" input (fun () ->
+                              raise (System.Text.RegularExpressions.RegexMatchTimeoutException()))
+                          |> ignore)
+                      (fun ex -> ex.Message)
+
+              let big = timedOut (System.String('x', Weir.Check.regexLargeInput))
+              Expect.stringContains big $"on a {Weir.Check.regexLargeInput}-char input" "names the size"
+              Expect.stringContains big "Seq.where (Str.isMatch pat)" "names the per-line spelling"
+              Expect.isFalse (big.Contains "backtracks catastrophically on this input") "does not assert backtracking"
+
+              let small = timedOut (System.String('x', Weir.Check.regexLargeInput - 1))
+              Expect.stringContains small "the pattern backtracks catastrophically on this input" "a small input keeps the backtracking words"
+          }
           test "feed pulls its INPUT lazily: an early-exiting child bounds the pulls [D:spawn-spec]" {
               // the standing laziness rule reaches inputs — the writer
               // task pulls as the pipe accepts, so `head -1` over a
@@ -9269,6 +9286,42 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(root, true)
           }
+          test "a glob segment matches linearly, and a repeated ** yields each path once [D:glob-linear]" {
+              skipOnWindows ()
+              let root = td ()
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "r", "a", "b")) |> ignore
+              // 79 dashes: a 7-star miss once ran past 100s as a regex
+              let name = String.replicate 79 "ab-" + "ab.txt"
+
+              for n in [ name; "r/x.gz"; "r/a/y.gz"; "r/a/b/z.gz"; "r/a/b/😀x" ] do
+                  System.IO.File.WriteAllText(System.IO.Path.Combine(root, n), "x")
+
+              let cells =
+                  [ "*-*-*-*-*-*-*.gz", ""
+                    "*-*-*-*-*-*-*.txt", name
+                    "ab-*ab-ab.txt", name
+                    "r/**/**/*.gz", "r/x.gz,r/a/y.gz,r/a/b/z.gz"
+                    "r/**/**/**", "r/a,r/a/b,r/a/b/z.gz,r/a/b/😀x,r/a/y.gz,r/x.gz"
+                    "r/**/a/**/*.gz", "r/a/y.gz,r/a/b/z.gz"
+                    "r/a/b/?x", "r/a/b/😀x"
+                    "r/a/b/[!a]*", "r/a/b/z.gz,r/a/b/😀x"
+                    "r/**/*.g?", "r/x.gz,r/a/y.gz,r/a/b/z.gz"
+                    "r/**/*.gz*", "r/x.gz,r/a/y.gz,r/a/b/z.gz" ]
+
+              let prog =
+                  [ $"within cd \"{weirPath root}\""
+                    for i, (pat, want) in List.indexed cells do
+                        $"    let g{i} = Path.glob @\"{pat}\" |> Str.join \",\""
+                        $"    if g{i} <> @\"{want}\" then fail $\"cell {i} gave {{g{i}}}\"" ]
+
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+
+              try
+                  Expect.equal (runFile prog) 0 "each cell matched"
+                  Expect.isLessThan sw.ElapsedMilliseconds 5000L "the pathological miss returns at once"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
           test "File.append inside a plan refuses — no v1 Op arm (kind-first)" {
               let dir = td ()
               System.IO.Directory.CreateDirectory dir |> ignore
@@ -9557,6 +9610,99 @@ let planApplyTests =
               Expect.isFalse (p "/r/SB" "/r/sb/f") "POSIX compares case"
               Expect.isFalse (p "/r/sb" @"/r/sb\f") "on POSIX a backslash is a name byte"
               Expect.isTrue (p "/r/sb/" "/r/sb/f") "POSIX, a trailing slash"
+          }
+          // [D:plan-guard-links]: the guard compares symlink-resolved
+          // paths both ways, folds case where the filesystem does, and
+          // checks every enclosing plan frame
+          test "stale reads: the guard resolves symlinks both ways; a deleted link's target reads [D:plan-guard-links]" {
+              skipOnWindows ()
+              let root = td ()
+              let at (p: string) = System.IO.Path.Combine(root, p)
+              System.IO.Directory.CreateDirectory(at "real") |> ignore
+              System.IO.File.WriteAllText(at "real/a.txt", "old\n")
+              System.IO.Directory.CreateSymbolicLink(at "alias", "real") |> ignore
+              System.IO.File.CreateSymbolicLink(at "real/lnk.txt", "a.txt") |> ignore
+
+              let refusedAfter (op: Value) (target: string) (read: unit -> unit) =
+                  let mutable r = false
+
+                  Weir.Eval.PlanMode.capturing (fun () ->
+                      Weir.Eval.PlanMode.capture op [ target ]
+
+                      r <-
+                          try
+                              read ()
+                              false
+                          with Failure m ->
+                              Expect.stringContains m "known-after-apply" "the refusal names the law"
+                              true)
+                  |> ignore
+
+                  r
+
+              let write p =
+                  VUnion("WriteFile", Some(VTuple [ VStr(at p); VSeq [] ])), at p
+
+              let delete p = VUnion("DeleteFile", Some(VStr(at p))), at p
+              let rd p () = Weir.Eval.PlanMode.checkRead "File.read" (at p)
+              let tree p () = Weir.Eval.PlanMode.checkTree "Dir.list" (at p)
+
+              try
+                  let check (op, t) read = refusedAfter op t read
+                  Expect.isTrue (check (write "real/a.txt") (rd "alias/a.txt")) "a read through a dir alias"
+                  Expect.isTrue (check (write "real/a.txt") (rd "real/lnk.txt")) "a read through a file link"
+                  Expect.isTrue (check (write "real/lnk.txt") (rd "real/a.txt")) "a write through a link lands on its target"
+                  Expect.isTrue (check (delete "alias/a.txt") (rd "real/a.txt")) "a delete via the alias, read via the real path"
+                  Expect.isTrue (check (write "alias/new.txt") (tree "real")) "a listing of the real dir"
+                  Expect.isTrue (check (delete "real/lnk.txt") (rd "real/lnk.txt")) "the deleted link itself"
+                  Expect.isFalse (check (delete "real/lnk.txt") (rd "real/a.txt")) "a deleted link's target still reads"
+                  Expect.isFalse (check (write "real/a.txt") (rd "real/other.txt")) "a sibling reads"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          test "stale reads: case folds on Windows and macOS, never on Linux [D:plan-guard-links]" {
+              let root = td ()
+              let at (p: string) = System.IO.Path.Combine(root, p)
+              System.IO.Directory.CreateDirectory(at "sb") |> ignore
+              let mutable refused = false
+
+              Weir.Eval.PlanMode.capturing (fun () ->
+                  Weir.Eval.PlanMode.capture (VUnion("DeleteFile", Some(VStr(at "sb/Cfg.txt")))) [ at "sb/Cfg.txt" ]
+
+                  refused <-
+                      try
+                          Weir.Eval.PlanMode.checkRead "File.read" (at "SB/cfg.TXT")
+                          false
+                      with Failure _ ->
+                          true)
+              |> ignore
+
+              try
+                  let folds = System.OperatingSystem.IsWindows() || System.OperatingSystem.IsMacOS()
+                  Expect.equal refused folds "the platform's case rule"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          test "stale reads: a nested plan checks every enclosing frame [D:plan-guard-links]" {
+              let root = td ()
+              let f = System.IO.Path.Combine(root, "cfg")
+              let mutable msg = ""
+
+              Weir.Eval.PlanMode.capturing (fun () ->
+                  Weir.Eval.PlanMode.capture (VUnion("WriteFile", Some(VTuple [ VStr f; VSeq [] ]))) [ f ]
+
+                  Weir.Eval.PlanMode.capturing (fun () ->
+                      msg <-
+                          try
+                              Weir.Eval.PlanMode.checkRead "File.exists" f
+                              ""
+                          with Failure m ->
+                              m)
+                  |> ignore)
+              |> ignore
+
+              Expect.stringContains msg "known-after-apply" "the inner read refuses"
+              Expect.stringContains msg "an enclosing 'plan'" "it names the enclosing plan"
           }
           test "stale reads: every fs read builtin refuses after a captured mutation; a move's source too" {
               let root = td ()
@@ -12231,6 +12377,41 @@ let optionSweepTests =
               expectValue "Str.padRight 3 \"😀\"" (VStr "😀  ")
               let ex = Expect.throwsC (fun () -> run "Str.sub 0 4 \"a😀b\"" |> ignore) id
               Expect.stringContains ex.Message "string length 3" ""
+          }
+          test "a long string's code-point index agrees with the walk [D:str-code-points]" {
+              // the reference: positions by a plain walk, a pair one position
+              let walk (s: string) =
+                  [| let mutable i = 0
+
+                     while i < s.Length do
+                         yield i
+                         i <- i + (if System.Char.IsSurrogatePair(s, i) then 2 else 1)
+
+                     yield s.Length |]
+
+              let lone = string (char 0xD800)
+
+              for s in
+                  [ String.replicate 1000 "a"
+                    String.replicate 300 "a😀"
+                    String.replicate 130 "😀" + lone + String.replicate 200 "b"
+                    String.replicate 64 "a" + "😀" + String.replicate 400 "c" ] do
+                  let offs = walk s
+                  let n = offs.Length - 1
+                  Expect.equal (CodePoints.length s) n $"length of a {s.Length}-unit string"
+
+                  for cp in [ 0; 1; 63; 64; 65; 127; 128; n - 1; n; n + 5 ] do
+                      let want = offs[min (max cp 0) n]
+                      Expect.equal (CodePoints.offset s cp) want $"offset {cp}"
+
+                  for cp in [ 0; 64; n - 1 ] do
+                      Expect.equal (CodePoints.ofOffset s offs[cp]) cp $"ofOffset at code point {cp}"
+
+                  Expect.equal (CodePoints.sub s (n - 1) 1) (s.Substring(offs[n - 1])) "the last code point"
+
+              expectValue "Str.sub 599 1 (Str.replicate 300 \"a😀\")" (VStr "😀")
+              expectValue "(Str.replicate 300 \"a😀\")[^1..]" (VStr "😀")
+              expectValue "Str.length (Str.replicate 300 \"a😀\")" (VInt 600)
           }
           test "match on Seq.tryHead pins the full idiom" {
               expectValue "match ls |> Seq.tryHead with | Some f -> f.name | None -> \"empty\"" (VStr "a.txt")
@@ -17082,6 +17263,37 @@ let secretTests =
                   (VStr "***")
                   "the map result is still secret"
           }
+          test "a raise inside Secret.map withholds the message, keeping the kind and the builtin's name [D:secret-map-withheld]" {
+              let errOf (code: string) =
+                  match run (code + " |> try result") with
+                  | VUnion("Error", Some(VStr m)) -> m
+                  | other -> failtest $"expected an Error, got {other}"
+
+              let b64 = errOf "Secret.map Str.fromBase64 (Secret.of \"S3CRET!\")"
+              Expect.stringStarts b64 "fromBase64: failed inside Secret.map" b64
+              Expect.stringContains b64 "the message is withheld" b64
+              Expect.isFalse (b64.Contains "S3CRET") b64
+
+              let toInt = errOf "Secret.map (fun t -> show (Str.toInt t)) (Secret.of \"S3CRET\")"
+              Expect.stringStarts toInt "toInt: failed inside Secret.map" toInt
+              Expect.isFalse (toInt.Contains "S3CRET") toInt
+
+              let hex = errOf "Secret.map (fun t -> Bytes.toBase64 (Bytes.fromHex t)) (Secret.of \"S3CRET\")"
+              Expect.stringStarts hex "Bytes.fromHex: failed inside Secret.map" hex
+
+              // a lead that is not a builtin's name is not kept: it may be the secret
+              let own = errOf "Secret.map (fun t -> fail $\"{t}: bad\") (Secret.of \"S3CRET\")"
+              Expect.stringStarts own "Secret.map: the function raised" own
+              Expect.isFalse (own.Contains "S3CRET") own
+
+              // the kind survives: still an ordinary failure
+              try
+                  run "Secret.map Str.fromBase64 (Secret.of \"S3CRET!\")" |> ignore
+                  failtest "expected a raise"
+              with
+              | Failure m -> Expect.isFalse (m.Contains "S3CRET") m
+              | ex -> failtest $"expected a Failure, got {ex.GetType().Name}"
+          }
           test "interpolation REFUSES, naming reveal (a secret must not reach a log line)" {
               let m = (checkErr "let s = Secret.of \"x\" in $\"tok: {s}\"").Message
               Expect.stringContains m "does not interpolate" "refused"
@@ -17106,6 +17318,44 @@ let secretTests =
                   (run "[\"token: y3\"] |> from yaml {| token: Secret |} |> _.token |> Secret.reveal")
                   (VStr "y3")
                   "yaml wraps on the way in"
+          }
+          test "a from json/jsonl/toml error withholds the excerpt when the type holds a Secret [D:from-secret-excerpt]" {
+              let errOf (code: string) =
+                  match run (code + " |> try result") with
+                  | VUnion("Error", Some(VStr m)) -> m
+                  | other -> failtest $"expected an Error, got {other}"
+
+              let withheld (m: string) (what: string) =
+                  Expect.stringContains m "<excerpt withheld: the type holds a Secret>" $"{what}: says it is withheld"
+                  Expect.isFalse (m.Contains "S3CRET") $"{what}: no secret in the message: {m}"
+
+              let doc = "[\"{\\\"token\\\": \\\"S3CRET\\\", \\\"ttl\\\": \\\"3600\\\"}\"]"
+              withheld (errOf (doc + " |> from json {| token: Secret; ttl: int |}")) "a field mismatch"
+              withheld (errOf (doc + " |> from jsonl {| token: Secret; ttl: int |}")) "jsonl"
+
+              withheld
+                  (errOf "[\"{\\\"token\\\": \\\"S3CRET\\\"\"] |> from json {| token: Secret |}")
+                  "malformed JSON"
+
+              withheld
+                  (errOf (doc + " |> from json {| ttl: int; inner: Option<seq<{| key: Secret |}>> |}"))
+                  "a Secret at depth"
+
+              // no Secret in the type: the excerpt is cited as before
+              Expect.stringContains
+                  (errOf (doc + " |> from json {| token: string; ttl: int |}"))
+                  "in: {\"token\": \"S3CRET\", \"ttl\": \"3600\"}"
+                  "no Secret, the excerpt stays"
+
+              // a toml parse detail quotes the document; the line survives
+              let t = errOf "[\"token = S3CRET\"] |> from toml {| token: Secret |}"
+              Expect.stringContains t "from toml: line 1: not a valid TOML document (detail withheld: the type holds a Secret)" t
+              Expect.isFalse (t.Contains "S3CRET") t
+
+              Expect.stringContains
+                  (errOf "[\"token = S3CRET\"] |> from toml {| token: string |}")
+                  "'S3CRET' is not a TOML value"
+                  "no Secret, the toml detail stays"
           }
           test "print refuses a Secret (show s -> ***), and Secret is not arithmetic" {
               Expect.stringContains (checkErr "print (Secret.of \"x\")").Message "will not render a Secret" ""
@@ -18867,6 +19117,26 @@ let accessorTeachingTests =
               // lazy (an infinite source must not be probed for length)
               expectValue "[1; 2; 3] |> Seq.item 1" (VInt 2L)
               expectValue "(Seq.initInfinite id) |> Seq.skip 2 |> Seq.head" (VInt 2L)
+          }
+          test "a frozen seq indexes without walking, its messages unchanged [D:seq-index-o1]" {
+              match run "[1; 2; 3] |> Seq.freeze" with
+              | VSeq(:? (Value[])) -> ()
+              | v -> failtest $"a frozen seq is an array: {v}"
+
+              let xs = "let xs = [10; 20; 30] |> Seq.freeze in "
+              expectValue (xs + "Seq.length xs") (VInt 3L)
+              expectValue (xs + "xs[1] + Seq.item 2 xs") (VInt 50L)
+              expectValue (xs + "xs[^1] + Seq.last xs") (VInt 60L)
+              expectValue (xs + "Seq.tryItem 2 xs") (VUnion("Some", Some(VInt 30L)))
+              expectValue (xs + "Seq.tryItem 3 xs") (VUnion("None", None))
+              expectValue (xs + "Seq.tryItem (-1) xs") (VUnion("None", None))
+              expectValue (xs + "Seq.tryLast xs") (VUnion("Some", Some(VInt 30L)))
+              Expect.stringContains (msgOf (xs + "Seq.item 5 xs")) "item: no element at index 5" "the lazy path's text"
+              Expect.stringContains (msgOf (xs + "xs[^4]")) "index ^4 is out of range for length 3" "the from-end text"
+
+              let empty = "let e = [1] |> Seq.where (fun x -> x > 1) |> Seq.freeze in "
+              Expect.stringContains (msgOf (empty + "Seq.last e")) "last: empty sequence" "empty last raises"
+              expectValue (empty + "Seq.tryLast e") (VUnion("None", None))
           }
           // B5 [D:int-narrowing]: a 64-bit int past int32 never wraps —
           // a position is out of range, an amount too large; slices clamp
@@ -22905,8 +23175,8 @@ let ttySanitizeTests =
               Expect.stringContains safe "\\x1b[2J" "clear-screen CSI defanged (ESC visible)"
               Expect.stringContains safe "\\x1b]0;PWNED" "OSC title/clipboard defanged"
               Expect.isFalse (safe.Contains(char 0x07)) "no raw BEL survives"
-              Expect.isFalse (safe.Contains '\r') "no raw CR survives — the name stays honest"
-              Expect.stringContains safe "\\x0d" "CR renders as \\x0d"
+              // a bare CR passes [D:tty-cr-pass]: progress lines rewrite in place
+              Expect.stringContains safe "a\rb" "a bare CR passes raw"
               Expect.stringContains safe "cleared" "the visible text is preserved"
               // the ONLY raw ESC left is the SGR's; the two dangerous
               // introducers became text
@@ -22924,6 +23194,32 @@ let ttySanitizeTests =
 
               // a clean string is returned unchanged
               Expect.equal (Weir.Eval.sanitizeTtyData "plain-name.txt") "plain-name.txt" "clean text untouched"
+          }
+          test "a bare CR passes; every other C0 control stays visible [D:tty-cr-pass]" {
+              Expect.equal (Weir.Eval.sanitizeTtyData "50%\r100%") "50%\r100%" "CR passes"
+              Expect.equal (Weir.Eval.sanitizeTtyData "a\r\nb") "a\r\nb" "CRLF passes"
+
+              for n in [ 0x00; 0x07; 0x08; 0x0b; 0x0c; 0x0e; 0x1f ] do
+                  let shown = Weir.Eval.sanitizeTtyData (string (char n))
+                  Expect.equal shown ("\\x" + n.ToString("x2")) $"0x{n:x2} stays visible"
+          }
+          test "stderr at a tty rides the sanitizer: escapes visible, SGR and CR pass [D:tty-diag-sanitize]" {
+              let esc = string (char 0x1b)
+              let bel = string (char 0x07)
+              use sink = new System.IO.StringWriter()
+              sink.NewLine <- "\n"
+              use w = new Weir.Eval.TtyErrWriter(sink)
+              w.WriteLine("check.weir:1: no file at x" + esc + "]52;c;cm0=" + bel + ".weir")
+              w.Write(esc + "[31merror" + esc + "[0m")
+              w.Write('\r')
+              w.Write([| 'a'; char 0x1b; 'b' |], 0, 3)
+              w.Write(char 0x1b)
+              w.WriteLine()
+              let out = sink.ToString()
+              Expect.stringContains out "x\\x1b]52;c;cm0=\\x07.weir\n" "the OSC renders visible, the newline is the inner's"
+              Expect.stringContains out (esc + "[31merror" + esc + "[0m") "weir's SGR colour passes"
+              Expect.stringContains out "\ra\\x1bb\\x1b\n" "CR passes; buffer and char writes are sanitized too"
+              Expect.equal (out.Split(char 0x1b).Length - 1) 2 "the only raw ESCs are the SGR pair"
           }
           test "sanitizeIfTty leaves redirected output byte-faithful, sanitizes a tty" {
               let hostile = string (char 0x1b) + "X"
@@ -23838,6 +24134,49 @@ let serveTests =
 
               for code in [ 200; 201; 204; 300; 304; 400; 404; 500 ] do
                   Expect.isFalse (Weir.Http.isRedirect code) $"{code} is not a follow-redirect"
+          }
+          test "a failing redirect target is the host the error names, for Http.send and the contract fetch" {
+              // 127.0.0.1 (healthy) 302s to localhost:1 (nothing listens):
+              // the refusal belongs to the target, never the origin
+              let port = 8631
+              let a = new System.Net.HttpListener()
+              a.Prefixes.Add $"http://127.0.0.1:{port}/"
+              a.Start()
+
+              let loop =
+                  System.Threading.Thread(fun () ->
+                      try
+                          while true do
+                              let ctx = a.GetContext()
+                              ctx.Response.StatusCode <- 302
+                              ctx.Response.Headers.Add("Location", "http://localhost:1/x")
+                              ctx.Response.Close()
+                      with _ ->
+                          ())
+
+              loop.IsBackground <- true
+              loop.Start()
+
+              try
+                  let req: Weir.Http.Req =
+                      { Method = "GET"
+                        Url = $"http://127.0.0.1:{port}/start"
+                        Headers = []
+                        SensitiveHeaders = Set.empty
+                        Body = None
+                        TimeoutMs = 10000L
+                        Insecure = false }
+
+                  match Weir.Http.send System.Threading.CancellationToken.None req with
+                  | Error(msg, Weir.Http.Refused 1) -> Expect.stringContains msg "localhost:1 refused the connection" "Http.send names the target"
+                  | other -> failtest $"Http.send should be refused at the target: {other}"
+
+                  match Weir.Contracts.fetchBytesWith [] $"http://127.0.0.1:{port}/start" with
+                  | Error msg -> Expect.stringContains msg "localhost:1 refused the connection" "the contract fetch names the target"
+                  | Ok _ -> failtest "the contract fetch should be refused at the target"
+              finally
+                  a.Stop()
+                  (a :> System.IDisposable).Dispose()
           }
           // ---- F12: the request-body read timeout [D:serve-body-timeout] ----
           test "the serve config accepts bodyTimeout, and omitting it stays clean" {
@@ -27131,6 +27470,94 @@ let hunt3BehaviourTests =
                       (VStr "1"))
           } ]
 
+// hunt 3 round 2's cancellation seams; the signal, stdin and pty halves are
+// e2e cells
+let hunt3r2CancelTests =
+    testSequenced
+    <| testList
+        "hunt-3r2 cancellation"
+        [ test "a condemned race group spares a child its cleanup starts [D:teardown-always-spawns]" {
+              skipOnWindows ()
+              let g = Weir.Session.RaceGroup()
+              g.Condemn()
+              let sleeper () = System.Diagnostics.Process.Start("sleep", "10")
+              let spared = sleeper ()
+              let killed = sleeper ()
+
+              try
+                  Weir.Session.runningCleanup (fun () -> g.Register spared)
+                  g.Register killed
+                  Expect.isTrue (killed.WaitForExit 5000) "a body's late child dies at registration"
+                  Expect.isFalse spared.HasExited "a cleanup's child runs on"
+              finally
+                  for p in [ spared; killed ] do
+                      try
+                          p.Kill true
+                      with _ ->
+                          ()
+          }
+          test "after a REPL ^C a fan-out takes no arm and ends as the interrupt [D:repl-interrupt-fanout]" {
+              withTempDir "weir-c4" (fun d ->
+                  let f = weirPath (Path.Combine(d, "arms.txt"))
+                  Weir.Session.beginReplEval ()
+
+                  try
+                      Weir.Session.interruptRepl ()
+
+                      for src in
+                          [ $"[1..40] |> Seq.piterWith 2 (fun i -> File.append \"{f}\" [show i] ; fail \"arm\")"
+                            $"[1..40] |> Seq.pmap (fun i -> File.append \"{f}\" [show i] ; fail \"arm\") |> Seq.length"
+                            $"[1..40] |> Seq.pfirst (fun i -> File.append \"{f}\" [show i] ; fail \"arm\")" ] do
+                          Expect.throwsT<Weir.Session.Interrupted> (fun () -> run src |> ignore) src
+
+                      Expect.throwsT<Weir.Session.Interrupted>
+                          (fun () -> Weir.Session.gatedSpawn (fun () -> 7) |> ignore)
+                          "a spawn is a ^C boundary"
+                  finally
+                      Weir.Session.endReplEval ()
+
+                  Expect.isFalse (File.Exists(Path.Combine(d, "arms.txt"))) "no arm started"
+                  expectValue "[1..4] |> Seq.pmap (fun i -> i) |> Seq.length" (VInt 4L))
+          }
+          test "a lost race abandons a blocking call; an unraced one keeps its raise [D:stdin-reader]" {
+              use cts = new System.Threading.CancellationTokenSource()
+
+              Weir.Session.racing (fun () ->
+                  Weir.Session.enterFlow cts.Token
+
+                  try
+                      System.Threading.Tasks.Task.Run(fun () ->
+                          System.Threading.Thread.Sleep 200
+                          cts.Cancel())
+                      |> ignore
+
+                      let sw = System.Diagnostics.Stopwatch.StartNew()
+
+                      Expect.throwsT<Weir.Session.Cancelled>
+                          (fun () ->
+                              Weir.Session.cutBlocking (fun () ->
+                                  System.Threading.Thread.Sleep 10000
+                                  1)
+                              |> ignore)
+                          "the cut raises"
+
+                      Expect.isLessThan sw.ElapsedMilliseconds 5000L "abandoned, not waited out"
+                  finally
+                      Weir.Session.exitFlow ())
+
+              use live = new System.Threading.CancellationTokenSource()
+              Weir.Session.enterFlow live.Token
+
+              try
+                  Expect.throwsT<IOException>
+                      (fun () -> Weir.Session.cutBlocking (fun () -> raise (IOException "fifo")) |> ignore)
+                      "the call's own raise, unwrapped"
+
+                  Expect.equal (Weir.Session.cutBlocking (fun () -> 5)) 5 "a value passes"
+              finally
+                  Weir.Session.exitFlow ()
+          } ]
+
 let sweepFindingTests =
     let msgs file lines = diagsIn file lines |> List.map (fun d -> d.Message)
 
@@ -27402,6 +27829,29 @@ let hunt3BehaviorTests =
 
               Expect.stringContains bad "not valid JSON" "invalid JSON keeps its own error"
           }
+          test "the depth refusal tells valid from invalid in one reader pass [D:json-deep-linear]" {
+              let kind (text: string) =
+                  match Weir.Types.parseJsonBounded text with
+                  | Ok d ->
+                      d.Dispose()
+                      "ok"
+                  | Error(Some _) -> "deep"
+                  | Error None -> "invalid"
+
+              Expect.equal (kind (deep 100)) "ok" "100 deep is within the bound"
+              Expect.equal (kind (deep 101)) "deep" "101 deep names the depth"
+              Expect.equal (kind ("[" + deep 100 + "]")) "deep" "an array level counts"
+              Expect.equal (kind (deep 5000)) "deep" "far past the bound"
+              Expect.equal (kind (deep 5000 + "}")) "invalid" "a deep document with trailing junk is invalid"
+              Expect.equal (kind (String.replicate 5000 "{\"a\":" + "1")) "invalid" "an unclosed deep document is invalid"
+              // a BOM the parser accepts is skipped by the scan too
+              if kind ("\uFEFF" + deep 99) = "ok" then
+                  Expect.equal (kind ("\uFEFF" + deep 101)) "deep" "a BOM'd deep document"
+
+              match Weir.Types.parseJsonBytesBounded (System.Text.Encoding.UTF8.GetBytes(deep 101)) with
+              | Error(Some _) -> ()
+              | other -> failtest $"bytes: {other}"
+          }
           test "a schema nested past 64 JSON levels parses [D:json-depth]" {
               let schema =
                   String.replicate 32 "{\"type\":\"object\",\"properties\":{\"c\":"
@@ -27442,6 +27892,47 @@ let hunt3BehaviorTests =
                   "a:\n  x: 3\n  y: 2"
                   "the yaml round trip holds"
           }
+          test "a mapping last-wins on read; to json and to yaml refuse a key twice [D:mapping-dupkeys]" {
+              let penv = henv |> declare "type HP = { labels: seq<string * string> }"
+              let src = doc """{"labels": {"a": "1", "b": "x", "a": "2"}}"""
+
+              Expect.equal
+                  (runUnder penv $"{src} |> from json HP |> to json" |> text)
+                  """{"labels":{"a":"2","b":"x"}}"""
+                  "the last value at the first position"
+
+              for write in [ "to json"; "to yaml" ] do
+                  for v in
+                      [ "{ labels = [(\"k\", \"1\"); (\"k\", \"2\")] }"
+                        "{ a = YMap [(\"k\", YInt 1); (\"j\", YInt 2); (\"k\", YInt 3)] }" ] do
+                      let msg = (Expect.throwsC (fun () -> runUnder penv $"{v} |> {write}" |> text |> ignore) id).Message
+                      Expect.stringContains msg $"{write}: the mapping holds the key 'k' twice" $"{write} names the key: {v}"
+          }
+          test "to yaml writes an all-None record as {} and an empty top-level seq as []; a stream keeps every document [D:yaml-empty-doc]" {
+              let yenv =
+                  henv
+                  |> declare "type YR = { cpu: Option<string>; memory: Option<string> }"
+                  |> declare "type YC = { name: string; resources: YR }"
+
+              let none = "{ cpu = None; memory = None }"
+              Expect.equal (runUnder yenv $"{none} |> to yaml" |> text) "{}" "a top-level all-None record"
+              Expect.equal (runUnder yenv $"{{ name = \"web\"; resources = {none} }} |> to yaml" |> text) "name: web\nresources: {}" "nested"
+              Expect.equal (runUnder yenv $"[{none}] |> to yaml" |> text) "- {}" "an element"
+              Expect.equal (runUnder yenv $"{none} |> to yaml |> from yaml YR |> fun r -> r == {none}") (VBool true) "it reads back"
+
+              Expect.equal
+                  (runUnder yenv $"{{ name = \"web\"; resources = {none} }} |> to yaml |> from yaml YC |> fun c -> c.resources == {none}")
+                  (VBool true)
+                  "nested reads back"
+
+              let empty = $"[{none}] |> Seq.where (fun r -> r.cpu == Some \"9\")"
+              Expect.equal (runUnder yenv $"{empty} |> to yaml" |> text) "[]" "an empty top-level seq"
+              Expect.equal (runUnder yenv $"{empty} |> to yaml |> from yaml seq<YR> |> Seq.length") (VInt 0L) "it reads back"
+
+              let xs = $"[{{ cpu = Some \"1\"; memory = None }}; {none}; {{ cpu = Some \"2\"; memory = None }}]"
+              Expect.equal (runUnder yenv $"{xs} |> to yaml stream" |> text) "cpu: \"1\"\n---\n{}\n---\ncpu: \"2\"" "the stream form"
+              Expect.equal (runUnder yenv $"{xs} |> to yaml stream |> from yaml stream YR |> Seq.length") (VInt 3L) "no document dropped"
+          }
           test "schema drafting: int-or-string is Yaml, an integer enum is int [D:schema-int-or-string][D:schema-int-enum]" {
               let g =
                   gen
@@ -27457,7 +27948,71 @@ let hunt3BehaviorTests =
               Expect.stringContains g "YInt n, a string as YStr s" "the note names the cases"
               Expect.stringContains g "\n    level: int\n" "an integer enum drafts int"
               Expect.stringContains g "an enum of 1, 2, 3 — drafted int" "its values in the note"
-              Expect.stringContains g "mixed: Option<string>" "a mixed enum stays string"
+              Expect.stringContains g "mixed: Option<Yaml>" "a mixed enum drafts Yaml [D:schema-enum-kind]"
+          }
+          test "schema drafting: number-or-string and format int-or-string are Yaml [D:schema-num-or-string]" {
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "properties": {
+                             "cpu": { "oneOf": [{ "type": ["string", "null"] }, { "type": ["number", "null"] }] },
+                             "target": { "anyOf": [{ "type": "number" }, { "type": "integer" }, { "type": "string" }] },
+                             "port": { "type": "string", "format": "int-or-string" },
+                             "maybe": { "type": ["string", "null"], "format": "int-or-string" },
+                             "name": { "type": "string", "format": "hostname" } } }"""
+
+              Expect.stringContains g "cpu: Option<Yaml>" "number-or-string → Yaml"
+              Expect.stringContains g "target: Option<Yaml>" "number/integer/string → Yaml"
+              Expect.stringContains g "a number reads as YInt n or YFloat f, a string as YStr s" "the note names the cases"
+              Expect.stringContains g "port: Option<Yaml>" "format int-or-string → Yaml"
+              Expect.stringContains g "maybe: Option<Yaml>" "a nullable one is Option<Yaml> once"
+              Expect.stringContains g "// note: port: format int-or-string — drafted Yaml" "the format case has its own note"
+              Expect.stringContains g "name: Option<string>" "another format drafts its type"
+              Expect.stringContains g "// note: not enforced: format on name" "another format is noted, not enforced"
+              Expect.isFalse (g.Contains "format on port") "int-or-string is not also 'not enforced'"
+          }
+          test "schema drafting: a typed enum drafts its type, a mixed enum Yaml [D:schema-enum-kind]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["on", "ratio", "n", "mixed", "untyped"],
+                           "properties": {
+                             "on": { "type": "boolean", "enum": [true] },
+                             "ratio": { "type": "number", "enum": [0.5, 1.5] },
+                             "n": { "type": "number", "enum": [1, 2] },
+                             "untyped": { "enum": [1, 2.5] },
+                             "flag": { "enum": [true, false] },
+                             "mixed": { "enum": ["a", 1, true] },
+                             "s": { "type": "string", "enum": ["a", "b"] } } }"""
+
+              Expect.stringContains g "\n    on: bool\n" "a boolean enum drafts bool"
+              Expect.stringContains g "\n    ratio: float\n" "a number enum drafts float"
+              Expect.stringContains g "\n    n: float\n" "the declared number type wins over integer values"
+              Expect.stringContains g "\n    untyped: float\n" "integers among numbers are numbers"
+              Expect.stringContains g "flag: Option<bool>" "an untyped boolean enum drafts bool"
+              Expect.stringContains g "\n    mixed: Yaml\n" "a mixed enum drafts Yaml"
+              Expect.stringContains g "an enum mixing kinds (a, 1, true) — drafted Yaml" "its note"
+              Expect.stringContains g "s: Option<string>" "a string enum stays string"
+              Expect.stringContains g "an enum of 0.5, 1.5 — drafted float" "the values in the note"
+          }
+          test "schema: a root $id, const and the content keywords are admitted and noted [D:schema-const-format]" {
+              let g =
+                  gen
+                      """{ "$id": "https://example.com/app.json", "type": "object",
+                           "properties": {
+                             "kind": { "type": "string", "const": "Deployment" },
+                             "v": { "const": 2 },
+                             "blob": { "type": "string", "contentEncoding": "base64", "contentMediaType": "image/png" } } }"""
+
+              Expect.stringContains g "kind: Option<string>" "const drafts the declared type"
+              Expect.stringContains g "v: Option<int>" "an untyped const drafts its value's type"
+              Expect.stringContains g "// note: not enforced: const on kind, v" "const is noted"
+              Expect.stringContains g "// note: not enforced: contentEncoding on blob" "contentEncoding"
+              Expect.stringContains g "// note: not enforced: contentMediaType on blob" "contentMediaType"
+              Expect.isFalse (g.Contains "$id") "the root $id is ignored"
+
+              match Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "p": { "$id": "x", "type": "string" } } }""" with
+              | Error e -> Expect.stringContains e "'$id'" "a nested $id still refuses"
+              | Ok _ -> failtest "a nested $id must refuse"
           }
           test "schema validation keywords are admitted and noted, never enforced [D:schema-validation-keys]" {
               let g =
@@ -27476,9 +28031,9 @@ let hunt3BehaviorTests =
               Expect.isFalse (g.Contains "$comment") "a comment is documentation, not noted"
 
               // shape-changing keywords still refuse
-              match Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "p": { "const": 1 } } }""" with
-              | Error e -> Expect.stringContains e "'const'" "const refuses"
-              | Ok _ -> failtest "const must refuse"
+              match Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "p": { "not": { "type": "string" } } } }""" with
+              | Error e -> Expect.stringContains e "'not'" "not refuses"
+              | Ok _ -> failtest "not must refuse"
           }
           test "schema validation notes cover only the definitions the module drafts [D:schema-validation-keys]" {
               let g =
@@ -27768,6 +28323,30 @@ let hunt3PerfTests =
                   Expect.notEqual moved ll "different segments, different lines"
                   Expect.equal { ll with Ends = [||]; PosIndex = null } ll "equality is text, head and segments"
               | other -> failtest $"unexpected: {other}"
+          }
+          test "a plan's stale-read check costs O(depth), not O(captured ops) [D:plan-guard-index]" {
+              let root = tempPath "weir-planidx"
+
+              let loop n () =
+                  Weir.Eval.PlanMode.capturing (fun () ->
+                      for i in 1..n do
+                          let p = System.IO.Path.Combine(root, $"s{i % 100}", $"f{i}")
+                          Weir.Eval.PlanMode.checkRead "File.exists" p
+                          Weir.Eval.PlanMode.capture (VUnion("WriteFile", Some(VTuple [ VStr p; VSeq [] ]))) [ p ])
+                  |> ignore
+
+              growsLinearly "write-if-absent, 10k vs 1k" (loop 1000) (loop 10000)
+          }
+          test "refusing deep JSON is linear in its depth [D:json-deep-linear]" {
+              let deep n =
+                  String.replicate n "{\"a\":" + "1" + String.replicate n "}"
+
+              let refuse (text: string) () =
+                  match Weir.Types.parseJsonBounded text with
+                  | Error(Some _) -> ()
+                  | _ -> failtest "a deep document names the depth"
+
+              growsLinearly "100k vs 10k deep" (refuse (deep 10000)) (refuse (deep 100000))
           } ]
 
 [<Tests>]
@@ -27777,6 +28356,7 @@ let allTests =
         [ hardeningTests
           teardownSeamTests
           hunt3BehaviourTests
+          hunt3r2CancelTests
           argsSecretEchoTests
           hunt3BehaviorTests
           docsBinaryTests

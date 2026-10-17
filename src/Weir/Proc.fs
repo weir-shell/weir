@@ -259,10 +259,8 @@ let private readBytes (s: System.IO.Stream) (buf: byte[]) (off: int) (len: int) 
 // consumers (complete disposes without killing: it has already read
 // both pipes to the end)
 let private reap (p: Process) =
-    try
-        p.Kill true
-    with _ ->
-        ()
+    // settled before any exit [D:kill-settle]
+    Session.killTree p
 
     try
         p.WaitForExit()

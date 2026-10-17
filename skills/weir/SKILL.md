@@ -76,7 +76,9 @@ print (show 1)
   enumeration — it is live, a second enumeration raises with the
   repair; `Self.prompt "msg?"` reads a line per interaction instead, message
   to stderr so piped stdout stays data, EOF refuses; it consumes nothing
-  past its newline, so later children read the rest), `Self.pid : int` (the process id),
+  past its newline, so later children read the rest; a read cut short —
+  a `pfirst` loser, a REPL `^C` — takes no line, the next read gets it
+  [D:stdin-reader]), `Self.pid : int` (the process id),
   `Self.scriptPath : string` (the FILE'S OWN absolute path, resolved
   at startup before any `cd`; symlinks unresolved like bash's `$0` —
   an imported module sees its own), and `Self.entryPath : string`
@@ -433,7 +435,10 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   literals read best: `Seq.where (Str.isMatch @"\.md$")`. Every
   match (these and `Regex` patterns) has a 5s timeout that raises
   `regex timeout: …` [D:regex-timeout] — catastrophic backtracking
-  (`^(a+)+$` on a long near-miss) fails loudly instead of hanging.
+  (`^(a+)+$` on a long near-miss) fails loudly instead of hanging. On
+  an input of 1M+ chars the message names the size instead: a linear
+  scan of ~80M chars takes the 5s by itself, so match line by line
+  (`File.read p |> Seq.where (Str.isMatch pat)`), not one joined string.
   `Str.rmatchAll pat s : seq<seq<string>>` is the plural — EVERY
   match's GROUPS, lazily; no Option (absence is the empty seq). Groups
   ONLY: a pattern with no capturing group yields an EMPTY inner seq per
@@ -593,9 +598,13 @@ print $"{key} -> {value}"
   `Secret` fields (env is the CI secret channel), `File.readSecret p`
   (a mounted secret file), a `Secret` field READ by `from json`/`from
   yaml`/`from toml` (a vault/API token — wrapping on the way in is the
-  safe direction [D:secret-read]), and `Secret.of` (assert secrecy, for
+  safe direction [D:secret-read]; when the type holds a `Secret`
+  anywhere, a read error cites `<excerpt withheld: the type holds a
+  Secret>` instead of the document), and `Secret.of` (assert secrecy, for
   computed secrets — the safe direction). `Secret.map (fun t -> "Bearer " + t) s`
-  keeps a derived value secret; `[<Default>]` on a `Secret` field is
+  keeps a derived value secret; a raise inside it keeps its kind and
+  the builtin's name but withholds the message (`fromBase64: failed
+  inside Secret.map — the message is withheld …`); `[<Default>]` on a `Secret` field is
   rejected. Qualified-only (no bare `of`/`map`). Not memory-hardening:
   the value is an un-zeroed managed string (see SECURITY.md).
 - HTTP is `Http.send : HttpRequest -> HttpResponse` (a record + one
@@ -636,8 +645,11 @@ print $"{key} -> {value}"
   `Auth` (`NoAuth`/`Bearer of Secret`/`Basic of string * Secret` — Basic does
   the base64); a `Secret` carries WHOLE (interpolating a token is a
   check error) and `show` masks it. Status is DATA (`if resp.status >=
-  400 then fail …`, a 404 binds); only TRANSPORT failure raises (and a
-  redirect loop — past 50 hops it raises, naming it). `auth` plus an
+  400 then fail …`, a 404 binds); only TRANSPORT failure raises, naming
+  the host that failed — a redirect's target, not the origin (and a
+  redirect loop — past 50 hops it raises, naming it). The proxy comes
+  from `HTTP_PROXY`/`HTTPS_PROXY`; a `NO_PROXY` entry bypasses it, `*`
+  for every host. `auth` plus an
   explicit `Authorization` header is refused (two credentials). A
   header the wire cannot carry raises before anything is sent, naming
   the header — a CR/LF/NUL byte, a non-token name (`"Bad Name"`), a
@@ -692,8 +704,9 @@ print $"{key} -> {value}"
   every loser before returning — AFTER `pfirst` RETURNS, NO LOSER
   EFFECT RUNS [D:pfirst-join]; a loser busy in pure computation holds
   the return until it reaches one, and a loser's `always` cleanup
-  still runs (before the return). `exit n` in an arm ends the race
-  and the script, as in `pmap`.
+  still runs whole, its commands included (before the return). A
+  loser blocked reading stdin or a FIFO is cut too (POSIX). `exit n`
+  in an arm ends the race and the script, as in `pmap`.
 - A SCOPED background process is `within proc srv = <command>` +
   an indented block [D:scoped-procs]: the scope IS the lifetime —
   at every exit (normal or raise) the process TREE is killed and
@@ -757,6 +770,12 @@ print $"{key} -> {value}"
   Framing and hop-by-hop headers a handler returns (`Transfer-Encoding`,
   `Content-Length`, `Connection`, `Keep-Alive`, `TE`, `Trailer`,
   `Upgrade`) are dropped — the server frames the response.
+  When the scope closes, handlers still running get 2s together to
+  finish; past that each is cut at its next builtin call, command,
+  sleep or Http send (the `pfirst` loser's cut, its children killed),
+  so NO HANDLER EFFECT LANDS AFTER `within serve` RETURNS [D:serve-cut]
+  (its late response is dropped; pure computation may run on, to its
+  next cut).
   `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
   excess queues; pipelined requests are answered in order. A request
   whose `Host` is not a loopback name (`127.0.0.1`, `localhost`,
@@ -834,8 +853,12 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   [D:sighup-teardown]. `nohup weir …` keeps SIGHUP ignored.
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel) tree-kills the running foreground command too, scoped or not.
-  A `pmap`/`piter` takes no new arm after the signal (or the closed
-  stdout); arms already running finish.
+  A `pmap`/`piter`/`pfirst` takes no new arm after the signal (or the
+  closed stdout), and arms already running are cut at their next
+  builtin call, command, sleep or wait and JOINED before any
+  enclosing scope closes [D:teardown-joins-arms] — no arm effect lands
+  after a lock is released or an `always` begins; an arm busy in pure
+  computation holds the teardown (a second signal hard-exits).
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
   definition — no userspace design closes that hole; and a weir
   BACKGROUNDED IN AN INTERACTIVE SHELL (`weir … &`/`nohup`, which
@@ -942,7 +965,9 @@ let x =
   read, existence check or listing at, under, or over a path an
   earlier captured mutation changes would see stale state — a write in
   `d` makes `Dir.list d` and `Path.glob "d/*"` refuse; a captured
-  `Dir.deleteAll d` makes every read under `d` refuse), and a captured
+  `Dir.deleteAll d` makes every read under `d` refuse; paths compare
+  through symlinks both ways, case-folded on Windows and macOS, and an
+  inner `plan` sees every enclosing plan's ops), and a captured
   op under a `within tmp` dir opened inside the plan (the dir is gone
   before apply — build the content in memory, or do the tmp work
   outside the plan).
@@ -1355,8 +1380,10 @@ print x
   foreground child dies of the group SIGINT (the script path's exact
   message), and a wait weir owns — `Duration.sleep`, a `poll`
   interval, a `retry` delay, a `within lock` acquire, `Proc.wait`, an
-  Http request — is cut where it stands (in a `pmap`/`piter` arm
-  too). `within`'s scopes close as on any raise; an `always` block
+  Http request, a `Self.prompt` (which takes no line) — is cut where
+  it stands (in a `pmap`/`piter` arm too); a fan-out takes no new arm,
+  and an arm whose command died of the `^C` is the interrupt, not a
+  failure [D:repl-interrupt-fanout]. `within`'s scopes close as on any raise; an `always` block
   runs as written unless `^C` is pressed again. At an idle prompt
   `^C` clears the line. Pure computation is not interrupted: it runs
   to its next wait, which then stops.
@@ -1718,7 +1745,9 @@ type Bad = C of int
   fields are all admitted, a `seq` of an admitted type, a
   `seq<string * T>` mapping (an object whose keys are DATA — k8s
   `data`/`labels`: reads as pairs in document order, writes back as
-  ONE object; an empty mapping writes `[]` and reads back empty),
+  ONE object; an empty mapping writes `[]` and reads back empty; a
+  repeated key last-wins at its first position, and `to json`/`to
+  yaml` refuse a pair-seq or `YMap` holding a key twice, naming it),
   a `Map<string, T>` of one, or an opaque `Yaml` node — any subtree
   read whole (JSON is a YAML subset: object -> `YMap` in document
   order, a repeated key last-wins, `null` -> `YNull`) and written back as the JSON it denotes
@@ -1768,7 +1797,8 @@ type Bad = C of int
   ONE mapping; `xs |> to yaml stream` writes one document per
   element (the bundle write — `to yaml stream |> from yaml stream
   T` roundtrips, `to yaml |> from yaml seq<T>` too). `None` fields
-  omit; ambiguous strings like `"no"`/`"007"` auto-quote. `Yaml`
+  omit — a record with every field `None` writes `{}`, and an empty
+  top-level seq `[]`, so no document is ever empty text; ambiguous strings like `"no"`/`"007"` auto-quote. `Yaml`
   nodes (`YStr`/`YInt`/`YFloat`/`YBool`/`YNull`/`YSeq`/`YMap`;
   `YMap [("k", YStr "v")]`) render directly —
   `YMap` keeps YOUR key order; record fields render in DECLARATION
@@ -1827,11 +1857,14 @@ type Bad = C of int
   locked schema, where `required` decides plain-vs-`Option`,
   `additionalProperties` becomes the `seq<string * V>` mapping, and
   `$ref` definition names become type names; an int-or-string field
-  (a k8s port) drafts `Yaml` (8080 stays `YInt`, `"25%"` `YStr`), an
-  integer `enum` drafts `int`; validation keywords (`minLength`,
-  `pattern`, `minimum`, `maxItems`, `uniqueItems`, `readOnly`, …) are
-  accepted but NOT enforced — each gets a `// note: not enforced:`
-  line; import it with
+  (a k8s port; `format: int-or-string` too) and a number-or-string
+  field (a quantity) draft `Yaml` (8080 stays `YInt`, `"25%"` `YStr`);
+  an `enum` drafts its declared type, else its values' one kind
+  (`int`, `float`, `bool`, `string`), and a mixed enum drafts `Yaml`;
+  validation keywords (`minLength`, `pattern`, `minimum`, `maxItems`,
+  `uniqueItems`, `readOnly`, `const`, `format`, `contentEncoding`, …)
+  are accepted but NOT enforced — each gets a `// note: not enforced:`
+  line (`const` drafts its type); a root `$id` is ignored; import it with
   `import "weir:<name>" as X` (type names resolve bare in the
   adapter slot). `from table` stays the tier for tools with no
   schema at all. The generated file is yours — regeneration is an
@@ -2299,7 +2332,9 @@ print (f 1)
   cross-segment (never through symlinked dirs — bash globstar),
   `?`, `[abc]`/`[!abc]`/`[a-z]` (one code point; a `]` first is a
   member, a reversed range matches nothing, `\` is a plain member —
-  never regex). Bash's dotfile law: `*` skips dotfiles, a
+  never regex; a segment matches in linear time, so no pattern can
+  hang on a long name). Each path comes once, however many `**` the
+  pattern repeats. Bash's dotfile law: `*` skips dotfiles, a
   `.`-leading segment matches them. Sorted per level (a directory's
   matches, then its subdirectories' — not one global sort); relative patterns
   echo relative and resolve against the cwd AT ENUMERATION —
@@ -2622,8 +2657,9 @@ print (show port)
 - `printerr` is `print` to stderr (same argument rule) — diagnostics
   there, data on stdout, so `weir script | next` stays clean. Like
   `print`, at a tty it neutralizes terminal-driving escapes in the
-  text (so do `Log.*`, the `Self.prompt` message and the `-e` echo);
-  redirected, the bytes pass unchanged.
+  text (so do `Log.*`, the `Self.prompt` message, the `-e` echo and
+  weir's own diagnostics); a bare CR passes, so a progress line can
+  rewrite itself. Redirected, the bytes pass unchanged.
 - `Log.trace/debug/info/warn "msg"` — levelled diagnostics, ALWAYS to
   stderr (stdout is data; there is no stream knob). `WEIR_LOG=level`
   selects (`trace|debug|info|warn|off`; default `info`; invalid
@@ -2700,7 +2736,7 @@ not the teaching.
 - `Server`: `port` `running` `streamErrors` — `streamErrors` lists the errors of `Stream` bodies that raised partway (the client got a truncated body; never raised out of the handler)
 - `Retry`: `defaults`
 - `Secret`: `map` `of` `reveal`
-- `Color`: `red` `green` `yellow` `blue` `magenta` `cyan` `gray` `bold` `dim` `underline` `sgr` — each `string -> string`, wrapping in a colour/attribute. Context-aware: emits the escape only at a terminal with colour on (no `NO_COLOR`) and returns the plain string when piped, so `print (Color.green x)` colours interactively and stays plain in a pipe. Nest to combine (`Color.bold (Color.red "!")`); `Color.sgr "38;5;208" s` is the raw-code escape hatch for 256-colour/truecolor. `print` keeps colour (SGR) at a tty but still neutralizes every terminal-driving escape a value carries (title, clipboard, cursor, CR) and shows bidi controls as a visible `\uXXXX`.
+- `Color`: `red` `green` `yellow` `blue` `magenta` `cyan` `gray` `bold` `dim` `underline` `sgr` — each `string -> string`, wrapping in a colour/attribute. Context-aware: emits the escape only at a terminal with colour on (no `NO_COLOR`) and returns the plain string when piped, so `print (Color.green x)` colours interactively and stays plain in a pipe. Nest to combine (`Color.bold (Color.red "!")`); `Color.sgr "38;5;208" s` is the raw-code escape hatch for 256-colour/truecolor. `print` keeps colour (SGR) at a tty but still neutralizes every terminal-driving escape a value carries (title, clipboard, cursor) and shows bidi controls as a visible `\uXXXX`; a bare CR passes.
 - `Term`: `width` — `Term.width () : int`, the terminal columns queried live; falls back to 80 when there is no terminal (piped/redirected), so it never raises. The `tput cols` primitive.
 - `Self`: `prompt`, everywhere — writes its message to stderr and reads one stdin line (raises at end of input); and `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `initInfinite` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`

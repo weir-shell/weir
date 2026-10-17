@@ -628,8 +628,8 @@ type Doc =
     { Root: Yaml.Node
       LocalDates: Set<int * string> }
 
-/// Parse a TOML document; errors read `line N: …`
-let parseDoc (text: string) : Result<Doc, string> =
+/// Parse a TOML document; an error is its line and message
+let parseDocAt (text: string) : Result<Doc, int * string> =
     let s = { Src = text; Pos = 0; Line = 1 }
     let root = newTab Header 1
     let mutable current = root
@@ -658,7 +658,11 @@ let parseDoc (text: string) : Result<Doc, string> =
         let node = tableNode locals root
         Ok { Root = node; LocalDates = Set.ofSeq locals }
     with TomlError(line, msg) ->
-        Error $"line {line}: {msg}"
+        Error(line, msg)
+
+/// Parse a TOML document; errors read `line N: …`
+let parseDoc (text: string) : Result<Doc, string> =
+    parseDocAt text |> Result.mapError (fun (line, msg) -> $"line {line}: {msg}")
 
 /// Parse a TOML document into the yaml node tree (a mapping at the top);
 /// errors read `line N: …`

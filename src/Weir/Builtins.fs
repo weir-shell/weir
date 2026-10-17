@@ -458,9 +458,24 @@ let private windowedImpl: Value =
                     VSeq(items |> Seq.windowed (toIntArg "windowed" Amount n) |> Seq.map (fun w -> VSeq(Seq.ofArray w)))
             | _ -> unreachable "the checker rejects 'windowed' on these arguments"))
 
+// a materialised seq answers length and index in O(1) [D:seq-index-o1]:
+// a frozen seq is an array, and any ICollection (an array, a buffer)
+// knows its count. An F# list is not one of these — its Count walks.
+let private knownCount (items: seq<Value>) : int voption =
+    match items with
+    | :? System.Collections.Generic.ICollection<Value> as c -> ValueSome c.Count
+    | _ -> ValueNone
+
+let private (|Indexed|_|) (items: seq<Value>) : System.Collections.Generic.IList<Value> option =
+    match items with
+    | :? System.Collections.Generic.IList<Value> as l -> Some l
+    | _ -> None
+
 let private lastImpl: Value =
     VBuiltin(fun v ->
         match v with
+        | VSeq(Indexed l) ->
+            if l.Count = 0 then failwith "last: empty sequence" else l[l.Count - 1]
         | VSeq items ->
             // asserts non-empty (the X/tryX rule); forces the whole
             // source by necessity
@@ -477,6 +492,8 @@ let private lastImpl: Value =
 let private tryLastImpl: Value =
     VBuiltin(fun v ->
         match v with
+        | VSeq(Indexed l) ->
+            if l.Count = 0 then VUnion("None", None) else VUnion("Some", Some l[l.Count - 1])
         | VSeq items ->
             let mutable acc = ValueNone
 
@@ -491,9 +508,8 @@ let private tryLastImpl: Value =
 let private toListImpl: Value =
     VBuiltin(fun v ->
         match v with
-        | VSeq items ->
-            let materialized = List.ofSeq items
-            VSeq(materialized :> seq<Value>)
+        // an array, so the snapshot indexes in O(1) [D:seq-index-o1]
+        | VSeq items -> VSeq(Seq.toArray items :> seq<Value>)
         | v -> unreachable $"the checker rejects 'freeze' on {formatValue v}")
 
 let completedDef: RecordDef =
@@ -735,7 +751,7 @@ let private isMatchImpl: Value =
     VBuiltin(fun patV ->
         VBuiltin(fun subjectV ->
             match patV, subjectV with
-            | VStr pat, VStr s -> VBool(Check.regexGuarded pat (fun () -> (compiledOrRaise pat).IsMatch s))
+            | VStr pat, VStr s -> VBool(Check.regexGuarded pat s (fun () -> (compiledOrRaise pat).IsMatch s))
             | _ -> unreachable "the checker rejects 'isMatch' on these arguments"))
 
 let private rmatchImpl: Value =
@@ -743,7 +759,7 @@ let private rmatchImpl: Value =
         VBuiltin(fun subjectV ->
             match patV, subjectV with
             | VStr pat, VStr s ->
-                let m = Check.regexGuarded pat (fun () -> (compiledOrRaise pat).Match s)
+                let m = Check.regexGuarded pat s (fun () -> (compiledOrRaise pat).Match s)
 
                 if m.Success then
                     VUnion("Some", Some(VSeq [ for i in 1 .. m.Groups.Count - 1 -> VStr m.Groups[i].Value ]))
@@ -766,11 +782,11 @@ let private rmatchAllImpl: Value =
 
                 VSeq(
                     seq {
-                        let mutable m = Check.regexGuarded pat (fun () -> re.Match s)
+                        let mutable m = Check.regexGuarded pat s (fun () -> re.Match s)
 
                         while m.Success do
                             yield VSeq [ for i in 1 .. m.Groups.Count - 1 -> VStr m.Groups[i].Value ]
-                            m <- Check.regexGuarded pat m.NextMatch
+                            m <- Check.regexGuarded pat s m.NextMatch
                     }
                 )
             | _ -> unreachable "the checker rejects 'rmatchAll' on these arguments"))
@@ -790,12 +806,12 @@ let private rsplitImpl: Value =
                 VSeq(
                     seq {
                         let mutable pos = 0
-                        let mutable m = Check.regexGuarded pat (fun () -> re.Match s)
+                        let mutable m = Check.regexGuarded pat s (fun () -> re.Match s)
 
                         while m.Success do
                             yield VStr(s.Substring(pos, m.Index - pos))
                             pos <- m.Index + m.Length
-                            m <- Check.regexGuarded pat m.NextMatch
+                            m <- Check.regexGuarded pat s m.NextMatch
 
                         yield VStr(s.Substring pos)
                     }
@@ -812,12 +828,12 @@ let private rsplitImpl: Value =
 // pattern is discovery, not assertion); no matches = the empty seq.
 // Hand-rolled: FileSystemGlobbing cannot express the dotfile law
 // (and is unrestorable offline).
-// one glob bracket class at seg[i] = '[' [D:surface-glob], translated
-// member by member — never raw regex text: `!`/`^` negates, a `]` first
-// is a member, `a-z` is a code-point range (a reversed one matches
-// nothing), a `-` at either end and a backslash are members. Matches
-// one code point, never `/`. None = no closer, so the `[` is literal.
-let private globClass (seg: string) (i: int) : (string * int) option =
+// one glob bracket class at seg[i] = '[' [D:surface-glob], read member
+// by member: `!`/`^` negates, a `]` first is a member, `a-z` is a
+// code-point range (a reversed one matches nothing), a `-` at either end
+// and a backslash are members. Matches one code point, never half a
+// surrogate pair. None = no closer, so the `[` is literal.
+let private globClass (seg: string) (i: int) : (bool * (int * int) list * int) option =
     let mutable j = i + 1
     let negate = j < seg.Length && (seg[j] = '!' || seg[j] = '^')
 
@@ -852,66 +868,107 @@ let private globClass (seg: string) (i: int) : (string * int) option =
             | a :: rest -> ranges ((a, a) :: acc) rest
             | [] -> List.rev acc
 
-        let u (c: int) = $"\\u{c:X4}"
-        let bmp = System.Text.StringBuilder()
-        let astral = ResizeArray<string>()
+        Some(negate, ranges [] cps, k)
 
-        let addBmp lo hi =
-            if lo <= hi then
-                (if lo = hi then bmp.Append(u lo) else bmp.Append(u lo).Append('-').Append(u hi)) |> ignore
+// a glob segment's units, matched over code points [D:glob-linear]
+type private GlobUnit =
+    | GLit of int
+    | GOne
+    | GClass of negate: bool * ranges: (int * int) list
+    | GStar
 
-        for (lo, hi) in ranges [] cps do
-            if lo <= hi then
-                // BMP minus the surrogate block: a class unit must never
-                // match half a pair [D:str-code-points]
-                addBmp lo (min hi 0xD7FF)
-                addBmp (max lo 0xE000) (min hi 0xFFFF)
+let private isStar (u: GlobUnit) =
+    match u with
+    | GStar -> true
+    | _ -> false
 
-                let alo, ahi = max lo 0x10000, hi
+let private codePointsOf (s: string) : int[] =
+    let out = ResizeArray<int>(s.Length)
+    let mutable q = 0
 
-                if alo <= ahi then
-                    if ahi - alo > 4096 then
-                        failwith "Path.glob: a bracket range past U+FFFF may span at most 4096 code points"
+    while q < s.Length do
+        if System.Char.IsSurrogatePair(s, q) then
+            out.Add(System.Char.ConvertToUtf32(s, q))
+            q <- q + 2
+        else
+            out.Add(int s[q])
+            q <- q + 1
 
-                    for c in alo..ahi do
-                        astral.Add(System.Text.RegularExpressions.Regex.Escape(System.Char.ConvertFromUtf32 c))
+    out.ToArray()
 
-        let alts =
-            [ if bmp.Length > 0 then
-                  yield "[" + bmp.ToString() + "]"
-              yield! astral ]
-
-        let set = if alts.IsEmpty then "(?!)" else "(?:" + String.concat "|" alts + ")"
-
-        let rx =
-            if negate then
-                "(?:(?!" + set + ")(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[^/]))"
-            else
-                set
-
-        Some(rx, k)
-
-let private globSegRegex (seg: string) : System.Text.RegularExpressions.Regex =
-    let sb = System.Text.StringBuilder("^")
+let private globUnits (seg: string) : GlobUnit[] =
+    let units = ResizeArray<GlobUnit>()
     let mutable i = 0
 
     while i < seg.Length do
         (match seg[i] with
-         | '*' -> sb.Append "[^/]*" |> ignore
-         // one code point, a surrogate pair included [D:str-code-points]
-         | '?' -> sb.Append "(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[^/])" |> ignore
+         // a run of stars is one star
+         | '*' ->
+             if units.Count = 0 || not (isStar units[units.Count - 1]) then
+                 units.Add GStar
+         | '?' -> units.Add GOne
          | '[' ->
              match globClass seg i with
-             | Some(rx, close) ->
-                 sb.Append rx |> ignore
+             | Some(negate, ranges, close) ->
+                 units.Add(GClass(negate, ranges))
                  i <- close
-             | None -> sb.Append(System.Text.RegularExpressions.Regex.Escape "[") |> ignore
-         | c -> sb.Append(System.Text.RegularExpressions.Regex.Escape(string c)) |> ignore)
+             | None -> units.Add(GLit(int '['))
+         | _ when System.Char.IsSurrogatePair(seg, i) ->
+             units.Add(GLit(System.Char.ConvertToUtf32(seg, i)))
+             i <- i + 1
+         | c -> units.Add(GLit(int c)))
 
         i <- i + 1
 
-    sb.Append "$" |> ignore
-    System.Text.RegularExpressions.Regex(sb.ToString())
+    units.ToArray()
+
+let private unitMatches (u: GlobUnit) (c: int) : bool =
+    match u with
+    | GLit l -> c = l
+    | GOne -> true
+    | GClass(negate, ranges) ->
+        // a lone surrogate is never a class member
+        let isMember =
+            (c < 0xD800 || c > 0xDFFF)
+            && ranges |> List.exists (fun (lo, hi) -> lo <= c && c <= hi)
+
+        isMember <> negate
+    | GStar -> false
+
+// a segment matcher with no regex [D:glob-linear]: the greedy walk keeps
+// only the last star's resume point, so a failing name costs at most
+// O(name x pattern) — never the backtracking a regex can spend on
+// `*-*-*-*-*-*-*.gz`
+let private globSegMatcher (seg: string) : string -> bool =
+    let units = globUnits seg
+
+    fun (name: string) ->
+        let cs = codePointsOf name
+        let mutable p = 0
+        let mutable c = 0
+        let mutable starP = -1
+        let mutable starC = 0
+        let mutable ok = true
+
+        while ok && c < cs.Length do
+            if p < units.Length && isStar units[p] then
+                starP <- p
+                starC <- c
+                p <- p + 1
+            elif p < units.Length && unitMatches units[p] cs[c] then
+                p <- p + 1
+                c <- c + 1
+            elif starP >= 0 then
+                p <- starP + 1
+                starC <- starC + 1
+                c <- starC
+            else
+                ok <- false
+
+        while ok && p < units.Length && isStar units[p] do
+            p <- p + 1
+
+        ok && p = units.Length
 
 /// a glob pattern's root and segments [D:path-glob]: `Some (fsRoot,
 /// shownRoot)` for an absolute pattern, None for a relative one. `/`
@@ -940,7 +997,21 @@ let globSplit (windows: bool) (pattern: string) : (string * string) option * str
 let private globWalk (rootFs: string) (pattern: string) : seq<string> =
     seq {
         let windows = System.OperatingSystem.IsWindows()
-        let root, segs = globSplit windows pattern
+        let root, split = globSplit windows pattern
+
+        // `**/**` is `**` — and every `**` past the first can reach a path
+        // twice, so those walks dedupe: bash yields each path once
+        let segs =
+            split
+            |> List.fold (fun acc seg -> if seg = "**" && List.tryHead acc = Some "**" then acc else seg :: acc) []
+            |> List.rev
+
+        let once =
+            if (segs |> List.filter ((=) "**") |> List.length) > 1 then
+                let seen = System.Collections.Generic.HashSet<string>()
+                Seq.filter seen.Add
+            else
+                id
 
         let rootDisplay =
             match root with
@@ -1003,11 +1074,11 @@ let private globWalk (rootFs: string) (pattern: string) : seq<string> =
                         if System.IO.Directory.Exists sub then
                             yield! walk sub (prefix + seg + "/") rest
                 | seg :: rest ->
-                    let rx = globSegRegex seg
+                    let matches = globSegMatcher seg
                     let dotOk = seg.StartsWith "."
 
                     for name in entriesOf dirFs do
-                        if (dotOk || not (name.StartsWith ".")) && rx.IsMatch name then
+                        if (dotOk || not (name.StartsWith ".")) && matches name then
                             let sub = System.IO.Path.Combine(dirFs, name)
 
                             match rest with
@@ -1020,11 +1091,11 @@ let private globWalk (rootFs: string) (pattern: string) : seq<string> =
         // a trailing `/` matches directories only, each shown with its
         // slash — bash's law (`*/` is `a/`, never a file) [D:path-glob]
         if pattern.Length > 1 && (pattern.EndsWith "/" || (windows && pattern.EndsWith "\\")) then
-            for m in walk rootFs rootDisplay segs do
+            for m in once (walk rootFs rootDisplay segs) do
                 if System.IO.Directory.Exists(System.IO.Path.Combine(rootFs, m)) then
                     yield m + "/"
         else
-            yield! walk rootFs rootDisplay segs
+            yield! once (walk rootFs rootDisplay segs)
     }
 
 let private globImpl: Value =
@@ -1124,7 +1195,10 @@ let private tryHeadImpl: Value =
 let private seqLengthImpl: Value =
     VBuiltin(fun v ->
         match v with
-        | VSeq items -> VInt(int64 (Seq.length items))
+        | VSeq items ->
+            match knownCount items with
+            | ValueSome n -> VInt(int64 n)
+            | ValueNone -> VInt(int64 (Seq.length items))
         | v -> unreachable $"the checker rejects 'Seq.length' on {formatValue v}")
 
 let private isEmptyImpl: Value =
@@ -1638,10 +1712,11 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     let callNode = RunPos.Current
 
     let worker () =
-        // a teardown stops new arms; in-flight ones finish (their children
-        // die with the teardown kill) [D:teardown-stops-arms]
+        // a teardown stops new arms [D:teardown-stops-arms] and cuts the
+        // in-flight ones at their next boundary [D:teardown-joins-arms]; a
+        // REPL ^C stops them too [D:repl-interrupt-fanout]
         let take () =
-            if Session.stopTakingArms () then
+            if Session.stopTakingArms () || Session.interruptRequested () then
                 arr.Length
             else
                 System.Threading.Interlocked.Increment &next
@@ -1683,6 +1758,10 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     // the teardown's code, never a partial array [D:teardown-stops-arms]
     if Session.stopTakingArms () then
         raise (ExitRequest(Session.teardownRequested ()))
+
+    // an arm whose child died of the ^C is the interrupt, not a failure
+    // [D:repl-interrupt-fanout]
+    Session.checkInterrupted ()
 
     if not errors.IsEmpty then
         raise errors[Seq.min errors.Keys]
@@ -1740,7 +1819,9 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
         while i < arr.Length
               && System.Threading.Volatile.Read &won = 0
-              && not race.IsCancellationRequested do
+              && not race.IsCancellationRequested
+              && not (Session.stopTakingArms ())
+              && not (Session.interruptRequested ()) do
             Session.enterWorker parentCwd
             Session.enterRace groups[i]
             Session.enterFlow race.Token
@@ -1789,7 +1870,12 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
             // every arm stopped without an outcome: an enclosing race
             // cancelled this one
             if not outcome.Task.IsCompleted then
+                Session.checkInterrupted ()
                 raise (Session.Cancelled())
+
+            // every arm failed under a ^C: the interrupt [D:repl-interrupt-fanout]
+            if outcome.Task.IsFaulted then
+                Session.checkInterrupted ()
 
             outcome.Task.Result
         with :? System.AggregateException as ae when ae.InnerExceptions.Count = 1 ->
@@ -1937,9 +2023,12 @@ let private itemImpl: Value =
                 if i < 0L then
                     failwith $"item: negative index {i}"
                 else
-                    match items |> Seq.tryItem (toIntArg "item" Position i) with
-                    | Some v -> v
-                    | None -> failwith $"item: no element at index {i}"
+                    match items with
+                    | Indexed l -> if i < int64 l.Count then l[toIntArg "item" Position i] else failwith $"item: no element at index {i}"
+                    | _ ->
+                        match items |> Seq.tryItem (toIntArg "item" Position i) with
+                        | Some v -> v
+                        | None -> failwith $"item: no element at index {i}"
             | _ -> unreachable "the checker rejects 'item' on these arguments"))
 
 // `xs[^n]` [D:range-slicing]: the element n from the end (`^1` is the
@@ -1950,18 +2039,23 @@ let private itemFromEndImpl: Value =
         VBuiltin(fun s ->
             match n, s with
             | VInt i, VSeq items ->
-                let arr = Seq.toArray items
+                let arr =
+                    match items with
+                    | Indexed l -> l
+                    | _ -> Seq.toArray items :> System.Collections.Generic.IList<Value>
 
-                if i < 1L || i > int64 arr.Length then
-                    failwith $"item: index ^{i} is out of range for length {arr.Length}"
+                if i < 1L || i > int64 arr.Count then
+                    failwith $"item: index ^{i} is out of range for length {arr.Count}"
                 else
-                    arr[arr.Length - toIntArg "item" Position i]
+                    arr[arr.Count - toIntArg "item" Position i]
             | _ -> unreachable "the checker rejects a from-end index on these arguments"))
 
 let private tryItemImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun s ->
             match n, s with
+            | VInt i, VSeq(Indexed l) ->
+                if i >= 0L && i < int64 l.Count then VUnion("Some", Some l[toIntArg "tryItem" Position i]) else VUnion("None", None)
             | VInt i, VSeq items ->
                 match items |> Seq.indexed |> Seq.tryFind (fun (j, _) -> int64 j = i) with
                 | Some(_, v) -> VUnion("Some", Some v)
@@ -2652,26 +2746,31 @@ let private bomAt (fs: FileStream) : bool =
 let private openShared (r: string) : FileStream =
     new FileStream(r, FileMode.Open, FileAccess.Read, FileShare.ReadWrite ||| FileShare.Delete)
 
+// a FIFO's open and read block where no kill reaches: a lost race or a
+// REPL ^C abandons them [D:stdin-reader]
 let private readLinesShared (r: string) : string[] =
-    use sr = new StreamReader(openShared r)
-    let acc = ResizeArray()
-    let mutable line = sr.ReadLine()
+    Session.cutBlocking (fun () ->
+        use sr = new StreamReader(openShared r)
+        let acc = ResizeArray()
+        let mutable line = sr.ReadLine()
 
-    while line <> null do
-        acc.Add line
-        line <- sr.ReadLine()
+        while line <> null do
+            acc.Add line
+            line <- sr.ReadLine()
 
-    acc.ToArray()
+        acc.ToArray())
 
 let private readTextShared (r: string) : string =
-    use sr = new StreamReader(openShared r)
-    sr.ReadToEnd()
+    Session.cutBlocking (fun () ->
+        use sr = new StreamReader(openShared r)
+        sr.ReadToEnd())
 
 let private readBytesShared (r: string) : byte[] =
-    use fs = openShared r
-    use ms = new MemoryStream()
-    fs.CopyTo ms
-    ms.ToArray()
+    Session.cutBlocking (fun () ->
+        use fs = openShared r
+        use ms = new MemoryStream()
+        fs.CopyTo ms
+        ms.ToArray())
 
 // the whole-file swap behind File.writeAtomic: the payload lands in a
 // same-directory exclusive temp, is fsynced, and renames over the
@@ -4521,6 +4620,18 @@ let private colorMembers: (string * Ty * Value) list =
               | VStr code, VStr s -> wrapSgr code s
               | _ -> unreachable "the checker rejects 'Color.sgr' on these arguments")) ]
 
+// the builtin names a raise leads with (`toInt: …`, `Bytes.fromHex: …`),
+// filled once the module table exists [D:secret-map-withheld]
+let private raiseNames = System.Collections.Generic.HashSet<string>()
+
+// a raise inside Secret.map may quote the clear value: the message is
+// withheld, the builtin's name kept when it leads [D:secret-map-withheld]
+let private secretMapWithheld (msg: string) : string =
+    match msg.IndexOf ": " with
+    | i when i > 0 && raiseNames.Contains(msg.Substring(0, i)) ->
+        $"{msg.Substring(0, i)}: failed inside Secret.map — the message is withheld (it may carry the secret)"
+    | _ -> "Secret.map: the function raised — the message is withheld (it may carry the secret)"
+
 let private secretMembers: (string * Ty * Value) list =
     // a marker the renderers respect [D:secret] — of asserts secrecy (the
     // safe direction, for computed secrets), reveal is the one guarded exit
@@ -4544,7 +4655,20 @@ let private secretMembers: (string * Ty * Value) list =
           VBuiltin(fun v ->
               match v with
               | VSecret s ->
-                  (match apply f (VStr s) with
+                  // the kind survives: a Failure stays a Failure, a
+                  // command failure keeps its code [D:secret-map-withheld]
+                  let mapped =
+                      try
+                          apply f (VStr s)
+                      with
+                      | ExitRequest _ -> reraise ()
+                      | :? System.OperationCanceledException -> reraise ()
+                      | Failure m when m.StartsWith "unreachable:" -> reraise ()
+                      | :? Proc.CommandFailure as cf ->
+                          raise (Proc.CommandFailure(cf.Code, cf.SignalNote, "<withheld inside Secret.map>"))
+                      | ex -> failwith (secretMapWithheld ex.Message)
+
+                  (match mapped with
                    | VStr s' -> VSecret s'
                    | v' -> unreachable $"the checker rejects 'Secret.map' result {formatValue v'}")
               | v -> unreachable $"the checker rejects 'Secret.map' on {formatValue v}")) ]
@@ -5768,38 +5892,6 @@ let private tableModuleMembers: (string * Ty * Value) list =
                           "Table.render needs a seq of same-shaped records with scalar fields; for other sequences use Seq.map show"
           | _ -> unreachable $"the checker rejects 'Table.render' on {formatValue v}") ]
 
-// one line for Self.prompt [D:prompt], consuming nothing past its
-// newline: a redirected stdin is read a byte at a time from fd 0, so the
-// rest stays for the children (and Self.stdin) that read after it —
-// Console.In buffers ahead. A terminal delivers a line per read anyway
-// and keeps Console.In's line editing.
-let private promptStdin = lazy (System.Console.OpenStandardInput())
-
-let private readPromptLine () : string =
-    if not System.Console.IsInputRedirected then
-        System.Console.In.ReadLine()
-    else
-        let stdin = promptStdin.Force()
-        let bytes = ResizeArray<byte>()
-        let one = Array.zeroCreate<byte> 1
-        let mutable atEof = false
-        let mutable go = true
-
-        while go do
-            if stdin.Read(one, 0, 1) = 0 then
-                atEof <- true
-                go <- false
-            elif one[0] = 10uy then
-                go <- false
-            else
-                bytes.Add one[0]
-
-        if atEof && bytes.Count = 0 then
-            null
-        else
-            let line = System.Text.Encoding.UTF8.GetString(bytes.ToArray())
-            if line.EndsWith '\r' then line.Substring(0, line.Length - 1) else line
-
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
@@ -5818,7 +5910,8 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
                 eprintf "%s " (sanitizeIfTty System.Console.IsErrorRedirected msg)
                 System.Console.Error.Flush()
 
-                match readPromptLine () with
+                // weir's one stdin reader [D:stdin-reader]
+                match Session.Stdin.readPromptLine () with
                 | null ->
                     failwith
                         "Self.prompt: stdin is closed (EOF) — no line to read; pipe an answer in, or run at a terminal"
@@ -7865,6 +7958,14 @@ let bareAliasHomesOf (table: (string * (string * Ty * Value) list) list) : Map<s
     |> Map.ofList
 
 let bareAliasHomes: Map<string, string> = bareAliasHomesOf moduleTable
+
+for m, members in moduleTable do
+    for n, _, _ in members do
+        raiseNames.Add n |> ignore
+        raiseNames.Add $"{m}.{n}" |> ignore
+
+for n, _, _ in entries do
+    raiseNames.Add n |> ignore
 
 let bareAliases: Set<string> =
     bareAliasHomes |> Map.toSeq |> Seq.map fst |> Set.ofSeq

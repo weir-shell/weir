@@ -1986,7 +1986,8 @@ flag shows up in the process list, and weir can't hide that.
 `File.readSecret` reads a secret file mounted by Kubernetes or
 Docker, and a `Secret` field in a record read with `from json` or
 `from yaml` wraps that value (a token in a vault or API response).
-Every use of the value goes through an explicit
+When such a read fails, the error leaves out the document, since any
+part of it could be the token. Every use of the value goes through an explicit
 `Secret.reveal`, so to audit where a secret goes, search for those
 calls. To build a new value from a secret and keep it secret, use
 `Secret.map`. Writing `"Bearer " + reveal` would give you an
@@ -2004,7 +2005,9 @@ A `Secret` spliced into a command is passed as its real value;
 `curl -H $header` is exactly what it's for. Interpolating it
 (`$"tok: {token}"`) is an error that mentions `reveal`, and
 `to json`/`to yaml` reject it: reading a Secret in is fine, writing
-one out is not.
+one out is not. If a function inside `Secret.map` fails (say
+`Str.fromBase64` on a value that is not base64), the error names the
+function but not its message, which would show the value.
 
 ## The script's own front door
 
@@ -2631,8 +2634,9 @@ piped or `NO_COLOR` is set, you get the plain string, so
 `weir script | grep` stays plain without any checks on your part. At
 a terminal, `print` lets color through, but turns every *other*
 escape sequence in a value into visible `\xNN`: window titles,
-clipboard access, cursor movement, and carriage-return overwrites.
-So untrusted data can't mess with your terminal. `Color.sgr` takes a
+clipboard access, and cursor movement. A bare carriage return passes,
+so a progress line can rewrite itself. So untrusted data can't mess
+with your terminal. `Color.sgr` takes a
 raw code, for 256-color and truecolor.
 
 `Table.render` lays out a sequence of records of the same type as

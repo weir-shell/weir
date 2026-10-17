@@ -29,8 +29,7 @@ module CodePoints =
     let private hasSurrogate (s: string) =
         s |> Seq.exists System.Char.IsSurrogate
 
-    /// the number of code points
-    let length (s: string) : int =
+    let private walkLength (s: string) : int =
         if not (hasSurrogate s) then
             s.Length
         else
@@ -55,13 +54,73 @@ module CodePoints =
 
         i
 
+    // a long string's code points are indexed once per string instance
+    // [D:str-code-points], so a char loop over it is not quadratic: the
+    // count, and the UTF-16 offset of every `stride`-th code point —
+    // null when the string has no surrogate (a position is its offset).
+    // A short string is walked; the walk is cheaper than the lookup.
+    [<Literal>]
+    let private indexedFrom = 256
+
+    [<Literal>]
+    let private stride = 64
+
+    type private Index(count: int, marks: int[]) =
+        member _.Count = count
+        member _.Marks = marks
+
+    let private indexes =
+        System.Runtime.CompilerServices.ConditionalWeakTable<string, Index>()
+
+    let private build (s: string) : Index =
+        if not (hasSurrogate s) then
+            Index(s.Length, null)
+        else
+            let marks = ResizeArray<int>()
+            let mutable n = 0
+            let mutable i = 0
+
+            while i < s.Length do
+                if n % stride = 0 then
+                    marks.Add i
+
+                i <- i + (if pairAt s i then 2 else 1)
+                n <- n + 1
+
+            if n % stride = 0 then
+                marks.Add i
+
+            Index(n, marks.ToArray())
+
+    let private indexOf (s: string) : Index =
+        indexes.GetValue(s, System.Runtime.CompilerServices.ConditionalWeakTable<string, Index>.CreateValueCallback build)
+
+    /// the number of code points
+    let length (s: string) : int =
+        if s.Length <= indexedFrom then walkLength s else (indexOf s).Count
+
     /// the UTF-16 offset of code point `cp`, clamped to [0, s.Length] —
-    /// O(cp), never a whole-string scan
+    /// O(cp) on a short string, O(stride) on an indexed one
     let offset (s: string) (cp: int) : int =
-        if cp <= 0 then 0 else offsetFrom s 0 0 cp
+        if cp <= 0 then
+            0
+        elif s.Length <= indexedFrom then
+            offsetFrom s 0 0 cp
+        else
+            let ix = indexOf s
+
+            match ix.Marks with
+            | null -> min cp s.Length
+            | marks ->
+                let k = min (cp / stride) (marks.Length - 1)
+                offsetFrom s marks[k] (k * stride) cp
 
     /// the code-point index of a UTF-16 offset
-    let ofOffset (s: string) (utf16: int) : int = length (s.Substring(0, utf16))
+    let ofOffset (s: string) (utf16: int) : int =
+        if s.Length > indexedFrom && isNull (indexOf s).Marks then
+            utf16
+        else
+            length (s.Substring(0, utf16))
 
     /// `count` code points from code point `start` (both clamped)
     let sub (s: string) (start: int) (count: int) : string =
@@ -694,6 +753,10 @@ module Waiting =
 
     let mutable private depth = 0
 
+    /// the raw stderr under the tty sanitizer [D:tty-diag-sanitize] —
+    /// the indicator's own line erase is terminal control, not data
+    let mutable control: IO.TextWriter = null
+
     let private active () =
         not Console.IsErrorRedirected
         && Environment.GetEnvironmentVariable "TERM" <> "dumb"
@@ -736,7 +799,7 @@ module Waiting =
                 spinner.Join()
 
                 if drew.Value then
-                    Console.Error.Write "\r\u001b[2K"
+                    (if isNull control then Console.Error else control).Write "\r\u001b[2K"
 
                 Threading.Interlocked.Decrement(&depth) |> ignore
 
@@ -1262,23 +1325,52 @@ let rawJsonWriterOptions =
 // bound the refusal names the depth; invalid JSON stays its own error.
 let jsonMaxDepth = 100
 
-/// parse one JSON document under the bound: Error (Some why) for a
-/// valid document nested past it, Error None for text that is not JSON
-let parseJsonBounded
+// telling the two failures apart: one reader pass over the rejected
+// text, no document built — JsonDocument's own unbounded build is
+// quadratic in depth, the reader linear [D:json-deep-linear]
+let private validPastBound (utf8: System.ReadOnlySpan<byte>) : bool =
+    // the document parser skips a UTF-8 BOM; the bare reader does not
+    let utf8 =
+        if utf8.Length >= 3 && utf8[0] = 0xEFuy && utf8[1] = 0xBBuy && utf8[2] = 0xBFuy then
+            utf8.Slice 3
+        else
+            utf8
+
+    let mutable reader =
+        System.Text.Json.Utf8JsonReader(utf8, System.Text.Json.JsonReaderOptions(MaxDepth = System.Int32.MaxValue))
+
+    let mutable deep = false
+
+    try
+        while reader.Read() do
+            match reader.TokenType with
+            | System.Text.Json.JsonTokenType.StartObject
+            | System.Text.Json.JsonTokenType.StartArray when reader.CurrentDepth >= jsonMaxDepth -> deep <- true
+            | _ -> ()
+
+        deep
+    with :? System.Text.Json.JsonException ->
+        false
+
+let private parseJsonBoundedWith
     (parse: System.Text.Json.JsonDocumentOptions -> System.Text.Json.JsonDocument)
+    (utf8: unit -> byte array)
     : Result<System.Text.Json.JsonDocument, string option> =
     try
         Ok(parse (System.Text.Json.JsonDocumentOptions(MaxDepth = jsonMaxDepth)))
     with :? System.Text.Json.JsonException ->
-        // telling the two failures apart: the reader is iterative, so an
-        // unbounded re-read of the rejected text costs memory, not stack
-        match
-            (try
-                Some(parse (System.Text.Json.JsonDocumentOptions(MaxDepth = System.Int32.MaxValue)))
-             with :? System.Text.Json.JsonException ->
-                 None)
-        with
-        | Some doc ->
-            doc.Dispose()
+        if validPastBound (System.ReadOnlySpan(utf8 ())) then
             Error(Some $"it nests deeper than {jsonMaxDepth} levels, weir's bound for a value")
-        | None -> Error None
+        else
+            Error None
+
+/// parse one JSON document under the bound: Error (Some why) for a
+/// valid document nested past it, Error None for text that is not JSON
+let parseJsonBounded (text: string) : Result<System.Text.Json.JsonDocument, string option> =
+    parseJsonBoundedWith
+        (fun o -> System.Text.Json.JsonDocument.Parse(text, o))
+        (fun () -> System.Text.Encoding.UTF8.GetBytes text)
+
+/// parseJsonBounded over UTF-8 bytes
+let parseJsonBytesBounded (bytes: byte array) : Result<System.Text.Json.JsonDocument, string option> =
+    parseJsonBoundedWith (fun o -> System.Text.Json.JsonDocument.Parse(System.ReadOnlyMemory<byte> bytes, o)) (fun () -> bytes)

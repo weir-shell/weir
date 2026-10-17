@@ -5,8 +5,9 @@ unqualified names like `map` and `where` (scripts need the qualified
 names), every value is echoed back, and tab completion and history
 work as you'd expect. `Ctrl+C` abandons the current line, and while
 an entry runs it stops what the entry is waiting on — a command, a
-sleep, a `poll` or `retry` wait, a lock, an Http request — and
-returns to the prompt; `Ctrl+D` or `#quit` exits. For a tour, see the [guide](GUIDE.md#the-repl); this
+sleep, a `poll` or `retry` wait, a lock, an Http request, a
+`Self.prompt` (it takes no input), the rest of a `pmap` or
+`piter` — and returns to the prompt; `Ctrl+D` or `#quit` exits. For a tour, see the [guide](GUIDE.md#the-repl); this
 page covers the details.
 
 A line starting with `#` is an instruction to the tooling, not part
