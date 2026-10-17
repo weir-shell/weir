@@ -13,10 +13,10 @@
 # - the graph [D:e2e-shards]: per OS, `<os>` publishes and uploads the
 #   binary; the unit suite runs beside it from t=0, and every binary
 #   consumer (the e2e shards, linux-gates) starts the moment the build
-#   lands. Linux runs ci/e2e.sh as three shards on their own runners
-#   (body, repl-a, repl-b); macos as two (body, repl) — macOS runners
-#   are the scarce queue, and windows' unsplittable e2e is the long pole
-#   either way; windows has no pty probes to split and stays whole.
+#   lands. Linux and macos run ci/e2e.sh as three shards on their own
+#   runners (body, repl-a, repl-b) — on macos the build is done before
+#   the shards start, so the peak is unit + 3 shards, under the 5-job
+#   macOS cap; windows has no pty probes to split and stays whole.
 name: ci
 
 on:
@@ -315,7 +315,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [body, repl]
+        shard: [body, repl-a, repl-b]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
