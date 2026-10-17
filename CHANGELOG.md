@@ -177,6 +177,13 @@
   `invalid base64: "<the secret>"`; it now says `fromBase64: failed
   inside Secret.map — the message is withheld (it may carry the
   secret)`.
+- **A `Self.prompt` cut short no longer eats a line.** A `pfirst` arm
+  waiting in `Self.prompt` (the "prompt with a timeout default" shape)
+  held the race at a terminal and, piped, took the next line when it
+  arrived; the race now returns at once and the next prompt gets the
+  line. Ctrl+C during `Self.prompt` at the REPL returns to the prompt
+  instead of taking the next typed line as the answer. A `pfirst` arm
+  reading `Self.stdin` or a FIFO no longer holds the race.
 - **A signal waits for running `pmap`, `piter` and `pfirst` arms.**
   After SIGINT, SIGTERM or SIGHUP, arms kept writing files after a
   `within lock` was released and an `always` had begun; each now stops

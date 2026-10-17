@@ -626,6 +626,29 @@ module private Libc =
     [<DllImport("libc", SetLastError = true)>]
     extern int flock(int fd, int operation)
 
+    [<DllImport("libc", SetLastError = true)>]
+    extern nativeint read(int fd, nativeint buf, unativeint count)
+
+    [<Struct; StructLayout(LayoutKind.Sequential)>]
+    type PollFd =
+        val mutable fd: int
+        val mutable events: int16
+        val mutable revents: int16
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int poll(PollFd& fds, unativeint nfds, int timeout)
+
+    let EINTR = 4
+    let EAGAIN = if System.OperatingSystem.IsLinux() then 11 else 35
+
+    /// wait up to `ms` for fd to be readable (data, EOF or an error —
+    /// whatever the next read reports); EINTR is a timeout
+    let readable (fd: int) (ms: int) : bool =
+        let mutable p = PollFd()
+        p.fd <- fd
+        p.events <- 1s // POLLIN
+        poll (&p, 1un, ms) > 0
+
     let SIG_DFL: nativeint = nativeint 0
     let SIG_IGN: nativeint = nativeint 1
     let SIGINT = 2
@@ -839,6 +862,23 @@ let cutRead
 let cutJoin (task: System.Threading.Tasks.Task<'a>) : 'a =
     cutRead (fun () -> task.Result) (fun _ -> System.Threading.Tasks.ValueTask<'a>(task))
 
+/// a blocking call a lost race or a REPL ^C abandons — a FIFO's open or
+/// read, which no kill reaches [D:stdin-reader]: under a cancel it runs off
+/// the flow and the wait raises; the abandoned call's result is never used
+let cutBlocking (f: unit -> 'a) : 'a =
+    match waitTokens () with
+    | [] -> f ()
+    | _ ->
+        let task = System.Threading.Tasks.Task.Run<'a>(System.Func<'a> f)
+
+        try
+            cutJoin task
+        with :? System.AggregateException as ae when
+            ae.InnerExceptions.Count = 1
+            && not (ae.InnerException :? System.OperationCanceledException) ->
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ae.InnerException).Throw()
+            Unchecked.defaultof<'a>
+
 // the main thread is joining arms for a teardown: it unwinds next, so the
 // signal watchdog stands down [D:teardown-joins-arms]
 let mutable private mainJoining = 0
@@ -865,6 +905,180 @@ let waitTask (t: System.Threading.Tasks.Task) : unit =
         checkTeardown ()
 
     t.Wait()
+
+// ---- weir's one stdin reader [D:stdin-reader] --------------------------
+// Self.prompt, Self.stdin and the piped REPL read fd 0 through one buffer,
+// so no reader hides input from another, and bytes are read only while a
+// reader waits. A prompt takes one byte at a time and stops at its
+// newline, so a child spawned later reads the rest; a stream read
+// (Self.stdin, the piped REPL) takes what is there. A wait the runtime
+// cuts (a lost race, a REPL ^C, a teardown) polls beside its tokens and
+// raises without reading further: a line it had begun stays buffered
+// for the next weir reader, and a cut never consumes a line. Windows
+// reads block, uncut.
+module Stdin =
+    // one reader at a time; a waiting one stays cuttable
+    let private gate = obj ()
+    // fd 0's bytes read, not yet handed out: buf[lo..hi)
+    let mutable private buf: byte[] = Array.zeroCreate 4096
+    let mutable private lo = 0
+    let mutable private hi = 0
+    // where the terminator scan resumes, so a long line scans once
+    let mutable private scanned = 0
+
+    let private winStdin = lazy (System.Console.OpenStandardInput())
+
+    let private winTty () =
+        System.OperatingSystem.IsWindows() && not System.Console.IsInputRedirected
+
+    // wait until fd 0 is readable, raising when the wait is cut
+    let private awaitReadable () =
+        if not (System.OperatingSystem.IsWindows()) && not (List.isEmpty (wakeHandles ())) then
+            raiseWoken ()
+
+            while not (Libc.readable 0 50) do
+                raiseWoken ()
+
+    // read up to `n` more bytes into the buffer; 0 at end of input (a
+    // read error is the end too)
+    let private fill (n: int) : int =
+        if lo = hi then
+            lo <- 0
+            hi <- 0
+            scanned <- 0
+        elif hi + n > buf.Length && lo > 0 then
+            System.Buffer.BlockCopy(buf, lo, buf, 0, hi - lo)
+            hi <- hi - lo
+            scanned <- scanned - lo
+            lo <- 0
+
+        if hi + n > buf.Length then
+            let bigger = Array.zeroCreate (max (buf.Length * 2) (hi + n))
+            System.Buffer.BlockCopy(buf, 0, bigger, 0, hi)
+            buf <- bigger
+
+        if System.OperatingSystem.IsWindows() then
+            let got = winStdin.Force().Read(buf, hi, n)
+            hi <- hi + got
+            got
+        else
+            let rec go () =
+                awaitReadable ()
+
+                let r =
+                    let h =
+                        System.Runtime.InteropServices.GCHandle.Alloc(
+                            buf,
+                            System.Runtime.InteropServices.GCHandleType.Pinned
+                        )
+
+                    try
+                        int (Libc.read (0, h.AddrOfPinnedObject() + nativeint hi, unativeint n))
+                    finally
+                        h.Free()
+
+                if r >= 0 then
+                    hi <- hi + r
+                    r
+                else
+                    match System.Runtime.InteropServices.Marshal.GetLastPInvokeError() with
+                    | e when e = Libc.EINTR -> go ()
+                    | e when e = Libc.EAGAIN ->
+                        // an inherited non-blocking fd 0
+                        Libc.readable 0 50 |> ignore
+                        go ()
+                    | _ -> 0
+
+            go ()
+
+    // the next whole line in the buffer: a stream read breaks at \n, \r
+    // and \r\n (a StreamReader's lines), a prompt at \n with one \r before
+    // it dropped. None when more bytes are needed (at the end, the rest)
+    let private takeLine (stream: bool) (atEnd: bool) : string option =
+        let span = System.ReadOnlySpan<byte>(buf, scanned, hi - scanned)
+
+        let at =
+            if stream then
+                System.MemoryExtensions.IndexOfAny(span, 10uy, 13uy)
+            else
+                System.MemoryExtensions.IndexOf(span, 10uy)
+
+        let decode (n: int) =
+            System.Text.Encoding.UTF8.GetString(buf, lo, n)
+
+        if at >= 0 then
+            let j = scanned + at
+
+            if buf[j] = 13uy && j + 1 = hi && not atEnd then
+                // a \r at the end may begin a \r\n: read on
+                scanned <- j
+                None
+            else
+                let line =
+                    if not stream && j > lo && buf[j - 1] = 13uy then
+                        decode (j - 1 - lo)
+                    else
+                        decode (j - lo)
+
+                lo <- if buf[j] = 13uy && j + 1 < hi && buf[j + 1] = 10uy then j + 2 else j + 1
+                scanned <- lo
+                Some line
+        elif atEnd && lo < hi then
+            let line = decode (hi - lo)
+            lo <- hi
+            scanned <- hi
+            Some line
+        else
+            scanned <- hi
+            None
+
+    let private readWith (stream: bool) : string =
+        if winTty () then
+            System.Console.In.ReadLine()
+        else
+            while not (System.Threading.Monitor.TryEnter(gate, 50)) do
+                raiseWoken ()
+
+            try
+                let chunk = if stream then 65536 else 1
+                // where the line taken begins (a fill may move the buffer)
+                let mutable start = lo
+                let mutable line = takeLine stream false
+                let mutable atEnd = false
+                let mutable waited = false
+
+                while line.IsNone && not atEnd do
+                    waited <- true
+
+                    if fill chunk = 0 then
+                        atEnd <- true
+
+                    start <- lo
+                    line <- takeLine stream atEnd
+
+                match line with
+                | Some l when waited ->
+                    // a cut landing as the line completes leaves it too
+                    try
+                        raiseWoken ()
+                    with _ ->
+                        lo <- start
+                        scanned <- start
+                        reraise ()
+
+                    l
+                | Some l -> l
+                | None -> null
+            finally
+                System.Threading.Monitor.Exit gate
+
+    /// one line for Self.prompt [D:prompt], reading nothing past its
+    /// newline; null at the end of input
+    let readPromptLine () : string = readWith false
+
+    /// the next line of the stream (Self.stdin, the piped REPL); null at
+    /// the end of input
+    let readLine () : string = readWith true
 
 // weir's own stdout, when it is a pipe or file [D:stdout-epipe]: .NET's
 // Unix console stream drops EPIPE, so a closed reader went unnoticed and
@@ -1011,11 +1225,11 @@ let private installExitHook () =
                             killLiveChildren ()
 
                             // the backstop: a main thread blocked where
-                            // no boundary comes (a stdin read, a network
-                            // call) cannot unwind — after a grace period
-                            // the old in-handler teardown runs and the
-                            // process exits; it runs no statement either.
-                            // One joining arms unwinds next and is left be
+                            // no boundary comes (a network call) cannot
+                            // unwind — after a grace period the old
+                            // in-handler teardown runs and the process
+                            // exits; it runs no statement either. One
+                            // joining arms unwinds next and is left be
                             let watchdog =
                                 System.Threading.Thread(fun () ->
                                     System.Threading.Thread.Sleep 1000

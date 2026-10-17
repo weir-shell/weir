@@ -27518,6 +27518,44 @@ let hunt3r2CancelTests =
 
                   Expect.isFalse (File.Exists(Path.Combine(d, "arms.txt"))) "no arm started"
                   expectValue "[1..4] |> Seq.pmap (fun i -> i) |> Seq.length" (VInt 4L))
+          }
+          test "a lost race abandons a blocking call; an unraced one keeps its raise [D:stdin-reader]" {
+              use cts = new System.Threading.CancellationTokenSource()
+
+              Weir.Session.racing (fun () ->
+                  Weir.Session.enterFlow cts.Token
+
+                  try
+                      System.Threading.Tasks.Task.Run(fun () ->
+                          System.Threading.Thread.Sleep 200
+                          cts.Cancel())
+                      |> ignore
+
+                      let sw = System.Diagnostics.Stopwatch.StartNew()
+
+                      Expect.throwsT<Weir.Session.Cancelled>
+                          (fun () ->
+                              Weir.Session.cutBlocking (fun () ->
+                                  System.Threading.Thread.Sleep 10000
+                                  1)
+                              |> ignore)
+                          "the cut raises"
+
+                      Expect.isLessThan sw.ElapsedMilliseconds 5000L "abandoned, not waited out"
+                  finally
+                      Weir.Session.exitFlow ())
+
+              use live = new System.Threading.CancellationTokenSource()
+              Weir.Session.enterFlow live.Token
+
+              try
+                  Expect.throwsT<IOException>
+                      (fun () -> Weir.Session.cutBlocking (fun () -> raise (IOException "fifo")) |> ignore)
+                      "the call's own raise, unwrapped"
+
+                  Expect.equal (Weir.Session.cutBlocking (fun () -> 5)) 5 "a value passes"
+              finally
+                  Weir.Session.exitFlow ()
           } ]
 
 let sweepFindingTests =

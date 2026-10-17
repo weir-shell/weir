@@ -2746,26 +2746,31 @@ let private bomAt (fs: FileStream) : bool =
 let private openShared (r: string) : FileStream =
     new FileStream(r, FileMode.Open, FileAccess.Read, FileShare.ReadWrite ||| FileShare.Delete)
 
+// a FIFO's open and read block where no kill reaches: a lost race or a
+// REPL ^C abandons them [D:stdin-reader]
 let private readLinesShared (r: string) : string[] =
-    use sr = new StreamReader(openShared r)
-    let acc = ResizeArray()
-    let mutable line = sr.ReadLine()
+    Session.cutBlocking (fun () ->
+        use sr = new StreamReader(openShared r)
+        let acc = ResizeArray()
+        let mutable line = sr.ReadLine()
 
-    while line <> null do
-        acc.Add line
-        line <- sr.ReadLine()
+        while line <> null do
+            acc.Add line
+            line <- sr.ReadLine()
 
-    acc.ToArray()
+        acc.ToArray())
 
 let private readTextShared (r: string) : string =
-    use sr = new StreamReader(openShared r)
-    sr.ReadToEnd()
+    Session.cutBlocking (fun () ->
+        use sr = new StreamReader(openShared r)
+        sr.ReadToEnd())
 
 let private readBytesShared (r: string) : byte[] =
-    use fs = openShared r
-    use ms = new MemoryStream()
-    fs.CopyTo ms
-    ms.ToArray()
+    Session.cutBlocking (fun () ->
+        use fs = openShared r
+        use ms = new MemoryStream()
+        fs.CopyTo ms
+        ms.ToArray())
 
 // the whole-file swap behind File.writeAtomic: the payload lands in a
 // same-directory exclusive temp, is fsynced, and renames over the
@@ -5887,38 +5892,6 @@ let private tableModuleMembers: (string * Ty * Value) list =
                           "Table.render needs a seq of same-shaped records with scalar fields; for other sequences use Seq.map show"
           | _ -> unreachable $"the checker rejects 'Table.render' on {formatValue v}") ]
 
-// one line for Self.prompt [D:prompt], consuming nothing past its
-// newline: a redirected stdin is read a byte at a time from fd 0, so the
-// rest stays for the children (and Self.stdin) that read after it —
-// Console.In buffers ahead. A terminal delivers a line per read anyway
-// and keeps Console.In's line editing.
-let private promptStdin = lazy (System.Console.OpenStandardInput())
-
-let private readPromptLine () : string =
-    if not System.Console.IsInputRedirected then
-        System.Console.In.ReadLine()
-    else
-        let stdin = promptStdin.Force()
-        let bytes = ResizeArray<byte>()
-        let one = Array.zeroCreate<byte> 1
-        let mutable atEof = false
-        let mutable go = true
-
-        while go do
-            if stdin.Read(one, 0, 1) = 0 then
-                atEof <- true
-                go <- false
-            elif one[0] = 10uy then
-                go <- false
-            else
-                bytes.Add one[0]
-
-        if atEof && bytes.Count = 0 then
-            null
-        else
-            let line = System.Text.Encoding.UTF8.GetString(bytes.ToArray())
-            if line.EndsWith '\r' then line.Substring(0, line.Length - 1) else line
-
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
@@ -5937,7 +5910,8 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
                 eprintf "%s " (sanitizeIfTty System.Console.IsErrorRedirected msg)
                 System.Console.Error.Flush()
 
-                match readPromptLine () with
+                // weir's one stdin reader [D:stdin-reader]
+                match Session.Stdin.readPromptLine () with
                 | null ->
                     failwith
                         "Self.prompt: stdin is closed (EOF) — no line to read; pipe an answer in, or run at a terminal"

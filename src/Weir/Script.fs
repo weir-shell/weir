@@ -3038,12 +3038,13 @@ let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
 
                 consumed.Value <- true
 
+                // weir's one stdin reader [D:stdin-reader]
                 seq {
-                    let mutable line = Console.In.ReadLine()
+                    let mutable line = Session.Stdin.readLine ()
 
                     while line <> null do
                         yield Eval.VStr line
-                        line <- Console.In.ReadLine()
+                        line <- Session.Stdin.readLine ()
                 })
         )
 

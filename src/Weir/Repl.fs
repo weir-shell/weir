@@ -1910,7 +1910,7 @@ let mutable private pendingLine: string option = None
 
 // the redirected-stdin accumulator [D:repl-multiline]: a piped REPL
 // (printf '…' | weir) has no tty line editor, so it reads physical
-// lines with Console.ReadLine. A statement that spans lines (heredoc, a
+// lines from weir's one stdin reader. A statement that spans lines (heredoc, a
 // multi-line `type`, an open `if`/`for`/`match` block, a leading-`|>`
 // pipeline, an unbalanced bracket) must assemble the way a script does
 // — Script.assemble is the one authority (never a second parser). The
@@ -1933,7 +1933,7 @@ let private readRedirected () : string =
         | Some l ->
             pendingLine <- None
             l
-        | None -> Console.ReadLine()
+        | None -> Session.Stdin.readLine () // the one reader [D:stdin-reader]
 
     // the completed statement's prompts, emitted once at return so the
     // eval output that follows keeps its order [D:repl-multiline] — a

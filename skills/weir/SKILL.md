@@ -76,7 +76,9 @@ print (show 1)
   enumeration — it is live, a second enumeration raises with the
   repair; `Self.prompt "msg?"` reads a line per interaction instead, message
   to stderr so piped stdout stays data, EOF refuses; it consumes nothing
-  past its newline, so later children read the rest), `Self.pid : int` (the process id),
+  past its newline, so later children read the rest; a read cut short —
+  a `pfirst` loser, a REPL `^C` — takes no line, the next read gets it
+  [D:stdin-reader]), `Self.pid : int` (the process id),
   `Self.scriptPath : string` (the FILE'S OWN absolute path, resolved
   at startup before any `cd`; symlinks unresolved like bash's `$0` —
   an imported module sees its own), and `Self.entryPath : string`
@@ -702,7 +704,8 @@ print $"{key} -> {value}"
   every loser before returning — AFTER `pfirst` RETURNS, NO LOSER
   EFFECT RUNS [D:pfirst-join]; a loser busy in pure computation holds
   the return until it reaches one, and a loser's `always` cleanup
-  still runs whole, its commands included (before the return). `exit n`
+  still runs whole, its commands included (before the return). A
+  loser blocked reading stdin or a FIFO is cut too (POSIX). `exit n`
   in an arm ends the race and the script, as in `pmap`.
 - A SCOPED background process is `within proc srv = <command>` +
   an indented block [D:scoped-procs]: the scope IS the lifetime —
@@ -1371,9 +1374,10 @@ print x
   foreground child dies of the group SIGINT (the script path's exact
   message), and a wait weir owns — `Duration.sleep`, a `poll`
   interval, a `retry` delay, a `within lock` acquire, `Proc.wait`, an
-  Http request — is cut where it stands (in a `pmap`/`piter` arm
-  too); a fan-out takes no new arm, and an arm whose command died of
-  the `^C` is the interrupt, not a failure [D:repl-interrupt-fanout]. `within`'s scopes close as on any raise; an `always` block
+  Http request, a `Self.prompt` (which takes no line) — is cut where
+  it stands (in a `pmap`/`piter` arm too); a fan-out takes no new arm,
+  and an arm whose command died of the `^C` is the interrupt, not a
+  failure [D:repl-interrupt-fanout]. `within`'s scopes close as on any raise; an `always` block
   runs as written unless `^C` is pressed again. At an idle prompt
   `^C` clears the line. Pure computation is not interrupted: it runs
   to its next wait, which then stops.

@@ -3710,11 +3710,19 @@ SCN
         echo "e2e skip: REPL ^C wait pins (flock(1))"
     fi
 
-    # ^C during a command fan-out is the interrupt, not an arm failure — no
-    # new arm starts and the prompt returns [D:repl-interrupt-fanout]
+    # ^C during Self.prompt cuts the read and takes no line [D:stdin-reader]:
+    # the next typed line reaches the REPL, not the cancelled prompt; ^C
+    # during a command fan-out is the interrupt, not an arm failure — no new
+    # arm starts and the prompt returns [D:repl-interrupt-fanout]
     idir=$(mkweirtmp)
     cat > "$idir/int.scn" <<SCN
 SLEEP 700
+SEND Self.prompt "name? "\r
+SLEEP 800
+SEND \x03
+SLEEP 500
+SEND print (Str.toUpper "after-prompt")\r
+SLEEP 400
 SEND [1..30] |> Seq.piterWith 3 (fun i -> sh -c \$"echo start {i} >> $idir/arms.log; sleep 2")\r
 SLEEP 1200
 SEND \x03
@@ -3727,10 +3735,11 @@ SCN
     sleep 2.5
     started=$(wc -l < "$idir/arms.log" 2>/dev/null || echo 0)
     n130=$(echo "$iout" | grep -c "exit 130 (SIGINT")
-    [ "$n130" = "1" ] || fail "^C during a fan-out must return with exit 130 (got $n130): $iout"
+    [ "$n130" = "2" ] || fail "^C during Self.prompt and a fan-out must each return with exit 130 (got $n130): $iout"
+    echo "$iout" | grep -q "AFTER-PROMPT" || fail "the line after a ^C'd Self.prompt must reach the REPL: $iout"
     echo "$iout" | grep -q "AFTER-FANOUT" || fail "the prompt must return after a ^C'd fan-out: $iout"
     [ "$started" -le 6 ] || fail "a ^C'd fan-out kept taking arms ($started of 30 started, 3 in flight at ^C)"
-    echo "e2e ok: REPL ^C stops a command fan-out"
+    echo "e2e ok: REPL ^C cuts Self.prompt without taking a line, and stops a command fan-out"
 else
     echo "e2e skip: REPL SIGINT pty pins (POSIX + python3)"
 fi
@@ -5831,6 +5840,50 @@ WEOF
 out=$(timeout 10 $BIN "$pdir/ahead2.weir" < "$pdir/ahead2.in" 2>/dev/null)
 [ "$out" = "$(printf 'got x\ny\nz')" ] || fail "Self.prompt then Self.stdin reads the rest: $out"
 echo "e2e ok: Self.prompt reads no further than its newline (pipe + file, CRLF trimmed)"
+# a cut read takes no line [D:stdin-reader]: a pfirst loser waiting in
+# Self.prompt is cut when the timer wins, the next prompt gets the first
+# line and a child the rest; a Self.stdin loser on an open, silent pipe
+# and a File.read loser on a FIFO nobody opens never hold the race.
+# Windows reads block, uncut — POSIX only
+if [ "$IS_WINDOWS" != "1" ] && command -v mkfifo >/dev/null 2>&1; then
+    cat > "$pdir/cut.weir" <<'WEOF'
+let a = ["ask"; "default"] |> Seq.pfirst (fun k ->
+    if k == "default" then
+        Duration.sleep 300ms
+        "timed-out"
+    else
+        Self.prompt "continue?")
+print $"answer={a}"
+let b = Self.prompt "name?"
+print $"next={b}"
+cat
+WEOF
+    out=$( (sleep 1.5; printf 'first\nsecond\n') | timeout 10 $BIN "$pdir/cut.weir" 2>/dev/null) || fail "the cut prompt script failed: $out"
+    [ "$out" = "$(printf 'answer=timed-out\nnext=first\nsecond')" ] || fail "a cut Self.prompt must leave its line for the next reader: $out"
+    for body in 'Self.stdin |> Seq.length |> show' 'File.read "ff" |> Seq.length |> show'; do
+        cat > "$pdir/cutw.weir" <<WEOF
+let r = [1; 2] |> Seq.pfirst (fun i ->
+    if i == 1 then
+        Duration.sleep 300ms
+        "timer"
+    else
+        $body)
+print \$"winner={r}"
+WEOF
+        rm -f "$pdir/ff" "$pdir/in"
+        mkfifo "$pdir/ff" "$pdir/in"
+        # stdin open and silent: a background writer the capture never waits on
+        sleep 4 > "$pdir/in" &
+        wpid=$!
+        start_ms=$(now_ms)
+        out=$(cd "$pdir" && timeout 10 $BIN cutw.weir 2>&1 < "$pdir/in") || true
+        took=$(( $(now_ms) - start_ms ))
+        kill "$wpid" 2>/dev/null || true
+        [ "$out" = "winner=timer" ] || fail "a blocked loser ($body) must lose: $out"
+        [ "$took" -lt 2500 ] || fail "a loser blocked in ($body) held the race (${took}ms)"
+    done
+    echo "e2e ok: a cut stdin read takes no line; Self.stdin and FIFO losers never hold the race"
+fi
 rm -rf "$pdir"
 
 # anonymous record types [D:anon-records]: the shape inline in the
