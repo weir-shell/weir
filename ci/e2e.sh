@@ -3194,6 +3194,57 @@ WEOF
     done
     [ "$stopped" = "0" ] || fail "a signal during pfirst races left $stopped SIGSTOPped orphan(s)"
     echo "e2e ok: signals during pfirst races leave no SIGSTOPped orphan (9 runs)"
+
+    # a requested teardown never preempts a cleanup on the clean path
+    # [D:teardown-never-preempts]: the signal lands while the `always` runs
+    # (its sleep is not cut short) or while the scope is still closing (a
+    # serve drain); the cleanup runs whole, once, then the signal's exit
+    cat > "$dtdir/inclean.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within
+    File.append log ["body"]
+always
+    File.append log ["start"]
+    Duration.sleep 1500ms
+    File.append log ["end"]
+File.append log ["after"]
+WEOF
+    for sig in TERM INT; do
+        rm -f "$dtdir/inclean.log"
+        setsid "$BIN" "$dtdir/inclean.weir" "$dtdir/inclean.log" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        for _ in $(seq 1 50); do grep -qx start "$dtdir/inclean.log" 2>/dev/null && break; sleep 0.05; done
+        kill -"$sig" "$wpid" 2>/dev/null || true
+        code=0; wait "$wpid" 2>/dev/null || code=$?
+        [ "$(tr '\n' ',' < "$dtdir/inclean.log")" = "body,start,end," ] || fail "a SIG$sig during a running cleanup must let it finish, then exit: $(tr '\n' ',' < "$dtdir/inclean.log")"
+        case "$code" in 130|143) ;; *) fail "a SIG$sig during a running cleanup must still exit by it (got $code)" ;; esac
+    done
+    svportC1=8491
+    cat > "$dtdir/closing.weir" <<WEOF
+let log = Self.args |> Seq.head
+let h = fun req ->
+    Duration.sleep 5s
+    HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+within
+    within serve _s = { port = $svportC1; maxConcurrent = 2 } h
+        poll timeout=8s interval=50ms
+            Net.portOpen $svportC1
+        within proc _c = curl -s -m 10 "http://127.0.0.1:$svportC1/x"
+            Duration.sleep 300ms
+        File.append log ["body done"]
+always
+    File.append log ["END"]
+WEOF
+    rm -f "$dtdir/closing.log"
+    setsid "$BIN" "$dtdir/closing.weir" "$dtdir/closing.log" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    for _ in $(seq 1 100); do grep -qx "body done" "$dtdir/closing.log" 2>/dev/null && break; sleep 0.05; done
+    sleep 0.5
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" 2>/dev/null || code=$?
+    [ "$code" = "143" ] || fail "a SIGTERM during a serve drain must exit 143 (got $code)"
+    [ "$(tr '\n' ',' < "$dtdir/closing.log")" = "body done,END," ] || fail "a SIGTERM while a scope closes must still run the enclosing always once: $(tr '\n' ',' < "$dtdir/closing.log")"
+    echo "e2e ok: a signal never preempts an always cleanup — running or about to start, it runs whole, then the signal's exit"
 else
     echo "e2e skip: detached-signal pins (POSIX + setsid + pgrep)"
 fi

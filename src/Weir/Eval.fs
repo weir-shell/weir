@@ -4631,6 +4631,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         let hooked = Session.registerAlways runCleanup
 
+        // the claim is made inside the cleanup's mark, so a teardown
+        // requested from here on waits for it [D:teardown-never-preempts]
+        let claimAndRun () =
+            Session.runningCleanup (fun () ->
+                if Session.deregisterAlways hooked then
+                    eval env cleanup |> ignore)
+
         match
             (try
                 Ok(eval env body)
@@ -4640,9 +4647,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         | Ok v ->
             // case 1: a cleanup raise propagates as the scope's raise —
             // unless a signal's hook already claimed the cleanup
-            if Session.deregisterAlways hooked then
-                runCleanup ()
-
+            claimAndRun ()
             v
         | Error original ->
             // the cleanup runs weir code while the body's raise unwinds: pin
@@ -4657,8 +4662,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                      b.Exact <- RunPos.Exact)
 
             (try
-                if Session.deregisterAlways hooked then
-                    runCleanup ()
+                claimAndRun ()
              with
              | :? ExitRequest ->
                  // the checker refuses exit inside always; a raise here

@@ -272,9 +272,33 @@ let private killedProcs =
 // commands are what `always` is for
 let private cleanupDepth = System.Threading.AsyncLocal<int>()
 
+let mutable private mainThreadId = 0
+
+let private onMainThread () =
+    mainThreadId <> 0
+    && System.Threading.Thread.CurrentThread.ManagedThreadId = mainThreadId
+
+// the main thread inside an `always` cleanup [D:teardown-never-preempts]:
+// the signal watchdog stands down for it, and once the watchdog has
+// fired no cleanup starts on the main thread (the sweep runs it)
+let private watchdogGate = obj ()
+let mutable private mainCleanups = 0
+let mutable private watchdogFired = false
+
 /// run an `always` cleanup: spawns inside it start even after the teardown
-/// kill, and a parallel fan-out inside it keeps taking arms
+/// kill, a parallel fan-out inside it keeps taking arms, and a requested
+/// teardown never preempts it [D:teardown-never-preempts]
 let runningCleanup (f: unit -> 'a) : 'a =
+    let onMain = onMainThread ()
+
+    if onMain then
+        lock watchdogGate (fun () ->
+            if watchdogFired then
+                // the process is exiting and the sweep owns the cleanups
+                System.Threading.Thread.Sleep System.Threading.Timeout.Infinite
+
+            mainCleanups <- mainCleanups + 1)
+
     cleanupDepth.Value <- cleanupDepth.Value + 1
 
     try
@@ -282,7 +306,16 @@ let runningCleanup (f: unit -> 'a) : 'a =
     finally
         cleanupDepth.Value <- cleanupDepth.Value - 1
 
+        if onMain then
+            lock watchdogGate (fun () -> mainCleanups <- mainCleanups - 1)
+
 let inCleanup () = cleanupDepth.Value > 0
+
+// children an `always` cleanup started: the teardown's kill spares them
+// [D:teardown-never-preempts] — a cleanup runs whole, its commands too;
+// the exit and a second signal still kill them
+let private cleanupProcs =
+    System.Collections.Concurrent.ConcurrentDictionary<System.Diagnostics.Process, unit>(HashIdentity.Reference)
 
 // a tree kill in flight [D:kill-settle]: .NET's Kill(true) on Unix
 // stops the tree, then kills it, so a process exiting between the two
@@ -419,7 +452,6 @@ let registerChild (p: System.Diagnostics.Process) : unit =
 // request. Registered by the script runner and -e; without a registered
 // main thread (the REPL) the handler keeps the in-handler sweep.
 
-let mutable private mainThreadId = 0
 let mutable private teardownCode = 0
 let mutable private teardownRaised = 0
 
@@ -428,10 +460,6 @@ let teardownWake = new System.Threading.ManualResetEventSlim(false)
 
 let registerMainThread () : unit =
     mainThreadId <- System.Threading.Thread.CurrentThread.ManagedThreadId
-
-let private onMainThread () =
-    mainThreadId <> 0
-    && System.Threading.Thread.CurrentThread.ManagedThreadId = mainThreadId
 
 // what a worker's waits hand to an API (an Http send) once a teardown is
 // requested [D:teardown-joins-arms]
@@ -611,15 +639,17 @@ let gatedSpawn (start: unit -> 'a) : 'a =
     finally
         spawnGate.ExitReadLock()
 
-/// stop spawning and tree-kill every live child not already killed
-let private killLiveChildren () : unit =
+/// stop spawning and tree-kill every live child not already killed; the
+/// teardown spares a cleanup's children [D:teardown-never-preempts]
+let private killLiveChildren (spareCleanups: bool) : unit =
     spawnGate.EnterWriteLock()
 
     try
         spawningStopped <- true
 
         for kv in liveProcs do
-            if killedProcs.Add kv.Value then
+            if not (spareCleanups && cleanupProcs.ContainsKey kv.Value)
+               && killedProcs.Add kv.Value then
                 killTree kv.Value
     finally
         spawnGate.ExitWriteLock()
@@ -802,7 +832,7 @@ let exitCodeOr (code: int) : int =
     | c ->
         // a requested teardown's kill completes before the exit, every
         // other tree kill in flight with it [D:kill-settle]
-        killLiveChildren ()
+        killLiveChildren false
         settleKills ()
         c
 
@@ -817,22 +847,26 @@ let teardownRequested () : int = System.Threading.Volatile.Read &teardownCode
 
 /// raise the requested teardown on the main thread, once: the unwind
 /// then runs the cleanups as ordinary code (which must not be cut short
-/// by the same request again)
+/// by the same request again). A cleanup already running is never
+/// preempted [D:teardown-never-preempts]: the request raises at the
+/// first boundary after it
 let checkTeardown () : unit =
     let c = System.Threading.Volatile.Read &teardownCode
 
     if
         c <> 0
         && onMainThread ()
+        && not (inCleanup ())
         && System.Threading.Interlocked.Exchange(&teardownRaised, 1) = 0
     then
         raise (ExitRequest c)
 
 // a main thread not yet unwinding waits interruptibly; elsewhere (a
-// worker, or a cleanup already running for the request) waits run as
-// written
+// worker, or a cleanup running) waits run as written
 let private interruptible () =
-    onMainThread () && System.Threading.Volatile.Read &teardownRaised = 0
+    onMainThread ()
+    && System.Threading.Volatile.Read &teardownRaised = 0
+    && not (inCleanup ())
 
 // what a runtime-owned wait wakes on: the teardown (main thread, not yet
 // unwinding; any other flow outside a cleanup [D:teardown-joins-arms]), a
@@ -1288,22 +1322,39 @@ let private installExitHook () =
                             let code = signalExitCode ctx.Signal
 
                             requestTeardown code
-                            killLiveChildren ()
+                            killLiveChildren true
 
                             // the backstop: a main thread blocked where
                             // no boundary comes (a network call) cannot
                             // unwind — after a grace period the old
                             // in-handler teardown runs and the process
                             // exits; it runs no statement either. One
-                            // joining arms unwinds next and is left be
+                            // joining arms unwinds next and is left be; one
+                            // in a cleanup runs it whole first
+                            // [D:teardown-never-preempts]
                             let watchdog =
                                 System.Threading.Thread(fun () ->
-                                    System.Threading.Thread.Sleep 1000
+                                    let rec standBy () =
+                                        System.Threading.Thread.Sleep 1000
 
-                                    if
-                                        System.Threading.Volatile.Read &teardownRaised = 0
-                                        && System.Threading.Volatile.Read &mainJoining = 0
-                                    then
+                                        let fire =
+                                            lock watchdogGate (fun () ->
+                                                if
+                                                    System.Threading.Volatile.Read &teardownRaised <> 0
+                                                    || System.Threading.Volatile.Read &mainJoining <> 0
+                                                then
+                                                    Some false
+                                                elif mainCleanups > 0 then
+                                                    None
+                                                else
+                                                    watchdogFired <- true
+                                                    Some true)
+
+                                        match fire with
+                                        | None -> standBy ()
+                                        | Some f -> f
+
+                                    if standBy () then
                                         sweepLiveTmpDirs ()
                                         System.Environment.Exit code)
 
@@ -1368,12 +1419,16 @@ let registerForeground (p: System.Diagnostics.Process) : unit =
 
             hookRoots <- (reg :> obj) :: hookRoots
 
+    if inCleanup () then
+        cleanupProcs[p] <- ()
+
     liveProcs[p.Id] <- p
 
 /// remove `p` under `pid` — only that very process, so a late exit
 /// event never drops a newer child that reused the pid
 let deregisterProcAt (pid: int) (p: System.Diagnostics.Process) : unit =
     liveProcs.TryRemove(System.Collections.Generic.KeyValuePair(pid, p)) |> ignore
+    cleanupProcs.TryRemove p |> ignore
 
 let deregisterProc (p: System.Diagnostics.Process) : unit = deregisterProcAt p.Id p
 
