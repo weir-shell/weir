@@ -1798,8 +1798,11 @@ type Bad = C of int
   ONE mapping; `xs |> to yaml stream` writes one document per
   element (the bundle write — `to yaml stream |> from yaml stream
   T` roundtrips, `to yaml |> from yaml seq<T>` too). `None` fields
-  omit — a record with every field `None` writes `{}`, and an empty
-  top-level seq `[]`, so no document is ever empty text; ambiguous strings like `"no"`/`"007"` auto-quote. `Yaml`
+  omit — a record with every field `None` writes `{}`; an empty seq
+  writes `[]` and an empty `seq<string * _>` `{}` at any depth, so
+  `Some []` reads back `Some []` (a Deployment's `args: []`/`labels:
+  {}` round-trip) and no document is ever empty text; a seq inside a
+  seq nests block-wise under a bare `-`; ambiguous strings like `"no"`/`"007"` auto-quote. `Yaml`
   nodes (`YStr`/`YInt`/`YFloat`/`YBool`/`YNull`/`YSeq`/`YMap`;
   `YMap [("k", YStr "v")]`) render directly —
   `YMap` keeps YOUR key order; record fields render in DECLARATION

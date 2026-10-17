@@ -27981,6 +27981,40 @@ let hunt3BehaviorTests =
               Expect.equal (runUnder yenv $"{xs} |> to yaml stream" |> text) "cpu: \"1\"\n---\n{}\n---\ncpu: \"2\"" "the stream form"
               Expect.equal (runUnder yenv $"{xs} |> to yaml stream |> from yaml stream YR |> Seq.length") (VInt 3L) "no document dropped"
           }
+          test "to yaml writes an empty seq [] and an empty pair-seq {} at any depth; nested seqs nest block-wise [D:yaml-empty-typed]" {
+              let kenv =
+                  henv
+                  |> declare "type KC = { name: string; args: Option<seq<string>>; env: Option<seq<string * string>>; ports: seq<int> }"
+                  |> declare "type KM = { labels: Option<seq<string * string>>; annotations: seq<string * string> }"
+                  |> declare "type KD = { metadata: KM; containers: seq<KC>; grid: seq<seq<seq<int>>>; ms: seq<seq<string * int>> }"
+                  |> declare "type KN = { n: Yaml }"
+
+              let d =
+                  "{ metadata = { labels = Some []; annotations = [] }; containers = [{ name = \"a\"; args = Some []; env = Some []; ports = [] }]; grid = [[[1]; []]; []]; ms = [[]; [(\"k\", 1)]] }"
+
+              Expect.equal
+                  (runUnder kenv $"{d} |> to yaml" |> text)
+                  "metadata:\n  labels: {}\n  annotations: {}\ncontainers:\n  - name: a\n    args: []\n    env: {}\n    ports: []\ngrid:\n  -\n    -\n      - 1\n    - []\n  - []\nms:\n  - {}\n  - k: 1"
+                  "Some [] is [], an empty mapping {}, a nested seq under a bare -"
+
+              Expect.equal
+                  (runUnder kenv $"{d} |> to yaml |> from yaml KD |> to json" |> text)
+                  (runUnder kenv $"{d} |> to json" |> text)
+                  "it reads back: Some [] stays Some [], not None"
+
+              Expect.equal
+                  (runUnder kenv $"[{d}; {d}] |> to yaml stream |> from yaml stream KD |> to json" |> text)
+                  (runUnder kenv $"[{d}; {d}] |> to json" |> text)
+                  "the stream form too"
+
+              let n = "{ n = YSeq [YSeq [YInt 1; YSeq [YStr \"x\"]]; YMap [(\"a\", YSeq [YInt 2])]; YSeq []] }"
+              Expect.equal (runUnder kenv $"{n} |> to yaml" |> text) "n:\n  -\n    - 1\n    -\n      - x\n  - a:\n      - 2\n  - []" "a nested YSeq"
+
+              Expect.equal
+                  (runUnder kenv $"{n} |> to yaml |> from yaml KN |> to json" |> text)
+                  (runUnder kenv $"{n} |> to json" |> text)
+                  "it reads back"
+          }
           test "schema drafting: int-or-string is Yaml, an integer enum is int [D:schema-int-or-string][D:schema-int-enum]" {
               let g =
                   gen

@@ -2805,6 +2805,7 @@ let rec private yamlRender
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, string * string * bool>)
     (depth: int)
+    (guide: Yaml.Shape option)
     (v: Value)
     : Rendered =
     if depth > yamlMaxDepth then
@@ -2813,26 +2814,30 @@ let rec private yamlRender
     let indent2 (lines: string list) =
         lines |> List.map (fun l -> if l = "" then "" else "  " + l)
 
-    let renderMap (entries: (string * Value) list) : string list =
+    let renderMap (entries: (string * Value * Yaml.Shape option) list) : string list =
         entries
-        |> List.collect (fun (k, v) ->
+        |> List.collect (fun (k, v, g) ->
             match v with
             | VUnion("None", None) -> [] // omit the key [D:json-option]'s yaml face
             | _ ->
                 let key = Yaml.renderScalar k
 
-                match yamlRender renames unions (depth + 1) v with
+                match yamlRender renames unions (depth + 1) g v with
                 | Inline "" -> [ $"{key}:" ]
                 | Inline s -> [ $"{key}: {s}" ]
                 | Block lines -> $"{key}:" :: indent2 lines
                 | BlockScalar(h, content) -> $"{key}: {h}" :: indent2 content)
 
-    let renderSeq (items: Value list) : string list =
+    let renderSeq (g: Yaml.Shape option) (items: Value list) : string list =
         items
         |> List.collect (fun item ->
-            match yamlRender renames unions (depth + 1) item with
+            match yamlRender renames unions (depth + 1) g item with
             | Inline "" -> [ "- null" ]
             | Inline s -> [ $"- {s}" ]
+            // a sequence item nests block-wise under a bare `-`
+            // [D:yaml-empty-typed] — the compact `- - x` is outside the
+            // subset the reader takes
+            | Block(first :: _ as lines) when first = "-" || first.StartsWith "- " -> "-" :: indent2 lines
             | Block lines ->
                 match lines with
                 | [] -> [ "-" ]
@@ -2844,6 +2849,18 @@ let rec private yamlRender
     // null and drops a stream document [D:yaml-empty-doc]
     let mapping (lines: string list) =
         if lines.IsEmpty then Inline "{}" else Block lines
+
+    // the child guides [D:yaml-empty-typed]
+    let fieldGuide (f: string) =
+        match guide with
+        | Some(Yaml.SRec(_, fs)) -> fs |> List.tryPick (fun (n, _, sh) -> if n = f then Some sh else None)
+        | _ -> None
+
+    let itemGuide, valueGuide =
+        match guide with
+        | Some(Yaml.SSeq g) -> Some g, None
+        | Some(Yaml.SPairs g) -> None, Some g
+        | _ -> None, None
 
     match v with
     | VInt n -> Inline(string n)
@@ -2863,19 +2880,25 @@ let rec private yamlRender
     // round-trip [D:yaml-empty-flow] — a bare `key:` reads back as null
     | VUnion("YSeq", Some(VSeq items)) when Seq.isEmpty items -> Inline "[]"
     | VUnion("YMap", Some(VSeq pairs)) when Seq.isEmpty pairs -> Inline "{}"
-    | VUnion("YSeq", Some(VSeq items)) -> Block(renderSeq (List.ofSeq items))
+    | VUnion("YSeq", Some(VSeq items)) -> Block(renderSeq None (List.ofSeq items))
     | VUnion("YMap", Some(VSeq pairs)) ->
         let entries =
             pairs
             |> Seq.map (fun p ->
                 match p with
-                | VTuple [ VStr k; v ] -> k, v
+                | VTuple [ VStr k; v ] -> k, v, None
                 | v -> unreachable $"the checker rejects YMap over {formatValue v}")
             |> List.ofSeq
 
-        refuseDupKeys "to yaml" (List.map fst entries)
+        refuseDupKeys "to yaml" (entries |> List.map (fun (k, _, _) -> k))
         Block(renderMap entries)
-    | VUnion("Some", Some inner) -> yamlRender renames unions (depth + 1) inner
+    | VUnion("Some", Some inner) ->
+        let g =
+            match guide with
+            | Some(Yaml.SOpt g) -> Some g
+            | _ -> None
+
+        yamlRender renames unions (depth + 1) g inner
     | VUnion("None", None) -> Inline "null" // element position; fields omit above
     // a tagged case renders its payload with the tag entry first
     // [D:wire-unions]; the [<Other>] case refuses — nothing faithful
@@ -2887,17 +2910,27 @@ let rec private yamlRender
             failwith
                 $"to yaml: '{c}' is the [<Other>] fallback — it names a tag that matched no case, and nothing faithful can be written from it"
 
+        let caseGuide =
+            match guide with
+            | Some(Yaml.SUnion(_, _, cases, _)) -> cases |> List.tryPick (fun (n, _, p) -> if n = c then p else None)
+            | _ -> None
+
         let payloadEntries =
             match payload with
             | Some(VRecord(rname, fields)) ->
                 let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
 
+                let g (f: string) =
+                    match caseGuide with
+                    | Some(Yaml.SRec(_, fs)) -> fs |> List.tryPick (fun (n, _, sh) -> if n = f then Some sh else None)
+                    | _ -> None
+
                 fields
-                |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv)
+                |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv, g f)
             | None -> []
             | Some v -> unreachable $"the declaration law rejects a tagged payload of {formatValue v}"
 
-        Block(renderMap ((tagField, VStr tagValue) :: payloadEntries))
+        Block(renderMap ((tagField, VStr tagValue, None) :: payloadEntries))
     | VRecord(rname, fields) ->
         // wire keys on the yaml wire too [D:wire-keys]
         let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
@@ -2905,7 +2938,7 @@ let rec private yamlRender
         mapping (
             renderMap (
                 fields
-                |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv)
+                |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv, fieldGuide f)
             )
         )
     | VSeq items ->
@@ -2920,23 +2953,28 @@ let rec private yamlRender
                 | _ -> None)
 
         if not items.IsEmpty && asPairs |> List.forall Option.isSome then
-            let entries = asPairs |> List.map Option.get
-            refuseDupKeys "to yaml" (List.map fst entries)
+            let entries = asPairs |> List.map (fun p -> let k, v = Option.get p in k, v, valueGuide)
+            refuseDupKeys "to yaml" (entries |> List.map (fun (k, _, _) -> k))
             mapping (renderMap entries)
-        elif items.IsEmpty && depth = 0 then
-            // an empty top-level seq is the empty flow sequence, as an
-            // empty Yaml node is [D:yaml-empty-doc]
-            Inline "[]"
+        elif items.IsEmpty then
+            // an empty seq is a flow empty at any depth, so `Some []`
+            // reads back `Some []`; the type picks the form
+            // [D:yaml-empty-typed] — a seq<string * _> is the empty
+            // mapping, any other seq the empty sequence
+            match guide with
+            | Some(Yaml.SPairs _) -> Inline "{}"
+            | _ -> Inline "[]"
         else
-            Block(renderSeq items)
+            Block(renderSeq itemGuide items)
     | v -> unreachable $"the checker rejects 'to yaml' on {formatValue v}"
 
 let private yamlToLines
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, string * string * bool>)
+    (guide: Yaml.Shape option)
     (v: Value)
     : string list =
-    match yamlRender renames unions 0 v with
+    match yamlRender renames unions 0 guide v with
     | Inline s -> [ s ]
     | Block lines -> lines
     | BlockScalar(h, content) -> h :: (content |> List.map (fun l -> if l = "" then "" else "  " + l))
@@ -2945,6 +2983,7 @@ let private yamlToImpl
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, string * string * bool>)
     (stream: bool)
+    (guide: Yaml.Shape option)
     : Value =
     VBuiltin(fun v ->
         match v with
@@ -2953,7 +2992,7 @@ let private yamlToImpl
         // sequence document (yamlRender's own VSeq arm, matching
         // json's array), and a pair-seq is a single mapping document.
         | VSeq items when stream ->
-            let docs = items |> Seq.map (yamlToLines renames unions) |> List.ofSeq
+            let docs = items |> Seq.map (yamlToLines renames unions guide) |> List.ofSeq
 
             let lines =
                 match docs with
@@ -2961,7 +3000,7 @@ let private yamlToImpl
                 | first :: rest -> first @ (rest |> List.collect (fun d -> "---" :: d))
 
             VSeq(lines |> List.map VStr |> List.toSeq)
-        | v -> VSeq(yamlToLines renames unions v |> List.map VStr |> List.toSeq))
+        | v -> VSeq(yamlToLines renames unions guide v |> List.map VStr |> List.toSeq))
 
 let scalarString (what: string) (v: Value) : string =
     match v with
@@ -4198,16 +4237,16 @@ and eval (env: Env) (te: TypedExpr) : Value =
         match patchBy with
         | None -> tree
         | Some by -> VUnion("|ypatch", Some(VTuple [ VStr(defaultArg by ""); tree ]))
-    | TETo("yaml", renames, codecs, unions, stream) ->
+    | TETo("yaml", renames, codecs, unions, stream, guide) ->
         // coded fields become plain values first [D:wire-codecs]
-        let render = yamlToImpl renames unions stream
+        let render = yamlToImpl renames unions stream guide
         VBuiltin(fun v -> apply render (encodeTree "yaml" codecs v))
-    | TETo("jsonl", renames, codecs, unions, _) ->
+    | TETo("jsonl", renames, codecs, unions, _, _) ->
         VBuiltin(fun v ->
             match v with
             | VSeq items -> VSeq(items |> Seq.map (encodeTree "jsonl" codecs >> jsonLine renames unions >> VStr))
             | v -> unreachable $"the checker rejects 'to jsonl' on {formatValue v}")
-    | TETo(fmt, renames, codecs, unions, _) ->
+    | TETo(fmt, renames, codecs, unions, _, _) ->
         // one document [D:to-jsonl] — the whole value through the same
         // renderer, once; an array document forces its seq (one line
         // cannot stream)

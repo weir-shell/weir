@@ -5472,6 +5472,39 @@ echo "$out" | grep -qF "to yaml: the mapping holds the key 'k' twice" || fail "t
 rm -rf "$ydir"
 echo "e2e ok: to yaml — {} and [] documents, the stream keeps every document; mappings last-win on read, refuse duplicates on write"
 
+# [D:yaml-empty-typed]: a Deployment's `args: []`, `env: []` and
+# `labels: {}` survive a yaml round trip as written, and a nested seq
+# writes block-wise and reads back
+ydir=$(mkweirtmp)
+cat > "$ydir/dep.yaml" <<'YEOF'
+metadata:
+  name: web
+  labels: {}
+spec:
+  containers:
+    - name: app
+      args: []
+      env: []
+      matrix:
+        -
+          - 1
+          - 2
+        - []
+YEOF
+cat > "$ydir/dep.weir" <<WEOF
+type Env = { name: string; value: string }
+type Ctr = { name: string; args: Option<seq<string>>; env: Option<seq<Env>>; matrix: seq<seq<int>> }
+type Spec = { containers: seq<Ctr> }
+type Meta = { name: string; labels: Option<seq<string * string>> }
+type Dep = { metadata: Meta; spec: Spec }
+let d = File.read "$ydir/dep.yaml" |> from yaml Dep
+d |> to yaml |> Seq.iter print
+WEOF
+out=$($BIN "$ydir/dep.weir" 2>&1) || fail "the Deployment round trip must run: $out"
+[ "$out" = "$(cat "$ydir/dep.yaml")" ] || fail "Some [] / {} / a nested seq round-trip as written: $out"
+rm -rf "$ydir"
+echo "e2e ok: to yaml — Some [] writes [], an empty mapping {}, a nested seq block-wise; a Deployment round-trips"
+
 # |> try [D:try-form]: a failure as a value — a real missing file and a
 # malformed document become None / Error; exit passes through the capture
 ydir=$(mkweirtmp)
