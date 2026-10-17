@@ -322,6 +322,14 @@ else
     now_ms() { echo $(($(date +%s%N) / 1000000)); }
 fi
 
+# every python3 here loads ci/py/sitecustomize.py: a local HTTPServer
+# resolves its own FQDN between bind and listen, which a macOS runner
+# answers in ~35s while awaitTcp waits
+pyfix="$PWD/ci/py"
+command -v cygpath >/dev/null 2>&1 && pyfix=$(cygpath -w "$pyfix")
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) pysep=';' ;; *) pysep=':' ;; esac
+export PYTHONPATH="$pyfix${PYTHONPATH:+$pysep$PYTHONPATH}"
+
 # macOS ships no GNU timeout — a background-watchdog polyfill (same
 # contract: run the command, kill it after N seconds, nonzero on kill).
 # `<&0` keeps the caller's stdin: without job control an `&` command's
@@ -333,10 +341,14 @@ if ! command -v timeout >/dev/null 2>&1; then
         shift
         "$@" <&0 &
         local pid=$!
+        # the watchdog's sleep dies with it and holds no caller fd: a
+        # surviving sleep kept a `$(timeout N …)` open for the full N
         (
-            sleep "$secs"
+            trap 'kill $! 2>/dev/null; exit 0' TERM
+            sleep "$secs" &
+            wait $!
             kill -9 "$pid" 2>/dev/null || true
-        ) &
+        ) >/dev/null 2>&1 &
         local wd=$!
         local rc=0
         wait "$pid" || rc=$?
@@ -12053,19 +12065,32 @@ svport8=8478
 cat > "$svdir/wire.py" <<'PYEOF'
 import socket, sys, re, time
 port = int(sys.argv[1]); H = b"Host: 127.0.0.1:%d\r\n" % port
+def drain(s, d, first, quiet):
+    s.settimeout(first)
+    while True:
+        try:
+            x = s.recv(65536)
+        except socket.timeout:
+            return d, "quiet"
+        except OSError:
+            return d, "reset"
+        if not x:
+            return d, "eof"
+        d += x
+        s.settimeout(quiet)
+# `then` is sent only once the first reply has gone quiet on an open
+# connection: writing into one the server closed draws a RST, and the
+# client then loses the reply it had not read yet (as hunt3-xplat X59)
 def exchange(payload, then=None):
     s = socket.create_connection(("127.0.0.1", port), timeout=5)
     s.sendall(payload)
-    if then:
-        time.sleep(0.3); s.sendall(then)
-    d = b""
-    try:
-        while True:
-            x = s.recv(65536)
-            if not x: break
-            d += x
-    except socket.timeout:
-        pass
+    d, end = drain(s, b"", 5, 1.0 if then else 5)
+    if then and end == "quiet":
+        try:
+            s.sendall(then)
+            d, _ = drain(s, d, 5, 5)
+        except OSError:
+            pass
     s.close()
     return d
 def statuses(d): return [m.decode() for m in re.findall(rb"HTTP/1\.1 [0-9]{3}", d)]
