@@ -9773,6 +9773,30 @@ out=$(cat "$pfdir/pf.out")
 sleep 2.5
 [ ! -e "$pfdir/marker" ] || fail "the loser's child survived the kill"
 
+# a pipe the kill cannot close [D:pfirst-join]: `(sleep 2 &)` reparents an
+# orphan that holds the loser's stdout — no tree kill reaches it — so a
+# loser reading to EOF would hold the race ~2s; the cut abandons the read
+# (statement, capture, chain capture, chain reifier)
+for body in 'sh -c "(sleep 2 &) ; sleep 3"' \
+    'let _n = sh -c "(sleep 2 &) ; sleep 3" |> Seq.length' \
+    'let _n = sh -c "(sleep 2 &) ; sleep 3" | cat |> Seq.length' \
+    'let _c = sh -c "(sleep 2 &) ; sleep 3" | cat | exitCode'; do
+    cat > "$pfdir/pforph.weir" <<WEOF
+let racer n =
+    if n == 1 then
+        $body
+        ()
+    Duration.sleep 200ms
+    n * 10
+print \$"winner: {[1; 2] |> Seq.pfirst racer}"
+WEOF
+    start_ms=$(now_ms)
+    $BIN "$pfdir/pforph.weir" > "$pfdir/pforph.out" 2>&1
+    took=$(( $(now_ms) - start_ms ))
+    [ "$(cat "$pfdir/pforph.out")" = "winner: 20" ] || fail "pfirst orphan-pipe winner ($body): $(cat "$pfdir/pforph.out")"
+    [ "$took" -lt 1800 ] || fail "pfirst waited on an orphan's pipe (took ${took}ms): $body"
+done
+
 # a scoped child joins its arm's race group too [D:seq-pfirst]: the spill
 # path spawns through the one starter, so `within proc` obeys the same
 # kill. The bare-command case above proved the group works; this proves

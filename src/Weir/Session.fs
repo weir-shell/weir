@@ -751,6 +751,42 @@ let waitProcess (p: System.Diagnostics.Process) : unit =
         // the no-argument form also waits for redirected streams' EOF
         p.WaitForExit()
 
+/// a pipe read a lost race or a REPL ^C cuts: the kill closes a pipe only
+/// when it reaches every holder — an orphaned grandchild keeps one open —
+/// so under a cancel the read waits beside the token and a cut raises
+/// instead of waiting for EOF; the abandoned read's bytes are never used
+let cutRead
+    (read: unit -> 'a)
+    (readAsync: System.Threading.CancellationToken -> System.Threading.Tasks.ValueTask<'a>)
+    : 'a =
+    match waitTokens () with
+    | [] -> read ()
+    | _ ->
+        checkCancels ()
+
+        withWaitToken (fun t ->
+            let vt = readAsync t
+
+            if vt.IsCompletedSuccessfully then
+                vt.Result
+            else
+                let task = vt.AsTask()
+
+                try
+                    // Wait(t), not the read's own token: a Windows pipe read
+                    // is synchronous underneath and ignores cancellation
+                    task.Wait t
+                    task.Result
+                with
+                | :? System.OperationCanceledException
+                | :? System.AggregateException when t.IsCancellationRequested ->
+                    checkCancels ()
+                    raise (System.OperationCanceledException t))
+
+/// join a reader task under the same cut as `cutRead`
+let cutJoin (task: System.Threading.Tasks.Task<'a>) : 'a =
+    cutRead (fun () -> task.Result) (fun _ -> System.Threading.Tasks.ValueTask<'a>(task))
+
 /// join a task; a teardown request raises on the main thread without
 /// waiting for it (the abandoned task dies with the process)
 let waitTask (t: System.Threading.Tasks.Task) : unit =
