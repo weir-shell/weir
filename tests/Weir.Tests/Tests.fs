@@ -27645,6 +27645,62 @@ let hunt3r2CancelTests =
                   Weir.Session.exitFlow ()
           } ]
 
+// hunt 3 round 3's cancellation seams; the signal, teardown and serve
+// halves are e2e cells
+let private skipUnlessLinux () =
+    if not (System.OperatingSystem.IsLinux()) then
+        skiptest "Linux (the /proc tree walk, a polled FIFO)"
+
+let hunt3r3TreeKillTests =
+    let gone (pid: int) =
+        let stat = $"/proc/{pid}/stat"
+
+        not (File.Exists stat)
+        || (try
+                let st = File.ReadAllText stat
+                st.Substring(st.LastIndexOf ')' + 2, 1) = "Z"
+            with _ ->
+                true)
+
+    let childrenOf (pid: int) =
+        try
+            File.ReadAllText($"/proc/{pid}/task/{pid}/children").Split(' ', System.StringSplitOptions.RemoveEmptyEntries)
+            |> Array.map int
+            |> List.ofArray
+        with _ ->
+            []
+
+    testList
+        "hunt-3r3 tree kill"
+        [ test "a tree kill walks the tree: grandchildren, a setsid child included [D:tree-kill-walk]" {
+              skipUnlessLinux ()
+
+              use p =
+                  System.Diagnostics.Process.Start("sh", [| "-c"; "setsid sleep 31 & sleep 32 & wait" |])
+
+              let clock = System.Diagnostics.Stopwatch.StartNew()
+              let mutable kids = []
+
+              while List.length kids < 2 && clock.ElapsedMilliseconds < 5000L do
+                  System.Threading.Thread.Sleep 20
+                  kids <- childrenOf p.Id
+
+              try
+                  Expect.equal (List.length kids) 2 "both children started"
+                  Weir.Session.killTree p
+                  Expect.isTrue (p.WaitForExit 5000) "the child dies"
+                  System.Threading.Thread.Sleep 200
+
+                  for k in kids do
+                      Expect.isTrue (gone k) $"grandchild {k} dies with the tree"
+              finally
+                  for k in kids do
+                      try
+                          (System.Diagnostics.Process.GetProcessById k).Kill()
+                      with _ ->
+                          ()
+          } ]
+
 let sweepFindingTests =
     let msgs file lines = diagsIn file lines |> List.map (fun d -> d.Message)
 
@@ -28540,6 +28596,7 @@ let allTests =
           teardownSeamTests
           hunt3BehaviourTests
           hunt3r2CancelTests
+          hunt3r3TreeKillTests
           argsSecretEchoTests
           hunt3BehaviorTests
           docsBinaryTests

@@ -289,13 +289,78 @@ let inCleanup () = cleanupDepth.Value > 0
 // leaves SIGSTOPped orphans — every exit path settles the kills in flight
 let mutable private killsInFlight = 0
 
+// the tree walk [D:tree-kill-walk]: .NET's Kill(true) reads every
+// process on the box to find one tree, so killing n trees cost n × the
+// process table. On Linux the kernel lists each task's children
+// (/proc/PID/task/TID/children), so the walk costs the tree alone. It
+// covers what Kill(true) covers — every descendant still linked to the
+// child by parent pid, a `setsid` child included; a daemon that forked
+// away from its parent was reparented and is out of reach of both.
+// Elsewhere (or a kernel without the file) Kill(true) stays.
+module private ProcTree =
+    open System.Runtime.InteropServices
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int kill(int pid, int signal)
+
+    let SIGKILL = 9
+    let SIGSTOP = 19
+
+    let available =
+        lazy
+            (System.OperatingSystem.IsLinux()
+             && System.IO.File.Exists(
+                 $"/proc/{System.Environment.ProcessId}/task/{System.Environment.ProcessId}/children"
+             ))
+
+    let childrenOf (pid: int) : int list =
+        try
+            [ for task in System.IO.Directory.EnumerateDirectories $"/proc/{pid}/task" do
+                  let listed =
+                      try
+                          System.IO.File.ReadAllText(System.IO.Path.Combine(task, "children"))
+                      with _ ->
+                          ""
+
+                  for tok in listed.Split(' ', System.StringSplitOptions.RemoveEmptyEntries) do
+                      match System.Int32.TryParse tok with
+                      | true, n -> yield n
+                      | _ -> () ]
+        with _ ->
+            []
+
+    // stop each process before listing its children (a stopped parent
+    // forks no more and reaps none, so no pid in the walk is reused),
+    // then kill leaves first, as Kill(true) stops then kills
+    let killWalk (root: int) : unit =
+        let order = System.Collections.Generic.List<int>()
+        let seen = System.Collections.Generic.HashSet<int>()
+
+        let rec walk (pid: int) =
+            if seen.Add pid then
+                kill (pid, SIGSTOP) |> ignore
+                order.Add pid
+
+                for c in childrenOf pid do
+                    walk c
+
+        try
+            walk root
+        finally
+            for i in order.Count - 1 .. -1 .. 0 do
+                kill (order[i], SIGKILL) |> ignore
+
 /// tree-kill `p` (a dead or reaped process is no error)
 let killTree (p: System.Diagnostics.Process) : unit =
     System.Threading.Interlocked.Increment &killsInFlight |> ignore
 
     try
         try
-            p.Kill true
+            if ProcTree.available.Value then
+                if not p.HasExited then
+                    ProcTree.killWalk p.Id
+            else
+                p.Kill true
         with _ ->
             ()
     finally
