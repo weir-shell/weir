@@ -114,6 +114,47 @@ fail() {
     exit 1
 }
 
+# CI shards [D:e2e-shards]: E2E_SHARD=body runs all but the pty REPL
+# probes, repl-a/repl-b only theirs; unset runs everything in order
+E2E_SHARD="${E2E_SHARD:-}"
+# the pty REPL probes [D:e2e-shards]: CI runs them on their own runners
+# (repl-a: repl-multiline alone, the long pole; repl-b: the rest)
+replProbe() {
+    case "$E2E_SHARD" in "" | "$1") ;; *) return 0 ;; esac
+    python3 "$(dirname "$0")/../tests/repl/$2" "$BIN" || fail "$3"
+    echo "$4"
+}
+replPtyProbes() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "e2e SKIP: python3 absent — repl pty probes NOT run" >&2
+    elif [ "$IS_WINDOWS" = "1" ]; then
+        echo "e2e SKIP: the pty REPL harnesses — python has no pty on Windows (the REPL itself is exercised by the Windows hand-run checklist)"
+    else
+        replProbe repl-b repl-wordnav.py "repl word navigation" "e2e ok: repl Ctrl+Left/Right word navigation"
+        replProbe repl-b repl-codepoints.py "repl code-point editing" "e2e ok: repl Left/Right/Backspace/^D step over a surrogate pair whole [D:str-code-points]"
+        replProbe repl-b repl-typeahead.py "repl type-ahead" "e2e ok: repl an Enter typed before the first prompt submits [D:owned-line-editor]"
+        replProbe repl-b repl-color.py "repl coloring" "e2e ok: repl lexical coloring, head verdicts, NO_COLOR"
+        replProbe repl-b repl-quality.py "repl quality (history/Ctrl+R)" "e2e ok: repl history (XDG/dedup/0600/invalid-UTF-8 kept raw), Ctrl+R fzf-stub + fallback"
+        replProbe repl-b waiting-indicator.py "waiting indicator" "e2e ok: repl waiting indicator (grace, erase, fast/piped/child-owned silent)"
+        replProbe repl-b cooked-trap.py "cooked trap / echo-once" "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
+        replProbe repl-b repl-it-streamed.py "it FSI-parity / function echo" "e2e ok: it FSI-parity — streamed binds (), misuse teaches the capture, functions echo mini-help, a failed command quiets to an exit-code status [D:repl-it] [D:repl-fn-echo] [D:repl-cmd-fail]"
+        replProbe repl-b repl-directives.py "repl directives" "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"
+        replProbe repl-b repl-pathquote.py "repl path-quote completion" "e2e ok: repl path completion quotes in expression position, bare in command-argv [D:repl-path-quote]"
+        replProbe repl-b repl-mapkeys.py "repl map-key completion" "e2e ok: repl map-key completion — a bound value's keys inside a Map lookup literal; a pipeline receiver stays silent [D:value-key-complete]"
+        replProbe repl-b repl-anon-complete.py "repl anonymous-record field completion" "e2e ok: repl an anonymous record's fields complete on the next line [D:anon-literals]"
+        replProbe repl-a repl-multiline.py "repl multiline editor" "e2e ok: repl 2D buffer, Enter-completeness, whole-entry history, wrap at two widths"
+    fi
+}
+case "$E2E_SHARD" in
+    "" | body) ;;
+    repl-a | repl-b)
+        replPtyProbes
+        echo "e2e battery: all green (shard $E2E_SHARD)"
+        exit 0
+        ;;
+    *) fail "unknown E2E_SHARD '$E2E_SHARD' — body, repl-a or repl-b (unset runs all)" ;;
+esac
+
 # conflict-marker gate [D:sized-findings]: three leftover diff3 `|||||||`
 # labels survived rebase resolutions into merged ledgers (the resolve
 # regex captured up to `=======`, which includes the base-section label).
@@ -1950,48 +1991,11 @@ PYADP
     # repo or its own; deferred with the split's release-gate question.
 
     # --- REPL line editor under a pty (2026-07-21) ---------------------
-    if [ "$IS_WINDOWS" = "1" ]; then
-        echo "e2e SKIP: the pty REPL harnesses — python has no pty on Windows (the REPL itself is exercised by the Windows hand-run checklist)"
+    if [ -z "$E2E_SHARD" ]; then
+        replPtyProbes
     else
-    python3 "$(dirname "$0")/../tests/repl/repl-wordnav.py" "$BIN" || fail "repl word navigation"
-    echo "e2e ok: repl Ctrl+Left/Right word navigation"
-
-    python3 "$(dirname "$0")/../tests/repl/repl-codepoints.py" "$BIN" || fail "repl code-point editing"
-    echo "e2e ok: repl Left/Right/Backspace/^D step over a surrogate pair whole [D:str-code-points]"
-
-    python3 "$(dirname "$0")/../tests/repl/repl-typeahead.py" "$BIN" || fail "repl type-ahead"
-    echo "e2e ok: repl an Enter typed before the first prompt submits [D:owned-line-editor]"
-
-    python3 "$(dirname "$0")/../tests/repl/repl-color.py" "$BIN" || fail "repl coloring"
-    echo "e2e ok: repl lexical coloring, head verdicts, NO_COLOR"
-
-    python3 "$(dirname "$0")/../tests/repl/repl-quality.py" "$BIN" || fail "repl quality (history/Ctrl+R)"
-    echo "e2e ok: repl history (XDG/dedup/0600/invalid-UTF-8 kept raw), Ctrl+R fzf-stub + fallback"
-
-    python3 "$(dirname "$0")/../tests/repl/waiting-indicator.py" "$BIN" || fail "waiting indicator"
-    echo "e2e ok: repl waiting indicator (grace, erase, fast/piped/child-owned silent)"
-
-    python3 "$(dirname "$0")/../tests/repl/cooked-trap.py" "$BIN" || fail "cooked trap / echo-once"
-    echo "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
-
-    python3 "$(dirname "$0")/../tests/repl/repl-it-streamed.py" "$BIN" || fail "it FSI-parity / function echo"
-    echo "e2e ok: it FSI-parity — streamed binds (), misuse teaches the capture, functions echo mini-help, a failed command quiets to an exit-code status [D:repl-it] [D:repl-fn-echo] [D:repl-cmd-fail]"
-
-    python3 "$(dirname "$0")/../tests/repl/repl-directives.py" "$BIN" || fail "repl directives"
-    echo "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"
-
-    python3 "$(dirname "$0")/../tests/repl/repl-pathquote.py" "$BIN" || fail "repl path-quote completion"
-    echo "e2e ok: repl path completion quotes in expression position, bare in command-argv [D:repl-path-quote]"
-
-    python3 "$(dirname "$0")/../tests/repl/repl-mapkeys.py" "$BIN" || fail "repl map-key completion"
-    echo "e2e ok: repl map-key completion — a bound value's keys inside a Map lookup literal; a pipeline receiver stays silent [D:value-key-complete]"
-
-    python3 "$(dirname "$0")/../tests/repl/repl-anon-complete.py" "$BIN" || fail "repl anonymous-record field completion"
-    echo "e2e ok: repl an anonymous record's fields complete on the next line [D:anon-literals]"
-
-    python3 "$(dirname "$0")/../tests/repl/repl-multiline.py" "$BIN" || fail "repl multiline editor"
+        echo "e2e skip: the pty REPL probes (shard $E2E_SHARD — they run in repl-a/repl-b)"
     fi
-    echo "e2e ok: repl 2D buffer, Enter-completeness, whole-entry history, wrap at two widths"
 else
     # no silent caps: name what was skipped
     echo "e2e SKIP: python3 absent — lsp + repl pty probes NOT run" >&2

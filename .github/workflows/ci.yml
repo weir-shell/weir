@@ -10,6 +10,9 @@
 # - windows unit: STATED SKIPS (POSIX-tool fixtures, the into gap, the
 #   shim set) — the Skipped count is the visible list; a NEW skip is a
 #   finding. HTTP e2e is the one surface never run on Windows.
+# - e2e shards [D:e2e-shards]: linux and macos run ci/e2e.sh as three
+#   jobs on their own runners (body, repl-a, repl-b) against the build
+#   job's binary; windows has no pty probes to split and stays whole.
 name: ci
 
 on:
@@ -57,6 +60,13 @@ jobs:
         run: |
           ./publish.sh
           ./ci/check-fresh.sh
+          mkdir -p "$RUNNER_TEMP/weir-bin" && cp ~/.local/bin/weir "$RUNNER_TEMP/weir-bin/"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weir-linux
+          path: ${{ runner.temp }}/weir-bin/weir
+          if-no-files-found: error
+          retention-days: 1
       # commit areas are DERIVED, not remembered [D:commit-areas]: every
       # PR commit's area prefix must equal what its diff touches. PR
       # titles keep the prefix too — the squash commit inherits it.
@@ -91,16 +101,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: e2e battery (conflict-marker gate at its top)
-        env:
-          # the add-module live cell resolves a ref via api.github.com —
-          # authenticated, so shared runner IPs cannot rate-limit it
-          WEIR_TOKEN_GITHUB_COM: ${{ github.token }}
-        run: |
-          # per-check cost report (ci/e2e-timing.py); pipefail keeps e2e's exit
-          set -o pipefail
-          py=python3; "$py" -c 1 2>/dev/null || py=python
-          ./ci/e2e.sh 2>&1 | "$py" ci/e2e-timing.py
       - name: fuzz smoke (pinned seed)
         run: dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj
       - name: doc-tests
@@ -152,14 +152,13 @@ jobs:
         run: |
           ./publish.sh
           ./ci/check-fresh.sh
-      - name: PyYAML — the interop referee runs here too (weir refereeing itself missed four emitter defects; doubling the referee's platforms is one line)
-        run: python3 -m pip install --break-system-packages pyyaml || python3 -m pip install pyyaml
-      - name: e2e battery — the GNU-ism sweep's real signal (reds are findings)
-        run: |
-          # per-check cost report (ci/e2e-timing.py); pipefail keeps e2e's exit
-          set -o pipefail
-          py=python3; "$py" -c 1 2>/dev/null || py=python
-          ./ci/e2e.sh 2>&1 | "$py" ci/e2e-timing.py
+          mkdir -p "$RUNNER_TEMP/weir-bin" && cp ~/.local/bin/weir "$RUNNER_TEMP/weir-bin/"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weir-macos
+          path: ${{ runner.temp }}/weir-bin/weir
+          if-no-files-found: error
+          retention-days: 1
       - name: doc-tests
         run: ./ci/skill-doc.sh
       - name: timing (advisory off-linux — the script states it)
@@ -199,3 +198,78 @@ jobs:
         run: WEIR_BIN="$LOCALAPPDATA/Programs/weir/weir.exe" ./ci/skill-doc.sh
       - name: timing (advisory off-linux — the script states it)
         run: WEIR_BIN="$LOCALAPPDATA/Programs/weir/weir.exe" ./ci/timing.sh
+
+  # the e2e shards [D:e2e-shards]: one runner each, so the battery's fixed
+  # ports and wall-clock thresholds never share a machine. The binary is
+  # the build job's; installing it after checkout keeps check-fresh's
+  # mtime gate true (artifacts also drop the exec bit — install restores it)
+  e2e-linux:
+    needs: linux
+    name: e2e-linux (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [body, repl-a, repl-b]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # the body's fuzz-driver cell runs dotnet test
+      - uses: actions/setup-dotnet@v6
+        if: matrix.shard == 'body'
+        with:
+          dotnet-version: "10.0.x"
+      - uses: actions/cache@v6
+        if: matrix.shard == 'body'
+        with:
+          path: ~/.nuget/packages
+          key: nuget-linux-${{ hashFiles('**/*.fsproj') }}
+          restore-keys: nuget-linux-
+      - uses: actions/download-artifact@v8
+        with:
+          name: weir-linux
+          path: ${{ runner.temp }}/weir-bin
+      - name: install the build job's binary
+        run: mkdir -p ~/.local/bin && install -m 755 "$RUNNER_TEMP/weir-bin/weir" ~/.local/bin/weir
+      - name: e2e battery (${{ matrix.shard }})
+        env:
+          E2E_SHARD: ${{ matrix.shard }}
+          # the add-module live cell resolves a ref via api.github.com —
+          # authenticated, so shared runner IPs cannot rate-limit it
+          WEIR_TOKEN_GITHUB_COM: ${{ github.token }}
+        run: |
+          # per-check cost report (ci/e2e-timing.py); pipefail keeps e2e's exit
+          set -o pipefail
+          py=python3; "$py" -c 1 2>/dev/null || py=python
+          ./ci/e2e.sh 2>&1 | "$py" ci/e2e-timing.py
+
+  e2e-macos:
+    needs: macos
+    name: e2e-macos (${{ matrix.shard }})
+    runs-on: macos-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [body, repl-a, repl-b]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: weir-macos
+          path: ${{ runner.temp }}/weir-bin
+      - name: install the build job's binary
+        run: mkdir -p ~/.local/bin && install -m 755 "$RUNNER_TEMP/weir-bin/weir" ~/.local/bin/weir
+      - name: PyYAML — the interop referee runs here too (weir refereeing itself missed four emitter defects; doubling the referee's platforms is one line)
+        if: matrix.shard == 'body'
+        run: python3 -m pip install --break-system-packages pyyaml || python3 -m pip install pyyaml
+      - name: e2e battery (${{ matrix.shard }}) — the GNU-ism sweep's real signal (reds are findings)
+        env:
+          E2E_SHARD: ${{ matrix.shard }}
+        run: |
+          # per-check cost report (ci/e2e-timing.py); pipefail keeps e2e's exit
+          set -o pipefail
+          py=python3; "$py" -c 1 2>/dev/null || py=python
+          ./ci/e2e.sh 2>&1 | "$py" ci/e2e-timing.py
