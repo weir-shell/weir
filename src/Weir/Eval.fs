@@ -494,22 +494,135 @@ let formatValue (v: Value) : string = formatWith showLimits 0 v
 // cannot cross-contaminate captures. Op is a `VUnion(case, payload)`
 // value (the prelude `Op` type), so equality/show/masking ride the
 // existing Value machinery [D:secret].
+// one node of the guard's component tries [D:plan-guard-linear]: the
+// target index keys a path's components (Target: a target here; Below:
+// a target under it), the link cache keys the components as written
+// (Resolved: where a link at that prefix leads, null for no link)
+[<AllowNullLiteral>]
+type private GuardNode(comparer: System.Collections.Generic.IEqualityComparer<string>) =
+    let mutable kids: System.Collections.Generic.Dictionary<string, GuardNode> = null
+
+    /// the child on edge `k`, or null
+    member _.Find(k: string) : GuardNode =
+        if isNull kids then
+            null
+        else
+            match kids.TryGetValue k with
+            | true, n -> n
+            | _ -> null
+
+    member _.Add(k: string, n: GuardNode) =
+        if isNull kids then
+            kids <- System.Collections.Generic.Dictionary(comparer)
+
+        kids[k] <- n
+
+    member _.IsEmpty = isNull kids
+
+    member val Target: string = null with get, set
+    member val Below: string = null with get, set
+    member val Resolved: string = null with get, set
+
 type private PlanFrame =
     { Ops: ResizeArray<Value>
       // the target paths captured mutations change [D:plan-apply]: a
       // later read at, under, or — for a listing — above one is
       // known-after-apply and refused [D:plan-stale-reads]. Indexed
-      // [D:plan-guard-index]: Targets maps each target's comparison
-      // keys (as written, and through symlinks [D:plan-guard-links]) to
-      // the path a refusal names, Above maps every proper ancestor of a
-      // key to a target below it, so a read costs O(depth) lookups,
-      // never a scan of the captured ops. Session-resolved so a relative
-      // read matches an earlier relative write.
-      Targets: System.Collections.Generic.Dictionary<string, string>
-      Above: System.Collections.Generic.Dictionary<string, string>
+      // [D:plan-guard-index] as a component trie [D:plan-guard-linear]:
+      // each target's comparison keys (as written, and through symlinks
+      // [D:plan-guard-links]) mark their node with the path a refusal
+      // names and every ancestor node with a target below, so a read
+      // costs one walk of its components, never a scan of the captured
+      // ops. Session-resolved so a relative read matches an earlier
+      // relative write.
+      Index: GuardNode
+      // the link cache [D:plan-guard-linear]: every prefix is resolved
+      // once per plan
+      Links: GuardNode
+      // the file identities in-place writes target [D:plan-guard-inode]:
+      // (device, inode) — the Windows file index — to the path a
+      // refusal names
+      Files: System.Collections.Generic.Dictionary<struct (uint64 * uint64), string>
       // `within tmp` dirs opened inside this plan [D:plan-within-tmp]:
       // deleted when their scope closes, before any apply
       TmpRoots: ResizeArray<string> }
+
+// a file's identity [D:plan-guard-inode]: (device, inode) through
+// statx on Linux (one layout on every architecture) and stat on macOS
+// (the 64-bit-inode entry point on x64), (volume serial, file index)
+// through GetFileInformationByHandle on Windows; None when the path is
+// absent or unreadable. A final link is followed, as a read follows it
+module private FileId =
+    open System.Runtime.InteropServices
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private statx(int dirfd, string path, int flags, uint mask, byte[] buf)
+
+    [<DllImport("libc", EntryPoint = "stat", SetLastError = true)>]
+    extern int private statMac(string path, byte[] buf)
+
+    [<DllImport("libc", EntryPoint = "stat$INODE64", SetLastError = true)>]
+    extern int private statMacX64(string path, byte[] buf)
+
+    [<DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)>]
+    extern nativeint private CreateFileW(
+        string name,
+        uint access,
+        uint share,
+        nativeint security,
+        uint disposition,
+        uint flags,
+        nativeint template)
+
+    [<DllImport("kernel32.dll", SetLastError = true)>]
+    extern bool private GetFileInformationByHandle(nativeint handle, byte[] info)
+
+    [<DllImport("kernel32.dll", SetLastError = true)>]
+    extern bool private CloseHandle(nativeint handle)
+
+    let private AT_FDCWD = -100
+    let private STATX_INO = 0x100u
+
+    let private u32 (b: byte[]) (at: int) = uint64 (System.BitConverter.ToUInt32(b, at))
+    let private u64 (b: byte[]) (at: int) = System.BitConverter.ToUInt64(b, at)
+
+    let ofPath (path: string) : struct (uint64 * uint64) voption =
+        try
+            if System.OperatingSystem.IsWindows() then
+                // no access, every share mode, OPEN_EXISTING, BACKUP_SEMANTICS
+                let h = CreateFileW(path, 0u, 7u, 0n, 3u, 0x02000000u, 0n)
+
+                if h = -1n then
+                    ValueNone
+                else
+                    try
+                        let info = Array.zeroCreate<byte> 52
+
+                        if GetFileInformationByHandle(h, info) then
+                            ValueSome(struct (u32 info 28, (u32 info 44 <<< 32) ||| u32 info 48))
+                        else
+                            ValueNone
+                    finally
+                        CloseHandle h |> ignore
+            elif System.OperatingSystem.IsMacOS() then
+                let buf = Array.zeroCreate<byte> 256
+
+                let rc =
+                    if RuntimeInformation.ProcessArchitecture = Architecture.X64 then
+                        statMacX64 (path, buf)
+                    else
+                        statMac (path, buf)
+
+                if rc = 0 then ValueSome(struct (u32 buf 0, u64 buf 8)) else ValueNone
+            else
+                let buf = Array.zeroCreate<byte> 256
+
+                if statx (AT_FDCWD, path, 0, STATX_INO, buf) = 0 then
+                    ValueSome(struct ((u32 buf 136 <<< 32) ||| u32 buf 140, u64 buf 32))
+                else
+                    ValueNone
+        with _ ->
+            ValueNone
 
 module PlanMode =
     let private stack = new System.Threading.ThreadLocal<PlanFrame list>(fun () -> [])
@@ -560,20 +673,10 @@ module PlanMode =
         let s = if windows then p.Replace('/', '\\') else p
         if s.Length > 1 && s[s.Length - 1] = sep then s.TrimEnd sep else s
 
-    // every proper ancestor of a key, the root included
-    let private ancestors (k: string) : string list =
-        let mutable acc = []
-        let mutable i = k.LastIndexOf sep
-
-        while i >= 0 do
-            let a = if i = 0 then string sep else k.Substring(0, i)
-
-            if a <> k then
-                acc <- a :: acc
-
-            i <- if i = 0 then -1 else k.LastIndexOf(sep, i - 1)
-
-        acc
+    // a key's components, the trie's edges: the root separator is the
+    // empty first component, so `/` is [""] and `/a` is [""; "a"]
+    let private parts (k: string) : string[] =
+        if k = string sep then [| "" |] else k.Split sep
 
     // the symlink a path names, or None (absent, not a link, unreadable)
     let private linkOf (p: string) : string option =
@@ -588,50 +691,124 @@ module PlanMode =
     /// resolved [D:plan-guard-links]; components that do not exist stay
     /// as written. `followLeaf = false` keeps the last component as is
     /// — a delete or move acts on a link itself. A loop stops resolving
-    /// after 40 links (the kernel's own bound).
-    let private resolveLinks (followLeaf: bool) (p: string) : string =
-        let rec go (hops: int) (cur: string) (rest: string list) =
-            match rest with
-            | [] -> cur
-            | part :: more ->
-                let next = System.IO.Path.Combine(cur, part)
+    /// after 40 links (the kernel's own bound). Each prefix as written
+    /// is resolved once per plan, through `cache` [D:plan-guard-linear]
+    /// — a path costs one lookup per component, a lstat only for the
+    /// components no earlier path reached
+    let private resolveLinks (cache: GuardNode) (followLeaf: bool) (p: string) : string =
+        let split (s: string) =
+            s.Split([| '/'; sep |], System.StringSplitOptions.RemoveEmptyEntries)
 
-                match (if more.IsEmpty && not followLeaf then None else linkOf next) with
-                | Some target when hops < 40 ->
-                    let full = System.IO.Path.GetFullPath(System.IO.Path.Combine(cur, target))
-                    let root = System.IO.Path.GetPathRoot full
-                    go (hops + 1) root (split (full.Substring root.Length) @ more)
-                | _ -> go hops next more
+        let hops = ref 0
 
-        and split (s: string) =
-            s.Split([| '/'; sep |], System.StringSplitOptions.RemoveEmptyEntries) |> List.ofArray
+        let rec walk (root: string) (comps: string[]) (followLast: bool) : string =
+            let mutable node =
+                match cache.Find root with
+                | null ->
+                    let n = GuardNode(System.StringComparer.Ordinal, Resolved = root)
+                    cache.Add(root, n)
+                    n
+                | n -> n
+
+            // the walk so far is `baseR` plus comps[from .. i-1]: a node
+            // that is no link keeps no string, so a cached walk builds
+            // one path, not one per component
+            let mutable baseR = node.Resolved
+            let mutable from = 0
+
+            let upTo (i: int) =
+                if i <= from then
+                    baseR
+                else
+                    System.IO.Path.Combine(Array.append [| baseR |] comps[from .. i - 1])
+
+            for i in 0 .. comps.Length - 1 do
+                let part = comps[i]
+
+                if i < comps.Length - 1 || followLast then
+                    match node.Find part with
+                    | null ->
+                        let parent = upTo i
+
+                        let resolved =
+                            match linkOf (System.IO.Path.Combine(parent, part)) with
+                            | Some target when hops.Value < 40 ->
+                                hops.Value <- hops.Value + 1
+                                let full = System.IO.Path.GetFullPath(System.IO.Path.Combine(parent, target))
+                                let r = System.IO.Path.GetPathRoot full
+                                walk r (split (full.Substring r.Length)) true
+                            | _ -> null
+
+                        let n = GuardNode(System.StringComparer.Ordinal, Resolved = resolved)
+                        node.Add(part, n)
+                        node <- n
+
+                        if not (isNull resolved) then
+                            baseR <- resolved
+                            from <- i + 1
+                    | n ->
+                        node <- n
+
+                        if not (isNull n.Resolved) then
+                            baseR <- n.Resolved
+                            from <- i + 1
+
+            upTo comps.Length
 
         let full = System.IO.Path.GetFullPath p
         let root = System.IO.Path.GetPathRoot full
-        go 0 root (split (full.Substring root.Length))
+        walk root (split (full.Substring root.Length)) followLeaf
 
     // the keys a path compares under: as written, its directory resolved,
     // and — for an op or read that follows a final link — fully resolved
-    let private keysOf (followLeaf: bool) (p: string) : string list =
+    let private keysOf (cache: GuardNode) (followLeaf: bool) (p: string) : string list =
         let lexical = keyOf (norm p)
 
         let resolved =
             try
-                [ keyOf (resolveLinks false p)
+                [ keyOf (resolveLinks cache false p)
                   if followLeaf then
-                      keyOf (resolveLinks true p) ]
+                      keyOf (resolveLinks cache true p) ]
             with _ ->
                 []
 
         List.distinct (lexical :: resolved)
+
+    // the outermost frame's link cache — one per plan nest
+    let private linkCache () =
+        match List.tryLast stack.Value with
+        | Some f -> f.Links
+        | None -> unreachable "PlanMode.linkCache with no active frame"
+
+    // mark a key's node with its target and every ancestor node with a
+    // target below [D:plan-guard-linear]; the first target recorded wins
+    let private index (frame: PlanFrame) (k: string) (shown: string) =
+        let comps = parts k
+        let mutable node = frame.Index
+
+        for i in 0 .. comps.Length - 1 do
+            node <-
+                match node.Find comps[i] with
+                | null ->
+                    let n = GuardNode(comparer)
+                    node.Add(comps[i], n)
+                    n
+                | n -> n
+
+            if i < comps.Length - 1 then
+                if isNull node.Below then
+                    node.Below <- shown
+            elif isNull node.Target then
+                node.Target <- shown
 
     /// run f while a fresh capture frame is on top; returns the captured
     /// Ops in capture order (the frame is popped on every exit)
     let capturing (f: unit -> unit) : Value list =
         let frame =
             { Ops = ResizeArray()
-              Targets = System.Collections.Generic.Dictionary(comparer)
-              Above = System.Collections.Generic.Dictionary(comparer)
+              Index = GuardNode(comparer)
+              Links = GuardNode(System.StringComparer.Ordinal)
+              Files = System.Collections.Generic.Dictionary()
               TmpRoots = ResizeArray() }
 
         stack.Value <- frame :: stack.Value
@@ -694,43 +871,61 @@ module PlanMode =
             // a write lands where a final symlink points; a delete or
             // move changes the link itself [D:plan-guard-links]
             let followLeaf = case = "WriteFile" || case = "WriteFileAtomic"
+            let cache = linkCache ()
 
             for p in targets do
                 let shown = norm p
 
-                for k in keysOf followLeaf p do
-                    frame.Targets.TryAdd(k, shown) |> ignore
+                for k in keysOf cache followLeaf p do
+                    index frame k shown
 
-                    for a in ancestors k do
-                        frame.Above.TryAdd(a, shown) |> ignore
+                // an in-place write changes the file under every hard
+                // link to it [D:plan-guard-inode]; an atomic write
+                // replaces the inode, so the other links keep their content
+                if case = "WriteFile" then
+                    match FileId.ofPath p with
+                    | ValueSome id -> frame.Files.TryAdd(id, shown) |> ignore
+                    | ValueNone -> ()
         | [] -> unreachable "PlanMode.capture with no active frame"
 
-    let private refuse (op: string) (resolvedPath: string) (enclosing: bool, target: string) =
+    let private refuse (op: string) (resolvedPath: string) (enclosing: bool, target: string, linked: bool) =
         let where = if enclosing then "an enclosing 'plan'" else "this 'plan'"
 
         let what =
-            if target = norm resolvedPath then "targets it"
+            if linked then $"targets '{target}', the same file (a hard link)"
+            elif target = norm resolvedPath then "targets it"
             else $"targets '{target}'"
 
         failwith
             $"{op}: known-after-apply — this reads '{resolvedPath}', but an earlier captured mutation in {where} {what}; the read would see stale state (the mutation is a pending Op, not yet applied). Restructure so the read does not depend on a captured write, or move it out of the plan"
 
-    // the target a key equals or lies under, in one frame
-    let private targetAtOrAbove (frame: PlanFrame) (k: string) : string option =
-        match frame.Targets.TryGetValue k with
-        | true, t -> Some t
-        | _ ->
-            ancestors k
-            |> List.tryPick (fun a ->
-                match frame.Targets.TryGetValue a with
-                | true, t -> Some t
-                | _ -> None)
+    // one walk of a key's components in one frame [D:plan-guard-linear]:
+    // the target the key equals, else the shallowest one above it, else
+    // — when `below` holds — a target under it
+    let private lookup (frame: PlanFrame) (k: string) (below: unit -> bool) : string option =
+        let comps = parts k
+        let mutable node = frame.Index
+        let mutable above: string = null
+        let mutable i = 0
 
-    // the target below a key, in one frame
-    let private targetBelow (frame: PlanFrame) (k: string) : string option =
-        match frame.Above.TryGetValue k with
-        | true, t -> Some t
-        | _ -> None
+        while not (isNull node) && i < comps.Length do
+            node <- node.Find comps[i]
+
+            if not (isNull node) && i < comps.Length - 1 && isNull above then
+                above <- node.Target
+
+            i <- i + 1
+
+        if isNull node then
+            Option.ofObj above
+        elif not (isNull node.Target) then
+            Some node.Target
+        elif not (isNull above) then
+            Some above
+        elif not (isNull node.Below) && below () then
+            Some node.Below
+        else
+            None
 
     // the guard's walk [D:plan-guard-links]: every enclosing frame — an
     // inner plan's read sees an outer plan's pending ops as stale too —
@@ -739,22 +934,31 @@ module PlanMode =
     let private guard (op: string) (resolvedPath: string) (below: unit -> bool) =
         match stack.Value with
         | [] -> ()
-        | frames when frames |> List.forall (fun f -> f.Targets.Count = 0) -> ()
+        | frames when frames |> List.forall (fun f -> f.Index.IsEmpty) -> ()
         | frames ->
-            let keys = keysOf true resolvedPath
+            let keys = keysOf (linkCache ()) true resolvedPath
+
+            // the path's file identity, asked only when a frame holds one
+            // [D:plan-guard-inode]
+            let id =
+                lazy
+                    (if frames |> List.exists (fun f -> f.Files.Count > 0) then
+                         FileId.ofPath resolvedPath
+                     else
+                         ValueNone)
 
             frames
             |> List.indexed
             |> List.tryPick (fun (i, frame) ->
-                keys
-                |> List.tryPick (fun k ->
-                    match targetAtOrAbove frame k with
-                    | Some t -> Some t
-                    | None ->
-                        match targetBelow frame k with
-                        | Some t when below () -> Some t
-                        | _ -> None)
-                |> Option.map (fun t -> i > 0, t))
+                match keys |> List.tryPick (fun k -> lookup frame k below) with
+                | Some t -> Some(i > 0, t, false)
+                | None ->
+                    match id.Value with
+                    | ValueSome fid when frame.Files.Count > 0 ->
+                        match frame.Files.TryGetValue fid with
+                        | true, t -> Some(i > 0, t, true)
+                        | _ -> None
+                    | _ -> None)
             |> Option.iter (refuse op resolvedPath)
 
     /// a read builtin's known-after-apply gate [D:plan-apply]

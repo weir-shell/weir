@@ -967,8 +967,9 @@ let x =
   earlier captured mutation changes would see stale state — a write in
   `d` makes `Dir.list d` and `Path.glob "d/*"` refuse; a captured
   `Dir.deleteAll d` makes every read under `d` refuse; paths compare
-  through symlinks both ways, case-folded on Windows and macOS, and an
-  inner `plan` sees every enclosing plan's ops), and a captured
+  through symlinks both ways, case-folded on Windows and macOS, a
+  `File.write` also refuses a read through another HARD LINK to its
+  file, and an inner `plan` sees every enclosing plan's ops), and a captured
   op under a `within tmp` dir opened inside the plan (the dir is gone
   before apply — build the content in memory, or do the tmp work
   outside the plan).

@@ -9698,6 +9698,45 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(root, true)
           }
+          test "stale reads: an in-place write refuses a read through another hard link; an atomic write's does not [D:plan-guard-inode]" {
+              skipOnWindows ()
+              let root = td ()
+              let at (p: string) = System.IO.Path.Combine(root, p)
+              System.IO.Directory.CreateDirectory(at "sub") |> ignore
+              System.IO.File.WriteAllText(at "a.txt", "old\n")
+
+              use ln =
+                  System.Diagnostics.Process.Start("ln", [ at "a.txt"; at "sub/b.txt" ])
+
+              ln.WaitForExit()
+
+              let readAfter (case: string) (read: string) =
+                  let mutable msg = ""
+
+                  Weir.Eval.PlanMode.capturing (fun () ->
+                      Weir.Eval.PlanMode.capture (VUnion(case, Some(VTuple [ VStr(at "a.txt"); VSeq [] ]))) [ at "a.txt" ]
+
+                      msg <-
+                          try
+                              Weir.Eval.PlanMode.checkRead "File.read" (at read)
+                              ""
+                          with Failure m ->
+                              m)
+                  |> ignore
+
+                  msg
+
+              try
+                  let m = readAfter "WriteFile" "sub/b.txt"
+                  Expect.stringContains m "known-after-apply" "the other link refuses"
+                  let a = at "a.txt"
+                  Expect.stringContains m $"targets '{a}', the same file (a hard link)" "the message names the link"
+                  Expect.equal (readAfter "WriteFileAtomic" "sub/b.txt") "" "an atomic write separates the links"
+                  System.IO.File.WriteAllText(at "c.txt", "other\n")
+                  Expect.equal (readAfter "WriteFile" "c.txt") "" "another file reads"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
           test "stale reads: a nested plan checks every enclosing frame [D:plan-guard-links]" {
               let root = td ()
               let f = System.IO.Path.Combine(root, "cfg")
@@ -28465,6 +28504,21 @@ let hunt3PerfTests =
                   |> ignore
 
               growsLinearly "write-if-absent, 10k vs 1k" (loop 1000) (loop 10000)
+          }
+          test "a plan's stale-read check costs O(depth) per path, not O(depth²) [D:plan-guard-linear]" {
+              let root = tempPath "weir-plandepth"
+
+              let loop depth () =
+                  let mid = System.IO.Path.Combine([| for i in 1..depth -> $"d{i}" |])
+
+                  Weir.Eval.PlanMode.capturing (fun () ->
+                      for i in 1..2000 do
+                          let p = System.IO.Path.Combine(root, mid, $"s{i % 100}", $"f{i}")
+                          Weir.Eval.PlanMode.checkRead "File.exists" p
+                          Weir.Eval.PlanMode.capture (VUnion("WriteFile", Some(VTuple [ VStr p; VSeq [] ]))) [ p ])
+                  |> ignore
+
+              growsLinearly "write-if-absent, depth 300 vs 30" (loop 30) (loop 300)
           }
           test "refusing deep JSON is linear in its depth [D:json-deep-linear]" {
               let deep n =

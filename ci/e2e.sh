@@ -12021,6 +12021,22 @@ out=$($BIN "$padir/np.weir" 2>&1) && fail "an inner plan's read of an outer-capt
 echo "$out" | grep -qF "an enclosing 'plan'" || fail "the nested refusal names the enclosing plan: $out"
 echo "e2e ok: plan/apply — a nested plan checks every enclosing frame"
 
+# [D:plan-guard-inode]: an in-place write refuses a read through another
+# hard link to the file
+if [ "$IS_WINDOWS" != "1" ]; then
+    mkdir -p "$padir/hl" && printf 'old\n' > "$padir/hl/a.txt" && ln "$padir/hl/a.txt" "$padir/hl/b.txt"
+    cat > "$padir/hl.weir" <<WEOF
+let p =
+    plan
+        File.write "$padir/hl/a.txt" ["new"]
+        File.read "$padir/hl/b.txt" |> Seq.iter print
+print \$"{p |> Plan.isEmpty}"
+WEOF
+    out=$($BIN "$padir/hl.weir" 2>&1) && fail "a read through another hard link must refuse: $out" || true
+    echo "$out" | grep -qF "the same file (a hard link)" || fail "the hard-link refusal: $out"
+    echo "e2e ok: plan/apply — the stale-read guard keys in-place writes by file identity"
+fi
+
 # [D:plan-within-tmp]: an op under a within tmp opened in the plan refuses
 # before anything applies
 cat > "$padir/wt.weir" <<WEOF
