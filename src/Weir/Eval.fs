@@ -491,12 +491,17 @@ let formatValue (v: Value) : string = formatWith showLimits 0 v
 // existing Value machinery [D:secret].
 type private PlanFrame =
     { Ops: ResizeArray<Value>
-      // the target paths captured mutations change [D:plan-apply]
-      // (normalized, no trailing separator); a later read at, under,
-      // or — for a listing — above one is known-after-apply and
-      // refused [D:plan-stale-reads]. Session-resolved so a relative
+      // the target paths captured mutations change [D:plan-apply]: a
+      // later read at, under, or — for a listing — above one is
+      // known-after-apply and refused [D:plan-stale-reads]. Indexed
+      // [D:plan-guard-index]: Targets maps each target's comparison
+      // keys (as written, and through symlinks [D:plan-guard-links]) to
+      // the path a refusal names, Above maps every proper ancestor of a
+      // key to a target below it, so a read costs O(depth) lookups,
+      // never a scan of the captured ops. Session-resolved so a relative
       // read matches an earlier relative write.
-      Targets: ResizeArray<string>
+      Targets: System.Collections.Generic.Dictionary<string, string>
+      Above: System.Collections.Generic.Dictionary<string, string>
       // `within tmp` dirs opened inside this plan [D:plan-within-tmp]:
       // deleted when their scope closes, before any apply
       TmpRoots: ResizeArray<string> }
@@ -530,15 +535,98 @@ module PlanMode =
         System.String.Equals(p, r, cmp)
         || p.StartsWith((if r.EndsWith sep then r else r + sep), cmp)
 
-    let private within (root: string) (p: string) =
-        pathWithinOn (System.OperatingSystem.IsWindows()) root p
+    let private windows = System.OperatingSystem.IsWindows()
+
+    let private within (root: string) (p: string) = pathWithinOn windows root p
+
+    let private sep = if windows then '\\' else '/'
+
+    // case folds where the filesystem does [D:plan-guard-links]: Windows,
+    // and macOS, whose default volumes are case-insensitive — a
+    // case-sensitive macOS volume over-refuses, it never misses
+    let private comparer =
+        if windows || System.OperatingSystem.IsMacOS() then
+            System.StringComparer.OrdinalIgnoreCase
+        else
+            System.StringComparer.Ordinal
+
+    // the comparison key: one separator spelling, no trailing separator
+    let private keyOf (p: string) =
+        let s = if windows then p.Replace('/', '\\') else p
+        if s.Length > 1 && s[s.Length - 1] = sep then s.TrimEnd sep else s
+
+    // every proper ancestor of a key, the root included
+    let private ancestors (k: string) : string list =
+        let mutable acc = []
+        let mutable i = k.LastIndexOf sep
+
+        while i >= 0 do
+            let a = if i = 0 then string sep else k.Substring(0, i)
+
+            if a <> k then
+                acc <- a :: acc
+
+            i <- if i = 0 then -1 else k.LastIndexOf(sep, i - 1)
+
+        acc
+
+    // the symlink a path names, or None (absent, not a link, unreadable)
+    let private linkOf (p: string) : string option =
+        try
+            match System.IO.FileInfo(p).LinkTarget with
+            | null -> None
+            | t -> Some t
+        with _ ->
+            None
+
+    /// `p` (absolute) with the symlinks among its existing components
+    /// resolved [D:plan-guard-links]; components that do not exist stay
+    /// as written. `followLeaf = false` keeps the last component as is
+    /// — a delete or move acts on a link itself. A loop stops resolving
+    /// after 40 links (the kernel's own bound).
+    let private resolveLinks (followLeaf: bool) (p: string) : string =
+        let rec go (hops: int) (cur: string) (rest: string list) =
+            match rest with
+            | [] -> cur
+            | part :: more ->
+                let next = System.IO.Path.Combine(cur, part)
+
+                match (if more.IsEmpty && not followLeaf then None else linkOf next) with
+                | Some target when hops < 40 ->
+                    let full = System.IO.Path.GetFullPath(System.IO.Path.Combine(cur, target))
+                    let root = System.IO.Path.GetPathRoot full
+                    go (hops + 1) root (split (full.Substring root.Length) @ more)
+                | _ -> go hops next more
+
+        and split (s: string) =
+            s.Split([| '/'; sep |], System.StringSplitOptions.RemoveEmptyEntries) |> List.ofArray
+
+        let full = System.IO.Path.GetFullPath p
+        let root = System.IO.Path.GetPathRoot full
+        go 0 root (split (full.Substring root.Length))
+
+    // the keys a path compares under: as written, its directory resolved,
+    // and — for an op or read that follows a final link — fully resolved
+    let private keysOf (followLeaf: bool) (p: string) : string list =
+        let lexical = keyOf (norm p)
+
+        let resolved =
+            try
+                [ keyOf (resolveLinks false p)
+                  if followLeaf then
+                      keyOf (resolveLinks true p) ]
+            with _ ->
+                []
+
+        List.distinct (lexical :: resolved)
 
     /// run f while a fresh capture frame is on top; returns the captured
     /// Ops in capture order (the frame is popped on every exit)
     let capturing (f: unit -> unit) : Value list =
         let frame =
             { Ops = ResizeArray()
-              Targets = ResizeArray()
+              Targets = System.Collections.Generic.Dictionary(comparer)
+              Above = System.Collections.Generic.Dictionary(comparer)
               TmpRoots = ResizeArray() }
 
         stack.Value <- frame :: stack.Value
@@ -597,16 +685,72 @@ module PlanMode =
                 | None -> ()
 
             frame.Ops.Add op
-            targets |> List.iter (fun p -> frame.Targets.Add(norm p))
+
+            // a write lands where a final symlink points; a delete or
+            // move changes the link itself [D:plan-guard-links]
+            let followLeaf = case = "WriteFile" || case = "WriteFileAtomic"
+
+            for p in targets do
+                let shown = norm p
+
+                for k in keysOf followLeaf p do
+                    frame.Targets.TryAdd(k, shown) |> ignore
+
+                    for a in ancestors k do
+                        frame.Above.TryAdd(a, shown) |> ignore
         | [] -> unreachable "PlanMode.capture with no active frame"
 
-    let private refuse (op: string) (resolvedPath: string) (target: string) =
+    let private refuse (op: string) (resolvedPath: string) (enclosing: bool, target: string) =
+        let where = if enclosing then "an enclosing 'plan'" else "this 'plan'"
+
         let what =
             if target = norm resolvedPath then "targets it"
             else $"targets '{target}'"
 
         failwith
-            $"{op}: known-after-apply — this reads '{resolvedPath}', but an earlier captured mutation in this 'plan' {what}; the read would see stale state (the mutation is a pending Op, not yet applied). Restructure so the read does not depend on a captured write, or move it out of the plan"
+            $"{op}: known-after-apply — this reads '{resolvedPath}', but an earlier captured mutation in {where} {what}; the read would see stale state (the mutation is a pending Op, not yet applied). Restructure so the read does not depend on a captured write, or move it out of the plan"
+
+    // the target a key equals or lies under, in one frame
+    let private targetAtOrAbove (frame: PlanFrame) (k: string) : string option =
+        match frame.Targets.TryGetValue k with
+        | true, t -> Some t
+        | _ ->
+            ancestors k
+            |> List.tryPick (fun a ->
+                match frame.Targets.TryGetValue a with
+                | true, t -> Some t
+                | _ -> None)
+
+    // the target below a key, in one frame
+    let private targetBelow (frame: PlanFrame) (k: string) : string option =
+        match frame.Above.TryGetValue k with
+        | true, t -> Some t
+        | _ -> None
+
+    // the guard's walk [D:plan-guard-links]: every enclosing frame — an
+    // inner plan's read sees an outer plan's pending ops as stale too —
+    // under every key of the read path; `below` decides a hit for a
+    // target below the path
+    let private guard (op: string) (resolvedPath: string) (below: unit -> bool) =
+        match stack.Value with
+        | [] -> ()
+        | frames when frames |> List.forall (fun f -> f.Targets.Count = 0) -> ()
+        | frames ->
+            let keys = keysOf true resolvedPath
+
+            frames
+            |> List.indexed
+            |> List.tryPick (fun (i, frame) ->
+                keys
+                |> List.tryPick (fun k ->
+                    match targetAtOrAbove frame k with
+                    | Some t -> Some t
+                    | None ->
+                        match targetBelow frame k with
+                        | Some t when below () -> Some t
+                        | _ -> None)
+                |> Option.map (fun t -> i > 0, t))
+            |> Option.iter (refuse op resolvedPath)
 
     /// a read builtin's known-after-apply gate [D:plan-apply]
     /// [D:plan-stale-reads]: inside a plan, reading a path an earlier
@@ -617,28 +761,11 @@ module PlanMode =
     /// below a path that does not exist yet (a captured write would
     /// create it). Other reads run. `op`/`path` name the offender.
     let checkRead (op: string) (resolvedPath: string) =
-        match stack.Value with
-        | frame :: _ ->
-            let r = norm resolvedPath
-
-            frame.Targets
-            |> Seq.tryFind (fun t ->
-                within t r
-                || (within r t && not (System.IO.Directory.Exists r)))
-            |> Option.iter (refuse op resolvedPath)
-        | [] -> ()
+        guard op resolvedPath (fun () -> not (System.IO.Directory.Exists resolvedPath))
 
     /// the listing gate (Dir.list/stat, Path.glob, ls) [D:plan-stale-reads]:
     /// a listing of `root` also sees every captured target below it
-    let checkTree (op: string) (resolvedRoot: string) =
-        match stack.Value with
-        | frame :: _ ->
-            let r = norm resolvedRoot
-
-            frame.Targets
-            |> Seq.tryFind (fun t -> within t r || within r t)
-            |> Option.iter (refuse op resolvedRoot)
-        | [] -> ()
+    let checkTree (op: string) (resolvedRoot: string) = guard op resolvedRoot (fun () -> true)
 
 // The REPL/-e echo [D:repl-echo]: bounded render plus the way-out
 // hint. The count shows only when already known (a materialized list)

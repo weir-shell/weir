@@ -11646,6 +11646,66 @@ out=$($BIN "$padir/sr2.weir" 2>&1) && fail "File.exists under a captured deleteA
 echo "$out" | grep -qF "File.exists: known-after-apply" || fail "the exists refusal: $out"
 echo "e2e ok: plan/apply — stale reads refuse: a listing over a captured write, a read under a captured deleteAll"
 
+# [D:plan-guard-links]: the guard compares symlink-resolved paths, both
+# directions — a read through a dir alias of a written file, a read of a
+# file a captured delete reached through the alias; and an inner plan's
+# read sees an enclosing plan's pending ops
+if [ "$IS_WINDOWS" != "1" ]; then
+    mkdir -p "$padir/sl/real" && printf 'old\n' > "$padir/sl/real/a.txt"
+    ln -s real "$padir/sl/alias" && ln -s a.txt "$padir/sl/real/lnk.txt"
+    cat > "$padir/sl1.weir" <<WEOF
+let p =
+    plan
+        File.write "$padir/sl/real/a.txt" ["new"]
+        File.read "$padir/sl/alias/a.txt" |> Seq.iter print
+print \$"{p |> Plan.isEmpty}"
+WEOF
+    out=$($BIN "$padir/sl1.weir" 2>&1) && fail "a read through a dir symlink alias must refuse: $out" || true
+    echo "$out" | grep -qF "File.read: known-after-apply" || fail "the alias read refusal: $out"
+    cat > "$padir/sl2.weir" <<WEOF
+let p =
+    plan
+        File.write "$padir/sl/real/a.txt" ["new"]
+        File.read "$padir/sl/real/lnk.txt" |> Seq.iter print
+print \$"{p |> Plan.isEmpty}"
+WEOF
+    out=$($BIN "$padir/sl2.weir" 2>&1) && fail "a read through a file symlink must refuse: $out" || true
+    echo "$out" | grep -qF "File.read: known-after-apply" || fail "the file-link read refusal: $out"
+    cat > "$padir/sl3.weir" <<WEOF
+let p =
+    plan
+        File.delete "$padir/sl/alias/a.txt"
+        print \$"{File.exists "$padir/sl/real/a.txt"}"
+print \$"{p |> Plan.isEmpty}"
+WEOF
+    out=$($BIN "$padir/sl3.weir" 2>&1) && fail "a real-path read after a delete via the alias must refuse: $out" || true
+    echo "$out" | grep -qF "File.exists: known-after-apply" || fail "the reverse alias refusal: $out"
+    cat > "$padir/sl4.weir" <<WEOF
+let p =
+    plan
+        File.delete "$padir/sl/real/lnk.txt"
+        print \$"{File.exists "$padir/sl/real/a.txt"}"
+print \$"{p |> Plan.isEmpty}"
+WEOF
+    out=$($BIN "$padir/sl4.weir" 2>&1) || fail "deleting a link leaves its target readable: $out"
+    [ "$out" = "$(printf 'true\nfalse')" ] || fail "the link's target reads: $out"
+    echo "e2e ok: plan/apply — the stale-read guard resolves symlinks, both directions; a deleted link's target reads"
+fi
+mkdir -p "$padir/np"
+cat > "$padir/np.weir" <<WEOF
+let outer =
+    plan
+        File.write "$padir/np/cfg" ["v2"]
+        let inner =
+            plan
+                print \$"{File.exists "$padir/np/cfg"}"
+        print \$"{inner |> Plan.isEmpty}"
+print \$"{outer |> Plan.isEmpty}"
+WEOF
+out=$($BIN "$padir/np.weir" 2>&1) && fail "an inner plan's read of an outer-captured path must refuse: $out" || true
+echo "$out" | grep -qF "an enclosing 'plan'" || fail "the nested refusal names the enclosing plan: $out"
+echo "e2e ok: plan/apply — a nested plan checks every enclosing frame"
+
 # [D:plan-within-tmp]: an op under a within tmp opened in the plan refuses
 # before anything applies
 cat > "$padir/wt.weir" <<WEOF

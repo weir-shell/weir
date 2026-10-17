@@ -9611,6 +9611,99 @@ let planApplyTests =
               Expect.isFalse (p "/r/sb" @"/r/sb\f") "on POSIX a backslash is a name byte"
               Expect.isTrue (p "/r/sb/" "/r/sb/f") "POSIX, a trailing slash"
           }
+          // [D:plan-guard-links]: the guard compares symlink-resolved
+          // paths both ways, folds case where the filesystem does, and
+          // checks every enclosing plan frame
+          test "stale reads: the guard resolves symlinks both ways; a deleted link's target reads [D:plan-guard-links]" {
+              skipOnWindows ()
+              let root = td ()
+              let at (p: string) = System.IO.Path.Combine(root, p)
+              System.IO.Directory.CreateDirectory(at "real") |> ignore
+              System.IO.File.WriteAllText(at "real/a.txt", "old\n")
+              System.IO.Directory.CreateSymbolicLink(at "alias", "real") |> ignore
+              System.IO.File.CreateSymbolicLink(at "real/lnk.txt", "a.txt") |> ignore
+
+              let refusedAfter (op: Value) (target: string) (read: unit -> unit) =
+                  let mutable r = false
+
+                  Weir.Eval.PlanMode.capturing (fun () ->
+                      Weir.Eval.PlanMode.capture op [ target ]
+
+                      r <-
+                          try
+                              read ()
+                              false
+                          with Failure m ->
+                              Expect.stringContains m "known-after-apply" "the refusal names the law"
+                              true)
+                  |> ignore
+
+                  r
+
+              let write p =
+                  VUnion("WriteFile", Some(VTuple [ VStr(at p); VSeq [] ])), at p
+
+              let delete p = VUnion("DeleteFile", Some(VStr(at p))), at p
+              let rd p () = Weir.Eval.PlanMode.checkRead "File.read" (at p)
+              let tree p () = Weir.Eval.PlanMode.checkTree "Dir.list" (at p)
+
+              try
+                  let check (op, t) read = refusedAfter op t read
+                  Expect.isTrue (check (write "real/a.txt") (rd "alias/a.txt")) "a read through a dir alias"
+                  Expect.isTrue (check (write "real/a.txt") (rd "real/lnk.txt")) "a read through a file link"
+                  Expect.isTrue (check (write "real/lnk.txt") (rd "real/a.txt")) "a write through a link lands on its target"
+                  Expect.isTrue (check (delete "alias/a.txt") (rd "real/a.txt")) "a delete via the alias, read via the real path"
+                  Expect.isTrue (check (write "alias/new.txt") (tree "real")) "a listing of the real dir"
+                  Expect.isTrue (check (delete "real/lnk.txt") (rd "real/lnk.txt")) "the deleted link itself"
+                  Expect.isFalse (check (delete "real/lnk.txt") (rd "real/a.txt")) "a deleted link's target still reads"
+                  Expect.isFalse (check (write "real/a.txt") (rd "real/other.txt")) "a sibling reads"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          test "stale reads: case folds on Windows and macOS, never on Linux [D:plan-guard-links]" {
+              let root = td ()
+              let at (p: string) = System.IO.Path.Combine(root, p)
+              System.IO.Directory.CreateDirectory(at "sb") |> ignore
+              let mutable refused = false
+
+              Weir.Eval.PlanMode.capturing (fun () ->
+                  Weir.Eval.PlanMode.capture (VUnion("DeleteFile", Some(VStr(at "sb/Cfg.txt")))) [ at "sb/Cfg.txt" ]
+
+                  refused <-
+                      try
+                          Weir.Eval.PlanMode.checkRead "File.read" (at "SB/cfg.TXT")
+                          false
+                      with Failure _ ->
+                          true)
+              |> ignore
+
+              try
+                  let folds = System.OperatingSystem.IsWindows() || System.OperatingSystem.IsMacOS()
+                  Expect.equal refused folds "the platform's case rule"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          test "stale reads: a nested plan checks every enclosing frame [D:plan-guard-links]" {
+              let root = td ()
+              let f = System.IO.Path.Combine(root, "cfg")
+              let mutable msg = ""
+
+              Weir.Eval.PlanMode.capturing (fun () ->
+                  Weir.Eval.PlanMode.capture (VUnion("WriteFile", Some(VTuple [ VStr f; VSeq [] ]))) [ f ]
+
+                  Weir.Eval.PlanMode.capturing (fun () ->
+                      msg <-
+                          try
+                              Weir.Eval.PlanMode.checkRead "File.exists" f
+                              ""
+                          with Failure m ->
+                              m)
+                  |> ignore)
+              |> ignore
+
+              Expect.stringContains msg "known-after-apply" "the inner read refuses"
+              Expect.stringContains msg "an enclosing 'plan'" "it names the enclosing plan"
+          }
           test "stale reads: every fs read builtin refuses after a captured mutation; a move's source too" {
               let root = td ()
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "sb", "tree")) |> ignore
@@ -28037,6 +28130,30 @@ let hunt3PerfTests =
                   Expect.notEqual moved ll "different segments, different lines"
                   Expect.equal { ll with Ends = [||]; PosIndex = null } ll "equality is text, head and segments"
               | other -> failtest $"unexpected: {other}"
+          }
+          test "a plan's stale-read check costs O(depth), not O(captured ops) [D:plan-guard-index]" {
+              let root = tempPath "weir-planidx"
+
+              let loop n () =
+                  Weir.Eval.PlanMode.capturing (fun () ->
+                      for i in 1..n do
+                          let p = System.IO.Path.Combine(root, $"s{i % 100}", $"f{i}")
+                          Weir.Eval.PlanMode.checkRead "File.exists" p
+                          Weir.Eval.PlanMode.capture (VUnion("WriteFile", Some(VTuple [ VStr p; VSeq [] ]))) [ p ])
+                  |> ignore
+
+              growsLinearly "write-if-absent, 10k vs 1k" (loop 1000) (loop 10000)
+          }
+          test "refusing deep JSON is linear in its depth [D:json-deep-linear]" {
+              let deep n =
+                  String.replicate n "{\"a\":" + "1" + String.replicate n "}"
+
+              let refuse (text: string) () =
+                  match Weir.Types.parseJsonBounded text with
+                  | Error(Some _) -> ()
+                  | _ -> failtest "a deep document names the depth"
+
+              growsLinearly "100k vs 10k deep" (refuse (deep 10000)) (refuse (deep 100000))
           } ]
 
 [<Tests>]
