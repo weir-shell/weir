@@ -190,8 +190,12 @@ let private evalOnce (input: string) : int =
                                                 $": {formatEchoTy te.Ty} (binary output — the echo refuses a terminal; redirect to a file, or print deliberately)"
                                         else
                                             let rendered, hint = Eval.echoValue Eval.echoPipedCap v
-                                            // [D:tty-sink-sanitize]
-                                            let rendered = Eval.sanitizeIfTty Console.IsOutputRedirected rendered
+                                            // [D:tty-echo-strict]
+                                            let rendered =
+                                                if Console.IsOutputRedirected then
+                                                    rendered
+                                                else
+                                                    Eval.sanitizeTtyEcho rendered
 
                                             let tail' = Eval.echoTail hint
 

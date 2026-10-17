@@ -2658,9 +2658,13 @@ print (show port)
 - `printerr` is `print` to stderr (same argument rule) — diagnostics
   there, data on stdout, so `weir script | next` stays clean. Like
   `print`, at a tty it neutralizes terminal-driving escapes in the
-  text (so do `Log.*`, the `Self.prompt` message, the `-e` echo and
-  weir's own diagnostics); a bare CR passes, so a progress line can
-  rewrite itself. Redirected, the bytes pass unchanged.
+  text (so do `Log.*`, the `Self.prompt` message, the `-e` echo,
+  `Args.load --help` and weir's own diagnostics); a bare CR passes, so
+  a progress line can rewrite itself. Redirected, the bytes pass
+  unchanged. Renderers that draw a VALUE go further: `show` writes a
+  CR as `\r`, and the REPL and `-e` echo (table cells included),
+  `Plan.preview` paths and `weir verify`/`restore` lines show CR and
+  colour escapes visibly.
 - `Log.trace/debug/info/warn "msg"` — levelled diagnostics, ALWAYS to
   stderr (stdout is data; there is no stream knob). `WEIR_LOG=level`
   selects (`trace|debug|info|warn|off`; default `info`; invalid

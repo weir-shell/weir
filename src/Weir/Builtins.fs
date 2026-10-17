@@ -5057,19 +5057,23 @@ let private planOps (v: Value) : Value seq =
 // an HttpSend request via the recursive renderer, so a preview line
 // never leaks an auth token
 let private previewOp (op: Value) : string =
+    // a path is data: CR, LF and escapes render visibly, so a name cannot
+    // rewrite or forge a preview line [D:tty-echo-strict]
+    let shown (p: string) = (sanitizeTtyEcho p).Replace("\n", "\\x0a")
+
     match op with
     | VUnion("WriteFile", Some(VTuple [ VStr p; VSeq lines ])) ->
-        $"write {p} ({lines |> Seq.length} line(s))"
+        $"write {shown p} ({lines |> Seq.length} line(s))"
     | VUnion("WriteFileAtomic", Some(VTuple [ VStr p; VSeq lines ])) ->
-        $"write {p} atomically ({lines |> Seq.length} line(s))"
-    | VUnion("DeleteFile", Some(VStr p)) -> $"delete file {p}"
-    | VUnion("MakeDir", Some(VStr p)) -> $"make dir {p}"
-    | VUnion("DeleteDir", Some(VStr p)) -> $"delete dir {p}"
-    | VUnion("DeleteTree", Some(VStr p)) -> $"delete tree {p}"
-    | VUnion("Copy", Some(VTuple [ VStr s; VStr d ])) -> $"copy {s} -> {d}"
-    | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> $"copy dir {s} -> {d}"
-    | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) -> $"move {s} -> {d}"
-    | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) -> $"move dir {s} -> {d}"
+        $"write {shown p} atomically ({lines |> Seq.length} line(s))"
+    | VUnion("DeleteFile", Some(VStr p)) -> $"delete file {shown p}"
+    | VUnion("MakeDir", Some(VStr p)) -> $"make dir {shown p}"
+    | VUnion("DeleteDir", Some(VStr p)) -> $"delete dir {shown p}"
+    | VUnion("DeleteTree", Some(VStr p)) -> $"delete tree {shown p}"
+    | VUnion("Copy", Some(VTuple [ VStr s; VStr d ])) -> $"copy {shown s} -> {shown d}"
+    | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> $"copy dir {shown s} -> {shown d}"
+    | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) -> $"move {shown s} -> {shown d}"
+    | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) -> $"move dir {shown s} -> {shown d}"
     | VUnion("HttpSend", Some req) -> $"http send {formatValue req}"
     | v -> formatValue v
 

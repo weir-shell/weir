@@ -2284,7 +2284,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                         let rendered, hint = Eval.echoValue cap (Eval.echoPrep bv)
 
                         Console.WriteLine
-                            $"{n} : {formatEchoTy sch.Ty} = {Eval.sanitizeTtyData rendered}{Eval.echoTail hint}"
+                            $"{n} : {formatEchoTy sch.Ty} = {Eval.sanitizeTtyEcho rendered}{Eval.echoTail hint}"
                 | _ -> Console.WriteLine $"{n} : {formatEchoTy sch.Ty}"
 
             { state with
@@ -2360,7 +2360,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                     // table's tint is added inside printTable, around
                     // sanitized cells)
                     (if te.Ty = TSeq TStr then
-                         lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyData l))
+                         lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyEcho l))
                      else
                          printTable lines)
 
@@ -2368,7 +2368,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 | None ->
                     let rendered, hint = Eval.echoValue cap ev
                     let tail = Eval.echoTail hint
-                    Console.WriteLine $"{name} : {formatEchoTy te.Ty} = {Eval.sanitizeTtyData rendered}{tail}"
+                    Console.WriteLine $"{name} : {formatEchoTy te.Ty} = {Eval.sanitizeTtyEcho rendered}{tail}"
 
             // a `let` binds its name only — it does not rebind `it`
             // (FSI parity) [D:repl-it]
@@ -2480,7 +2480,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                         | Some(lines, hint) ->
                             // data at the tty is sanitized [D:binary-echo]
                             (if te.Ty = TSeq TStr then
-                                 lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyData l))
+                                 lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyEcho l))
                              else
                                  printTable lines)
 
@@ -2492,7 +2492,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                             // the value stays plain; the type tail recedes
                             // like every other metadata line [D:table-polish]
                             Console.WriteLine(
-                                Eval.sanitizeTtyData rendered
+                                Eval.sanitizeTtyEcho rendered
                                 + Types.Color.dim Types.Color.onStdout.Value $" : {formatEchoTy te.Ty}{tail}"
                             )
                 elif not Console.IsOutputRedirected then

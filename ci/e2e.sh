@@ -12936,6 +12936,27 @@ echo "e2e ok: tty-sink printerr, Log, Self.prompt and the -e echo sanitized at a
 crout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" -e 'printerr ("50%" + (Str.fromBase64 "DQ==") + "100%" + (Str.fromBase64 "Gw==") + "]0;CR")' 2>&1)
 echo "$crout" | grep -qF '50%\r100%\\x1b]0;CR' || fail "tty-cr: printerr must pass a bare CR raw and defang the OSC: $crout"
 echo "e2e ok: tty-cr a bare CR passes printerr at a tty, the OSC beside it stays visible"
+# the DATA renderers show CR and SGR visibly [D:tty-echo-strict] while
+# print keeps both [D:tty-cr-pass]; X = "a<CR>b<ESC>[8mc"
+X='(Str.fromBase64 "YQ1iG1s4bWM=")'
+sout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" -e "Some $X" 2>&1)
+echo "$sout" | grep -qF 'a\\rb\\x1b[8mc' || fail "tty-echo-strict: the -e echo must show CR (show's \\r) and SGR visibly: $sout"
+sout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" -e "[$X]" 2>&1)
+echo "$sout" | grep -qF 'a\\rb\\x1b[8mc' || fail "tty-echo-strict: the -e seq echo must show CR and SGR visibly: $sout"
+sout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" -e "print $X" 2>&1)
+echo "$sout" | grep -qF 'a\rb\x1b[8mc' || fail "tty-echo-strict: print must keep CR and SGR raw: $sout"
+sout=$(printf 'SLEEP 900\nSEND [%s]\\r\nSLEEP 800\nSEND [{| n = %s |}; {| n = %s |}]\\r\nSLEEP 800\nSEND #quit\\r\n' "$X" "$X" "$X" | python3 "$sinkrun" 10 "$BIN" 2>&1)
+[ "$(echo "$sout" | grep -oF 'a\\x0db\\x1b[8mc' | wc -l)" -ge 2 ] || fail "tty-echo-strict: the REPL lines echo and table cells must show CR and SGR visibly: $sout"
+echo "$sout" | grep -qF 'a\rb\x1b[8mc' && fail "tty-echo-strict: the REPL echo put a raw CR/SGR on the tty: $sout" || true
+cat > "$svdir/preview-cr.weir" <<WEOF
+let p =
+    plan
+        File.delete \$"/nowhere/a{$X}"
+p |> Plan.preview |> Seq.iter print
+WEOF
+pout=$($BIN "$svdir/preview-cr.weir" 2>&1) || fail "tty-echo-strict: preview run failed: $pout"
+[ "$pout" = 'delete file /nowhere/aa\x0db\x1b[8mc' ] || fail "tty-echo-strict: a Plan.preview path must render CR and SGR visibly, piped too: $pout"
+echo "e2e ok: tty-echo-strict the -e/REPL echo, table cells and Plan.preview show CR and SGR visibly; print keeps them"
 # Args.load --help rides the tty sanitizer [D:tty-help-sanitize]
 printf 'type Cli = {\n    /// be verbose \033]0;HELP\007\n    verbose: bool\n}\nlet cli = Args.load Cli\nprint (show cli.verbose)\n' > "$svdir/help-osc.weir"
 sout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" "$svdir/help-osc.weir" --help 2>&1)

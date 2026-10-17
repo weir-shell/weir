@@ -8917,6 +8917,21 @@ let planApplyTests =
 
               Expect.equal (runFile prog) 0 "the token is masked in preview"
           }
+          test "a preview path renders CR, LF and escapes visibly [D:tty-echo-strict]" {
+              let prog =
+                  [ "let cr = Str.fromBase64 \"DQ==\""
+                    "let lf = Str.fromBase64 \"Cg==\""
+                    "let esc = Str.fromBase64 \"Gw==\""
+                    "let p ="
+                    "    plan"
+                    "        File.delete $\"/nowhere/a{cr}x{lf}delete file /b{esc}[8m\""
+                    "let line = p |> Plan.preview |> Seq.exactlyOne"
+                    "if Str.contains cr line || Str.contains lf line || Str.contains esc line then fail $\"raw control: {show line}\""
+                    "if not (Str.contains \"a\\\\x0dx\\\\x0adelete file\" line) then fail $\"not visible: {show line}\""
+                    "print \"ok\"" ]
+
+              Expect.equal (runFile prog) 0 "a preview path renders CR, LF and ESC visibly"
+          }
           test "Http.send{post} captures as an HttpSend Op — the per-method split" {
               let prog =
                   [ "let p ="
@@ -23241,6 +23256,16 @@ let ttySanitizeTests =
               Expect.stringContains out (esc + "[31merror" + esc + "[0m") "weir's SGR colour passes"
               Expect.stringContains out "\ra\\x1bb\\x1b\n" "CR passes; buffer and char writes are sanitized too"
               Expect.equal (out.Split(char 0x1b).Length - 1) 2 "the only raw ESCs are the SGR pair"
+          }
+          test "the DATA renderers escape a bare CR and SGR too [D:tty-echo-strict]" {
+              let esc = string (char 0x1b)
+              let echo = Weir.Eval.sanitizeTtyEcho ("a\rb" + esc + "[8mhidden" + esc + "]0;T\u0007")
+              Expect.equal echo "a\\x0db\\x1b[8mhidden\\x1b]0;T\\x07" "CR, SGR and OSC all visible"
+              Expect.equal (Weir.Eval.sanitizeTtyEcho "a\tb\nc\u202E") "a\tb\nc\\u202E" "TAB/LF pass, bidi visible"
+              // print's sanitizer keeps both [D:tty-cr-pass] [D:tty-color]
+              Expect.equal (Weir.Eval.sanitizeTtyData ("a\r" + esc + "[8m")) ("a\r" + esc + "[8m") "print keeps CR and SGR"
+              // show escapes CR like LF, piped or not
+              expectValue "show (Str.fromBase64 \"YQ1i\")" (VStr "\"a\\rb\"")
           }
           test "sanitizeIfTty leaves redirected output byte-faithful, sanitizes a tty" {
               let hostile = string (char 0x1b) + "X"

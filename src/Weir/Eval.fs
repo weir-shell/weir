@@ -411,7 +411,12 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
                 | _ -> s, false
 
             let escaped =
-                raw.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\t", "\\t")
+                raw
+                    .Replace("\\", "\\\\")
+                    .Replace("\"", "\\\"")
+                    .Replace("\n", "\\n")
+                    .Replace("\r", "\\r") // [D:tty-echo-strict]
+                    .Replace("\t", "\\t")
 
             let tail = if clipped then "…" else ""
             $"\"{escaped}{tail}\""
@@ -896,7 +901,7 @@ let private sgrLenAt (s: string) (i: int) : int =
 // output is byte-faithful.
 // Bidi controls render as a visible \uXXXX too [D:tty-bidi-sanitize]:
 // the text the user reads must match the bytes (Trojan Source).
-let sanitizeTtyData (s: string) : string =
+let private sanitizeWith (strict: bool) (s: string) : string =
     // bidi = the embeddings/overrides U+202A..202E, the isolates
     // U+2066..2069, LRM/RLM (U+200E/200F) and ALM (U+061C)
     let bidi (c: char) =
@@ -911,7 +916,7 @@ let sanitizeTtyData (s: string) : string =
 
         n = 0x1B
         || n = 0x7F
-        || (n < 0x20 && c <> '\t' && c <> '\n' && c <> '\r')
+        || (n < 0x20 && c <> '\t' && c <> '\n' && (strict || c <> '\r'))
         || (n >= 0x80 && n <= 0x9F)
 
     if not (s |> Seq.exists (fun c -> hostile c || bidi c)) then
@@ -926,7 +931,7 @@ let sanitizeTtyData (s: string) : string =
             let c = s.[i]
 
             if int c = 0x1B then
-                match sgrLenAt s i with
+                match (if strict then 0 else sgrLenAt s i) with
                 | 0 ->
                     // a non-SGR escape (OSC/DCS/cursor CSI/lone ESC): the
                     // introducer renders visible; the rest is now inert text
@@ -956,6 +961,13 @@ let sanitizeTtyData (s: string) : string =
                 i <- i + 1
 
         sb.ToString()
+
+let sanitizeTtyData (s: string) : string = sanitizeWith false s
+
+/// weir's DATA renderers (the REPL and -e echo, table cells) show a
+/// bare CR and SGR visibly too [D:tty-echo-strict]: what they render is
+/// a value, never the user's intended terminal output
+let sanitizeTtyEcho (s: string) : string = sanitizeWith true s
 
 /// sanitize data only when the sink is a tty [D:binary-echo] —
 /// redirected output (a pipe, a file) stays byte-faithful; a terminal
@@ -1111,7 +1123,7 @@ let rec private tableCell (v: Value) : (string * bool) option =
         // the table is a tty-only renderer [D:binary-echo]: a data cell's
         // hostile bytes are neutralized (the tint is added later, around
         // this sanitized text — weir's own colouring is untouched)
-        Some(sanitizeTtyData clipped, false)
+        Some(sanitizeTtyEcho clipped, false)
     | VInt _
     | VFloat _
     | VSize _
@@ -1132,9 +1144,9 @@ let rec private tableCell (v: Value) : (string * bool) option =
 
 /// the lines form [D:echo-lines]: seq<string> presents as its lines
 /// at a tty — the content arrived as lines, and the list-literal
-/// render undid that. Raw and unclipped per line (print parity — a
-/// tab or an escape renders as itself; tty-only, so the piped surface
-/// cannot change); the count clip and the forced/unforced sentence
+/// render undid that. Unclipped per line (a tab renders as itself; CR
+/// and escapes render visibly at the caller [D:tty-echo-strict];
+/// tty-only, so the piped surface cannot change); the count clip and the forced/unforced sentence
 /// ride the footer unchanged. Keyed on the type at the caller
 /// (seq<string> exactly), never content-sniffing.
 let echoLines (cap: int option) (v: Value) : (string list * string option) option =
