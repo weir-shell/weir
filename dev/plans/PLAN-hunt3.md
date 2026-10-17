@@ -1,6 +1,6 @@
 # PLAN — the third bug hunt (daily-driver W3)
 
-Status: ROUND 1 FIXED (2026-10-16) — 37 confirmed (8 high, 29 medium), all fixed on plan/hunt3 (PLAN-hunt3-fixes, PLAN-kestrel), landed as #376. ROUND 2 RUNNING (2026-10-17) — see the last section.
+Status: ROUND 1 FIXED (2026-10-16) — 37 confirmed (8 high, 29 medium), all fixed on plan/hunt3 (PLAN-hunt3-fixes, PLAN-kestrel), landed as #376. ROUND 2 FIXED (2026-10-17) — 25 confirmed (8 high, 17 medium; A clean), all fixed on plan/hunt3r2 (PLAN-hunt3r2-fixes, rulings R1-R8), harness tools/hunt3r2-repro.weir 25/25. Round 2 found highs, so ROUND 3 (same areas + regressions from round 2's fixes) is owed after landing.
 
 Source plan: PLAN-daily-driver.md W3. Black-box, medium and above only;
 lows go straight to BACKLOG. The loop stops at the first round with no
