@@ -127,6 +127,9 @@
   carrying an OSC 52 (clipboard write), a title change or a screen
   clear shows as visible `\x1b…` text instead of driving the terminal.
   Redirected output is unchanged.
+- **A carriage return passes `print`, `printerr`, `Log.*` and the
+  prompt at a tty** instead of showing as `\x0d`, so progress lines
+  overwrite themselves again. Other control characters stay visible.
 - **`Args.load` no longer echoes a secret given as `--token=VALUE`.**
   The message reads `unknown flag '--token=***' — … write '--token
   <value>'` for a `Secret` field, and an unknown `--name=value` flag is

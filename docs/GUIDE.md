@@ -2631,8 +2631,9 @@ piped or `NO_COLOR` is set, you get the plain string, so
 `weir script | grep` stays plain without any checks on your part. At
 a terminal, `print` lets color through, but turns every *other*
 escape sequence in a value into visible `\xNN`: window titles,
-clipboard access, cursor movement, and carriage-return overwrites.
-So untrusted data can't mess with your terminal. `Color.sgr` takes a
+clipboard access, and cursor movement. A bare carriage return passes,
+so a progress line can rewrite itself. So untrusted data can't mess
+with your terminal. `Color.sgr` takes a
 raw code, for 256-color and truecolor.
 
 `Table.render` lays out a sequence of records of the same type as

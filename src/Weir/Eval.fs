@@ -758,14 +758,14 @@ let private sgrLenAt (s: string) (i: int) : int =
 // this is the same rule one class wider, covering the data a renderer
 // prints. A filename or field carrying OSC/DCS escapes, a bare ESC, a
 // cursor/screen CSI, or C0/C1 controls can clear the screen, set the
-// window title, write the clipboard, or — quietest of all — use CR so
-// the name the user reads is not the name on disk. So tty-bound data
-// renderers neutralize those bytes: the ESC introducer, C0 controls
-// except \t and \n, DEL, and the C1 range render as a visible \xNN
-// escape so the text stays honest. SGR sequences are the one exception
-// [D:tty-color]: display-only, so intentional colour (the Color module,
-// a coloured prompt) survives while every terminal-driving family stays
-// neutralized. Applied only at a tty and only to data — redirected
+// window title, or write the clipboard. So tty-bound data renderers
+// neutralize those bytes: the ESC introducer, C0 controls except \t,
+// \n and a bare CR, DEL, and the C1 range render as a visible \xNN
+// escape so the text stays honest. CR passes [D:tty-cr-pass]: it only
+// returns the cursor, and progress lines rewrite themselves with it.
+// SGR sequences are the other exception [D:tty-color]: display-only,
+// so intentional colour (the Color module, a coloured prompt) survives
+// while every terminal-driving family stays neutralized. Applied only at a tty and only to data — redirected
 // output is byte-faithful.
 // Bidi controls render as a visible \uXXXX too [D:tty-bidi-sanitize]:
 // the text the user reads must match the bytes (Trojan Source).
@@ -777,10 +777,15 @@ let sanitizeTtyData (s: string) : string =
         (n >= 0x202A && n <= 0x202E) || (n >= 0x2066 && n <= 0x2069) || n = 0x200E || n = 0x200F || n = 0x061C
 
     // hostile = ESC (0x1B) the introducer, DEL (0x7F), any C0 control
-    // (< 0x20) except TAB and LF, and the C1 range (0x80..0x9F)
+    // (< 0x20) except TAB, LF and CR [D:tty-cr-pass], and the C1 range
+    // (0x80..0x9F)
     let hostile (c: char) =
         let n = int c
-        n = 0x1B || n = 0x7F || (n < 0x20 && c <> '\t' && c <> '\n') || (n >= 0x80 && n <= 0x9F)
+
+        n = 0x1B
+        || n = 0x7F
+        || (n < 0x20 && c <> '\t' && c <> '\n' && c <> '\r')
+        || (n >= 0x80 && n <= 0x9F)
 
     if not (s |> Seq.exists (fun c -> hostile c || bidi c)) then
         s

@@ -12449,10 +12449,10 @@ WEOF
 fi
 
 # (F13) tty data sanitize [D:binary-echo]/[D:tty-color]: a data value's
-# terminal-DRIVING escapes (OSC title/clipboard, cursor/screen CSI, CR
-# name-hiding, BEL) render sanitized at a tty, while SGR colour passes
-# (display-only, cannot hijack) and weir's own colour is unaffected;
-# redirected output stays byte-faithful. Driven through a pty.
+# terminal-DRIVING escapes (OSC title/clipboard, cursor/screen CSI, BEL)
+# render sanitized at a tty, while SGR colour and a bare CR pass
+# (display-only / cursor return [D:tty-cr-pass]) and weir's own colour
+# is unaffected; redirected output stays byte-faithful. Driven through a pty.
 # Bidi controls (RLO here) render as visible \uXXXX [D:tty-bidi-sanitize].
 cat > "$svdir/f13.weir" <<'WEOF'
 let esc = Str.fromBase64 "Gw=="
@@ -12466,7 +12466,7 @@ WEOF
 cat > "$svdir/f13err.weir" <<'WEOF'
 let esc = Str.fromBase64 "Gw=="
 let cr = Str.fromBase64 "DQ=="
-let bad = esc + "[31mhidden" + cr + "evil"
+let bad = esc + "[31mhidden" + cr + "evil" + esc + "]0;PWN"
 fail $"file: {bad}"
 WEOF
 # F13 is driven through a real pty; Windows Python has no termios/pty
@@ -12496,8 +12496,8 @@ else:
     sgr_kept = b'\x1b[32mok' in data          # display colour survives
     osc_raw = b'\x1b]' in data                # raw OSC introducer must NOT appear
     osc_vis = b'\\x1b]0;PWN' in data          # OSC defanged to visible text
-    cr_raw = b'mid\rend' in data              # the name-hiding CR must NOT appear raw
-    cr_vis = b'\\x0d' in data                 # CR visible as \x0d
+    cr_raw = b'mid\rend' in data              # a bare CR passes raw [D:tty-cr-pass]
+    cr_vis = b'\\x0d' in data                 # and never renders as \x0d
     bidi_raw = b'\xe2\x80\xae' in data         # a raw RLO must NOT appear
     bidi_vis = b'bidi\\u202Etxt' in data       # RLO visible as \u202E
     print('SGR_KEPT=%s OSC_RAW=%s OSC_VIS=%s CR_RAW=%s CR_VIS=%s BIDI_RAW=%s BIDI_VIS=%s' % (sgr_kept, osc_raw, osc_vis, cr_raw, cr_vis, bidi_raw, bidi_vis))
@@ -12506,8 +12506,8 @@ PYEOF
 echo "$sanit" | grep -qF "SGR_KEPT=True" || fail "F13: SGR colour from data should reach the tty (display-only): $sanit"
 echo "$sanit" | grep -qF "OSC_RAW=False" || fail "F13: a raw OSC from data must not reach the tty: $sanit"
 echo "$sanit" | grep -qF "OSC_VIS=True" || fail "F13: an OSC must render as visible \\x1b] at a tty: $sanit"
-echo "$sanit" | grep -qF "CR_RAW=False" || fail "F13: a name-hiding CR must not reach the tty: $sanit"
-echo "$sanit" | grep -qF "CR_VIS=True" || fail "F13: CR must render as visible \\x0d at a tty: $sanit"
+echo "$sanit" | grep -qF "CR_RAW=True" || fail "F13: a bare CR must pass raw at a tty [D:tty-cr-pass]: $sanit"
+echo "$sanit" | grep -qF "CR_VIS=False" || fail "F13: a bare CR must not render as \\x0d at a tty: $sanit"
 echo "$sanit" | grep -qF "BIDI_RAW=False" || fail "F13: a raw bidi control must not reach the tty: $sanit"
 echo "$sanit" | grep -qF "BIDI_VIS=True" || fail "F13: a bidi control must render as visible \\u202E at a tty: $sanit"
 # weir's own colour survives: the error word stays coloured while the
@@ -12530,13 +12530,14 @@ else:
     data = b''.join(out)
     before_data = data.split(b'file:')[0]
     weir_colour = b'\x1b[' in before_data   # weir's own error colour, raw
-    # the data's name-hiding CR is neutralized (its SGR is cosmetic, kept)
-    cr_safe = (b'hidden\revil' not in data) and (b'\\x0d' in data)
+    # the data's OSC is neutralized (its SGR is cosmetic and its CR a
+    # cursor return, both kept [D:tty-cr-pass])
+    cr_safe = (b'hidden\revil\\x1b]0;PWN' in data) and (b'\x1b]0;PWN' not in data)
     print('WEIR_COLOUR=%s DATA_SANITIZED=%s' % (weir_colour, cr_safe))
 PYEOF
 )
 echo "$colour" | grep -qF "WEIR_COLOUR=True" || fail "F13: weir's own colour must be unaffected: $colour"
-echo "$colour" | grep -qF "DATA_SANITIZED=True" || fail "F13: the name-hiding CR in error text must be sanitized: $colour"
+echo "$colour" | grep -qF "DATA_SANITIZED=True" || fail "F13: the OSC in error text must be sanitized, its CR kept: $colour"
 # redirected (piped) output stays byte-faithful — every raw byte survives
 $BIN "$svdir/f13.weir" > "$svdir/f13.out" 2>/dev/null || true
 python3 -c "import sys; d=open('$svdir/f13.out','rb').read(); sys.exit(0 if (b'\x1b[32mok\x1b]0;PWN\x07mid\rend' in d and b'bidi\xe2\x80\xaetxt' in d) else 1)" \
@@ -12599,6 +12600,11 @@ printf 'ans\n' | $BIN -e 'Log.warn ((Str.fromBase64 "Gw==") + "]52;c;SINK")' 2> 
 python3 -c "import sys; sys.exit(0 if b'\x1b]52;c;SINK' in open('$svdir/sink.err','rb').read() else 1)" \
     || fail "tty-sink: a redirected stderr must stay byte-faithful"
 echo "e2e ok: tty-sink printerr, Log, Self.prompt and the -e echo sanitized at a tty, byte-faithful when redirected"
+# a bare CR passes every sink [D:tty-cr-pass]: printerr keeps the
+# progress-line rewrite while its OSC stays visible
+crout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" -e 'printerr ("50%" + (Str.fromBase64 "DQ==") + "100%" + (Str.fromBase64 "Gw==") + "]0;CR")' 2>&1)
+echo "$crout" | grep -qF '50%\r100%\\x1b]0;CR' || fail "tty-cr: printerr must pass a bare CR raw and defang the OSC: $crout"
+echo "e2e ok: tty-cr a bare CR passes printerr at a tty, the OSC beside it stays visible"
 else
     echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"
 fi

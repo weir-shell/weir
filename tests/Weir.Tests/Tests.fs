@@ -23013,8 +23013,8 @@ let ttySanitizeTests =
               Expect.stringContains safe "\\x1b[2J" "clear-screen CSI defanged (ESC visible)"
               Expect.stringContains safe "\\x1b]0;PWNED" "OSC title/clipboard defanged"
               Expect.isFalse (safe.Contains(char 0x07)) "no raw BEL survives"
-              Expect.isFalse (safe.Contains '\r') "no raw CR survives — the name stays honest"
-              Expect.stringContains safe "\\x0d" "CR renders as \\x0d"
+              // a bare CR passes [D:tty-cr-pass]: progress lines rewrite in place
+              Expect.stringContains safe "a\rb" "a bare CR passes raw"
               Expect.stringContains safe "cleared" "the visible text is preserved"
               // the ONLY raw ESC left is the SGR's; the two dangerous
               // introducers became text
@@ -23032,6 +23032,14 @@ let ttySanitizeTests =
 
               // a clean string is returned unchanged
               Expect.equal (Weir.Eval.sanitizeTtyData "plain-name.txt") "plain-name.txt" "clean text untouched"
+          }
+          test "a bare CR passes; every other C0 control stays visible [D:tty-cr-pass]" {
+              Expect.equal (Weir.Eval.sanitizeTtyData "50%\r100%") "50%\r100%" "CR passes"
+              Expect.equal (Weir.Eval.sanitizeTtyData "a\r\nb") "a\r\nb" "CRLF passes"
+
+              for n in [ 0x00; 0x07; 0x08; 0x0b; 0x0c; 0x0e; 0x1f ] do
+                  let shown = Weir.Eval.sanitizeTtyData (string (char n))
+                  Expect.equal shown ("\\x" + n.ToString("x2")) $"0x{n:x2} stays visible"
           }
           test "sanitizeIfTty leaves redirected output byte-faithful, sanitizes a tty" {
               let hostile = string (char 0x1b) + "X"
