@@ -248,20 +248,35 @@ jobs:
       - name: message census
         run: ~/.local/bin/weir tools/dx-message-census.weir --bin ~/.local/bin/weir
 
-      # the bug hunts' acceptance harnesses, kept as regression gates
-      # [D:repro-gates]: one OK per probe; any REPRODUCES, failed control
-      # or SKIP exits 1
+      - name: F# oracle
+        run: ./ci/fsharp-oracle.sh
+      - name: timing
+        run: ./ci/timing.sh
+
+  # the bug hunts' acceptance harnesses, kept as regression gates
+  # [D:repro-gates]: one OK per probe; any REPRODUCES, failed control or
+  # SKIP exits nonzero. Their own job beside linux-gates — together they
+  # would be the longest pole
+  linux-hunts:
+    needs: linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: weir-linux
+          path: ${{ runner.temp }}/weir-bin
+      - name: install the build job's binary
+        run: mkdir -p ~/.local/bin && install -m 755 "$RUNNER_TEMP/weir-bin/weir" ~/.local/bin/weir
       - name: sweep repro harness
         run: ~/.local/bin/weir tools/sweep-repro.weir --bin ~/.local/bin/weir
       - name: hunt2 repro harness
         run: ~/.local/bin/weir tools/hunt2-repro.weir --bin ~/.local/bin/weir
       - name: hunt3 repro harness
         run: ~/.local/bin/weir tools/hunt3-repro.weir --bin ~/.local/bin/weir
-
-      - name: F# oracle
-        run: ./ci/fsharp-oracle.sh
-      - name: timing
-        run: ./ci/timing.sh
+      - name: hunt3 round-2 repro harness
+        run: ~/.local/bin/weir tools/hunt3r2-repro.weir --bin ~/.local/bin/weir
 
   # the e2e shards: one runner each, so the battery's fixed ports and
   # wall-clock thresholds never share a machine
