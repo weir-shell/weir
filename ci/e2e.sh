@@ -2914,9 +2914,10 @@ WEOF
 
     # a pid-targeted SIGTERM tree-kills the FOREGROUND child too
     # [D:signal-main-unwind]: `timeout`/`docker stop` signal weir alone; an
-    # unregistered foreground child outlived it, reparented to init
+    # unregistered foreground child outlived it, reparented to init. A
+    # pid-targeted SIGINT the same [D:sigint-reaps]
     printf 'sleep %s\n' "$MK3" > "$dtdir/fg.weir"
-    for pair in "TERM:143" "HUP:129"; do
+    for pair in "TERM:143" "HUP:129" "INT:130"; do
         sig="${pair%%:*}"; want="${pair##*:}"
         pkill -f "sleep $MK3\$" 2>/dev/null || true
         setsid "$BIN" "$dtdir/fg.weir" </dev/null >/dev/null 2>&1 &
@@ -2930,7 +2931,33 @@ WEOF
         pkill -f "sleep $MK3\$" 2>/dev/null || true
         [ "$left" = "0" ] || fail "SIG$sig to weir must tree-kill its foreground child (orphans left: $left)"
     done
-    echo "e2e ok: SIGTERM/SIGHUP to weir's pid reaps the foreground child"
+    echo "e2e ok: SIGTERM/SIGHUP/SIGINT to weir's pid reaps the foreground child"
+
+    # ...and every fan-out arm's command, scoped or not [D:sigint-reaps];
+    # an arm the kill ends is the teardown, never "command failed with
+    # exit code 137" [D:teardown-kill-not-failure]
+    MK8=$((MK + 8))
+    printf '[1..4] |> Seq.piterWith 4 (fun _ -> sleep %s)\nprint "after"\n' "$MK8" > "$dtdir/fgarms.weir"
+    printf 'within lock "%s/fga.lock"\n    [1..4] |> Seq.piterWith 4 (fun _ -> sleep %s)\n' "$dtdir" "$MK8" > "$dtdir/fgarmslock.weir"
+    for probe in fgarms fgarmslock; do
+        for pair in "INT:130" "TERM:143" "INT:130" "TERM:143" "TERM:143"; do
+            sig="${pair%%:*}"; want="${pair##*:}"
+            pkill -f "^sleep $MK8\$" 2>/dev/null || true
+            setsid "$BIN" "$dtdir/$probe.weir" </dev/null >"$dtdir/fga.out" 2>&1 &
+            wpid=$!
+            for _ in $(seq 1 40); do [ "$(pgrep -cf "^sleep $MK8\$" 2>/dev/null || true)" = "4" ] && break; sleep 0.1; done
+            kill -"$sig" "$wpid" 2>/dev/null || true
+            code=0; wait "$wpid" 2>/dev/null || code=$?
+            sleep 0.3
+            left=$(pgrep -cf "^sleep $MK8\$" 2>/dev/null || true); left=${left:-0}
+            pkill -9 -f "^sleep $MK8\$" 2>/dev/null || true
+            [ "$code" = "$want" ] || fail "$probe: SIG$sig must exit $want (got $code): $(cat "$dtdir/fga.out")"
+            [ "$left" = "0" ] || fail "$probe: SIG$sig to weir's pid must tree-kill every arm's command (orphans left: $left)"
+            ! grep -qF "command failed" "$dtdir/fga.out" || fail "$probe: SIG$sig — an arm the teardown killed reported a failure: $(cat "$dtdir/fga.out")"
+            ! grep -qF "after" "$dtdir/fga.out" || fail "$probe: SIG$sig — a statement ran after the signal"
+        done
+    done
+    echo "e2e ok: SIGINT/SIGTERM to weir's pid reaps every fan-out arm's command, scoped or not, and reports no arm failure"
 
     # ...and every pmap worker's tree, exactly once, after spawning stops
     # [D:signal-main-unwind]: the kill raced the exit (a SIGSTOPped

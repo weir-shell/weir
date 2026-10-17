@@ -823,6 +823,18 @@ let sigpipeForChildren: Lazy<unit> =
                  | _ -> ()
              | None -> ())
 
+/// the detached-SIGINT reset [D:signal-teardown], once, before the first
+/// SIGINT registration and the first spawn — .NET reads the inherited
+/// disposition when it first starts a process [D:sigint-reaps]
+let resetDetachedSigint: Lazy<unit> =
+    lazy
+        (if
+            not (System.OperatingSystem.IsWindows())
+            && not (replSurvivesSigint.Value)
+            && not (Libc.hasControllingTty ())
+         then
+             Libc.resetSigintIfIgnored () |> ignore)
+
 /// the requested exit code, or `code` when none was requested — the
 /// runner's result, so a request racing a statement's normal end still
 /// exits with the request's code
@@ -1284,8 +1296,7 @@ let private installExitHook () =
         // A `nohup weir &` keeps its tty and its SIG_IGN — terminal Ctrl+C
         // still cannot kill it. The REPL is interactive (has a tty), so it
         // never trips this and its [D:repl-isig] survival is untouched.
-        if not (replSurvivesSigint.Value) && not (Libc.hasControllingTty ()) then
-            Libc.resetSigintIfIgnored () |> ignore
+        resetDetachedSigint.Force()
 
         // SIGHUP joins them [D:sighup-teardown]: a closed terminal or a
         // `kill -HUP` unwinds like INT/TERM, exit 129; an inherited
@@ -1386,12 +1397,17 @@ let registerProc (p: System.Diagnostics.Process) : unit =
 
     liveProcs[p.Id] <- p
 
-// a foreground child alone installs only a SIGTERM/SIGHUP reaper
-// [D:signal-main-unwind]: a pid-targeted TERM or HUP tree-kills the live children,
-// then default termination proceeds (weir still dies BY the signal, as
-// before any scope exists; a ^C reaches the child through the group
-// anyway). Once a scope installs the full hook, that hook does the kill
-// as part of its teardown and this one stands down. POSIX only.
+// a foreground child alone installs only a reaper [D:signal-main-unwind]:
+// a pid-targeted TERM, HUP or INT tree-kills the live children, then
+// default termination proceeds (weir still dies BY the signal, as before
+// any scope exists). SIGINT joins them [D:sigint-reaps]: a `kill -INT` of
+// weir's pid reaches no child, and a terminal ^C that already reached the
+// group is the same stop; the REPL survives its ^C and is skipped, an
+// inherited SIG_IGN (a backgrounded weir) keeps the handler unbound. In a
+// script the teardown is requested before the kill, so a child or arm the
+// kill ends is the teardown, never a command failure [D:teardown-kill-not-failure].
+// Once a scope installs the full hook, that hook does the kill as part of
+// its teardown and this one stands down. POSIX only.
 let private fgHookInstalled = ref 0
 
 let registerForeground (p: System.Diagnostics.Process) : unit =
@@ -1399,21 +1415,31 @@ let registerForeground (p: System.Diagnostics.Process) : unit =
         not (System.OperatingSystem.IsWindows())
         && System.Threading.Interlocked.Exchange(fgHookInstalled, 1) = 0
     then
+        resetDetachedSigint.Force()
+
         // a pid-targeted HUP reaps the same way [D:sighup-teardown]
         for posixSig in
             [ System.Runtime.InteropServices.PosixSignal.SIGTERM
-              System.Runtime.InteropServices.PosixSignal.SIGHUP ] do
+              System.Runtime.InteropServices.PosixSignal.SIGHUP
+              System.Runtime.InteropServices.PosixSignal.SIGINT ] do
             let reg =
                 System.Runtime.InteropServices.PosixSignalRegistration.Create(
                     posixSig,
-                    fun _ ->
+                    fun ctx ->
                         // the full hook owns the signal once installed: it must
                         // request the teardown BEFORE any child dies, or the
                         // main thread's wait returns and runs the next statement
-                        if System.Threading.Volatile.Read &hookInstalled.contents = 0 then
-                            for kv in liveProcs do
-                                killTree kv.Value
+                        if
+                            System.Threading.Volatile.Read &hookInstalled.contents = 0
+                            && not (
+                                replSurvivesSigint.Value
+                                && ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
+                            )
+                        then
+                            if mainThreadId <> 0 then
+                                requestTeardown (signalExitCode ctx.Signal)
 
+                            killLiveChildren true
                             settleKills ()
                 )
 

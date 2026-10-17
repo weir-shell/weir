@@ -853,7 +853,15 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   second signal mid-teardown hard-exits, the double-Ctrl+C escape)
   [D:sighup-teardown]. `nohup weir …` keeps SIGHUP ignored.
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
-  cancel) tree-kills the running foreground command too, scoped or not.
+  cancel, a `kill -INT`) tree-kills the running foreground command and
+  every fan-out arm's command too, scoped or not [D:sigint-reaps]; an
+  arm the teardown kills is the teardown, never a "command failed"
+  [D:teardown-kill-not-failure]. The tree kill reaches every
+  descendant still linked to the command by parent pid (a `setsid`
+  child included); one that daemonized away (`(cmd &)`) is out of
+  reach [D:tree-kill-walk]. An `always` cleanup running or about to
+  start when the signal lands runs whole, its commands too, then the
+  signal's exit [D:teardown-never-preempts].
   A `pmap`/`piter`/`pfirst` takes no new arm after the signal (or the
   closed stdout), and arms already running are cut at their next
   builtin call, command, sleep or wait and JOINED before any

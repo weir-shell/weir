@@ -142,6 +142,7 @@ let private spawn
         nulRefusal $"the env value for '{k}'" v
 
     Session.sigpipeForChildren.Force()
+    Session.resetDetachedSigint.Force()
     let psi = ProcessStartInfo(prog)
 
     for a in args do
@@ -282,8 +283,10 @@ type CommandFailure(code: int, signalNote: string, shown: string) =
 
 let private raiseNonzero (s: Spec) (code: int) =
     // a child killed by a teardown is the teardown's, not a failure
-    // [D:signal-main-unwind]
+    // [D:signal-main-unwind] — on an arm too, which the teardown cuts
+    // [D:teardown-kill-not-failure]
     Session.checkTeardown ()
+    Session.checkCancelled ()
     let shown = showArgv (s.Prog :: s.Args)
 
     let signalNote =
