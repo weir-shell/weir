@@ -1,6 +1,6 @@
 # PLAN — the third bug hunt (daily-driver W3)
 
-Status: ROUND 1 FIXED (2026-10-16) — 37 confirmed (8 high, 29 medium), all fixed on plan/hunt3 (PLAN-hunt3-fixes, PLAN-kestrel). Round 2 (same areas + regressions from the fixes) is next, after landing.
+Status: ROUND 1 FIXED (2026-10-16) — 37 confirmed (8 high, 29 medium), all fixed on plan/hunt3 (PLAN-hunt3-fixes, PLAN-kestrel), landed as #376. ROUND 2 RUNNING (2026-10-17) — see the last section.
 
 Source plan: PLAN-daily-driver.md W3. Black-box, medium and above only;
 lows go straight to BACKLOG. The loop stops at the first round with no
@@ -185,3 +185,34 @@ D alone at the end on a quiet machine. Then the coordinator:
 
 If round 1 finds no high/medium, W3 is done; otherwise round 2 after
 the fixes land, over the same areas plus regressions from the fixes.
+
+## Round 2 (2026-10-17)
+
+Same method, severity and operating rules as round 1. Target: the AOT
+binary from main @ ae61572 at `/output/tmp/weir-h3r2/Weir`; scratch
+under `/output/tmp/h3r2-<area>/`. Round 1's findings and repros
+(`/output/tmp/h3-findings.md`, `/output/tmp/h3-*/`) are the baseline: a
+round-1 repro that still reproduces is a finding (fix incomplete).
+
+What round 1 landed, so what can regress (the areas each brief re-probes
+beside its own):
+
+- the fixes (PLAN-hunt3-fixes Stages 1–3): tty sanitizing of printerr/
+  Log/Self.prompt/`-e`, Secret masking in Args.load and header
+  refusals, signal teardown (`always` spawns, pmap/piter stop, SIGHUP),
+  pfirst cancel-and-join (R2) incl. the pipe-read cut, REPL `^C` cuts,
+  env-key `=` refusal, owner-only temp files, plan guards (Http method
+  classes, stale reads, writeAtomic, `within tmp`), gen types (int-or-
+  string, integer enums, validation-keyword notes), JSON depth, TOML
+  local date-time, Yaml duplicate keys, the three perf fixes;
+- `serve` rebuilt on Kestrel (PLAN-kestrel): limits, pipelining, the
+  listener's 404/505 answers, streamErrors, scope-close drain;
+- the binary-size trims (PLAN-binary-size, `ILLink.Substitutions.xml`):
+  stack-trace data, FSharp.Core resources, F# signature resources, the
+  regex NonBacktracking engine and Kestrel HTTP/2-3 are gone — anything
+  that printed, reflected or matched through them;
+- the cross-platform fixes (Path.normalize at a drive root, Path.glob
+  with a native prefix, the plan guard's path comparison).
+
+Waves: B+E+F, then C, then D alone. A rides the user's dispatch of
+`hunt3-xplat.yml` on main (ubuntu the control).
