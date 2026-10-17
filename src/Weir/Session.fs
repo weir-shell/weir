@@ -220,46 +220,6 @@ let createPrivateDir (dir: string) : unit =
         )
         |> ignore
 
-// pfirst's loser tree-kill [D:seq-pfirst]: an arm registers its live
-// children in its race group (AsyncLocal — the registration follows
-// the arm's logical context, the same keying as cwd/env). The winner
-// condemns every other group: registered trees die, and a child
-// spawned after condemnation dies at registration (the race window a
-// plain bag would leak).
-type RaceGroup() =
-    let procs =
-        System.Collections.Concurrent.ConcurrentBag<System.Diagnostics.Process>()
-
-    let mutable condemned = false
-
-    member _.Register(p: System.Diagnostics.Process) =
-        if condemned then
-            try
-                p.Kill true
-            with _ ->
-                ()
-        else
-            procs.Add p
-
-    member _.Condemn() =
-        condemned <- true
-
-        for p in procs do
-            try
-                p.Kill true
-            with _ ->
-                ()
-
-let private raceGroup = System.Threading.AsyncLocal<RaceGroup option>()
-
-let enterRace (g: RaceGroup) : unit = raceGroup.Value <- Some g
-let exitRace () : unit = raceGroup.Value <- None
-
-let registerChild (p: System.Diagnostics.Process) : unit =
-    match raceGroup.Value with
-    | Some g -> g.Register p
-    | None -> ()
-
 // script argv, for the Args module scanners (script-only semantics:
 // the REPL leaves this empty)
 let mutable ScriptArgs: string list = []
@@ -323,6 +283,66 @@ let runningCleanup (f: unit -> 'a) : 'a =
         cleanupDepth.Value <- cleanupDepth.Value - 1
 
 let inCleanup () = cleanupDepth.Value > 0
+
+// a tree kill in flight [D:kill-settle]: .NET's Kill(true) on Unix
+// stops the tree, then kills it, so a process exiting between the two
+// leaves SIGSTOPped orphans — every exit path settles the kills in flight
+let mutable private killsInFlight = 0
+
+/// tree-kill `p` (a dead or reaped process is no error)
+let killTree (p: System.Diagnostics.Process) : unit =
+    System.Threading.Interlocked.Increment &killsInFlight |> ignore
+
+    try
+        try
+            p.Kill true
+        with _ ->
+            ()
+    finally
+        System.Threading.Interlocked.Decrement &killsInFlight |> ignore
+
+/// wait (bounded) for every tree kill in flight to finish
+let settleKills () : unit =
+    let clock = System.Diagnostics.Stopwatch.StartNew()
+
+    while System.Threading.Volatile.Read &killsInFlight > 0
+          && clock.ElapsedMilliseconds < 2000L do
+        System.Threading.Thread.Sleep 5
+
+// pfirst's loser tree-kill [D:seq-pfirst]: an arm registers its live
+// children in its race group (AsyncLocal — the registration follows
+// the arm's logical context, the same keying as cwd/env). The winner
+// condemns every other group: registered trees die, and a child
+// spawned after condemnation dies at registration (the race window a
+// plain bag would leak). A child an `always` cleanup starts never joins
+// the group — the cut stops the body, never its cleanup
+// [D:teardown-always-spawns]; the race joins the arm, so it joins them.
+type RaceGroup() =
+    let procs =
+        System.Collections.Concurrent.ConcurrentBag<System.Diagnostics.Process>()
+
+    let mutable condemned = false
+
+    member _.Register(p: System.Diagnostics.Process) =
+        if inCleanup () then ()
+        elif condemned then killTree p
+        else procs.Add p
+
+    member _.Condemn() =
+        condemned <- true
+
+        for p in procs do
+            killTree p
+
+let private raceGroup = System.Threading.AsyncLocal<RaceGroup option>()
+
+let enterRace (g: RaceGroup) : unit = raceGroup.Value <- Some g
+let exitRace () : unit = raceGroup.Value <- None
+
+let registerChild (p: System.Diagnostics.Process) : unit =
+    match raceGroup.Value with
+    | Some g -> g.Register p
+    | None -> ()
 
 // ---- the main-thread teardown [D:signal-main-unwind] [D:stdout-epipe] --
 // A signal or a closed stdout ends the script, but the teardown — every
@@ -530,10 +550,7 @@ let private killLiveChildren () : unit =
 
         for kv in liveProcs do
             if killedProcs.Add kv.Value then
-                try
-                    kv.Value.Kill true
-                with _ ->
-                    ()
+                killTree kv.Value
     finally
         spawnGate.ExitWriteLock()
 
@@ -561,15 +578,16 @@ let private sweepLiveTmpDirs () =
         | _ -> ()
 
     for kv in liveProcs do
-        try
-            kv.Value.Kill true
-        with _ ->
-            ()
+        killTree kv.Value
 
         try
             kv.Value.WaitForExit()
         with _ ->
             ()
+
+    // a race's kill still walking a tree on another thread finishes
+    // before the process does [D:kill-settle]
+    settleKills ()
 
     for kv in liveTmpDirs do
         try
@@ -689,8 +707,10 @@ let exitCodeOr (code: int) : int =
     match System.Threading.Volatile.Read &teardownCode with
     | 0 -> code
     | c ->
-        // a requested teardown's kill completes before the exit
+        // a requested teardown's kill completes before the exit, every
+        // other tree kill in flight with it [D:kill-settle]
         killLiveChildren ()
+        settleKills ()
         c
 
 /// a parallel worker stops taking arms once a teardown is requested
@@ -1057,10 +1077,9 @@ let registerForeground (p: System.Diagnostics.Process) : unit =
                         // main thread's wait returns and runs the next statement
                         if System.Threading.Volatile.Read &hookInstalled.contents = 0 then
                             for kv in liveProcs do
-                                try
-                                    kv.Value.Kill true
-                                with _ ->
-                                    ()
+                                killTree kv.Value
+
+                            settleKills ()
                 )
 
             hookRoots <- (reg :> obj) :: hookRoots

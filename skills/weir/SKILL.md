@@ -702,8 +702,8 @@ print $"{key} -> {value}"
   every loser before returning — AFTER `pfirst` RETURNS, NO LOSER
   EFFECT RUNS [D:pfirst-join]; a loser busy in pure computation holds
   the return until it reaches one, and a loser's `always` cleanup
-  still runs (before the return). `exit n` in an arm ends the race
-  and the script, as in `pmap`.
+  still runs whole, its commands included (before the return). `exit n`
+  in an arm ends the race and the script, as in `pmap`.
 - A SCOPED background process is `within proc srv = <command>` +
   an indented block [D:scoped-procs]: the scope IS the lifetime —
   at every exit (normal or raise) the process TREE is killed and

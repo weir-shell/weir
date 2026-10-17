@@ -182,6 +182,11 @@
   `within lock` was released and an `always` had begun; each now stops
   at its next builtin call, command or sleep, and the script waits for
   them before closing any scope.
+- **A `pfirst` loser's `always` commands run.** They were killed as
+  they started (exit 137) and the rest of the cleanup was skipped.
+- **A signal during `pfirst` races leaves no stopped processes.** A
+  loser's child could be left SIGSTOPped, orphaned and holding the
+  terminal.
 - **`Args.load` no longer echoes a secret given as `--token=VALUE`.**
   The message reads `unknown flag '--token=***' — … write '--token
   <value>'` for a `Secret` field, and an unknown `--name=value` flag is

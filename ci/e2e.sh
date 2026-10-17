@@ -57,6 +57,7 @@ BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 # `$` so one run's marker is never a prefix of another's.
 MK=$(( 100000 + ($$ % 400000) * 10 ))
 MK1=$((MK + 1)); MK2=$((MK + 2)); MK3=$((MK + 3)); MK4=$((MK + 4)); MK5=$((MK + 5)); MK6=$((MK + 6))
+MK7=$((MK + 7))
 
 # POSIX-only harnesses (os.fork, pty, zombies) get stated skips on
 # Windows — a skip echoes its reason, never silence
@@ -3159,6 +3160,40 @@ WEOF
     [ "$code" = "143" ] || fail "jointmp: SIGTERM must exit 143 (got $code)"
     [ "$(find "$jtmp" -mindepth 1 -maxdepth 1 | wc -l)" = "0" ] || fail "jointmp: an arm recreated the within-tmp dir after the teardown: $(find "$jtmp")"
     echo "e2e ok: a teardown cuts and joins in-flight piter/pmap/pfirst arms before always runs; within tmp leaves nothing"
+
+    # a signal during pfirst races never leaves SIGSTOPped orphans
+    # [D:kill-settle]: .NET's tree kill stops, then kills, so every
+    # exit settles the race kills in flight first
+    cat > "$dtdir/stopped.weir" <<WEOF
+within
+    [1..500] |> Seq.iter (fun i ->
+        let _w =
+            [0..8] |> Seq.pfirstWith 9 (fun k ->
+                if k == 0 then
+                    Duration.sleep 20ms
+                    k
+                else
+                    let _c = sh -c "sleep $MK7; echo x" | exitCode
+                    k)
+        ())
+always
+    print "always"
+WEOF
+    stopped=0
+    for r in 1 2 3 4 5 6 7 8 9; do
+        case $((r % 3)) in 0) sig=INT ;; 1) sig=TERM ;; *) sig=HUP ;; esac
+        setsid "$BIN" "$dtdir/stopped.weir" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        sleep "0.$((3 + r % 7))"
+        kill -"$sig" "$wpid" 2>/dev/null || true
+        wait "$wpid" 2>/dev/null || true
+        sleep 0.5
+        n=$(ps -eo stat=,args= | awk -v m="sleep $MK7" '$1 ~ /T/ && ($2 " " $3) == m' | wc -l)
+        stopped=$((stopped + n))
+        pkill -9 -f "^sleep $MK7\$" 2>/dev/null || true
+    done
+    [ "$stopped" = "0" ] || fail "a signal during pfirst races left $stopped SIGSTOPped orphan(s)"
+    echo "e2e ok: signals during pfirst races leave no SIGSTOPped orphan (9 runs)"
 else
     echo "e2e skip: detached-signal pins (POSIX + setsid + pgrep)"
 fi
@@ -10014,6 +10049,26 @@ jout=$($BIN "$pfdir/pfjoin.weir" 2>&1) || fail "pfirst join script failed: $jout
 took=$(( $(now_ms) - start_ms ))
 [ "$jout" = "winner: 2 log: body 2,cleanup 1,cleanup 2" ] || fail "pfirst joins its losers (cut body, cleanup kept): $jout"
 [ "$took" -lt 2500 ] || fail "the loser's sleep must be cut, not waited out (took ${took}ms)"
+# a loser's cleanup runs whole [D:teardown-always-spawns]: a command its
+# `always` starts after the loss is exempt from the race kill, and the race
+# joins it before returning
+cat > "$pfdir/pfalw.weir" <<WEOF
+let w = ["lose"; "win"] |> Seq.pfirst (fun k ->
+    if k == "win" then
+        Duration.sleep 300ms
+        k
+    else
+        within
+            Duration.sleep 10s
+        always
+            sh -c "sleep 0.3; echo cleanup-cmd >> $pfdir/alw.log"
+            File.append "$pfdir/alw.log" ["cleanup end"]
+        "lose")
+let log = File.read "$pfdir/alw.log" |> Str.join ","
+print \$"winner={w} log={log}"
+WEOF
+aout=$($BIN "$pfdir/pfalw.weir" 2>&1) || fail "pfirst loser-cleanup script failed: $aout"
+[ "$aout" = "winner=win log=cleanup-cmd,cleanup end" ] || fail "a pfirst loser's always command must run, not die with the race kill: $aout"
 # exit n in an arm ends the race and the script [D:pfirst-join]
 xrc=0
 $BIN -e '[1; 2] |> Seq.pfirst (fun i -> match i with | 1 -> exit 3 ; 0 | _ -> Duration.sleep 300ms ; i)' >/dev/null 2>&1 || xrc=$?
@@ -10026,7 +10081,7 @@ echo "$out" | grep -qF "seven dies" || fail "first error by input order: $out"
 out=$($BIN -e '[] |> Seq.pfirst (fun n -> n)' 2>&1) && fail "empty must raise" || true
 echo "$out" | grep -qF "a race needs at least one arm" || fail "empty names Seq.isEmpty: $out"
 rm -rf "$pfdir"
-echo "e2e ok: Seq.pfirst (winner fast, loser tree killed — bare AND scoped, winner's scoped child survives, losers joined with cleanups kept, exit ends the race, first-by-order error, empty names the guard)"
+echo "e2e ok: Seq.pfirst (winner fast, loser tree killed — bare AND scoped, winner's scoped child survives, losers joined with cleanups kept — their commands too, exit ends the race, first-by-order error, empty names the guard)"
 
 # a loser's within-tmp cleanup does run — the `finally` executes on the
 # loser's own (un-aborted) thread once its killed child fails; here the

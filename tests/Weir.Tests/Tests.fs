@@ -27470,6 +27470,33 @@ let hunt3BehaviourTests =
                       (VStr "1"))
           } ]
 
+// hunt 3 round 2's cancellation seams; the signal, stdin and pty halves are
+// e2e cells
+let hunt3r2CancelTests =
+    testSequenced
+    <| testList
+        "hunt-3r2 cancellation"
+        [ test "a condemned race group spares a child its cleanup starts [D:teardown-always-spawns]" {
+              skipOnWindows ()
+              let g = Weir.Session.RaceGroup()
+              g.Condemn()
+              let sleeper () = System.Diagnostics.Process.Start("sleep", "10")
+              let spared = sleeper ()
+              let killed = sleeper ()
+
+              try
+                  Weir.Session.runningCleanup (fun () -> g.Register spared)
+                  g.Register killed
+                  Expect.isTrue (killed.WaitForExit 5000) "a body's late child dies at registration"
+                  Expect.isFalse spared.HasExited "a cleanup's child runs on"
+              finally
+                  for p in [ spared; killed ] do
+                      try
+                          p.Kill true
+                      with _ ->
+                          ()
+          } ]
+
 let sweepFindingTests =
     let msgs file lines = diagsIn file lines |> List.map (fun d -> d.Message)
 
@@ -28268,6 +28295,7 @@ let allTests =
         [ hardeningTests
           teardownSeamTests
           hunt3BehaviourTests
+          hunt3r2CancelTests
           argsSecretEchoTests
           hunt3BehaviorTests
           docsBinaryTests
