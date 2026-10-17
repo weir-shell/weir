@@ -638,7 +638,9 @@ print $"{key} -> {value}"
   check error) and `show` masks it. Status is DATA (`if resp.status >=
   400 then fail …`, a 404 binds); only TRANSPORT failure raises, naming
   the host that failed — a redirect's target, not the origin (and a
-  redirect loop — past 50 hops it raises, naming it). `auth` plus an
+  redirect loop — past 50 hops it raises, naming it). The proxy comes
+  from `HTTP_PROXY`/`HTTPS_PROXY`; a `NO_PROXY` entry bypasses it, `*`
+  for every host. `auth` plus an
   explicit `Authorization` header is refused (two credentials). A
   header the wire cannot carry raises before anything is sent, naming
   the header — a CR/LF/NUL byte, a non-token name (`"Bad Name"`), a

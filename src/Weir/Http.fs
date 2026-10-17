@@ -175,7 +175,9 @@ let private maxTimerMs = int64 Int32.MaxValue - 1L
 // NO_PROXY against an IPv6 literal [D:noproxy-v6]: .NET matches entries
 // against the bracketed host, so `::1` never bypassed `http://[::1]` and
 // `[::1]` did. An entry names the address as curl reads it — bracket-less,
-// compared as an address (or `*`); every other host keeps the runtime's rule.
+// compared as an address; every other host keeps the runtime's rule.
+// A `*` entry bypasses every host [D:noproxy-star] — the runtime's rule
+// knows no wildcard.
 type private V6NoProxy(inner: Net.IWebProxy) =
     let entries =
         lazy
@@ -194,16 +196,19 @@ type private V6NoProxy(inner: Net.IWebProxy) =
         | true, host ->
             entries.Value
             |> List.exists (fun e ->
-                e = "*"
-                || (match Net.IPAddress.TryParse e with
-                    | true, a -> a.Equals host
-                    | _ -> false))
+                match Net.IPAddress.TryParse e with
+                | true, a -> a.Equals host
+                | _ -> false)
         | _ -> false
 
     let isV6 (u: Uri) = u.HostNameType = UriHostNameType.IPv6
 
+    let star = lazy (entries.Value |> List.contains "*")
+
     let proxyFor (u: Uri) : Uri =
-        if not (isV6 u) then
+        if star.Value then
+            null
+        elif not (isV6 u) then
             inner.GetProxy u
         elif listed u then
             null
@@ -220,7 +225,7 @@ type private V6NoProxy(inner: Net.IWebProxy) =
         member _.GetProxy(u: Uri) = proxyFor u
 
         member _.IsBypassed(u: Uri) =
-            if isV6 u then isNull (proxyFor u) else inner.IsBypassed u
+            if star.Value || isV6 u then isNull (proxyFor u) else inner.IsBypassed u
 
 /// the host a transport error names: the URL's host, or the whole URL
 /// when it would not parse — redacted [D:url-redact], since a

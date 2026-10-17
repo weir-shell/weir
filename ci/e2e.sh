@@ -10690,6 +10690,25 @@ WEOF
     echo "$out" | grep -qF "control-status=200" || { kill $hsrv 2>/dev/null || true; fail "F3: a clean header must send fine: $out"; }
     echo "e2e ok: Http F3 outbound header injection refused (CR/LF/NUL in a request header, located, control sends clean)"
 
+    # NO_PROXY=* bypasses the proxy for every host [D:noproxy-star], not
+    # only an IPv6 literal: the proxy is a dead port, so a request that
+    # went through it fails. The control (an unrelated NO_PROXY entry)
+    # must fail — else this host ignores the proxy env and the pin proves
+    # nothing.
+    cat > "$hdir/star.weir" <<WEOF
+let r = Http.send (Http.get "http://127.0.0.1:$hport/x")
+print \$"star-status={r.status}"
+WEOF
+    viaDead() { env HTTP_PROXY=http://127.0.0.1:1 http_proxy=http://127.0.0.1:1 NO_PROXY="$1" no_proxy="$1" "$BIN" "$hdir/star.weir" 2>&1; }
+    if ctl=$(viaDead example.invalid); then
+        echo "e2e SKIP: this host ignores HTTP_PROXY ($ctl) — NO_PROXY=* pin not run" >&2
+    else
+        out=$(viaDead '*') || { kill $hsrv 2>/dev/null || true; fail "NO_PROXY=* must bypass the proxy for 127.0.0.1: $out"; }
+        echo "$out" | grep -qF "star-status=200" || { kill $hsrv 2>/dev/null || true; fail "NO_PROXY=* direct send: $out"; }
+        out=$(viaDead 'example.invalid,*') || { kill $hsrv 2>/dev/null || true; fail "a * entry in a list must bypass too: $out"; }
+        echo "e2e ok: Http NO_PROXY=* bypasses the proxy for every host (control routes through it)"
+    fi
+
     kill $hsrv 2>/dev/null || true
 
     # transport failure raises, in its own words per case [D:transport-words];
