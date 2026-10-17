@@ -12936,6 +12936,14 @@ echo "e2e ok: tty-sink printerr, Log, Self.prompt and the -e echo sanitized at a
 crout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" -e 'printerr ("50%" + (Str.fromBase64 "DQ==") + "100%" + (Str.fromBase64 "Gw==") + "]0;CR")' 2>&1)
 echo "$crout" | grep -qF '50%\r100%\\x1b]0;CR' || fail "tty-cr: printerr must pass a bare CR raw and defang the OSC: $crout"
 echo "e2e ok: tty-cr a bare CR passes printerr at a tty, the OSC beside it stays visible"
+# Args.load --help rides the tty sanitizer [D:tty-help-sanitize]
+printf 'type Cli = {\n    /// be verbose \033]0;HELP\007\n    verbose: bool\n}\nlet cli = Args.load Cli\nprint (show cli.verbose)\n' > "$svdir/help-osc.weir"
+sout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" "$svdir/help-osc.weir" --help 2>&1)
+echo "$sout" | grep -qF 'be verbose \\x1b]0;HELP\\x07' || fail "tty-help: --help must render the doc's OSC visible at a tty: $sout"
+$BIN "$svdir/help-osc.weir" --help > "$svdir/help-osc.out" 2>&1 || fail "tty-help: --help must exit 0"
+python3 -c "import sys; sys.exit(0 if b'\x1b]0;HELP\x07' in open('$svdir/help-osc.out','rb').read() else 1)" \
+    || fail "tty-help: redirected --help must stay byte-faithful"
+echo "e2e ok: tty-help Args.load --help doc text sanitized at a tty, byte-faithful when redirected"
 # every diagnostic sink rides the tty sanitizer [D:tty-diag-sanitize]:
 # check's import path, the run's parse/type source echo, the invalid-regex
 # message, the #sig name and `no such script` render an OSC visible at a

@@ -3617,7 +3617,8 @@ let private argvLoad (target: ArgsTarget) : Value =
     let argv = Session.ScriptArgs
 
     if List.contains "--help" argv || List.contains "-h" argv then
-        printfn "%s" (argvUsage target argv)
+        // the `///` doc text is the script's data [D:tty-help-sanitize]
+        printfn "%s" (argvUsage target argv |> sanitizeIfTty System.Console.IsOutputRedirected)
         raise (ExitRequest 0)
 
     match target with
