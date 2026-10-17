@@ -27767,6 +27767,17 @@ let hunt3r3PromptKeyTests =
               Expect.equal (drop "a\u001b") "a\u001b" "a lone ESC is kept"
           } ]
 
+let hunt3r3UnreadTests =
+    testSequenced
+    <| testList
+        "hunt-3r3 stdin put-back"
+        [ test "a line put back is the next prompt's, in order [D:repl-lookahead-unread]" {
+              Weir.Session.Stdin.unread "two"
+              Weir.Session.Stdin.unread "one"
+              Expect.equal (Weir.Session.Stdin.readPromptLine ()) "one" "the last put back is first"
+              Expect.equal (Weir.Session.Stdin.readPromptLine ()) "two" "then the earlier one"
+          } ]
+
 let sweepFindingTests =
     let msgs file lines = diagsIn file lines |> List.map (fun d -> d.Message)
 
@@ -28665,6 +28676,7 @@ let allTests =
           hunt3r3TreeKillTests
           hunt3r3FifoTests
           hunt3r3PromptKeyTests
+          hunt3r3UnreadTests
           argsSecretEchoTests
           hunt3BehaviorTests
           docsBinaryTests

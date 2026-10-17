@@ -1297,6 +1297,25 @@ module Stdin =
     /// the end of input
     let readLine () : string = readWith true
 
+    /// put a line read ahead back in front of the buffer, so the next weir
+    /// reader — a `Self.prompt` included — takes it [D:repl-lookahead-unread]
+    let unread (line: string) : unit =
+        lock gate (fun () ->
+            let bytes = System.Text.Encoding.UTF8.GetBytes(line + "\n")
+            let n = bytes.Length
+
+            if lo >= n then
+                lo <- lo - n
+            else
+                let bigger = Array.zeroCreate (max buf.Length (n + hi - lo))
+                System.Buffer.BlockCopy(buf, lo, bigger, n, hi - lo)
+                hi <- n + hi - lo
+                lo <- 0
+                buf <- bigger
+
+            System.Buffer.BlockCopy(bytes, 0, buf, lo, n)
+            scanned <- lo)
+
     /// a terminal answer without the key sequences cooked mode passes
     /// through [D:prompt-tty-keys]: CSI (ESC [ … final) and SS3 (ESC O x) —
     /// an arrow, Home or Delete is ignored

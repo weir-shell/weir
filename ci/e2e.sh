@@ -13474,6 +13474,15 @@ out=$(cd "$w2dir" && XDG_CONFIG_HOME="$w2dir/cfg" XDG_STATE_HOME="$w2dir/st" "$B
 [ "$(echo "$out" | grep -c 'echo cap: 100')" = 2 ] || fail "a directive after a block must run as a directive: $out"
 echo "$out" | grep -qF "parse error" && fail "a directive after a block must not be parsed as code: $out"
 echo "e2e ok: piped REPL — a directive never continues the block above it"
+# the piped REPL's lookahead line goes back to weir's stdin buffer
+# [D:repl-lookahead-unread]: a Self.prompt in the entry reads the next
+# line (the answer), which never runs as a command
+printf 'let ok = Self.prompt "go?"\nANSWER\nprint $"ok=[{ok}]"\nlet two = Self.prompt "again?"\n#echo\nprint $"two=[{two}]"\n' >"$w2dir/prompt.txt"
+out=$(cd "$w2dir" && XDG_CONFIG_HOME="$w2dir/cfg" XDG_STATE_HOME="$w2dir/st" "$BIN" <"$w2dir/prompt.txt" 2>&1)
+echo "$out" | grep -qF "ok=[ANSWER]" || fail "a piped REPL Self.prompt must read the next line: $out"
+echo "$out" | grep -qF "two=[#echo]" || fail "a looked-ahead directive line must reach the prompt: $out"
+echo "$out" | grep -qF "unknown command" && fail "the prompt's answer ran as a command: $out"
+echo "e2e ok: piped REPL — Self.prompt reads the line after its statement"
 # GUIDE "Lazy values": the stated outputs of the within cd / within env example
 cat >"$w2dir/lazy.weir" <<'WEOF'
 Dir.create "proj/src"
