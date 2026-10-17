@@ -12268,6 +12268,41 @@ let optionSweepTests =
               let ex = Expect.throwsC (fun () -> run "Str.sub 0 4 \"a😀b\"" |> ignore) id
               Expect.stringContains ex.Message "string length 3" ""
           }
+          test "a long string's code-point index agrees with the walk [D:str-code-points]" {
+              // the reference: positions by a plain walk, a pair one position
+              let walk (s: string) =
+                  [| let mutable i = 0
+
+                     while i < s.Length do
+                         yield i
+                         i <- i + (if System.Char.IsSurrogatePair(s, i) then 2 else 1)
+
+                     yield s.Length |]
+
+              let lone = string (char 0xD800)
+
+              for s in
+                  [ String.replicate 1000 "a"
+                    String.replicate 300 "a😀"
+                    String.replicate 130 "😀" + lone + String.replicate 200 "b"
+                    String.replicate 64 "a" + "😀" + String.replicate 400 "c" ] do
+                  let offs = walk s
+                  let n = offs.Length - 1
+                  Expect.equal (CodePoints.length s) n $"length of a {s.Length}-unit string"
+
+                  for cp in [ 0; 1; 63; 64; 65; 127; 128; n - 1; n; n + 5 ] do
+                      let want = offs[min (max cp 0) n]
+                      Expect.equal (CodePoints.offset s cp) want $"offset {cp}"
+
+                  for cp in [ 0; 64; n - 1 ] do
+                      Expect.equal (CodePoints.ofOffset s offs[cp]) cp $"ofOffset at code point {cp}"
+
+                  Expect.equal (CodePoints.sub s (n - 1) 1) (s.Substring(offs[n - 1])) "the last code point"
+
+              expectValue "Str.sub 599 1 (Str.replicate 300 \"a😀\")" (VStr "😀")
+              expectValue "(Str.replicate 300 \"a😀\")[^1..]" (VStr "😀")
+              expectValue "Str.length (Str.replicate 300 \"a😀\")" (VInt 600)
+          }
           test "match on Seq.tryHead pins the full idiom" {
               expectValue "match ls |> Seq.tryHead with | Some f -> f.name | None -> \"empty\"" (VStr "a.txt")
           } ]

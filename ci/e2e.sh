@@ -7094,6 +7094,33 @@ expect "glob: ** apart yields each path once" "apart=r/a/y.gz,r/a/b/z.gz" "$out"
 echo "e2e ok: glob segments match linearly (7-star miss in ${elapsed}ms) and a repeated ** dedupes"
 rm -rf "$pgdir" "$big"
 
+# frozen seqs know their length and index [D:seq-index-o1], and a long
+# string's code points are indexed once [D:str-code-points]: each loop
+# below was quadratic at 100k (16-54s each); a generous ceiling catches
+# the regression without flaking on load
+o1dir=$(mkweirtmp)
+cat > "$o1dir/o1.weir" <<'WEOF'
+let n = 100000
+let xs = [1..n] |> Seq.freeze
+let a = [1..n] |> Seq.map (fun _ -> Seq.length xs) |> Seq.sum
+let b = [0..(n - 1)] |> Seq.map (fun i -> xs[i] + Seq.item i xs) |> Seq.sum
+let c = [1..n] |> Seq.map (fun _ -> xs[^1] + Seq.last xs) |> Seq.sum
+let d = [0..(n - 1)] |> Seq.choose (fun i -> Seq.tryItem i xs) |> Seq.length
+let s = Str.replicate n "a"
+let e = [1..n] |> Seq.map (fun _ -> Str.length s) |> Seq.sum
+let f = [0..(n - 1)] |> Seq.map (fun i -> Str.sub i 1 s + s[i..i]) |> Seq.where (fun t -> t == "aa") |> Seq.length
+let w = Str.replicate (n / 2) "a😀"
+let g = [0..(n - 1)] |> Seq.map (fun i -> Str.sub i 1 w) |> Str.join ""
+print $"{a} {b} {c} {d} {e} {f} {Str.length w} {g == w}"
+WEOF
+start=$(now_ms)
+out=$(timeout 120 $BIN "$o1dir/o1.weir" 2>&1) || fail "O(1) length/index loops: $out"
+elapsed=$(($(now_ms) - start))
+expect "frozen length/index and string positions" "10000000000 10000100000 20000000000 100000 10000000000 100000 100000 true" "$out"
+[ "$elapsed" -lt 10000 ] || fail "frozen-seq / string-position loops ceiling: ${elapsed}ms (quadratic regression?)"
+echo "e2e ok: frozen seqs index in O(1), long strings index code points once (${elapsed}ms for 9 x 100k)"
+rm -rf "$o1dir"
+
 # ---- Seq.distinct [D:seq-distinct]: dedupe as a pipeline stage ----
 
 sddir=$(mkweirtmp)
