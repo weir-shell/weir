@@ -2191,6 +2191,11 @@ let private resolver (state: State) : Parser.Resolver =
                 else
                     Map.tryFind n state.Aliases |> Option.map (fun a -> (a.Exe, a.Prefix)) }
 
+// a diagnostic line echoes the entry, a path, a pattern
+// [D:tty-diag-sanitize]
+let private diagLine (s: string) =
+    Console.WriteLine(Eval.sanitizeIfTty Console.IsOutputRedirected s)
+
 let private printHint (state: State) (line: string) =
     Diagnose.hint
         (fun n ->
@@ -2199,7 +2204,7 @@ let private printHint (state: State) (line: string) =
         Builtins.commandCallable.Contains
         Extern.exists
         line
-    |> Option.iter (fun h -> Console.WriteLine $"hint: {h}")
+    |> Option.iter (fun h -> diagLine $"hint: {h}")
 
 // The last-result binding [D:repl-it], FSI parity: expressions and
 // commands rebind `it` — always, unit included (a streamed bare
@@ -3773,11 +3778,11 @@ let rec private loop (state: State) =
                 // [D:assembly-col], as a parse error shows its line
                 match Script.assemblyErrorAt numbered msg with
                 | Some(l, c, _) when l >= 1 && l <= srcLines.Length ->
-                    Console.WriteLine srcLines[l - 1]
+                    diagLine srcLines[l - 1]
                     Console.WriteLine(String(' ', c - 1) + "^")
                 | _ -> ()
 
-                Console.WriteLine msg
+                diagLine msg
                 state
             | Ok lls ->
                 lls
@@ -3804,7 +3809,7 @@ let rec private loop (state: State) =
                                 else
                                     ""
 
-                            Console.WriteLine src
+                            diagLine src
 
                             Console.WriteLine(
                                 Types.Color.red Types.Color.onStdout.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
@@ -3816,7 +3821,7 @@ let rec private loop (state: State) =
                             // saying it is one (check says
                             // `error [parse]`, the runner says
                             // `parse error:`)
-                            Console.WriteLine(
+                            diagLine (
                                 if d.Parse then
                                     $"parse error: {d.Message}"
                                 else
@@ -3827,7 +3832,7 @@ let rec private loop (state: State) =
                             // multiline arm's copy of the single-line
                             // append [D:repl-it]
                             (if not d.Parse && lastStreamed.IsSome && referencesIt ll.Text then
-                                 Console.WriteLine(streamedItRepair lastStreamed))
+                                 diagLine (streamedItRepair lastStreamed))
 
                             st
                         | Ok chk ->
@@ -3874,7 +3879,7 @@ let rec private loop (state: State) =
                 )
 
                 // labelled, like every other parse diagnostic weir prints
-                Console.WriteLine $"parse error: {d.Message}"
+                diagLine $"parse error: {d.Message}"
                 printHint state line
                 state
             | Error d ->
@@ -3886,13 +3891,13 @@ let rec private loop (state: State) =
 
                 (match d.Span with
                  | Some sp ->
-                     Console.WriteLine(
+                     diagLine (
                          Check.formatError
                              { Span = sp
                                Message = d.Message
                                Origin = None }
                      )
-                 | None -> Console.WriteLine d.Message)
+                 | None -> diagLine d.Message)
 
                 // the streamed-`it` misuse teach [D:repl-it]: `it` is
                 // unit-bound after a streamed statement (the latch holds
@@ -3901,7 +3906,7 @@ let rec private loop (state: State) =
                 // with the command verbatim. Fresh-session unbound `it`
                 // keeps the plain error (no latch, no repair).
                 (if not d.Parse && lastStreamed.IsSome && referencesIt line then
-                     Console.WriteLine(streamedItRepair lastStreamed))
+                     diagLine (streamedItRepair lastStreamed))
 
                 // hint only for expression and let forms;
                 // type/binder-pattern errors stay bare

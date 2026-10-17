@@ -230,6 +230,10 @@ let main argv =
 
     if Console.IsErrorRedirected then
         Console.Error.NewLine <- "\n"
+    else
+        // one choke point for every stderr diagnostic [D:tty-diag-sanitize]
+        Types.Waiting.control <- Console.Error
+        Console.SetError(new Eval.TtyErrWriter(Console.Error))
 
     // WEIR_LOG validates once, before anything runs — an invalid level
     // is a loud startup error, never a silent fallback [D:log-module]

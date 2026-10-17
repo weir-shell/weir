@@ -7798,6 +7798,7 @@ let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
                 Console.WriteLine(
                     Color.bold c $"{d.File}"
                     + ": this does not look like a weir script — the first statement could not be parsed"
+                    |> Eval.sanitizeIfTty Console.IsOutputRedirected
                 )
             | [] -> ()
 
@@ -7810,7 +7811,11 @@ let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
                 else
                     Color.red c $"error [{d.Code}]"
 
-            Console.WriteLine(Color.bold c $"{d.File}:{d.Line}:{d.Col}" + $": {sev}: {d.Message}")
+            // a message echoes source, paths, patterns [D:tty-diag-sanitize]
+            Console.WriteLine(
+                Color.bold c $"{d.File}:{d.Line}:{d.Col}" + $": {sev}: {d.Message}"
+                |> Eval.sanitizeIfTty Console.IsOutputRedirected
+            )
 
 let checkOnly (json: bool) (path: string) : int =
     match readEntryScript path with

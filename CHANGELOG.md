@@ -127,6 +127,13 @@
   carrying an OSC 52 (clipboard write), a title change or a screen
   clear shows as visible `\x1b…` text instead of driving the terminal.
   Redirected output is unchanged.
+- **weir's own error messages neutralize terminal escapes at a tty.**
+  `weir check` and the runner echoed a script's bytes raw — the source
+  line under a parse or type error, an unresolved import's path, an
+  invalid regex, a `#sig` name, `no such script: …` — so checking an
+  untrusted script could write the clipboard (OSC 52) or set the
+  window title. They now show as visible `\x1b…` text; colour and
+  redirected output are unchanged.
 - **A carriage return passes `print`, `printerr`, `Log.*` and the
   prompt at a tty** instead of showing as `\x0d`, so progress lines
   overwrite themselves again. Other control characters stay visible.

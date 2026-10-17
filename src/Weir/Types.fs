@@ -753,6 +753,10 @@ module Waiting =
 
     let mutable private depth = 0
 
+    /// the raw stderr under the tty sanitizer [D:tty-diag-sanitize] —
+    /// the indicator's own line erase is terminal control, not data
+    let mutable control: IO.TextWriter = null
+
     let private active () =
         not Console.IsErrorRedirected
         && Environment.GetEnvironmentVariable "TERM" <> "dumb"
@@ -795,7 +799,7 @@ module Waiting =
                 spinner.Join()
 
                 if drew.Value then
-                    Console.Error.Write "\r\u001b[2K"
+                    (if isNull control then Console.Error else control).Write "\r\u001b[2K"
 
                 Threading.Interlocked.Decrement(&depth) |> ignore
 

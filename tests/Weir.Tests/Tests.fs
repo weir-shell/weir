@@ -23041,6 +23041,24 @@ let ttySanitizeTests =
                   let shown = Weir.Eval.sanitizeTtyData (string (char n))
                   Expect.equal shown ("\\x" + n.ToString("x2")) $"0x{n:x2} stays visible"
           }
+          test "stderr at a tty rides the sanitizer: escapes visible, SGR and CR pass [D:tty-diag-sanitize]" {
+              let esc = string (char 0x1b)
+              let bel = string (char 0x07)
+              use sink = new System.IO.StringWriter()
+              sink.NewLine <- "\n"
+              use w = new Weir.Eval.TtyErrWriter(sink)
+              w.WriteLine("check.weir:1: no file at x" + esc + "]52;c;cm0=" + bel + ".weir")
+              w.Write(esc + "[31merror" + esc + "[0m")
+              w.Write('\r')
+              w.Write([| 'a'; char 0x1b; 'b' |], 0, 3)
+              w.Write(char 0x1b)
+              w.WriteLine()
+              let out = sink.ToString()
+              Expect.stringContains out "x\\x1b]52;c;cm0=\\x07.weir\n" "the OSC renders visible, the newline is the inner's"
+              Expect.stringContains out (esc + "[31merror" + esc + "[0m") "weir's SGR colour passes"
+              Expect.stringContains out "\ra\\x1bb\\x1b\n" "CR passes; buffer and char writes are sanitized too"
+              Expect.equal (out.Split(char 0x1b).Length - 1) 2 "the only raw ESCs are the SGR pair"
+          }
           test "sanitizeIfTty leaves redirected output byte-faithful, sanitizes a tty" {
               let hostile = string (char 0x1b) + "X"
               Expect.equal (Weir.Eval.sanitizeIfTty true hostile) hostile "redirected: raw (a pipe/file is byte-faithful)"

@@ -12605,6 +12605,30 @@ echo "e2e ok: tty-sink printerr, Log, Self.prompt and the -e echo sanitized at a
 crout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" -e 'printerr ("50%" + (Str.fromBase64 "DQ==") + "100%" + (Str.fromBase64 "Gw==") + "]0;CR")' 2>&1)
 echo "$crout" | grep -qF '50%\r100%\\x1b]0;CR' || fail "tty-cr: printerr must pass a bare CR raw and defang the OSC: $crout"
 echo "e2e ok: tty-cr a bare CR passes printerr at a tty, the OSC beside it stays visible"
+# every diagnostic sink rides the tty sanitizer [D:tty-diag-sanitize]:
+# check's import path, the run's parse/type source echo, the invalid-regex
+# message, the #sig name and `no such script` render an OSC visible at a
+# tty, while weir's own colour stays; redirected output stays raw
+dg="$svdir/diag"; mkdir -p "$dg"
+printf 'import "./x\033]52;c;DIAG\007.weir" as M\nprint "x"\n' > "$dg/imp.weir"
+printf 'let x = "a\033]52;c;DIAG\007b" + 1\nprint x\n' > "$dg/src.weir"
+printf 'let x = "a\033]52;c;DIAG\007b" +\nprint x\n' > "$dg/parse.weir"
+printf 'let f s =\n    match s with\n    | Regex @"(\033]52;c;DIAG\007" x -> x\n    | _ -> ""\nprint (f "a")\n' > "$dg/rx.weir"
+printf '#sig zz\033]52;c;DIAG\007\nprint "x"\n' > "$dg/sig.weir"
+for args in "check $dg/imp.weir" "$dg/imp.weir" "$dg/src.weir" "$dg/parse.weir" "check $dg/rx.weir" "$dg/rx.weir" \
+            "check $dg/sig.weir" "$dg/sig.weir" "$(printf "$dg/nope\033]52;c;DIAG\007.weir")"; do
+    # shellcheck disable=SC2086
+    dout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" $args 2>&1)
+    echo "$dout" | grep -qF '\\x1b]52;c;DIAG' || fail "tty-diag: weir $args must render the OSC visible at a tty: $dout"
+    echo "$dout" | grep -q '[^\\]\\x1b\]52' && fail "tty-diag: weir $args put a raw OSC on the tty: $dout" || true
+done
+dout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" "$dg/src.weir" 2>&1)
+echo "$dout" | grep -qF '\x1b[31mtype error' || fail "tty-diag: weir's own colour must survive the sanitizer: $dout"
+$BIN check "$dg/imp.weir" > "$dg/imp.out" 2>&1 || true
+$BIN "$dg/src.weir" 2> "$dg/src.err" || true
+python3 -c "import sys; sys.exit(0 if all(b'\x1b]52;c;DIAG\x07' in open(f,'rb').read() for f in sys.argv[1:]) else 1)" "$dg/imp.out" "$dg/src.err" \
+    || fail "tty-diag: redirected diagnostics must stay byte-faithful"
+echo "e2e ok: tty-diag check/run diagnostics (import path, source echo, regex, #sig, no such script) sanitized at a tty, byte-faithful when redirected"
 else
     echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"
 fi

@@ -836,6 +836,33 @@ let sanitizeTtyData (s: string) : string =
 let sanitizeIfTty (redirected: bool) (s: string) : string =
     if redirected then s else sanitizeTtyData s
 
+/// stderr at a tty [D:tty-diag-sanitize]: every write rides the data
+/// sanitizer, so a diagnostic echoing source, a path or a pattern
+/// cannot drive the terminal; weir's own SGR colouring passes
+type TtyErrWriter(inner: System.IO.TextWriter) =
+    inherit System.IO.TextWriter()
+    override _.Encoding = inner.Encoding
+
+    override _.NewLine
+        with get () = inner.NewLine
+        and set v = inner.NewLine <- v
+
+    override _.Write(c: char) = inner.Write(sanitizeTtyData (string c))
+
+    override _.Write(s: string) =
+        if not (isNull s) then
+            inner.Write(sanitizeTtyData s)
+
+    override _.Write(buffer: char[], index: int, count: int) =
+        inner.Write(sanitizeTtyData (System.String(buffer, index, count)))
+
+    override _.WriteLine() = inner.WriteLine()
+
+    override _.WriteLine(s: string) =
+        inner.WriteLine(if isNull s then s else sanitizeTtyData s)
+
+    override _.Flush() = inner.Flush()
+
 // binary content must not reach a terminal [D:binary-echo]: a NUL in
 // the echo's pulled prefix marks the value binary, and the echo —
 // weir's own rendering choice — refuses with the redirect hint;
