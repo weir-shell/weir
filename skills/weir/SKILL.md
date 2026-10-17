@@ -862,7 +862,13 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   [D:sighup-teardown]. `nohup weir …` keeps SIGHUP ignored.
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel, a `kill -INT`) tree-kills the running foreground command and
-  every fan-out arm's command too, scoped or not [D:sigint-reaps]; an
+  every fan-out arm's command too, scoped or not [D:sigint-reaps]. A
+  terminal ^C at an unscoped script is not that: when weir is the
+  terminal's foreground group the ^C reached the command too, so weir
+  kills nothing, waits for it (its own ^C handling runs — terraform,
+  make, a Python traceback), then dies by the SIGINT; the cost is that a `kill -INT`
+  of an interactive weir that is the foreground group behaves the same,
+  and its child may survive [D:sigint-terminal-group]; an
   arm the teardown kills is the teardown, never a "command failed"
   [D:teardown-kill-not-failure]. The tree kill reaches every
   descendant still linked to the command by parent pid (a `setsid`

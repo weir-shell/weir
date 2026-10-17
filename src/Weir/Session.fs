@@ -720,6 +720,12 @@ module private Libc =
     extern int close(int fd)
 
     [<DllImport("libc", SetLastError = true)>]
+    extern int tcgetpgrp(int fd)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int getpgrp()
+
+    [<DllImport("libc", SetLastError = true)>]
     extern int flock(int fd, int operation)
 
     [<DllImport("libc", SetLastError = true)>]
@@ -764,6 +770,21 @@ module private Libc =
             true
         else
             false
+
+    /// true when weir's process group is its controlling terminal's
+    /// foreground group — a SIGINT then is the terminal's ^C, delivered
+    /// to the whole group [D:sigint-terminal-group]
+    let terminalForeground () : bool =
+        let fd = ``open`` ("/dev/tty", O_RDWR)
+
+        if fd < 0 then
+            false
+        else
+            try
+                let fg = tcgetpgrp fd
+                fg > 0 && fg = getpgrp ()
+            finally
+                close fd |> ignore
 
     /// convert an inherited SIG_IGN on SIGINT to SIG_DFL, leaving every
     /// other disposition untouched (peek by setting SIG_DFL, restore if
@@ -838,6 +859,16 @@ let resetDetachedSigint: Lazy<unit> =
          then
              Libc.resetSigintIfIgnored () |> ignore)
 
+// a terminal ^C weir waited out ends weir BY the SIGINT, as before any
+// wait [D:sigint-terminal-group] — a calling shell sees the ^C, not an exit
+let mutable private dieBySigint = false
+
+let private raiseSigint () =
+    Libc.signal (Libc.SIGINT, Libc.SIG_DFL) |> ignore
+    ProcTree.kill (System.Environment.ProcessId, Libc.SIGINT) |> ignore
+    System.Threading.Thread.Sleep 1000
+    System.Environment.Exit 130
+
 /// the requested exit code, or `code` when none was requested — the
 /// runner's result, so a request racing a statement's normal end still
 /// exits with the request's code
@@ -849,6 +880,11 @@ let exitCodeOr (code: int) : int =
         // other tree kill in flight with it [D:kill-settle]
         killLiveChildren false
         settleKills ()
+
+        if dieBySigint then
+            System.Console.Out.Flush()
+            raiseSigint ()
+
         c
 
 /// a parallel worker stops taking arms once a teardown is requested
@@ -859,6 +895,24 @@ let stopTakingArms () : bool =
 
 /// the requested teardown's exit code, or 0 when none is requested
 let teardownRequested () : int = System.Threading.Volatile.Read &teardownCode
+
+/// a command that died of SIGINT while weir is the terminal's foreground
+/// group most likely took the terminal's ^C with weir [D:sigint-terminal-group]:
+/// give the signal handler a moment to request the teardown, so the death
+/// is the ^C, not a command failure
+let settleInterrupt (code: int) : unit =
+    if
+        code = 130
+        && not (System.OperatingSystem.IsWindows())
+        && mainThreadId <> 0
+        && System.Threading.Volatile.Read &teardownCode = 0
+        && Libc.terminalForeground ()
+    then
+        let clock = System.Diagnostics.Stopwatch.StartNew()
+
+        while System.Threading.Volatile.Read &teardownCode = 0
+              && clock.ElapsedMilliseconds < 250L do
+            System.Threading.Thread.Sleep 5
 
 /// raise the requested teardown on the main thread, once: the unwind
 /// then runs the cleanups as ordinary code (which must not be cut short
@@ -1677,18 +1731,44 @@ let registerForeground (p: System.Diagnostics.Process) : unit =
                         // the full hook owns the signal once installed: it must
                         // request the teardown BEFORE any child dies, or the
                         // main thread's wait returns and runs the next statement
+                        let sigint = ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
+
                         if
                             System.Threading.Volatile.Read &hookInstalled.contents = 0
-                            && not (
-                                replSurvivesSigint.Value
-                                && ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
-                            )
+                            && not (replSurvivesSigint.Value && sigint)
                         then
-                            if mainThreadId <> 0 then
-                                requestTeardown (signalExitCode ctx.Signal)
+                            if sigint && Libc.terminalForeground () then
+                                // the terminal's ^C reached the children with
+                                // weir [D:sigint-terminal-group]: no kill —
+                                // the script waits for its child (its own ^C
+                                // handling runs) and then unwinds; without a
+                                // live child to wait for, it exits after a
+                                // grace period
+                                if mainThreadId <> 0 then
+                                    ctx.Cancel <- true
+                                    dieBySigint <- true
+                                    requestTeardown 130
 
-                            killLiveChildren true
-                            settleKills ()
+                                    let watch =
+                                        System.Threading.Thread(fun () ->
+                                            let mutable idle = 0
+
+                                            while System.Threading.Volatile.Read &teardownRaised = 0
+                                                  && idle < 10 do
+                                                System.Threading.Thread.Sleep 100
+                                                idle <- if liveProcs.IsEmpty then idle + 1 else 0
+
+                                            if System.Threading.Volatile.Read &teardownRaised = 0 then
+                                                raiseSigint ())
+
+                                    watch.IsBackground <- true
+                                    watch.Start()
+                            else
+                                if mainThreadId <> 0 then
+                                    requestTeardown (signalExitCode ctx.Signal)
+
+                                killLiveChildren true
+                                settleKills ()
                 )
 
             hookRoots <- (reg :> obj) :: hookRoots

@@ -284,7 +284,9 @@ type CommandFailure(code: int, signalNote: string, shown: string) =
 let private raiseNonzero (s: Spec) (code: int) =
     // a child killed by a teardown is the teardown's, not a failure
     // [D:signal-main-unwind] — on an arm too, which the teardown cuts
-    // [D:teardown-kill-not-failure]
+    // [D:teardown-kill-not-failure]; a terminal ^C's death likewise
+    // [D:sigint-terminal-group]
+    Session.settleInterrupt code
     Session.checkTeardown ()
     Session.checkCancelled ()
     let shown = showArgv (s.Prog :: s.Args)

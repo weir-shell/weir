@@ -3477,6 +3477,18 @@ WEOF
     # child's own write — no weir guard, raw bytes and all (bash's
     # posture; gzip refuses a tty by itself). The value echo keeps its
     # refusal — the [D:binary-echo] cells pin that half.
+    # a terminal ^C reaches weir's foreground group whole, so weir kills
+    # nothing and waits [D:sigint-terminal-group]: a child that traps
+    # SIGINT runs its handler and exits, then weir dies by the SIGINT —
+    # no statement after it, no "command failed"
+    printf '%s\n' "sh -c 'trap \"sleep 0.5; echo caught; exit 3\" INT; sleep 7.31 & wait'" 'print "after"' > "$sedir/trapint.weir"
+    tout=$(printf 'SLEEP 1000\nSEND \\x03\nSLEEP 2500\n' | python3 "$ptyrun" 6 "$BIN" "$sedir/trapint.weir")
+    pkill -f "^sleep 7.31\$" 2>/dev/null || true
+    echo "$tout" | grep -qF "caught" || fail "a terminal ^C must let the child run its SIGINT handler: $tout"
+    echo "$tout" | grep -qF "EXIT -2" || fail "weir dies by the SIGINT after the child's ^C handling: $tout"
+    echo "$tout" | grep -qF "after" && fail "no statement runs after a terminal ^C: $tout"
+    echo "$tout" | grep -qF "command failed" && fail "a terminal ^C is not a command failure: $tout"
+
     # a tty Self.prompt stays cooked and drops key sequences
     # [D:prompt-tty-keys]: a left arrow (CSI) and an SS3 up arrow typed
     # into the answer are ignored, never part of it

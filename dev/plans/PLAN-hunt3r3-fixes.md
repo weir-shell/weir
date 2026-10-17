@@ -24,6 +24,12 @@ stays 25/25.
   one is refused as known-after-apply.
 - **R3 (F2)** a tty `Self.prompt` stays in cooked mode and drops CSI/SS3
   key sequences from the answer (arrows ignored, as v0.0.74).
+- **R4 (D4, terminal ^C)** the foreground-group rule: a SIGINT while weir
+  is its controlling terminal's foreground group came from the terminal
+  and reached the child — no tree kill, weir waits for the child (its own
+  ^C handling runs); otherwise (no tty, a background group, a pid-only
+  `kill -INT` while not foreground) tree-kill as D4. Residual: a pid-only
+  `kill -INT` at a foreground interactive weir behaves the old way.
 
 ## Stage 1 — terminal, secrets, network, cache (`fix/h3r3-safety`)
 
