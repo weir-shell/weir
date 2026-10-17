@@ -137,6 +137,11 @@
 - **A carriage return passes `print`, `printerr`, `Log.*` and the
   prompt at a tty** instead of showing as `\x0d`, so progress lines
   overwrite themselves again. Other control characters stay visible.
+- **A `from json`/`jsonl`/`toml` error no longer prints a `Secret`.**
+  When the type holds a `Secret` anywhere, `field 'ttl' expected int,
+  got string in: …` cites `<excerpt withheld: the type holds a
+  Secret>` instead of the document, and a TOML parse error keeps its
+  line but withholds the detail.
 - **`Args.load` no longer echoes a secret given as `--token=VALUE`.**
   The message reads `unknown flag '--token=***' — … write '--token
   <value>'` for a `Secret` field, and an unknown `--name=value` flag is

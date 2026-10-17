@@ -596,7 +596,9 @@ print $"{key} -> {value}"
   `Secret` fields (env is the CI secret channel), `File.readSecret p`
   (a mounted secret file), a `Secret` field READ by `from json`/`from
   yaml`/`from toml` (a vault/API token — wrapping on the way in is the
-  safe direction [D:secret-read]), and `Secret.of` (assert secrecy, for
+  safe direction [D:secret-read]; when the type holds a `Secret`
+  anywhere, a read error cites `<excerpt withheld: the type holds a
+  Secret>` instead of the document), and `Secret.of` (assert secrecy, for
   computed secrets — the safe direction). `Secret.map (fun t -> "Bearer " + t) s`
   keeps a derived value secret; `[<Default>]` on a `Secret` field is
   rejected. Qualified-only (no bare `of`/`map`). Not memory-hardening:

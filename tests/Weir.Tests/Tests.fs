@@ -17195,6 +17195,44 @@ let secretTests =
                   (VStr "y3")
                   "yaml wraps on the way in"
           }
+          test "a from json/jsonl/toml error withholds the excerpt when the type holds a Secret [D:from-secret-excerpt]" {
+              let errOf (code: string) =
+                  match run (code + " |> try result") with
+                  | VUnion("Error", Some(VStr m)) -> m
+                  | other -> failtest $"expected an Error, got {other}"
+
+              let withheld (m: string) (what: string) =
+                  Expect.stringContains m "<excerpt withheld: the type holds a Secret>" $"{what}: says it is withheld"
+                  Expect.isFalse (m.Contains "S3CRET") $"{what}: no secret in the message: {m}"
+
+              let doc = "[\"{\\\"token\\\": \\\"S3CRET\\\", \\\"ttl\\\": \\\"3600\\\"}\"]"
+              withheld (errOf (doc + " |> from json {| token: Secret; ttl: int |}")) "a field mismatch"
+              withheld (errOf (doc + " |> from jsonl {| token: Secret; ttl: int |}")) "jsonl"
+
+              withheld
+                  (errOf "[\"{\\\"token\\\": \\\"S3CRET\\\"\"] |> from json {| token: Secret |}")
+                  "malformed JSON"
+
+              withheld
+                  (errOf (doc + " |> from json {| ttl: int; inner: Option<seq<{| key: Secret |}>> |}"))
+                  "a Secret at depth"
+
+              // no Secret in the type: the excerpt is cited as before
+              Expect.stringContains
+                  (errOf (doc + " |> from json {| token: string; ttl: int |}"))
+                  "in: {\"token\": \"S3CRET\", \"ttl\": \"3600\"}"
+                  "no Secret, the excerpt stays"
+
+              // a toml parse detail quotes the document; the line survives
+              let t = errOf "[\"token = S3CRET\"] |> from toml {| token: Secret |}"
+              Expect.stringContains t "from toml: line 1: not a valid TOML document (detail withheld: the type holds a Secret)" t
+              Expect.isFalse (t.Contains "S3CRET") t
+
+              Expect.stringContains
+                  (errOf "[\"token = S3CRET\"] |> from toml {| token: string |}")
+                  "'S3CRET' is not a TOML value"
+                  "no Secret, the toml detail stays"
+          }
           test "print refuses a Secret (show s -> ***), and Secret is not arithmetic" {
               Expect.stringContains (checkErr "print (Secret.of \"x\")").Message "will not render a Secret" ""
 

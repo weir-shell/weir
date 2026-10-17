@@ -1986,7 +1986,8 @@ flag shows up in the process list, and weir can't hide that.
 `File.readSecret` reads a secret file mounted by Kubernetes or
 Docker, and a `Secret` field in a record read with `from json` or
 `from yaml` wraps that value (a token in a vault or API response).
-Every use of the value goes through an explicit
+When such a read fails, the error leaves out the document, since any
+part of it could be the token. Every use of the value goes through an explicit
 `Secret.reveal`, so to audit where a secret goes, search for those
 calls. To build a new value from a secret and keep it secret, use
 `Secret.map`. Writing `"Bearer " + reveal` would give you an

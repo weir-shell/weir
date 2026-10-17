@@ -1941,6 +1941,46 @@ let private jsonSnippet (text: string) : string =
     let t = text.Trim()
     if t.Length <= 120 then t else t.Substring(0, 117) + "..."
 
+// what an error cites in place of the document when the declared shape
+// holds a Secret [D:from-secret-excerpt]: any excerpt may carry it
+let private secretExcerpt = "<excerpt withheld: the type holds a Secret>"
+
+/// does the declared shape hold a Secret anywhere — fields, payloads,
+/// type arguments, at any depth [D:from-secret-excerpt]
+let private jsonTopHoldsSecret (top: JsonTop) (defs: Map<string, RecordDef>) (udefs: Map<string, UnionDef>) =
+    let seen = System.Collections.Generic.HashSet<string>()
+
+    let rec ty (t: Ty) =
+        match t with
+        | TSecret -> true
+        | TSeq e -> ty e
+        | TTuple ts -> List.exists ty ts
+        | TFun(a, b) -> ty a || ty b
+        | TRowVar(_, fs) -> fs |> List.exists (snd >> ty)
+        | TNamed(n, args) -> List.exists ty args || named n
+        | _ -> false
+
+    and named (n: string) =
+        seen.Add n
+        && (match Map.tryFind n defs with
+            | Some d -> record d
+            | None ->
+                match Map.tryFind n udefs with
+                | Some u -> union u
+                | None -> false)
+
+    and record (d: RecordDef) = d.Fields |> List.exists (snd >> ty)
+    and union (u: UnionDef) = u.Cases |> List.exists (snd >> Option.exists ty)
+
+    match top with
+    | TopRec d ->
+        seen.Add d.Name |> ignore
+        record d
+    | TopUnion u ->
+        seen.Add u.Name |> ignore
+        union u
+    | TopValue t -> ty t
+
 // ---- the read-only XML boundary [D:from-xml] ------------------------------
 
 /// read one XML document under the declared shape [D:from-xml]: the root
@@ -2172,6 +2212,9 @@ let private fromAdapter
     (defs: Map<string, RecordDef>)
     (udefs: Map<string, UnionDef>)
     : Value =
+    let holdsSecret = jsonTopHoldsSecret top defs udefs
+    let cite (excerpt: string) = if holdsSecret then secretExcerpt else excerpt
+
     match fmt with
     // one document -> T: join the elements back into the text they
     // came from (a pretty-printed body pipes straight in) [D:from-jsonl]
@@ -2190,7 +2233,7 @@ let private fromAdapter
                 if text.Trim() = "" then
                     failwith "from json: empty input — expected one JSON document"
 
-                jsonDoc "from json" seqOf mapOf top defs udefs (jsonSnippet text) text
+                jsonDoc "from json" seqOf mapOf top defs udefs (cite (jsonSnippet text)) text
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     // one document per element -> seq<T> (NDJSON, `to json`'s shape)
     | "jsonl" ->
@@ -2204,7 +2247,7 @@ let private fromAdapter
                     |> Seq.choose (fun l ->
                         match l with
                         | VStr s when s.Trim() = "" -> None
-                        | VStr s -> Some(jsonDoc "from jsonl" false false top defs udefs s s)
+                        | VStr s -> Some(jsonDoc "from jsonl" false false top defs udefs (cite s) s)
                         | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
                 )
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
@@ -2225,7 +2268,7 @@ let private fromAdapter
                 if text.Trim() = "" then
                     failwith "from xml: empty input — expected one XML document"
 
-                xmlDoc "from xml" top defs (jsonSnippet text) text
+                xmlDoc "from xml" top defs (cite (jsonSnippet text)) text
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     // header-aligned rows -> seq<T> [D:from-table]: the header must be
     // read before any row slices, so the input materializes here
@@ -2498,6 +2541,17 @@ let private yamlFromImpl (shape: Yaml.Shape) (stream: bool) : Value =
                     $"from yaml: reads one document; this input has {List.length docs} documents — read a stream with 'from yaml stream T'"
         | v -> unreachable $"the checker rejects 'from yaml' on {formatValue v}")
 
+/// does a yaml/toml shape hold a Secret anywhere [D:from-secret-excerpt]
+let rec private shapeHoldsSecret (shape: Yaml.Shape) : bool =
+    match shape with
+    | Yaml.SSecret -> true
+    | Yaml.SOpt s
+    | Yaml.SSeq s
+    | Yaml.SPairs s -> shapeHoldsSecret s
+    | Yaml.SRec(_, fields) -> fields |> List.exists (fun (_, _, s) -> shapeHoldsSecret s)
+    | Yaml.SUnion(_, _, cases, _) -> cases |> List.exists (fun (_, _, p) -> Option.exists shapeHoldsSecret p)
+    | _ -> false
+
 // from toml T [D:from-toml]: the toml parser builds the yaml node tree and
 // the yaml binder converts it — the binder's messages are relabelled
 let private tomlFromImpl (shape: Yaml.Shape) : Value =
@@ -2512,8 +2566,11 @@ let private tomlFromImpl (shape: Yaml.Shape) : Value =
                     | v -> unreachable $"the checker rejects 'from toml' on non-string elements: {formatValue v}")
                 |> String.concat "\n"
 
-            match Toml.parseDoc text with
-            | Error msg -> failwith $"from toml: {msg}"
+            match Toml.parseDocAt text with
+            // a parse detail quotes the document [D:from-secret-excerpt]
+            | Error(line, _) when shapeHoldsSecret shape ->
+                failwith $"from toml: line {line}: not a valid TOML document (detail withheld: the type holds a Secret)"
+            | Error(line, msg) -> failwith $"from toml: line {line}: {msg}"
             | Ok doc ->
                 try
                     yamlConvertWith (fun line raw -> doc.LocalDates.Contains((line, raw))) shape doc.Root
