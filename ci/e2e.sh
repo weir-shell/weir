@@ -115,12 +115,13 @@ fail() {
 }
 
 # CI shards [D:e2e-shards]: E2E_SHARD=body runs all but the pty REPL
-# probes, repl-a/repl-b only theirs; unset runs everything in order
+# probes, repl-a/repl-b only theirs, repl both halves; unset runs
+# everything in order
 E2E_SHARD="${E2E_SHARD:-}"
 # the pty REPL probes [D:e2e-shards]: CI runs them on their own runners
 # (repl-a: repl-multiline alone, the long pole; repl-b: the rest)
 replProbe() {
-    case "$E2E_SHARD" in "" | "$1") ;; *) return 0 ;; esac
+    case "$E2E_SHARD" in "" | repl | "$1") ;; *) return 0 ;; esac
     python3 "$(dirname "$0")/../tests/repl/$2" "$BIN" || fail "$3"
     echo "$4"
 }
@@ -147,12 +148,12 @@ replPtyProbes() {
 }
 case "$E2E_SHARD" in
     "" | body) ;;
-    repl-a | repl-b)
+    repl-a | repl-b | repl)
         replPtyProbes
         echo "e2e battery: all green (shard $E2E_SHARD)"
         exit 0
         ;;
-    *) fail "unknown E2E_SHARD '$E2E_SHARD' — body, repl-a or repl-b (unset runs all)" ;;
+    *) fail "unknown E2E_SHARD '$E2E_SHARD' — body, repl-a, repl-b or repl (unset runs all)" ;;
 esac
 
 # conflict-marker gate [D:sized-findings]: three leftover diff3 `|||||||`
