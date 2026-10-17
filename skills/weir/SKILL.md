@@ -600,7 +600,9 @@ print $"{key} -> {value}"
   anywhere, a read error cites `<excerpt withheld: the type holds a
   Secret>` instead of the document), and `Secret.of` (assert secrecy, for
   computed secrets — the safe direction). `Secret.map (fun t -> "Bearer " + t) s`
-  keeps a derived value secret; `[<Default>]` on a `Secret` field is
+  keeps a derived value secret; a raise inside it keeps its kind and
+  the builtin's name but withholds the message (`fromBase64: failed
+  inside Secret.map — the message is withheld …`); `[<Default>]` on a `Secret` field is
   rejected. Qualified-only (no bare `of`/`map`). Not memory-hardening:
   the value is an un-zeroed managed string (see SECURITY.md).
 - HTTP is `Http.send : HttpRequest -> HttpResponse` (a record + one

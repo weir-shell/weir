@@ -131,8 +131,9 @@ it, by design):
 - **`Secret` is a rendering marker, not memory protection** [D:secret].
   A `Secret` makes weir's own renderers refuse to print a value —
   `show` gives `***`, interpolation and the wire boundaries refuse,
-  the REPL echo is safe, and a read error under a `Secret`-holding
-  type withholds the document [D:from-secret-excerpt]. That is its entire enforcement surface, and
+  the REPL echo is safe, a read error under a `Secret`-holding type
+  withholds the document [D:from-secret-excerpt], and a raise inside
+  `Secret.map` withholds its message [D:secret-map-withheld]. That is its entire enforcement surface, and
   the honest claim is narrow: **weir gives you a way to SAY a value is
   secret and then respects it consistently, at the boundaries weir
   owns.** It is NOT a secrets manager and NOT memory hardening. What

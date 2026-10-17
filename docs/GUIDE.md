@@ -2005,7 +2005,9 @@ A `Secret` spliced into a command is passed as its real value;
 `curl -H $header` is exactly what it's for. Interpolating it
 (`$"tok: {token}"`) is an error that mentions `reveal`, and
 `to json`/`to yaml` reject it: reading a Secret in is fine, writing
-one out is not.
+one out is not. If a function inside `Secret.map` fails (say
+`Str.fromBase64` on a value that is not base64), the error names the
+function but not its message, which would show the value.
 
 ## The script's own front door
 

@@ -17170,6 +17170,37 @@ let secretTests =
                   (VStr "***")
                   "the map result is still secret"
           }
+          test "a raise inside Secret.map withholds the message, keeping the kind and the builtin's name [D:secret-map-withheld]" {
+              let errOf (code: string) =
+                  match run (code + " |> try result") with
+                  | VUnion("Error", Some(VStr m)) -> m
+                  | other -> failtest $"expected an Error, got {other}"
+
+              let b64 = errOf "Secret.map Str.fromBase64 (Secret.of \"S3CRET!\")"
+              Expect.stringStarts b64 "fromBase64: failed inside Secret.map" b64
+              Expect.stringContains b64 "the message is withheld" b64
+              Expect.isFalse (b64.Contains "S3CRET") b64
+
+              let toInt = errOf "Secret.map (fun t -> show (Str.toInt t)) (Secret.of \"S3CRET\")"
+              Expect.stringStarts toInt "toInt: failed inside Secret.map" toInt
+              Expect.isFalse (toInt.Contains "S3CRET") toInt
+
+              let hex = errOf "Secret.map (fun t -> Bytes.toBase64 (Bytes.fromHex t)) (Secret.of \"S3CRET\")"
+              Expect.stringStarts hex "Bytes.fromHex: failed inside Secret.map" hex
+
+              // a lead that is not a builtin's name is not kept: it may be the secret
+              let own = errOf "Secret.map (fun t -> fail $\"{t}: bad\") (Secret.of \"S3CRET\")"
+              Expect.stringStarts own "Secret.map: the function raised" own
+              Expect.isFalse (own.Contains "S3CRET") own
+
+              // the kind survives: still an ordinary failure
+              try
+                  run "Secret.map Str.fromBase64 (Secret.of \"S3CRET!\")" |> ignore
+                  failtest "expected a raise"
+              with
+              | Failure m -> Expect.isFalse (m.Contains "S3CRET") m
+              | ex -> failtest $"expected a Failure, got {ex.GetType().Name}"
+          }
           test "interpolation REFUSES, naming reveal (a secret must not reach a log line)" {
               let m = (checkErr "let s = Secret.of \"x\" in $\"tok: {s}\"").Message
               Expect.stringContains m "does not interpolate" "refused"

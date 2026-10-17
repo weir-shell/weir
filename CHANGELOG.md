@@ -142,6 +142,11 @@
   got string in: …` cites `<excerpt withheld: the type holds a
   Secret>` instead of the document, and a TOML parse error keeps its
   line but withholds the detail.
+- **A function failing inside `Secret.map` no longer prints the
+  secret.** `Secret.map Str.fromBase64 s` on bad input said
+  `invalid base64: "<the secret>"`; it now says `fromBase64: failed
+  inside Secret.map — the message is withheld (it may carry the
+  secret)`.
 - **`Args.load` no longer echoes a secret given as `--token=VALUE`.**
   The message reads `unknown flag '--token=***' — … write '--token
   <value>'` for a `Secret` field, and an unknown `--name=value` flag is

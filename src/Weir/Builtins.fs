@@ -4603,6 +4603,18 @@ let private colorMembers: (string * Ty * Value) list =
               | VStr code, VStr s -> wrapSgr code s
               | _ -> unreachable "the checker rejects 'Color.sgr' on these arguments")) ]
 
+// the builtin names a raise leads with (`toInt: …`, `Bytes.fromHex: …`),
+// filled once the module table exists [D:secret-map-withheld]
+let private raiseNames = System.Collections.Generic.HashSet<string>()
+
+// a raise inside Secret.map may quote the clear value: the message is
+// withheld, the builtin's name kept when it leads [D:secret-map-withheld]
+let private secretMapWithheld (msg: string) : string =
+    match msg.IndexOf ": " with
+    | i when i > 0 && raiseNames.Contains(msg.Substring(0, i)) ->
+        $"{msg.Substring(0, i)}: failed inside Secret.map — the message is withheld (it may carry the secret)"
+    | _ -> "Secret.map: the function raised — the message is withheld (it may carry the secret)"
+
 let private secretMembers: (string * Ty * Value) list =
     // a marker the renderers respect [D:secret] — of asserts secrecy (the
     // safe direction, for computed secrets), reveal is the one guarded exit
@@ -4626,7 +4638,20 @@ let private secretMembers: (string * Ty * Value) list =
           VBuiltin(fun v ->
               match v with
               | VSecret s ->
-                  (match apply f (VStr s) with
+                  // the kind survives: a Failure stays a Failure, a
+                  // command failure keeps its code [D:secret-map-withheld]
+                  let mapped =
+                      try
+                          apply f (VStr s)
+                      with
+                      | ExitRequest _ -> reraise ()
+                      | :? System.OperationCanceledException -> reraise ()
+                      | Failure m when m.StartsWith "unreachable:" -> reraise ()
+                      | :? Proc.CommandFailure as cf ->
+                          raise (Proc.CommandFailure(cf.Code, cf.SignalNote, "<withheld inside Secret.map>"))
+                      | ex -> failwith (secretMapWithheld ex.Message)
+
+                  (match mapped with
                    | VStr s' -> VSecret s'
                    | v' -> unreachable $"the checker rejects 'Secret.map' result {formatValue v'}")
               | v -> unreachable $"the checker rejects 'Secret.map' on {formatValue v}")) ]
@@ -7947,6 +7972,14 @@ let bareAliasHomesOf (table: (string * (string * Ty * Value) list) list) : Map<s
     |> Map.ofList
 
 let bareAliasHomes: Map<string, string> = bareAliasHomesOf moduleTable
+
+for m, members in moduleTable do
+    for n, _, _ in members do
+        raiseNames.Add n |> ignore
+        raiseNames.Add $"{m}.{n}" |> ignore
+
+for n, _, _ in entries do
+    raiseNames.Add n |> ignore
 
 let bareAliases: Set<string> =
     bareAliasHomes |> Map.toSeq |> Seq.map fst |> Set.ofSeq
