@@ -27648,6 +27648,29 @@ let hunt3BehaviorTests =
 
               Expect.stringContains bad "not valid JSON" "invalid JSON keeps its own error"
           }
+          test "the depth refusal tells valid from invalid in one reader pass [D:json-deep-linear]" {
+              let kind (text: string) =
+                  match Weir.Types.parseJsonBounded text with
+                  | Ok d ->
+                      d.Dispose()
+                      "ok"
+                  | Error(Some _) -> "deep"
+                  | Error None -> "invalid"
+
+              Expect.equal (kind (deep 100)) "ok" "100 deep is within the bound"
+              Expect.equal (kind (deep 101)) "deep" "101 deep names the depth"
+              Expect.equal (kind ("[" + deep 100 + "]")) "deep" "an array level counts"
+              Expect.equal (kind (deep 5000)) "deep" "far past the bound"
+              Expect.equal (kind (deep 5000 + "}")) "invalid" "a deep document with trailing junk is invalid"
+              Expect.equal (kind (String.replicate 5000 "{\"a\":" + "1")) "invalid" "an unclosed deep document is invalid"
+              // a BOM the parser accepts is skipped by the scan too
+              if kind ("\uFEFF" + deep 99) = "ok" then
+                  Expect.equal (kind ("\uFEFF" + deep 101)) "deep" "a BOM'd deep document"
+
+              match Weir.Types.parseJsonBytesBounded (System.Text.Encoding.UTF8.GetBytes(deep 101)) with
+              | Error(Some _) -> ()
+              | other -> failtest $"bytes: {other}"
+          }
           test "a schema nested past 64 JSON levels parses [D:json-depth]" {
               let schema =
                   String.replicate 32 "{\"type\":\"object\",\"properties\":{\"c\":"

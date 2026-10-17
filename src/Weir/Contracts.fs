@@ -1193,7 +1193,7 @@ let rec private refsOf (s: Schema) : string list =
 /// checked to resolve here, so consumers never meet a dangling name.
 /// Errors carry the schema name and the JSON path of the offender.
 let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
-    match parseJsonBounded (fun o -> Text.Json.JsonDocument.Parse(text, o)) with
+    match parseJsonBounded text with
     | Error(Some why) -> Error $"schema {name}: valid JSON, but {why}"
     | Error None ->
         let why =
@@ -1321,7 +1321,7 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
         let ct = contentType |> Option.defaultValue "unknown"
 
         let parsed =
-            match parseJsonBounded (fun o -> Text.Json.JsonDocument.Parse(ReadOnlyMemory<byte> bytes, o)) with
+            match parseJsonBytesBounded bytes with
             | Ok d -> Ok d
             | Error(Some why) -> Error $"the response is valid JSON, but {why}; nothing was written"
             | Error None -> Error $"the response is not JSON (Content-Type: {ct}){rawUrlHint url}; nothing was written"

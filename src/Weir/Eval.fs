@@ -1584,7 +1584,7 @@ let private jsonDocRead
     (text: string)
     : Value =
     use doc =
-        match parseJsonBounded (fun o -> System.Text.Json.JsonDocument.Parse(text, o)) with
+        match parseJsonBounded text with
         | Ok d -> d
         // never System.Text.Json's words [D:json-boundary]
         | Error(Some why) -> failwith $"{who}: valid JSON, but {why}: {shown}"

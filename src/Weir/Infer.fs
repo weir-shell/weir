@@ -65,7 +65,7 @@ let rec private ofJsonElement (el: System.Text.Json.JsonElement) : INode =
 let private jsonNode (lines: string seq) : Result<INode, string> =
     let text = String.Join("\n", lines)
 
-    match Weir.Types.parseJsonBounded (fun o -> System.Text.Json.JsonDocument.Parse(text, o)) with
+    match Weir.Types.parseJsonBounded text with
     | Ok doc ->
         use doc = doc
         Ok(ofJsonElement doc.RootElement)
@@ -84,7 +84,7 @@ let private jsonlNode (lines: string seq) : Result<INode, string> =
 
     for line in lines do
         if err.IsNone && line.Trim() <> "" then
-            match Weir.Types.parseJsonBounded (fun o -> System.Text.Json.JsonDocument.Parse(line, o)) with
+            match Weir.Types.parseJsonBounded line with
             | Ok doc ->
                 use doc = doc
                 docs.Add(ofJsonElement doc.RootElement)

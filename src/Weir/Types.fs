@@ -1325,23 +1325,52 @@ let rawJsonWriterOptions =
 // bound the refusal names the depth; invalid JSON stays its own error.
 let jsonMaxDepth = 100
 
-/// parse one JSON document under the bound: Error (Some why) for a
-/// valid document nested past it, Error None for text that is not JSON
-let parseJsonBounded
+// telling the two failures apart: one reader pass over the rejected
+// text, no document built — JsonDocument's own unbounded build is
+// quadratic in depth, the reader linear [D:json-deep-linear]
+let private validPastBound (utf8: System.ReadOnlySpan<byte>) : bool =
+    // the document parser skips a UTF-8 BOM; the bare reader does not
+    let utf8 =
+        if utf8.Length >= 3 && utf8[0] = 0xEFuy && utf8[1] = 0xBBuy && utf8[2] = 0xBFuy then
+            utf8.Slice 3
+        else
+            utf8
+
+    let mutable reader =
+        System.Text.Json.Utf8JsonReader(utf8, System.Text.Json.JsonReaderOptions(MaxDepth = System.Int32.MaxValue))
+
+    let mutable deep = false
+
+    try
+        while reader.Read() do
+            match reader.TokenType with
+            | System.Text.Json.JsonTokenType.StartObject
+            | System.Text.Json.JsonTokenType.StartArray when reader.CurrentDepth >= jsonMaxDepth -> deep <- true
+            | _ -> ()
+
+        deep
+    with :? System.Text.Json.JsonException ->
+        false
+
+let private parseJsonBoundedWith
     (parse: System.Text.Json.JsonDocumentOptions -> System.Text.Json.JsonDocument)
+    (utf8: unit -> byte array)
     : Result<System.Text.Json.JsonDocument, string option> =
     try
         Ok(parse (System.Text.Json.JsonDocumentOptions(MaxDepth = jsonMaxDepth)))
     with :? System.Text.Json.JsonException ->
-        // telling the two failures apart: the reader is iterative, so an
-        // unbounded re-read of the rejected text costs memory, not stack
-        match
-            (try
-                Some(parse (System.Text.Json.JsonDocumentOptions(MaxDepth = System.Int32.MaxValue)))
-             with :? System.Text.Json.JsonException ->
-                 None)
-        with
-        | Some doc ->
-            doc.Dispose()
+        if validPastBound (System.ReadOnlySpan(utf8 ())) then
             Error(Some $"it nests deeper than {jsonMaxDepth} levels, weir's bound for a value")
-        | None -> Error None
+        else
+            Error None
+
+/// parse one JSON document under the bound: Error (Some why) for a
+/// valid document nested past it, Error None for text that is not JSON
+let parseJsonBounded (text: string) : Result<System.Text.Json.JsonDocument, string option> =
+    parseJsonBoundedWith
+        (fun o -> System.Text.Json.JsonDocument.Parse(text, o))
+        (fun () -> System.Text.Encoding.UTF8.GetBytes text)
+
+/// parseJsonBounded over UTF-8 bytes
+let parseJsonBytesBounded (bytes: byte array) : Result<System.Text.Json.JsonDocument, string option> =
+    parseJsonBoundedWith (fun o -> System.Text.Json.JsonDocument.Parse(System.ReadOnlyMemory<byte> bytes, o)) (fun () -> bytes)
