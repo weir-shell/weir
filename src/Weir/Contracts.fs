@@ -430,6 +430,11 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
                     | None -> ""
 
                 let kind = need "kind"
+
+                // the kinds weir writes [D:lock-print-sanitize]; any other is a hand edit
+                if kind <> "schema" && kind <> "module" && kind <> "sig" then
+                    bad $"{at}: unknown \"kind\" '{kind}' — weir locks schema, module and sig entries"
+
                 let name = need "name"
                 let at = $"{at} ({kind} {name})"
                 let url = need "url"

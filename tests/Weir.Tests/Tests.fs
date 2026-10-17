@@ -12636,6 +12636,8 @@ let lockfileConfinementTests =
                         entry (full.Replace("\"url\": \"http://x\", ", "")), "missing \"url\""
                         entry (full.Replace("schemas/n.json", "")), "\"path\" is empty"
                         "{ \"artifacts\": [ 3 ] }", "artifacts[0] must be an object"
+                        // [D:lock-print-sanitize]: weir writes schema, module and sig only
+                        entry (full.Replace("\"kind\": \"schema\"", "\"kind\": \"evil\"")), "unknown \"kind\" 'evil'"
                         "[]", "must be a JSON object" ]
 
                   for text, want in cases do

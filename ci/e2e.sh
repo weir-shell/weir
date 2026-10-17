@@ -12965,6 +12965,23 @@ $BIN "$svdir/help-osc.weir" --help > "$svdir/help-osc.out" 2>&1 || fail "tty-hel
 python3 -c "import sys; sys.exit(0 if b'\x1b]0;HELP\x07' in open('$svdir/help-osc.out','rb').read() else 1)" \
     || fail "tty-help: redirected --help must stay byte-faithful"
 echo "e2e ok: tty-help Args.load --help doc text sanitized at a tty, byte-faithful when redirected"
+# weir verify/restore render lock.json fields as data [D:lock-print-sanitize]
+lk="$svdir/lockprint"; mkdir -p "$lk/.weir/sigs"; : > "$lk/.git"
+lockof() { printf '{"schemaVersion": 1, "artifacts": [{"kind": "%s", "name": "ls\\u001b]52;c;SINK\\u0007", "url": "generated:help", "sha256": "%s", "path": "sigs/ls.weir", "version": "x"}]}' \
+    "$1" "$(printf '0%.0s' $(seq 64))" > "$lk/.weir/lock.json"; }
+lockof sig
+printf '// tampered\n' > "$lk/.weir/sigs/ls.weir"
+absbin=$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")
+abssink=$(cd "$(dirname "$sinkrun")" && pwd)/$(basename "$sinkrun")
+sout=$(cd "$lk" && printf 'SLEEP 300\n' | python3 "$abssink" 6 "$absbin" verify 2>&1)
+echo "$sout" | grep -qF 'ls\\x1b]52;c;SINK\\x07: MODIFIED' || fail "lock-print: verify must render the lock name's OSC visible at a tty: $sout"
+(cd "$lk" && "$absbin" verify > "$lk/verify.out" 2>&1) && fail "lock-print: a modified sig must exit 1"
+python3 -c "import sys; sys.exit(0 if b'ls\x1b]52;c;SINK\x07: MODIFIED' in open('$lk/verify.out','rb').read() else 1)" \
+    || fail "lock-print: redirected verify must stay byte-faithful"
+lockof evil
+kout=$(cd "$lk" && "$absbin" verify 2>&1) && fail "lock-print: an unknown kind must refuse: $kout"
+echo "$kout" | grep -qF "unknown \"kind\" 'evil'" || fail "lock-print: the refusal must name the kind: $kout"
+echo "e2e ok: lock-print verify renders lock fields visibly at a tty (byte-faithful piped); an unknown kind refuses"
 # every diagnostic sink rides the tty sanitizer [D:tty-diag-sanitize]:
 # check's import path, the run's parse/type source echo, the invalid-regex
 # message, the #sig name and `no such script` render an OSC visible at a
