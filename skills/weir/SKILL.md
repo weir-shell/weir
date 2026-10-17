@@ -2302,7 +2302,9 @@ print (f 1)
   cross-segment (never through symlinked dirs — bash globstar),
   `?`, `[abc]`/`[!abc]`/`[a-z]` (one code point; a `]` first is a
   member, a reversed range matches nothing, `\` is a plain member —
-  never regex). Bash's dotfile law: `*` skips dotfiles, a
+  never regex; a segment matches in linear time, so no pattern can
+  hang on a long name). Each path comes once, however many `**` the
+  pattern repeats. Bash's dotfile law: `*` skips dotfiles, a
   `.`-leading segment matches them. Sorted per level (a directory's
   matches, then its subdirectories' — not one global sort); relative patterns
   echo relative and resolve against the cwd AT ENUMERATION —

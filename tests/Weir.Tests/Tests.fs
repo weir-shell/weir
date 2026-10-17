@@ -9269,6 +9269,42 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(root, true)
           }
+          test "a glob segment matches linearly, and a repeated ** yields each path once [D:glob-linear]" {
+              skipOnWindows ()
+              let root = td ()
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "r", "a", "b")) |> ignore
+              // 79 dashes: a 7-star miss once ran past 100s as a regex
+              let name = String.replicate 79 "ab-" + "ab.txt"
+
+              for n in [ name; "r/x.gz"; "r/a/y.gz"; "r/a/b/z.gz"; "r/a/b/😀x" ] do
+                  System.IO.File.WriteAllText(System.IO.Path.Combine(root, n), "x")
+
+              let cells =
+                  [ "*-*-*-*-*-*-*.gz", ""
+                    "*-*-*-*-*-*-*.txt", name
+                    "ab-*ab-ab.txt", name
+                    "r/**/**/*.gz", "r/x.gz,r/a/y.gz,r/a/b/z.gz"
+                    "r/**/**/**", "r/a,r/a/b,r/a/b/z.gz,r/a/b/😀x,r/a/y.gz,r/x.gz"
+                    "r/**/a/**/*.gz", "r/a/y.gz,r/a/b/z.gz"
+                    "r/a/b/?x", "r/a/b/😀x"
+                    "r/a/b/[!a]*", "r/a/b/z.gz,r/a/b/😀x"
+                    "r/**/*.g?", "r/x.gz,r/a/y.gz,r/a/b/z.gz"
+                    "r/**/*.gz*", "r/x.gz,r/a/y.gz,r/a/b/z.gz" ]
+
+              let prog =
+                  [ $"within cd \"{weirPath root}\""
+                    for i, (pat, want) in List.indexed cells do
+                        $"    let g{i} = Path.glob @\"{pat}\" |> Str.join \",\""
+                        $"    if g{i} <> @\"{want}\" then fail $\"cell {i} gave {{g{i}}}\"" ]
+
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+
+              try
+                  Expect.equal (runFile prog) 0 "each cell matched"
+                  Expect.isLessThan sw.ElapsedMilliseconds 5000L "the pathological miss returns at once"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
           test "File.append inside a plan refuses — no v1 Op arm (kind-first)" {
               let dir = td ()
               System.IO.Directory.CreateDirectory dir |> ignore

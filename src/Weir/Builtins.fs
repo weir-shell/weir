@@ -812,12 +812,12 @@ let private rsplitImpl: Value =
 // pattern is discovery, not assertion); no matches = the empty seq.
 // Hand-rolled: FileSystemGlobbing cannot express the dotfile law
 // (and is unrestorable offline).
-// one glob bracket class at seg[i] = '[' [D:surface-glob], translated
-// member by member — never raw regex text: `!`/`^` negates, a `]` first
-// is a member, `a-z` is a code-point range (a reversed one matches
-// nothing), a `-` at either end and a backslash are members. Matches
-// one code point, never `/`. None = no closer, so the `[` is literal.
-let private globClass (seg: string) (i: int) : (string * int) option =
+// one glob bracket class at seg[i] = '[' [D:surface-glob], read member
+// by member: `!`/`^` negates, a `]` first is a member, `a-z` is a
+// code-point range (a reversed one matches nothing), a `-` at either end
+// and a backslash are members. Matches one code point, never half a
+// surrogate pair. None = no closer, so the `[` is literal.
+let private globClass (seg: string) (i: int) : (bool * (int * int) list * int) option =
     let mutable j = i + 1
     let negate = j < seg.Length && (seg[j] = '!' || seg[j] = '^')
 
@@ -852,66 +852,107 @@ let private globClass (seg: string) (i: int) : (string * int) option =
             | a :: rest -> ranges ((a, a) :: acc) rest
             | [] -> List.rev acc
 
-        let u (c: int) = $"\\u{c:X4}"
-        let bmp = System.Text.StringBuilder()
-        let astral = ResizeArray<string>()
+        Some(negate, ranges [] cps, k)
 
-        let addBmp lo hi =
-            if lo <= hi then
-                (if lo = hi then bmp.Append(u lo) else bmp.Append(u lo).Append('-').Append(u hi)) |> ignore
+// a glob segment's units, matched over code points [D:glob-linear]
+type private GlobUnit =
+    | GLit of int
+    | GOne
+    | GClass of negate: bool * ranges: (int * int) list
+    | GStar
 
-        for (lo, hi) in ranges [] cps do
-            if lo <= hi then
-                // BMP minus the surrogate block: a class unit must never
-                // match half a pair [D:str-code-points]
-                addBmp lo (min hi 0xD7FF)
-                addBmp (max lo 0xE000) (min hi 0xFFFF)
+let private isStar (u: GlobUnit) =
+    match u with
+    | GStar -> true
+    | _ -> false
 
-                let alo, ahi = max lo 0x10000, hi
+let private codePointsOf (s: string) : int[] =
+    let out = ResizeArray<int>(s.Length)
+    let mutable q = 0
 
-                if alo <= ahi then
-                    if ahi - alo > 4096 then
-                        failwith "Path.glob: a bracket range past U+FFFF may span at most 4096 code points"
+    while q < s.Length do
+        if System.Char.IsSurrogatePair(s, q) then
+            out.Add(System.Char.ConvertToUtf32(s, q))
+            q <- q + 2
+        else
+            out.Add(int s[q])
+            q <- q + 1
 
-                    for c in alo..ahi do
-                        astral.Add(System.Text.RegularExpressions.Regex.Escape(System.Char.ConvertFromUtf32 c))
+    out.ToArray()
 
-        let alts =
-            [ if bmp.Length > 0 then
-                  yield "[" + bmp.ToString() + "]"
-              yield! astral ]
-
-        let set = if alts.IsEmpty then "(?!)" else "(?:" + String.concat "|" alts + ")"
-
-        let rx =
-            if negate then
-                "(?:(?!" + set + ")(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[^/]))"
-            else
-                set
-
-        Some(rx, k)
-
-let private globSegRegex (seg: string) : System.Text.RegularExpressions.Regex =
-    let sb = System.Text.StringBuilder("^")
+let private globUnits (seg: string) : GlobUnit[] =
+    let units = ResizeArray<GlobUnit>()
     let mutable i = 0
 
     while i < seg.Length do
         (match seg[i] with
-         | '*' -> sb.Append "[^/]*" |> ignore
-         // one code point, a surrogate pair included [D:str-code-points]
-         | '?' -> sb.Append "(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[^/])" |> ignore
+         // a run of stars is one star
+         | '*' ->
+             if units.Count = 0 || not (isStar units[units.Count - 1]) then
+                 units.Add GStar
+         | '?' -> units.Add GOne
          | '[' ->
              match globClass seg i with
-             | Some(rx, close) ->
-                 sb.Append rx |> ignore
+             | Some(negate, ranges, close) ->
+                 units.Add(GClass(negate, ranges))
                  i <- close
-             | None -> sb.Append(System.Text.RegularExpressions.Regex.Escape "[") |> ignore
-         | c -> sb.Append(System.Text.RegularExpressions.Regex.Escape(string c)) |> ignore)
+             | None -> units.Add(GLit(int '['))
+         | _ when System.Char.IsSurrogatePair(seg, i) ->
+             units.Add(GLit(System.Char.ConvertToUtf32(seg, i)))
+             i <- i + 1
+         | c -> units.Add(GLit(int c)))
 
         i <- i + 1
 
-    sb.Append "$" |> ignore
-    System.Text.RegularExpressions.Regex(sb.ToString())
+    units.ToArray()
+
+let private unitMatches (u: GlobUnit) (c: int) : bool =
+    match u with
+    | GLit l -> c = l
+    | GOne -> true
+    | GClass(negate, ranges) ->
+        // a lone surrogate is never a class member
+        let isMember =
+            (c < 0xD800 || c > 0xDFFF)
+            && ranges |> List.exists (fun (lo, hi) -> lo <= c && c <= hi)
+
+        isMember <> negate
+    | GStar -> false
+
+// a segment matcher with no regex [D:glob-linear]: the greedy walk keeps
+// only the last star's resume point, so a failing name costs at most
+// O(name x pattern) — never the backtracking a regex can spend on
+// `*-*-*-*-*-*-*.gz`
+let private globSegMatcher (seg: string) : string -> bool =
+    let units = globUnits seg
+
+    fun (name: string) ->
+        let cs = codePointsOf name
+        let mutable p = 0
+        let mutable c = 0
+        let mutable starP = -1
+        let mutable starC = 0
+        let mutable ok = true
+
+        while ok && c < cs.Length do
+            if p < units.Length && isStar units[p] then
+                starP <- p
+                starC <- c
+                p <- p + 1
+            elif p < units.Length && unitMatches units[p] cs[c] then
+                p <- p + 1
+                c <- c + 1
+            elif starP >= 0 then
+                p <- starP + 1
+                starC <- starC + 1
+                c <- starC
+            else
+                ok <- false
+
+        while ok && p < units.Length && isStar units[p] do
+            p <- p + 1
+
+        ok && p = units.Length
 
 /// a glob pattern's root and segments [D:path-glob]: `Some (fsRoot,
 /// shownRoot)` for an absolute pattern, None for a relative one. `/`
@@ -940,7 +981,21 @@ let globSplit (windows: bool) (pattern: string) : (string * string) option * str
 let private globWalk (rootFs: string) (pattern: string) : seq<string> =
     seq {
         let windows = System.OperatingSystem.IsWindows()
-        let root, segs = globSplit windows pattern
+        let root, split = globSplit windows pattern
+
+        // `**/**` is `**` — and every `**` past the first can reach a path
+        // twice, so those walks dedupe: bash yields each path once
+        let segs =
+            split
+            |> List.fold (fun acc seg -> if seg = "**" && List.tryHead acc = Some "**" then acc else seg :: acc) []
+            |> List.rev
+
+        let once =
+            if (segs |> List.filter ((=) "**") |> List.length) > 1 then
+                let seen = System.Collections.Generic.HashSet<string>()
+                Seq.filter seen.Add
+            else
+                id
 
         let rootDisplay =
             match root with
@@ -1003,11 +1058,11 @@ let private globWalk (rootFs: string) (pattern: string) : seq<string> =
                         if System.IO.Directory.Exists sub then
                             yield! walk sub (prefix + seg + "/") rest
                 | seg :: rest ->
-                    let rx = globSegRegex seg
+                    let matches = globSegMatcher seg
                     let dotOk = seg.StartsWith "."
 
                     for name in entriesOf dirFs do
-                        if (dotOk || not (name.StartsWith ".")) && rx.IsMatch name then
+                        if (dotOk || not (name.StartsWith ".")) && matches name then
                             let sub = System.IO.Path.Combine(dirFs, name)
 
                             match rest with
@@ -1020,11 +1075,11 @@ let private globWalk (rootFs: string) (pattern: string) : seq<string> =
         // a trailing `/` matches directories only, each shown with its
         // slash — bash's law (`*/` is `a/`, never a file) [D:path-glob]
         if pattern.Length > 1 && (pattern.EndsWith "/" || (windows && pattern.EndsWith "\\")) then
-            for m in walk rootFs rootDisplay segs do
+            for m in once (walk rootFs rootDisplay segs) do
                 if System.IO.Directory.Exists(System.IO.Path.Combine(rootFs, m)) then
                     yield m + "/"
         else
-            yield! walk rootFs rootDisplay segs
+            yield! once (walk rootFs rootDisplay segs)
     }
 
 let private globImpl: Value =

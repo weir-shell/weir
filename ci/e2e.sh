@@ -7071,6 +7071,27 @@ elapsed=$(($(now_ms) - start))
 expect "glob: 10k files counted" "10000" "$out"
 [ "$elapsed" -lt 2000 ] || fail "glob 10k ceiling: ${elapsed}ms"
 echo "e2e ok: glob 10k-file tree under the ceiling (${elapsed}ms)"
+
+# a segment matches with a linear wildcard matcher, no regex
+# [D:glob-linear]: a 7-star miss against one 239-char name with 79
+# dashes ran past 100s as a regex; a repeated `**` yields each path once
+mkdir -p "$big/p" "$big/r/a/b"
+(cd "$big/p" && touch "$(printf 'ab-%.0s' $(seq 1 79))ab.txt")
+touch "$big/r/x.gz" "$big/r/a/y.gz" "$big/r/a/b/z.gz"
+cat > "$big/patho.weir" <<'WEOF'
+within cd "p"
+    print $"miss={Path.glob "*-*-*-*-*-*-*.gz" |> Seq.length} hit={Path.glob "*-*-*-*-*-*-*.txt" |> Seq.length}"
+print $"twice={Path.glob "r/**/**/*.gz" |> Str.join ","}"
+print $"apart={Path.glob "r/**/a/**/*.gz" |> Str.join ","}"
+WEOF
+start=$(now_ms)
+out=$(cd "$big" && timeout 60 $BIN patho.weir 2>&1) || fail "glob pathological pattern: $out"
+elapsed=$(($(now_ms) - start))
+expect "glob: the 7-star miss is empty, its .txt twin matches" "miss=0 hit=1" "$out"
+expect "glob: a repeated ** yields each path once" "twice=r/x.gz,r/a/y.gz,r/a/b/z.gz" "$out"
+expect "glob: ** apart yields each path once" "apart=r/a/y.gz,r/a/b/z.gz" "$out"
+[ "$elapsed" -lt 5000 ] || fail "glob pathological-pattern ceiling: ${elapsed}ms"
+echo "e2e ok: glob segments match linearly (7-star miss in ${elapsed}ms) and a repeated ** dedupes"
 rm -rf "$pgdir" "$big"
 
 # ---- Seq.distinct [D:seq-distinct]: dedupe as a pipeline stage ----
