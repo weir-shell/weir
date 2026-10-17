@@ -12413,6 +12413,27 @@ let optionSweepTests =
               expectValue "(Str.replicate 300 \"a😀\")[^1..]" (VStr "😀")
               expectValue "Str.length (Str.replicate 300 \"a😀\")" (VInt 600)
           }
+          test "a long string with no surrogate adds no index entry [D:str-cp-plain]" {
+              let before = CodePoints.indexedForTest ()
+
+              for i in 1..2000 do
+                  let s = string i + String.replicate 300 "a"
+                  Expect.equal (CodePoints.length s) s.Length "a plain length is its UTF-16 length"
+                  Expect.equal (CodePoints.sub s 3 2) (s.Substring(3, 2)) "a plain cut is a UTF-16 cut"
+                  Expect.equal (CodePoints.ofOffset s 7) 7 "a plain position is its offset"
+
+              // parallel suites may index a few strings of their own
+              Expect.isLessThan (CodePoints.indexedForTest () - before) 100 "2000 plain strings left the table alone"
+
+              // the per-thread memo never answers for another string
+              let plain = String.replicate 400 "b"
+              let astral = String.replicate 300 "😀"
+
+              for _ in 1..3 do
+                  Expect.equal (CodePoints.length plain) 400 "the plain string"
+                  Expect.equal (CodePoints.length astral) 300 "the astral string, between plain lookups"
+                  Expect.equal (CodePoints.sub astral 299 1) "😀" "its index still cuts on a pair"
+          }
           test "match on Seq.tryHead pins the full idiom" {
               expectValue "match ls |> Seq.tryHead with | Some f -> f.name | None -> \"empty\"" (VStr "a.txt")
           } ]

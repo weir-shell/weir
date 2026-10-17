@@ -27,7 +27,7 @@ module CodePoints =
         && System.Char.IsLowSurrogate s[i + 1]
 
     let private hasSurrogate (s: string) =
-        s |> Seq.exists System.Char.IsSurrogate
+        System.MemoryExtensions.IndexOfAnyInRange(System.MemoryExtensions.AsSpan s, '\uD800', '\uDFFF') >= 0
 
     let private walkLength (s: string) : int =
         if not (hasSurrogate s) then
@@ -56,8 +56,7 @@ module CodePoints =
 
     // a long string's code points are indexed once per string instance
     // [D:str-code-points], so a char loop over it is not quadratic: the
-    // count, and the UTF-16 offset of every `stride`-th code point —
-    // null when the string has no surrogate (a position is its offset).
+    // count, and the UTF-16 offset of every `stride`-th code point.
     // A short string is walked; the walk is cheaper than the lookup.
     [<Literal>]
     let private indexedFrom = 256
@@ -65,6 +64,7 @@ module CodePoints =
     [<Literal>]
     let private stride = 64
 
+    [<AllowNullLiteral>]
     type private Index(count: int, marks: int[]) =
         member _.Count = count
         member _.Marks = marks
@@ -73,31 +73,54 @@ module CodePoints =
         System.Runtime.CompilerServices.ConditionalWeakTable<string, Index>()
 
     let private build (s: string) : Index =
-        if not (hasSurrogate s) then
-            Index(s.Length, null)
-        else
-            let marks = ResizeArray<int>()
-            let mutable n = 0
-            let mutable i = 0
+        let marks = ResizeArray<int>()
+        let mutable n = 0
+        let mutable i = 0
 
-            while i < s.Length do
-                if n % stride = 0 then
-                    marks.Add i
-
-                i <- i + (if pairAt s i then 2 else 1)
-                n <- n + 1
-
+        while i < s.Length do
             if n % stride = 0 then
                 marks.Add i
 
-            Index(n, marks.ToArray())
+            i <- i + (if pairAt s i then 2 else 1)
+            n <- n + 1
 
+        if n % stride = 0 then
+            marks.Add i
+
+        Index(n, marks.ToArray())
+
+    // a long string with no surrogate needs no index [D:str-cp-plain]:
+    // a position is its offset. It never enters the table, so a stream
+    // of strings adds nothing; the last one each thread scanned is
+    // remembered (weakly), so a loop over one string scans it once
+    let private lastPlain =
+        new System.Threading.ThreadLocal<System.WeakReference<string>>(fun () -> System.WeakReference<string>(null))
+
+    // the long string's index; null when it is plain (no surrogate)
     let private indexOf (s: string) : Index =
-        indexes.GetValue(s, System.Runtime.CompilerServices.ConditionalWeakTable<string, Index>.CreateValueCallback build)
+        let memo = lastPlain.Value
+
+        match memo.TryGetTarget() with
+        | true, t when obj.ReferenceEquals(t, s) -> null
+        | _ ->
+            match indexes.TryGetValue s with
+            | true, ix -> ix
+            | _ when not (hasSurrogate s) ->
+                memo.SetTarget s
+                null
+            | _ -> indexes.GetValue(s, System.Runtime.CompilerServices.ConditionalWeakTable<string, Index>.CreateValueCallback build)
+
+    /// the number of entries in the index table (tests: plain strings add none)
+    let indexedForTest () : int = Seq.length indexes
 
     /// the number of code points
     let length (s: string) : int =
-        if s.Length <= indexedFrom then walkLength s else (indexOf s).Count
+        if s.Length <= indexedFrom then
+            walkLength s
+        else
+            match indexOf s with
+            | null -> s.Length
+            | ix -> ix.Count
 
     /// the UTF-16 offset of code point `cp`, clamped to [0, s.Length] —
     /// O(cp) on a short string, O(stride) on an indexed one
@@ -107,17 +130,16 @@ module CodePoints =
         elif s.Length <= indexedFrom then
             offsetFrom s 0 0 cp
         else
-            let ix = indexOf s
-
-            match ix.Marks with
+            match indexOf s with
             | null -> min cp s.Length
-            | marks ->
+            | ix ->
+                let marks = ix.Marks
                 let k = min (cp / stride) (marks.Length - 1)
                 offsetFrom s marks[k] (k * stride) cp
 
     /// the code-point index of a UTF-16 offset
     let ofOffset (s: string) (utf16: int) : int =
-        if s.Length > indexedFrom && isNull (indexOf s).Marks then
+        if s.Length > indexedFrom && isNull (indexOf s) then
             utf16
         else
             length (s.Substring(0, utf16))
