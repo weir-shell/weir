@@ -12967,6 +12967,38 @@ out=$($BIN "$svdir/late.weir" 2>&1) || fail "serve late-handler run failed: $out
 [ "$(tr '\n' ',' < "$svdir/late.log")" = "handler started,scope closed,script end," ] || fail "a late serve handler's effects landed after the scope: $(tr '\n' ',' < "$svdir/late.log")"
 echo "e2e ok: within serve — a handler past the drain is cut; no effect after the scope returns"
 
+# a cut handler's `always` is joined whole before `within serve` returns
+# [D:serve-cut-joins-cleanup] — no drain-length cap on the cleanup, its
+# command included, and an enclosing lock is held until it ends
+svport17=8492
+rm -f "$svdir/clean.log"
+cat > "$svdir/clean.weir" <<WEOF
+let log = "$svdir/clean.log"
+let handler = fun req ->
+    within
+        File.append log ["handler started"]
+        Duration.sleep 6s
+    always
+        File.append log ["cleanup start"]
+        Duration.sleep 2500ms
+        sh -c "echo cleanup-cmd >> $svdir/clean.log"
+        File.append log ["cleanup end"]
+    HttpServerResponse { status = 200; headers = []; body = Text "late" }
+
+within lock "$svdir/clean.lock"
+    within serve srv = { port = $svport17; maxConcurrent = 2 } handler
+        poll timeout=8s interval=50ms
+            Net.portOpen $svport17
+        within proc client = curl -s --max-time 15 http://127.0.0.1:$svport17/
+            poll timeout=8s interval=50ms
+                File.exists log
+    File.append log ["serve returned"]
+File.append log ["lock released"]
+WEOF
+out=$($BIN "$svdir/clean.weir" 2>&1) || fail "serve cleanup-join run failed: $out"
+[ "$(tr '\n' ',' < "$svdir/clean.log")" = "handler started,cleanup start,cleanup-cmd,cleanup end,serve returned,lock released," ] || fail "a cut serve handler's always must finish before within serve returns: $(tr '\n' ',' < "$svdir/clean.log")"
+echo "e2e ok: within serve — a cut handler's always cleanup is joined whole before the scope returns"
+
 # (H3 lows) a queued request whose client already left is never started,
 # and a Stream whose client aborts frees its slot [D:serve-drain]
 svport14=8484

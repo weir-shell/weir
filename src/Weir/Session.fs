@@ -1086,6 +1086,14 @@ let waitTask (t: System.Threading.Tasks.Task) : unit =
     // an arm joining its own arms is parked with them
     if teardownCuts () then parking t.Wait else t.Wait()
 
+/// join a thread (a serve handler) whole; a teardown requested meanwhile
+/// stands the signal watchdog down, as `waitTask` does
+/// [D:serve-cut-joins-cleanup]
+let joinThread (th: System.Threading.Thread) : unit =
+    while not (th.Join 50) do
+        if interruptible () && teardownRequested () <> 0 then
+            System.Threading.Volatile.Write(&mainJoining, 1)
+
 // ---- weir's one stdin reader [D:stdin-reader] --------------------------
 // Self.prompt, Self.stdin and the piped REPL read fd 0 through one buffer,
 // so no reader hides input from another, and bytes are read only while a

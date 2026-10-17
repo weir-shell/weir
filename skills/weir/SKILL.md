@@ -781,8 +781,10 @@ print $"{key} -> {value}"
   finish; past that each is cut at its next builtin call, command,
   sleep or Http send (the `pfirst` loser's cut, its children killed),
   so NO HANDLER EFFECT LANDS AFTER `within serve` RETURNS [D:serve-cut]
-  (its late response is dropped; pure computation may run on, to its
-  next cut).
+  (its late response is dropped); a cut handler's `always` cleanup
+  runs whole, as long as it takes, before the scope returns, and pure
+  computation holds the return as a `pfirst` loser's does
+  [D:serve-cut-joins-cleanup].
   `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
   excess queues; pipelined requests are answered in order. A request
   whose `Host` is not a loopback name (`127.0.0.1`, `localhost`,

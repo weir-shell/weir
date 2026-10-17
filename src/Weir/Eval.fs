@@ -5239,19 +5239,19 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 loopThread.Join 500 |> ignore
 
                 // a handler still running past the drain is cut at its next
-                // effect boundary and joined, so none of its effects lands
-                // after the scope [D:serve-cut]; its writes are dropped and
-                // its result discarded, never raised [D:serve-drain]. Pure
-                // compute may outlive the join — its next boundary is cut
+                // effect boundary and joined whole, its `always` cleanup
+                // included, so none of its effects lands after the scope
+                // [D:serve-cut] [D:serve-cut-joins-cleanup]; its writes are
+                // dropped and its result discarded, never raised
+                // [D:serve-drain]. Pure compute holds the join, as a pfirst
+                // loser's does
                 cut.Cancel()
 
                 for kv in inflight do
                     kv.Value.Condemn()
 
-                let clock = System.Diagnostics.Stopwatch.StartNew()
-
                 for kv in inflight do
-                    kv.Key.Join(max 0 (drainMs - int clock.ElapsedMilliseconds)) |> ignore
+                    Session.joinThread kv.Key
         | WithinTmp ->
             // kind tmp [D:within-scopes]: a fresh unique directory,
             // bound as the binder for the block; removed on every
