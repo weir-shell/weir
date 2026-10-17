@@ -649,7 +649,8 @@ print $"{key} -> {value}"
   the host that failed — a redirect's target, not the origin (and a
   redirect loop — past 50 hops it raises, naming it). The proxy comes
   from `HTTP_PROXY`/`HTTPS_PROXY`; a `NO_PROXY` entry bypasses it, `*`
-  for every host. `auth` plus an
+  for every host, a CIDR (`10.0.0.0/8`) for every address it covers; a
+  dead proxy's error names the proxy. `auth` plus an
   explicit `Authorization` header is refused (two credentials). A
   header the wire cannot carry raises before anything is sent, naming
   the header — a CR/LF/NUL byte, a non-token name (`"Bad Name"`), a

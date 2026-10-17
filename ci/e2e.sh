@@ -10985,6 +10985,19 @@ WEOF
         echo "$out" | grep -qF "star-status=200" || { kill $hsrv 2>/dev/null || true; fail "NO_PROXY=* direct send: $out"; }
         out=$(viaDead 'example.invalid,*') || { kill $hsrv 2>/dev/null || true; fail "a * entry in a list must bypass too: $out"; }
         echo "e2e ok: Http NO_PROXY=* bypasses the proxy for every host (control routes through it)"
+        # a CIDR entry bypasses every address it covers [D:noproxy-cidr]
+        out=$(viaDead 'example.invalid,127.0.0.0/8') || { kill $hsrv 2>/dev/null || true; fail "NO_PROXY=127.0.0.0/8 must bypass the proxy for 127.0.0.1: $out"; }
+        echo "$out" | grep -qF "star-status=200" || { kill $hsrv 2>/dev/null || true; fail "NO_PROXY CIDR direct send: $out"; }
+        out=$(viaDead '127.9.9.9/8') || { kill $hsrv 2>/dev/null || true; fail "a CIDR's host bits are ignored: $out"; }
+        out=$(viaDead '10.0.0.0/8') && { kill $hsrv 2>/dev/null || true; fail "a CIDR not covering the host must not bypass: $out"; }
+        echo "e2e ok: Http NO_PROXY CIDR entries bypass the addresses they cover"
+        # a dead proxy's error names the proxy, not the target [D:proxy-err-names-proxy]
+        echo "$out" | grep -qF "the proxy 127.0.0.1:1 refused the connection" || { kill $hsrv 2>/dev/null || true; fail "E4: a dead http proxy must be named: $out"; }
+        out=$(env HTTPS_PROXY=http://127.0.0.1:1 https_proxy=http://127.0.0.1:1 NO_PROXY=example.invalid no_proxy=example.invalid "$BIN" -e "Http.send (Http.get \"https://127.0.0.1:$hport/x\") |> fun r -> r.status" 2>&1) && { kill $hsrv 2>/dev/null || true; fail "E4: https through a dead proxy must fail: $out"; }
+        echo "$out" | grep -qF "the proxy 127.0.0.1:1 refused the connection" || { kill $hsrv 2>/dev/null || true; fail "E4: a dead https proxy must be named: $out"; }
+        out=$(env HTTP_PROXY=http://proxy-weir-e2e.invalid:3128 http_proxy=http://proxy-weir-e2e.invalid:3128 NO_PROXY=example.invalid no_proxy=example.invalid "$BIN" "$hdir/star.weir" 2>&1) && { kill $hsrv 2>/dev/null || true; fail "E4: an unresolvable proxy must fail: $out"; }
+        echo "$out" | grep -qF "cannot resolve the proxy proxy-weir-e2e.invalid" || { kill $hsrv 2>/dev/null || true; fail "E4: an unresolvable proxy must be named: $out"; }
+        echo "e2e ok: Http a dead proxy's error names the proxy (refused http/https, unresolvable)"
     fi
 
     kill $hsrv 2>/dev/null || true
