@@ -222,6 +222,22 @@ type private V6NoProxy(inner: Net.IWebProxy) =
         member _.IsBypassed(u: Uri) =
             if isV6 u then isNull (proxyFor u) else inner.IsBypassed u
 
+/// the host a transport error names: the URL's host, or the whole URL
+/// when it would not parse — redacted [D:url-redact], since a
+/// `user:pass@host` credential must not print verbatim
+let failingHost (url: string) : string =
+    try
+        Uri(url).Host
+    with _ ->
+        redactUrl url
+
+/// the port the transport classifier reports (0 when unparseable)
+let failingPort (url: string) : int =
+    try
+        Uri(url).Port
+    with _ ->
+        0
+
 /// the environment's proxy for a client handler, NO_PROXY matched as above
 let useEnvProxy (handler: HttpClientHandler) : unit =
     handler.Proxy <- V6NoProxy(HttpClient.DefaultProxy)
@@ -240,6 +256,10 @@ let useEnvProxy (handler: HttpClientHandler) : unit =
 /// `cancel` cuts the request (a lost pfirst race, a REPL ^C); the caller
 /// names why — the transport error then reads as a timeout.
 let send (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string * TransportError> =
+    // the hop in flight: a transport failure names the host that failed,
+    // never the original one a redirect left behind
+    let mutable curUrl = req.Url
+
     try
         // the insecure callback is set per request only — the default
         // path keeps TLS verification on [D:http-s2]. Auto-redirect is
@@ -311,7 +331,6 @@ let send (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string 
         // on a redirect status with a Location, rebuild for the next hop,
         // dropping the credential headers when the origin changed.
         let mutable curMethod = req.Method
-        let mutable curUrl = req.Url
         let mutable curHeaders = req.Headers
         let mutable curBody = req.Body
         let mutable hops = 0
@@ -406,22 +425,20 @@ let send (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string 
               Headers = headers
               Body = body }
     with ex ->
-        let host, port =
-            try
-                let u = Uri(req.Url)
-                u.Host, u.Port
-            with _ ->
-                // the URL would not parse — the fallback names it in the
-                // error, so redact its userinfo [D:url-redact] (a
-                // `user:pass@host` credential must not print verbatim)
-                redactUrl req.Url, 0
-
         let err =
             match ex with
             | CharsetUnknown(cs, status) -> UnknownCharset(cs, status)
             | TooManyRedirects(hops, last) -> RedirectLoop(hops, last)
-            | _ -> classifyTransport req.TimeoutMs port ex
-        Error(transportMessage host err, err)
+            | _ -> classifyTransport req.TimeoutMs (failingPort curUrl) ex
+
+        // a loop is the request's own failure (its last hop is in the
+        // message); anything else names the hop that failed
+        let named =
+            match err with
+            | RedirectLoop _ -> req.Url
+            | _ -> curUrl
+
+        Error(transportMessage (failingHost named) err, err)
 
 /// Basic auth is an encoding, not a prefix: base64(user:pass) [D:http] —
 /// which is why it is a union case the runner encodes, not a header a

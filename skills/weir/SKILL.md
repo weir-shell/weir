@@ -636,7 +636,8 @@ print $"{key} -> {value}"
   `Auth` (`NoAuth`/`Bearer of Secret`/`Basic of string * Secret` — Basic does
   the base64); a `Secret` carries WHOLE (interpolating a token is a
   check error) and `show` masks it. Status is DATA (`if resp.status >=
-  400 then fail …`, a 404 binds); only TRANSPORT failure raises (and a
+  400 then fail …`, a 404 binds); only TRANSPORT failure raises, naming
+  the host that failed — a redirect's target, not the origin (and a
   redirect loop — past 50 hops it raises, naming it). `auth` plus an
   explicit `Authorization` header is refused (two credentials). A
   header the wire cannot carry raises before anything is sent, naming

@@ -10759,8 +10759,30 @@ print \$"insecure-status={r.status}"
 WEOF
         out=$($BIN "$hdir/ins.weir" 2>&1) || { kill $tsrv 2>/dev/null || true; fail "insecure=true must accept the self-signed cert: $out"; }
         echo "$out" | grep -qF "insecure-status=200" || { kill $tsrv 2>/dev/null || true; fail "insecure did not connect: $out"; }
-        kill $tsrv 2>/dev/null || true
-        echo "e2e ok: Http insecure (default rejects a self-signed cert, insecure=true accepts — per-request)"
+        # a redirect whose TARGET fails names the target's host, not the
+        # healthy origin — the TLS repair included (localhost here is the
+        # self-signed server, 127.0.0.1 the redirector)
+        rtls=$((23000 + RANDOM % 100))
+        cat > "$hdir/tredir.py" <<REOF
+import http.server
+class A(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(302)
+        self.send_header('Location', 'https://localhost:$tport/' if self.path == '/tls' else 'http://localhost:1/')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', $rtls), A).serve_forever()
+REOF
+        python3 "$hdir/tredir.py" & trsrv=$!
+        awaitTcp $rtls || { kill $tsrv $trsrv 2>/dev/null || true; fail "the TLS redirector never came up on $rtls"; }
+        out=$($BIN -e 'Http.send (Http.get "http://127.0.0.1:'"$rtls"'/tls")' 2>&1) && { kill $tsrv $trsrv 2>/dev/null || true; fail "a redirect to a self-signed target must raise"; } || true
+        echo "$out" | grep -qF "cannot establish TLS with localhost" || { kill $tsrv $trsrv 2>/dev/null || true; fail "the TLS error must name the redirect target's host: $out"; }
+        echo "$out" | grep -qF "insecure = true" || { kill $tsrv $trsrv 2>/dev/null || true; fail "the redirected TLS error keeps its repair: $out"; }
+        out=$($BIN -e 'Http.send (Http.get "http://127.0.0.1:'"$rtls"'/dead")' 2>&1) && { kill $tsrv $trsrv 2>/dev/null || true; fail "a redirect to a dead port must raise"; } || true
+        echo "$out" | grep -qF "localhost:1 refused the connection" || { kill $tsrv $trsrv 2>/dev/null || true; fail "the refusal must name the redirect target's host and port: $out"; }
+        kill $tsrv $trsrv 2>/dev/null || true
+        echo "e2e ok: Http insecure (default rejects a self-signed cert, insecure=true accepts — per-request); a failing redirect target is the host named"
     else
         echo "e2e SKIP: openssl absent — Http insecure TLS pin not run" >&2
     fi

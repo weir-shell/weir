@@ -493,6 +493,9 @@ let private contractSensitiveHeaders: Set<string> =
     Set.ofList [ "authorization"; "private-token" ]
 
 let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte[] * string option, string> =
+    // the hop in flight: a transport failure names the host that failed
+    let mutable curUrl = url
+
     try
         // auto-redirect off so the contract client controls the
         // credential-drop on an origin change [D:contract-redirect] — the
@@ -508,7 +511,6 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
         // filtered per hop), dropping the credential headers on a
         // cross-origin change. Covers both the API-resolution request and the
         // artifact download — every fetchBytesWith caller.
-        let mutable curUrl = url
         let mutable curHeaders = headers
         let mutable hops = 0
         let mutable result: Net.Http.HttpResponseMessage = null
@@ -557,16 +559,9 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
 
             Ok(resp.Content.ReadAsByteArrayAsync().Result, ct)
     with ex ->
-        let host, port =
-            try
-                let u = Uri(url)
-                u.Host, u.Port
-            with _ ->
-                url, 0
-
         // the shared transport classifier [D:transport-words] — 60s is
         // this fetch's own client timeout above
-        Error(Http.transportMessage host (Http.classifyTransport 60000L port ex))
+        Error(Http.transportMessage (Http.failingHost curUrl) (Http.classifyTransport 60000L (Http.failingPort curUrl) ex))
 
 let fetchBytes (url: string) : Result<byte[] * string option, string> = fetchBytesWith [] url
 

@@ -23839,6 +23839,49 @@ let serveTests =
               for code in [ 200; 201; 204; 300; 304; 400; 404; 500 ] do
                   Expect.isFalse (Weir.Http.isRedirect code) $"{code} is not a follow-redirect"
           }
+          test "a failing redirect target is the host the error names, for Http.send and the contract fetch" {
+              // 127.0.0.1 (healthy) 302s to localhost:1 (nothing listens):
+              // the refusal belongs to the target, never the origin
+              let port = 8631
+              let a = new System.Net.HttpListener()
+              a.Prefixes.Add $"http://127.0.0.1:{port}/"
+              a.Start()
+
+              let loop =
+                  System.Threading.Thread(fun () ->
+                      try
+                          while true do
+                              let ctx = a.GetContext()
+                              ctx.Response.StatusCode <- 302
+                              ctx.Response.Headers.Add("Location", "http://localhost:1/x")
+                              ctx.Response.Close()
+                      with _ ->
+                          ())
+
+              loop.IsBackground <- true
+              loop.Start()
+
+              try
+                  let req: Weir.Http.Req =
+                      { Method = "GET"
+                        Url = $"http://127.0.0.1:{port}/start"
+                        Headers = []
+                        SensitiveHeaders = Set.empty
+                        Body = None
+                        TimeoutMs = 10000L
+                        Insecure = false }
+
+                  match Weir.Http.send System.Threading.CancellationToken.None req with
+                  | Error(msg, Weir.Http.Refused 1) -> Expect.stringContains msg "localhost:1 refused the connection" "Http.send names the target"
+                  | other -> failtest $"Http.send should be refused at the target: {other}"
+
+                  match Weir.Contracts.fetchBytesWith [] $"http://127.0.0.1:{port}/start" with
+                  | Error msg -> Expect.stringContains msg "localhost:1 refused the connection" "the contract fetch names the target"
+                  | Ok _ -> failtest "the contract fetch should be refused at the target"
+              finally
+                  a.Stop()
+                  (a :> System.IDisposable).Dispose()
+          }
           // ---- F12: the request-body read timeout [D:serve-body-timeout] ----
           test "the serve config accepts bodyTimeout, and omitting it stays clean" {
               // omitted — rests at the default, existing scripts unbroken
