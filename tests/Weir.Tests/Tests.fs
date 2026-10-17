@@ -27701,6 +27701,61 @@ let hunt3r3TreeKillTests =
                           ()
           } ]
 
+let hunt3r3FifoTests =
+    testSequenced
+    <| testList
+        "hunt-3r3 polled FIFO"
+        [ test "a FIFO read is polled: a cut raises and closes it, the next reader gets the data [D:fifo-read-polled]" {
+              skipUnlessLinux ()
+
+              withTempDir "weir-fifo" (fun d ->
+                  let reg = Path.Combine(d, "plain.txt")
+                  File.WriteAllText(reg, "x")
+                  Expect.isNone (Weir.Session.openPolled reg) "a regular file opens as a file"
+                  let fifo = Path.Combine(d, "f")
+
+                  use mk = System.Diagnostics.Process.Start("mkfifo", [| fifo |])
+                  mk.WaitForExit()
+                  use cts = new System.Threading.CancellationTokenSource()
+
+                  Weir.Session.racing (fun () ->
+                      Weir.Session.enterFlow cts.Token
+
+                      try
+                          System.Threading.Tasks.Task.Run(fun () ->
+                              System.Threading.Thread.Sleep 200
+                              cts.Cancel())
+                          |> ignore
+
+                          let sw = System.Diagnostics.Stopwatch.StartNew()
+
+                          Expect.throwsT<Weir.Session.Cancelled>
+                              (fun () ->
+                                  match Weir.Session.openPolled fifo with
+                                  | Some s ->
+                                      use s = s
+                                      use r = new StreamReader(s)
+                                      r.ReadToEnd() |> ignore
+                                  | None -> failtest "a FIFO is polled")
+                              "the cut raises"
+
+                          Expect.isLessThan sw.ElapsedMilliseconds 3000L "no writer is waited for"
+                      finally
+                          Weir.Session.exitFlow ())
+
+                  let writer =
+                      System.Threading.Tasks.Task.Run(fun () -> File.WriteAllText(fifo, "D1\nD2\n"))
+
+                  match Weir.Session.openPolled fifo with
+                  | Some s ->
+                      use s = s
+                      use r = new StreamReader(s)
+                      Expect.equal (r.ReadToEnd()) "D1\nD2\n" "the next reader gets every byte"
+                  | None -> failtest "a FIFO is polled"
+
+                  Expect.isTrue (writer.Wait 5000) "the writer finished")
+          } ]
+
 let sweepFindingTests =
     let msgs file lines = diagsIn file lines |> List.map (fun d -> d.Message)
 
@@ -28597,6 +28652,7 @@ let allTests =
           hunt3BehaviourTests
           hunt3r2CancelTests
           hunt3r3TreeKillTests
+          hunt3r3FifoTests
           argsSecretEchoTests
           hunt3BehaviorTests
           docsBinaryTests

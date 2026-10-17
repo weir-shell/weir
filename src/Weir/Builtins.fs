@@ -2751,11 +2751,26 @@ let private bomAt (fs: FileStream) : bool =
 let private openShared (r: string) : FileStream =
     new FileStream(r, FileMode.Open, FileAccess.Read, FileShare.ReadWrite ||| FileShare.Delete)
 
-// a FIFO's open and read block where no kill reaches: a lost race or a
-// REPL ^C abandons them [D:stdin-reader]
+// a FIFO's open and read block where no kill reaches: on Linux the read
+// is polled beside the cut and the cut closes it [D:fifo-read-polled];
+// elsewhere a lost race, a REPL ^C or a teardown abandons the blocking
+// call [D:stdin-reader] [D:teardown-abandons-reads]
+let private withReadStream (r: string) (f: Stream -> 'a) : 'a =
+    match Session.openPolled r with
+    | Some s ->
+        use s = s
+        f s
+    | None when System.OperatingSystem.IsLinux() ->
+        use s = openShared r
+        f (s :> Stream)
+    | None ->
+        Session.cutBlocking (fun () ->
+            use s = openShared r
+            f (s :> Stream))
+
 let private readLinesShared (r: string) : string[] =
-    Session.cutBlocking (fun () ->
-        use sr = new StreamReader(openShared r)
+    withReadStream r (fun s ->
+        use sr = new StreamReader(s)
         let acc = ResizeArray()
         let mutable line = sr.ReadLine()
 
@@ -2766,15 +2781,14 @@ let private readLinesShared (r: string) : string[] =
         acc.ToArray())
 
 let private readTextShared (r: string) : string =
-    Session.cutBlocking (fun () ->
-        use sr = new StreamReader(openShared r)
+    withReadStream r (fun s ->
+        use sr = new StreamReader(s)
         sr.ReadToEnd())
 
 let private readBytesShared (r: string) : byte[] =
-    Session.cutBlocking (fun () ->
-        use fs = openShared r
+    withReadStream r (fun s ->
         use ms = new MemoryStream()
-        fs.CopyTo ms
+        s.CopyTo ms
         ms.ToArray())
 
 // the whole-file swap behind File.writeAtomic: the payload lands in a

@@ -706,8 +706,10 @@ print $"{key} -> {value}"
   EFFECT RUNS [D:pfirst-join]; a loser busy in pure computation holds
   the return until it reaches one, and a loser's `always` cleanup
   still runs whole, its commands included (before the return). A
-  loser blocked reading stdin or a FIFO is cut too (POSIX). `exit n`
-  in an arm ends the race and the script, as in `pmap`.
+  loser blocked reading stdin or a FIFO is cut too (POSIX; on Linux the
+  cut closes the FIFO, so a later read gets the writer's data
+  [D:fifo-read-polled]). `exit n` in an arm ends the race and the
+  script, as in `pmap`.
 - A SCOPED background process is `within proc srv = <command>` +
   an indented block [D:scoped-procs]: the scope IS the lifetime —
   at every exit (normal or raise) the process TREE is killed and

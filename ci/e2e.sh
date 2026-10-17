@@ -6034,6 +6034,32 @@ WEOF
         [ "$took" -lt 2500 ] || fail "a loser blocked in ($body) held the race (${took}ms)"
     done
     echo "e2e ok: a cut stdin read takes no line; Self.stdin and FIFO losers never hold the race"
+
+    # an abandoned FIFO read never takes a later writer's data
+    # [D:fifo-read-polled]: the loser's fd is closed by the cut, so the
+    # next File.read gets both lines. Linux (a polled FIFO)
+    if [ "$(uname -s)" = Linux ]; then
+        cat > "$pdir/steal.weir" <<'WEOF'
+let f = Self.args |> Seq.head
+let a = ["read"; "to"] |> Seq.pfirst (fun k ->
+    if k == "to" then
+        Duration.sleep 300ms
+        "timeout"
+    else
+        File.read f |> Seq.head)
+print $"race={a}"
+print (File.read f |> Seq.freeze |> Str.join ",")
+WEOF
+        for _ in 1 2 3; do
+            rm -f "$pdir/sf"; mkfifo "$pdir/sf"
+            (sleep 1; timeout 5 sh -c "printf 'D1\nD2\n' > $pdir/sf") &
+            wpid=$!
+            out=$(timeout 10 $BIN "$pdir/steal.weir" "$pdir/sf" 2>&1) || true
+            wait "$wpid" 2>/dev/null || true
+            [ "$out" = "$(printf 'race=timeout\nD1,D2')" ] || fail "an abandoned FIFO read took a later writer's data: $out"
+        done
+        echo "e2e ok: an abandoned FIFO read closes its fd — the next reader gets every line"
+    fi
 fi
 rm -rf "$pdir"
 

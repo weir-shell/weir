@@ -725,6 +725,9 @@ module private Libc =
     [<DllImport("libc", SetLastError = true)>]
     extern nativeint read(int fd, nativeint buf, unativeint count)
 
+    [<DllImport("libc", SetLastError = true)>]
+    extern int64 lseek(int fd, int64 offset, int whence)
+
     [<Struct; StructLayout(LayoutKind.Sequential)>]
     type PollFd =
         val mutable fd: int
@@ -1256,6 +1259,93 @@ module Stdin =
     /// the next line of the stream (Self.stdin, the piped REPL); null at
     /// the end of input
     let readLine () : string = readWith true
+
+// an unseekable path File.read opens — a FIFO, /dev/stdin on a pipe, a
+// tty [D:fifo-read-polled]: opened non-blocking (so the open waits for no
+// writer) and polled beside the cut, so a lost race, a REPL ^C or a
+// teardown raises at the poll and the dispose closes the fd — no thread is
+// left inside read(2) to take a later writer's bytes. Linux, where a
+// fresh reader's poll stays quiet until a writer arrives
+type private PolledFd(fd: int) =
+    inherit System.IO.Stream()
+    let mutable closed = false
+
+    // wait until fd is readable (data, EOF or an error), raising when the
+    // wait is cut
+    let await () =
+        match wakeHandles () with
+        | [] ->
+            while not (Libc.readable fd 1000) do
+                ()
+        | _ ->
+            raiseWoken ()
+
+            while not (Libc.readable fd 50) do
+                raiseWoken ()
+
+    override _.CanRead = true
+    override _.CanSeek = false
+    override _.CanWrite = false
+    override _.Length = raise (System.NotSupportedException())
+
+    override _.Position
+        with get () = raise (System.NotSupportedException())
+        and set (_: int64) = raise (System.NotSupportedException())
+
+    override _.Flush() = ()
+    override _.Seek(_: int64, _: System.IO.SeekOrigin) : int64 = raise (System.NotSupportedException())
+    override _.SetLength(_: int64) = raise (System.NotSupportedException())
+    override _.Write(_: byte[], _: int, _: int) = raise (System.NotSupportedException())
+
+    override _.Read(buffer: byte[], offset: int, count: int) : int =
+        let rec go () =
+            await ()
+
+            let h =
+                System.Runtime.InteropServices.GCHandle.Alloc(
+                    buffer,
+                    System.Runtime.InteropServices.GCHandleType.Pinned
+                )
+
+            let r =
+                try
+                    int (Libc.read (fd, h.AddrOfPinnedObject() + nativeint offset, unativeint count))
+                finally
+                    h.Free()
+
+            if r >= 0 then
+                r
+            else
+                match System.Runtime.InteropServices.Marshal.GetLastPInvokeError() with
+                | e when e = Libc.EINTR || e = Libc.EAGAIN -> go ()
+                | e -> raise (System.IO.IOException $"read failed (errno {e})")
+
+        if count = 0 then 0 else go ()
+
+    override _.Dispose(disposing: bool) =
+        if not closed then
+            closed <- true
+            Libc.close fd |> ignore
+
+        base.Dispose disposing
+
+/// a polled stream for an unseekable path [D:fifo-read-polled]; None for a
+/// seekable one (or off Linux, or a path open(2) refuses) — the caller opens
+/// it as a file
+let openPolled (path: string) : System.IO.Stream option =
+    if not (System.OperatingSystem.IsLinux()) then
+        None
+    else
+        let O_NONBLOCK, O_CLOEXEC = 0x800, 0x80000
+        let fd = Libc.``open`` (path, O_NONBLOCK ||| O_CLOEXEC)
+
+        if fd < 0 then
+            None
+        elif Libc.lseek (fd, 0L, 1) >= 0L then
+            Libc.close fd |> ignore
+            None
+        else
+            Some(new PolledFd(fd) :> System.IO.Stream)
 
 // weir's own stdout, when it is a pipe or file [D:stdout-epipe]: .NET's
 // Unix console stream drops EPIPE, so a closed reader went unnoticed and
