@@ -116,7 +116,11 @@ stream gives zero documents.
 Writing mirrors reading exactly. `to yaml` writes one document: a
 record becomes a mapping, a seq a sequence document, and a seq of
 pairs one mapping. `to yaml stream` writes one document per element.
-Each form reads back with the matching reader
+A record whose fields are all `None` is written as `{}` and an empty
+seq as `[]`, so no document is empty. A seq of pairs, or a `YMap`,
+that holds a key twice is refused by `to yaml` and `to json`, naming
+the key; reading JSON into a seq of pairs keeps the last value of a
+repeated key, at the first key's position. Each form reads back with the matching reader
 (`to yaml |> from yaml seq<T>`,
 `to yaml stream |> from yaml stream T`). A multiline string is
 written as a block scalar. The `yaml` template literal (with checked

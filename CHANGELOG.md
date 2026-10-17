@@ -81,6 +81,36 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **`weir gen types` drafts number-or-string fields and `format:
+  int-or-string` as `Yaml`.** Kubernetes `resources.limits`, an HPA
+  `target.value` and swagger's IntOrString drafted `string`, which
+  refused `cpu: 1` on read.
+- **`weir gen types` drafts an enum as its type.** An enum under
+  `type: boolean` or `number` drafted `string` and refused `true` and
+  `0.5`; it now drafts `bool`/`float`. An enum mixing kinds drafts
+  `Yaml`, with a note.
+- **`weir add schema` accepts a root `$id`, `const`,
+  `contentEncoding` and `contentMediaType`.** Each refused the whole
+  schema; `$id` is ignored, and the others (and `format`) get a
+  `// note: not enforced:` line.
+- **`to yaml` writes an all-`None` record as `{}` and an empty
+  top-level seq as `[]`.** Both wrote nothing, so `to yaml stream`
+  dropped the document and the text read back as something else.
+- **Duplicate mapping keys.** A repeated key read into a
+  `seq<string * T>` from JSON kept both pairs; it now last-wins at its
+  first position. `to json` and `to yaml` refuse a pair-seq or `YMap`
+  holding a key twice, naming the key, instead of writing a document
+  weir then refuses.
+- **A `plan`'s stale-read guard follows symlinks and nested plans.**
+  A read through a symlink alias of a captured target (either way
+  round) saw stale state; on macOS a different letter case did too.
+  An inner `plan` now also refuses a read an enclosing plan's ops
+  changed.
+- **A `plan` read no longer slows with every captured op.** A
+  30,000-file write-if-absent loop took 31 s; it is linear again.
+- **Refusing JSON nested past 100 levels is linear.** A 100,000-deep
+  document took 11 s to refuse (`from json`, `from jsonl`,
+  `inferShape`); it now takes milliseconds.
 - **`Path.normalize` treats a Windows drive root as a root.** On
   Windows, `Path.normalize "C:/../y"` gave `C:/../y`; it is now `C:/y`,
   as `/../y` is `/y`.

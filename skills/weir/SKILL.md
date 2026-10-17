@@ -952,7 +952,9 @@ let x =
   read, existence check or listing at, under, or over a path an
   earlier captured mutation changes would see stale state — a write in
   `d` makes `Dir.list d` and `Path.glob "d/*"` refuse; a captured
-  `Dir.deleteAll d` makes every read under `d` refuse), and a captured
+  `Dir.deleteAll d` makes every read under `d` refuse; paths compare
+  through symlinks both ways, case-folded on Windows and macOS, and an
+  inner `plan` sees every enclosing plan's ops), and a captured
   op under a `within tmp` dir opened inside the plan (the dir is gone
   before apply — build the content in memory, or do the tmp work
   outside the plan).
@@ -1728,7 +1730,9 @@ type Bad = C of int
   fields are all admitted, a `seq` of an admitted type, a
   `seq<string * T>` mapping (an object whose keys are DATA — k8s
   `data`/`labels`: reads as pairs in document order, writes back as
-  ONE object; an empty mapping writes `[]` and reads back empty),
+  ONE object; an empty mapping writes `[]` and reads back empty; a
+  repeated key last-wins at its first position, and `to json`/`to
+  yaml` refuse a pair-seq or `YMap` holding a key twice, naming it),
   a `Map<string, T>` of one, or an opaque `Yaml` node — any subtree
   read whole (JSON is a YAML subset: object -> `YMap` in document
   order, a repeated key last-wins, `null` -> `YNull`) and written back as the JSON it denotes
@@ -1778,7 +1782,8 @@ type Bad = C of int
   ONE mapping; `xs |> to yaml stream` writes one document per
   element (the bundle write — `to yaml stream |> from yaml stream
   T` roundtrips, `to yaml |> from yaml seq<T>` too). `None` fields
-  omit; ambiguous strings like `"no"`/`"007"` auto-quote. `Yaml`
+  omit — a record with every field `None` writes `{}`, and an empty
+  top-level seq `[]`, so no document is ever empty text; ambiguous strings like `"no"`/`"007"` auto-quote. `Yaml`
   nodes (`YStr`/`YInt`/`YFloat`/`YBool`/`YNull`/`YSeq`/`YMap`;
   `YMap [("k", YStr "v")]`) render directly —
   `YMap` keeps YOUR key order; record fields render in DECLARATION
@@ -1837,11 +1842,14 @@ type Bad = C of int
   locked schema, where `required` decides plain-vs-`Option`,
   `additionalProperties` becomes the `seq<string * V>` mapping, and
   `$ref` definition names become type names; an int-or-string field
-  (a k8s port) drafts `Yaml` (8080 stays `YInt`, `"25%"` `YStr`), an
-  integer `enum` drafts `int`; validation keywords (`minLength`,
-  `pattern`, `minimum`, `maxItems`, `uniqueItems`, `readOnly`, …) are
-  accepted but NOT enforced — each gets a `// note: not enforced:`
-  line; import it with
+  (a k8s port; `format: int-or-string` too) and a number-or-string
+  field (a quantity) draft `Yaml` (8080 stays `YInt`, `"25%"` `YStr`);
+  an `enum` drafts its declared type, else its values' one kind
+  (`int`, `float`, `bool`, `string`), and a mixed enum drafts `Yaml`;
+  validation keywords (`minLength`, `pattern`, `minimum`, `maxItems`,
+  `uniqueItems`, `readOnly`, `const`, `format`, `contentEncoding`, …)
+  are accepted but NOT enforced — each gets a `// note: not enforced:`
+  line (`const` drafts its type); a root `$id` is ignored; import it with
   `import "weir:<name>" as X` (type names resolve bare in the
   adapter slot). `from table` stays the tier for tools with no
   schema at all. The generated file is yours — regeneration is an
