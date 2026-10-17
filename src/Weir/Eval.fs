@@ -3819,8 +3819,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
             match eval env target with
             | VSeq items ->
                 if loFromEnd || hiFromEnd then
-                    // a from-end bound needs the length — force the seq
-                    let arr = Seq.toArray items
+                    // a from-end bound needs the length — force the seq,
+                    // unless it is already an array [D:seq-index-o1]
+                    let arr =
+                        match items with
+                        | :? (Value[]) as a -> a
+                        | _ -> Seq.toArray items
                     let a = max 0L (absLo arr.Length)
                     let b = absHi arr.Length
                     if a > b then VSeq Seq.empty else VSeq(Array.sub arr (int a) (int (b - a + 1L)))

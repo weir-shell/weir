@@ -458,9 +458,24 @@ let private windowedImpl: Value =
                     VSeq(items |> Seq.windowed (toIntArg "windowed" Amount n) |> Seq.map (fun w -> VSeq(Seq.ofArray w)))
             | _ -> unreachable "the checker rejects 'windowed' on these arguments"))
 
+// a materialised seq answers length and index in O(1) [D:seq-index-o1]:
+// a frozen seq is an array, and any ICollection (an array, a buffer)
+// knows its count. An F# list is not one of these — its Count walks.
+let private knownCount (items: seq<Value>) : int voption =
+    match items with
+    | :? System.Collections.Generic.ICollection<Value> as c -> ValueSome c.Count
+    | _ -> ValueNone
+
+let private (|Indexed|_|) (items: seq<Value>) : System.Collections.Generic.IList<Value> option =
+    match items with
+    | :? System.Collections.Generic.IList<Value> as l -> Some l
+    | _ -> None
+
 let private lastImpl: Value =
     VBuiltin(fun v ->
         match v with
+        | VSeq(Indexed l) ->
+            if l.Count = 0 then failwith "last: empty sequence" else l[l.Count - 1]
         | VSeq items ->
             // asserts non-empty (the X/tryX rule); forces the whole
             // source by necessity
@@ -477,6 +492,8 @@ let private lastImpl: Value =
 let private tryLastImpl: Value =
     VBuiltin(fun v ->
         match v with
+        | VSeq(Indexed l) ->
+            if l.Count = 0 then VUnion("None", None) else VUnion("Some", Some l[l.Count - 1])
         | VSeq items ->
             let mutable acc = ValueNone
 
@@ -491,9 +508,8 @@ let private tryLastImpl: Value =
 let private toListImpl: Value =
     VBuiltin(fun v ->
         match v with
-        | VSeq items ->
-            let materialized = List.ofSeq items
-            VSeq(materialized :> seq<Value>)
+        // an array, so the snapshot indexes in O(1) [D:seq-index-o1]
+        | VSeq items -> VSeq(Seq.toArray items :> seq<Value>)
         | v -> unreachable $"the checker rejects 'freeze' on {formatValue v}")
 
 let completedDef: RecordDef =
@@ -1179,7 +1195,10 @@ let private tryHeadImpl: Value =
 let private seqLengthImpl: Value =
     VBuiltin(fun v ->
         match v with
-        | VSeq items -> VInt(int64 (Seq.length items))
+        | VSeq items ->
+            match knownCount items with
+            | ValueSome n -> VInt(int64 n)
+            | ValueNone -> VInt(int64 (Seq.length items))
         | v -> unreachable $"the checker rejects 'Seq.length' on {formatValue v}")
 
 let private isEmptyImpl: Value =
@@ -1992,9 +2011,12 @@ let private itemImpl: Value =
                 if i < 0L then
                     failwith $"item: negative index {i}"
                 else
-                    match items |> Seq.tryItem (toIntArg "item" Position i) with
-                    | Some v -> v
-                    | None -> failwith $"item: no element at index {i}"
+                    match items with
+                    | Indexed l -> if i < int64 l.Count then l[toIntArg "item" Position i] else failwith $"item: no element at index {i}"
+                    | _ ->
+                        match items |> Seq.tryItem (toIntArg "item" Position i) with
+                        | Some v -> v
+                        | None -> failwith $"item: no element at index {i}"
             | _ -> unreachable "the checker rejects 'item' on these arguments"))
 
 // `xs[^n]` [D:range-slicing]: the element n from the end (`^1` is the
@@ -2005,18 +2027,23 @@ let private itemFromEndImpl: Value =
         VBuiltin(fun s ->
             match n, s with
             | VInt i, VSeq items ->
-                let arr = Seq.toArray items
+                let arr =
+                    match items with
+                    | Indexed l -> l
+                    | _ -> Seq.toArray items :> System.Collections.Generic.IList<Value>
 
-                if i < 1L || i > int64 arr.Length then
-                    failwith $"item: index ^{i} is out of range for length {arr.Length}"
+                if i < 1L || i > int64 arr.Count then
+                    failwith $"item: index ^{i} is out of range for length {arr.Count}"
                 else
-                    arr[arr.Length - toIntArg "item" Position i]
+                    arr[arr.Count - toIntArg "item" Position i]
             | _ -> unreachable "the checker rejects a from-end index on these arguments"))
 
 let private tryItemImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun s ->
             match n, s with
+            | VInt i, VSeq(Indexed l) ->
+                if i >= 0L && i < int64 l.Count then VUnion("Some", Some l[toIntArg "tryItem" Position i]) else VUnion("None", None)
             | VInt i, VSeq items ->
                 match items |> Seq.indexed |> Seq.tryFind (fun (j, _) -> int64 j = i) with
                 | Some(_, v) -> VUnion("Some", Some v)

@@ -18904,6 +18904,26 @@ let accessorTeachingTests =
               expectValue "[1; 2; 3] |> Seq.item 1" (VInt 2L)
               expectValue "(Seq.initInfinite id) |> Seq.skip 2 |> Seq.head" (VInt 2L)
           }
+          test "a frozen seq indexes without walking, its messages unchanged [D:seq-index-o1]" {
+              match run "[1; 2; 3] |> Seq.freeze" with
+              | VSeq(:? (Value[])) -> ()
+              | v -> failtest $"a frozen seq is an array: {v}"
+
+              let xs = "let xs = [10; 20; 30] |> Seq.freeze in "
+              expectValue (xs + "Seq.length xs") (VInt 3L)
+              expectValue (xs + "xs[1] + Seq.item 2 xs") (VInt 50L)
+              expectValue (xs + "xs[^1] + Seq.last xs") (VInt 60L)
+              expectValue (xs + "Seq.tryItem 2 xs") (VUnion("Some", Some(VInt 30L)))
+              expectValue (xs + "Seq.tryItem 3 xs") (VUnion("None", None))
+              expectValue (xs + "Seq.tryItem (-1) xs") (VUnion("None", None))
+              expectValue (xs + "Seq.tryLast xs") (VUnion("Some", Some(VInt 30L)))
+              Expect.stringContains (msgOf (xs + "Seq.item 5 xs")) "item: no element at index 5" "the lazy path's text"
+              Expect.stringContains (msgOf (xs + "xs[^4]")) "index ^4 is out of range for length 3" "the from-end text"
+
+              let empty = "let e = [1] |> Seq.where (fun x -> x > 1) |> Seq.freeze in "
+              Expect.stringContains (msgOf (empty + "Seq.last e")) "last: empty sequence" "empty last raises"
+              expectValue (empty + "Seq.tryLast e") (VUnion("None", None))
+          }
           // B5 [D:int-narrowing]: a 64-bit int past int32 never wraps —
           // a position is out of range, an amount too large; slices clamp
           test "int arguments past int32 raise instead of wrapping" {
