@@ -843,6 +843,11 @@ type Schema =
     // `format: int-or-string` on a string: the scalar is widened to
     // integer/string; the generator notes the format [D:schema-num-or-string]
     | SIntOrStringFormat of Schema
+    // a type array mixing a scalar with array/object (or array with
+    // object): one alternative per kind — SScalar, SObject, SArray —
+    // the value's node kind picks the one it validates against
+    // [D:schema-mixed-kinds]
+    | SMixed of kinds: Set<string> * alts: Schema list
 
 and AdditionalProps =
     | Closed
@@ -1165,17 +1170,41 @@ let rec private parseNode
                                 let wrapNullListed (r: Result<Schema, string>) =
                                     if nullListed then Result.map SNullable r else r
 
+                                let mixed (kinds: Set<string>) =
+                                    let containers = Set.intersect kinds (set [ "object"; "array" ])
+                                    let scalars = kinds - containers
+                                    not containers.IsEmpty && (containers.Count > 1 || not (Set.remove "null" scalars).IsEmpty)
+
+                                let arrayNode () =
+                                    match getProp "items" with
+                                    | Some items -> parseNode (path + "items.") items |> Result.map SArray
+                                    | None -> Ok(SArray SAny)
+
                                 (match typeKinds with
+                                 // a scalar beside a container is neither
+                                 // [D:schema-mixed-kinds]: every kind keeps
+                                 // its own alternative
+                                 | Some kinds when mixed kinds ->
+                                     let scalars = kinds - set [ "object"; "array" ]
+
+                                     [ (if scalars.IsEmpty then None else Some(Ok(SScalar scalars)))
+                                       (if kinds.Contains "object" then Some(objectNode path el getProp) else None)
+                                       (if kinds.Contains "array" then Some(arrayNode ()) else None) ]
+                                     |> List.choose id
+                                     |> List.fold
+                                         (fun acc r ->
+                                             match acc, r with
+                                             | Error e, _
+                                             | _, Error e -> Error e
+                                             | Ok list, Ok alt -> Ok(alt :: list))
+                                         (Ok [])
+                                     |> Result.map (fun alts -> SMixed(kinds, List.rev alts))
                                  | Some kinds when
                                      kinds.Contains "object" || (kinds.IsEmpty && getProp("properties").IsSome)
                                      ->
                                      objectNode path el getProp |> wrapNullListed
                                  | None when (getProp "properties").IsSome -> objectNode path el getProp
-                                 | Some kinds when kinds.Contains "array" ->
-                                     (match getProp "items" with
-                                      | Some items -> parseNode (path + "items.") items |> Result.map SArray
-                                      | None -> Ok(SArray SAny))
-                                     |> wrapNullListed
+                                 | Some kinds when kinds.Contains "array" -> arrayNode () |> wrapNullListed
                                  // `format: int-or-string` on a string field
                                  // (swagger's IntOrString) [D:schema-num-or-string]
                                  | Some kinds when
@@ -1254,7 +1283,8 @@ let rec private refsOf (s: Schema) : string list =
     | SArray items -> refsOf items
     | SNullable inner
     | SIntOrStringFormat inner -> refsOf inner
-    | SChoice alts -> alts |> List.collect refsOf
+    | SChoice alts
+    | SMixed(_, alts) -> alts |> List.collect refsOf
     | SAny
     | SScalar _
     | SEnum _ -> []
@@ -1848,6 +1878,25 @@ let rec validateTpl
     | SNullable _, Check.TYtScalar(raw, quoted, _) when literalKind raw quoted = "null" -> []
     | SNullable inner, tpl -> validateTpl name defs path inner tpl
     | SIntOrStringFormat inner, tpl -> validateTpl name defs path inner tpl
+    // the node's kind picks its alternative [D:schema-mixed-kinds]
+    | SMixed(kinds, alts), tpl ->
+        let pick =
+            alts
+            |> List.tryFind (fun alt ->
+                match alt, tpl with
+                | SScalar _, Check.TYtScalar _
+                | SScalar _, Check.TYtBlock _
+                | SObject _, Check.TYtMap _
+                | SArray _, Check.TYtSeq _ -> true
+                | _ -> false)
+
+        match pick, tpl with
+        | Some alt, tpl -> validateTpl name defs path alt tpl
+        | None, Check.TYtScalar(_, _, span)
+        | None, Check.TYtBlock(_, span) -> [ span, $"schema {name}: {fieldName path} expects {kindsText kinds}, got a scalar" ]
+        | None, Check.TYtMap(_, span) -> [ span, $"schema {name}: {fieldName path} expects {kindsText kinds}, got a mapping" ]
+        | None, Check.TYtSeq(_, span) -> [ span, $"schema {name}: {fieldName path} expects {kindsText kinds}, got a sequence" ]
+        | None, _ -> []
     | SObject(props, required, additional), Check.TYtMap(entries, mspan) ->
         let hasDynamic =
             entries
@@ -1954,6 +2003,26 @@ and private spliceCheck
     | SChoice _ -> []
     | SNullable inner
     | SIntOrStringFormat inner -> spliceCheck name defs path inner te
+    // a seq checks against the array alternative, a scalar type against
+    // the scalar one; any other splice skips [D:schema-mixed-kinds]
+    | SMixed(_, alts) ->
+        let alt =
+            match te.Ty with
+            | TSeq _ ->
+                alts
+                |> List.tryFind (function
+                    | SArray _ -> true
+                    | _ -> false)
+            | t when (tyKind t).IsSome ->
+                alts
+                |> List.tryFind (function
+                    | SScalar _ -> true
+                    | _ -> false)
+            | _ -> None
+
+        match alt with
+        | Some a -> spliceCheck name defs path a te
+        | None -> []
     | SScalar kinds ->
         match te.Ty with
         | TSeq _ ->

@@ -1861,8 +1861,11 @@ type Bad = C of int
   locked schema, where `required` decides plain-vs-`Option`,
   `additionalProperties` becomes the `seq<string * V>` mapping, and
   `$ref` definition names become type names; an int-or-string field
-  (a k8s port; `format: int-or-string` too) and a number-or-string
-  field (a quantity) draft `Yaml` (8080 stays `YInt`, `"25%"` `YStr`);
+  (a k8s port; `format: int-or-string` too), a number-or-string
+  field (a quantity), a boolean-or-string/number field (`oneOf` too)
+  and a type array mixing a scalar with `array`/`object` (a compose
+  `command`) draft `Yaml` with a note (8080 stays `YInt`, `"25%"`
+  `YStr`, `true` `YBool`) — never a silent pick of one kind;
   an `enum` drafts its declared type, else its values' one kind
   (`int`, `float`, `bool`, `string`), and a mixed enum drafts `Yaml`;
   validation keywords (`minLength`, `pattern`, `minimum`, `maxItems`,

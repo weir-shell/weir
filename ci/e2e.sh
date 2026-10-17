@@ -9266,6 +9266,45 @@ out=$($BIN check "$ctdir/proj/sub/six2.weir" 2>&1 || true)
 echo "$out" | grep -qF "schema six: field kind expects 'Service', got 'Deployment'" || fail "6 one-element enum, plainly: $out"
 echo "e2e ok: the six schema messages re-pinned verbatim — fields named, paths always"
 
+# a type array mixing a scalar with a container validates each node
+# against its own kind's alternative [D:schema-mixed-kinds]
+cat > "$ctdir/proj/.weir/schemas/mix.json" <<'JEOF'
+{ "type": "object", "additionalProperties": false,
+  "properties": {
+    "cmd": { "type": ["string", "array"], "items": { "type": "string" } },
+    "on": { "type": ["boolean", "string"] } } }
+JEOF
+cat > "$ctdir/proj/sub/mix.weir" <<'WEOF'
+let a = yaml schema=mix
+    cmd: make all
+    on: true
+
+let b = yaml schema=mix
+    cmd:
+        - make
+        - all
+
+a |> to yaml |> print
+b |> to yaml |> print
+WEOF
+$BIN check "$ctdir/proj/sub/mix.weir" || fail "a scalar and a sequence both validate against [string, array]"
+cat > "$ctdir/proj/sub/mix2.weir" <<'WEOF'
+let a = yaml schema=mix
+    cmd:
+        bad: map
+
+let b = yaml schema=mix
+    cmd:
+        - 1
+
+a |> to yaml |> print
+b |> to yaml |> print
+WEOF
+out=$($BIN check "$ctdir/proj/sub/mix2.weir" 2>&1 || true)
+echo "$out" | grep -qF "schema mix: field cmd expects array/string, got a mapping" || fail "mixed kinds: a mapping refused: $out"
+echo "$out" | grep -qF "schema mix: field cmd expects string, got integer ('1')" || fail "mixed kinds: the array alternative's items: $out"
+echo "e2e ok: a type array mixing a scalar with a container validates per kind"
+
 # a schema without additionalProperties:false warns at add time — the
 # silently-inert-contract guard [schema-polish item 3]
 printf '{ "type": "object", "properties": { "a": { "type": "string" } } }' > "$ctdir/serve/loose.json"

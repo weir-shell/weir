@@ -28053,6 +28053,53 @@ let hunt3BehaviorTests =
               Expect.stringContains g "// note: not enforced: format on name" "another format is noted, not enforced"
               Expect.isFalse (g.Contains "format on port") "int-or-string is not also 'not enforced'"
           }
+          test "schema drafting: boolean beside string or number is Yaml [D:schema-bool-or-string]" {
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "properties": {
+                             "cancel": { "type": ["boolean", "string"] },
+                             "bn": { "type": ["boolean", "number"] },
+                             "bis": { "type": ["boolean", "integer", "string"] },
+                             "one": { "oneOf": [{ "type": "boolean" }, { "type": "string" }] },
+                             "nb": { "type": ["boolean", "string", "null"] } } }"""
+
+              for f in [ "cancel"; "bn"; "bis"; "one"; "nb" ] do
+                  Expect.stringContains g $"{f}: Option<Yaml>" $"{f} drafts Yaml"
+
+              Expect.stringContains
+                  g
+                  "// note: cancel: the schema allows boolean/string — drafted Yaml; a bool reads as YBool b, a string as YStr s"
+                  "the note names the cases"
+
+              Expect.stringContains g "bn: the schema allows boolean/number — drafted Yaml; a bool reads as YBool b, a number as YInt n or YFloat f" "bool|number"
+              Expect.stringContains g "bis: the schema allows boolean/integer/string — drafted Yaml; a bool reads as YBool b, an int as YInt n, a string as YStr s" "bool|int|string"
+              Expect.isFalse (g.Contains "drafted string") "never string"
+          }
+          test "schema drafting: a type array mixing a scalar with a container is Yaml, never a silent pick [D:schema-mixed-kinds]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["cmd"],
+                           "properties": {
+                             "cmd": { "type": ["string", "array"], "items": { "type": "string" } },
+                             "runs": { "type": ["string", "array", "null"], "items": { "type": "string" } },
+                             "env": { "type": ["object", "string"], "additionalProperties": { "type": "string" } },
+                             "both": { "type": ["object", "array"] },
+                             "plain": { "type": ["array", "null"], "items": { "type": "string" } } } }"""
+
+              Expect.stringContains g "\n    cmd: Yaml\n" "[string, array] → Yaml"
+              Expect.stringContains g "runs: Option<Yaml>" "nullable once"
+              Expect.stringContains g "env: Option<Yaml>" "[object, string] → Yaml"
+              Expect.stringContains g "both: Option<Yaml>" "[object, array] → Yaml"
+              Expect.stringContains g "plain: Option<seq<string>>" "a nullable array stays an array"
+
+              Expect.stringContains
+                  g
+                  "// note: cmd: the schema allows array/string — drafted Yaml; a string reads as YStr s, a sequence as YSeq items"
+                  "the note names the cases"
+
+              Expect.stringContains g "both: the schema allows array/object — drafted Yaml; a sequence reads as YSeq items, a mapping as YMap entries" "both containers"
+          }
           test "schema drafting: a typed enum drafts its type, a mixed enum Yaml [D:schema-enum-kind]" {
               let g =
                   gen
