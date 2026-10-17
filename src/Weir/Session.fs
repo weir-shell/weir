@@ -1297,6 +1297,35 @@ module Stdin =
     /// the end of input
     let readLine () : string = readWith true
 
+    /// a terminal answer without the key sequences cooked mode passes
+    /// through [D:prompt-tty-keys]: CSI (ESC [ … final) and SS3 (ESC O x) —
+    /// an arrow, Home or Delete is ignored
+    let dropKeySequences (line: string) : string =
+        if not (line.Contains '\u001b') then
+            line
+        else
+            let sb = System.Text.StringBuilder(line.Length)
+            let mutable i = 0
+
+            while i < line.Length do
+                let c = line[i]
+
+                if c = '\u001b' && i + 1 < line.Length && line[i + 1] = '[' then
+                    // parameters and intermediates, then one final byte
+                    let mutable j = i + 2
+
+                    while j < line.Length && line[j] >= '\u0020' && line[j] <= '\u003f' do
+                        j <- j + 1
+
+                    i <- if j < line.Length && line[j] >= '\u0040' && line[j] <= '\u007e' then j + 1 else j
+                elif c = '\u001b' && i + 1 < line.Length && line[i + 1] = 'O' then
+                    i <- min line.Length (i + 3)
+                else
+                    sb.Append c |> ignore
+                    i <- i + 1
+
+            sb.ToString()
+
 // an unseekable path File.read opens — a FIFO, /dev/stdin on a pipe, a
 // tty [D:fifo-read-polled]: opened non-blocking (so the open waits for no
 // writer) and polled beside the cut, so a lost race, a REPL ^C or a

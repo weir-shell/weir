@@ -27756,6 +27756,17 @@ let hunt3r3FifoTests =
                   Expect.isTrue (writer.Wait 5000) "the writer finished")
           } ]
 
+let hunt3r3PromptKeyTests =
+    testList
+        "hunt-3r3 tty prompt keys"
+        [ test "a tty answer drops CSI and SS3 key sequences [D:prompt-tty-keys]" {
+              let drop = Weir.Session.Stdin.dropKeySequences
+              Expect.equal (drop "ab\u001b[Dc") "abc" "a left arrow"
+              Expect.equal (drop "\u001bOAx\u001b[1;5Cy\u001b[3~") "xy" "SS3 up, ctrl-right, delete"
+              Expect.equal (drop "plain é") "plain é" "plain text untouched"
+              Expect.equal (drop "a\u001b") "a\u001b" "a lone ESC is kept"
+          } ]
+
 let sweepFindingTests =
     let msgs file lines = diagsIn file lines |> List.map (fun d -> d.Message)
 
@@ -28653,6 +28664,7 @@ let allTests =
           hunt3r2CancelTests
           hunt3r3TreeKillTests
           hunt3r3FifoTests
+          hunt3r3PromptKeyTests
           argsSecretEchoTests
           hunt3BehaviorTests
           docsBinaryTests

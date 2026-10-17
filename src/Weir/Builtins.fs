@@ -5938,6 +5938,8 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
                 | null ->
                     failwith
                         "Self.prompt: stdin is closed (EOF) — no line to read; pipe an answer in, or run at a terminal"
+                // a terminal's arrows are ignored [D:prompt-tty-keys]
+                | line when not System.Console.IsInputRedirected -> VStr(Session.Stdin.dropKeySequences line)
                 | line -> VStr line
             | v -> unreachable $"the checker rejects 'Self.prompt' on {formatValue v}") ]
       "Frontier", frontierMembers

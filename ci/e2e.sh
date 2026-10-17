@@ -3477,6 +3477,13 @@ WEOF
     # child's own write — no weir guard, raw bytes and all (bash's
     # posture; gzip refuses a tty by itself). The value echo keeps its
     # refusal — the [D:binary-echo] cells pin that half.
+    # a tty Self.prompt stays cooked and drops key sequences
+    # [D:prompt-tty-keys]: a left arrow (CSI) and an SS3 up arrow typed
+    # into the answer are ignored, never part of it
+    printf 'let a = Self.prompt "name?"\nprint $"[{a}] length={Str.length a}"\n' > "$sedir/arrow.weir"
+    aout=$(printf 'SLEEP 500\nSEND ab\\x1b[Dc\\x1bOAd\\r\nSLEEP 800\n' | python3 "$ptyrun" 5 "$BIN" "$sedir/arrow.weir")
+    echo "$aout" | grep -qF "[abcd] length=4" || fail "a tty Self.prompt must drop arrow-key sequences: $aout"
+
     bout=$(printf 'SLEEP 500\nSEND sh %s/pb.sh\\r\nSLEEP 800\nSEND #quit\\r\n' "$sedir" | python3 "$ptyrun" 5 "$BIN")
     echo "$bout" | grep -qF "binary output" && fail "the statement path has no guard to refuse with: $bout"
     echo "$bout" | grep -qF "text\x00binary" || fail "the child's bytes reach the terminal raw: $bout"
