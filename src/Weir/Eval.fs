@@ -1534,6 +1534,17 @@ let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) :
             | Error _ -> failwith $"{where}: number {raw} is out of float range"
     | _ -> VUnion("YNull", None)
 
+// a mapping's keys are unique on the wire [D:mapping-dupkeys]: a pair
+// seq or YMap holding a key twice would write a document weir reads
+// last-wins (json) or refuses (yaml) — the writer refuses, naming it
+let private refuseDupKeys (who: string) (keys: string seq) =
+    let seen = System.Collections.Generic.HashSet<string>()
+
+    for k in keys do
+        if not (seen.Add k) then
+            failwith
+                $"{who}: the mapping holds the key '{k}' twice — a document's keys are unique; keep one pair per key before writing"
+
 let private jsonLine
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, string * string * bool>)
@@ -1599,9 +1610,11 @@ let private jsonLine
                     | _ -> None)
 
             if not items.IsEmpty && asPairs |> List.forall Option.isSome then
+                let pairs = asPairs |> List.map Option.get
+                refuseDupKeys "to json" (List.map fst pairs)
                 writer.WriteStartObject()
 
-                for (k, v) in asPairs |> List.map Option.get do
+                for (k, v) in pairs do
                     writer.WritePropertyName k
                     write v
 
@@ -1627,6 +1640,12 @@ let private jsonLine
         // a `Yaml` node writes as the JSON it denotes [D:json-yaml-field]
         // — after the tagged arm, which owns any user case names
         | VUnion("YMap", Some(VSeq entries)) ->
+            entries
+            |> Seq.choose (function
+                | VTuple [ VStr k; _ ] -> Some k
+                | _ -> None)
+            |> refuseDupKeys "to json"
+
             writer.WriteStartObject()
 
             for e in entries do
@@ -1789,10 +1808,15 @@ let private jsonDocRead
                 failwith
                     $"{who}: field '{name}' expected an object ({formatTy ty}), got {jsonKindName prop.ValueKind} in: {shown}"
             else
-                // forced before the document disposes
-                prop.EnumerateObject()
-                |> Seq.map (fun p -> VTuple [ VStr p.Name; readValue $"{name}[\"{p.Name}\"]" v p.Value ])
-                |> List.ofSeq
+                // forced before the document disposes; a repeated key
+                // last-wins at its first position [D:mapping-dupkeys]
+                let props = prop.EnumerateObject() |> List.ofSeq
+                let last = props |> List.map (fun p -> p.Name, p.Value) |> Map.ofList
+
+                props
+                |> List.map (fun p -> p.Name)
+                |> List.distinct
+                |> List.map (fun k -> VTuple [ VStr k; readValue $"{name}[\"{k}\"]" v last[k] ])
                 |> List.toSeq
                 |> VSeq
         | TSeq elem ->
@@ -2803,6 +2827,12 @@ let rec private yamlRender
                 | first :: rest -> ($"- {first}") :: (rest |> List.map (fun l -> "  " + l))
             | BlockScalar(h, content) -> ($"- {h}") :: indent2 content)
 
+    // a mapping whose every entry is omitted (an all-None record) is the
+    // empty flow mapping — never no text at all, which reads back as
+    // null and drops a stream document [D:yaml-empty-doc]
+    let mapping (lines: string list) =
+        if lines.IsEmpty then Inline "{}" else Block lines
+
     match v with
     | VInt n -> Inline(string n)
     | VFloat f -> Inline(formatFloat f)
@@ -2823,16 +2853,16 @@ let rec private yamlRender
     | VUnion("YMap", Some(VSeq pairs)) when Seq.isEmpty pairs -> Inline "{}"
     | VUnion("YSeq", Some(VSeq items)) -> Block(renderSeq (List.ofSeq items))
     | VUnion("YMap", Some(VSeq pairs)) ->
-        Block(
-            renderMap (
-                pairs
-                |> Seq.map (fun p ->
-                    match p with
-                    | VTuple [ VStr k; v ] -> k, v
-                    | v -> unreachable $"the checker rejects YMap over {formatValue v}")
-                |> List.ofSeq
-            )
-        )
+        let entries =
+            pairs
+            |> Seq.map (fun p ->
+                match p with
+                | VTuple [ VStr k; v ] -> k, v
+                | v -> unreachable $"the checker rejects YMap over {formatValue v}")
+            |> List.ofSeq
+
+        refuseDupKeys "to yaml" (List.map fst entries)
+        Block(renderMap entries)
     | VUnion("Some", Some inner) -> yamlRender renames unions (depth + 1) inner
     | VUnion("None", None) -> Inline "null" // element position; fields omit above
     // a tagged case renders its payload with the tag entry first
@@ -2860,7 +2890,7 @@ let rec private yamlRender
         // wire keys on the yaml wire too [D:wire-keys]
         let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
 
-        Block(
+        mapping (
             renderMap (
                 fields
                 |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv)
@@ -2878,7 +2908,13 @@ let rec private yamlRender
                 | _ -> None)
 
         if not items.IsEmpty && asPairs |> List.forall Option.isSome then
-            Block(renderMap (asPairs |> List.map Option.get))
+            let entries = asPairs |> List.map Option.get
+            refuseDupKeys "to yaml" (List.map fst entries)
+            mapping (renderMap entries)
+        elif items.IsEmpty && depth = 0 then
+            // an empty top-level seq is the empty flow sequence, as an
+            // empty Yaml node is [D:yaml-empty-doc]
+            Inline "[]"
         else
             Block(renderSeq items)
     | v -> unreachable $"the checker rejects 'to yaml' on {formatValue v}"

@@ -27804,6 +27804,47 @@ let hunt3BehaviorTests =
                   "a:\n  x: 3\n  y: 2"
                   "the yaml round trip holds"
           }
+          test "a mapping last-wins on read; to json and to yaml refuse a key twice [D:mapping-dupkeys]" {
+              let penv = henv |> declare "type HP = { labels: seq<string * string> }"
+              let src = doc """{"labels": {"a": "1", "b": "x", "a": "2"}}"""
+
+              Expect.equal
+                  (runUnder penv $"{src} |> from json HP |> to json" |> text)
+                  """{"labels":{"a":"2","b":"x"}}"""
+                  "the last value at the first position"
+
+              for write in [ "to json"; "to yaml" ] do
+                  for v in
+                      [ "{ labels = [(\"k\", \"1\"); (\"k\", \"2\")] }"
+                        "{ a = YMap [(\"k\", YInt 1); (\"j\", YInt 2); (\"k\", YInt 3)] }" ] do
+                      let msg = (Expect.throwsC (fun () -> runUnder penv $"{v} |> {write}" |> text |> ignore) id).Message
+                      Expect.stringContains msg $"{write}: the mapping holds the key 'k' twice" $"{write} names the key: {v}"
+          }
+          test "to yaml writes an all-None record as {} and an empty top-level seq as []; a stream keeps every document [D:yaml-empty-doc]" {
+              let yenv =
+                  henv
+                  |> declare "type YR = { cpu: Option<string>; memory: Option<string> }"
+                  |> declare "type YC = { name: string; resources: YR }"
+
+              let none = "{ cpu = None; memory = None }"
+              Expect.equal (runUnder yenv $"{none} |> to yaml" |> text) "{}" "a top-level all-None record"
+              Expect.equal (runUnder yenv $"{{ name = \"web\"; resources = {none} }} |> to yaml" |> text) "name: web\nresources: {}" "nested"
+              Expect.equal (runUnder yenv $"[{none}] |> to yaml" |> text) "- {}" "an element"
+              Expect.equal (runUnder yenv $"{none} |> to yaml |> from yaml YR |> fun r -> r == {none}") (VBool true) "it reads back"
+
+              Expect.equal
+                  (runUnder yenv $"{{ name = \"web\"; resources = {none} }} |> to yaml |> from yaml YC |> fun c -> c.resources == {none}")
+                  (VBool true)
+                  "nested reads back"
+
+              let empty = $"[{none}] |> Seq.where (fun r -> r.cpu == Some \"9\")"
+              Expect.equal (runUnder yenv $"{empty} |> to yaml" |> text) "[]" "an empty top-level seq"
+              Expect.equal (runUnder yenv $"{empty} |> to yaml |> from yaml seq<YR> |> Seq.length") (VInt 0L) "it reads back"
+
+              let xs = $"[{{ cpu = Some \"1\"; memory = None }}; {none}; {{ cpu = Some \"2\"; memory = None }}]"
+              Expect.equal (runUnder yenv $"{xs} |> to yaml stream" |> text) "cpu: \"1\"\n---\n{}\n---\ncpu: \"2\"" "the stream form"
+              Expect.equal (runUnder yenv $"{xs} |> to yaml stream |> from yaml stream YR |> Seq.length") (VInt 3L) "no document dropped"
+          }
           test "schema drafting: int-or-string is Yaml, an integer enum is int [D:schema-int-or-string][D:schema-int-enum]" {
               let g =
                   gen

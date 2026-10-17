@@ -5328,6 +5328,36 @@ out=$($BIN "$jdir/dup.weir" 2>&1) || fail "a repeated key into Yaml must round-t
 rm -rf "$jdir"
 echo "e2e ok: from json — 65-deep reads, 101-deep names the depth, a repeated key into Yaml last-wins"
 
+# [D:yaml-empty-doc] [D:mapping-dupkeys]: an all-None record writes {},
+# an empty top-level seq [], and the stream keeps every document; a
+# repeated key into seq<string * _> last-wins, and the writers refuse a
+# mapping holding a key twice
+ydir=$(mkweirtmp)
+cat > "$ydir/ye.weir" <<'WEOF'
+type Res = { cpu: Option<string> }
+let xs = [{ cpu = Some "1" }; { cpu = None }; { cpu = Some "2" }]
+let y = xs |> to yaml stream |> Seq.freeze
+print (Str.join "|" y)
+y |> from yaml stream Res |> Seq.iter (fun r -> print (show r.cpu))
+let none = xs |> Seq.where (fun r -> r.cpu == Some "9")
+print (Str.join "|" (none |> to yaml))
+print $"{none |> to yaml |> from yaml seq<Res> |> Seq.length}"
+WEOF
+out=$($BIN "$ydir/ye.weir" 2>&1) || fail "the empty-document writes must run: $out"
+[ "$out" = "$(printf 'cpu: "1"|---|{}|---|cpu: "2"\nSome "1"\nNone\nSome "2"\n[]\n0')" ] || fail "{} and [] documents round-trip: $out"
+cat > "$ydir/dup.weir" <<'WEOF'
+type P = { labels: seq<string * string> }
+let p = ["{\"labels\": {\"a\": \"1\", \"b\": \"x\", \"a\": \"2\"}}"] |> from json P
+p |> to json |> Seq.iter print
+let w = { labels = [("k", "1"); ("k", "2")] }
+w |> to yaml |> Seq.iter print
+WEOF
+out=$($BIN "$ydir/dup.weir" 2>&1) && fail "a duplicate key must refuse on write: $out" || true
+echo "$out" | grep -qxF '{"labels":{"a":"2","b":"x"}}' || fail "a repeated key last-wins at its first position: $out"
+echo "$out" | grep -qF "to yaml: the mapping holds the key 'k' twice" || fail "the writer names the key: $out"
+rm -rf "$ydir"
+echo "e2e ok: to yaml — {} and [] documents, the stream keeps every document; mappings last-win on read, refuse duplicates on write"
+
 # |> try [D:try-form]: a failure as a value — a real missing file and a
 # malformed document become None / Error; exit passes through the capture
 ydir=$(mkweirtmp)
