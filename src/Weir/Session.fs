@@ -493,9 +493,12 @@ let private replToken () : System.Threading.CancellationToken =
         with :? System.ObjectDisposedException ->
             System.Threading.CancellationToken.None
 
+/// has ^C cut this evaluation's waits? (a fan-out stops taking arms)
+let interruptRequested () : bool = (replToken ()).IsCancellationRequested
+
 /// raise Interrupted when ^C cut this evaluation's waits
 let checkInterrupted () : unit =
-    if (replToken ()).IsCancellationRequested then
+    if interruptRequested () then
         raise (Interrupted())
 
 /// the tokens a runtime-owned wait honours, beyond the teardown
@@ -529,8 +532,9 @@ let withWaitToken (f: System.Threading.CancellationToken -> 'a) : 'a =
 /// run a process start + registration inside the spawn gate; refuses once
 /// the teardown kill has run, except inside an `always` cleanup
 let gatedSpawn (start: unit -> 'a) : 'a =
-    // a spawn is an effect boundary [D:pfirst-join]
-    checkCancelled ()
+    // a spawn is an effect boundary [D:pfirst-join] — for a REPL ^C too,
+    // so a fan-out's next arm starts nothing [D:repl-interrupt-fanout]
+    checkCancels ()
     spawnGate.EnterReadLock()
 
     try

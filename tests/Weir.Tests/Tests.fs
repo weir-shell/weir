@@ -27495,6 +27495,29 @@ let hunt3r2CancelTests =
                           p.Kill true
                       with _ ->
                           ()
+          }
+          test "after a REPL ^C a fan-out takes no arm and ends as the interrupt [D:repl-interrupt-fanout]" {
+              withTempDir "weir-c4" (fun d ->
+                  let f = weirPath (Path.Combine(d, "arms.txt"))
+                  Weir.Session.beginReplEval ()
+
+                  try
+                      Weir.Session.interruptRepl ()
+
+                      for src in
+                          [ $"[1..40] |> Seq.piterWith 2 (fun i -> File.append \"{f}\" [show i] ; fail \"arm\")"
+                            $"[1..40] |> Seq.pmap (fun i -> File.append \"{f}\" [show i] ; fail \"arm\") |> Seq.length"
+                            $"[1..40] |> Seq.pfirst (fun i -> File.append \"{f}\" [show i] ; fail \"arm\")" ] do
+                          Expect.throwsT<Weir.Session.Interrupted> (fun () -> run src |> ignore) src
+
+                      Expect.throwsT<Weir.Session.Interrupted>
+                          (fun () -> Weir.Session.gatedSpawn (fun () -> 7) |> ignore)
+                          "a spawn is a ^C boundary"
+                  finally
+                      Weir.Session.endReplEval ()
+
+                  Expect.isFalse (File.Exists(Path.Combine(d, "arms.txt"))) "no arm started"
+                  expectValue "[1..4] |> Seq.pmap (fun i -> i) |> Seq.length" (VInt 4L))
           } ]
 
 let sweepFindingTests =

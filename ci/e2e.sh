@@ -3709,6 +3709,28 @@ SCN
     else
         echo "e2e skip: REPL ^C wait pins (flock(1))"
     fi
+
+    # ^C during a command fan-out is the interrupt, not an arm failure — no
+    # new arm starts and the prompt returns [D:repl-interrupt-fanout]
+    idir=$(mkweirtmp)
+    cat > "$idir/int.scn" <<SCN
+SLEEP 700
+SEND [1..30] |> Seq.piterWith 3 (fun i -> sh -c \$"echo start {i} >> $idir/arms.log; sleep 2")\r
+SLEEP 1200
+SEND \x03
+SLEEP 1500
+SEND print (Str.toUpper "after-fanout")\r
+SLEEP 400
+SEND #quit\r
+SCN
+    iout=$(python3 "$ptyrun" 20 "$BIN" < "$idir/int.scn" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
+    sleep 2.5
+    started=$(wc -l < "$idir/arms.log" 2>/dev/null || echo 0)
+    n130=$(echo "$iout" | grep -c "exit 130 (SIGINT")
+    [ "$n130" = "1" ] || fail "^C during a fan-out must return with exit 130 (got $n130): $iout"
+    echo "$iout" | grep -q "AFTER-FANOUT" || fail "the prompt must return after a ^C'd fan-out: $iout"
+    [ "$started" -le 6 ] || fail "a ^C'd fan-out kept taking arms ($started of 30 started, 3 in flight at ^C)"
+    echo "e2e ok: REPL ^C stops a command fan-out"
 else
     echo "e2e skip: REPL SIGINT pty pins (POSIX + python3)"
 fi

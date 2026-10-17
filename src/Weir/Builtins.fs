@@ -1713,9 +1713,10 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
 
     let worker () =
         // a teardown stops new arms [D:teardown-stops-arms] and cuts the
-        // in-flight ones at their next boundary [D:teardown-joins-arms]
+        // in-flight ones at their next boundary [D:teardown-joins-arms]; a
+        // REPL ^C stops them too [D:repl-interrupt-fanout]
         let take () =
-            if Session.stopTakingArms () then
+            if Session.stopTakingArms () || Session.interruptRequested () then
                 arr.Length
             else
                 System.Threading.Interlocked.Increment &next
@@ -1757,6 +1758,10 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     // the teardown's code, never a partial array [D:teardown-stops-arms]
     if Session.stopTakingArms () then
         raise (ExitRequest(Session.teardownRequested ()))
+
+    // an arm whose child died of the ^C is the interrupt, not a failure
+    // [D:repl-interrupt-fanout]
+    Session.checkInterrupted ()
 
     if not errors.IsEmpty then
         raise errors[Seq.min errors.Keys]
@@ -1815,7 +1820,8 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
         while i < arr.Length
               && System.Threading.Volatile.Read &won = 0
               && not race.IsCancellationRequested
-              && not (Session.stopTakingArms ()) do
+              && not (Session.stopTakingArms ())
+              && not (Session.interruptRequested ()) do
             Session.enterWorker parentCwd
             Session.enterRace groups[i]
             Session.enterFlow race.Token
@@ -1864,7 +1870,12 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
             // every arm stopped without an outcome: an enclosing race
             // cancelled this one
             if not outcome.Task.IsCompleted then
+                Session.checkInterrupted ()
                 raise (Session.Cancelled())
+
+            // every arm failed under a ^C: the interrupt [D:repl-interrupt-fanout]
+            if outcome.Task.IsFaulted then
+                Session.checkInterrupted ()
 
             outcome.Task.Result
         with :? System.AggregateException as ae when ae.InnerExceptions.Count = 1 ->

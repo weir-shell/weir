@@ -184,6 +184,9 @@
   them before closing any scope.
 - **A `pfirst` loser's `always` commands run.** They were killed as
   they started (exit 137) and the rest of the cleanup was skipped.
+- **Ctrl+C at the REPL stops a `pmap`/`piter` whose arms run
+  commands.** Every remaining arm ran and the prompt came back only
+  after all of them; no new arm starts now.
 - **A signal during `pfirst` races leaves no stopped processes.** A
   loser's child could be left SIGSTOPped, orphaned and holding the
   terminal.

@@ -1372,7 +1372,8 @@ print x
   message), and a wait weir owns — `Duration.sleep`, a `poll`
   interval, a `retry` delay, a `within lock` acquire, `Proc.wait`, an
   Http request — is cut where it stands (in a `pmap`/`piter` arm
-  too). `within`'s scopes close as on any raise; an `always` block
+  too); a fan-out takes no new arm, and an arm whose command died of
+  the `^C` is the interrupt, not a failure [D:repl-interrupt-fanout]. `within`'s scopes close as on any raise; an `always` block
   runs as written unless `^C` is pressed again. At an idle prompt
   `^C` clears the line. Pure computation is not interrupted: it runs
   to its next wait, which then stops.
