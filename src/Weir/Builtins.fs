@@ -1711,7 +1711,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     // an arm that raises before evaluating anything falls back to the call
     let callNode = RunPos.Current
 
-    let worker () =
+    let work () =
         // a teardown stops new arms [D:teardown-stops-arms] and cuts the
         // in-flight ones at their next boundary [D:teardown-joins-arms]; a
         // REPL ^C stops them too [D:repl-interrupt-fanout]
@@ -1740,6 +1740,9 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
                 Session.exitWorker ()
 
             i <- take ()
+
+    // counted for the teardown's join [D:teardown-abandons-reads]
+    let worker () = Session.armRunning work
 
     // arms are one level deeper [D:parallel-ladder]: set before
     // StartNew so the workers capture depth+1, restored after the join
@@ -1814,7 +1817,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
             race.Cancel()
             set ()
 
-    let worker () =
+    let work () =
         let mutable i = System.Threading.Interlocked.Increment &next
 
         while i < arr.Length
@@ -1848,6 +1851,8 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
                 Session.exitWorker ()
 
             i <- System.Threading.Interlocked.Increment &next
+
+    let worker () = Session.armRunning work
 
     Session.racing (fun () ->
         // arms are one level deeper [D:parallel-ladder]

@@ -867,7 +867,10 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   builtin call, command, sleep or wait and JOINED before any
   enclosing scope closes [D:teardown-joins-arms] — no arm effect lands
   after a lock is released or an `always` begins; an arm busy in pure
-  computation holds the teardown (a second signal hard-exits).
+  computation holds the teardown (a second signal hard-exits); an arm
+  blocked in a read no cut reaches (a FIFO, a pipe an orphaned
+  grandchild holds) is abandoned, and raises if the read ever returns
+  [D:teardown-abandons-reads].
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
   definition — no userspace design closes that hole; and a weir
   BACKGROUNDED IN AN INTERACTIVE SHELL (`weir … &`/`nohup`, which

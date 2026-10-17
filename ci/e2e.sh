@@ -3272,6 +3272,46 @@ WEOF
     [ "$code" = "143" ] || fail "a SIGTERM during a serve drain must exit 143 (got $code)"
     [ "$(tr '\n' ',' < "$dtdir/closing.log")" = "body done,END," ] || fail "a SIGTERM while a scope closes must still run the enclosing always once: $(tr '\n' ',' < "$dtdir/closing.log")"
     echo "e2e ok: a signal never preempts an always cleanup — running or about to start, it runs whole, then the signal's exit"
+
+    # the teardown's join abandons an arm parked in a read no cut reaches
+    # [D:teardown-abandons-reads]: a FIFO nobody opens, a FIFO whose writer
+    # stays silent, a pipe an orphaned grandchild holds — the arm's late
+    # effect never lands, `always` runs, the exit is prompt
+    MK9=$((MK + 9))
+    rm -f "$dtdir/tff"; mkfifo "$dtdir/tff"
+    for src in "File.read \"$dtdir/tff\" |> Seq.length" "sh -c \"(setsid sleep $MK9 &); echo started\" |> Seq.length"; do
+        for writer in none silent; do
+            case "$src" in sh*) [ "$writer" = silent ] && continue ;; esac
+            cat > "$dtdir/parked.weir" <<WEOF
+let log = Self.args |> Seq.head
+within
+    [1; 2] |> Seq.piter (fun i ->
+        let n = $src
+        File.append log [\$"LATE arm {i} {n}"])
+always
+    File.append log ["END"]
+WEOF
+            rm -f "$dtdir/parked.log"
+            wp=""
+            if [ "$writer" = silent ]; then sleep 30 > "$dtdir/tff" & wp=$!; fi
+            setsid "$BIN" "$dtdir/parked.weir" "$dtdir/parked.log" </dev/null >/dev/null 2>&1 &
+            wpid=$!
+            sleep 1
+            kill -TERM "$wpid" 2>/dev/null || true
+            code=timeout
+            for _ in $(seq 1 30); do
+                if ! kill -0 "$wpid" 2>/dev/null; then code=0; wait "$wpid" 2>/dev/null || code=$?; break; fi
+                sleep 0.2
+            done
+            [ "$code" = timeout ] && { kill -9 "$wpid" 2>/dev/null || true; }
+            [ -n "$wp" ] && { kill "$wp" 2>/dev/null || true; }
+            pkill -9 -f "^sleep $MK9\$" 2>/dev/null || true
+            [ "$code" = "143" ] || fail "a SIGTERM with arms parked in ($src, writer $writer) must exit 143 promptly (got $code)"
+            [ "$(tr '\n' ',' < "$dtdir/parked.log")" = "END," ] || fail "parked arms ($src, writer $writer): $(tr '\n' ',' < "$dtdir/parked.log")"
+        done
+    done
+    rm -f "$dtdir/tff"
+    echo "e2e ok: a teardown abandons arms parked in a FIFO open/read or an orphan-held pipe"
 else
     echo "e2e skip: detached-signal pins (POSIX + setsid + pgrep)"
 fi

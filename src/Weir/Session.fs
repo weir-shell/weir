@@ -938,15 +938,72 @@ let waitProcess (p: System.Diagnostics.Process) : unit =
         // the no-argument form also waits for redirected streams' EOF
         p.WaitForExit()
 
+// each running fan-out worker, marked while parked in a blocking call no
+// cut reaches [D:teardown-abandons-reads]: the teardown's join stops
+// waiting once every live worker is parked. One mark per worker thread, so
+// a parked read costs no shared write
+[<AllowNullLiteral>]
+type private ArmMark() =
+    [<DefaultValue>]
+    val mutable Parked: int
+
+let private armMarks =
+    System.Collections.Concurrent.ConcurrentDictionary<ArmMark, byte>(HashIdentity.Reference)
+
+let private armMark = new System.Threading.ThreadLocal<ArmMark>()
+
+/// run one fan-out worker (on its own thread), marked for the teardown's join
+let armRunning (f: unit -> 'a) : 'a =
+    let m = ArmMark()
+    let prev = armMark.Value
+    armMark.Value <- m
+    armMarks[m] <- 0uy
+
+    try
+        f ()
+    finally
+        armMarks.TryRemove m |> ignore
+        armMark.Value <- prev
+
+let private parking (f: unit -> 'a) : 'a =
+    match armMark.Value with
+    | null -> f ()
+    | m ->
+        m.Parked <- m.Parked + 1
+
+        try
+            f ()
+        finally
+            m.Parked <- m.Parked - 1
+
+let private allArmsParked () =
+    not armMarks.IsEmpty
+    && armMarks.Keys |> Seq.forall (fun m -> System.Threading.Volatile.Read &m.Parked > 0)
+
+// a blocking call on a flow only the teardown cuts: parked while it blocks,
+// and a teardown landing meanwhile raises as it returns — its result unused
+let private parked (f: unit -> 'a) : 'a =
+    let cut () =
+        if System.Threading.Volatile.Read &teardownCode <> 0 then
+            raise (Cancelled())
+
+    cut ()
+    let v = parking f
+    cut ()
+    v
+
 /// a pipe read a lost race or a REPL ^C cuts: the kill closes a pipe only
 /// when it reaches every holder — an orphaned grandchild keeps one open —
 /// so under a cancel the read waits beside the token and a cut raises
-/// instead of waiting for EOF; the abandoned read's bytes are never used
+/// instead of waiting for EOF; the abandoned read's bytes are never used.
+/// An arm's read only a teardown could cut is parked, and the teardown's
+/// join abandons it [D:teardown-abandons-reads]
 let cutRead
     (read: unit -> 'a)
     (readAsync: System.Threading.CancellationToken -> System.Threading.Tasks.ValueTask<'a>)
     : 'a =
     match waitTokens () with
+    | [] when teardownCuts () -> parked read
     | [] -> read ()
     | _ ->
         checkCancels ()
@@ -976,9 +1033,11 @@ let cutJoin (task: System.Threading.Tasks.Task<'a>) : 'a =
 
 /// a blocking call a lost race or a REPL ^C abandons — a FIFO's open or
 /// read, which no kill reaches [D:stdin-reader]: under a cancel it runs off
-/// the flow and the wait raises; the abandoned call's result is never used
+/// the flow and the wait raises; the abandoned call's result is never used.
+/// Only a teardown could cut it: parked [D:teardown-abandons-reads]
 let cutBlocking (f: unit -> 'a) : 'a =
     match waitTokens () with
+    | [] when teardownCuts () -> parked f
     | [] -> f ()
     | _ ->
         let task = System.Threading.Tasks.Task.Run<'a>(System.Func<'a> f)
@@ -1009,14 +1068,20 @@ let waitTask (t: System.Threading.Tasks.Task) : unit =
         if teardownRequested () <> 0 then
             System.Threading.Volatile.Write(&mainJoining, 1)
 
+            // every live arm parked in a call no cut reaches, twice in a
+            // row: the join abandons them [D:teardown-abandons-reads]
+            let mutable streak = 0
+
             try
-                t.Wait()
+                while not (t.Wait 50) && streak < 2 do
+                    streak <- if allArmsParked () then streak + 1 else 0
             with _ ->
                 ()
 
         checkTeardown ()
 
-    t.Wait()
+    // an arm joining its own arms is parked with them
+    if teardownCuts () then parking t.Wait else t.Wait()
 
 // ---- weir's one stdin reader [D:stdin-reader] --------------------------
 // Self.prompt, Self.stdin and the piped REPL read fd 0 through one buffer,
