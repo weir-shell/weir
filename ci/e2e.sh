@@ -9121,6 +9121,13 @@ cat > "$gtdir/serve/svc.json" <<'JEOF'
 {"type":"object","$comment":"c","required":["level"],"properties":{"name":{"type":"string","minLength":1,"pattern":"^a"},"port":{"anyOf":[{"type":"integer"},{"type":"string"}],"x-kubernetes-int-or-string":true},"level":{"type":"integer","enum":[1,2,3]},"tags":{"type":"array","items":{"type":"string"},"maxItems":3,"uniqueItems":true}}}
 JEOF
 ( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/svc.json --as svc ) >/dev/null || fail "add schema over validation keywords"
+# [D:schema-num-or-string] [D:schema-enum-kind] [D:schema-const-format]:
+# number-or-string and format int-or-string draft Yaml, a typed enum its
+# type, a mixed enum Yaml; a root $id, const and contentEncoding vendor
+cat > "$gtdir/serve/r2.json" <<'JEOF'
+{"$id":"https://example.com/r2.json","type":"object","required":["on","ratio"],"properties":{"cpu":{"oneOf":[{"type":["string","null"]},{"type":["number","null"]}]},"port":{"type":"string","format":"int-or-string"},"on":{"type":"boolean","enum":[true]},"ratio":{"type":"number","enum":[0.5,1.5]},"mode":{"enum":["a",1]},"kind":{"type":"string","const":"Deployment"},"blob":{"type":"string","contentEncoding":"base64","format":"byte"}}}
+JEOF
+( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/r2.json --as r2 ) >/dev/null || fail "add schema over \$id/const/contentEncoding"
 kill $gtsrv 2>/dev/null || true
 wait $gtsrv 2>/dev/null || true
 
@@ -9216,6 +9223,21 @@ out=$( cd "$gtdir/proj" && $BIN svc.weir 2>&1 ) || fail "the svc types read json
 echo "$out" | grep -qF '"port":8080' || fail "json keeps 8080 an int: $out"
 echo "$out" | grep -qxF "port: 8080" || fail "yaml writes 8080 unquoted: $out"
 echo "e2e ok: gen types — validation keywords noted, int-or-string as Yaml, an integer enum as int"
+( cd "$gtdir/proj" && $BIN gen types --schema r2 ) >/dev/null || fail "gen types r2"
+r2mod="$gtdir/proj/.weir/types/r2.weir"
+for want in "cpu: Option<Yaml>" "port: Option<Yaml>" "on: bool" "ratio: float" "mode: Option<Yaml>" "kind: Option<string>" \
+    "// note: port: format int-or-string — drafted Yaml" "// note: not enforced: const on kind" \
+    "// note: not enforced: contentEncoding on blob" "// note: not enforced: format on blob"; do
+    grep -qF "$want" "$r2mod" || fail "r2 drafts '$want': $(cat "$r2mod")"
+done
+cat > "$gtdir/proj/r2.weir" <<'WEOF'
+import "weir:r2" as R
+let j = ["{\"cpu\": 1.5, \"port\": 8080, \"on\": true, \"ratio\": 0.5, \"mode\": 1}"] |> from json R2
+j |> to json |> Seq.iter print
+WEOF
+out=$( cd "$gtdir/proj" && $BIN r2.weir 2>&1 ) || fail "the r2 types read the document's own values: $out"
+[ "$out" = '{"cpu":1.5,"mode":1,"on":true,"port":8080,"ratio":0.5}' ] || fail "the r2 round trip: $out"
+echo "e2e ok: gen types — number-or-string and format int-or-string as Yaml, typed and mixed enums, \$id/const/content keywords noted"
 
 # --out -: stdout, nothing written; --as renames the top type
 ( cd "$gtdir/proj" && $BIN gen types --schema pod --as Manifest --out - ) | grep -qF "type Manifest = {" || fail "--as + --out - streams the renamed module"

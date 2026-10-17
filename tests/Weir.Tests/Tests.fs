@@ -27860,7 +27860,71 @@ let hunt3BehaviorTests =
               Expect.stringContains g "YInt n, a string as YStr s" "the note names the cases"
               Expect.stringContains g "\n    level: int\n" "an integer enum drafts int"
               Expect.stringContains g "an enum of 1, 2, 3 — drafted int" "its values in the note"
-              Expect.stringContains g "mixed: Option<string>" "a mixed enum stays string"
+              Expect.stringContains g "mixed: Option<Yaml>" "a mixed enum drafts Yaml [D:schema-enum-kind]"
+          }
+          test "schema drafting: number-or-string and format int-or-string are Yaml [D:schema-num-or-string]" {
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "properties": {
+                             "cpu": { "oneOf": [{ "type": ["string", "null"] }, { "type": ["number", "null"] }] },
+                             "target": { "anyOf": [{ "type": "number" }, { "type": "integer" }, { "type": "string" }] },
+                             "port": { "type": "string", "format": "int-or-string" },
+                             "maybe": { "type": ["string", "null"], "format": "int-or-string" },
+                             "name": { "type": "string", "format": "hostname" } } }"""
+
+              Expect.stringContains g "cpu: Option<Yaml>" "number-or-string → Yaml"
+              Expect.stringContains g "target: Option<Yaml>" "number/integer/string → Yaml"
+              Expect.stringContains g "a number reads as YInt n or YFloat f, a string as YStr s" "the note names the cases"
+              Expect.stringContains g "port: Option<Yaml>" "format int-or-string → Yaml"
+              Expect.stringContains g "maybe: Option<Yaml>" "a nullable one is Option<Yaml> once"
+              Expect.stringContains g "// note: port: format int-or-string — drafted Yaml" "the format case has its own note"
+              Expect.stringContains g "name: Option<string>" "another format drafts its type"
+              Expect.stringContains g "// note: not enforced: format on name" "another format is noted, not enforced"
+              Expect.isFalse (g.Contains "format on port") "int-or-string is not also 'not enforced'"
+          }
+          test "schema drafting: a typed enum drafts its type, a mixed enum Yaml [D:schema-enum-kind]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["on", "ratio", "n", "mixed", "untyped"],
+                           "properties": {
+                             "on": { "type": "boolean", "enum": [true] },
+                             "ratio": { "type": "number", "enum": [0.5, 1.5] },
+                             "n": { "type": "number", "enum": [1, 2] },
+                             "untyped": { "enum": [1, 2.5] },
+                             "flag": { "enum": [true, false] },
+                             "mixed": { "enum": ["a", 1, true] },
+                             "s": { "type": "string", "enum": ["a", "b"] } } }"""
+
+              Expect.stringContains g "\n    on: bool\n" "a boolean enum drafts bool"
+              Expect.stringContains g "\n    ratio: float\n" "a number enum drafts float"
+              Expect.stringContains g "\n    n: float\n" "the declared number type wins over integer values"
+              Expect.stringContains g "\n    untyped: float\n" "integers among numbers are numbers"
+              Expect.stringContains g "flag: Option<bool>" "an untyped boolean enum drafts bool"
+              Expect.stringContains g "\n    mixed: Yaml\n" "a mixed enum drafts Yaml"
+              Expect.stringContains g "an enum mixing kinds (a, 1, true) — drafted Yaml" "its note"
+              Expect.stringContains g "s: Option<string>" "a string enum stays string"
+              Expect.stringContains g "an enum of 0.5, 1.5 — drafted float" "the values in the note"
+          }
+          test "schema: a root $id, const and the content keywords are admitted and noted [D:schema-const-format]" {
+              let g =
+                  gen
+                      """{ "$id": "https://example.com/app.json", "type": "object",
+                           "properties": {
+                             "kind": { "type": "string", "const": "Deployment" },
+                             "v": { "const": 2 },
+                             "blob": { "type": "string", "contentEncoding": "base64", "contentMediaType": "image/png" } } }"""
+
+              Expect.stringContains g "kind: Option<string>" "const drafts the declared type"
+              Expect.stringContains g "v: Option<int>" "an untyped const drafts its value's type"
+              Expect.stringContains g "// note: not enforced: const on kind, v" "const is noted"
+              Expect.stringContains g "// note: not enforced: contentEncoding on blob" "contentEncoding"
+              Expect.stringContains g "// note: not enforced: contentMediaType on blob" "contentMediaType"
+              Expect.isFalse (g.Contains "$id") "the root $id is ignored"
+
+              match Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "p": { "$id": "x", "type": "string" } } }""" with
+              | Error e -> Expect.stringContains e "'$id'" "a nested $id still refuses"
+              | Ok _ -> failtest "a nested $id must refuse"
           }
           test "schema validation keywords are admitted and noted, never enforced [D:schema-validation-keys]" {
               let g =
@@ -27879,9 +27943,9 @@ let hunt3BehaviorTests =
               Expect.isFalse (g.Contains "$comment") "a comment is documentation, not noted"
 
               // shape-changing keywords still refuse
-              match Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "p": { "const": 1 } } }""" with
-              | Error e -> Expect.stringContains e "'const'" "const refuses"
-              | Ok _ -> failtest "const must refuse"
+              match Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "p": { "not": { "type": "string" } } } }""" with
+              | Error e -> Expect.stringContains e "'not'" "not refuses"
+              | Ok _ -> failtest "not must refuse"
           }
           test "schema validation notes cover only the definitions the module drafts [D:schema-validation-keys]" {
               let g =

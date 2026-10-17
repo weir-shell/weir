@@ -75,17 +75,45 @@ let generate
             // schema territory weir does not draft) [D:schema-types]
             reg.AddNote $"{where}: anyOf — drafted the FIRST variant only; verify the rest"
             shape desired srcKey parentStem path first
-        | SEnum(values, true) ->
-            // an integer enum drafts int [D:schema-int-enum] — string
-            // would refuse the document's own numbers
-            let listed = String.concat ", " values
-            reg.AddNote $"{where}: an enum of {listed} — drafted int; match the values yourself"
-            "int"
-        | SEnum(values, false) ->
+        | SEnum(values, "string") ->
             // bounded v1: enum drafts string, the values ride a note
             // (a string union is a stated follow-up)
             reg.AddNote $"{where}: an enum of {enumText values} — drafted string; match the values yourself"
             "string"
+        | SEnum(values, "mixed") ->
+            // values of differing kinds draft the opaque node
+            // [D:schema-enum-kind]: any one type would refuse the rest
+            let listed = String.concat ", " values
+
+            reg.AddNote
+                $"{where}: an enum mixing kinds ({listed}) — drafted Yaml; match the node's case and value yourself"
+
+            "Yaml"
+        | SEnum(values, kind) ->
+            // a non-string enum drafts its type [D:schema-int-enum]
+            // [D:schema-enum-kind] — string would refuse the document's
+            // own numbers and booleans
+            let ty =
+                match kind with
+                | "integer" -> "int"
+                | "number" -> "float"
+                | _ -> "bool"
+
+            let listed = String.concat ", " values
+            reg.AddNote $"{where}: an enum of {listed} — drafted {ty}; match the values yourself"
+            ty
+        | SIntOrStringFormat inner ->
+            // [D:schema-num-or-string]: the int-or-string fix's
+            // class, spelled as a string format
+            let nullable =
+                match inner with
+                | SScalar kinds -> kinds.Contains "null"
+                | _ -> false
+
+            reg.AddNote
+                $"{where}: format int-or-string — drafted Yaml; an int reads as YInt n, a string as YStr s"
+
+            if nullable then opt "Yaml" else "Yaml"
         | SAny ->
             reg.AddNote $"{where}: unconstrained in the schema — drafted string (edit if the real shape is known)"
             "string"
@@ -106,6 +134,17 @@ let generate
                     // and quote it on write
                     reg.AddNote
                         $"{where}: the schema allows integer/string — drafted Yaml; an int reads as YInt n, a string as YStr s"
+
+                    "Yaml"
+                elif
+                    core.Contains "string"
+                    && core.Contains "number"
+                    && Set.isSubset core (set [ "integer"; "number"; "string" ])
+                then
+                    // number-or-string (a k8s quantity, an HPA target)
+                    // is the same class [D:schema-num-or-string]
+                    reg.AddNote
+                        $"{where}: the schema allows {kindsText core} — drafted Yaml; a number reads as YInt n or YFloat f, a string as YStr s"
 
                     "Yaml"
                 elif core.IsEmpty then
