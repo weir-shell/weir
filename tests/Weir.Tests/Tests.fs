@@ -1023,6 +1023,23 @@ let streamingTests =
               Expect.stringContains ex.Message "regex timeout" ""
               Expect.equal Weir.Check.regexTimeout (System.TimeSpan.FromSeconds 5.0) "the documented bound"
           }
+          test "a timeout on a large input names its size and the per-line spelling [D:regex-timeout-size]" {
+              let timedOut input =
+                  Expect.throwsC
+                      (fun () ->
+                          Weir.Check.regexGuarded "a|b" input (fun () ->
+                              raise (System.Text.RegularExpressions.RegexMatchTimeoutException()))
+                          |> ignore)
+                      (fun ex -> ex.Message)
+
+              let big = timedOut (System.String('x', Weir.Check.regexLargeInput))
+              Expect.stringContains big $"on a {Weir.Check.regexLargeInput}-char input" "names the size"
+              Expect.stringContains big "Seq.where (Str.isMatch pat)" "names the per-line spelling"
+              Expect.isFalse (big.Contains "backtracks catastrophically on this input") "does not assert backtracking"
+
+              let small = timedOut (System.String('x', Weir.Check.regexLargeInput - 1))
+              Expect.stringContains small "the pattern backtracks catastrophically on this input" "a small input keeps the backtracking words"
+          }
           test "feed pulls its INPUT lazily: an early-exiting child bounds the pulls [D:spawn-spec]" {
               // the standing laziness rule reaches inputs — the writer
               // task pulls as the pipe accepts, so `head -1` over a

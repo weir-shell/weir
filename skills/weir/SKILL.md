@@ -433,7 +433,10 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   literals read best: `Seq.where (Str.isMatch @"\.md$")`. Every
   match (these and `Regex` patterns) has a 5s timeout that raises
   `regex timeout: …` [D:regex-timeout] — catastrophic backtracking
-  (`^(a+)+$` on a long near-miss) fails loudly instead of hanging.
+  (`^(a+)+$` on a long near-miss) fails loudly instead of hanging. On
+  an input of 1M+ chars the message names the size instead: a linear
+  scan of ~80M chars takes the 5s by itself, so match line by line
+  (`File.read p |> Seq.where (Str.isMatch pat)`), not one joined string.
   `Str.rmatchAll pat s : seq<seq<string>>` is the plural — EVERY
   match's GROUPS, lazily; no Option (absence is the empty seq). Groups
   ONLY: a pattern with no capturing group yields an EMPTY inner seq per

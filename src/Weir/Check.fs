@@ -2024,14 +2024,27 @@ let private regexCache =
 // covers hundreds of MB in that time) and short enough to fail loudly.
 let regexTimeout = System.TimeSpan.FromSeconds 5.0
 
-/// run a match against `pat`, turning the engine's timeout into weir's
-/// named error [D:regex-timeout]
-let regexGuarded (pat: string) (f: unit -> 'a) : 'a =
+// past this many chars a timeout may be the input's size, not
+// backtracking [D:regex-timeout-size]: a 10-way alternation scans ~16M
+// chars/s here, so 5s covers ~80M; 1M leaves an 80x margin for heavier
+// linear patterns, and below it only backtracking can spend 5s
+[<Literal>]
+let regexLargeInput = 1048576
+
+/// run a match of `pat` over `input`, turning the engine's timeout into
+/// weir's named error [D:regex-timeout]
+let regexGuarded (pat: string) (input: string) (f: unit -> 'a) : 'a =
     try
         f ()
     with :? System.Text.RegularExpressions.RegexMatchTimeoutException ->
-        failwith
-            $"regex timeout: matching @\"{Types.excerpt pat}\" ran past {int regexTimeout.TotalSeconds}s — the pattern backtracks catastrophically on this input (nested repetition like (a+)+ or (a|a)*); rewrite it so each character can match only one way"
+        let ran = $"regex timeout: matching @\"{Types.excerpt pat}\" ran past {int regexTimeout.TotalSeconds}s"
+
+        if input.Length >= regexLargeInput then
+            failwith
+                $"{ran} on a {input.Length}-char input — at this size the scan alone can take that long; match line by line instead of one joined string (`File.read p |> Seq.where (Str.isMatch pat)`), or, if the pattern nests repetition like (a+)+ or (a|a)*, rewrite it so each character can match only one way"
+        else
+            failwith
+                $"{ran} — the pattern backtracks catastrophically on this input (nested repetition like (a+)+ or (a|a)*); rewrite it so each character can match only one way"
 
 let compileRegex (pat: string) : Result<System.Text.RegularExpressions.Regex, string> =
     match regexCache.TryGetValue pat with
