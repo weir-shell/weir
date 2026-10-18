@@ -5526,16 +5526,58 @@ let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) li
                 |> List.map (fun (sp, m) -> mk sp m)))
 
 // ---- external contracts: command signatures [D:command-signatures] --------
+// a flag's value shape, read off its field type [D:sig-arity]: bool takes
+// no value word; Option<_> takes an attached value only (`--color=never`,
+// `-i.bak`); seq<_> takes its value and ends the tool's own options
+// (python's `-m mod`); any other type takes one value, attached or the
+// next word. Every older signature is all-bool — no flag consumes a word,
+// the check it always had.
+type SigArity =
+    | ANone
+    | AOpt
+    | AOne
+    | ARest
+
+// one case's spellings. Longs: `--x` names; Shorts: one-letter `-x`
+// (explicit [<Short>] or a two-character dash Wire — weir's own
+// derivation is a convention, and a signature records a foreign tool's
+// facts); Literals: dash-spelled words matched whole (`-plaintext`,
+// find's `-name`) [D:sig-conventions]
+type SigSurface =
+    { Longs: Map<string, SigArity>
+      Shorts: Map<string, SigArity>
+      Literals: Map<string, SigArity> }
+
+let emptySigSurface =
+    { Longs = Map.empty
+      Shorts = Map.empty
+      Literals = Map.empty }
+
 // a loaded signature's checkable surface. Subs: kebab-cased subcommand
-// -> (long-flag set, explicit-short set); the "" key is the flag-only
-// shape (Cmd declared as a record). Shorts are explicit [<Short>] only —
-// weir's own derivation is a convention, and a signature records a
-// foreign tool's facts.
+// -> (long-flag set, short set), the globals folded in (what completion
+// offers); the "" key is the flag-only shape (Cmd declared as a record).
+// Surfaces carries the same cases with arity, Globals the `type Globals`
+// record checked at every level, and the module lets the tool's
+// convention [D:sig-conventions].
 type SigInfo =
     { Tool: string
       DeclLine: int
       Exhaustive: bool
       Subs: Map<string, Set<string> * Set<string>>
+      Surfaces: Map<string, SigSurface>
+      Globals: SigSurface option
+      // "gnu" (default), "go", "find" [D:sig-conventions]
+      Convention: string
+      // GNU getopt's unique-prefix longs (`--verb` for `--verbose`)
+      Abbreviations: bool
+      // `--no-x` for any switch `--x` (node)
+      Negatable: bool
+      // case keys whose first operand ends the tool's own options
+      // (`docker run IMAGE …`, an interpreter's script) [D:sig-operand-stop]
+      StopAtOperand: Set<string>
+      // case keys whose flags no source could list (git log's revision
+      // options): reaching one ends the check [D:sig-unwalked]
+      Unchecked: Set<string>
       // the resolved sig file, its recorded version, and each surface's
       // record type name — what hover/definition need to reach the
       // declaration site [D:lsp-cross-file]
@@ -5543,7 +5585,7 @@ type SigInfo =
       Version: string
       SubRecords: Map<string, string> }
 
-let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
+let private sigSurface (def: RecordDef) : SigSurface =
     let positional f =
         match Map.tryFind f def.Attrs with
         | Some specs -> specs |> List.exists (fun (n, _) -> n = "Positional")
@@ -5564,14 +5606,69 @@ let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
                 | _ -> None)
         | None -> []
 
-    let longs =
-        def.Fields
-        |> List.filter (fun (f, _) -> not (positional f))
-        |> List.collect (fun (f, _) -> Weir.Argv.kebabFlag f :: wiresOf f)
-        |> Set.ofList
+    let arityOf ty =
+        match ty with
+        | TBool -> ANone
+        | TNamed("Option", _) -> AOpt
+        | TSeq _ -> ARest
+        | _ -> AOne
 
-    let shorts = Weir.Argv.explicitShorts def |> List.map snd |> Set.ofList
-    longs, shorts
+    let explicit = Weir.Argv.explicitShorts def |> Map.ofList
+    let shortOf f = Map.tryFind f explicit
+
+    def.Fields
+    |> List.filter (fun (f, _) -> not (positional f))
+    |> List.fold
+        (fun (acc: SigSurface) (f, ty) ->
+            let a = arityOf ty
+            let wires = wiresOf f
+            // a dash-spelled Wire is the field's one spelling
+            // [D:sig-conventions]: a short-only row (`-B`), a second short,
+            // a Go or find word, `-h` (no [<Short "h">] exists) — the field
+            // name is then a label, never a `--long`
+            let dashed = wires |> List.exists (fun w -> w.StartsWith "-")
+
+            let acc =
+                if dashed then
+                    acc
+                else
+                    { acc with
+                        Longs = Map.add (Weir.Argv.kebabFlag f) a acc.Longs }
+
+            let acc =
+                wires
+                |> List.fold
+                    (fun (acc: SigSurface) (w: string) ->
+                        if w.StartsWith "--" then
+                            { acc with
+                                Longs = Map.add (w.Substring 2) a acc.Longs }
+                        elif w.StartsWith "-" && w.Length = 2 then
+                            { acc with
+                                Shorts = Map.add (w.Substring 1) a acc.Shorts }
+                        elif w.StartsWith "-" then
+                            { acc with
+                                Literals = Map.add w a acc.Literals }
+                        else
+                            { acc with Longs = Map.add w a acc.Longs })
+                    acc
+
+            match shortOf f with
+            | Some sh -> { acc with Shorts = Map.add sh a acc.Shorts }
+            | None -> acc)
+        emptySigSurface
+
+// later spellings never displace earlier ones: a case's own flag keeps
+// its arity over a global of the same name
+let private mergeSurface (a: SigSurface) (b: SigSurface) : SigSurface =
+    let into (m: Map<string, SigArity>) (n: Map<string, SigArity>) =
+        n |> Map.fold (fun acc k v -> if Map.containsKey k acc then acc else Map.add k v acc) m
+
+    { Longs = into a.Longs b.Longs
+      Shorts = into a.Shorts b.Shorts
+      Literals = into a.Literals b.Literals }
+
+let private surfaceSets (s: SigSurface) : Set<string> * Set<string> =
+    (s.Longs |> Map.keys |> Set.ofSeq), (s.Shorts |> Map.keys |> Set.ofSeq)
 
 /// a PATH-y tool name ("./rooz/v3/lib/jp", "~/.azure/bin/bicep") maps
 /// to one flat filename under .weir/sigs — separators become '_'
@@ -5686,6 +5783,61 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                             | (n, Record rd) when n = name -> Some rd
                             | _ -> None)
 
+                    let letStrs name =
+                        lm.Body
+                        |> List.tryPick (function
+                            | _, CLet(n, te) when n = name ->
+                                match te.Kind with
+                                | Check.TEList items ->
+                                    Some(
+                                        items
+                                        |> List.choose (fun i ->
+                                            match i.Kind with
+                                            | Check.TEStr s -> Some s
+                                            | _ -> None)
+                                    )
+                                | _ -> None
+                            | _ -> None)
+
+                    // the convention lets [D:sig-conventions]: absent = GNU,
+                    // no abbreviations, no negation, no operand stop — what
+                    // every older signature meant. Paths in the lists are
+                    // written as typed (`image prune`); "" is the top level
+                    let keysOf name =
+                        letStrs name
+                        |> Option.defaultValue []
+                        |> List.map (fun p -> p.Trim().Replace(" ", "-"))
+                        |> Set.ofList
+
+                    let convention = letStr "convention" |> Option.defaultValue "gnu"
+
+                    if not (List.contains convention [ "gnu"; "go"; "find" ]) then
+                        diags.Add(
+                            mk
+                                decl.Line
+                                $"#sig {decl.Tool}: `let convention = \"{convention}\"` names no flag convention — use \"gnu\" (the default), \"go\" or \"find\""
+                        )
+
+                    let globals = recordOf "Globals" |> Option.map sigSurface
+
+                    let info surfaces subRecords =
+                        let g = globals |> Option.defaultValue emptySigSurface
+
+                        { Tool = decl.Tool
+                          DeclLine = decl.Line
+                          Exhaustive = letBool "exhaustive" |> Option.defaultValue false
+                          Subs = surfaces |> Map.map (fun _ sf -> surfaceSets (mergeSurface sf g))
+                          Surfaces = surfaces
+                          Globals = globals
+                          Convention = convention
+                          Abbreviations = letBool "abbreviations" |> Option.defaultValue false
+                          Negatable = letBool "negatable" |> Option.defaultValue false
+                          StopAtOperand = keysOf "stopAtOperand"
+                          Unchecked = keysOf "unchecked"
+                          SigPath = sigFile
+                          Version = letStr "version" |> Option.defaultValue ""
+                          SubRecords = subRecords }
+
                     match lm.TypeDefs |> List.tryFind (fun (n, _) -> n = "Cmd") with
                     | None ->
                         diags.Add(
@@ -5693,26 +5845,18 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                 decl.Line
                                 $"#sig {decl.Tool}: the signature declares no type `Cmd` — the command surface is the type named Cmd (a union of subcommands, or a record of flags)"
                         )
-                    | Some(_, Record rd) ->
-                        infos.Add
-                            { Tool = decl.Tool
-                              DeclLine = decl.Line
-                              Exhaustive = letBool "exhaustive" |> Option.defaultValue false
-                              Subs = Map [ "", sigFlagSets rd ]
-                              SigPath = sigFile
-                              Version = letStr "version" |> Option.defaultValue ""
-                              SubRecords = Map [ "", "Cmd" ] }
+                    | Some(_, Record rd) -> infos.Add(info (Map [ "", sigSurface rd ]) (Map [ "", "Cmd" ]))
                     | Some(_, Union ud) ->
-                        let subs =
+                        let surfaces =
                             ud.Cases
                             |> List.map (fun (case, payload) ->
                                 let flags =
                                     match payload with
                                     | Some(TNamed(rn, [])) ->
                                         match recordOf rn with
-                                        | Some rd -> sigFlagSets rd
-                                        | None -> Set.empty, Set.empty
-                                    | _ -> Set.empty, Set.empty
+                                        | Some rd -> sigSurface rd
+                                        | None -> emptySigSurface
+                                    | _ -> emptySigSurface
 
                                 Weir.Argv.kebabFlag case, flags)
                             |> Map.ofList
@@ -5725,14 +5869,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                 | _ -> None)
                             |> Map.ofList
 
-                        infos.Add
-                            { Tool = decl.Tool
-                              DeclLine = decl.Line
-                              Exhaustive = letBool "exhaustive" |> Option.defaultValue false
-                              Subs = subs
-                              SigPath = sigFile
-                              Version = letStr "version" |> Option.defaultValue ""
-                              SubRecords = subRecords }
+                        infos.Add(info surfaces subRecords)
 
     List.ofSeq diags, List.ofSeq infos
 
@@ -5837,120 +5974,350 @@ let sigCmdDiagnostics
                 match Map.tryFind prog byTool with
                 | None -> []
                 | Some si ->
+                    // a spliced word is a placeholder: its text is unknown
+                    // at check, but it still takes its place — a flag's
+                    // value, or an operand naming no case
                     let words =
                         args
-                        |> List.choose (fun a ->
+                        |> List.map (fun a ->
                             match a.Kind with
-                            | Check.TEStr w -> Some(w, a.Span)
-                            | _ -> None)
+                            | Check.TEStr w -> Some w, a.Span
+                            | _ -> None, a.Span)
 
-                    let surface =
-                        match Map.tryFind "" si.Subs with
-                        | Some fs -> Some(None, fs)
-                        | None ->
-                            // the longest run of leading sub words wins
-                            // [D:scoped-sigs]: `issue list` matches the
-                            // IssueList case before falling back to Issue —
-                            // tokens join kebab-style, the loader's own key
-                            let run =
-                                words
-                                |> List.skipWhile (fun (w, _) -> w.StartsWith "-")
-                                |> List.takeWhile (fun (w, _) -> not (w.StartsWith "-"))
-                                |> List.truncate 4
-                                |> List.map fst
+                    let scoped = not (Map.containsKey "" si.Surfaces)
+                    let globals = si.Globals |> Option.defaultValue emptySigSurface
+
+                    // the top level: the flat record, or `type Globals`; a
+                    // scoped sig without one checks the case intersection —
+                    // what rides every case is global — and an empty
+                    // intersection (hand-written unions that never
+                    // duplicate) checks nothing there [D:scoped-sigs]
+                    let rootSurface =
+                        match Map.tryFind "" si.Surfaces, si.Globals with
+                        | Some sf, _ -> Some(mergeSurface sf globals)
+                        | None, Some g -> Some g
+                        | None, None ->
+                            match si.Surfaces |> Map.toList |> List.map snd with
+                            | [] -> None
+                            | c0 :: rest ->
+                                let inter (pick: SigSurface -> Map<string, SigArity>) =
+                                    pick c0 |> Map.filter (fun k _ -> rest |> List.forall (fun c -> Map.containsKey k (pick c)))
+
+                                let longs = inter (fun c -> c.Longs)
+
+                                if longs.IsEmpty then
+                                    None
+                                else
+                                    Some
+                                        { Longs = longs
+                                          Shorts = inter (fun c -> c.Shorts)
+                                          Literals = inter (fun c -> c.Literals) }
+
+                    let surfaceAt key =
+                        if key = "" then
+                            rootSurface
+                        else
+                            Map.tryFind key si.Surfaces |> Option.map (fun sf -> mergeSurface sf globals)
+
+                    let hasChildren key =
+                        scoped && (key = "" || si.Surfaces |> Map.exists (fun k _ -> k.StartsWith(key + "-")))
+
+                    // a scoped surface names its case in the warning, as
+                    // typed (`gh issue list`) [D:scoped-sigs]
+                    let toolAndSub (typed: string list) = String.concat " " (si.Tool :: typed)
+
+                    let sev = if si.Exhaustive then "error" else "warning"
+
+                    let note =
+                        if si.Exhaustive then
+                            $"(#sig {si.Tool}, line {si.DeclLine}; exhaustive signature)"
+                        else
+                            $"(#sig {si.Tool}, line {si.DeclLine}; partial signature — a scraped surface may be incomplete)"
+
+                    let mk (sp: Span) (msg: string) =
+                        let l1, c1 = translate ll sp.Start.Col
+                        let l2, c2 = translate ll (max sp.Start.Col (sp.End.Col - 1))
+
+                        { File = path
+                          Line = l1
+                          Col = c1
+                          EndLine = Some l2
+                          EndCol = Some(c2 + 1)
+                          Severity = sev
+                          Code = "sig"
+                          Message = msg }
+
+                    // did-you-mean over the spellings the convention takes
+                    // [D:sig-conventions]: shorts count (`--H` -> `-H`), a
+                    // distant match is no suggestion (a one-letter name
+                    // never borrows a two-letter one)
+                    let dym (typed: string) (cands: string seq) =
+                        let bare = typed.TrimStart '-'
+                        let limit = if bare.Length <= 3 then 1 else 2
+
+                        // names compare without their dashes: `--H` is one
+                        // dash from `-H`, zero letters
+                        cands
+                        |> Seq.filter (fun c -> c <> typed)
+                        |> Seq.map (fun c -> c, editDistance bare (c.TrimStart '-'))
+                        |> Seq.filter (fun (_, d) -> d = 0 || (d <= limit && d < bare.Length))
+                        |> Seq.sortBy (fun (c, d) -> d, abs (c.Length - typed.Length), c)
+                        |> Seq.tryHead
+                        |> Option.map (fun (c, _) -> $". Did you mean '{c}'?")
+                        |> Option.defaultValue ""
+
+                    let spellings (sf: SigSurface) =
+                        Seq.concat
+                            [ sf.Longs |> Map.keys |> Seq.map (fun l -> "--" + l)
+                              sf.Shorts |> Map.keys |> Seq.map (fun s -> "-" + s)
+                              sf.Literals |> Map.keys |> Seq.map id ]
+
+                    // the value-word step after a flag: 0 none, 1 the next
+                    // word, 2 the tool's options end here, 3 the next word,
+                    // then they end
+                    let after (a: SigArity) (attached: bool) =
+                        match a with
+                        | ANone
+                        | AOpt -> 0
+                        | AOne -> if attached then 0 else 1
+                        | ARest -> if attached then 2 else 3
+
+                    let unknown (sf: SigSurface) typed (shown: string) (sp: Span) =
+                        mk sp $"unknown flag '{shown}' for {toolAndSub typed}{dym shown (spellings sf)} {note}"
+
+                    // one flag word against one surface: the diagnostics and
+                    // the value-word step
+                    let checkFlag (sf: SigSurface) typed (w: string) (sp: Span) : Diagnostic list * int =
+                        let name, attached =
+                            match w.IndexOf '=' with
+                            | -1 -> w, false
+                            | i -> w.Substring(0, i), true
+
+                        match si.Convention with
+                        | "go" ->
+                            // `-x`, `-long`, `--long` are one flag (Go's flag
+                            // package); no bundles
+                            let bare = name.TrimStart '-'
 
                             let hit =
-                                [ List.length run .. -1 .. 1 ]
-                                |> List.tryPick (fun n ->
-                                    let toks = run |> List.truncate n
-                                    let key = String.concat "-" toks
-
-                                    Map.tryFind key si.Subs
-                                    |> Option.map (fun fs -> Some(String.concat " " toks), fs))
+                                [ Map.tryFind bare sf.Longs
+                                  Map.tryFind bare sf.Shorts
+                                  Map.tryFind ("-" + bare) sf.Literals
+                                  Map.tryFind ("--" + bare) sf.Literals ]
+                                |> List.tryPick id
 
                             match hit with
-                            | Some hit -> Some hit
+                            | Some a -> [], after a attached
+                            | None when name.StartsWith "---" -> [ unknown sf typed name sp ], 0
                             | None ->
-                                // a sub-less line on a scoped sig checks the
-                                // globals: what rides every case is global,
-                                // so the intersection is the global set
-                                // [D:scoped-sigs]. Empty intersection
-                                // (hand-written unions that never duplicate)
-                                // keeps the L2 skip — claude's flag-only
-                                // lines check, git's sub-less lines stay
-                                // silent
-                                match si.Subs |> Map.toList |> List.map snd with
-                                | [] -> None
-                                | (l0, s0) :: rest ->
-                                    let longs = rest |> List.fold (fun acc (l, _) -> Set.intersect acc l) l0
+                                let goSpellings =
+                                    spellings sf |> Seq.map (fun s -> (if name.StartsWith "--" then "--" else "-") + s.TrimStart '-')
 
-                                    let shorts = rest |> List.fold (fun acc (_, sh) -> Set.intersect acc sh) s0
+                                [ mk sp $"unknown flag '{name}' for {toolAndSub typed}{dym name goSpellings} {note}" ], 0
+                        | "find" ->
+                            // whole words: a predicate (`-name`), a listed
+                            // `--help`; a one-letter option may carry its
+                            // value attached (`-O3`)
+                            let exact =
+                                [ Map.tryFind name sf.Literals
+                                  (if name.StartsWith "--" then
+                                       Map.tryFind (name.Substring 2) sf.Longs
+                                   elif name.Length = 2 then
+                                       Map.tryFind (name.Substring 1) sf.Shorts
+                                   else
+                                       None) ]
+                                |> List.tryPick id
 
-                                    if longs.IsEmpty then None else Some(None, (longs, shorts))
+                            let glued () =
+                                Seq.append
+                                    (sf.Shorts |> Map.toSeq |> Seq.map (fun (k, a) -> "-" + k, a))
+                                    (sf.Literals |> Map.toSeq |> Seq.filter (fun (k, _) -> k.Length = 2))
+                                |> Seq.tryFind (fun (k, a) -> (a = AOne || a = AOpt) && w.StartsWith k && w.Length > 2)
 
-                    match surface with
-                    | None -> [] // no matching subcommand, no shared globals: L2 stops here
-                    | Some(subName, (longs, shorts)) ->
-                        // a scoped surface names its case in the warning
-                        // [D:scoped-sigs]
-                        let toolAndSub =
-                            match subName with
-                            | Some sub -> $"{si.Tool} {sub}"
-                            | None -> si.Tool
+                            match exact with
+                            | Some a -> [], after a attached
+                            | None ->
+                                match glued () with
+                                | Some _ -> [], 0
+                                | None -> [ unknown sf typed name sp ], 0
+                        | _ ->
+                            if w.StartsWith "--" then
+                                let long = name.Substring 2
 
-                        let sev = if si.Exhaustive then "error" else "warning"
-
-                        let note =
-                            if si.Exhaustive then
-                                $"(#sig {si.Tool}, line {si.DeclLine}; exhaustive signature)"
-                            else
-                                $"(#sig {si.Tool}, line {si.DeclLine}; partial signature — a scraped surface may be incomplete)"
-
-                        let mk (sp: Span) (msg: string) =
-                            let l1, c1 = translate ll sp.Start.Col
-                            let l2, c2 = translate ll (max sp.Start.Col (sp.End.Col - 1))
-
-                            { File = path
-                              Line = l1
-                              Col = c1
-                              EndLine = Some l2
-                              EndCol = Some(c2 + 1)
-                              Severity = sev
-                              Code = "sig"
-                              Message = msg }
-
-                        let rec check acc ws =
-                            match ws with
-                            | [] -> acc
-                            | ("--", _) :: _ -> acc // end-of-flags: everything after is operands
-                            | (w: string, sp) :: rest when w.StartsWith "--" ->
-                                let name = w.Substring(2).Split('=')[0]
-
-                                let acc =
-                                    if longs.Contains name then
-                                        acc
+                                let negated () =
+                                    if si.Negatable && long.StartsWith "no-" then
+                                        match Map.tryFind (long.Substring 3) sf.Longs with
+                                        | Some(ANone | AOpt) -> Some ANone
+                                        | _ -> None
                                     else
-                                        let dym =
-                                            Weir.Types.didYouMean ("--" + name) (longs |> Seq.map (fun l -> "--" + l))
+                                        None
 
-                                        mk sp $"unknown flag '--{name}' for {toolAndSub}{dym} {note}" :: acc
+                                // getopt_long's unique prefix [D:sig-conventions]
+                                let abbreviated () =
+                                    if si.Abbreviations && long.Length >= 2 then
+                                        match sf.Longs |> Map.toList |> List.filter (fun (k, _) -> k.StartsWith long) with
+                                        | [ (_, a) ] -> Some a
+                                        | _ -> None
+                                    else
+                                        None
 
-                                check acc rest
-                            | (w, sp) :: rest when w.StartsWith "-" && w.Length = 2 && not (System.Char.IsDigit w[1]) ->
+                                let hit =
+                                    match Map.tryFind long sf.Longs with
+                                    | Some a -> Some a
+                                    | None ->
+                                        match Map.tryFind name sf.Literals with
+                                        | Some a -> Some a
+                                        | None -> negated () |> Option.orElse (abbreviated ())
+
+                                match hit with
+                                | Some a -> [], after a attached
+                                | None -> [ unknown sf typed name sp ], 0
+                            else
+                                match Map.tryFind name sf.Literals with
+                                | Some a -> [], after a attached
+                                | None when System.Char.IsDigit w[1] -> [], 0 // `-1`, `-7`: a count or a value, never a flag
                                 // a surface that recorded no shorts has no
                                 // evidence to warn on (BSD grep's help is
                                 // usage-only — the harvest sees longs, never
                                 // the short bundle) [D:sig-version-probe]
-                                let acc =
-                                    if shorts.IsEmpty || shorts.Contains(w.Substring 1) then
-                                        acc
+                                | None when sf.Shorts.IsEmpty -> [], 0
+                                | None ->
+                                    // a bundle, letter by letter: a value-taking
+                                    // letter takes the rest of the word (`-n5`,
+                                    // `-i.bak`) or the next one (`-xzf a.tgz`)
+                                    let rec bundle i =
+                                        if i >= w.Length then
+                                            [], 0
+                                        else
+                                            let c = string w[i]
+
+                                            match Map.tryFind c sf.Shorts with
+                                            | None ->
+                                                let inWord = if w.Length > 2 then $" (in '{w}')" else ""
+
+                                                [ mk sp $"unknown flag '-{c}'{inWord} for {toolAndSub typed} {note}" ], 0
+                                            | Some ANone -> bundle (i + 1)
+                                            | Some a -> [], after a (i + 1 < w.Length)
+
+                                    bundle 1
+
+                    let isFlag (w: string) = w.Length > 1 && w[0] = '-'
+
+                    // the longest run of operand words naming a case under key
+                    let subAt key (ws: (string option * Span) list) =
+                        let run =
+                            ws
+                            |> List.takeWhile (fun (w, _) ->
+                                match w with
+                                | Some w -> not (isFlag w)
+                                | None -> false)
+                            |> List.truncate 4
+                            |> List.choose fst
+
+                        [ List.length run .. -1 .. 1 ]
+                        |> List.tryPick (fun n ->
+                            let toks = run |> List.truncate n
+                            let k = String.concat "-" (if key = "" then toks else key :: toks)
+                            if Map.containsKey k si.Surfaces then Some(n, k, toks) else None)
+
+                    // where the rest of the line lands, diagnostics aside:
+                    // flags step over their known values, operands descend
+                    let rec reach key typed (ws: (string option * Span) list) =
+                        match ws with
+                        | [] -> key, typed
+                        | (Some "--", _) :: _ -> key, typed
+                        | (Some w, sp) :: rest when isFlag w ->
+                            match surfaceAt key with
+                            | Some sf ->
+                                match checkFlag sf typed w sp with
+                                | [], 1 ->
+                                    match rest with
+                                    | _ :: r -> reach key typed r
+                                    | [] -> key, typed
+                                | _ -> reach key typed rest
+                            | None -> reach key typed rest
+                        | _ ->
+                            if hasChildren key then
+                                match subAt key ws with
+                                | Some(n, k, toks) when not (Set.contains k si.Unchecked) -> reach k (typed @ toks) (List.skip n ws)
+                                | _ -> key, typed
+                            else
+                                key, typed
+
+                    // the walk [D:sig-operand-stop]: flags check against the
+                    // case reached so far; an operand either names a deeper
+                    // case (the longest run of operand words wins —
+                    // `issue list` beats `issue`), or, under a case with
+                    // children, is a subcommand the signature does not know
+                    // and ends the check (its flags are not its parent's);
+                    // a leaf's operands are permuted GNU-style unless its
+                    // case stops at the first one
+                    let rec walk acc key typed (ws: (string option * Span) list) =
+                        match ws with
+                        | [] -> acc
+                        | (Some "--", _) :: _ -> acc // end-of-flags: everything after is operands
+                        | (Some w, sp) :: rest when isFlag w ->
+                            match surfaceAt key with
+                            | None -> walk acc key typed rest // no evidence at this level (L2 discipline)
+                            | Some sf ->
+                                let ds, step = checkFlag sf typed w sp
+
+                                // a flag the level does not know, written before
+                                // the subcommand, is judged by the case the line
+                                // reaches — cobra parses every flag at the final
+                                // command (`gh --repo o/r issue view`), its
+                                // value word included [D:scoped-sigs]
+                                let ds, step =
+                                    if ds.IsEmpty || not (hasChildren key) then
+                                        ds, step
                                     else
-                                        mk sp $"unknown flag '{w}' for {toolAndSub} {note}" :: acc
+                                        let deeper ws =
+                                            match reach key typed ws with
+                                            | k, t when k <> key -> Some(k, t)
+                                            | _ -> None
 
-                                check acc rest
-                            | _ :: rest -> check acc rest
+                                        let landed =
+                                            match deeper rest with
+                                            | Some r -> Some(r, false)
+                                            | None ->
+                                                match rest with
+                                                | (Some v, _) :: tail when not (isFlag v) -> deeper tail |> Option.map (fun r -> r, true)
+                                                | _ -> None
 
-                        check [] words |> List.rev))
+                                        match landed with
+                                        | Some((k, t), tookValue) ->
+                                            match surfaceAt k with
+                                            | Some deep ->
+                                                match checkFlag deep t w sp with
+                                                | [], st -> [], (if tookValue then 1 else st)
+                                                | ds2, _ -> ds2, step
+                                            | None -> ds, step
+                                        | None -> ds, step
+
+                                let acc = List.rev ds @ acc
+
+                                match step, rest with
+                                | 0, _ -> walk acc key typed rest
+                                | 1, _ :: rest' -> walk acc key typed rest'
+                                | 1, [] -> acc
+                                | _ -> acc
+                        | _ :: rest ->
+                            if hasChildren key then
+                                match subAt key ws with
+                                | Some(_, k, _) when Set.contains k si.Unchecked -> acc
+                                | Some(n, k, toks) -> walk acc k (typed @ toks) (List.skip n ws)
+                                | None -> acc
+                            elif Set.contains key si.StopAtOperand then
+                                acc
+                            else
+                                walk acc key typed rest
+
+                    // `unchecked` naming the tool itself ("") checks none of
+                    // its lines [D:sig-open-tool]
+                    if Set.contains "" si.Unchecked then
+                        []
+                    else
+                        walk [] "" [] words |> List.rev))
 
 // ---- `weir add sig <tool>`: generation [D:command-signatures] --------------
 // Three sources in fidelity order, the chosen one recorded in the
