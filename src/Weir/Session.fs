@@ -1625,11 +1625,13 @@ let private signalExitCode (s: System.Runtime.InteropServices.PosixSignal) =
 let private scoped () =
     not liveTmpDirs.IsEmpty || not liveAlways.IsEmpty
 
-// the second signal's hard exit [D:signal-teardown]: 128 + the signal; a
-// terminal ^C's teardown dies by the SIGINT, its children killed first
+// the second signal's hard exit [D:signal-teardown]: the sweep (the
+// foreground reaper alone has no ProcessExit hook to run it), then 128 +
+// the signal; a second ^C after a terminal ^C dies by the SIGINT
 let private hardExit (code: int) =
-    if dieBySigint then
-        sweepLiveTmpDirs ()
+    sweepLiveTmpDirs ()
+
+    if dieBySigint && code = 130 then
         raiseSigint ()
 
     System.Environment.Exit code
