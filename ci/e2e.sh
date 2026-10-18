@@ -10611,7 +10611,11 @@ $BIN -e '[1; 2] |> Seq.pfirst (fun i -> match i with | 1 -> exit 3 ; 0 | _ -> Du
 # exit n in a pmap/piter arm stops the fan-out as it ends a race
 # [D:fanout-exit]: the in-flight arm is cut (its command killed) and joined
 # with its cleanup whole, no new arm starts, and an earlier arm's error
-# never masks the exit
+# never masks the exit. An arm whose read the kill cannot end (a pipe an
+# orphan holds) is abandoned by the join, its cleanup run before the exit
+# [D:fanout-exit-reads]
+MKFX="8.$((MK + 11))"
+for cmd in 'sleep 6; echo x' "(sleep $MKFX &) ; sleep 6"; do
 for fan in 'let _n = [1; 2; 3] |> Seq.pmap body |> Seq.length' '[1; 2; 3] |> Seq.piterWith 3 body' 'let _n = [1; 2; 3] |> Seq.pmapWith 3 body |> Seq.length'; do
     rm -f "$pfdir/fx.log"
     cat > "$pfdir/fx.weir" <<WEOF
@@ -10624,7 +10628,7 @@ let body i =
         exit 7
     | _ ->
         within
-            let _c = sh -c "sleep 6; echo x" | exitCode
+            let _c = sh -c "$cmd" | exitCode
             File.append log ["late"]
         always
             File.append log ["cleanup"]
@@ -10633,14 +10637,16 @@ WEOF
     xrc=0; t0=$(date +%s)
     $BIN "$pfdir/fx.weir" >/dev/null 2>&1 || xrc=$?
     t1=$(date +%s)
-    [ "$xrc" = "7" ] || fail "exit 7 in a fan-out arm must exit 7, not the earlier arm's error ($fan: got $xrc)"
-    [ $((t1 - t0)) -le 3 ] || fail "exit in a fan-out arm must cut the in-flight arm ($fan: $((t1 - t0))s)"
-    [ "$(tr '\n' ',' < "$pfdir/fx.log" 2>/dev/null)" = "cleanup," ] || fail "a cut fan-out arm: body cut, cleanup whole ($fan): $(tr '\n' ',' < "$pfdir/fx.log" 2>/dev/null)"
+    pkill -9 -f "^sleep $MKFX\$" 2>/dev/null || true
+    [ "$xrc" = "7" ] || fail "exit 7 in a fan-out arm must exit 7, not the earlier arm's error ($cmd; $fan: got $xrc)"
+    [ $((t1 - t0)) -le 3 ] || fail "exit in a fan-out arm must cut the in-flight arm ($cmd; $fan: $((t1 - t0))s)"
+    [ "$(tr '\n' ',' < "$pfdir/fx.log" 2>/dev/null)" = "cleanup," ] || fail "a cut fan-out arm: body cut, cleanup whole ($cmd; $fan): $(tr '\n' ',' < "$pfdir/fx.log" 2>/dev/null)"
+done
 done
 rm -f "$pfdir/fx.log"
 xrc=0; $BIN -e "[1; 2; 3] |> Seq.piterWith 1 (fun i -> File.append \"$pfdir/fx.log\" [show i] ; match i with | 1 -> exit 4 | _ -> ())" >/dev/null 2>&1 || xrc=$?
 [ "$xrc" = "4" ] && [ "$(tr '\n' ',' < "$pfdir/fx.log")" = "1," ] || fail "exit in a piter arm must start no new arm (rc $xrc, arms $(tr '\n' ',' < "$pfdir/fx.log"))"
-echo "e2e ok: exit n in a pmap/piter arm stops the fan-out — no new arm, the in-flight arm cut with its cleanup whole, never masked"
+echo "e2e ok: exit n in a pmap/piter arm stops the fan-out — no new arm, the in-flight arm cut (an orphan-held read abandoned) with its cleanup whole, never masked"
 
 out=$($BIN -e '[7; 8] |> Seq.pfirst (fun n -> match n with | 7 -> Duration.sleep 200ms ; fail "seven dies" | _ -> fail "eight dies")' 2>&1) && fail "all-failed must raise" || true
 echo "$out" | grep -qF "seven dies" || fail "first error by input order: $out"

@@ -699,8 +699,9 @@ print $"{key} -> {value}"
   Every arm runs even if one fails; the first error BY INPUT ORDER
   rethrows after the join. The exception is `exit n` in an arm: it
   stops the fan-out (no new arm; the arms in flight are cut and joined,
-  their `always` cleanups whole) and the script exits n, never masked
-  by another arm's error [D:fanout-exit]. Workers fork the session:
+  their `always` cleanups whole; an arm stuck in a read no kill ends
+  is abandoned, its cleanups run first) and the script exits n, never
+  masked by another arm's error [D:fanout-exit] [D:fanout-exit-reads]. Workers fork the session:
   `cd` inside a worker is worker-local and gone at the join — force
   worker output inside the worker (`Seq.head`/`Seq.freeze`) if its cd
   matters. The RACE is `xs |> Seq.pfirst (fun x -> ...)`: the first
@@ -896,8 +897,8 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   after a lock is released or an `always` begins; an arm busy in pure
   computation holds the teardown (a second signal hard-exits); an arm
   blocked in a read no cut reaches (a FIFO, a pipe an orphaned
-  grandchild holds) is abandoned, and raises if the read ever returns
-  [D:teardown-abandons-reads].
+  grandchild holds) is abandoned and never runs on, its pending
+  `always` run first [D:teardown-abandons-reads].
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
   definition — no userspace design closes that hole; and a weir
   BACKGROUNDED IN AN INTERACTIVE SHELL (`weir … &`/`nohup`, which

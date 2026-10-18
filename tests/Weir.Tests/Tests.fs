@@ -27822,6 +27822,29 @@ let hunt3r4RaceTests =
 
                   Expect.equal (File.ReadAllLines(Path.Combine(d, "arms.txt"))) [| "1" |] "no new arm starts"
                   expectValue "[1..4] |> Seq.pmap (fun i -> i) |> Seq.length" (VInt 4L))
+          }
+          test "exit n abandons an arm whose read no kill ends, nested fan-outs too [D:fanout-exit-reads]" {
+              skipOnWindows ()
+
+              withTempDir "weir-fxr" (fun d ->
+                  let f = weirPath (Path.Combine(d, "late.txt"))
+                  let orphan = "(sleep 4 &) ; sleep 4"
+
+                  for src in
+                      [ $"[1; 2] |> Seq.pmap (fun i -> match i with | 1 -> (Duration.sleep 300ms ; exit 7) | _ -> (File.append \"{f}\" [show ($(sh -c \"{orphan}\") |> Seq.length)] ; 0)) |> Seq.length"
+                        $"[1; 2] |> Seq.pmap (fun i -> match i with | 1 -> (Duration.sleep 300ms ; exit 7) | _ -> ([1; 2] |> Seq.pmap (fun _ -> (File.append \"{f}\" [show ($(sh -c \"{orphan}\") |> Seq.length)] ; 0)) |> Seq.length)) |> Seq.length" ] do
+                      let sw = System.Diagnostics.Stopwatch.StartNew()
+
+                      match (try Ok(runReal src) with e -> Error e) with
+                      | Error(Weir.Session.ExitRequest 7) -> ()
+                      | Error e -> failtest $"expected exit 7, got {e.Message}: {src}"
+                      | Ok v -> failtest $"expected exit 7, got {v}: {src}"
+
+                      Expect.isLessThan sw.ElapsedMilliseconds 2500L $"the orphan-held read is abandoned: {src}"
+
+                  // the abandoned reads return when the orphans exit: nothing lands
+                  System.Threading.Thread.Sleep 4500
+                  Expect.isFalse (File.Exists(Path.Combine(d, "late.txt"))) "an abandoned arm never runs on")
           } ]
 
 let sweepFindingTests =

@@ -93,19 +93,25 @@ the signal handlers and `EpipeWriter.Guard`).
 
 **I4. No fan-out, race or serve scope returns before its flows have
 joined.** Two things may hold a join: pure computation and a running
-cleanup. Only a teardown may abandon a flow: a fan-out arm parked in a
-read that no cut reaches is left behind once every live arm has been
-parked for two polls in a row, and if the read ever returns, the arm
-raises without using the bytes. A read that a race, a REPL ^C or the
-serve cut stops is abandoned in the same way: its bytes are never used.
-When the join abandons parked arms, the main thread first runs their
-pending `always` cleanups, each in its arm's context, so none lands
-after an enclosing scope releases; the watchdog has stood down for the
-join, so a slow one runs whole. Rests on [D:pfirst-join],
+cleanup. Only a teardown or a fan-out exit may abandon a flow: a
+fan-out arm parked in a read or wait that no cut reaches is left behind
+once every arm the join waits on has been parked for two polls in a row
+(for the teardown, every live arm; for an `exit n`, that fan-out's own
+arms). The join proposes, re-checks and only then commits, so an arm
+whose call returns meanwhile is never abandoned, and an abandoned arm
+whose call returns later stops there and never runs again. A read that
+a race, a REPL ^C or the serve cut stops is abandoned too: its bytes are
+never used. When the join abandons parked arms, the joining thread
+first runs their pending `always` cleanups, each in its arm's context
+and claimed by removal, so none runs twice or lands after an enclosing
+scope releases; the watchdog has stood down for the join, so a slow
+one runs whole. Rests on [D:pfirst-join],
 [D:teardown-joins-arms], [D:teardown-abandons-reads],
-[D:abandoned-arm-cleanup], [D:serve-cut-joins-cleanup]. Enforced by
-`Session.waitTask` (`WhenAll` for pmap/piter, one `waitTask all` for
-pfirst), `joinThread` (serve, no cap), `armRunning`/`parking`/`parked`/`allArmsParked`,
+[D:abandoned-arm-cleanup], [D:fanout-exit-reads],
+[D:serve-cut-joins-cleanup]. Enforced by `Session.waitTask` (one
+`waitTask all` for pfirst), `FanArms.Join` (pmap/piter: `waitTask`, or
+the fan-out's own abandon once its cut fires), `joinThread` (serve, no
+cap), `armRunning`/`parking`/`parked`/`fanParks`/`abandonParked`/`tryAbandon`,
 `armAlways`/`runAbandonedCleanups`, and `cutRead`/`cutBlocking`.
 
 **I5. A stopped fan-out takes no new arm and never returns a partial
@@ -267,7 +273,9 @@ ignored too ([D:signal-teardown], [D:sigint-reaps],
   until it reaches a boundary ([D:pfirst-join], [D:serve-cut-joins-cleanup],
   [D:teardown-joins-arms]).
 - An arm parked in a FIFO read, or in a pipe held by an orphan, is
-  abandoned rather than joined ([D:teardown-abandons-reads]).
+  abandoned rather than joined by a teardown or a fan-out exit
+  ([D:teardown-abandons-reads], [D:fanout-exit-reads]). The abandoned
+  thread stays blocked until the process exits.
 - stdin ([D:prompt-cut-whole-line]): a line a cut finished, or one the
   writer had only partly written, stays in weir's buffer, so a child
   spawned next does not see it. The stream reads buffer ahead in 64KiB
@@ -280,8 +288,6 @@ ignored too ([D:signal-teardown], [D:sigint-reaps],
   an orphan, a main-thread Http send), only the 1s watchdog ends it.
   The watchdog runs the pending cleanups on its own thread, then exits
   ([D:signal-main-unwind], [D:signal-thread-cleanups]).
-- An `exit n` that stops a fan-out does not cut an arm reading a pipe
-  an orphan holds: that arm holds the join ([D:fanout-exit]).
 - An abandoned arm's cleanup runs while its body is still parked, and
   the arm's own inner lock or tmp dir is released only at process exit
   ([D:abandoned-arm-cleanup]).

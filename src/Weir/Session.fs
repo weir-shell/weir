@@ -1081,13 +1081,20 @@ let waitProcess (p: System.Diagnostics.Process) : unit =
         p.WaitForExit()
 
 // each running fan-out worker, marked while parked in a blocking call no
-// cut reaches [D:teardown-abandons-reads]: the teardown's join stops
-// waiting once every live worker is parked. One mark per worker thread, so
-// a parked read costs no shared write
+// cut reaches [D:teardown-abandons-reads]: a join stops waiting once every
+// arm it waits on is parked. One mark per worker thread, so a parked read
+// costs no shared write while no cut is live
 [<AllowNullLiteral>]
 type private ArmMark() =
     [<DefaultValue>]
     val mutable Parked: int
+
+    // 0 live, 1 a join proposes to abandon the arm, 2 abandoned: an arm
+    // leaving a parked call under a cut waits out a proposal, and an
+    // abandoned arm never runs again — its cleanups are its join's
+    // [D:fanout-exit-reads]
+    [<DefaultValue>]
+    val mutable Abandon: int
 
 let private armMarks =
     System.Collections.Concurrent.ConcurrentDictionary<ArmMark, byte>(HashIdentity.Reference)
@@ -1107,6 +1114,11 @@ let armRunning (f: unit -> 'a) : 'a =
         armMarks.TryRemove m |> ignore
         armMark.Value <- prev
 
+// a cut is live, so a join may be abandoning parked arms
+let private cutPending () =
+    System.Threading.Volatile.Read &teardownCode <> 0
+    || System.Threading.Volatile.Read &racesLive <> 0
+
 let private parking (f: unit -> 'a) : 'a =
     match armMark.Value with
     | null -> f ()
@@ -1116,23 +1128,75 @@ let private parking (f: unit -> 'a) : 'a =
         try
             f ()
         finally
-            m.Parked <- m.Parked - 1
+            if cutPending () then
+                System.Threading.Interlocked.Decrement &m.Parked |> ignore
 
-let private allArmsParked () =
-    not armMarks.IsEmpty
-    && armMarks.Keys |> Seq.forall (fun m -> System.Threading.Volatile.Read &m.Parked > 0)
+                while System.Threading.Volatile.Read &m.Abandon = 1 do
+                    System.Threading.Thread.Sleep 1
+
+                if System.Threading.Volatile.Read &m.Abandon = 2 then
+                    System.Threading.Thread.Sleep System.Threading.Timeout.Infinite
+            else
+                m.Parked <- m.Parked - 1
+
+// abandon `marks` if every one is still parked: propose, check, then commit
+// or withdraw, so no arm runs on past a commit
+let private tryAbandon (marks: ArmMark list) : bool =
+    for m in marks do
+        System.Threading.Interlocked.Exchange(&m.Abandon, 1) |> ignore
+
+    let all =
+        marks
+        |> List.forall (fun m -> System.Threading.Volatile.Read &m.Parked > 0)
+
+    for m in marks do
+        System.Threading.Volatile.Write(&m.Abandon, (if all then 2 else 0))
+
+    all
+
+// the main thread is joining arms for a teardown: it unwinds next, so the
+// signal watchdog stands down [D:teardown-joins-arms]
+let mutable private mainJoining = 0
+
+// wait for `t`; abandon the arms `live` lists once they are all parked, twice
+// in a row — the abandoned ones, or none when `t` ended
+let private abandonParked (t: System.Threading.Tasks.Task) (live: unit -> ArmMark list) : ArmMark list =
+    let mutable streak = 0
+    let mutable abandoned = []
+
+    try
+        while List.isEmpty abandoned && not (t.Wait 50) do
+            if interruptible () && teardownRequested () <> 0 then
+                System.Threading.Volatile.Write(&mainJoining, 1)
+
+            let ms = live ()
+
+            if
+                not (List.isEmpty ms)
+                && ms |> List.forall (fun m -> System.Threading.Volatile.Read &m.Parked > 0)
+            then
+                streak <- streak + 1
+
+                if streak >= 2 && tryAbandon ms then
+                    abandoned <- ms
+            else
+                streak <- 0
+    with _ ->
+        ()
+
+    abandoned
 
 // the pending `always` cleanups an arm registered, with the arm's context:
-// when the teardown's join abandons the arm, the main thread runs them
-// before it unwinds, so none lands after an enclosing scope released
+// when a join abandons the arm, the joining thread runs them before it
+// unwinds, so none lands after an enclosing scope released
 // [D:abandoned-arm-cleanup]
 let private armAlways =
     System.Collections.Concurrent.ConcurrentDictionary<int, ArmMark * System.Threading.ExecutionContext>()
 
-let private runAbandonedCleanups () =
+let private runAbandonedCleanups (owned: ArmMark list) =
     for id in armAlways.Keys |> Seq.sortDescending do
         match armAlways.TryGetValue id with
-        | true, (m, ctx) when armMarks.ContainsKey m ->
+        | true, (m, ctx) when owned |> List.exists (fun o -> obj.ReferenceEquals(o, m)) ->
             match liveAlways.TryRemove id with
             | true, cleanup ->
                 armAlways.TryRemove id |> ignore
@@ -1146,11 +1210,28 @@ let private runAbandonedCleanups () =
             | _ -> ()
         | _ -> ()
 
-// a blocking call on a flow only the teardown cuts: parked while it blocks,
-// and a teardown landing meanwhile raises as it returns — its result unused
+// the enclosing fan-out's cut has fired on this flow
+let private fanCut () =
+    System.Threading.Volatile.Read &racesLive <> 0
+    && (fanToken ()).IsCancellationRequested
+
+// a fan-out arm outside a cleanup it entered: its uncut calls are parked,
+// so the fan-out's join can abandon them once its cut fires
+// [D:fanout-exit-reads]
+let private fanParks () =
+    not (isNull armMark.Value)
+    && not (inFlowCleanup ())
+    && fanCancel.Value.CanBeCanceled
+
+// a blocking call on a flow only the teardown or a fan-out's cut stops:
+// parked while it blocks, and a cut landing meanwhile raises as it
+// returns — its result unused
 let private parked (f: unit -> 'a) : 'a =
     let cut () =
-        if System.Threading.Volatile.Read &teardownCode <> 0 then
+        if
+            (System.Threading.Volatile.Read &teardownCode <> 0 && teardownCuts ())
+            || fanCut ()
+        then
             raise (Cancelled())
 
     cut ()
@@ -1162,14 +1243,14 @@ let private parked (f: unit -> 'a) : 'a =
 /// when it reaches every holder — an orphaned grandchild keeps one open —
 /// so under a cancel the read waits beside the token and a cut raises
 /// instead of waiting for EOF; the abandoned read's bytes are never used.
-/// An arm's read only a teardown could cut is parked, and the teardown's
-/// join abandons it [D:teardown-abandons-reads]
+/// An arm's read only a teardown or its fan-out's exit could cut is parked,
+/// and that join abandons it [D:teardown-abandons-reads] [D:fanout-exit-reads]
 let cutRead
     (read: unit -> 'a)
     (readAsync: System.Threading.CancellationToken -> System.Threading.Tasks.ValueTask<'a>)
     : 'a =
     match waitTokens () with
-    | [] when teardownCuts () -> parked read
+    | [] when teardownCuts () || fanParks () -> parked read
     | [] -> read ()
     | _ ->
         checkCancels ()
@@ -1208,10 +1289,11 @@ let cutJoin (task: System.Threading.Tasks.Task<'a>) : 'a =
 /// a blocking call a lost race or a REPL ^C abandons — a FIFO's open or
 /// read, which no kill reaches [D:stdin-reader]: under a cancel it runs off
 /// the flow and the wait raises; the abandoned call's result is never used.
-/// Only a teardown could cut it: parked [D:teardown-abandons-reads]
+/// Only a teardown or a fan-out's exit could cut it: parked
+/// [D:teardown-abandons-reads]
 let cutBlocking (f: unit -> 'a) : 'a =
     match waitTokens () with
-    | [] when teardownCuts () -> parked f
+    | [] when teardownCuts () || fanParks () -> parked f
     | [] -> f ()
     | _ ->
         let task = System.Threading.Tasks.Task.Run<'a>(System.Func<'a> f)
@@ -1223,10 +1305,6 @@ let cutBlocking (f: unit -> 'a) : 'a =
             && not (ae.InnerException :? System.OperationCanceledException) ->
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ae.InnerException).Throw()
             Unchecked.defaultof<'a>
-
-// the main thread is joining arms for a teardown: it unwinds next, so the
-// signal watchdog stands down [D:teardown-joins-arms]
-let mutable private mainJoining = 0
 
 /// join a task; a teardown request raises on the main thread once the
 /// task's arms, cut at their next boundary, have joined
@@ -1244,21 +1322,70 @@ let waitTask (t: System.Threading.Tasks.Task) : unit =
 
             // every live arm parked in a call no cut reaches, twice in a
             // row: the join abandons them [D:teardown-abandons-reads]
-            let mutable streak = 0
-
-            try
-                while not (t.Wait 50) && streak < 2 do
-                    streak <- if allArmsParked () then streak + 1 else 0
-            with _ ->
-                ()
-
-            if not t.IsCompleted then
-                runAbandonedCleanups ()
+            match abandonParked t (fun () -> List.ofSeq armMarks.Keys) with
+            | [] -> ()
+            | ms -> runAbandonedCleanups ms
 
         checkTeardown ()
 
     // an arm joining its own arms is parked with them
     if teardownCuts () then parking t.Wait else t.Wait()
+
+/// the workers of one fan-out, for its own join [D:fanout-exit-reads]
+type FanArms(n: int) =
+    let marks: ArmMark[] = Array.zeroCreate n
+
+    /// run worker `w`, marked as one of this fan-out's arms
+    member _.Run(w: int, f: unit -> unit) : unit =
+        armRunning (fun () ->
+            System.Threading.Volatile.Write(&marks[w], armMark.Value)
+
+            try
+                f ()
+            finally
+                System.Threading.Volatile.Write(&marks[w], null))
+
+    /// join the workers' task. Once the fan-out's cut fires, workers parked
+    /// in a call no cut reaches are abandoned and their pending cleanups
+    /// run here, before the join returns; true when it abandoned any
+    member _.Join(t: System.Threading.Tasks.Task, cut: System.Threading.CancellationToken) : bool =
+        let cutFirst =
+            if interruptible () then
+                System.Threading.WaitHandle.WaitAny(
+                    [| (t :> System.IAsyncResult).AsyncWaitHandle
+                       teardownWake.WaitHandle
+                       cut.WaitHandle |]
+                )
+                |> ignore
+
+                not t.IsCompleted
+                && teardownRequested () = 0
+                && cut.IsCancellationRequested
+            else
+                try
+                    if teardownCuts () then
+                        parking (fun () -> t.Wait cut)
+                    else
+                        t.Wait cut
+
+                    false
+                with :? System.OperationCanceledException ->
+                    true
+
+        if cutFirst then
+            let live () =
+                marks
+                |> Array.choose (fun m -> if isNull m then None else Some m)
+                |> List.ofArray
+
+            match abandonParked t live with
+            | [] -> false
+            | ms ->
+                runAbandonedCleanups ms
+                true
+        else
+            waitTask t
+            false
 
 /// join a thread (a serve handler) whole; a teardown requested meanwhile
 /// stands the signal watchdog down, as `waitTask` does

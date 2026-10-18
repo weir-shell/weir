@@ -1778,8 +1778,11 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
 
             i <- take ()
 
-    // counted for the teardown's join [D:teardown-abandons-reads]
-    let worker (w: int) () = Session.armRunning (fun () -> work w)
+    // counted for the teardown's join and this fan-out's own
+    // [D:teardown-abandons-reads] [D:fanout-exit-reads]
+    let arms = Session.FanArms workers
+    let worker (w: int) () = arms.Run(w, (fun () -> work w))
+    let mutable abandoned = false
 
     // arms are one level deeper [D:parallel-ladder]: set before
     // StartNew so the workers capture depth+1, restored after the join
@@ -1790,11 +1793,13 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
         let tasks =
             Array.init workers (fun w -> Task.Factory.StartNew(worker w, TaskCreationOptions.LongRunning))
 
-        Session.waitTask (Task.WhenAll(tasks: Task[]))
+        abandoned <- arms.Join(Task.WhenAll(tasks: Task[]), fan.Token)
     finally
         Session.setParallelDepth depth
 
-        if System.Threading.Volatile.Read &cutLive = 1 then
+        // an abandoned arm's parked call may still return: the cut stays
+        // live for it, so it never runs on
+        if System.Threading.Volatile.Read &cutLive = 1 && not abandoned then
             Session.cutsDone ()
 
     // arms skipped by a teardown leave no result: the fan-out ends with
@@ -1809,6 +1814,10 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     match exited with
     | null -> ()
     | e -> System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e).Throw()
+
+    // an enclosing fan-out's exit cut this one: never a partial result
+    if fan.IsCancellationRequested then
+        raise (Session.Cancelled())
 
     if not errors.IsEmpty then
         raise errors[Seq.min errors.Keys]
