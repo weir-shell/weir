@@ -212,9 +212,10 @@ There is no `to xml`.
 `from xml` also takes the document's `Bytes`
 (`File.readBytes "legacy.xml" |> from xml Proj`), which are decoded
 by their byte-order mark, else by the encoding the XML declaration
-names, else as UTF-8. UTF-8, UTF-16, UTF-32, US-ASCII, the ISO-8859
-family, the windows-125x code pages and the other common code pages
-(KOI8-R, Shift_JIS, …) are supported; an undecodable byte is an error.
+names, else as UTF-8. UTF-8, UTF-16, UTF-32, US-ASCII and ISO-8859-1
+are supported; any other declared encoding (windows-1252, Shift_JIS, …)
+is an error naming it — convert the file to UTF-8 first (`iconv`). An
+undecodable byte is an error.
 Text is already decoded as UTF-8, so a text document whose declaration
 names another encoding reads only if it is plain ASCII; otherwise the
 error asks for the bytes. A declared encoding weir does not know is an

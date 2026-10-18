@@ -2653,21 +2653,14 @@ let private xmlDeclEncoding =
     System.Text.RegularExpressions.Regex
         @"^\uFEFF?\s*<\?xml\s[^>]*?\bencoding\s*=\s*[""']([A-Za-z][A-Za-z0-9._:-]*)[""']"
 
-// the encodings a declaration may name [D:xml-encoding]: CoreLib's
-// (UTF-8/16/32, US-ASCII, ISO-8859-1) and the code pages the provider
-// adds (windows-125x, ISO-8859-x, KOI8, Shift_JIS, …); registered once,
-// on first need
-let private codePages =
-    lazy (System.Text.Encoding.RegisterProvider System.Text.CodePagesEncodingProvider.Instance)
-
+// the encodings a declaration may name: CoreLib's alone (UTF-8/16/32,
+// US-ASCII, ISO-8859-1) — no code-page provider [D:xml-encoding-builtin]
 let private xmlEncoding (who: string) (name: string) : System.Text.Encoding =
-    codePages.Force()
-
     try
         System.Text.Encoding.GetEncoding name
     with _ ->
         failwith
-            $"{who}: the document declares encoding '{excerpt name}', which weir cannot decode — UTF-8, UTF-16, UTF-32, US-ASCII, ISO-8859-x and the windows-125x code pages read"
+            $"{who}: the document declares encoding '{excerpt name}', which weir cannot decode — UTF-8, UTF-16, UTF-32, US-ASCII and ISO-8859-1 read; convert others to UTF-8 first (iconv -f {excerpt name} -t UTF-8)"
 
 /// the input of `from xml`: text (already decoded as UTF-8) or the
 /// document's bytes, which decode per their BOM or declaration

@@ -1827,7 +1827,6 @@ let boundaryTests =
               Expect.stringContains empty.Message "empty input — expected one XML document" ""
           }
           test "from xml: bytes decode per the BOM or declaration; text refuses a non-UTF-8 one; unknown refuses [D:xml-encoding]" {
-              System.Text.Encoding.RegisterProvider System.Text.CodePagesEncodingProvider.Instance
               let xenv = env |> declare "type XT = { Title: string }"
 
               let b64 (enc: System.Text.Encoding) (decl: string) (title: string) =
@@ -1843,10 +1842,6 @@ let boundaryTests =
                   (VStr "{ Title = \"café\" }")
                   "ISO-8859-1"
 
-              Expect.equal
-                  (readBytes (b64 (System.Text.Encoding.GetEncoding 1252) " encoding=\"windows-1252\"" "€uro"))
-                  (VStr "{ Title = \"€uro\" }")
-                  "windows-1252 (the code-page provider)"
 
               Expect.equal
                   (readBytes (b64 (System.Text.UnicodeEncoding(false, true)) " encoding=\"UTF-16\"" "café"))
@@ -1862,6 +1857,12 @@ let boundaryTests =
                   (Expect.throwsC (fun () -> runUnder xenv src |> ignore) id).Message
 
               let klingon = b64 System.Text.Encoding.ASCII " encoding=\"x-klingon\"" "ab"
+              let cp1252 = b64 System.Text.Encoding.ASCII " encoding=\"windows-1252\"" "euro"
+
+              Expect.stringContains
+                  (msg $"Bytes.fromBase64 \"{cp1252}\" |> from xml XT")
+                  "declares encoding 'windows-1252', which weir cannot decode"
+                  "a code page outside CoreLib refuses [D:xml-encoding-builtin]"
 
               Expect.stringContains
                   (msg $"Bytes.fromBase64 \"{klingon}\" |> from xml XT")
