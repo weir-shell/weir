@@ -1,0 +1,93 @@
+# The nightly signal storm [D:storm-nightly] — scheduled, linux-only.
+#
+# ci/storm/storm.py sends INT/TERM/HUP at random points into fixtures that
+# nest scopes, fan-outs, races, locks, procs and serve, and judges each run
+# against the documented signal semantics (docs/reference/concurrency.md):
+# the exit status, cleanups whole and once, nothing after a cut, no orphan,
+# no tmp left. Unlike the review harnesses these GATE: every run must pass,
+# so a red night is a finding — its failing run dirs are in the artifact.
+# ci/storm/fuzz.py rides the same job: random fan-out/race trees against a
+# discrete-event oracle.
+#
+# Sized for ~15 min on ubuntu-latest: --runs 30 per fixture per storm (8
+# fixtures, ~2 min a storm at 3 jobs) and 500 fuzz trees (~3 min), beside
+# the AOT publish. Raise them on a workflow_dispatch for resolution.
+name: storm
+
+on:
+  schedule:
+    - cron: "29 2 * * *"
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "runs per fixture per storm"
+        default: "30"
+      count:
+        description: "signals per run in the multi-signal storm (N or A-B)"
+        default: "2-3"
+      tty:
+        description: "run the --tty storm"
+        type: boolean
+        default: true
+      trees:
+        description: "race-tree fuzzer trees"
+        default: "500"
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  RUNS: ${{ inputs.runs || '30' }}
+  COUNT: ${{ inputs.count || '2-3' }}
+  TREES: ${{ inputs.trees || '500' }}
+
+jobs:
+  storm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-linux-${{ hashFiles('**/*.fsproj') }}
+          restore-keys: nuget-linux-
+      - name: AOT prerequisites
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - name: publish (AOT) + freshness gate
+        id: publish
+        run: |
+          ./publish.sh
+          ./ci/check-fresh.sh
+      # each storm draws its serve ports from its own 500-port block below
+      # the ephemeral range [D:harness-ports]; every step runs even after a
+      # red one, so one night reports all four
+      - name: storm, one signal
+        env:
+          STORM_PORT0: "20000"
+        run: python3 -I ci/storm/storm.py --bin ~/.local/bin/weir --out "$RUNNER_TEMP/storm/single" --runs "$RUNS" --jobs 3 --count 1
+      - name: storm, several signals
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
+        env:
+          STORM_PORT0: "20500"
+        run: python3 -I ci/storm/storm.py --bin ~/.local/bin/weir --out "$RUNNER_TEMP/storm/multi" --runs "$RUNS" --jobs 3 --count "$COUNT"
+      - name: storm, at a terminal
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' && (github.event_name != 'workflow_dispatch' || inputs.tty) }}
+        env:
+          STORM_PORT0: "21000"
+        run: python3 -I ci/storm/storm.py --bin ~/.local/bin/weir --out "$RUNNER_TEMP/storm/tty" --runs "$RUNS" --jobs 3 --count 1-3 --tty
+      - name: race-tree fuzzer
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
+        run: python3 -I ci/storm/fuzz.py --bin ~/.local/bin/weir --out "$RUNNER_TEMP/storm/fuzz" --trees "$TREES" --jobs 3
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: storm-results
+          path: ${{ runner.temp }}/storm
+          if-no-files-found: warn
+          retention-days: 14

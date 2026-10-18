@@ -1,0 +1,52 @@
+// within lock > pfirst: one arm wins at ~250ms, losers have cleanups; then a piter, then outer always
+let a = Self.args |> Seq.freeze
+let log = a[0]
+let tag = a[1]
+let dir = a[2]
+let ev s = File.append log [s]
+within
+    ev "O outer"
+    within lock $"{dir}/p.lock"
+        ev "O outer/lock"
+        let w =
+            [0..3] |> Seq.pfirst (fun i ->
+                within
+                    ev $"O outer/lock/race/r{i}"
+                    if i == 0 then
+                        Duration.sleep 250ms
+                    elif i == 1 then
+                        sleep $"5.{tag}"
+                        ()
+                    elif i == 2 then
+                        sh -c $"sleep 5.{tag}"
+                        ()
+                    else
+                        [1..100] |> Seq.iter (fun k ->
+                            ev $"B outer/lock/race/r{i} {k}"
+                            Duration.sleep 20ms)
+                    ev $"B outer/lock/race/r{i} won"
+                always
+                    ev $"S outer/lock/race/r{i}"
+                    sleep $"0.08{tag}"
+                    ev $"E outer/lock/race/r{i}"
+                i)
+        ev "J outer/lock/race"
+        ev $"B outer/lock winner {w}"
+        [0..2] |> Seq.piter (fun i ->
+            within
+                ev $"O outer/lock/fan/p{i}"
+                sleep $"0.2{tag}"
+                ev $"B outer/lock/fan/p{i} slept"
+            always
+                ev $"S outer/lock/fan/p{i}"
+                Duration.sleep 50ms
+                ev $"E outer/lock/fan/p{i}")
+        ev "J outer/lock/fan"
+    always
+        ev "S outer/lock"
+        sh -c $"sleep 0.05{tag}"
+        ev "E outer/lock"
+always
+    ev "S outer"
+    ev "E outer"
+ev "DONE"

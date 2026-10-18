@@ -1,0 +1,38 @@
+// fan-outs and a race opened inside an always cleanup (cleanup-owns-its-cuts); the body is a piter
+let a = Self.args |> Seq.freeze
+let log = a[0]
+let tag = a[1]
+let ev s = File.append log [s]
+within
+    ev "O outer"
+    within
+        ev "O outer/w"
+        [0..2] |> Seq.piter (fun i ->
+            ev $"B outer/w arm{i}"
+            sleep $"0.3{tag}"
+            ())
+    always
+        ev "S outer/w"
+        [0..2] |> Seq.piter (fun i ->
+            within
+                ev $"C outer/w carm{i}"
+                sleep $"0.1{tag}"
+                ()
+            always
+                ev $"C outer/w carm{i} cleanup"
+                Duration.sleep 30ms)
+        let w =
+            ["fast"; "slow"] |> Seq.pfirst (fun k ->
+                if k == "fast" then
+                    Duration.sleep 100ms
+                else
+                    sleep $"3.{tag}"
+                    ev "L outer/w slow-landed"
+                k)
+        ev $"C outer/w race {w}"
+        ev "E outer/w"
+always
+    ev "S outer"
+    sh -c $"sleep 0.05{tag}"
+    ev "E outer"
+ev "DONE"

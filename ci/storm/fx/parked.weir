@@ -1,0 +1,39 @@
+// arms parked in uncut reads (a FIFO with no writer, a pipe a setsid orphan holds) beside a cuttable arm, in a lock
+// storm-allow-orphan: sleep 2.
+let a = Self.args |> Seq.freeze
+let log = a[0]
+let tag = a[1]
+let dir = a[2]
+let ev s = File.append log [s]
+mkfifo $"{dir}/ff"
+within proc wr = sh -c $"sleep 2.{tag}; echo d > {dir}/ff"
+    within
+        ev "O outer"
+        within lock $"{dir}/p.lock"
+            ev "O outer/lock"
+            [0..2] |> Seq.piter (fun i ->
+                within
+                    ev $"O outer/lock/fan/arm{i}"
+                    if i == 0 then
+                        let x = File.read $"{dir}/ff" |> Seq.length
+                        ev $"B outer/lock/fan/arm0 read {x}"
+                    elif i == 1 then
+                        let x = sh -c $"setsid sleep 2.{tag} & echo hi" |> Seq.freeze
+                        ev $"B outer/lock/fan/arm1 read {x}"
+                    else
+                        [1..30] |> Seq.iter (fun k ->
+                            ev $"B outer/lock/fan/arm{i} {k}"
+                            sleep $"0.03{tag}"
+                            ())
+                always
+                    ev $"S outer/lock/fan/arm{i}"
+                    Duration.sleep 100ms
+                    ev $"E outer/lock/fan/arm{i}")
+            ev "J outer/lock/fan"
+        always
+            ev "S outer/lock"
+            ev "E outer/lock"
+    always
+        ev "S outer"
+        ev "E outer"
+ev "DONE"

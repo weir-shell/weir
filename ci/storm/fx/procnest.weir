@@ -1,0 +1,38 @@
+// main-thread waits under within proc > within tmp > within: foreground commands, captures, pipelines
+let a = Self.args |> Seq.freeze
+let log = a[0]
+let tag = a[1]
+let ev s = File.append log [s]
+within
+    ev "O outer"
+    within proc srv = sleep $"30.{tag}"
+        ev "O outer/proc"
+        within tmp d
+            ev "O outer/proc/tmp"
+            within
+                ev "O outer/proc/tmp/w"
+                [1..5] |> Seq.iter (fun k ->
+                    ev $"B outer/proc/tmp/w {k}"
+                    sleep $"0.05{tag}"
+                    let c = sh -c $"sleep 0.04{tag}; echo x" | complete
+                    ["y"] |> File.write $"{d}/f{k}"
+                    let n = sh -c $"sleep 0.03{tag}; seq 1 1000" |> Seq.length
+                    ev $"B outer/proc/tmp/w got {c.exitCode} {n}")
+            always
+                ev "S outer/proc/tmp/w"
+                sleep $"0.06{tag}"
+                ev "E outer/proc/tmp/w"
+        always
+            ev "S outer/proc/tmp"
+            Duration.sleep 40ms
+            ev "E outer/proc/tmp"
+    always
+        ev $"S outer/proc"
+        let r = Proc.running srv
+        sh -c $"sleep 0.04{tag}"
+        ev $"E outer/proc {r}"
+always
+    ev "S outer"
+    sleep $"0.05{tag}"
+    ev "E outer"
+ev "DONE"
