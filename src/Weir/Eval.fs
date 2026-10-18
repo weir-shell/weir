@@ -5492,6 +5492,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         internalError ctx
                     // cut past the scope: detached, nothing to answer
                     | :? Session.Cancelled -> ()
+                    // `exit n` in a handler stops the scope [D:serve-handler-exit]:
+                    // no new request, the other handlers and the body cut
+                    // (their children killed, their cleanups whole), the
+                    // scope closes, then the exit; this connection closes
+                    // unanswered
+                    | :? ExitRequest as e ->
+                        System.Threading.Interlocked.CompareExchange(&serveNode.Exit, (e :> exn), null) |> ignore
+                        Session.cutNode serveNode 1 Session.CutReason.HandlerExit true
+                        Serve.abandon ctx
                     // a REPL ^C passes through as `exit` does [D:repl-interrupt]:
                     // the evaluation ends, the connection closes unanswered
                     | :? Session.Interrupted -> Serve.abandon ctx
@@ -5527,6 +5536,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     if slot then
                         match Serve.accept handle with
                         | None -> gate.Release() |> ignore // the server closed — shut down
+                        // a handler's `exit n` stopped the scope: no new
+                        // request runs [D:serve-handler-exit]
+                        | Some ctx when Session.isCut serveNode ->
+                            Serve.abandon ctx
+                            Serve.finish ctx
+                            gate.Release() |> ignore
+                            go ()
                         | Some ctx ->
                             let node = Session.openNode serveNode Session.NodeKind.Handler
 
@@ -5574,15 +5590,25 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             let frame = Session.pushFrame release
 
-            try
-                Session.setCurrentNode serveNode
-
+            let v =
                 try
-                    eval (Map.add binderName (VServer handle) env) body
+                    try
+                        Session.setCurrentNode serveNode
+
+                        try
+                            eval (Map.add binderName (VServer handle) env) body
+                        finally
+                            Session.setCurrentNode home
+                    with
+                    | :? ExitRequest -> reraise ()
+                    // the body cut by a handler's `exit n`: raised below
+                    | _ when not (isNull serveNode.Exit) -> VUnit
                 finally
-                    Session.setCurrentNode home
-            finally
-                Session.releaseFrame frame release
+                    Session.releaseFrame frame release
+
+            match serveNode.Exit with
+            | null -> v
+            | e -> raise e
         | WithinTmp ->
             // kind tmp [D:within-scopes]: a fresh unique directory,
             // bound as the binder for the block; removed on every

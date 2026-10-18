@@ -3027,20 +3027,30 @@ let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
     let stdinStream =
         // one enumeration [D:prompt]: stdin is a live stream — a second
         // GetEnumerator cannot rewind the fd, and yielding empty there
-        // silently produces wrong data; raise with the repair instead
-        let consumed = ref false
+        // silently produces wrong data; raise with the repair instead.
+        // 0 untouched, 1 an enumeration began, 2 it read: one cut before
+        // its first read (a race's loser) read nothing, so it leaves stdin
+        // untouched [D:stdin-reader]
+        let consumed = ref 0
+
+        let firstLine () =
+            try
+                let line = Session.Stdin.readLine ()
+                consumed.Value <- 2
+                line
+            with _ ->
+                System.Threading.Interlocked.CompareExchange(&consumed.contents, 0, 1) |> ignore
+                reraise ()
 
         Eval.VSeq(
             Seq.delay (fun () ->
-                if consumed.Value then
+                if System.Threading.Interlocked.CompareExchange(&consumed.contents, 1, 0) <> 0 then
                     failwith
                         "Self.stdin is a live stream and was already consumed — bind ONE enumeration (let lines = Self.stdin |> Seq.freeze), or read a line per interaction with `Self.prompt`"
 
-                consumed.Value <- true
-
                 // weir's one stdin reader [D:stdin-reader]
                 seq {
-                    let mutable line = Session.Stdin.readLine ()
+                    let mutable line = firstLine ()
 
                     while line <> null do
                         yield Eval.VStr line

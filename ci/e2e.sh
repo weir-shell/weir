@@ -3603,6 +3603,202 @@ if [ "$IS_WINDOWS" = "0" ]; then
 fi
 rm -rf "$h54dir"
 
+# ---- the scope tree [D:scope-tree] -------------------------------------------
+# hunt-3 round 4 stage A: the second signal's hard exit (C1-1), death by the
+# signal after the unwind (R7, C1-4), a cleanup's commands in their own
+# group (R8, C1-2), the detached SIGINT reset at start (C1-6), a REPL entry
+# as one evaluation (C23), a cut Self.stdin loser (C24), `exit n` in a serve
+# handler (R2, C25), a cut prompt's partial line (R3, F5). sig.py reports
+# the raw status (-n: died by signal n), which bash's $? cannot tell apart
+# from an exit 128+n
+if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
+    stdir=$(mkweirtmp)
+    ptyrun="$(dirname "$0")/../tests/pty/pty-run.py"
+    cat > "$stdir/sig.py" <<'PYEOF'
+# sig.py TIMEOUT [--ign SIG] STEP... -- argv; STEP: wait:FILE:LINE | sleep:MS | kill:SIG
+import os, sys, time, signal, subprocess
+a = sys.argv[1:]; tmo = float(a.pop(0)); ign = None
+if a[0] == '--ign':
+    a.pop(0); ign = getattr(signal, 'SIG' + a.pop(0))
+i = a.index('--'); steps, argv = a[:i], a[i + 1:]
+def pre():
+    for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE):
+        signal.signal(s, signal.SIG_DFL)
+    if ign:
+        signal.signal(ign, signal.SIG_IGN)
+p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, preexec_fn=pre, start_new_session=True)
+t0 = time.monotonic(); last = t0
+for st in steps:
+    k, _, v = st.partition(':')
+    if k == 'wait':
+        f, _, line = v.partition(':')
+        while time.monotonic() - t0 < tmo:
+            try:
+                if line in open(f).read().splitlines():
+                    break
+            except OSError:
+                pass
+            time.sleep(0.02)
+    elif k == 'sleep':
+        time.sleep(int(v) / 1000)
+    elif k == 'kill':
+        os.kill(p.pid, getattr(signal, 'SIG' + v)); last = time.monotonic()
+try:
+    rc = p.wait(timeout=max(0.1, tmo - (time.monotonic() - t0)))
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL); p.wait(); rc = 'HANG'
+out = p.stdout.read().decode(errors='replace').replace('\n', ' | ')
+print('status %s after %d out %s' % (rc, (time.monotonic() - last) * 1000, out))
+PYEOF
+    stlog() { tr '\n' ',' < "$1" 2>/dev/null; }
+
+    # C1-1: a second signal while an inner cleanup runs and an outer one is
+    # pending exits at once [D:hard-exit]: no cleanup starts, the running
+    # one's command dies, one code — the first signal's death
+    cat > "$stdir/hard.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+let ev s = File.append log [s]
+within
+    within
+        ev "body"
+        sleep 31.61
+    always
+        ev "inner start"
+        sleep 31.62
+        ev "inner end"
+always
+    ev "outer start"
+WEOF
+    for pair in "TERM:TERM:-15" "INT:TERM:-2" "HUP:INT:-1"; do
+        s1=${pair%%:*}; rest=${pair#*:}; s2=${rest%%:*}; want=${rest#*:}
+        rm -f "$stdir/hard.log"
+        r=$(python3 "$stdir/sig.py" 15 "wait:$stdir/hard.log:body" "kill:$s1" "wait:$stdir/hard.log:inner start" sleep:300 "kill:$s2" -- "$BIN" "$stdir/hard.weir" "$stdir/hard.log")
+        left=$(ps -eo pid,args | awk '$2 == "sleep" && ($3 == "31.61" || $3 == "31.62") {print $1}')
+        [ -z "$left" ] || { kill -9 $left 2>/dev/null; fail "a second signal's hard exit must kill the cleanup's command ($pair)"; }
+        [ "$(stlog "$stdir/hard.log")" = "body,inner start," ] || fail "a second signal ($pair) runs no cleanup and lets none run on: $(stlog "$stdir/hard.log")"
+        echo "$r" | grep -q "^status $want " || fail "a second signal ($pair) dies by the first signal: $r"
+        ms=$(echo "$r" | awk '{print $4}')
+        [ "$ms" -lt 1000 ] || fail "a second signal ($pair) exits at once (${ms}ms): $r"
+        echo "$r" | grep -q "command failed" && fail "a second signal ($pair) reports no command failure: $r"
+    done
+    echo "e2e ok: a second signal hard-exits at once — no cleanup runs, the running one's command dies, weir dies by the first signal"
+
+    # R7 (C1-4): after the unwind weir dies BY the signal, scoped or not
+    cat > "$stdir/r7.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within
+    File.append log ["body"]
+    Duration.sleep 30s
+always
+    File.append log ["cleanup"]
+WEOF
+    printf '%s\n' 'let log = Self.args |> Seq.head' 'sh -c "true"' 'File.append log ["body"]' 'Duration.sleep 30s' > "$stdir/r7u.weir"
+    for case in "r7:TERM:-15" "r7:INT:-2" "r7:HUP:-1" "r7u:TERM:-15" "r7u:INT:-2"; do
+        f=${case%%:*}; rest=${case#*:}; sig=${rest%%:*}; want=${rest#*:}
+        rm -f "$stdir/r7.log"
+        r=$(python3 "$stdir/sig.py" 10 "wait:$stdir/r7.log:body" "kill:$sig" -- "$BIN" "$stdir/$f.weir" "$stdir/r7.log")
+        echo "$r" | grep -q "^status $want " || fail "a SIG$sig ($f) ends weir by the signal after the unwind [D:die-by-signal]: $r"
+        [ "$f" = "r7u" ] || [ "$(stlog "$stdir/r7.log")" = "body,cleanup," ] || fail "a SIG$sig runs the cleanup first: $(stlog "$stdir/r7.log")"
+    done
+    echo "e2e ok: after the unwind weir dies by its signal — INT, TERM, HUP, scoped or not"
+
+    # C1-6: an inherited SIG_IGN SIGINT without a tty is reset at start, so a
+    # poller that never spawns dies by a kill -INT
+    printf '%s\n' 'Duration.sleep 3s' 'print "after"' > "$stdir/ign.weir"
+    r=$(python3 "$stdir/sig.py" 10 --ign INT sleep:500 kill:INT -- "$BIN" "$stdir/ign.weir")
+    echo "$r" | grep -q "^status -2 " || fail "an inherited SIG_IGN SIGINT without a tty is reset at start: $r"
+    echo "$r" | grep -q "out after" && fail "nothing runs after the SIGINT: $r"
+    echo "e2e ok: an inherited SIG_IGN SIGINT without a tty is reset at start — kill -INT ends a poller"
+
+    # R8 (C1-2): a terminal ^C during an always does not reach the cleanup's
+    # command (its own process group); the cleanup ends whole, then weir dies
+    # by the SIGINT [D:cleanup-pgrp]
+    cat > "$stdir/pg.weir" <<'WEOF'
+within
+    print "body"
+always
+    print "cleanup start"
+    sh -c "sleep 1.2; echo cmd-done"
+    sh -c "trap 'echo trapped' INT; sleep 0.4; echo trap-done"
+    print "cleanup end"
+print "after"
+WEOF
+    tout=$(printf 'SLEEP 600\nSEND \\x03\nSLEEP 3000\n' | python3 "$ptyrun" 8 "$BIN" "$stdir/pg.weir")
+    for want in "cmd-done" "trap-done" "cleanup end" "EXIT -2"; do
+        echo "$tout" | grep -qF "$want" || fail "a terminal ^C during an always: '$want' expected: $tout"
+    done
+    echo "$tout" | grep -qE "trapped|command failed|after" && fail "a terminal ^C never reaches a cleanup's command: $tout"
+    echo "e2e ok: a terminal ^C never reaches a cleanup's command — its own process group; the cleanup ends whole, then the SIGINT"
+
+    # C23: a tty REPL entry of several statements is one evaluation — a ^C
+    # or a failure ends the whole entry, the session goes on
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND Duration.sleep 2s\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-two")\x1b\r' 'SLEEP 150' 'SEND sh -c "sleep 2; echo late-three | tr a-z A-Z"\r' 'SLEEP 700' 'SEND \x03' 'SLEEP 3500' 'SEND fail "boom"\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "after-fail")\r' 'SLEEP 1000' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" python3 "$ptyrun" 15 "$BIN")
+    echo "$tout" | grep -qF "STILL-HERE" || fail "the REPL survives an entry's ^C and failure: $tout"
+    echo "$tout" | grep -qE "LATE-TWO|LATE-THREE|AFTER-FAIL" && fail "a ^C or a failure ends the whole REPL entry: $tout"
+    echo "e2e ok: a REPL entry is one evaluation — a ^C or a failure ends all of it, the session goes on"
+
+    # C24: a Self.stdin race loser cut before any byte read nothing — the
+    # next Self.stdin reads the whole input
+    cat > "$stdir/c24.weir" <<'WEOF'
+let a =
+    ["read"; "to"] |> Seq.pfirst (fun k ->
+        if k == "to" then
+            Duration.sleep 300ms
+            "timeout"
+        else
+            Self.stdin |> Seq.head)
+print $"race={a}"
+let rest = Self.stdin |> Seq.freeze
+print $"""rest={rest |> Str.join ","}"""
+WEOF
+    out=$( (sleep 1; printf 'L1\nL2\n') | timeout 10 "$BIN" "$stdir/c24.weir" 2>&1) || true
+    echo "$out" | grep -qx "race=timeout" || fail "the stdin race's timer wins: $out"
+    echo "$out" | grep -qx "rest=L1,L2" || fail "a Self.stdin loser cut before reading leaves stdin whole: $out"
+    echo "e2e ok: a Self.stdin race loser cut before any byte is no enumeration — the next one reads the whole input"
+
+    # R3 (F5): a cut Self.prompt's partial line never splices — a child
+    # reading stdin next starts at the line after, the line stays whole
+    printf '%s\n' 'let w = [1; 2] |> Seq.pfirst (fun i -> if i == 1 then Self.prompt "" else (Duration.sleep 300ms; "timer"))' 'print $"winner={w}"' 'let c = sh -c "read l; echo child=$l" | text' 'print c' 'let b = Self.prompt ""' 'print $"prompt2={b}"' > "$stdir/f5.weir"
+    out=$( (printf 'L'; sleep 0.6; printf '1\nL2\nL3\n') | timeout 10 "$BIN" "$stdir/f5.weir" 2>&1) || true
+    echo "$out" | grep -qx "child=L2" || fail "a child after a cut prompt's partial line reads the next whole line: $out"
+    echo "$out" | grep -q "prompt2=L1$" || fail "the cut prompt's line stays whole for the next prompt: $out"
+    echo "e2e ok: a cut prompt's partial line never splices — finished whole before a child reads stdin"
+
+    # R2 (C25): `exit n` in a serve handler stops the scope — the parked
+    # handler is cut with its cleanup whole, nothing after the scope runs,
+    # weir exits n [D:serve-handler-exit]
+    svportT=8493
+    cat > "$stdir/c25.weir" <<WEOF
+let log = Self.args |> Seq.head
+let handler = fun req ->
+    match req.path with
+    | "/park" ->
+        within
+            Duration.sleep 30s
+            File.append log ["LATE park"]
+        always
+            File.append log ["park cleanup"]
+        HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+    | _ ->
+        exit 7
+        HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+within serve srv = { port = $svportT; maxConcurrent = 4 } handler
+    within proc _c = curl -s -m 10 "http://127.0.0.1:$svportT/park"
+        Duration.sleep 300ms
+        let _r = Http.send { Http.defaults with url = "http://127.0.0.1:$svportT/x" } |> try result
+        Duration.sleep 2s
+        File.append log ["LATE body"]
+File.append log ["LATE after"]
+WEOF
+    rm -f "$stdir/c25.log"
+    code=0; out=$(timeout 20 "$BIN" "$stdir/c25.weir" "$stdir/c25.log" 2>&1) || code=$?
+    [ "$code" = "7" ] || fail "exit 7 in a serve handler exits 7 (got $code): $out"
+    [ "$(stlog "$stdir/c25.log")" = "park cleanup," ] || fail "the handler's exit cuts the parked handler, its cleanup whole, nothing after: $(stlog "$stdir/c25.log")"
+    echo "$out" | grep -q "ExitRequest" && fail "a handler's exit names no internal exception: $out"
+    echo "e2e ok: exit n in a serve handler stops the scope — handlers cut and joined, cleanups whole, then exit n"
+    rm -rf "$stdir"
+fi
+
 # ---- streaming statement echo [D:stream-echo] -------------------------------
 # the general pty instrument (tests/pty/pty-run.py — built for these
 # pins, deliberately general: C14 TTY-contention and the REPL SIGINT

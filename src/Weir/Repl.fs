@@ -3789,74 +3789,90 @@ let rec private loop (state: State) =
                 diagLine msg
                 state
             | Ok lls ->
-                lls
-                |> List.fold
-                    (fun st ll ->
-                        match
-                            Script.checkStatement
-                                false
-                                None
-                                (fun _ -> resolver st)
-                                Script.scriptOnlyImport
-                                st.TypeEnv
-                                ll
-                        with
-                        | Error d ->
-                            lastErrored <- true
-                            lastExit <- None
-                            // script-style rendering: the offending source
-                            // line + caret + message (the buffer's echo is
-                            // rows above; reprinting is deterministic)
-                            let src =
-                                if d.PhysLine >= 1 && d.PhysLine <= srcLines.Length then
-                                    srcLines[d.PhysLine - 1]
-                                else
-                                    ""
+                let entryStatement (st: State) (ll: Script.LogicalLine) =
+                    match
+                        Script.checkStatement
+                            false
+                            None
+                            (fun _ -> resolver st)
+                            Script.scriptOnlyImport
+                            st.TypeEnv
+                            ll
+                    with
+                    | Error d ->
+                        lastErrored <- true
+                        lastExit <- None
+                        // script-style rendering: the offending source
+                        // line + caret + message (the buffer's echo is
+                        // rows above; reprinting is deterministic)
+                        let src =
+                            if d.PhysLine >= 1 && d.PhysLine <= srcLines.Length then
+                                srcLines[d.PhysLine - 1]
+                            else
+                                ""
 
-                            diagLine src
+                        diagLine src
 
-                            Console.WriteLine(
-                                Types.Color.red Types.Color.onStdout.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
-                            )
+                        Console.WriteLine(
+                            Types.Color.red Types.Color.onStdout.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
+                        )
 
-                            // label both kinds [D:not-weir-shape]: an
-                            // unlabelled parse message would be the one
-                            // place in weir that shows an error without
-                            // saying it is one (check says
-                            // `error [parse]`, the runner says
-                            // `parse error:`)
-                            diagLine (
-                                if d.Parse then
-                                    $"parse error: {d.Message}"
-                                else
-                                    $"type error: {d.Message}"
-                            )
+                        // label both kinds [D:not-weir-shape]: an
+                        // unlabelled parse message would be the one
+                        // place in weir that shows an error without
+                        // saying it is one (check says
+                        // `error [parse]`, the runner says
+                        // `parse error:`)
+                        diagLine (
+                            if d.Parse then
+                                $"parse error: {d.Message}"
+                            else
+                                $"type error: {d.Message}"
+                        )
 
-                            // the streamed-`it` misuse teach, the
-                            // multiline arm's copy of the single-line
-                            // append [D:repl-it]
-                            (if not d.Parse && lastStreamed.IsSome && referencesIt ll.Text then
-                                 diagLine (streamedItRepair lastStreamed))
+                        // the streamed-`it` misuse teach, the
+                        // multiline arm's copy of the single-line
+                        // append [D:repl-it]
+                        (if not d.Parse && lastStreamed.IsSome && referencesIt ll.Text then
+                             diagLine (streamedItRepair lastStreamed))
 
-                            st
-                        | Ok chk ->
-                            let st' = evalChecked ll.Text st chk
+                        st
+                    | Ok chk ->
+                        let st' = evalChecked ll.Text st chk
 
-                            (if not lastErrored then
-                                 // carry the real physical source (newlines +
-                                 // indentation), not the sentinel-joined
-                                 // `ll.Text` — a kept heredoc/type must
-                                 // round-trip through `weir check` [D:repl-save]
-                                 let phys = physicalSource srcLines ll
+                        (if not lastErrored then
+                             // carry the real physical source (newlines +
+                             // indentation), not the sentinel-joined
+                             // `ll.Text` — a kept heredoc/type must
+                             // round-trip through `weir check` [D:repl-save]
+                             let phys = physicalSource srcLines ll
 
-                                 match recordKind chk with
-                                 | Some(TDef name) -> recordDef name phys ll.Text
-                                 | Some TDiscard -> recordDiscard phys ll.Text
-                                 | Some TOther -> recordOther phys ll.Text
-                                 | None -> ())
+                             match recordKind chk with
+                             | Some(TDef name) -> recordDef name phys ll.Text
+                             | Some TDiscard -> recordDiscard phys ll.Text
+                             | Some TOther -> recordOther phys ll.Text
+                             | None -> ())
 
-                            st')
-                    state
+                        st'
+
+                // one evaluation for the whole entry, which its first failure
+                // or ^C ends, as a script's would [D:repl-interrupt]
+                let stopped = ref false
+                Session.beginReplEval ()
+
+                try
+                    lls
+                    |> List.fold
+                        (fun st ll ->
+                            if stopped.Value then
+                                st
+                            else
+                                let st' = entryStatement st ll
+                                stopped.Value <- lastErrored
+                                st')
+                        state
+                finally
+                    Session.endReplEval ()
 
         loop next
     | line ->

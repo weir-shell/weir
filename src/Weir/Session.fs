@@ -944,8 +944,11 @@ let checkCancelled () : unit =
 let mutable private replInterrupts = 0
 let mutable private replNode: Node = null
 
-/// arm a fresh interrupt for one REPL evaluation: its own node
-let beginReplEval () : unit =
+// an entry's statements share one evaluation: the nested begin/end of each
+// statement's evaluation inside an entry's are no-ops
+let mutable private replDepth = 0
+
+let private beginReplEvalNode () =
     replInterrupts <- 0
     let n = openNode rootNode NodeKind.Flow
     System.Threading.Volatile.Write(&replNode, n)
@@ -953,8 +956,7 @@ let beginReplEval () : unit =
     replFlow <- true
     System.Threading.Volatile.Write(&mainThreadId, System.Threading.Thread.CurrentThread.ManagedThreadId)
 
-/// disarm after the evaluation (a late ^C then cuts nothing)
-let endReplEval () : unit =
+let private endReplEvalNode () =
     match System.Threading.Interlocked.Exchange(&replNode, null) with
     | null -> ()
     | n ->
@@ -962,6 +964,21 @@ let endReplEval () : unit =
         replFlow <- false
         current.Value <- null
         closeNode n
+
+/// arm a fresh interrupt for one REPL evaluation (an entry, or a statement
+/// outside one): its own node [D:scope-tree]
+let beginReplEval () : unit =
+    replDepth <- replDepth + 1
+
+    if replDepth = 1 then
+        beginReplEvalNode ()
+
+/// disarm after the evaluation (a late ^C then cuts nothing)
+let endReplEval () : unit =
+    replDepth <- max 0 (replDepth - 1)
+
+    if replDepth = 0 then
+        endReplEvalNode ()
 
 /// the REPL's SIGINT handler: cut the evaluation's waits
 let interruptRepl () : unit =
@@ -2066,6 +2083,34 @@ module Stdin =
                     l
                 | Some l -> l
                 | None -> null
+            finally
+                System.Threading.Monitor.Exit gate
+
+    /// a child about to read fd 0 while weir holds a begun line — a cut
+    /// prompt's partial one [D:prompt-cut-whole-line]: the rest of that line
+    /// is read first (waiting for it, cut as the flow is), so the line stays
+    /// whole in weir's buffer for its next reader and the child starts at
+    /// the line after — no reader sees a line that was not written
+    let finishForChild () =
+        if not (System.OperatingSystem.IsWindows()) && hi > lo && buf[hi - 1] <> 10uy then
+            while not (System.Threading.Monitor.TryEnter(gate, 50)) do
+                raiseWoken ()
+
+            try
+                let mutable go = hi > lo && buf[hi - 1] <> 10uy
+
+                while go do
+                    awaitReadable ()
+
+                    if hi + 1 > buf.Length then
+                        let bigger = Array.zeroCreate (buf.Length * 2)
+                        System.Buffer.BlockCopy(buf, 0, bigger, 0, hi)
+                        buf <- bigger
+
+                    match readRaw 1 with
+                    | 1 -> go <- buf[hi - 1] <> 10uy
+                    | e when -e = Libc.EINTR || -e = Libc.EAGAIN -> ()
+                    | _ -> go <- false
             finally
                 System.Threading.Monitor.Exit gate
 

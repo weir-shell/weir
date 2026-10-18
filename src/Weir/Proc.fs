@@ -198,6 +198,11 @@ let private spawn
     psi.RedirectStandardError <- redirectErr
     psi.RedirectStandardInput <- redirectIn
 
+    // a child reading weir's stdin starts after any line weir began
+    // [D:prompt-cut-whole-line]
+    if not redirectIn then
+        Session.Stdin.finishForChild ()
+
     // start through registration inside the spawn gate: the teardown kill
     // sees every started child, and none starts after it
     // [D:signal-main-unwind]
