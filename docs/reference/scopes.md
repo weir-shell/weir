@@ -4,8 +4,10 @@
 however the block exits: normal completion, an error, `exit n`,
 SIGINT or SIGTERM. This works both in a terminal and detached: a
 `kill -INT`/`kill -TERM` sent to a `setsid` or backgrounded weir
-cleans up the same way, exiting with 130/143. The cleanup runs on the
-script's own thread, and no statement after the signal runs: a sleep
+cleans up the same way, exiting with 130/143. In a script on Linux or
+macOS the cleanup runs on the script's own thread (the REPL and Windows
+run it on the signal thread, still whole, once and in reverse order),
+and no statement after the signal runs: a sleep
 or a wait on a scoped process is cut short, and the block unwinds from
 there. Running `pmap`, `piter` and `pfirst` arms stop at their next
 builtin call, command or sleep, and the script waits for them before
@@ -17,8 +19,8 @@ itself skips cleanup (only a lock is still released, by the kernel).
 And a weir started in the background from an interactive shell
 (`weir … &`/`nohup`, which keeps a controlling terminal) starts with
 SIGINT ignored, following the usual job-control convention, so Ctrl+C
-in the terminal does not reach it; send it SIGTERM, or `kill -INT`
-its pid directly. The block is an ordinary block: its statements run
+in the terminal does not reach it, and neither does a `kill -INT` of
+its pid. Send it SIGTERM, or SIGHUP unless `nohup` ignored that too. The block is an ordinary block: its statements run
 and the last expression is its value. It also works as a plain
 statement.
 

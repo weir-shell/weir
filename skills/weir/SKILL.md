@@ -784,7 +784,9 @@ print $"{key} -> {value}"
   (its late response is dropped); a cut handler's `always` cleanup
   runs whole, as long as it takes, before the scope returns, and pure
   computation holds the return as a `pfirst` loser's does
-  [D:serve-cut-joins-cleanup].
+  [D:serve-cut-joins-cleanup]. A script's signal closes it the same way,
+  its handlers cut at once: the close waits at most 2s, then joins
+  their cleanups whole [D:serve-drain-signal].
   `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
   excess queues; pipelined requests are answered in order. A request
   whose `Host` is not a loopback name (`127.0.0.1`, `localhost`,
@@ -853,8 +855,10 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   backgrounding; compose inside `sh -c`); the block starts on the
   NEXT line (the command owns the rest of its own). THE NON-CLAIM,
   stated: normal exit, raise, SIGINT, SIGTERM and SIGHUP (the
-  terminal closed, `kill -HUP`) all close every scope (on the
-  script's own thread — no statement runs after the signal; a reader
+  terminal closed, `kill -HUP`) all close every scope (a script's on
+  its own thread on POSIX — no statement runs after the signal; the
+  REPL and Windows run the cleanups on the signal thread, still whole,
+  once, LIFO [D:signal-thread-cleanups]; a reader
   closing weir's stdout ends the script the same way, exit 141, no
   message) — at a tty AND detached (a `kill -INT`/`-TERM`/`-HUP` on a
   `setsid`/backgrounded weir unwinds the same way, exit 130/143/129; a
@@ -863,10 +867,12 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel, a `kill -INT`) tree-kills the running foreground command and
   every fan-out arm's command too, scoped or not [D:sigint-reaps]. A
-  terminal ^C at an unscoped script is not that: when weir is the
+  terminal ^C while no `tmp`/`proc`/`serve`/`always` scope is open is
+  not that [D:sigint-live-scopes]: when weir is the
   terminal's foreground group the ^C reached the command too, so weir
   kills nothing, waits for it (its own ^C handling runs — terraform,
-  make, a Python traceback), then dies by the SIGINT; the cost is that a `kill -INT`
+  make, a Python traceback), then dies by the SIGINT (a second ^C
+  kills it and exits at once); the cost is that a `kill -INT`
   of an interactive weir that is the foreground group behaves the same,
   and its child may survive [D:sigint-terminal-group]; an
   arm the teardown kills is the teardown, never a "command failed"
@@ -890,7 +896,8 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   BACKGROUNDED IN AN INTERACTIVE SHELL (`weir … &`/`nohup`, which
   keeps a controlling terminal) inherits SIGINT ignored — the
   job-control nohup convention — so a terminal Ctrl+C does not reach
-  it (send SIGTERM, or `kill -INT` the pid directly). AND THE MIRROR non-claim: the
+  it, and neither does a `kill -INT` of its pid (send SIGTERM, or
+  SIGHUP unless `nohup` ignored that too) [D:sigint-ignored-tty]. AND THE MIRROR non-claim: the
   tree-kill weir performs lands as SIGKILL on the CHILDREN too
   (measured: wait = 137), so `within proc` does not run your child's
   cleanup — a child that traps SIGTERM to flush state, remove a
