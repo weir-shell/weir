@@ -1000,7 +1000,7 @@ let h42 d =
 
 let h43 d =
     let rSome = runAt d "30" (put d "h43-some.weir" ["print (show (Some (1, 2)))"])
-    let rPlan = runAt d "30" (put d "h43-plan.weir" ["let p ="; "    plan"; "        File.copy \"a\" \"b\""; "print (show p)"])
+    let rPlan = runAt d "30" (put d "h43-plan.weir" ["File.write \"a\" [\"x\"]"; "let p ="; "    plan"; "        File.copy \"a\" \"b\""; "print (show p)"])
     failing [
         ("Some (1, 2)", prints "Some (1, 2)" rSome)
         ("a Plan op", codeOf rPlan == 0 && not (outOf rPlan |> Str.contains "(("))
