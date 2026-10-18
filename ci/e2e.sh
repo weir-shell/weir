@@ -10647,6 +10647,85 @@ rm -f "$pfdir/fx.log"
 xrc=0; $BIN -e "[1; 2; 3] |> Seq.piterWith 1 (fun i -> File.append \"$pfdir/fx.log\" [show i] ; match i with | 1 -> exit 4 | _ -> ())" >/dev/null 2>&1 || xrc=$?
 [ "$xrc" = "4" ] && [ "$(tr '\n' ',' < "$pfdir/fx.log")" = "1," ] || fail "exit in a piter arm must start no new arm (rc $xrc, arms $(tr '\n' ',' < "$pfdir/fx.log"))"
 echo "e2e ok: exit n in a pmap/piter arm stops the fan-out — no new arm, the in-flight arm cut (an orphan-held read abandoned) with its cleanup whole, never masked"
+# an exit cuts a sibling arm's Proc.wait on a scoped proc opened outside
+# the fan-out, which no group kill reaches [D:fanout-exit-reads]; and a
+# nested fan-out takes no new arm once an enclosing race is won, an
+# enclosing fan-out exits or the serve cut lands [D:fanout-exit]
+MKPW="8.$((MK + 12))"
+cat > "$pfdir/pw.weir" <<WEOF
+within proc srv = sleep $MKPW
+    within
+        [0; 1] |> Seq.piter (fun i ->
+            if i == 0 then
+                let r = Proc.wait srv
+                print \$"LATE waited {r}"
+            else
+                Duration.sleep 200ms
+                exit 7)
+    always
+        print "always"
+WEOF
+xrc=0; t0=$(date +%s)
+pwout=$($BIN "$pfdir/pw.weir" 2>&1) || xrc=$?
+t1=$(date +%s)
+pkill -9 -f "^sleep $MKPW\$" 2>/dev/null || true
+[ "$xrc" = "7" ] && [ "$pwout" = "always" ] && [ $((t1 - t0)) -le 3 ] || fail "exit in a fan-out arm must cut a sibling's Proc.wait on an outer proc (rc $xrc, $((t1 - t0))s): $pwout"
+for outer in race exit serve; do
+    rm -f "$pfdir/na.log"
+    case $outer in
+        race) cat > "$pfdir/na.weir" <<WEOF
+let note s = File.append "$pfdir/na.log" [s]
+let r =
+    [0; 1] |> Seq.pfirst (fun i ->
+        if i == 0 then
+            [0; 1; 2] |> Seq.piterWith 1 (fun j ->
+                within
+                    Duration.sleep 1s
+                always
+                    note \$"inner arm {j} cleanup")
+            0
+        else
+            Duration.sleep 200ms
+            1)
+note \$"returned {r}"
+WEOF
+            want="inner arm 0 cleanup,returned 1," ;;
+        exit) cat > "$pfdir/na.weir" <<WEOF
+let note s = File.append "$pfdir/na.log" [s]
+[0; 1] |> Seq.piter (fun i ->
+    if i == 0 then
+        [0; 1; 2] |> Seq.piterWith 1 (fun j ->
+            within
+                Duration.sleep 1s
+            always
+                note \$"inner arm {j} cleanup")
+    else
+        Duration.sleep 200ms
+        exit 7)
+WEOF
+            want="inner arm 0 cleanup," ;;
+        serve) cat > "$pfdir/na.weir" <<WEOF
+let note s = File.append "$pfdir/na.log" [s]
+let handler = fun req ->
+    [0; 1; 2] |> Seq.piterWith 1 (fun j ->
+        within
+            Duration.sleep 5s
+        always
+            note \$"inner arm {j} cleanup")
+    HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+within serve _srv = { port = 8495; maxConcurrent = 4 } handler
+    poll timeout=8s interval=50ms
+        Net.portOpen 8495
+    within proc _c = curl -s --noproxy "*" -m 20 "http://127.0.0.1:8495/x"
+        Duration.sleep 500ms
+note "returned"
+WEOF
+            want="inner arm 0 cleanup,returned," ;;
+    esac
+    $BIN "$pfdir/na.weir" >/dev/null 2>&1 || true
+    [ "$(tr '\n' ',' < "$pfdir/na.log" 2>/dev/null)" = "$want" ] || fail "a nested fan-out must take no new arm once its enclosing $outer cut it: $(tr '\n' ',' < "$pfdir/na.log" 2>/dev/null)"
+done
+echo "e2e ok: a fan-out exit cuts a sibling's Proc.wait on an outer proc; a nested fan-out takes no new arm after an enclosing race win, exit or serve cut"
 
 out=$($BIN -e '[7; 8] |> Seq.pfirst (fun n -> match n with | 7 -> Duration.sleep 200ms ; fail "seven dies" | _ -> fail "eight dies")' 2>&1) && fail "all-failed must raise" || true
 echo "$out" | grep -qF "seven dies" || fail "first error by input order: $out"

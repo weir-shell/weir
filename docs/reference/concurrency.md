@@ -35,6 +35,12 @@ Cancellation sources:
   handlers' flow token and condemns their groups.
 - **fan-out exit**: an `exit n` in a `pmap`/`piter` arm cancels the
   fan-out's `fanCancel` token and condemns each running arm's group.
+  The token is linked to the enclosing fan-out's and to the enclosing
+  race's or serve scope's, so any of those cuts stops a nested fan-out
+  too. Sleeps, Http sends, builtin calls, spawns and `waitProcess` (a
+  `Proc.wait` on a process opened outside the fan-out, which no group
+  kill reaches) honour it; uncut reads are parked and abandoned
+  ([D:fanout-exit-reads]).
 
 A **boundary** is where a flow checks whether it was stopped: every
 builtin call (`Eval.apply` → `checkCancelled`), every spawn
@@ -120,7 +126,8 @@ it raises `Interrupted`, and an arm whose command died of the ^C counts
 as the interrupt, not as a failure. An `exit n` in a `pmap`/`piter` arm
 stops the fan-out: no new arm, the in-flight arms cut and joined, then
 the exit, raised before any arm error. A race takes no new arm once it
-has been won. Rests on [D:teardown-stops-arms], [D:repl-interrupt-fanout],
+has been won, and a nested fan-out none once an enclosing race, fan-out
+exit or serve cut has stopped its flow. Rests on [D:teardown-stops-arms], [D:repl-interrupt-fanout],
 [D:seq-pfirst], [D:fanout-exit]. Enforced by `take` and `stop` in
 `runParallelWith`, the loop guard in `runRaceWith`, `stopTakingArms`,
 `interruptRequested`, and the checks that run after the join.

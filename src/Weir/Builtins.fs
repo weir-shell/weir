@@ -1718,7 +1718,10 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     let mutable exited: exn = null
     let parentFlow = Session.flowToken ()
     let parentGroup = Session.enclosingGroup ()
-    use fan = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(Session.fanToken ())
+    // linked to the enclosing race's or serve scope's token too, so a cut
+    // there stops this fan-out taking arms [D:fanout-exit]
+    use fan =
+        System.Threading.CancellationTokenSource.CreateLinkedTokenSource(Session.fanToken (), parentFlow)
     // each worker's running arm's group
     let groups: Session.RaceGroup[] = Array.zeroCreate workers
     let mutable cutLive = 0
@@ -1742,6 +1745,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
                 Session.stopTakingArms ()
                 || Session.interruptRequested ()
                 || not (isNull (System.Threading.Volatile.Read &exited))
+                || fan.IsCancellationRequested
             then
                 arr.Length
             else
@@ -1815,7 +1819,8 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     | null -> ()
     | e -> System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e).Throw()
 
-    // an enclosing fan-out's exit cut this one: never a partial result
+    // an enclosing cut (a fan-out's exit, a race, the serve cut) stopped
+    // this one: never a partial result
     if fan.IsCancellationRequested then
         raise (Session.Cancelled())
 

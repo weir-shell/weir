@@ -685,14 +685,18 @@ let checkCancels () : unit =
     checkCancelled ()
     checkInterrupted ()
 
+// the enclosing fan-out's cut, for the waits that honour it
+let private fanTokens () : System.Threading.CancellationToken list =
+    match fanToken () with
+    | t when t.CanBeCanceled -> [ t ]
+    | _ -> []
+
 // the wait tokens plus, off the main thread, the teardown's
 // [D:teardown-joins-arms]
 let private cutTokens () : System.Threading.CancellationToken list =
     waitTokens ()
     @ (if teardownCuts () then [ teardownCut.Token ] else [])
-    @ (match fanToken () with
-       | t when t.CanBeCanceled -> [ t ]
-       | _ -> [])
+    @ fanTokens ()
 
 /// run `f` with one token that cancels when this flow's waits are cut —
 /// for a wait the runtime hands to an API (an Http send); `checkCancels`
@@ -1062,13 +1066,15 @@ let waitOrCancel (span: System.TimeSpan) (token: System.Threading.CancellationTo
         raiseWoken ()
         i = 0
 
-/// wait for a process to exit; a lost race or a REPL ^C raises (a
-/// signal's or a closed stdout's teardown kills the child, which ends the
-/// wait; a terminal ^C's waits for it [D:sigint-terminal-group])
+/// wait for a process to exit; a lost race, a fan-out's exit or a REPL ^C
+/// raises — the process may be one no group kill reaches, a `within proc`
+/// opened outside the fan-out [D:fanout-exit-reads] (a signal's or a closed
+/// stdout's teardown kills the child, which ends the wait; a terminal ^C's
+/// waits for it [D:sigint-terminal-group])
 let waitProcess (p: System.Diagnostics.Process) : unit =
     checkCancels ()
 
-    match waitTokens () with
+    match waitTokens () @ fanTokens () with
     | [] -> p.WaitForExit()
     | ts ->
         let hs = ts |> List.map (fun t -> t.WaitHandle) |> Array.ofList
