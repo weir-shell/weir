@@ -441,19 +441,28 @@ type RaceGroup(parent: RaceGroup option) =
             | Some g -> g.Register p
             | None -> ()
 
-            if condemned then
-                killTree p
-            else
+            // under the lock with Condemn: a child registered as the group
+            // is condemned is either in the bag Condemn kills or killed here
+            let late =
                 lock this (fun () ->
-                    if isNull procs then
-                        procs <- System.Collections.Concurrent.ConcurrentBag<System.Diagnostics.Process>())
+                    if condemned then
+                        true
+                    else
+                        if isNull procs then
+                            procs <- System.Collections.Concurrent.ConcurrentBag<System.Diagnostics.Process>()
 
-                procs.Add p
+                        procs.Add p
+                        false)
+
+            if late then
+                killTree p
 
     member this.Condemn() =
-        condemned <- true
-
-        match lock this (fun () -> procs) with
+        match
+            lock this (fun () ->
+                condemned <- true
+                procs)
+        with
         | null -> ()
         | b ->
             for p in b do
