@@ -1,0 +1,8 @@
+#sig tar
+tar --exclude=.git -czf a.tgz --verbos dir // clean (tar takes the unique prefix of --verbose)
+tar -xf a.tgz --overwritte // typo: --overwritte
+tar -czf a.tgz dir // clean
+tar xzf a.tgz -C out // clean
+tar -xf a.tgz --strip-components=1 --directory out // clean
+tar --list --file a.tar --wildcard x // typo: --wildcard (tar: ambiguous, --wildcards or --wildcards-match-slash)
+tar -xf a.tgz --no-same-owner // clean

@@ -1,0 +1,11 @@
+#sig curl
+curl -sS --retry 3 --connect-timout 5 https://x // typo: --connect-timout
+curl --insecuer https://x // typo: --insecuer
+curl --compressed --max-time 10 --locaton https://x // typo: --locaton
+curl -Q https://x // clean (-Q is --quote; it takes https://x as its value)
+curl -fsSL -o out https://x // clean
+curl -X POST -H "a: b" --data-raw x https://x // clean
+curl --fail-with-body --silent https://x // clean
+curl -w "%{http_code}" -o /dev/null https://x // clean
+curl --retry 3 --retry-delay 2 --retry-all-errors https://x // clean
+curl -u a:b --cacert ca.pem https://x // clean

@@ -1,0 +1,10 @@
+#sig kustomize
+kustomize build --enable-alpha-plugns . // typo: --enable-alpha-plugns
+kustomize build -Z . // typo: -Z
+kustomize edit add resource --no-verifyy x.yaml // typo: --no-verifyy
+kustomize build overlays/prod --enable-helm // clean
+kustomize build --load-restrictor LoadRestrictionsNone . // clean
+kustomize edit set image app=img:1 // clean
+kustomize build -o out.yaml . // clean
+kustomize build --stack-trace . // clean
+kustomize edit set image --help // clean

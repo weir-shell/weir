@@ -1,0 +1,7 @@
+#sig fishfx
+fishfx --binary -e x -A2 f // clean
+fishfx -uuu --hidden x // clean
+fishfx --compresed x // typo: --compresed
+fishfx -o out --compressed -plain x // clean
+fishfx --regexpp x // typo: --regexpp
+fishfx -uZ x // typo: -Z

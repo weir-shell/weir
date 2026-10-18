@@ -1,0 +1,11 @@
+#sig gitfx
+gitfx commit -m "msg" --amendd // typo: --amendd
+gitfx commit -am x // clean
+gitfx commit -Zm x // typo: -Z
+gitfx commit --allow-empty -m x // clean
+gitfx -c user.name=x commit --amend --no-verify // clean
+gitfx -C /tmp status --porcelainn // typo: --porcelainn
+gitfx status -sb --porcelain=v2 // clean
+gitfx log --oneline -n 5 --graphh // miss: --graphh — git log parses revision options outside parse-options; its completion helper cannot list them, so the case is unchecked
+gitfx log -1 --format=%H // clean
+gitfx rev-parse --abbrev-ref HEAD // clean

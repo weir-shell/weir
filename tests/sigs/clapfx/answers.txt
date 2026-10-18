@@ -1,0 +1,20 @@
+=== --version
+clapfx 10.3.0
+=== --help
+A simple, fast and user-friendly alternative to 'find'
+
+Usage: clapfx [OPTIONS] [pattern] [path]...
+
+Arguments:
+  [pattern]  the search pattern (a regular expression)
+  [path]...  the root directories for the filesystem search
+
+Options:
+  -H, --hidden                     Search hidden files and directories
+  -e, --extension <ext>            Filter by file extension
+  -t, --type <filetype>            Filter by type: file (f), directory (d)
+  -E, --exclude <pattern>          Exclude entries that match the given glob
+  -d, --max-depth <depth>          Set maximum search depth (default: none)
+  -x, --exec <cmd>...              Execute a command for each search result
+  -h, --help                       Print help (see more with '--help')
+  -V, --version                    Print version

@@ -7,6 +7,10 @@ skill lines and targeted hints).
 
 ## fallbacks
 - 2026-10-18 | ci/storm/storm.py, fuzz.py -> python3 | a pty session leader typing ^C, signals at sub-ms offsets to a pid, /proc session scans and a thread pool of timed runs; the job's glue stays in the workflow's run lines.
+- 2026-10-18 | signature gate samples (tests/sigs/replay.sh) ->
+  POSIX sh | each sample tool is an executable the generator spawns by
+  PATH: a replayer per probe must start in milliseconds and must not need
+  weir on PATH inside the run it is scoring; the scorer itself is weir.
 - 2026-10-16 | ci/e2e-timing.py -> python3 | the e2e cost report must not depend on the weir binary it is timing (a broken build would lose its own timings).
 - 2026-10-16 | binary-size study (PLAN-binary-size.md, scratch scripts
   outside the repo) -> F# script + python3 | the ILC mstat is a

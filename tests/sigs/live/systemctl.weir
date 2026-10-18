@@ -1,0 +1,13 @@
+#sig systemctl
+systemctl list-units --type=service --state=running --no-legnd // typo: --no-legnd
+systemctl restart --no-blok foo // typo: --no-blok
+systemctl daemon-reload --quite // typo: --quite
+systemctl --user restart foo.service // clean
+systemctl status --no-pager -l nginx // clean
+systemctl is-active --quiet nginx // clean
+systemctl daemon-reload // clean
+systemctl enable --now foo // clean
+systemctl show -p ActiveState --value nginx // clean
+systemctl --user daemon-reload // clean
+systemctl -H host restart --no-blok foo // typo: --no-blok
+systemctl --user --no-pager status foo // clean

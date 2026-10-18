@@ -1,0 +1,19 @@
+=== --version
+Python 3.14.4
+=== --help
+usage: pyfx [option] ... [-c cmd | -m mod | file | -] [arg] ...
+Options (and corresponding environment variables):
+-c cmd : program passed in as string (terminates option list)
+-h     : print this help message and exit (also -? or --help)
+--help-all: print complete help information and exit
+=== --help-all
+usage: pyfx [option] ... [-c cmd | -m mod | file | -] [arg] ...
+Options (and corresponding environment variables):
+-B     : don't write .pyc files on import; also PYTHONDONTWRITEBYTECODE=x
+-c cmd : program passed in as string (terminates option list)
+-h     : print this help message and exit (also -? or --help)
+-m mod : run library module as a script (terminates option list)
+-u     : force the stdout and stderr streams to be unbuffered;
+-V     : print the Python version number and exit (also --version)
+-X opt : set implementation-specific option
+--help-all: print complete help information and exit

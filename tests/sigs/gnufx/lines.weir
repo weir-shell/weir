@@ -1,0 +1,11 @@
+#sig gnufx
+gnufx -ri "s/a/b/" f // clean
+gnufx -i.bak -e x f // clean
+gnufx --in-place=.bak --expression=1p -s f // typo: -s
+gnufx -xzf a.tgz -B // clean
+gnufx -xqf a // typo: -q
+gnufx -l 80 -n f --silent // clean
+gnufx --verbos f // clean (the unique prefix of --verbose)
+gnufx --wildcard f // typo: --wildcard (ambiguous: --wildcards or --wildcards-match-slash)
+gnufx --regexp-extendd x // typo: --regexp-extendd
+gnufx -? // clean

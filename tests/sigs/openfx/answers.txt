@@ -1,0 +1,24 @@
+=== --version
+12.2.0
+=== --help
+@exit 1
+openfx <command>
+
+Usage:
+
+openfx install        install all the dependencies in your project
+openfx test           run this project's tests
+
+All commands:
+
+    install, test
+
+Specify configs in the ini-formatted file:
+    /home/user/.openfxrc
+or on the command line via: openfx <command> --key=value
+=== -h
+@exit 1
+openfx <command>
+=== -help
+@exit 1
+openfx <command>

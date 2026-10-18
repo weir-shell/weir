@@ -1,0 +1,8 @@
+#sig gpgfx
+gpgfx --armor --detach-sign --local-usr K f // typo: --local-usr
+gpgfx --batch --yess --import k.asc // typo: --yess
+gpgfx --batch --yes --import key.asc // clean
+gpgfx --keyserver hkps://x --recv-keys K // clean
+gpgfx --pinentry-mode loopback --passphrase-fd 0 -d f // clean
+gpgfx --list-secret-keys --with-colons --dearmor // clean
+gpgfx --export-secret-keys -a K // clean

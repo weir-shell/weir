@@ -1,0 +1,26 @@
+=== --version
+phantomfx 1.8.1
+=== --versio
+@exit 1
+phantomfx: unrecognized option '--versio'
+=== --help
+Usage:	phantomfx [options] <filter> [file...]
+
+Command options:
+  -n, --null-input          use `null` as the single input value;
+  -r, --raw-output          output strings without escapes and quotes;
+  -c, --compact-output      compact instead of pretty-printed output;
+  -s, --slurp               read all inputs into an array and use it as
+                            the single input value;
+      --arg name value      set $name to the string value;
+      --argjson name value  set $name to the JSON value;
+
+Commands:
+  -h --help                Show this help text
+     --list-boots          Show terse information about recorded boots
+     --vacuum-time=TIME    Remove journal files older than specified time
+
+Options:
+  -u --unit=UNIT           Show logs from the specified unit
+  -S --since=DATE          Show entries not older than the specified date
+  -f --follow              Follow the journal

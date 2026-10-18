@@ -1,0 +1,7 @@
+#sig phantomfx
+phantomfx -n --raw-ouput .a f // typo: --raw-ouput
+phantomfx -rc .a f // clean
+phantomfx -s --tab . f // typo: --tab
+phantomfx --list-boots // clean
+phantomfx -u nginx --since "1 hour ago" -f // clean
+phantomfx --vaccum-time=2d // typo: --vaccum-time

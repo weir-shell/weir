@@ -1,0 +1,9 @@
+#sig journalctl
+journalctl --vaccum-time=2d // typo: --vaccum-time
+journalctl --user -u x --outptu cat // typo: --outptu
+journalctl -Y // typo: -Y
+journalctl -u nginx -f --since "1 hour ago" // clean
+journalctl -u nginx --no-pager -n 100 -o json // clean
+journalctl -b -1 -p err // clean
+journalctl --list-boots // clean
+journalctl -xeu nginx // clean

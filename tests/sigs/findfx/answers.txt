@@ -1,0 +1,25 @@
+=== --version
+find (GNU findutils) 4.10.0
+=== --help
+Usage: findfx [-H] [-L] [-P] [-Olevel] [-D debugopts] [path...] [expression]
+
+Default path is the current directory; default expression is -print.
+
+Operators (decreasing precedence; -and is implicit where no others are given):
+      ( EXPR )   ! EXPR   -not EXPR   EXPR1 -a EXPR2   EXPR1 -and EXPR2
+      EXPR1 -o EXPR2   EXPR1 -or EXPR2   EXPR1 , EXPR2
+
+Normal options (always true, specified before other expressions):
+      -depth -maxdepth LEVELS -mindepth LEVELS -xdev
+
+Tests (N can be +N or -N or N):
+      -iname PATTERN -mtime N -name PATTERN -newer FILE
+      -path PATTERN -type [bcdpflsD] -empty
+
+Actions:
+      -delete -print0 -print -prune -quit
+      -exec COMMAND ; -exec COMMAND {} + -ok COMMAND ;
+
+Other common options:
+      --help                   display this help and exit
+      --version                output version information and exit

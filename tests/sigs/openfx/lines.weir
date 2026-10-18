@@ -1,0 +1,4 @@
+#sig openfx
+openfx install -g --prefix /x pkg // clean
+openfx install --save-dev typescript // clean
+openfx test -- --watch // clean

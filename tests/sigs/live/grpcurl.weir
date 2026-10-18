@@ -1,0 +1,10 @@
+#sig grpcurl
+grpcurl -plaintextt localhost:1 list // typo: -plaintextt
+grpcurl --protosett x h:1 list // typo: --protosett
+grpcurl -max-tme 3 h:1 list // typo: -max-tme
+grpcurl -Z h:1 list // typo: -Z
+grpcurl -plaintext -d "{}" localhost:1 svc/M // clean
+grpcurl -H "a: b" -v localhost:1 list // clean
+grpcurl --plaintext --max-time 5 localhost:1 list // clean
+grpcurl -import-path p -proto x.proto -d "{}" h:1 s/M // clean
+grpcurl --H "a: b" h:1 list // clean

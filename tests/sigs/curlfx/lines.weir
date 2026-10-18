@@ -1,0 +1,11 @@
+#sig curlfx
+// expect-version: curl 8.18.0 (x86_64-pc-linux-gnu)
+curlfx -sS --retry 3 --connect-timout 5 https://x // typo: --connect-timout
+curlfx --insecuer https://x // typo: --insecuer
+curlfx --compressed --locaton https://x // typo: --locaton
+curlfx -fsSL -o out https://x // clean
+curlfx -X POST -H "a: b" --data-raw x https://x // clean
+curlfx --fail-with-body --silent https://x // clean
+curlfx -w "%{http_code}" -o /dev/null https://x // clean
+curlfx --retry 3 --retry-delay 2 --retry-all-errors https://x // clean
+curlfx -u a:b --cacert ca.pem -Q x https://x // clean

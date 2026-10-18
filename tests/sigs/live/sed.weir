@@ -1,0 +1,8 @@
+#sig sed
+sed --regexp-extendd "s/a/b/" f // typo: --regexp-extendd
+sed -Q 1p f // typo: -Q
+sed -i -e "s/a/b/" f // clean
+sed -n -E 1p f // clean
+sed --in-place=.bak "s/a/b/" f // clean
+sed -ri "s/a/b/" f // clean
+sed --expression=1p -s f // clean

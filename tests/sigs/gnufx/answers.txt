@@ -1,0 +1,28 @@
+=== --version
+gnufx (GNU gnufx) 4.9
+Copyright (C) 2022 Free Software Foundation, Inc.
+=== --versio
+gnufx (GNU gnufx) 4.9
+Copyright (C) 2022 Free Software Foundation, Inc.
+=== --help
+Usage: gnufx [OPTION]... [FILE]...
+
+  -n, --quiet, --silent
+                 suppress automatic printing
+  -e script, --expression=script
+                 add the script to the commands to be executed
+  -E, -r, --regexp-extended
+                 use extended regular expressions in the script
+  -i[SUFFIX], --in-place[=SUFFIX]
+                 edit files in place
+  -l N, --line-length=N
+                 specify the desired line-wrap length
+  -f, --file=ARCHIVE         use archive file or device ARCHIVE
+  -x, --extract              extract files from an archive
+  -z, --gzip                 filter the archive through gzip
+  -B                         do not write backup files
+      --verbose              verbosely list files processed
+      --wildcards            use wildcards
+      --wildcards-match-slash   wildcards match '/'
+      --help     display this help and exit (also -?)
+      --version  output version information and exit

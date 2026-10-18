@@ -1,0 +1,9 @@
+#sig yq
+yq --output-formt json . f // typo: --output-formt
+yq ea --null-inptu . a // typo: --null-inptu
+yq -Z . f // typo: -Z
+yq -i ".a = 1" f.yaml // clean
+yq eval -o json f.yaml // clean
+yq -P --inplace .x f // clean
+yq e -e .a f // clean
+yq -oj . f // clean

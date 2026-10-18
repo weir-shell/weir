@@ -1,0 +1,9 @@
+#sig grep
+grep --ignroe-case x f // typo: --ignroe-case
+grep --line-buffred x f // typo: --line-buffred
+grep -Y x f // typo: -Y
+grep -rn --include=*.fs foo src // clean
+grep -E --colour=never x f // clean
+grep --exclude-dir=.git -r x . // clean
+grep -qs x f // clean
+grep -P "\\d" f // clean

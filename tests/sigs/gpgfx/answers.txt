@@ -1,0 +1,35 @@
+=== --version
+gpg (GnuPG) 2.4.8
+libgcrypt 1.12.0
+=== --help
+gpg (GnuPG) 2.4.8
+
+Syntax: gpg [options] [files]
+
+Commands:
+
+ -s, --sign                         make a signature
+ -d, --decrypt                      decrypt data (default)
+     --verify                       verify a signature
+
+Options controlling the output:
+ -a, --armor                        create ascii armored output
+ -u, --local-user USER-ID           use USER-ID to sign or decrypt
+=== --dump-options
+--sign
+--decrypt
+--verify
+--armor
+--local-user
+--batch
+--yes
+--import
+--keyserver
+--recv-keys
+--pinentry-mode
+--passphrase-fd
+--dearmor
+--with-colons
+--list-secret-keys
+--export-secret-keys
+--detach-sign

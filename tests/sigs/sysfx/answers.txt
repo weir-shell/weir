@@ -1,0 +1,116 @@
+=== --version
+systemd 259 (259.5-0ubuntu3.4)
++PAM +AUDIT
+=== --versio
+systemd 259 (259.5-0ubuntu3.4)
++PAM +AUDIT
+=== --help
+sysfx [OPTIONS...] COMMAND ...
+
+Query or send control commands to the system manager.
+
+Unit Commands:
+  list-units [PATTERN...]             List units currently in memory
+  restart UNIT...                     Start or restart one or more units
+  show [PATTERN...|JOB...]            Show properties of one or more units
+  daemon-reload                       Reload systemd manager configuration
+
+Options:
+  -h --help              Show this help
+  -t --type=TYPE         List units of a particular type
+  -p --property=NAME     Show only properties by this name
+     --value             When showing properties, only print the value
+  -H --host=[USER@]HOST  Operate on remote host
+     --user              Connect to user service manager
+     --no-block          Do not wait until operation finished
+     --no-legend         Do not print a legend
+     --no-pager          Do not pipe output into a pager
+  -q --quiet             Suppress output
+=== list-units --help
+sysfx [OPTIONS...] COMMAND ...
+
+Query or send control commands to the system manager.
+
+Unit Commands:
+  list-units [PATTERN...]             List units currently in memory
+  restart UNIT...                     Start or restart one or more units
+  show [PATTERN...|JOB...]            Show properties of one or more units
+  daemon-reload                       Reload systemd manager configuration
+
+Options:
+  -h --help              Show this help
+  -t --type=TYPE         List units of a particular type
+  -p --property=NAME     Show only properties by this name
+     --value             When showing properties, only print the value
+  -H --host=[USER@]HOST  Operate on remote host
+     --user              Connect to user service manager
+     --no-block          Do not wait until operation finished
+     --no-legend         Do not print a legend
+     --no-pager          Do not pipe output into a pager
+  -q --quiet             Suppress output
+=== restart --help
+sysfx [OPTIONS...] COMMAND ...
+
+Query or send control commands to the system manager.
+
+Unit Commands:
+  list-units [PATTERN...]             List units currently in memory
+  restart UNIT...                     Start or restart one or more units
+  show [PATTERN...|JOB...]            Show properties of one or more units
+  daemon-reload                       Reload systemd manager configuration
+
+Options:
+  -h --help              Show this help
+  -t --type=TYPE         List units of a particular type
+  -p --property=NAME     Show only properties by this name
+     --value             When showing properties, only print the value
+  -H --host=[USER@]HOST  Operate on remote host
+     --user              Connect to user service manager
+     --no-block          Do not wait until operation finished
+     --no-legend         Do not print a legend
+     --no-pager          Do not pipe output into a pager
+  -q --quiet             Suppress output
+=== show --help
+sysfx [OPTIONS...] COMMAND ...
+
+Query or send control commands to the system manager.
+
+Unit Commands:
+  list-units [PATTERN...]             List units currently in memory
+  restart UNIT...                     Start or restart one or more units
+  show [PATTERN...|JOB...]            Show properties of one or more units
+  daemon-reload                       Reload systemd manager configuration
+
+Options:
+  -h --help              Show this help
+  -t --type=TYPE         List units of a particular type
+  -p --property=NAME     Show only properties by this name
+     --value             When showing properties, only print the value
+  -H --host=[USER@]HOST  Operate on remote host
+     --user              Connect to user service manager
+     --no-block          Do not wait until operation finished
+     --no-legend         Do not print a legend
+     --no-pager          Do not pipe output into a pager
+  -q --quiet             Suppress output
+=== daemon-reload --help
+sysfx [OPTIONS...] COMMAND ...
+
+Query or send control commands to the system manager.
+
+Unit Commands:
+  list-units [PATTERN...]             List units currently in memory
+  restart UNIT...                     Start or restart one or more units
+  show [PATTERN...|JOB...]            Show properties of one or more units
+  daemon-reload                       Reload systemd manager configuration
+
+Options:
+  -h --help              Show this help
+  -t --type=TYPE         List units of a particular type
+  -p --property=NAME     Show only properties by this name
+     --value             When showing properties, only print the value
+  -H --host=[USER@]HOST  Operate on remote host
+     --user              Connect to user service manager
+     --no-block          Do not wait until operation finished
+     --no-legend         Do not print a legend
+     --no-pager          Do not pipe output into a pager
+  -q --quiet             Suppress output

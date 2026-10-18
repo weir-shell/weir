@@ -1,0 +1,7 @@
+#sig sysfx
+sysfx -H host restart --no-blok foo // typo: --no-blok
+sysfx --user --no-pager restart foo // clean
+sysfx list-units --type=service --no-legnd // typo: --no-legnd
+sysfx show -p ActiveState --value nginx // clean
+sysfx daemon-reload --quite // typo: --quite
+sysfx --no-leg list-units // clean (the unique prefix of --no-legend)

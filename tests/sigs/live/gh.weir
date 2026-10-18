@@ -1,0 +1,17 @@
+#sig gh
+gh release create v1 --notes x --generate-note // typo: --generate-note
+gh pr merge --squash --delete-brnach // typo: --delete-brnach
+gh issue list --label bug --assignee me --stat open // typo: --stat
+gh run list --workflow ci.yml --brnch main // typo: --brnch
+gh pr create -Z // typo: -Z
+gh pr create --title t --body b --base main --draft // clean
+gh pr list --state open --json number,title --limit 10 // clean
+gh api repos/o/r --jq .name -H "Accept: x" // clean
+gh run watch --exit-status 123 // clean
+gh repo clone o/r -- --depth 1 // clean
+gh workflow run ci.yml --ref main -f a=b // clean
+gh secret set X --body y --repo o/r // clean
+gh pr view 12 -R o/r --web // clean
+gh release upload v1 a.tgz --clobber // clean
+gh -R o/r pr list --state open // clean
+gh --repo o/r issue view 3 // clean
