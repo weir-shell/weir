@@ -14206,6 +14206,52 @@ echo "$out" | grep -qF "ok=[ANSWER]" || fail "a piped REPL Self.prompt must read
 echo "$out" | grep -qF "two=[#echo]" || fail "a looked-ahead directive line must reach the prompt: $out"
 echo "$out" | grep -qF "unknown command" && fail "the prompt's answer ran as a command: $out"
 echo "e2e ok: piped REPL — Self.prompt reads the line after its statement"
+# an attached lookahead line is judged like a read one — every
+# continuation shape (|> tails, a match's arms, an if's body and else, a
+# for body, a bracket) leaves the answers after it to its prompts, in order
+cat >"$w2dir/cont.txt" <<'WEOF'
+[1]
+    |> Seq.iter (fun _ -> print $"P1=[{Self.prompt "q?"}]")
+ANS1
+let a = Self.prompt "q?"
+        |> Str.toUpper
+ans2
+print $"A2=[{a}]"
+[1]
+    |> Seq.map id
+    |> Seq.iter (fun _ -> print $"P3=[{Self.prompt "q?"}]")
+ANS3
+match Self.prompt "q?" with
+| "M" -> print "M4=yes"
+| _ -> print "M4=no"
+M
+if true then
+    print $"A5=[{Self.prompt "q?"}]"
+    print $"B5=[{Self.prompt "q?"}]"
+ANS5a
+ANS5b
+if true then
+    print $"I6=[{Self.prompt "q?"}]"
+else
+    print "no"
+ANS6
+for i in [1; 2] do
+    print $"F7=[{Self.prompt "q?"}]"
+F7a
+F7b
+let xs = [
+    Self.prompt "q?"
+]
+B8
+print $"B8=[{xs |> Str.join ","}]"
+print "end"
+WEOF
+out=$(cd "$w2dir" && XDG_CONFIG_HOME="$w2dir/cfg" XDG_STATE_HOME="$w2dir/st" "$BIN" <"$w2dir/cont.txt" 2>&1)
+for want in "P1=[ANS1]" "A2=[ANS2]" "P3=[ANS3]" "M4=yes" "A5=[ANS5a]" "B5=[ANS5b]" "I6=[ANS6]" "F7=[F7a]" "F7=[F7b]" "B8=[B8]" "end"; do
+    echo "$out" | grep -qF -- "$want" || fail "piped REPL continuation shapes: expected $want in: $out"
+done
+echo "$out" | grep -qE "unknown command|parse error|continuation without" && fail "a looked-ahead answer ran as code: $out"
+echo "e2e ok: piped REPL — every continuation shape leaves its answers to its prompts, in order"
 # GUIDE "Lazy values": the stated outputs of the within cd / within env example
 cat >"$w2dir/lazy.weir" <<'WEOF'
 Dir.create "proj/src"

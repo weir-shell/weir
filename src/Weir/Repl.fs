@@ -1952,6 +1952,15 @@ let private readRedirected () : string =
                 Console.Write prompt
                 null
             | _ -> ret (List.rev acc)
+        | line -> step line acc
+
+    // one physical line joins the entry — a line read or a peeked line
+    // that attaches: an attached peek is judged like any other line (is
+    // the entry complete now? then peek again), never followed by an
+    // unconditional read that would swallow the next statement's line
+    // [D:repl-lookahead-unread]
+    and step (line: string) (acc: string list) =
+        match line with
         // a column-0 directive never continues an open statement: it
         // ends the entry and is read next as its own line
         | line when not (List.isEmpty acc) && line.StartsWith "#" ->
@@ -1982,7 +1991,7 @@ let private readRedirected () : string =
                 // complete as-is; peek whether the next line continues it
                 match readLine () with
                 | null -> ret buf
-                | next when Script.pipedAttaches buf next -> go (next :: acc')
+                | next when Script.pipedAttaches buf next -> step next acc'
                 | next ->
                     pushBack next
                     ret buf
