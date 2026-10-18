@@ -10725,6 +10725,31 @@ WEOF
     $BIN "$pfdir/na.weir" >/dev/null 2>&1 || true
     [ "$(tr '\n' ',' < "$pfdir/na.log" 2>/dev/null)" = "$want" ] || fail "a nested fan-out must take no new arm once its enclosing $outer cut it: $(tr '\n' ',' < "$pfdir/na.log" 2>/dev/null)"
 done
+# the exit's join counts an arm joining a nested race as parked only with
+# that race's arms parked: a nested arm's running cleanup holds it
+cat > "$pfdir/nc.weir" <<WEOF
+let note s = File.append "$pfdir/nc.log" [s]
+within
+    [0; 1] |> Seq.piter (fun i ->
+        if i == 0 then
+            let _w =
+                [0] |> Seq.pfirst (fun k ->
+                    within
+                        note "nested body"
+                    always
+                        sh -c "sleep 0.5"
+                        note "nested cleanup"
+                    k)
+            ()
+        else
+            Duration.sleep 100ms
+            exit 5)
+always
+    note "outer always"
+WEOF
+rm -f "$pfdir/nc.log"
+xrc=0; $BIN "$pfdir/nc.weir" >/dev/null 2>&1 || xrc=$?
+[ "$xrc" = "5" ] && [ "$(tr '\n' ',' < "$pfdir/nc.log")" = "nested body,nested cleanup,outer always," ] || fail "a fan-out exit must join a nested race's running cleanup (rc $xrc): $(tr '\n' ',' < "$pfdir/nc.log")"
 echo "e2e ok: a fan-out exit cuts a sibling's Proc.wait on an outer proc; a nested fan-out takes no new arm after an enclosing race win, exit or serve cut"
 
 out=$($BIN -e '[7; 8] |> Seq.pfirst (fun n -> match n with | 7 -> Duration.sleep 200ms ; fail "seven dies" | _ -> fail "eight dies")' 2>&1) && fail "all-failed must raise" || true

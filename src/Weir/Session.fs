@@ -1102,16 +1102,26 @@ type private ArmMark() =
     [<DefaultValue>]
     val mutable Abandon: int
 
+    // the arm whose flow opened this one's fan-out or race (null at top)
+    [<DefaultValue>]
+    val mutable Parent: ArmMark
+
 let private armMarks =
     System.Collections.Concurrent.ConcurrentDictionary<ArmMark, byte>(HashIdentity.Reference)
 
 let private armMark = new System.Threading.ThreadLocal<ArmMark>()
 
+// the arm a flow runs in, inherited by the workers it opens
+let private armOwner = System.Threading.AsyncLocal<ArmMark>()
+
 /// run one fan-out worker (on its own thread), marked for the teardown's join
 let armRunning (f: unit -> 'a) : 'a =
     let m = ArmMark()
+    m.Parent <- armOwner.Value
     let prev = armMark.Value
+    let prevOwner = armOwner.Value
     armMark.Value <- m
+    armOwner.Value <- m
     armMarks[m] <- 0uy
 
     try
@@ -1119,6 +1129,7 @@ let armRunning (f: unit -> 'a) : 'a =
     finally
         armMarks.TryRemove m |> ignore
         armMark.Value <- prev
+        armOwner.Value <- prevOwner
 
 // a cut is live, so a join may be abandoning parked arms
 let private cutPending () =
@@ -1379,10 +1390,27 @@ type FanArms(n: int) =
                     true
 
         if cutFirst then
+            // this fan-out's arms and every arm nested under them: an arm
+            // parked joining its own fan-out counts only with that one's
+            // arms parked too
             let live () =
-                marks
-                |> Array.choose (fun m -> if isNull m then None else Some m)
-                |> List.ofArray
+                let own =
+                    marks
+                    |> Array.choose (fun m -> if isNull m then None else Some m)
+                    |> List.ofArray
+
+                let mine (m: ArmMark) = own |> List.exists (fun o -> obj.ReferenceEquals(o, m))
+
+                let rec under (m: ArmMark) =
+                    not (isNull m) && (mine m || under m.Parent)
+
+                if List.isEmpty own then
+                    []
+                else
+                    own
+                    @ [ for m in armMarks.Keys do
+                            if not (mine m) && under m.Parent then
+                                yield m ]
 
             match abandonParked t live with
             | [] -> false
