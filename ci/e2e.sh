@@ -4301,6 +4301,41 @@ out=$( cd "$mvdir" && $BIN check mk.weir 2>&1 ) && fail "Map<int, …> in the sl
 expect "the slot's int key teaches" "Map keys are strings only" "$out"
 rm -rf "$mvdir"
 
+# ---- `..` after a symlink is physical [D:fs-dotdot-physical] -----------------
+# L -> real/sub: File.* resolve L/.. to real, as the kernel (cat) does, and
+# the plan guard sees the write it lands under its real path
+if [ "$IS_WINDOWS" != "1" ]; then
+    dddir=$(mkweirtmp)
+    mkdir -p "$dddir/real/sub"
+    echo inner > "$dddir/real/x.txt"
+    echo top > "$dddir/x.txt"
+    ln -s real/sub "$dddir/L"
+    cat > "$dddir/t.weir" <<'WEOF'
+// L -> real/sub: `L/..` is real, as the kernel resolves it [D:fs-dotdot-physical]
+let base = Self.args |> Seq.head
+print $"read: {File.read $"{base}/L/../x.txt" |> Str.join ""}"
+["w"] |> File.write $"{base}/L/../y.txt"
+print $"landed: {File.exists $"{base}/real/y.txt"} {File.exists $"{base}/y.txt"}"
+print $"exists: {File.exists $"{base}/L/../x.txt"} dir: {Dir.exists $"{base}/L/../sub"}"
+print $"list: {Dir.list $"{base}/L/.." |> Seq.map Path.fileName |> Str.join " "}"
+File.copy $"{base}/L/../x.txt" $"{base}/L/../z.txt"
+print $"copied: {File.exists $"{base}/real/z.txt"}"
+let _guarded =
+    plan
+        File.write $"{base}/L/../p.txt" ["p"]
+        print $"{File.read $"{base}/real/p.txt" |> Seq.length}"
+print "unreached"
+WEOF
+    out=$($BIN "$dddir/t.weir" "$dddir" 2>&1) && fail "the dotdot cell's plan read must refuse: $out"
+    expect "File.read L/.. is physical" "read: inner" "$out"
+    expect "File.write L/.. lands where the kernel puts it" "landed: true false" "$out"
+    expect "File.exists/Dir.exists L/.. are physical" "exists: true dir: true" "$out"
+    expect "Dir.list L/.. lists real" "list: sub x.txt y.txt" "$out"
+    expect "File.copy L/.. is physical" "copied: true" "$out"
+    expect "the plan guard keys the physical path" "known-after-apply" "$out"
+    rm -rf "$dddir"
+fi
+
 # ---- FileRow reshape [D:filerow] --------------------------------------------
 # kind/target over a real symlink, and File.mode against the platform's
 # own stat — an external referee [D:yaml-interop]'s rule

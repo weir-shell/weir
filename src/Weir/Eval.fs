@@ -5128,7 +5128,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             if path = "" then
                 failwith "within lock: the lock path is empty — name a lock file"
 
-            let resolved = Session.resolve path
+            let resolved = Session.resolveFs path
 
             if System.IO.Directory.Exists resolved then
                 failwith $"within lock: {resolved} is a directory — the lock is a file (e.g. {resolved}/.lock)"

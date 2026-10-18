@@ -3486,7 +3486,7 @@ let private envFromFileImpl: Value =
         | VStr path ->
             VSeq(
                 Seq.delay (fun () ->
-                    let resolved = Session.resolve path
+                    let resolved = Session.resolveFs path
                     PlanMode.checkRead "Env.fromFile" resolved
 
                     // the File-family guards, in Env.fromFile's own words —
@@ -3914,7 +3914,7 @@ let private fileMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr path ->
-              let r = Session.resolve path
+              let r = Session.resolveFs path
               PlanMode.checkRead "File.read" r
               readGuard "File.read" r
               VSeq(ioGuarded "File.read" r (fun () -> readLinesShared r) |> Seq.map VStr)
@@ -3929,7 +3929,7 @@ let private fileMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr path ->
-              let r = Session.resolve path
+              let r = Session.resolveFs path
               PlanMode.checkRead "File.readSecret" r
               readGuard "File.readSecret" r
               VSecret((ioGuarded "File.readSecret" r (fun () -> readTextShared r)).TrimEnd('\n', '\r'))
@@ -3940,7 +3940,7 @@ let private fileMembers: (string * Ty * Value) list =
           VBuiltin(fun linesV ->
               match pathV, linesV with
               | VStr path, VSeq lines ->
-                  let r = Session.resolve path
+                  let r = Session.resolveFs path
 
                   match capWrite "File.write" "WriteFile" r lines with
                   | Some captured -> captured
@@ -3975,7 +3975,7 @@ let private fileMembers: (string * Ty * Value) list =
           VBuiltin(fun linesV ->
               match pathV, linesV with
               | VStr path, VSeq lines ->
-                  let r = Session.resolve path
+                  let r = Session.resolveFs path
 
                   match capWrite "File.writeAtomic" "WriteFileAtomic" r lines with
                   | Some captured -> captured
@@ -3992,7 +3992,7 @@ let private fileMembers: (string * Ty * Value) list =
           VBuiltin(fun linesV ->
               match pathV, linesV with
               | VStr path, VSeq lines ->
-                  let r = Session.resolve path
+                  let r = Session.resolveFs path
 
                   match refuseInPlan "File.append" "an append is a read-modify-write with no captured Op" with
                   | Some _ -> VUnit
@@ -4014,7 +4014,7 @@ let private fileMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr path ->
-              let r = Session.resolve path
+              let r = Session.resolveFs path
               PlanMode.checkRead "File.exists" r
               VBool(File.Exists r)
           | v -> unreachable $"the checker rejects 'File.exists' on {formatValue v}") ]
@@ -4087,7 +4087,7 @@ let private fsStr2
         VBuiltin(fun b ->
             match a, b with
             | VStr src, VStr dst ->
-                let s, d = Session.resolve src, Session.resolve dst
+                let s, d = Session.resolveFs src, Session.resolveFs dst
 
                 match capPath2 (fun pr -> pre pr name s d) opCase s d with
                 | Some captured -> captured
@@ -4106,7 +4106,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr p ->
-              let r = Session.resolve p
+              let r = Session.resolveFs p
               PlanMode.checkRead "File.mode" r
 
               if not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
@@ -4153,11 +4153,11 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr p ->
-              let r = Session.resolve p
+              let r = Session.resolveFs p
               PlanMode.checkRead "File.isExecutable" r
 
               // "" is a no-such-path, not the cwd [D:isexecutable-empty]:
-              // Session.resolve "" folds to the cwd, which exists and
+              // Session.resolveFs "" folds to the cwd, which exists and
               // carries the dir's x bit — the empty string must raise the
               // same located error as a missing path, never answer true.
               if p = "" || not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
@@ -4185,7 +4185,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr p ->
-              let r = Session.resolve p
+              let r = Session.resolveFs p
               PlanMode.checkRead "File.readBytes" r
               readGuard "File.readBytes" r
               VBytes(ioGuarded "File.readBytes" r (fun () -> readBytesShared r))
@@ -4196,7 +4196,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           VBuiltin(fun bytesV ->
               match pathV, bytesV with
               | VStr path, VBytes b ->
-                  let r = Session.resolve path
+                  let r = Session.resolveFs path
 
                   match refuseInPlan "File.writeBytes" "the WriteFile Op carries text lines, not bytes" with
                   | Some _ -> VUnit
@@ -4213,7 +4213,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr p ->
-              let r = Session.resolve p
+              let r = Session.resolveFs p
               PlanMode.checkRead "File.sha256" r
               readGuard "File.sha256" r
 
@@ -4231,7 +4231,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr p ->
-              let r = Session.resolve p
+              let r = Session.resolveFs p
 
               match capPath1 (fun pr -> preFileDelete pr "File.delete" r) "DeleteFile" r with
               | Some captured -> captured
@@ -4253,7 +4253,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr p ->
-              let r = Session.resolve p
+              let r = Session.resolveFs p
               PlanMode.checkRead "File.size" r
               readGuard "File.size" r
 
@@ -4273,7 +4273,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr p ->
-              let r = Session.resolve p
+              let r = Session.resolveFs p
               PlanMode.checkRead "File.stat" r
 
               // FileInfo.Exists is the path's own fact (true for a
@@ -4298,7 +4298,7 @@ let private dirMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr p ->
-              let r = Session.resolve p
+              let r = Session.resolveFs p
 
               match capPath1 (fun pr -> preDirCreate pr "Dir.create" r) "MakeDir" r with
               | Some captured -> captured
@@ -4312,7 +4312,7 @@ let private dirMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr p ->
-              let r = Session.resolve p
+              let r = Session.resolveFs p
               PlanMode.checkRead "Dir.exists" r
               VBool(System.IO.Directory.Exists r)
           | v -> unreachable $"the checker rejects 'Dir.exists' on {formatValue v}")
@@ -4321,7 +4321,7 @@ let private dirMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr p ->
-              let r = Session.resolve p
+              let r = Session.resolveFs p
 
               match capPath1 (fun pr -> preDirDelete pr "Dir.delete" r) "DeleteDir" r with
               | Some captured -> captured
@@ -4335,7 +4335,7 @@ let private dirMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr p ->
-              let r = Session.resolve p
+              let r = Session.resolveFs p
 
               match capPath1 (fun pr -> requireDirIn pr "Dir.deleteAll" r) "DeleteTree" r with
               | Some captured -> captured
@@ -4349,7 +4349,7 @@ let private dirMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr p ->
-              let r = Session.resolve p
+              let r = Session.resolveFs p
               PlanMode.checkTree "Dir.list" r
 
               if not (System.IO.Directory.Exists r) then
@@ -4369,7 +4369,7 @@ let private dirMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr p ->
-              let r = Session.resolve p
+              let r = Session.resolveFs p
               PlanMode.checkTree "Dir.stat" r
 
               if not (System.IO.Directory.Exists r) then

@@ -206,6 +206,74 @@ let resolve (path: string) : string =
 
     System.IO.Path.GetFullPath(System.IO.Path.Combine(Cwd(), path))
 
+/// a filesystem builtin's path [D:fs-dotdot-physical]: `..` steps up
+/// from where the path so far physically is — the symlinks before it
+/// followed, as the kernel (and so `cat L/../x`) resolves it — where
+/// `resolve` collapses `..` lexically (right for a `cd`, which a shell
+/// tracks logically). A path without `..` is resolved as `resolve` does;
+/// components after the last `..` stay as written
+let resolveFs (path: string) : string =
+    let combined =
+        if path.Contains '\000' then
+            resolve path // the NUL refusal
+        else
+            System.IO.Path.Combine(Cwd(), path)
+
+    let seps = [| '/'; System.IO.Path.DirectorySeparatorChar |]
+
+    let segsOf (p: string) =
+        let root = System.IO.Path.GetPathRoot p
+        root, p.Substring(root.Length).Split(seps, System.StringSplitOptions.RemoveEmptyEntries)
+
+    let _, segs = segsOf combined
+
+    if not (segs |> Array.contains "..") then
+        System.IO.Path.GetFullPath combined
+    else
+        let mutable hops = 0
+
+        let parentOf (p: string) =
+            match System.IO.Path.GetDirectoryName p with
+            | null -> p
+            | parent -> parent
+
+        // every symlink in `p` followed (40 hops, the kernel's bound)
+        let rec realOf (p: string) : string =
+            let root, segs = segsOf p
+            let mutable acc = root
+
+            for seg in segs do
+                if seg = "." then
+                    ()
+                elif seg = ".." then
+                    acc <- parentOf acc
+                else
+                    let next = System.IO.Path.Combine(acc, seg)
+
+                    let target =
+                        try
+                            System.IO.FileInfo(next).LinkTarget
+                        with _ ->
+                            null
+
+                    if not (isNull target) && hops < 40 then
+                        hops <- hops + 1
+                        acc <- realOf (System.IO.Path.Combine(acc, target))
+                    else
+                        acc <- next
+
+            acc
+
+        let root, segs = segsOf combined
+        let mutable cur = root
+
+        for seg in segs do
+            if seg = "." then ()
+            elif seg = ".." then cur <- parentOf (realOf cur)
+            else cur <- System.IO.Path.Combine(cur, seg)
+
+        System.IO.Path.GetFullPath cur
+
 /// a temp dir only its owner can enter [D:private-temp] — 0700 on POSIX,
 /// mkdtemp's convention: child output and scratch content are the script's
 let createPrivateDir (dir: string) : unit =

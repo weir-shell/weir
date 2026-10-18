@@ -1552,7 +1552,10 @@ ls |> Seq.where (fun f -> f.name |> Str.startsWith "lssort-") |> Seq.iter (fun f
   glob on any row field. It describes a symlink ITSELF (`kind ==
   Symlink`, `target Some` — a dangling link is a row, not an absence),
   matching `ls` — a stated third position beside `**`'s
-  skip-symlinked-dirs law and `File.*`'s follow-as-a-shell-does.
+  skip-symlinked-dirs law and `File.*`'s follow-as-a-shell-does
+  (`..` included: `File.read "L/../x"` steps up from where the link
+  `L` really points, as `cat L/../x` does [D:fs-dotdot-physical];
+  `cd`/`within cd` keep the shell's logical `..`).
   Raises when absent, naming the resolved path — and a glob hit can
   vanish before `stat` reaches it, the same TIMING seam `Seq.freeze`
   documents for glob.
