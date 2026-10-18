@@ -584,9 +584,19 @@ let h3r4p04 d =
     let second = a.sent |> Seq.tryItem 1 |> Option.defaultValue 0
     let aMs = if a.exitMs < 0 then 99999 else a.exitMs - second
     // (b) piter arms in pure computation: the join must hold the exit until
-    // they reach a boundary (calibrated by the same fixture unsignalled)
-    let p = put cdir "compute.weir" (p04Compute 5000000)
-    let calib = ptyRun cdir "30" [cli.bin; p; $"{cdir}/calib.log"] []
+    // they reach a boundary (calibrated by the same fixture unsignalled; the
+    // workload doubles until the unsignalled run takes 2s, so a fast runner
+    // still has the ^C land mid-compute)
+    let calibrate n =
+        let p = put cdir $"compute-{n}.weir" (p04Compute n)
+        (p, ptyRun cdir "30" [cli.bin; p; $"{cdir}/calib.log"] [])
+    let (p1, c1) = calibrate 5000000
+    let (p, calib) =
+        if c1.code <> "0" || c1.exitMs >= 2000 then
+            (p1, c1)
+        else
+            let (p2, c2) = calibrate 10000000
+            if c2.code <> "0" || c2.exitMs >= 2000 then (p2, c2) else calibrate 20000000
     let b = ptyRun cdir "30" [cli.bin; p; $"{cdir}/log"] ["SLEEP 600"; ctrlC; "SLEEP 500"]
     let landed = linesOf $"{cdir}/log"
     let calibLog = linesOf $"{cdir}/calib.log" |> joined
