@@ -1,0 +1,40 @@
+// args: log tag dir.  4 piter arms inside within lock, each with its own always; outer always.
+let a = Self.args |> Seq.freeze
+let log = a[0]
+let tag = a[1]
+let dir = a[2]
+let ev s = File.append log [s]
+within
+    ev "O outer"
+    within lock $"{dir}/the.lock"
+        ev "O outer/lock"
+        [0..3] |> Seq.piter (fun i ->
+            within
+                ev $"O outer/lock/fan/arm{i}"
+                [1..8] |> Seq.iter (fun k ->
+                    ev $"B outer/lock/fan/arm{i} {k}"
+                    if k % 3 == 0 then
+                        sleep $"0.05{tag}"
+                        ()
+                    elif k % 3 == 1 then
+                        Duration.sleep 40ms
+                    else
+                        sh -c $"sleep 0.04{tag}"
+                        ())
+            always
+                ev $"S outer/lock/fan/arm{i}"
+                Duration.sleep 60ms
+                sleep $"0.06{tag}"
+                ev $"E outer/lock/fan/arm{i}")
+        ev "J outer/lock/fan"
+        ev "B outer/lock tail"
+    always
+        ev "S outer/lock"
+        sh -c $"sleep 0.07{tag}"
+        ev "E outer/lock"
+    ev "B outer after-lock"
+always
+    ev "S outer"
+    Duration.sleep 50ms
+    ev "E outer"
+ev "DONE"

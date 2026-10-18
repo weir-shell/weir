@@ -13620,6 +13620,38 @@ echo "$out" | grep -qF "status=HTTP/1.1 200 OK body=len=16" || fail "H20: a body
 echo "$out" | grep -qF "status=HTTP/1.1 413" || fail "H20: a body past maxBody must be 413: $out"
 echo "e2e ok: within serve — H20 maxBody answers 413 past the bound"
 
+# a request body in a charset weir cannot decode is answered 415 before
+# the handler [D:serve-charset], never decoded as UTF-8 with U+FFFD; a
+# known charset still decodes per its declaration
+svport20=8487
+cat > "$svdir/charset.py" <<'PYEOF'
+import socket, sys
+port, cs, body = int(sys.argv[1]), sys.argv[2], bytes.fromhex(sys.argv[3])
+s = socket.socket(); s.connect(('127.0.0.1', port))
+s.sendall(('POST /x HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain; charset=%s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n' % (cs, len(body))).encode() + body)
+d = b''
+while True:
+    c = s.recv(4096)
+    if not c: break
+    d += c
+print('%s status=%s body=%s' % (cs, d.split(b'\r\n', 1)[0].decode(), d.split(b'\r\n\r\n', 1)[-1].decode()))
+PYEOF
+cat > "$svdir/charset.weir" <<WEOF
+within serve srv = { port = $svport20; maxConcurrent = 2 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text \$"handled={req.body}" })
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport20
+    let unknown = sh -c "python3 '$svdir/charset.py' $svport20 x-weir-none e961" | complete
+    unknown.stdout |> Seq.iter print
+    let latin = sh -c "python3 '$svdir/charset.py' $svport20 iso-8859-1 e961" | complete
+    latin.stdout |> Seq.iter print
+WEOF
+out=$($BIN "$svdir/charset.weir" 2>&1) || fail "serve charset run failed: $out"
+echo "$out" | grep -qF "x-weir-none status=HTTP/1.1 415" || fail "a body in an unknown charset must be 415: $out"
+echo "$out" | grep -qF "request body charset 'x-weir-none' is not one weir decodes" || fail "the 415 must name the charset: $out"
+echo "$out" | grep -q "x-weir-none.*handled=" && fail "a body in an unknown charset must never reach the handler: $out"
+echo "$out" | grep -qF "iso-8859-1 status=HTTP/1.1 200 OK body=handled=éa" || fail "a declared iso-8859-1 body must decode per its charset: $out"
+echo "e2e ok: within serve — a body in an unknown charset is answered 415 before the handler"
+
 # ---- serve on Kestrel [D:serve-kestrel]: the wire, end to end ----------
 # Pipelining, repeated headers (F10) and one-response-per-request (H3-E6)
 # on the AOT binary through a weir handler; a raw socket referees the

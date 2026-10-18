@@ -81,6 +81,10 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **`serve` answers 415 to a request body in a charset weir cannot
+  decode.** It was decoded as UTF-8, a wrong byte becoming U+FFFD, and
+  handed to the handler; now no handler runs, as the HTTP client
+  refuses such a response.
 - **A `plan` refuses an op that would fail at apply, where it is
   captured.** A copy onto an existing (or planned) file, a delete of a
   missing (or already deleted) file, a copy or move from a missing

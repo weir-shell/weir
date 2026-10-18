@@ -73,6 +73,8 @@ type private BodyRead =
     | BodyText of string
     | BodyTimedOut
     | BodyOverMax
+    // read whole, in a declared charset weir cannot decode [D:serve-charset]
+    | BodyCharset of string
 
 /// one parked request: Kestrel's context, the pre-read body, and the
 /// completion its request delegate awaits. Opaque outside this module.
@@ -156,19 +158,22 @@ let private targetUri (raw: string) : Uri option =
 
     if ok then Some u else None
 
-/// the request body's text encoding: the Content-Type charset when the
-/// runtime knows it, UTF-8 otherwise
-let private bodyEncoding (http: HttpContext) : Encoding =
+/// the request body's text encoding: the Content-Type charset, UTF-8 when
+/// none is declared; a charset the runtime does not know is the Error,
+/// never a guessed UTF-8 decode [D:serve-charset]
+let private bodyEncoding (http: HttpContext) : Result<Encoding, string> =
     match http.Request.ContentType with
-    | null -> Encoding.UTF8
+    | null -> Ok Encoding.UTF8
     | ct ->
         match Net.Http.Headers.MediaTypeHeaderValue.TryParse ct with
-        | true, mt when not (String.IsNullOrEmpty mt.CharSet) ->
+        | true, mt when not (String.IsNullOrWhiteSpace mt.CharSet) ->
+            let cs = mt.CharSet.Trim().Trim('"')
+
             try
-                Encoding.GetEncoding(mt.CharSet.Trim('"'))
+                Ok(Encoding.GetEncoding cs)
             with _ ->
-                Encoding.UTF8
-        | _ -> Encoding.UTF8
+                Error cs
+        | _ -> Ok Encoding.UTF8
 
 /// read the whole body under the deadline and the size bound
 /// [D:serve-body-timeout] [D:serve-max-body], on the delegate (no thread,
@@ -206,9 +211,12 @@ let private readBody (http: HttpContext) (lim: Limits) : Task<BodyRead> =
                     let! n = req.Body.ReadAsync(buf.AsMemory(), cts.Token)
 
                     if n = 0 then
-                        ms.Position <- 0L
-                        use r = new IO.StreamReader(ms, bodyEncoding http)
-                        result <- Some(BodyText(r.ReadToEnd()))
+                        match bodyEncoding http with
+                        | Ok enc ->
+                            ms.Position <- 0L
+                            use r = new IO.StreamReader(ms, enc)
+                            result <- Some(BodyText(r.ReadToEnd()))
+                        | Error cs -> result <- Some(BodyCharset cs)
                     else
                         ms.Write(buf, 0, n)
 
@@ -255,7 +263,8 @@ let private onRequest (h: Handle) (lim: Limits) (features: IFeatureCollection) :
                   // cannot stay in frame past the refusal
                   CloseAfter =
                     (match body with
-                     | BodyText _ -> false
+                     | BodyText _
+                     | BodyCharset _ -> false
                      | _ -> true) }
 
             // add-then-check against stop's set-then-sweep, under one lock:
@@ -471,6 +480,11 @@ exception BodyReadTimeout
 /// [D:serve-max-body] — the accept loop answers 413 without reading on
 exception BodyTooLarge
 
+/// raised when the request body declares a charset weir cannot decode
+/// [D:serve-charset] — the accept loop answers 415 before any handler,
+/// as the client refuses such a response body [D:encoding-law]
+exception BodyCharsetUnknown of charset: string
+
 /// raised when a handler-returned response header carries CR/LF/NUL
 /// [D:http-header-bytes] — the inbound-response face of the review's F3 —
 /// or cannot be sent at all [D:http-header-unsendable]. A distinguishable
@@ -506,6 +520,7 @@ let readRequest (ctx: SCtx) : SReq =
         match ctx.Body with
         | BodyOverMax -> raise BodyTooLarge
         | BodyTimedOut -> raise BodyReadTimeout
+        | BodyCharset cs -> raise (BodyCharsetUnknown cs)
         | BodyText t -> t
 
     let path, query =
