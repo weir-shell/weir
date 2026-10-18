@@ -311,6 +311,13 @@ let runningCleanup (f: unit -> 'a) : 'a =
 
 let inCleanup () = cleanupDepth.Value > 0
 
+// the cleanup depth a race, fan-out or serve flow was opened at
+// [D:cleanup-owns-its-cuts]: a cleanup entered inside the flow is spared
+// its cut, while a scope opened inside a cleanup still cuts its own flows
+let private flowBase = System.Threading.AsyncLocal<int>()
+
+let private inFlowCleanup () = cleanupDepth.Value > flowBase.Value
+
 // children an `always` cleanup started: the teardown's kill spares them
 // [D:teardown-never-preempts] — a cleanup runs whole, its commands too;
 // the exit and a second signal still kill them
@@ -415,27 +422,51 @@ let settleKills () : unit =
 // plain bag would leak). A child an `always` cleanup starts never joins
 // the group — the cut stops the body, never its cleanup
 // [D:teardown-always-spawns]; the race joins the arm, so it joins them.
-type RaceGroup() =
-    let procs =
-        System.Collections.Concurrent.ConcurrentBag<System.Diagnostics.Process>()
+// A nested group registers its children with the enclosing arm's group
+// too, so a condemned arm's nested races and fan-outs lose theirs.
+// The bag is made at the first child: every fan-out arm has a group.
+type RaceGroup(parent: RaceGroup option) =
+    let mutable procs: System.Collections.Concurrent.ConcurrentBag<System.Diagnostics.Process> =
+        null
 
     let mutable condemned = false
 
-    member _.Register(p: System.Diagnostics.Process) =
-        if inCleanup () then ()
-        elif condemned then killTree p
-        else procs.Add p
+    new() = RaceGroup(None)
 
-    member _.Condemn() =
+    member this.Register(p: System.Diagnostics.Process) =
+        if inFlowCleanup () then
+            ()
+        else
+            match parent with
+            | Some g -> g.Register p
+            | None -> ()
+
+            if condemned then
+                killTree p
+            else
+                lock this (fun () ->
+                    if isNull procs then
+                        procs <- System.Collections.Concurrent.ConcurrentBag<System.Diagnostics.Process>())
+
+                procs.Add p
+
+    member this.Condemn() =
         condemned <- true
 
-        for p in procs do
-            killTree p
+        match lock this (fun () -> procs) with
+        | null -> ()
+        | b ->
+            for p in b do
+                killTree p
 
 let private raceGroup = System.Threading.AsyncLocal<RaceGroup option>()
 
 let enterRace (g: RaceGroup) : unit = raceGroup.Value <- Some g
 let exitRace () : unit = raceGroup.Value <- None
+
+/// the group a race or fan-out opened here nests in (none inside a cleanup)
+let enclosingGroup () : RaceGroup option =
+    if inFlowCleanup () then None else raceGroup.Value
 
 let registerChild (p: System.Diagnostics.Process) : unit =
     match raceGroup.Value with
@@ -498,28 +529,68 @@ let private flowCancel = System.Threading.AsyncLocal<System.Threading.Cancellati
 // alone, never the AsyncLocal
 let mutable private racesLive = 0
 
-/// the flow's cancel token (CancellationToken.None outside a race)
-let flowToken () : System.Threading.CancellationToken = flowCancel.Value
+// a pmap/piter arm's cut: an `exit n` in a sibling arm stops the fan-out
+// [D:fanout-exit]. Kept apart from the race token so a fan-out arm's reads
+// and process waits stay as they are; sleeps, Http sends and builtin calls
+// honour it, and the arm's children die by its group
+let private fanCancel = System.Threading.AsyncLocal<System.Threading.CancellationToken>()
 
-let enterFlow (t: System.Threading.CancellationToken) : unit = flowCancel.Value <- t
-let exitFlow () : unit = flowCancel.Value <- System.Threading.CancellationToken.None
+/// the flow's cancel token (CancellationToken.None outside a race, or
+/// inside a cleanup the flow entered)
+let flowToken () : System.Threading.CancellationToken =
+    if inFlowCleanup () then
+        System.Threading.CancellationToken.None
+    else
+        flowCancel.Value
+
+/// the enclosing fan-out's cut, as `flowToken`
+let fanToken () : System.Threading.CancellationToken =
+    if inFlowCleanup () then
+        System.Threading.CancellationToken.None
+    else
+        fanCancel.Value
+
+let enterFlow (t: System.Threading.CancellationToken) : unit =
+    flowCancel.Value <- t
+    fanCancel.Value <- System.Threading.CancellationToken.None
+    flowBase.Value <- cleanupDepth.Value
+
+/// enter a fan-out arm: the enclosing flow's token (taken by `flowToken`
+/// where the fan-out opened) plus the fan-out's own cut
+let enterFan (flow: System.Threading.CancellationToken) (fan: System.Threading.CancellationToken) : unit =
+    flowCancel.Value <- flow
+    fanCancel.Value <- fan
+    flowBase.Value <- cleanupDepth.Value
+
+let exitFlow () : unit =
+    flowCancel.Value <- System.Threading.CancellationToken.None
+    fanCancel.Value <- System.Threading.CancellationToken.None
+    flowBase.Value <- 0
+
+/// a flow token may now be cancelled: the per-builtin check reads it
+let cutsLive () : unit =
+    System.Threading.Interlocked.Increment &racesLive |> ignore
+
+let cutsDone () : unit =
+    System.Threading.Interlocked.Decrement &racesLive |> ignore
 
 /// run a race (or a serve scope's handlers): the counter gates the
 /// per-builtin check
 let racing (f: unit -> 'a) : 'a =
-    System.Threading.Interlocked.Increment &racesLive |> ignore
+    cutsLive ()
 
     try
         f ()
     finally
-        System.Threading.Interlocked.Decrement &racesLive |> ignore
+        cutsDone ()
 
 // a lost race stops the body, never an `always` cleanup — the race joins
 // the loser, so its cleanup still runs before pfirst returns
 let private flowCut () =
     System.Threading.Volatile.Read &racesLive <> 0
-    && flowCancel.Value.IsCancellationRequested
-    && not (inCleanup ())
+    && (flowCancel.Value.IsCancellationRequested
+        || fanCancel.Value.IsCancellationRequested)
+    && not (inFlowCleanup ())
 
 // a requested teardown cuts every flow off the main thread outside an
 // `always` cleanup [D:teardown-joins-arms] — the main thread unwinds by
@@ -597,8 +668,7 @@ let checkInterrupted () : unit =
 
 /// the tokens a runtime-owned wait honours, beyond the teardown
 let private waitTokens () : System.Threading.CancellationToken list =
-    [ (if inCleanup () then System.Threading.CancellationToken.None else flowCancel.Value)
-      replToken () ]
+    [ flowToken (); replToken () ]
     |> List.filter (fun t -> t.CanBeCanceled)
 
 /// raise whichever cancel stopped this flow (the race's, then ^C's)
@@ -611,6 +681,9 @@ let checkCancels () : unit =
 let private cutTokens () : System.Threading.CancellationToken list =
     waitTokens ()
     @ (if teardownCuts () then [ teardownCut.Token ] else [])
+    @ (match fanToken () with
+       | t when t.CanBeCanceled -> [ t ]
+       | _ -> [])
 
 /// run `f` with one token that cancels when this flow's waits are cut —
 /// for a wait the runtime hands to an API (an Http send); `checkCancels`
@@ -1040,6 +1113,30 @@ let private allArmsParked () =
     not armMarks.IsEmpty
     && armMarks.Keys |> Seq.forall (fun m -> System.Threading.Volatile.Read &m.Parked > 0)
 
+// the pending `always` cleanups an arm registered, with the arm's context:
+// when the teardown's join abandons the arm, the main thread runs them
+// before it unwinds, so none lands after an enclosing scope released
+// [D:abandoned-arm-cleanup]
+let private armAlways =
+    System.Collections.Concurrent.ConcurrentDictionary<int, ArmMark * System.Threading.ExecutionContext>()
+
+let private runAbandonedCleanups () =
+    for id in armAlways.Keys |> Seq.sortDescending do
+        match armAlways.TryGetValue id with
+        | true, (m, ctx) when armMarks.ContainsKey m ->
+            match liveAlways.TryRemove id with
+            | true, cleanup ->
+                armAlways.TryRemove id |> ignore
+
+                try
+                    match ctx with
+                    | null -> cleanup ()
+                    | c -> System.Threading.ExecutionContext.Run(c, (fun _ -> cleanup ()), null)
+                with _ ->
+                    ()
+            | _ -> ()
+        | _ -> ()
+
 // a blocking call on a flow only the teardown cuts: parked while it blocks,
 // and a teardown landing meanwhile raises as it returns — its result unused
 let private parked (f: unit -> 'a) : 'a =
@@ -1145,6 +1242,9 @@ let waitTask (t: System.Threading.Tasks.Task) : unit =
                     streak <- if allArmsParked () then streak + 1 else 0
             with _ ->
                 ()
+
+            if not t.IsCompleted then
+                runAbandonedCleanups ()
 
         checkTeardown ()
 
@@ -1859,10 +1959,17 @@ let registerAlways (cleanup: unit -> unit) : int =
         installExitHook ()
 
     let id = System.Threading.Interlocked.Increment alwaysCounter
+
+    match armMark.Value with
+    | null -> ()
+    | m -> armAlways[id] <- (m, System.Threading.ExecutionContext.Capture())
+
     liveAlways[id] <- cleanup
     id
 
 // claim-by-removal: true when the caller took the cleanup back from the
 // exit hook — the hook claims the same way, so a signal racing a raise
 // cannot run one cleanup twice [D:within-always-any]
-let deregisterAlways (id: int) : bool = fst (liveAlways.TryRemove id)
+let deregisterAlways (id: int) : bool =
+    armAlways.TryRemove id |> ignore
+    fst (liveAlways.TryRemove id)

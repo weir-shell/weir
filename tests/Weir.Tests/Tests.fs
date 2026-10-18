@@ -27778,6 +27778,52 @@ let hunt3r3UnreadTests =
               Expect.equal (Weir.Session.Stdin.readPromptLine ()) "two" "then the earlier one"
           } ]
 
+// hunt 3 round 4's race seams; the signal, serve and REPL halves are e2e
+// cells
+let hunt3r4RaceTests =
+    testSequenced
+    <| testList
+        "hunt-3r4 races"
+        [ test "a race opened inside a cleanup cuts its own loser [D:cleanup-owns-its-cuts]" {
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+
+              let v =
+                  Weir.Session.runningCleanup (fun () ->
+                      run "[1; 2] |> Seq.pfirst (fun i -> match i with | 1 -> (Duration.sleep 5s ; 0) | _ -> i)")
+
+              Expect.equal v (VInt 2L) "the fast arm wins"
+              Expect.isLessThan sw.ElapsedMilliseconds 3000L "the loser is cut, not waited out"
+          }
+          test "exit n in a fan-out arm stops it and is never masked [D:fanout-exit]" {
+              withTempDir "weir-fx" (fun d ->
+                  let f = weirPath (Path.Combine(d, "arms.txt"))
+
+                  for src in
+                      [ $"[1; 2; 3] |> Seq.pmap (fun i -> match i with | 1 -> fail \"one\" | 2 -> (Duration.sleep 200ms ; exit 7) | _ -> (Duration.sleep 5s ; File.append \"{f}\" [\"late\"] ; i)) |> Seq.length"
+                        $"[1; 2; 3] |> Seq.piterWith 3 (fun i -> match i with | 1 -> fail \"one\" | 2 -> (Duration.sleep 200ms ; exit 7) | _ -> (Duration.sleep 5s ; File.append \"{f}\" [\"late\"]))" ] do
+                      let sw = System.Diagnostics.Stopwatch.StartNew()
+
+                      match (try Ok(run src) with e -> Error e) with
+                      | Error(Weir.Session.ExitRequest 7) -> ()
+                      | other -> failtest $"expected exit 7, got {other}: {src}"
+
+                      Expect.isLessThan sw.ElapsedMilliseconds 3000L $"the in-flight arm is cut: {src}"
+
+                  Expect.isFalse (File.Exists(Path.Combine(d, "arms.txt"))) "no cut arm's write lands"
+
+                  match
+                      (try
+                          Ok(run $"[1; 2; 3] |> Seq.piterWith 1 (fun i -> File.append \"{f}\" [show i] ; match i with | 1 -> exit 4 | _ -> ())")
+                       with e ->
+                           Error e)
+                  with
+                  | Error(Weir.Session.ExitRequest 4) -> ()
+                  | other -> failtest $"expected exit 4, got {other}"
+
+                  Expect.equal (File.ReadAllLines(Path.Combine(d, "arms.txt"))) [| "1" |] "no new arm starts"
+                  expectValue "[1..4] |> Seq.pmap (fun i -> i) |> Seq.length" (VInt 4L))
+          } ]
+
 let sweepFindingTests =
     let msgs file lines = diagsIn file lines |> List.map (fun d -> d.Message)
 
@@ -28677,6 +28723,7 @@ let allTests =
           hunt3r3FifoTests
           hunt3r3PromptKeyTests
           hunt3r3UnreadTests
+          hunt3r4RaceTests
           argsSecretEchoTests
           hunt3BehaviorTests
           docsBinaryTests

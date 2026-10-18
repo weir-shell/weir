@@ -5173,6 +5173,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         internalError ctx
                     // cut past the scope: detached, nothing to answer
                     | :? Session.Cancelled -> ()
+                    // a REPL ^C passes through as `exit` does [D:repl-interrupt]:
+                    // the evaluation ends, the connection closes unanswered
+                    | :? Session.Interrupted -> Serve.abandon ctx
                     | ex ->
                         // a handler raise is a 500 — the server
                         // survives one bad request, and the

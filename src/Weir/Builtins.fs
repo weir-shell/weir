@@ -1711,26 +1711,63 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     // an arm that raises before evaluating anything falls back to the call
     let callNode = RunPos.Current
 
-    let work () =
+    // `exit n` in an arm stops the fan-out as it ends a race
+    // [D:fanout-exit]: no new arm, the in-flight ones cut (their children
+    // killed by their group) and joined, then the exit — never ranked
+    // with the arms' errors
+    let mutable exited: exn = null
+    let parentFlow = Session.flowToken ()
+    let parentGroup = Session.enclosingGroup ()
+    use fan = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(Session.fanToken ())
+    // each worker's running arm's group
+    let groups: Session.RaceGroup[] = Array.zeroCreate workers
+    let mutable cutLive = 0
+
+    let stop (e: exn) =
+        if isNull (System.Threading.Interlocked.CompareExchange(&exited, e, null)) then
+            System.Threading.Interlocked.Exchange(&cutLive, 1) |> ignore
+            Session.cutsLive ()
+            fan.Cancel()
+
+            for g in groups do
+                if not (isNull (box g)) then
+                    g.Condemn()
+
+    let work (w: int) =
         // a teardown stops new arms [D:teardown-stops-arms] and cuts the
         // in-flight ones at their next boundary [D:teardown-joins-arms]; a
         // REPL ^C stops them too [D:repl-interrupt-fanout]
         let take () =
-            if Session.stopTakingArms () || Session.interruptRequested () then
+            if
+                Session.stopTakingArms ()
+                || Session.interruptRequested ()
+                || not (isNull (System.Threading.Volatile.Read &exited))
+            then
                 arr.Length
             else
                 System.Threading.Interlocked.Increment &next
 
+        Session.enterFan parentFlow fan.Token
         let mutable i = take ()
 
         while i < arr.Length do
             Session.enterWorker parentCwd
+            let group = Session.RaceGroup parentGroup
+            System.Threading.Volatile.Write(&groups[w], group)
+
+            // an exit landing as the arm was taken
+            if not (isNull (System.Threading.Volatile.Read &exited)) then
+                group.Condemn()
+
+            Session.enterRace group
             RunPos.Current <- callNode
 
             try
                 try
                     out[i] <- apply f arr[i]
-                with e ->
+                with
+                | :? ExitRequest as e -> stop e
+                | e ->
                     pinOnThread e
                     // every arm still runs (data parallelism does not
                     // half-finish); the first error by input order
@@ -1742,7 +1779,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
             i <- take ()
 
     // counted for the teardown's join [D:teardown-abandons-reads]
-    let worker () = Session.armRunning work
+    let worker (w: int) () = Session.armRunning (fun () -> work w)
 
     // arms are one level deeper [D:parallel-ladder]: set before
     // StartNew so the workers capture depth+1, restored after the join
@@ -1751,11 +1788,14 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
 
     try
         let tasks =
-            Array.init workers (fun _ -> Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning))
+            Array.init workers (fun w -> Task.Factory.StartNew(worker w, TaskCreationOptions.LongRunning))
 
         Session.waitTask (Task.WhenAll(tasks: Task[]))
     finally
         Session.setParallelDepth depth
+
+        if System.Threading.Volatile.Read &cutLive = 1 then
+            Session.cutsDone ()
 
     // arms skipped by a teardown leave no result: the fan-out ends with
     // the teardown's code, never a partial array [D:teardown-stops-arms]
@@ -1765,6 +1805,10 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     // an arm whose child died of the ^C is the interrupt, not a failure
     // [D:repl-interrupt-fanout]
     Session.checkInterrupted ()
+
+    match exited with
+    | null -> ()
+    | e -> System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e).Throw()
 
     if not errors.IsEmpty then
         raise errors[Seq.min errors.Keys]
@@ -1790,7 +1834,8 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
         failwith "pfirst: empty sequence — a race needs at least one arm; guard with Seq.isEmpty"
 
     let parentCwd = Session.Cwd()
-    let groups = Array.init arr.Length (fun _ -> Session.RaceGroup())
+    let parentGroup = Session.enclosingGroup ()
+    let groups = Array.init arr.Length (fun _ -> Session.RaceGroup parentGroup)
     let mutable won = 0
     let mutable failedCount = 0
     let errors = System.Collections.Concurrent.ConcurrentDictionary<int, exn>()
@@ -1798,9 +1843,9 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
     let outcome =
         TaskCompletionSource<Value>(TaskCreationOptions.RunContinuationsAsynchronously)
 
-    // a nested race inherits its arm's cancellation
+    // a nested race inherits its arm's cancellation (none inside a cleanup)
     use race =
-        System.Threading.CancellationTokenSource.CreateLinkedTokenSource(Session.flowToken ())
+        System.Threading.CancellationTokenSource.CreateLinkedTokenSource(Session.flowToken (), Session.fanToken ())
 
     let workers = min degree arr.Length
     let mutable next = -1
@@ -1868,8 +1913,8 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
         let all = Task.WhenAll(tasks: Task[])
 
         try
-            Session.waitTask (Task.WhenAny(outcome.Task, all))
-            // the losers join before the race returns [D:pfirst-join]
+            // the losers join before the race returns [D:pfirst-join],
+            // under a teardown too [D:teardown-joins-arms]
             Session.waitTask all
 
             // every arm stopped without an outcome: an enclosing race
