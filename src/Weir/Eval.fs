@@ -5370,6 +5370,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, Session.RaceGroup>()
 
             let cut = new System.Threading.CancellationTokenSource()
+            // the scope's node [D:scope-tree]: the body runs in it, each
+            // handler in a node under it
+            let home = Session.currentNode ()
+            let serveNode = Session.openNode home Session.NodeKind.Serve
 
             // a handler failure the client sees as a 500 is recorded for
             // the script too [D:serve-handler-errors], on the stream-error
@@ -5397,10 +5401,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // running is cut at its next effect boundary [D:serve-cut]: the
             // scope's flow token (the pfirst loser's mechanism) and the
             // request's race group, whose children die with the cut
-            let runHandler (ctx: Serve.SCtx) (group: Session.RaceGroup) =
+            let runHandler (ctx: Serve.SCtx) (group: Session.RaceGroup) (node: Session.Node) =
                 let mutable seen = None
 
                 try
+                    Session.setCurrentNode node
                     // fork the session like a pmap arm — the
                     // handler sees the scope's cwd, worker-local
                     Session.enterWorker parentCwd
@@ -5494,6 +5499,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     Session.exitWorker ()
                     gate.Release() |> ignore
                     inflight.TryRemove(System.Threading.Thread.CurrentThread) |> ignore
+                    Session.setCurrentNode null
+                    Session.closeNode node
 
             // the accept loop on its own thread: it takes a slot, then
             // blocks in accept until a request is parked or stop() closes
@@ -5515,12 +5522,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         | None -> gate.Release() |> ignore // the server closed — shut down
                         | Some ctx ->
                             let group = Session.RaceGroup()
+                            let node = Session.openNode serveNode Session.NodeKind.Handler
 
                             let worker =
                                 System.Threading.Thread(fun () ->
                                     // the counter keeps the per-builtin check
                                     // live while a handler runs [D:serve-cut]
-                                    Session.racing (fun () -> runHandler ctx group))
+                                    Session.racing (fun () -> runHandler ctx group node))
 
                             worker.IsBackground <- true
                             inflight[worker] <- group
@@ -5536,7 +5544,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
             loopThread.Start()
 
             try
-                eval (Map.add binderName (VServer handle) env) body
+                Session.setCurrentNode serveNode
+
+                try
+                    eval (Map.add binderName (VServer handle) env) body
+                finally
+                    Session.setCurrentNode home
             finally
                 // close the server — frees the port, drops queued requests,
                 // gives in-flight handlers the drain together; idempotent
@@ -5561,7 +5574,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         kv.Value.Condemn()
 
                     for kv in inflight do
-                        Session.joinThread kv.Key)
+                        Session.joinThread kv.Key
+
+                    Session.closeNode serveNode)
         | WithinTmp ->
             // kind tmp [D:within-scopes]: a fresh unique directory,
             // bound as the binder for the block; removed on every

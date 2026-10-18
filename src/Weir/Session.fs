@@ -335,6 +335,142 @@ let mutable private spawningStopped = false
 let private killedProcs =
     System.Collections.Generic.HashSet<System.Diagnostics.Process>(HashIdentity.Reference)
 
+// ---- the cancellation-scope tree [D:scope-tree] ------------------------
+// Every flow (the main flow, a REPL entry, a fan-out or race arm, a serve
+// handler) and every scope that has flows of its own (a race, a fan-out, a
+// serve) is a node; a running cleanup is a shield node. The current node
+// rides one AsyncLocal, so an arm's helpers inherit it. A node owns the
+// children its flow spawned (they leave it as they exit, and a node that
+// closes hands the live ones to its parent) and its cut: a cut marks the
+// node and every node under it, stopping at shields, wakes their waits and,
+// when it kills, tree-kills their children. A flow checks its own node and
+// nothing else.
+type NodeKind =
+    | Root = 0
+    | Flow = 1
+    | Race = 2
+    | Fan = 3
+    | Arm = 4
+    | Serve = 5
+    | Handler = 6
+    | Shield = 7
+
+/// why a node was cut (flags) — what its flows raise follows from it
+module CutReason =
+    let Teardown = 1
+    let Soft = 2
+    let RaceLost = 4
+    let FanExit = 8
+    let ServeCut = 16
+    let HandlerExit = 32
+    let Repl = 64
+
+// a live child and the node that owns it now (a closing node hands its
+// live children to its parent, so the owner moves)
+[<AllowNullLiteral>]
+type private ProcEntry(p: System.Diagnostics.Process, owner: obj) =
+    member _.P = p
+
+    [<DefaultValue>]
+    val mutable Killed: int
+
+    member val Owner: obj = owner with get, set
+
+[<AllowNullLiteral>]
+type Node(parent: Node, kind: NodeKind) =
+    /// 0 uncut, 1 cut, 2 cut through shields (a second REPL ^C)
+    [<DefaultValue>]
+    val mutable Cut: int
+
+    [<DefaultValue>]
+    val mutable Reasons: int
+
+    // a killing cut reached it: children registering now die at once
+    [<DefaultValue>]
+    val mutable Killing: bool
+
+    // takes no new arm (a won race)
+    [<DefaultValue>]
+    val mutable Closed: bool
+
+    // left the tree
+    [<DefaultValue>]
+    val mutable Detached: bool
+
+    [<DefaultValue>]
+    val mutable Cts: System.Threading.CancellationTokenSource
+
+    [<DefaultValue>]
+    val mutable Kids: System.Collections.Generic.HashSet<Node>
+
+    [<DefaultValue>]
+    val mutable internal Procs: System.Collections.Generic.HashSet<obj>
+
+    /// the `exit n` a fan-out or serve scope raises once its flows joined
+    [<DefaultValue>]
+    val mutable Exit: exn
+
+    member _.Parent = parent
+    member _.Kind = kind
+
+// cut nodes still in the tree: the per-builtin check's fast path reads this
+// alone
+let mutable private cutsPending = 0
+
+let private rootNode = Node(null, NodeKind.Root)
+
+let private refEq = HashIdentity.Reference<Node>
+
+/// open a node under `parent`; it is born cut when its parent is (a shield
+/// only by a cut that passes shields)
+let openNode (parent: Node) (kind: NodeKind) : Node =
+    let n = Node(parent, kind)
+
+    lock parent (fun () ->
+        if isNull parent.Kids then
+            parent.Kids <- System.Collections.Generic.HashSet<Node>(refEq)
+
+        parent.Kids.Add n |> ignore
+
+        if parent.Cut > 0 && (kind <> NodeKind.Shield || parent.Cut = 2) then
+            n.Cut <- parent.Cut
+            n.Reasons <- parent.Reasons
+            n.Killing <- parent.Killing && kind <> NodeKind.Shield
+            System.Threading.Interlocked.Increment &cutsPending |> ignore)
+
+    n
+
+// the default flow: the main thread's (and, in-process, every evaluation's
+// with no node of its own)
+let private mainNode = openNode rootNode NodeKind.Flow
+
+let private current = System.Threading.AsyncLocal<Node>()
+
+/// the node this flow runs in
+let currentNode () : Node =
+    match current.Value with
+    | null -> mainNode
+    | n -> n
+
+/// make `n` this flow's node (null: the default flow)
+let setCurrentNode (n: Node) : unit = current.Value <- n
+
+/// leave the tree: the live children go to the parent
+let closeNode (n: Node) : unit =
+    let p = n.Parent
+
+    let detach () =
+        if not n.Detached then
+            n.Detached <- true
+
+            if not (isNull p.Kids) then
+                p.Kids.Remove n |> ignore
+
+            if n.Cut > 0 then
+                System.Threading.Interlocked.Decrement &cutsPending |> ignore
+
+    lock n (fun () -> lock p detach)
+
 // an `always` block in progress on this logical flow [D:teardown-always-spawns]:
 // the teardown stops the body's spawns, never a cleanup's — teardown
 // commands are what `always` is for
@@ -368,10 +504,16 @@ let runningCleanup (f: unit -> 'a) : 'a =
             mainCleanups <- mainCleanups + 1)
 
     cleanupDepth.Value <- cleanupDepth.Value + 1
+    // the cleanup's own node [D:scope-tree]: no cut from its parent reaches it
+    let home = current.Value
+    let shield = openNode (currentNode ()) NodeKind.Shield
+    current.Value <- shield
 
     try
         f ()
     finally
+        current.Value <- home
+        closeNode shield
         cleanupDepth.Value <- cleanupDepth.Value - 1
 
         if onMain then
@@ -692,8 +834,13 @@ let mutable private replCutCleanup: System.Threading.CancellationTokenSource = n
 let mutable private replInterrupts = 0
 
 /// arm a fresh interrupt for one REPL evaluation
+let mutable private replNode: Node = null
+
 let beginReplEval () : unit =
     replInterrupts <- 0
+    // one node per evaluation [D:scope-tree]
+    replNode <- openNode rootNode NodeKind.Flow
+    current.Value <- replNode
     replCut <- new System.Threading.CancellationTokenSource()
     replCutCleanup <- new System.Threading.CancellationTokenSource()
 
@@ -701,6 +848,13 @@ let beginReplEval () : unit =
 let endReplEval () : unit =
     let a, b = replCut, replCutCleanup
     replCut <- null
+
+    match replNode with
+    | null -> ()
+    | n ->
+        replNode <- null
+        current.Value <- null
+        closeNode n
     replCutCleanup <- null
 
     for c in [ a; b ] do

@@ -1725,6 +1725,8 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     // each worker's running arm's group
     let groups: Session.RaceGroup[] = Array.zeroCreate workers
     let mutable cutLive = 0
+    // this fan-out's node [D:scope-tree]: each arm runs in a node under it
+    let fanNode = Session.openNode (Session.currentNode ()) Session.NodeKind.Fan
 
     let stop (e: exn) =
         if isNull (System.Threading.Interlocked.CompareExchange(&exited, e, null)) then
@@ -1752,10 +1754,13 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
                 System.Threading.Interlocked.Increment &next
 
         Session.enterFan parentFlow fan.Token
+        let home = Session.currentNode ()
         let mutable i = take ()
 
         while i < arr.Length do
             Session.enterWorker parentCwd
+            let armNode = Session.openNode fanNode Session.NodeKind.Arm
+            Session.setCurrentNode armNode
             let group = Session.RaceGroup parentGroup
             System.Threading.Volatile.Write(&groups[w], group)
 
@@ -1778,6 +1783,8 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
                     // rethrows after the join
                     errors[i] <- e
             finally
+                Session.setCurrentNode home
+                Session.closeNode armNode
                 Session.exitWorker ()
 
             i <- take ()
@@ -1800,6 +1807,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
         abandoned <- arms.Join(Task.WhenAll(tasks: Task[]), fan.Token)
     finally
         Session.setParallelDepth depth
+        Session.closeNode fanNode
 
         // an abandoned arm's parked call may still return: the cut stays
         // live for it, so it never runs on
@@ -1863,6 +1871,8 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
     let workers = min degree arr.Length
     let mutable next = -1
+    // this race's node [D:scope-tree]: each arm runs in a node under it
+    let raceNode = Session.openNode (Session.currentNode ()) Session.NodeKind.Race
     // blamed where the arm raised, as in runParallelWith
     let callNode = RunPos.Current
 
@@ -1877,6 +1887,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
             set ()
 
     let work () =
+        let home = Session.currentNode ()
         let mutable i = System.Threading.Interlocked.Increment &next
 
         while i < arr.Length
@@ -1885,6 +1896,8 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
               && not (Session.stopTakingArms ())
               && not (Session.interruptRequested ()) do
             Session.enterWorker parentCwd
+            let armNode = Session.openNode raceNode Session.NodeKind.Arm
+            Session.setCurrentNode armNode
             Session.enterRace groups[i]
             Session.enterFlow race.Token
             RunPos.Current <- callNode
@@ -1907,43 +1920,48 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
             finally
                 Session.exitFlow ()
                 Session.exitRace ()
+                Session.setCurrentNode home
+                Session.closeNode armNode
                 Session.exitWorker ()
 
             i <- System.Threading.Interlocked.Increment &next
 
     let worker () = Session.armRunning work
 
-    Session.racing (fun () ->
-        // arms are one level deeper [D:parallel-ladder]
-        let depth = Session.parallelDepthNow ()
-        Session.setParallelDepth (depth + 1)
+    try
+        Session.racing (fun () ->
+            // arms are one level deeper [D:parallel-ladder]
+            let depth = Session.parallelDepthNow ()
+            Session.setParallelDepth (depth + 1)
 
-        let tasks =
+            let tasks =
+                try
+                    Array.init workers (fun _ -> Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning))
+                finally
+                    Session.setParallelDepth depth
+
+            let all = Task.WhenAll(tasks: Task[])
+
             try
-                Array.init workers (fun _ -> Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning))
-            finally
-                Session.setParallelDepth depth
+                // the losers join before the race returns [D:pfirst-join],
+                // under a teardown too [D:teardown-joins-arms]
+                Session.waitTask all
 
-        let all = Task.WhenAll(tasks: Task[])
+                // every arm stopped without an outcome: an enclosing race
+                // cancelled this one
+                if not outcome.Task.IsCompleted then
+                    Session.checkInterrupted ()
+                    raise (Session.Cancelled())
 
-        try
-            // the losers join before the race returns [D:pfirst-join],
-            // under a teardown too [D:teardown-joins-arms]
-            Session.waitTask all
+                // every arm failed under a ^C: the interrupt [D:repl-interrupt-fanout]
+                if outcome.Task.IsFaulted then
+                    Session.checkInterrupted ()
 
-            // every arm stopped without an outcome: an enclosing race
-            // cancelled this one
-            if not outcome.Task.IsCompleted then
-                Session.checkInterrupted ()
-                raise (Session.Cancelled())
-
-            // every arm failed under a ^C: the interrupt [D:repl-interrupt-fanout]
-            if outcome.Task.IsFaulted then
-                Session.checkInterrupted ()
-
-            outcome.Task.Result
-        with :? System.AggregateException as ae when ae.InnerExceptions.Count = 1 ->
-            raise ae.InnerExceptions[0])
+                outcome.Task.Result
+            with :? System.AggregateException as ae when ae.InnerExceptions.Count = 1 ->
+                raise ae.InnerExceptions[0])
+    finally
+        Session.closeNode raceNode
 
 let private pfirstImpl: Value =
     VBuiltin(fun f ->
