@@ -682,6 +682,25 @@ WEOF
         pkill -f "yes epipe$MK\$" 2>/dev/null || true
         fail "a closed stdout must reap the relayed child (yes left running)"
     fi
+    # the closed stdout's teardown kills the children then [D:stdout-epipe]:
+    # an arm waiting on a running command is cut by the kill, not after it
+    cat > "$epdir/arm.weir" <<WEOF
+[1; 2] |> Seq.piter (fun i ->
+    if i == 1 then
+        print "a"
+        Duration.sleep 400ms
+        print "b"
+        print "c"
+    else
+        within proc p = sleep 6.$MK
+            let _code = Proc.wait p
+            ())
+WEOF
+    t0=$(now_ms)
+    res=$( { $BIN "$epdir/arm.weir" 2>"$epdir/err-arm" | head -1 >/dev/null; } ; echo "${PIPESTATUS[0]}")
+    took=$(( $(now_ms) - t0 ))
+    [ "$res" = "141" ] || fail "a closed stdout ends a fan-out with 141 (got $res): $(cat "$epdir/err-arm")"
+    [ "$took" -lt 4000 ] || fail "a closed stdout must kill an arm's waited command at the teardown (took ${took}ms)"
     rm -rf "$epdir"
     echo "e2e ok: a closed stdout ends the script with 141, always runs, the child is reaped"
 fi
@@ -3488,6 +3507,37 @@ WEOF
     echo "$tout" | grep -qF "EXIT -2" || fail "weir dies by the SIGINT after the child's ^C handling: $tout"
     echo "$tout" | grep -qF "after" && fail "no statement runs after a terminal ^C: $tout"
     echo "$tout" | grep -qF "command failed" && fail "a terminal ^C is not a command failure: $tout"
+
+    # the terminal ^C follows LIVE scopes [D:sigint-terminal-group]: once
+    # the `within tmp` has closed, the ^C is the unscoped one — the child's
+    # handler runs, weir dies by the SIGINT
+    printf '%s\n' 'within tmp d' '    print "scoped"' "sh -c 'trap \"sleep 0.5; echo caught; exit 3\" INT; sleep 7.32 & wait'" 'print "after"' > "$sedir/trapclosed.weir"
+    tout=$(printf 'SLEEP 1000\nSEND \\x03\nSLEEP 2500\n' | python3 "$ptyrun" 6 "$BIN" "$sedir/trapclosed.weir")
+    echo "$tout" | grep -qF "caught" || fail "a terminal ^C after every scope closed is the unscoped one (the child's handler runs): $tout"
+    echo "$tout" | grep -qF "EXIT -2" || fail "a terminal ^C after the scopes closed dies by the SIGINT: $tout"
+    left=$(ps -eo pid,args | awk '$2 == "sleep" && $3 == "7.32" {print $1}')
+    [ -z "$left" ] || kill -9 $left 2>/dev/null || true
+
+    # a second terminal ^C mid-teardown hard-exits [D:signal-teardown]: a
+    # child ignoring the ^C does not hold weir, and it dies with weir
+    printf '%s\n' "sh -c 'trap \"\" INT; sleep 7.42'" 'print "after"' > "$sedir/ignint.weir"
+    t0=$(now_ms)
+    tout=$(printf 'SLEEP 800\nSEND \\x03\nSLEEP 700\nSEND \\x03\nSLEEP 300\n' | python3 "$ptyrun" 12 "$BIN" "$sedir/ignint.weir")
+    took=$(( $(now_ms) - t0 ))
+    left=$(ps -eo pid,args | awk '$2 == "sleep" && $3 == "7.42" {print $1}')
+    [ -z "$left" ] || { kill -9 $left 2>/dev/null; fail "the second ^C's hard exit must kill the ^C-ignoring child"; }
+    echo "$tout" | grep -qF "EXIT -2" || fail "a second terminal ^C dies by the SIGINT: $tout"
+    [ "$took" -lt 5000 ] || fail "a second terminal ^C must hard-exit, not wait out the child (${took}ms): $tout"
+
+    # pure computation holds the terminal ^C's join [D:teardown-joins-arms]:
+    # the grace period does not exit while the arms compute
+    printf '%s\n' 'sh -c "true"' '[1; 2] |> Seq.piter (fun i ->' '    let n = [1..7000000] |> Seq.fold (fun a x -> a + 1) 0' '    print $"arm {i} {n}")' 'print "after"' > "$sedir/purejoin.weir"
+    t0=$(now_ms)
+    tout=$(printf 'SLEEP 500\nSEND \\x03\nSLEEP 300\n' | python3 "$ptyrun" 20 "$BIN" "$sedir/purejoin.weir")
+    took=$(( $(now_ms) - t0 ))
+    echo "$tout" | grep -qF "EXIT -2" || fail "a terminal ^C during a pure-compute join dies by the SIGINT: $tout"
+    echo "$tout" | grep -qE "arm [12] |after" && fail "no arm effect or statement after a terminal ^C: $tout"
+    [ "$took" -gt 2000 ] || fail "the terminal ^C's grace must hold for the pure-compute join (exited at ${took}ms): $tout"
 
     # a tty Self.prompt stays cooked and drops key sequences
     # [D:prompt-tty-keys]: a left arrow (CSI) and an SS3 up arrow typed
@@ -13010,6 +13060,44 @@ WEOF
 out=$($BIN "$svdir/clean.weir" 2>&1) || fail "serve cleanup-join run failed: $out"
 [ "$(tr '\n' ',' < "$svdir/clean.log")" = "handler started,cleanup start,cleanup-cmd,cleanup end,serve returned,lock released," ] || fail "a cut serve handler's always must finish before within serve returns: $(tr '\n' ',' < "$svdir/clean.log")"
 echo "e2e ok: within serve — a cut handler's always cleanup is joined whole before the scope returns"
+
+# a signal landing while `within serve` drains holds the watchdog
+# [D:serve-cut-joins-cleanup]: the cut handler's `always` (longer than the
+# watchdog's 1s) is joined whole, then the signal's exit
+svport18=8493
+if [ "$IS_WINDOWS" != "1" ] && command -v setsid >/dev/null 2>&1; then
+    rm -f "$svdir/dsig.log"
+    cat > "$svdir/dsig.weir" <<WEOF
+let log = "$svdir/dsig.log"
+let handler = fun req ->
+    within
+        File.append log ["handler started"]
+        Duration.sleep 6s
+    always
+        File.append log ["cleanup start"]
+        Duration.sleep 2500ms
+        File.append log ["cleanup end"]
+    HttpServerResponse { status = 200; headers = []; body = Text "late" }
+
+within serve srv = { port = $svport18; maxConcurrent = 2 } handler
+    poll timeout=8s interval=50ms
+        Net.portOpen $svport18
+    within proc client = curl -s --max-time 15 http://127.0.0.1:$svport18/
+        poll timeout=8s interval=50ms
+            File.exists log
+    File.append log ["body done"]
+File.append log ["serve returned"]
+WEOF
+    setsid "$BIN" "$svdir/dsig.weir" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    for _ in $(seq 1 100); do grep -qF "body done" "$svdir/dsig.log" 2>/dev/null && break; sleep 0.05; done
+    sleep 0.2
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" || code=$?
+    [ "$code" = "143" ] || fail "a SIGTERM during the serve drain exits 143 (got $code)"
+    [ "$(tr '\n' ',' < "$svdir/dsig.log")" = "handler started,body done,cleanup start,cleanup end," ] || fail "a signal during the serve drain must join the handler's always whole: $(tr '\n' ',' < "$svdir/dsig.log")"
+    echo "e2e ok: within serve — a signal during the drain holds the watchdog; the cut handler's always runs whole"
+fi
 
 # (H3 lows) a queued request whose client already left is never started,
 # and a Stream whose client aborts frees its slot [D:serve-drain]
