@@ -12,4 +12,18 @@ Rulings (user, all as recommended):
 - #10 exit n in a pmap/piter arm stops the fan-out like pfirst (no new arm, in-flight cut + joined, cleanups whole), exits n, never masked.
 - #12 a signal still drains serve (≤2s, then cut, cleanups joined); correct the serve-drain row.
 
-Stage 0 status (2026-10-18): done. Fixed #1 #2 #3 #4 #5 #9 #10 #11 (plus #5's capture-reader "errors occurred" line); rulings #6 #7 #8 #10 #12 applied in code and docs; docs/reference/concurrency.md Discrepancies 1-12 all resolved. Gate: tools/hunt3r4-repro.weir 9/9 with its controls, rides linux-hunts and local.sh. Residuals (concurrency.md): an exit-stopped fan-out does not cut an arm reading an orphan-held pipe; an abandoned arm's cleanup runs while its body is still parked. Next: black-box round 4, then the nightly signal-stress job. Round 4 is not done.
+Stage 0 status (2026-10-18): done. Fixed #1 #2 #3 #4 #5 #9 #10 #11 (plus #5's capture-reader "errors occurred" line); rulings #6 #7 #8 #10 #12 applied in code and docs; docs/reference/concurrency.md Discrepancies 1-12 all resolved. Gate: tools/hunt3r4-repro.weir 9/9 with its controls, rides linux-hunts and local.sh. Residual (concurrency.md): an abandoned arm's cleanup runs while its body is still parked. A Windows e2e failure (an exit-stopped fan-out waiting on a read the kill missed) is fixed with the black-box round's C21/C22: the exit's join abandons arms parked in uncut reads and runs their cleanups first, a sibling's Proc.wait is cut, a nested fan-out takes no new arm once its enclosing race/exit/serve stopped ([D:fanout-exit-reads]).
+
+Black-box round 4 (2026-10-18): done — 7 high, 26 medium (A clean on all OSes). C21 and C22 fixed on this branch; the rest owed in PLAN-hunt3r4-fixes. The core-redesign trigger is met (C21, C22, C1-1 a second signal sweeps cleanups on the signal thread concurrently with a running one, C1-5 an abandoned arm's late cleanup on its own thread): the core becomes one cancellation-scope tree (ruling R6).
+
+Rulings (user 2026-10-18, all as recommended):
+- R1 (E5) runtime errors escape the data they quote, as the echo does; weir's own diagnostic styling keeps its SGR.
+- R2 (C25) `exit n` in a serve handler stops the scope (no new request, handlers cut and joined, cleanups whole), then exits n.
+- R3 (F5) a cut Self.prompt never splices: no reader sees a line that wasn't written.
+- R4 (B2) a plan's captured op checks its preconditions against the plan's simulated state and raises at capture.
+- R5 (B9) from xml decodes per the declared encoding; an unknown one refuses.
+- R6 one cancellation-scope tree: every flow, wait and arm takes its cut from its parent scope; one owner runs cleanups LIFO; a second signal hard-exits with no concurrent sweep.
+- R7 (C1-4) after the unwind weir dies by the signal (INT/TERM/HUP), scoped or not.
+- R8 (C1-2) commands spawned inside an `always` run in their own process group: a terminal ^C cannot reach them.
+Severity: C22 high; F3 medium; B8, B11 low.
+Next: PLAN-hunt3r4-fixes — harness first, then stage A (the scope tree) beside the safety and formats stages; the nightly signal-stress job from the round's storm driver. Round 4 is not done.
