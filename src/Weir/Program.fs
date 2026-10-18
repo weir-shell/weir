@@ -222,6 +222,10 @@ let private lockText (redirected: bool) (s: string) : string =
 // a script (or -e) tears down on its main thread: signals and a closed
 // stdout end it with their own code [D:signal-main-unwind] [D:stdout-epipe]
 let private runOnMain (run: unit -> int) : int =
+    // an inherited SIG_IGN on SIGINT without a tty is reset at start, so a
+    // detached poller that never spawns dies by a `kill -INT` too
+    // [D:signal-teardown]
+    Session.resetDetachedSigint.Force()
     Session.registerMainThread ()
     Session.armStdout ()
     run () |> Session.exitCodeOr
@@ -268,7 +272,9 @@ let main argv =
     let dispatch () =
         match Array.toList argv with
         | [ "-e"; input ] -> runOnMain (fun () -> evalOnce input)
-        | [] -> Weir.Repl.run ()
+        // a signal's teardown of an evaluation ends the REPL by the signal
+        // [D:die-by-signal]
+        | [] -> Weir.Repl.run () |> Session.exitCodeOr
         // the reference dump [D:reference] — machine surface for the site's
         // generated pages; the e2e currency gate diffs it against the
         // committed site/src/data/reference.json

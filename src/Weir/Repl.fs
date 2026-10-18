@@ -1876,6 +1876,8 @@ let private setupLineEditor () =
     if not (OperatingSystem.IsWindows()) then
         ttyEval <- true
         Session.replSurvivesSigint.Value <- true
+        // a death by a signal leaves the shell's terminal as it found it
+        Session.beforeDie <- Term.restoreCooked
 
         sigintSurvival <-
             Some(

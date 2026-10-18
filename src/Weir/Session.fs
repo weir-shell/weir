@@ -510,6 +510,13 @@ let private liveProcs =
 // alone
 let mutable private cutsPending = 0
 
+// the hard exit froze every flow [D:hard-exit]: a flow reaching any runtime
+// point now parks there, never to run again
+let mutable private hardExiting = 0
+
+let private park () =
+    System.Threading.Thread.Sleep System.Threading.Timeout.Infinite
+
 let private rootNode = Node(null, NodeKind.Root)
 
 let private refEq = HashIdentity.Reference<Node>
@@ -729,6 +736,9 @@ let mutable private watchdogFired = false
 /// kill, a parallel fan-out inside it keeps taking arms, and a requested
 /// teardown never preempts it [D:teardown-never-preempts]
 let runningCleanup (f: unit -> 'a) : 'a =
+    if System.Threading.Volatile.Read &hardExiting <> 0 then
+        park ()
+
     let onMain = onMainThread ()
 
     if onMain then
@@ -792,6 +802,9 @@ let releaseFrame (f: Frame) (release: unit -> unit) : unit =
     if isNull f then
         release ()
     else
+        if System.Threading.Volatile.Read &hardExiting <> 0 then
+            park ()
+
         let mine =
             lock watchdogGate (fun () ->
                 if watchdogFired || f.Claimed then
@@ -853,6 +866,16 @@ let private adoptMain () =
 let mutable private teardownCode = 0
 let mutable private teardownRaised = 0
 
+// a second signal during teardown hard-exits [D:signal-teardown]
+// [D:hard-exit] — the shell's double-Ctrl+C escape, so a slow or stuck
+// cleanup can never wedge a supervisor. Set by the first signal and by a
+// closed stdout's teardown
+let private tearingDown = ref 0
+
+// the REPL's evaluation is the flow a teardown unwinds (its thread stands
+// in for the main thread meanwhile)
+let mutable private replFlow = false
+
 let registerMainThread () : unit =
     mainThreadId <- System.Threading.Thread.CurrentThread.ManagedThreadId
 
@@ -906,6 +929,9 @@ let private cancelledBy (n: Node) =
 /// exit, the serve cut, a teardown off the main thread) — the effect boundary
 let checkCancelled () : unit =
     if System.Threading.Volatile.Read &cutsPending <> 0 then
+        if System.Threading.Volatile.Read &hardExiting <> 0 then
+            park ()
+
         let n = currentNode ()
 
         if n.Cut > 0 && cancelledBy n then
@@ -924,12 +950,16 @@ let beginReplEval () : unit =
     let n = openNode rootNode NodeKind.Flow
     System.Threading.Volatile.Write(&replNode, n)
     current.Value <- n
+    replFlow <- true
+    System.Threading.Volatile.Write(&mainThreadId, System.Threading.Thread.CurrentThread.ManagedThreadId)
 
 /// disarm after the evaluation (a late ^C then cuts nothing)
 let endReplEval () : unit =
     match System.Threading.Interlocked.Exchange(&replNode, null) with
     | null -> ()
     | n ->
+        System.Threading.Volatile.Write(&mainThreadId, 0)
+        replFlow <- false
         current.Value <- null
         closeNode n
 
@@ -1047,28 +1077,22 @@ let private killLiveChildren (spareCleanups: bool) : unit =
 // so a second hook firing (SIGTERM then ProcessExit) cannot run one
 // twice.
 let private liveAlways =
-    System.Collections.Concurrent.ConcurrentDictionary<int, unit -> unit>()
+    System.Collections.Concurrent.ConcurrentDictionary<int, unit>()
 
 let private alwaysCounter = ref 0
 
-let private sweepLiveTmpDirs () =
-    // runs at exit while finallys may also be running: a vanished dir is
-    // benign (the double-delete pin's territory), and the hook must
-    // never throw during exit
-    for id in liveAlways.Keys |> Seq.sortDescending do
-        match liveAlways.TryRemove id with
-        | true, cleanup ->
-            try
-                cleanup ()
-            with _ ->
-                ()
-        | _ -> ()
-
+// the exit's sweep [D:exit-hook]: every live child killed (a spilling child
+// holds its spill dir open, so the kill is load-bearing on Windows), every
+// kill in flight settled, every registered dir deleted. No cleanup runs
+// here: each scope's own owner ran its cleanups [D:scope-tree]. It runs at
+// exit while other threads may still be about, so a vanished dir is
+// benign and it never throws
+let private sweepDirs () =
     for kv in liveProcs do
         killEntry kv.Value
 
         try
-            kv.Key.WaitForExit()
+            kv.Key.WaitForExit 1000 |> ignore
         with _ ->
             ()
 
@@ -1120,6 +1144,10 @@ module private Libc =
 
     [<DllImport("libc", SetLastError = true)>]
     extern int64 lseek(int fd, int64 offset, int whence)
+
+    // the exit that runs no managed code (no ProcessExit sweep)
+    [<DllImport("libc", EntryPoint = "_exit")>]
+    extern void sysExit(int status)
 
     [<Struct; StructLayout(LayoutKind.Sequential)>]
     type PollFd =
@@ -1246,22 +1274,60 @@ let resetDetachedSigint: Lazy<unit> =
          then
              Libc.resetSigintIfIgnored () |> ignore)
 
-// a terminal ^C weir waited out ends weir BY the SIGINT, as before any
-// wait [D:sigint-terminal-group] — a calling shell sees the ^C, not an exit
-let mutable private dieBySigint = false
+/// restores what weir changed about the terminal before it dies (the REPL's
+/// raw mode) — set by the REPL
+let mutable beforeDie: unit -> unit = ignore
 
-let private raiseSigint () =
-    // the tree kills in flight settle first [D:kill-settle]
+// ends weir with a teardown's code [D:die-by-signal]: after the unwind
+// (or the backstop's, or the hard exit), INT/TERM/HUP end it BY the signal,
+// as an unscoped weir dies, so a calling shell sees the signal (bash's
+// wait-and-cooperative-exit); the handler .NET installed is replaced by
+// the default first. A closed stdout's 141 is an exit. Windows has no
+// death by signal: a Ctrl+C exits as the console ends a process. Only the
+// flow's own exit flushes: a backstop or a hard exit may be dying because
+// a write is stuck, and a flush would wait on it
+let private dieByFlushing (flush: bool) (code: int) : unit =
+    if flush then
+        try
+            System.Console.Out.Flush()
+            System.Console.Error.Flush()
+        with _ ->
+            ()
+
     settleKills ()
-    Libc.signal (Libc.SIGINT, Libc.SIG_DFL) |> ignore
-    ProcTree.kill (System.Environment.ProcessId, Libc.SIGINT) |> ignore
-    System.Threading.Thread.Sleep 1000
-    System.Environment.Exit 130
+
+    (try
+        beforeDie ()
+     with _ ->
+         ())
+
+    if System.OperatingSystem.IsWindows() then
+        System.Environment.Exit(if code = 130 then -1073741510 else code)
+    else
+        let signum =
+            match code with
+            | 130 -> 2
+            | 143 -> 15
+            | 129 -> 1
+            | _ -> 0
+
+        if signum <> 0 then
+            Libc.signal (signum, Libc.SIG_DFL) |> ignore
+            ProcTree.kill (System.Environment.ProcessId, signum) |> ignore
+            System.Threading.Thread.Sleep 1000
+
+        Libc.sysExit code
+
+let private dieBy (code: int) : unit = dieByFlushing false code
 
 /// the requested exit code, or `code` when none was requested — the
 /// runner's result, so a request racing a statement's normal end still
-/// exits with the request's code
+/// exits with the request's code; a signal's teardown dies by the signal
+/// [D:die-by-signal]
 let exitCodeOr (code: int) : int =
+    if System.Threading.Volatile.Read &hardExiting <> 0 then
+        park ()
+
     match System.Threading.Volatile.Read &teardownCode with
     | 0 -> code
     | c ->
@@ -1270,9 +1336,9 @@ let exitCodeOr (code: int) : int =
         killLiveChildren false
         settleKills ()
 
-        if dieBySigint then
-            System.Console.Out.Flush()
-            raiseSigint ()
+        if c <> 141 then
+            sweepDirs ()
+            dieByFlushing true c
 
         c
 
@@ -1294,6 +1360,7 @@ let settleInterrupt (code: int) : unit =
         code = 130
         && not (System.OperatingSystem.IsWindows())
         && mainThreadId <> 0
+        && not replFlow
         && System.Threading.Volatile.Read &teardownCode = 0
         && Libc.terminalForeground ()
     then
@@ -1324,6 +1391,9 @@ let checkTeardown () : unit =
 /// Cancelled. One read while nothing is cut
 let evalBoundary () : unit =
     if System.Threading.Volatile.Read &cutsPending <> 0 then
+        if System.Threading.Volatile.Read &hardExiting <> 0 then
+            park ()
+
         let n = currentNode ()
 
         if n.Cut > 0 then
@@ -2037,6 +2107,8 @@ type private EpipeWriter(inner: System.IO.StreamWriter) =
             // errno as the HResult
             with :? System.IO.IOException as e when e.HResult = 32 ->
                 dead <- true
+                // a signal from here on is the second [D:hard-exit]
+                System.Threading.Interlocked.Exchange(tearingDown, 1) |> ignore
                 requestTeardown 141
                 // the signal teardown's kill: what the flows wait on dies
                 // now, not at the exit [D:epipe-kills-at-teardown]
@@ -2090,12 +2162,6 @@ let armStdout () : unit =
             inner.NewLine <- System.Console.Out.NewLine
             System.Console.SetOut(System.IO.TextWriter.Synchronized(new EpipeWriter(inner)))
 
-// a second signal during teardown hard-exits [D:signal-teardown] — the
-// shell's double-Ctrl+C escape, so a slow or stuck cleanup can never
-// wedge a supervisor. The first signal sets this and runs the sweep;
-// default termination then carries the conventional 128 + signal.
-let private tearingDown = ref 0
-
 // 128 + the signal number, the shell's convention
 let private signalExitCode (s: System.Runtime.InteropServices.PosixSignal) =
     match s with
@@ -2103,73 +2169,119 @@ let private signalExitCode (s: System.Runtime.InteropServices.PosixSignal) =
     | System.Runtime.InteropServices.PosixSignal.SIGHUP -> 129
     | _ -> 130
 
-// a live tmp/proc/serve/always scope: the full hook's SIGINT is a tree
-// kill only while one is open — a terminal ^C after every scope has
-// closed is the unscoped one [D:sigint-live-scopes] (a `within proc`
-// holds its spill dir for its lifetime)
+// a live tmp/proc/serve/always scope: SIGINT is a tree kill only while one
+// is open — a terminal ^C after every scope has closed is the unscoped one
+// [D:sigint-live-scopes] (a `within proc` holds its spill dir for its
+// lifetime)
 let private scoped () =
     not liveTmpDirs.IsEmpty || not liveAlways.IsEmpty
 
-// the second signal's hard exit [D:signal-teardown]: the sweep (the
-// foreground reaper alone has no ProcessExit hook to run it), then 128 +
-// the signal; a second ^C after a terminal ^C dies by the SIGINT
+// the second signal's hard exit [D:hard-exit]: no cleanup runs and none
+// keeps running — every thread parks at its next runtime point, every
+// child dies (a cleanup's too), the kills settle, the registered dirs go,
+// and weir dies by the teardown's FIRST signal; one code, whatever thread
+// wins
 let private hardExit (code: int) =
-    sweepLiveTmpDirs ()
+    System.Threading.Volatile.Write(&hardExiting, 1)
+    System.Threading.Interlocked.Add(&cutsPending, 1 <<< 20) |> ignore
+    spawnGate.TryEnterWriteLock 1000 |> ignore
 
-    if dieBySigint && code = 130 then
-        raiseSigint ()
+    for kv in liveProcs do
+        killEntry kv.Value
 
-    System.Environment.Exit code
+    settleKills ()
+
+    for kv in liveTmpDirs do
+        try
+            System.IO.Directory.Delete(kv.Key, true)
+        with _ ->
+            ()
+
+    System.Threading.Interlocked.CompareExchange(&teardownCode, code, 0) |> ignore
+    dieBy (System.Threading.Volatile.Read &teardownCode)
+
+// the signal backstop [D:teardown-never-preempts]: a main flow blocked
+// where no boundary comes (a builtin's own loop, a stalled write) cannot
+// unwind — after `graceMs` (and each `pollMs` after) the backstop's verdict
+// holds while it runs a cleanup, closes a scope or joins; otherwise the
+// backstop adopts the main flow, runs its pending frames and dies
+let private startBackstop (graceMs: int) (pollMs: int) (ready: unit -> bool) (code: int) =
+    let watch =
+        System.Threading.Thread(fun () ->
+            System.Threading.Thread.Sleep graceMs
+
+            let rec standBy () =
+                match backstopVerdict (ready ()) with
+                | None ->
+                    System.Threading.Thread.Sleep pollMs
+                    standBy ()
+                | Some f -> f
+
+            if standBy () then
+                adoptMain ()
+                sweepDirs ()
+                dieBy code)
+
+    watch.IsBackground <- true
+    watch.Start()
 
 // the terminal's ^C reached the children with weir [D:sigint-terminal-group]:
 // no kill — the script waits for its child (its own ^C handling runs) and
 // then unwinds; without a live child to wait for, it exits after a grace
 // period, held as the watchdog is (a cleanup, a scope close, a join)
 // [D:terminal-sigint-teardown]
-let private terminalInterrupt (ctx: System.Runtime.InteropServices.PosixSignalContext) =
-    ctx.Cancel <- true
-    dieBySigint <- true
+let private terminalInterrupt () =
     requestTeardownWith true 130
 
-    let watch =
-        System.Threading.Thread(fun () ->
-            let rec standBy idle =
-                System.Threading.Thread.Sleep 100
-                let idle = if liveProcs.IsEmpty then idle + 1 else 0
+    let idle = ref 0
 
-                match backstopVerdict (idle >= 10) with
-                | None -> standBy idle
-                | Some f -> f
+    let ready () =
+        idle.Value <- (if liveProcs.IsEmpty then idle.Value + 1 else 0)
+        idle.Value >= 10
 
-            if standBy 0 then
-                adoptMain ()
-                raiseSigint ())
+    startBackstop 100 100 ready 130
 
-    watch.IsBackground <- true
-    watch.Start()
+// one signal dispatch [D:scope-tree]: the REPL's own ^C, the hard exit, the
+// terminal's unscoped ^C, the teardown — or, with no flow to unwind (the
+// REPL between entries, a subcommand), the exit's sweep and the signal's
+// death
+let private onSignal (ctx: System.Runtime.InteropServices.PosixSignalContext) =
+    let sigint = ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
+    let code = signalExitCode ctx.Signal
+
+    // a SIGINT the REPL cancels is not a death [D:repl-isig]
+    if replSurvivesSigint.Value && sigint then
+        ()
+    elif System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
+        ctx.Cancel <- true
+        hardExit code
+    elif System.Threading.Volatile.Read &mainThreadId = 0 then
+        ctx.Cancel <- true
+        System.Threading.Interlocked.CompareExchange(&teardownCode, code, 0) |> ignore
+        killLiveChildren false
+        sweepDirs ()
+        dieBy code
+    elif sigint && not (scoped ()) && Libc.terminalForeground () then
+        ctx.Cancel <- true
+        terminalInterrupt ()
+    else
+        // first signal, a flow running: it tears down [D:signal-main-unwind]
+        // — what it waits on is cut and killed, its cleanups' spared
+        ctx.Cancel <- true
+        requestTeardown code
+        killLiveChildren true
+        startBackstop 1000 1000 (fun () -> true) code
 
 let private installExitHook () =
-    // normal process exit — the pfirst exit-race customer: a background
+    // a normal process exit — the pfirst exit-race customer: a background
     // loser killed mid-finally no longer leaks its dir
-    System.AppDomain.CurrentDomain.ProcessExit.Add(fun _ -> sweepLiveTmpDirs ())
+    System.AppDomain.CurrentDomain.ProcessExit.Add(fun _ -> sweepDirs ())
 
-    // SIGINT/SIGTERM — the Ctrl-C customer. POSIX arm only: Create
-    // throws on Windows (the SIGWINCH guard's lesson [D:windows-v1]);
-    // Windows takes Console.CancelKeyPress instead. After the handler,
-    // default termination proceeds (Cancel stays false) — sweep, then die.
+    // SIGINT/SIGTERM/SIGHUP. POSIX arm only: Create throws on Windows (the
+    // SIGWINCH guard's lesson [D:windows-v1]); Windows takes
+    // Console.CancelKeyPress, through the same teardown.
     if not (System.OperatingSystem.IsWindows()) then
-        // the detached-SIGINT reset [D:signal-teardown]: a shell
-        // backgrounding weir in a non-interactive context sets SIGINT
-        // (and SIGQUIT) to SIG_IGN — the job-control nohup convention —
-        // and .NET honours an inherited SIG_IGN, so PosixSignalRegistration
-        // never installs and a `kill -INT` on a detached supervisor is a
-        // no-op (only SIGKILL stops it, no scope unwind). We reset SIGINT
-        // to SIG_DFL only when there is no controlling terminal: a truly
-        // detached process has no terminal Ctrl+C to protect against, so
-        // any SIGINT it receives is an explicit stop that must tear down.
-        // A `nohup weir &` keeps its tty and its SIG_IGN — terminal Ctrl+C
-        // still cannot kill it. The REPL is interactive (has a tty), so it
-        // never trips this and its [D:repl-isig] survival is untouched.
+        // the detached-SIGINT reset [D:signal-teardown], done at start too
         resetDetachedSigint.Force()
 
         // SIGHUP joins them [D:sighup-teardown]: a closed terminal or a
@@ -2180,165 +2292,61 @@ let private installExitHook () =
               System.Runtime.InteropServices.PosixSignal.SIGTERM
               System.Runtime.InteropServices.PosixSignal.SIGHUP ] do
             let reg =
-                System.Runtime.InteropServices.PosixSignalRegistration.Create(
-                    posixSig,
-                    fun ctx ->
-                        // a SIGINT the REPL cancels is not a death —
-                        // the dirs stay live [D:repl-isig]
-                        if
-                            replSurvivesSigint.Value
-                            && ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
-                        then
-                            ()
-                        // a second signal mid-teardown hard-exits
-                        // [D:signal-teardown] — the double-Ctrl+C escape,
-                        // 128 + the signal
-                        elif System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
-                            hardExit (signalExitCode ctx.Signal)
-                        elif
-                            mainThreadId <> 0
-                            && ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
-                            && not (scoped ())
-                            && Libc.terminalForeground ()
-                        then
-                            terminalInterrupt ctx
-                        elif mainThreadId <> 0 then
-                            // first signal, a script running: the main
-                            // thread tears down [D:signal-main-unwind] —
-                            // kill what it waits on, wake its sleeps, and
-                            // keep the process alive for the unwind
-                            ctx.Cancel <- true
-
-                            let code = signalExitCode ctx.Signal
-
-                            requestTeardown code
-                            killLiveChildren true
-
-                            // the backstop: a main thread blocked where
-                            // no boundary comes (a network call) cannot
-                            // unwind — after a grace period the old
-                            // in-handler teardown runs and the process
-                            // exits; it runs no statement either. One
-                            // joining arms unwinds next and is left be; one
-                            // in a cleanup or closing a scope runs it whole
-                            // first [D:teardown-never-preempts]
-                            let watchdog =
-                                System.Threading.Thread(fun () ->
-                                    let rec standBy () =
-                                        System.Threading.Thread.Sleep 1000
-
-                                        match backstopVerdict true with
-                                        | None -> standBy ()
-                                        | Some f -> f
-
-                                    if standBy () then
-                                        adoptMain ()
-                                        sweepLiveTmpDirs ()
-                                        System.Environment.Exit code)
-
-                            watchdog.IsBackground <- true
-                            watchdog.Start()
-                        else
-                            // first signal, no script main thread (the
-                            // REPL): run the one teardown, then let
-                            // default termination carry 128 + signal (Cancel
-                            // stays false)
-                            sweepLiveTmpDirs ()
-                )
+                System.Runtime.InteropServices.PosixSignalRegistration.Create(posixSig, onSignal)
 
             hookRoots <- (reg :> obj) :: hookRoots
     else
-        System.Console.CancelKeyPress.Add(fun _ -> sweepLiveTmpDirs ())
+        System.Console.CancelKeyPress.Add(fun e ->
+            e.Cancel <- true
 
-let registerTmpDir (dir: string) : unit =
+            if System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
+                hardExit 130
+            elif System.Threading.Volatile.Read &mainThreadId = 0 then
+                System.Threading.Interlocked.CompareExchange(&teardownCode, 130, 0) |> ignore
+                killLiveChildren false
+                sweepDirs ()
+                dieBy 130
+            else
+                requestTeardown 130
+                killLiveChildren true
+                startBackstop 1000 1000 (fun () -> true) 130)
+
+let private ensureHook () =
     if System.Threading.Interlocked.Exchange(hookInstalled, 1) = 0 then
         installExitHook ()
 
+let registerTmpDir (dir: string) : unit =
+    ensureHook ()
     liveTmpDirs[dir] <- ()
 
 let deregisterTmpDir (dir: string) : unit = liveTmpDirs.TryRemove dir |> ignore
 
 let registerProc (p: System.Diagnostics.Process) : unit =
-    if System.Threading.Interlocked.Exchange(hookInstalled, 1) = 0 then
-        installExitHook ()
-
+    ensureHook ()
     liveProcs.TryAdd(p, ProcEntry(p, currentNode ())) |> ignore
 
-// a foreground child alone installs only a reaper [D:signal-main-unwind]:
-// a pid-targeted TERM, HUP or INT tree-kills the live children, then
-// default termination proceeds (weir still dies BY the signal, as before
-// any scope exists). SIGINT joins them [D:sigint-reaps]: a `kill -INT` of
-// weir's pid reaches no child, and a terminal ^C that already reached the
-// group is the same stop; the REPL survives its ^C and is skipped, an
-// inherited SIG_IGN (a backgrounded weir) keeps the handler unbound. In a
-// script the teardown is requested before the kill, so a child or arm the
-// kill ends is the teardown, never a command failure [D:teardown-kill-not-failure].
-// Once a scope installs the full hook, that hook does the kill as part of
-// its teardown, and takes the terminal ^C while no scope is live; this one
-// stands down. POSIX only.
-let private fgHookInstalled = ref 0
+/// a spawned child: the signal hook is installed (POSIX), so a signal
+/// tears down — a pid-targeted TERM, HUP or INT tree-kills the live
+/// children [D:signal-main-unwind] [D:sigint-reaps]; the teardown is
+/// requested before the kill, so a child or arm the kill ends is the
+/// teardown, never a command failure [D:teardown-kill-not-failure]
+let registerForeground (_: System.Diagnostics.Process) : unit =
+    if not (System.OperatingSystem.IsWindows()) then
+        ensureHook ()
 
-let registerForeground (p: System.Diagnostics.Process) : unit =
-    if
-        not (System.OperatingSystem.IsWindows())
-        && System.Threading.Interlocked.Exchange(fgHookInstalled, 1) = 0
-    then
-        resetDetachedSigint.Force()
-
-        // a pid-targeted HUP reaps the same way [D:sighup-teardown]
-        for posixSig in
-            [ System.Runtime.InteropServices.PosixSignal.SIGTERM
-              System.Runtime.InteropServices.PosixSignal.SIGHUP
-              System.Runtime.InteropServices.PosixSignal.SIGINT ] do
-            let reg =
-                System.Runtime.InteropServices.PosixSignalRegistration.Create(
-                    posixSig,
-                    fun ctx ->
-                        // the full hook owns the signal once installed: it must
-                        // request the teardown BEFORE any child dies, or the
-                        // main thread's wait returns and runs the next statement
-                        let sigint = ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
-
-                        if
-                            System.Threading.Volatile.Read &hookInstalled.contents = 0
-                            && not (replSurvivesSigint.Value && sigint)
-                        then
-                            // a second signal mid-teardown hard-exits
-                            // [D:signal-teardown], as the full hook's does
-                            if System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
-                                hardExit (signalExitCode ctx.Signal)
-                            elif sigint && Libc.terminalForeground () then
-                                if mainThreadId <> 0 then
-                                    terminalInterrupt ctx
-                            else
-                                if mainThreadId <> 0 then
-                                    requestTeardown (signalExitCode ctx.Signal)
-
-                                killLiveChildren true
-                                settleKills ()
-                )
-
-            hookRoots <- (reg :> obj) :: hookRoots
-
-
-/// remove `p` under `pid` — only that very process, so a late exit
-/// event never drops a newer child that reused the pid
-let deregisterProcAt (pid: int) (p: System.Diagnostics.Process) : unit =
-    forgetChild p
+/// remove `p` — only that very process, so a late exit event never drops
+/// a newer child that reused the pid
+let deregisterProcAt (_: int) (p: System.Diagnostics.Process) : unit = forgetChild p
 
 let deregisterProc (p: System.Diagnostics.Process) : unit = deregisterProcAt p.Id p
 
-let registerAlways (cleanup: unit -> unit) : int =
-    if System.Threading.Interlocked.Exchange(hookInstalled, 1) = 0 then
-        installExitHook ()
-
+/// an `always` scope is pending (the live-scope rule's count)
+let registerAlways () : int =
+    ensureHook ()
     let id = System.Threading.Interlocked.Increment alwaysCounter
-
-    liveAlways[id] <- cleanup
+    liveAlways[id] <- ()
     id
 
-// claim-by-removal: true when the caller took the cleanup back from the
-// exit hook — the hook claims the same way, so a signal racing a raise
-// cannot run one cleanup twice [D:within-always-any]
-let deregisterAlways (id: int) : bool =
-    fst (liveAlways.TryRemove id)
+// claim-by-removal: true for the one caller that took the cleanup
+// [D:within-always-any]
+let deregisterAlways (id: int) : bool = fst (liveAlways.TryRemove id)

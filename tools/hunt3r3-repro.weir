@@ -97,6 +97,10 @@ let errOf { stderr = s } = s |> Str.join "\n"
 let diagOf r = outOf r + "\n" + errOf r
 let codeOf { exitCode = c } = c
 
+// a signal's exit as the driver reports it: weir dies BY the signal after
+// the unwind [D:die-by-signal] (-n), which a shell reads as 128 + n
+let sigRc n rc = rc == $"-{n}" || rc == $"{128 + n}"
+
 let failing cases =
     cases |> Seq.where (fun (_, ok) -> not ok) |> Seq.map fst |> Seq.freeze
 
@@ -678,7 +682,7 @@ let c1Serve port = $$<<<
 let ctlTermAlways d =
     let p = put d "c.weir" ["let log = Self.args |> Seq.head"; "within"; "    Duration.sleep 5s"; "always"; "    File.append log [\"always start\"]"; "    Duration.sleep 300ms"; "    File.append log [\"always end\"]"]
     let run = sigRun d "TERM" "ms" "800" "10" "0" [p; $"{d}/log"]
-    run.rc == "143" && Seq.equal (linesOf $"{d}/log") ["always start"; "always end"]
+    sigRc 15 run.rc && Seq.equal (linesOf $"{d}/log") ["always start"; "always end"]
 
 // one signalled run of a closing scope; Some why when the always was skipped
 let c1Once d script mark maxDelay i =

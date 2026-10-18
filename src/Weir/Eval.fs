@@ -4928,13 +4928,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
         //     diagnosis outranks its consequence)
         //  3. teardown continues outward regardless — one failed
         //     cleanup must not strand the enclosing scopes' LIFO.
-        // exit n is a raise (ExitRequest) and unwinds the same way;
-        // signals run the pending cleanups via the exit hook, LIFO.
+        // exit n is a raise (ExitRequest) and unwinds the same way; a
+        // signal unwinds the flow, which runs them LIFO [D:scope-tree].
         // a cleanup's commands start even mid-teardown [D:teardown-always-spawns]
-        let runCleanup () =
-            Session.runningCleanup (fun () -> eval env cleanup |> ignore)
-
-        let hooked = Session.registerAlways runCleanup
+        let hooked = Session.registerAlways ()
 
         // the claim is made inside the cleanup's mark, so a teardown
         // requested from here on waits for it [D:teardown-never-preempts]
@@ -5368,11 +5365,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // this long, together, to finish their responses
             let drainMs = 2000
 
-            // the signal/hard-exit backstop [D:http-serve]: SIGINT/SIGTERM/
-            // ProcessExit sweep this, closing the socket exactly as the
-            // finally does on a managed exit — one close, idempotent, and
-            // no drain on the way out of the process
-            let hooked = Session.registerAlways (fun () -> Serve.stop handle 0)
+            // a live scope for the terminal-^C rule [D:sigint-live-scopes];
+            // a signal unwinds the flow through the close below, and the
+            // kernel closes the socket at any death [D:http-serve]
+            let hooked = Session.registerAlways ()
 
             // the handler concurrency ceiling [D:http-serve]: N in
             // flight, excess queues — pmapWith's bound, via a
