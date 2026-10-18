@@ -90,11 +90,10 @@
   with the same error the direct call gives.
 - **`from xml` reads a document in its declared encoding.** Pipe the
   bytes: `File.readBytes "legacy.xml" |> from xml Proj` decodes by
-  BOM, else the XML declaration (ISO-8859-x, windows-125x, UTF-16 and
-  the other common code pages), else UTF-8. A text document declaring
-  a non-UTF-8 encoding read `café` as `caf�`; it now refuses unless
-  it is ASCII, and an unknown encoding refuses either way. The binary
-  is about 0.8 MB larger (the code pages).
+  BOM, else the XML declaration (UTF-16/32, US-ASCII, ISO-8859-1), else
+  UTF-8. A text document declaring a non-UTF-8 encoding read `café` as
+  `caf�`; it now refuses unless it is ASCII, and any other encoding
+  (windows-1252, Shift_JIS, …) refuses naming it.
 - **`File.*` and `Dir.*` resolve `..` after a symlink as the kernel
   does.** With `L -> real/sub`, `File.read "L/../x"` read `./x` while
   `cat L/../x` read `real/x`. `cd` keeps the shell's logical `..`.

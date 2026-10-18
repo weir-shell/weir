@@ -2042,9 +2042,9 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   one root (`from xml seq<T>` refuses — a repeat is a `seq< >` field),
   and there is NO `to xml`. `Bytes` read too (`File.readBytes p |>
   from xml T`): decoded by BOM, else the declaration's encoding (UTF-8/
-  16/32, ASCII, ISO-8859-x, windows-125x, the code pages), else UTF-8,
-  strictly [D:xml-encoding]; text under a non-UTF-8 declaration reads
-  only if ASCII, an unknown encoding refuses. A DTD (`<!DOCTYPE …>`) refuses
+  16/32, ASCII, ISO-8859-1 only — convert others with iconv), else
+  UTF-8, strictly [D:xml-encoding] [D:xml-encoding-builtin]; text under a non-UTF-8 declaration
+  reads only if ASCII, an unknown encoding refuses. A DTD (`<!DOCTYPE …>`) refuses
   [D:xml-no-dtd] — no declared entity expands or resolves.
   An element that repeats under a `string`/`Option<string>`/record
   field refuses (never silently the first) — declare a `seq< >`. A
