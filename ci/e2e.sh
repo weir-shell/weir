@@ -3674,8 +3674,9 @@ WEOF
     [ "$took" -lt 5000 ] || fail "a second terminal ^C must hard-exit, not wait out the child (${took}ms): $tout"
 
     # pure computation holds the terminal ^C's join [D:teardown-joins-arms]:
-    # the grace period does not exit while the arms compute
-    printf '%s\n' 'sh -c "true"' '[1; 2] |> Seq.piter (fun i ->' '    let n = [1..7000000] |> Seq.fold (fun a x -> a + 1) 0' '    print $"arm {i} {n}")' 'print "after"' > "$sedir/purejoin.weir"
+    # the grace period does not exit while the arms compute — a builtin's
+    # own loop, since every evaluated node is a boundary [D:scope-tree]
+    printf '%s\n' 'sh -c "true"' '[1; 2] |> Seq.piter (fun i ->' '    let n = [1..300000000] |> Seq.length' '    print $"arm {i} {n}")' 'print "after"' > "$sedir/purejoin.weir"
     t0=$(now_ms)
     tout=$(printf 'SLEEP 500\nSEND \\x03\nSLEEP 300\n' | python3 "$ptyrun" 20 "$BIN" "$sedir/purejoin.weir")
     took=$(( $(now_ms) - t0 ))

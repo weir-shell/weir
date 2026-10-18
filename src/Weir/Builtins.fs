@@ -1716,20 +1716,13 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     // killed by their group) and joined, then the exit — never ranked
     // with the arms' errors
     let mutable exited: exn = null
-    let parentFlow = Session.flowToken ()
-    // linked to the enclosing race's or serve scope's token too, so a cut
-    // there stops this fan-out taking arms [D:fanout-exit]
-    use fan =
-        System.Threading.CancellationTokenSource.CreateLinkedTokenSource(Session.fanToken (), parentFlow)
-    let mutable cutLive = 0
-    // this fan-out's node [D:scope-tree]: each arm runs in a node under it
+    // this fan-out's node [D:scope-tree]: each arm runs in a node under it;
+    // a cut of an enclosing race, fan-out or serve scope reaches it, so it
+    // takes no new arm then [D:fanout-exit]
     let fanNode = Session.openNode (Session.currentNode ()) Session.NodeKind.Fan
 
     let stop (e: exn) =
         if isNull (System.Threading.Interlocked.CompareExchange(&exited, e, null)) then
-            System.Threading.Interlocked.Exchange(&cutLive, 1) |> ignore
-            Session.cutsLive ()
-            fan.Cancel()
             // the in-flight arms' children die with the cut [D:fanout-exit]
             Session.cutNode fanNode 1 Session.CutReason.FanExit true
 
@@ -1742,13 +1735,12 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
                 Session.stopTakingArms ()
                 || Session.interruptRequested ()
                 || not (isNull (System.Threading.Volatile.Read &exited))
-                || fan.IsCancellationRequested
+                || Session.isCut fanNode
             then
                 arr.Length
             else
                 System.Threading.Interlocked.Increment &next
 
-        Session.enterFan parentFlow fan.Token
         let home = Session.currentNode ()
         let mutable i = take ()
 
@@ -1793,15 +1785,10 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
         let tasks =
             Array.init workers (fun w -> Task.Factory.StartNew(worker w, TaskCreationOptions.LongRunning))
 
-        abandoned <- arms.Join(Task.WhenAll(tasks: Task[]), fan.Token)
+        abandoned <- arms.Join(Task.WhenAll(tasks: Task[]), Session.nodeToken fanNode)
     finally
         Session.setParallelDepth depth
         Session.closeNode fanNode
-
-        // an abandoned arm's parked call may still return: the cut stays
-        // live for it, so it never runs on
-        if System.Threading.Volatile.Read &cutLive = 1 && not abandoned then
-            Session.cutsDone ()
 
     // arms skipped by a teardown leave no result: the fan-out ends with
     // the teardown's code, never a partial array [D:teardown-stops-arms]
@@ -1818,7 +1805,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
 
     // an enclosing cut (a fan-out's exit, a race, the serve cut) stopped
     // this one: never a partial result
-    if fan.IsCancellationRequested then
+    if Session.isCut fanNode then
         raise (Session.Cancelled())
 
     if not errors.IsEmpty then
@@ -1852,10 +1839,6 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
     let outcome =
         TaskCompletionSource<Value>(TaskCreationOptions.RunContinuationsAsynchronously)
 
-    // a nested race inherits its arm's cancellation (none inside a cleanup)
-    use race =
-        System.Threading.CancellationTokenSource.CreateLinkedTokenSource(Session.flowToken (), Session.fanToken ())
-
     let workers = min degree arr.Length
     let mutable next = -1
     // this race's node [D:scope-tree]: each arm runs in a node under it
@@ -1873,7 +1856,6 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
                 if not (obj.ReferenceEquals(other, mine)) then
                     Session.cutNode other 1 Session.CutReason.RaceLost true
 
-            race.Cancel()
             set ()
 
     let work () =
@@ -1882,7 +1864,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
         while i < arr.Length
               && System.Threading.Volatile.Read &won = 0
-              && not race.IsCancellationRequested
+              && not (Session.isCut raceNode)
               && not (Session.stopTakingArms ())
               && not (Session.interruptRequested ()) do
             Session.enterWorker parentCwd
@@ -1891,7 +1873,6 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
             if not (isNull armNode) then
                 Session.setCurrentNode armNode
-                Session.enterFlow race.Token
                 RunPos.Current <- callNode
 
             try
@@ -1911,7 +1892,6 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
                     if System.Threading.Interlocked.Increment &failedCount = arr.Length then
                         outcome.TrySetException errors[Seq.min errors.Keys] |> ignore
             finally
-                Session.exitFlow ()
                 Session.setCurrentNode home
 
                 if not (isNull armNode) then
@@ -1924,7 +1904,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
     let worker () = Session.armRunning work
 
     try
-        Session.racing (fun () ->
+        (fun () ->
             // arms are one level deeper [D:parallel-ladder]
             let depth = Session.parallelDepthNow ()
             Session.setParallelDepth (depth + 1)
@@ -1955,6 +1935,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
                 outcome.Task.Result
             with :? System.AggregateException as ae when ae.InnerExceptions.Count = 1 ->
                 raise ae.InnerExceptions[0])
+            ()
     finally
         Session.closeNode raceNode
 

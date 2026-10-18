@@ -4306,8 +4306,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
     RunPos.Current <- box te
     RunPos.Exact <- false
     // a signal or closed stdout unwinds here, before the node runs
-    // [D:signal-main-unwind]
-    Session.checkTeardown ()
+    // [D:signal-main-unwind]; any flow's cut stops it here [D:scope-tree]
+    Session.evalBoundary ()
 
     match te.Kind with
     // a failure as a value [D:try-form]: the body runs inside the capture
@@ -5369,7 +5369,6 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let inflight =
                 System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, Session.Node>()
 
-            let cut = new System.Threading.CancellationTokenSource()
             // the scope's node [D:scope-tree]: the body runs in it, each
             // handler in a node under it
             let home = Session.currentNode ()
@@ -5409,7 +5408,6 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     // fork the session like a pmap arm — the
                     // handler sees the scope's cwd, worker-local
                     Session.enterWorker parentCwd
-                    Session.enterFlow cut.Token
 
                     try
                         // the body was read before the slot
@@ -5493,7 +5491,6 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         internalError ctx
                 finally
                     Serve.finish ctx
-                    Session.exitFlow ()
                     Session.exitWorker ()
                     gate.Release() |> ignore
                     inflight.TryRemove(System.Threading.Thread.CurrentThread) |> ignore
@@ -5522,10 +5519,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                             let node = Session.openNode serveNode Session.NodeKind.Handler
 
                             let worker =
-                                System.Threading.Thread(fun () ->
-                                    // the counter keeps the per-builtin check
-                                    // live while a handler runs [D:serve-cut]
-                                    Session.racing (fun () -> runHandler ctx node))
+                                System.Threading.Thread(fun () -> runHandler ctx node)
 
                             worker.IsBackground <- true
                             inflight[worker] <- node
@@ -5565,8 +5559,6 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     // dropped and its result discarded, never raised
                     // [D:serve-drain]. Pure compute holds the join, as a pfirst
                     // loser's does
-                    cut.Cancel()
-
                     for kv in inflight do
                         Session.cutNode kv.Value 1 Session.CutReason.ServeCut true
 

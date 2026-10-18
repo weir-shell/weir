@@ -27710,6 +27710,23 @@ let hunt3BehaviourTests =
 
 // hunt 3 round 2's cancellation seams; the signal, stdin and pty halves are
 // e2e cells
+// run `body` as an arm in a node of its own, cut (a lost race) after `ms`
+// [D:scope-tree]
+let private asArmCutAfter (ms: int) (body: unit -> unit) =
+    let n = Weir.Session.openNode (Weir.Session.currentNode ()) Weir.Session.NodeKind.Arm
+    Weir.Session.setCurrentNode n
+
+    try
+        System.Threading.Tasks.Task.Run(fun () ->
+            System.Threading.Thread.Sleep ms
+            Weir.Session.cutNode n 1 Weir.Session.CutReason.RaceLost true)
+        |> ignore
+
+        body ()
+    finally
+        Weir.Session.setCurrentNode null
+        Weir.Session.closeNode n
+
 let hunt3r2CancelTests =
     testSequenced
     <| testList
@@ -27790,42 +27807,25 @@ let hunt3r2CancelTests =
                   expectValue "[1..4] |> Seq.pmap (fun i -> i) |> Seq.length" (VInt 4L))
           }
           test "a lost race abandons a blocking call; an unraced one keeps its raise [D:stdin-reader]" {
-              use cts = new System.Threading.CancellationTokenSource()
+              asArmCutAfter 200 (fun () ->
+                  let sw = System.Diagnostics.Stopwatch.StartNew()
 
-              Weir.Session.racing (fun () ->
-                  Weir.Session.enterFlow cts.Token
+                  Expect.throwsT<Weir.Session.Cancelled>
+                      (fun () ->
+                          Weir.Session.cutBlocking (fun () ->
+                              System.Threading.Thread.Sleep 10000
+                              1)
+                          |> ignore)
+                      "the cut raises"
 
-                  try
-                      System.Threading.Tasks.Task.Run(fun () ->
-                          System.Threading.Thread.Sleep 200
-                          cts.Cancel())
-                      |> ignore
+                  Expect.isLessThan sw.ElapsedMilliseconds 5000L "abandoned, not waited out")
 
-                      let sw = System.Diagnostics.Stopwatch.StartNew()
-
-                      Expect.throwsT<Weir.Session.Cancelled>
-                          (fun () ->
-                              Weir.Session.cutBlocking (fun () ->
-                                  System.Threading.Thread.Sleep 10000
-                                  1)
-                              |> ignore)
-                          "the cut raises"
-
-                      Expect.isLessThan sw.ElapsedMilliseconds 5000L "abandoned, not waited out"
-                  finally
-                      Weir.Session.exitFlow ())
-
-              use live = new System.Threading.CancellationTokenSource()
-              Weir.Session.enterFlow live.Token
-
-              try
+              asArmCutAfter 60000 (fun () ->
                   Expect.throwsT<IOException>
                       (fun () -> Weir.Session.cutBlocking (fun () -> raise (IOException "fifo")) |> ignore)
                       "the call's own raise, unwrapped"
 
-                  Expect.equal (Weir.Session.cutBlocking (fun () -> 5)) 5 "a value passes"
-              finally
-                  Weir.Session.exitFlow ()
+                  Expect.equal (Weir.Session.cutBlocking (fun () -> 5)) 5 "a value passes")
           } ]
 
 // hunt 3 round 3's cancellation seams; the signal, teardown and serve
@@ -27899,17 +27899,7 @@ let hunt3r3FifoTests =
 
                   use mk = System.Diagnostics.Process.Start("mkfifo", [| fifo |])
                   mk.WaitForExit()
-                  use cts = new System.Threading.CancellationTokenSource()
-
-                  Weir.Session.racing (fun () ->
-                      Weir.Session.enterFlow cts.Token
-
-                      try
-                          System.Threading.Tasks.Task.Run(fun () ->
-                              System.Threading.Thread.Sleep 200
-                              cts.Cancel())
-                          |> ignore
-
+                  asArmCutAfter 200 (fun () ->
                           let sw = System.Diagnostics.Stopwatch.StartNew()
 
                           Expect.throwsT<Weir.Session.Cancelled>
@@ -27922,9 +27912,7 @@ let hunt3r3FifoTests =
                                   | None -> failtest "a FIFO is polled")
                               "the cut raises"
 
-                          Expect.isLessThan sw.ElapsedMilliseconds 3000L "no writer is waited for"
-                      finally
-                          Weir.Session.exitFlow ())
+                          Expect.isLessThan sw.ElapsedMilliseconds 3000L "no writer is waited for")
 
                   let writer =
                       System.Threading.Tasks.Task.Run(fun () -> File.WriteAllText(fifo, "D1\nD2\n"))

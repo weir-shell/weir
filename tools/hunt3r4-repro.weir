@@ -29,8 +29,10 @@
 // retry loop): a signal or a ^C lands at a point the fixture marks (a log
 // line, a fixed delay well inside a multi-second window), and timing
 // judgements leave a 2x margin. Pure computation is a `Seq.fold` over a
-// range (no boundary inside); H3R4-04 calibrates its length against an
-// unsignalled run of the same fixture.
+// range; where it must have no boundary at all (every evaluated node is
+// one [D:scope-tree]) it is a builtin's own loop, `Seq.length` over a
+// range, and H3R4-04 calibrates its length against an unsignalled run of
+// the same fixture.
 //
 // Signals go to weir's pid ALONE (the signal driver spawns the child in its
 // own session with default dispositions). A terminal ^C is a 0x03 byte
@@ -351,6 +353,9 @@ let sigRun d sig whenKind whenArg tmo mark args =
 // idle core
 let computeLine n = $"[1..{n}] |> Seq.fold (fun a x -> a + 1) 0"
 
+// computation with no boundary inside: a builtin's own loop
+let builtinComputeLine n = $"[1..{n}] |> Seq.length"
+
 // ---- H3R4-01: a teardown returns from pfirst without joining a loser ----------
 
 // the cleanup arm fails at once and its always marks BODY DONE; the signal
@@ -556,7 +561,7 @@ let p04Compute n = [
     "let log = Self.args |> Seq.head"
     "sh -c \"true\""
     "[1; 2] |> Seq.piter (fun i ->"
-    $"    let n = {computeLine n}"
+    $"    let n = {builtinComputeLine n}"
     "    File.append log [$\"arm {i} {n}\"])"
     "print \"after\""
 ]
@@ -590,13 +595,13 @@ let h3r4p04 d =
     let calibrate n =
         let p = put cdir $"compute-{n}.weir" (p04Compute n)
         (p, ptyRun cdir "30" [cli.bin; p; $"{cdir}/calib.log"] [])
-    let (p1, c1) = calibrate 5000000
+    let (p1, c1) = calibrate 250000000
     let (p, calib) =
         if c1.code <> "0" || c1.exitMs >= 2000 then
             (p1, c1)
         else
-            let (p2, c2) = calibrate 10000000
-            if c2.code <> "0" || c2.exitMs >= 2000 then (p2, c2) else calibrate 20000000
+            let (p2, c2) = calibrate 500000000
+            if c2.code <> "0" || c2.exitMs >= 2000 then (p2, c2) else calibrate 1000000000
     let b = ptyRun cdir "30" [cli.bin; p; $"{cdir}/log"] ["SLEEP 600"; ctrlC; "SLEEP 500"]
     let landed = linesOf $"{cdir}/log"
     let calibLog = linesOf $"{cdir}/calib.log" |> joined
