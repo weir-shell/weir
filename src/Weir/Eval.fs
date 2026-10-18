@@ -523,8 +523,52 @@ type private GuardNode(comparer: System.Collections.Generic.IEqualityComparer<st
     member val Below: string = null with get, set
     member val Resolved: string = null with get, set
 
+// one node of a plan's simulated filesystem [D:plan-preconditions]: what
+// the captured ops have made of a path — State 0 unknown (the layer
+// below decides), 1 file, 2 directory, 3 absent; Cleared: nothing below
+// it in the layer beneath counts any more (deleted, overwritten, a fresh
+// copy); Mirror: the path whose layer-beneath contents back this
+// subtree (a copied or moved directory)
+[<AllowNullLiteral>]
+type private SimNode(comparer: System.Collections.Generic.IEqualityComparer<string>) =
+    let mutable kids: System.Collections.Generic.Dictionary<string, SimNode> = null
+
+    member _.Find(k: string) : SimNode =
+        if isNull kids then
+            null
+        else
+            match kids.TryGetValue k with
+            | true, n -> n
+            | _ -> null
+
+    member _.Add(k: string, n: SimNode) =
+        if isNull kids then
+            kids <- System.Collections.Generic.Dictionary(comparer)
+
+        kids[k] <- n
+
+    member _.Clear() = kids <- null
+
+    member _.Names: string list =
+        if isNull kids then [] else List.ofSeq kids.Keys
+
+    member val State = 0 with get, set
+    member val Cleared = false with get, set
+    member val Mirror: string = null with get, set
+
+    member this.Clone() : SimNode =
+        let n = SimNode(comparer, State = this.State, Cleared = this.Cleared, Mirror = this.Mirror)
+
+        for k in this.Names do
+            n.Add(k, this.Find(k).Clone())
+
+        n
+
 type private PlanFrame =
     { Ops: ResizeArray<Value>
+      // the filesystem as the captured ops leave it, over the real one
+      // (or an enclosing plan's) [D:plan-preconditions]
+      Sim: SimNode
       // the target paths captured mutations change [D:plan-apply]: a
       // later read at, under, or — for a listing — above one is
       // known-after-apply and refused [D:plan-stale-reads]. Indexed
@@ -806,6 +850,7 @@ module PlanMode =
     let capturing (f: unit -> unit) : Value list =
         let frame =
             { Ops = ResizeArray()
+              Sim = SimNode(comparer)
               Index = GuardNode(comparer)
               Links = GuardNode(System.StringComparer.Ordinal)
               Files = System.Collections.Generic.Dictionary()
@@ -837,6 +882,219 @@ module PlanMode =
         for frame in stack.Value do
             frame.TmpRoots.Add(norm dir)
 
+    // ---- the simulated filesystem [D:plan-preconditions] ----------------
+    // a captured op checks its preconditions against the state the
+    // plan's earlier ops leave, exactly as the direct call checks the
+    // real filesystem — preview == apply. Kinds: 0 absent, 1 file,
+    // 2 directory, 4 another entry (a dangling link)
+
+    /// the real filesystem's kind of a path
+    let realKind (p: string) : int =
+        if System.IO.Directory.Exists p then 2
+        elif System.IO.File.Exists p then 1
+        elif System.IO.FileInfo(p).Exists || not (isNull (System.IO.FileInfo(p).LinkTarget)) then 4
+        else 0
+
+    let private compsOf (p: string) = parts (keyOf (norm p))
+
+    let private joinComps (comps: string[]) =
+        if comps = [| "" |] then string sep else System.String.Join(string sep, comps)
+
+    // one layer's view of a path: the state its ops gave it (0 = the
+    // layer below decides), the overlay node there (or null), and the
+    // path to ask the layer below (null when nothing below counts)
+    let private viewIn (root: SimNode) (p: string) : struct (int * SimNode * string) =
+        let comps = compsOf p
+        let mutable node = root
+        let mutable basePath: string = null
+        let mutable baseFrom = 0
+        let mutable cleared = false
+        let mutable result = ValueNone
+        let mutable i = 0
+
+        let below () =
+            if cleared then
+                null
+            elif isNull basePath then
+                joinComps comps
+            elif baseFrom >= comps.Length then
+                basePath
+            else
+                System.IO.Path.Combine(Array.append [| basePath |] comps[baseFrom..])
+
+        while result.IsNone && i < comps.Length do
+            let child = node.Find comps[i]
+            let last = i = comps.Length - 1
+
+            if isNull child then
+                result <- ValueSome(struct ((if cleared then 3 else 0), null, below ()))
+            else
+                node <- child
+
+                if child.State = 3 || (child.State = 1 && not last) then
+                    result <- ValueSome(struct (3, null, null))
+                elif child.State = 1 then
+                    result <- ValueSome(struct (1, child, null))
+                else
+                    if not (isNull child.Mirror) then
+                        basePath <- child.Mirror
+                        baseFrom <- i + 1
+                        cleared <- false
+                    elif child.Cleared then
+                        cleared <- true
+
+                    if last then
+                        let st = if child.State = 2 then 2 elif cleared then 3 else 0
+                        result <- ValueSome(struct (st, child, below ()))
+
+            i <- i + 1
+
+        match result with
+        | ValueSome r -> r
+        | ValueNone -> struct (0, null, p)
+
+    let rec private kindIn (frames: PlanFrame list) (p: string) : int =
+        match frames with
+        | [] -> realKind p
+        | f :: outer ->
+            match viewIn f.Sim p with
+            | struct (3, _, _) -> 0
+            | struct (0, _, below) when not (isNull below) -> kindIn outer below
+            | struct (0, _, _) -> 0
+            | struct (k, _, _) -> k
+
+    // the real path a view ends at, for the checks only the real
+    // filesystem answers (a dangling link); None when an op made it
+    let rec private realPathIn (frames: PlanFrame list) (p: string) : string option =
+        match frames with
+        | [] -> Some p
+        | f :: outer ->
+            match viewIn f.Sim p with
+            | struct (0, _, below) when not (isNull below) -> realPathIn outer below
+            | _ -> None
+
+    // the entry names a directory holds, before asking each one's kind
+    let rec private namesIn (frames: PlanFrame list) (p: string) : string list =
+        match frames with
+        | [] ->
+            try
+                System.IO.Directory.EnumerateFileSystemEntries p
+                |> Seq.map System.IO.Path.GetFileName
+                |> List.ofSeq
+            with _ ->
+                []
+        | f :: outer ->
+            let struct (_, node, below) = viewIn f.Sim p
+            let mine = if isNull node then [] else node.Names
+            let theirs = if isNull below then [] else namesIn outer below
+            List.distinct (mine @ theirs)
+
+    /// the plan-time kind of a path (0 absent, 1 file, 2 dir, 4 other)
+    let simKind (p: string) : int = kindIn stack.Value p
+
+    /// does the plan-time directory hold an entry?
+    let simEmptyDir (p: string) : bool =
+        namesIn stack.Value p
+        |> List.forall (fun n -> kindIn stack.Value (System.IO.Path.Combine(p, n)) = 0)
+
+    /// a dangling link at plan time: only a path no op has touched can be
+    let simDangling (isDangling: string -> bool) (p: string) : bool =
+        match realPathIn stack.Value p with
+        | Some r -> isDangling r
+        | None -> false
+
+    // the top layer's node for a path, created along the way
+    let private ensure (root: SimNode) (p: string) : SimNode =
+        let mutable node = root
+
+        for c in compsOf p do
+            node <-
+                match node.Find c with
+                | null ->
+                    let n = SimNode(comparer)
+                    node.Add(c, n)
+                    n
+                | n -> n
+
+        node
+
+    // every proper ancestor exists as a directory once an entry is made
+    let private markParents (root: SimNode) (p: string) =
+        let comps = compsOf p
+        let mutable node = root
+
+        for i in 0 .. comps.Length - 2 do
+            node <- node.Find comps[i]
+
+            if node.State = 0 || node.State = 3 then
+                if node.State = 3 then
+                    node.Cleared <- true
+
+                node.State <- 2
+
+    let private setLeaf (root: SimNode) (p: string) (state: int) =
+        let n = ensure root p
+        n.Clear()
+        n.State <- state
+        n.Cleared <- true
+        n.Mirror <- null
+
+        if state <> 3 then
+            markParents root p
+
+    // a directory copy: the destination is the source's view, overlay
+    // cloned, the layer beneath mirrored
+    let private copyTree (frames: PlanFrame list) (src: string) (dst: string) =
+        let top = (List.head frames).Sim
+        let struct (_, node, below) = viewIn top src
+
+        let mirror =
+            match below with
+            | null -> null
+            | b -> b
+
+        let d = ensure top dst
+        d.Clear()
+
+        if not (isNull node) then
+            for k in node.Names do
+                d.Add(k, node.Find(k).Clone())
+
+        d.State <- 2
+        d.Cleared <- true
+        d.Mirror <- mirror
+        markParents top dst
+
+    // a captured op's effect on the top layer
+    let private simApply (op: Value) =
+        let frames = stack.Value
+        let top = (List.head frames).Sim
+
+        match op with
+        | VUnion(("WriteFile" | "WriteFileAtomic"), Some(VTuple [ VStr p; _ ])) -> setLeaf top p 1
+        | VUnion("DeleteFile", Some(VStr p))
+        | VUnion("DeleteDir", Some(VStr p))
+        | VUnion("DeleteTree", Some(VStr p)) -> setLeaf top p 3
+        | VUnion("MakeDir", Some(VStr p)) ->
+            let n = ensure top p
+
+            if n.State = 0 || n.State = 3 then
+                if n.State = 3 then
+                    n.Cleared <- true
+
+                n.State <- 2
+
+            markParents top p
+        | VUnion("Copy", Some(VTuple [ VStr _; VStr d ])) -> setLeaf top d 1
+        | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) ->
+            setLeaf top s 3
+            setLeaf top d 1
+        | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> copyTree frames s d
+        | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) ->
+            copyTree frames s d
+            setLeaf top s 3
+        | _ -> ()
+
     // the filesystem paths an Op names (HttpSend names none)
     let private opPaths (op: Value) : string list =
         match op with
@@ -867,6 +1125,7 @@ module PlanMode =
                 | None -> ()
 
             frame.Ops.Add op
+            simApply op
 
             // a write lands where a final symlink points; a delete or
             // move changes the link itself [D:plan-guard-links]

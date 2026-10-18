@@ -3626,14 +3626,35 @@ let private readGuard (op: string) (r: string) : unit =
         failwith $"{op}: dangling symlink: {r} — its target does not exist"
 
 
-let private writeGuard (op: string) (r: string) : unit =
-    if System.IO.Directory.Exists r then
+// what a mutation's preconditions ask of the filesystem
+// [D:plan-preconditions]: the real one for a direct call and Plan.apply,
+// the plan's simulated one at capture — one set of checks, so a plan
+// refuses at capture exactly what the direct call would
+type private FsProbe =
+    { Kind: string -> int // 0 absent, 1 file, 2 dir, 4 another entry
+      EmptyDir: string -> bool
+      Dangling: string -> bool }
+
+let private realProbe =
+    { Kind = PlanMode.realKind
+      EmptyDir = fun r -> System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty
+      Dangling = isDangling }
+
+let private planProbe =
+    { Kind = PlanMode.simKind
+      EmptyDir = PlanMode.simEmptyDir
+      Dangling = PlanMode.simDangling isDangling }
+
+let private preWrite (pr: FsProbe) (op: string) (r: string) : unit =
+    if pr.Kind r = 2 then
         failwith $"{op}: {r} is a directory"
     else
         let parent = System.IO.Path.GetDirectoryName r
 
-        if parent <> "" && not (System.IO.Directory.Exists parent) then
+        if not (isNull parent) && parent <> "" && pr.Kind parent <> 2 then
             failwith $"{op}: no such directory: {parent}"
+
+let private writeGuard (op: string) (r: string) : unit = preWrite realProbe op r
 
 let private ioGuarded (op: string) (r: string) (f: unit -> 'a) : 'a =
     try
@@ -3656,15 +3677,19 @@ let private ioGuarded (op: string) (r: string) (f: unit -> 'a) : 'a =
 // plan's own frame (a nested mutation in the content is
 // captured/refused).
 
+/// a captured op checks its preconditions at capture against the plan's
+/// simulated filesystem, as outside a plan [D:plan-preconditions]
+/// (ruling R4): a plan never holds an op certain to fail at apply
 /// capture a WriteFile op (File.write) or WriteFileAtomic (File.writeAtomic,
 /// applied through the atomic path [D:plan-writeatomic]): force the
 /// content seq to data now.
 /// The captured path is the resolved absolute path [D:plan-path-bound]:
 /// the target is fixed at capture, so apply writes exactly the previewed
 /// location regardless of the apply-time cwd.
-let private capWrite (case: string) (resolved: string) (lines: Value seq) : Value option =
+let private capWrite (op: string) (case: string) (resolved: string) (lines: Value seq) : Value option =
     if PlanMode.active () then
         let snapshot = lines |> List.ofSeq // FORCE: snapshot content at plan time
+        preWrite planProbe op resolved
         PlanMode.capture (VUnion(case, Some(VTuple [ VStr resolved; VSeq snapshot ]))) [ resolved ]
         Some VUnit
     else
@@ -3672,8 +3697,9 @@ let private capWrite (case: string) (resolved: string) (lines: Value seq) : Valu
 
 /// capture a one-path op (DeleteFile / MakeDir / DeleteDir): stores the
 /// resolved absolute path [D:plan-path-bound]
-let private capPath1 (case: string) (resolved: string) : Value option =
+let private capPath1 (pre: FsProbe -> unit) (case: string) (resolved: string) : Value option =
     if PlanMode.active () then
+        pre planProbe
         PlanMode.capture (VUnion(case, Some(VStr resolved))) [ resolved ]
         Some VUnit
     else
@@ -3684,8 +3710,15 @@ let private capPath1 (case: string) (resolved: string) : Value option =
 /// read). Both
 /// paths are stored resolved absolute [D:plan-path-bound] — apply
 /// replays the exact captured source and destination, cwd-independent.
-let private capPath2 (case: string) (resolvedSrc: string) (resolvedDst: string) : Value option =
+let private capPath2
+    (pre: FsProbe -> unit)
+    (case: string)
+    (resolvedSrc: string)
+    (resolvedDst: string)
+    : Value option =
     if PlanMode.active () then
+        pre planProbe
+
         // a move also changes its source (gone after apply) [D:plan-stale-reads]
         let targets =
             match case with
@@ -3712,69 +3745,105 @@ let private refuseInPlan (op: string) (why: string) : Value option =
 // the performers [D:plan-apply]: one body per mutation, shared by the
 // direct builtin and Plan.apply's replay of its Op, so an applied plan
 // runs exactly the direct call's checks. `op` names the caller in messages.
-let private doFileDelete (op: string) (r: string) : unit =
-    if System.IO.Directory.Exists r then
+let private preFileDelete (pr: FsProbe) (op: string) (r: string) : unit =
+    let k = pr.Kind r
+
+    if k = 2 then
         failwith $"{op}: {r} is a directory — Dir.delete removes a directory"
 
-    if not (System.IO.File.Exists r) then
+    if k <> 1 then
         failwith $"{op}: no such file: {r}"
 
+let private doFileDelete (op: string) (r: string) : unit =
+    preFileDelete realProbe op r
     ioGuarded op r (fun () -> System.IO.File.Delete r)
 
-let private refuseExistingDst (op: string) (dst: string) : unit =
-    if System.IO.File.Exists dst || System.IO.Directory.Exists dst || FileInfo(dst).Exists then
+let private refuseExistingDst (pr: FsProbe) (op: string) (dst: string) : unit =
+    if pr.Kind dst <> 0 then
         failwith $"{op}: destination exists: {dst}"
 
-let private doFileCopy (op: string) (src: string) (dst: string) : unit =
-    if System.IO.Directory.Exists src then
+let private preFileCopy (pr: FsProbe) (op: string) (src: string) (dst: string) : unit =
+    let k = pr.Kind src
+
+    if k = 2 then
         failwith $"{op}: {src} is a directory — Dir.copy copies a directory"
 
-    if not (System.IO.File.Exists src) then
+    if k <> 1 then
         failwith $"{op}: no such file: {src}"
 
-    if isDangling src then
+    if pr.Dangling src then
         failwith $"{op}: dangling symlink: {src} — its target does not exist"
 
-    refuseExistingDst op dst
+    refuseExistingDst pr op dst
+
+let private doFileCopy (op: string) (src: string) (dst: string) : unit =
+    preFileCopy realProbe op src dst
     ioGuarded op src (fun () -> System.IO.File.Copy(src, dst))
 
-let private doFileMove (op: string) (src: string) (dst: string) : unit =
-    if System.IO.Directory.Exists src then
+let private preFileMove (pr: FsProbe) (op: string) (src: string) (dst: string) : unit =
+    let k = pr.Kind src
+
+    if k = 2 then
         failwith $"{op}: {src} is a directory — Dir.move moves a directory"
 
-    if not (System.IO.File.Exists src) then
+    if k <> 1 then
         failwith $"{op}: no such file: {src}"
 
-    refuseExistingDst op dst
+    refuseExistingDst pr op dst
+
+let private doFileMove (op: string) (src: string) (dst: string) : unit =
+    preFileMove realProbe op src dst
     ioGuarded op src (fun () -> System.IO.File.Move(src, dst))
+
+// mkdir -p: a file at the path or at any ancestor blocks it
+let private preDirCreate (pr: FsProbe) (op: string) (r: string) : unit =
+    let rec ancestors (p: string) =
+        match System.IO.Path.GetDirectoryName p with
+        | null
+        | "" -> [ p ]
+        | parent when parent = p -> [ p ]
+        | parent -> p :: ancestors parent
+
+    match ancestors r |> List.rev |> List.tryFind (fun p -> pr.Kind p = 1) with
+    | Some f -> failwith $"{op}: {f} is a file — a directory cannot be created there"
+    | None -> ()
 
 let private doDirCreate (op: string) (r: string) : unit =
     // mkdir -p: parents created, existing = the post-condition
+    preDirCreate realProbe op r
     ioGuarded op r (fun () -> System.IO.Directory.CreateDirectory r |> ignore)
 
-let private requireDir (op: string) (r: string) : unit =
-    if not (System.IO.Directory.Exists r) then
-        if System.IO.File.Exists r then
-            failwith $"{op}: {r} is not a directory"
-        else
-            failwith $"{op}: no such directory: {r}"
+let private requireDirIn (pr: FsProbe) (op: string) (r: string) : unit =
+    match pr.Kind r with
+    | 2 -> ()
+    | 1 -> failwith $"{op}: {r} is not a directory"
+    | _ -> failwith $"{op}: no such directory: {r}"
+
+let private requireDir (op: string) (r: string) : unit = requireDirIn realProbe op r
+
+let private preDirDelete (pr: FsProbe) (op: string) (r: string) : unit =
+    requireDirIn pr op r
+
+    if not (pr.EmptyDir r) then
+        failwith $"{op}: not empty: {r} — Dir.deleteAll removes a tree"
 
 let private doDirDelete (op: string) (r: string) : unit =
     requireDir op r
 
     ioGuarded op r (fun () ->
-        if System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty |> not then
-            failwith $"{op}: not empty: {r} — Dir.deleteAll removes a tree"
-
+        preDirDelete realProbe op r
         System.IO.Directory.Delete r)
 
 let private doDirDeleteAll (op: string) (r: string) : unit =
     requireDir op r
     ioGuarded op r (fun () -> System.IO.Directory.Delete(r, true))
 
+let private preDirMove (pr: FsProbe) (op: string) (src: string) (dst: string) : unit =
+    requireDirIn pr op src
+    refuseExistingDst pr op dst
+
 let private doDirMove (op: string) (src: string) (dst: string) : unit =
-    requireDir op src
-    refuseExistingDst op dst
+    preDirMove realProbe op src dst
     ioGuarded op src (fun () -> System.IO.Directory.Move(src, dst))
 
 // copying a directory means copying its contents — there is no
@@ -3784,9 +3853,9 @@ let private doDirMove (op: string) (src: string) (dst: string) : unit =
 // deliberate replace spelling. A symlink inside the tree is copied as a
 // link (dangling ones too), never followed — `cp -a`'s reading; a
 // destination inside the source would copy into itself, so it refuses.
-let private doDirCopy (op: string) (src: string) (dst: string) : unit =
-    requireDir op src
-    refuseExistingDst op dst
+let private preDirCopy (pr: FsProbe) (op: string) (src: string) (dst: string) : unit =
+    requireDirIn pr op src
+    refuseExistingDst pr op dst
 
     let sep = string System.IO.Path.DirectorySeparatorChar
 
@@ -3816,6 +3885,9 @@ let private doDirCopy (op: string) (src: string) (dst: string) : unit =
 
     if fd.StartsWith(fs + sep, cmp) || System.String.Equals(fd, fs, cmp) then
         failwith $"{op}: destination {dst} is inside the source {src}"
+
+let private doDirCopy (op: string) (src: string) (dst: string) : unit =
+    preDirCopy realProbe op src dst
 
     ioGuarded op src (fun () ->
         let rec go (s: string) (d: string) =
@@ -3870,7 +3942,7 @@ let private fileMembers: (string * Ty * Value) list =
               | VStr path, VSeq lines ->
                   let r = Session.resolve path
 
-                  match capWrite "WriteFile" r lines with
+                  match capWrite "File.write" "WriteFile" r lines with
                   | Some captured -> captured
                   | None ->
                   writeGuard "File.write" r
@@ -3905,7 +3977,7 @@ let private fileMembers: (string * Ty * Value) list =
               | VStr path, VSeq lines ->
                   let r = Session.resolve path
 
-                  match capWrite "WriteFileAtomic" r lines with
+                  match capWrite "File.writeAtomic" "WriteFileAtomic" r lines with
                   | Some captured -> captured
                   | None ->
                   writeGuard "File.writeAtomic" r
@@ -4005,14 +4077,19 @@ let private logMembers: (string * Ty * Value) list =
 // a two-path fs mutation [D:plan-apply]: `opCase` is its Plan Op (Copy /
 // Move) — inside a plan it captures (src, dst) and records the dst as
 // the known-after-apply target; otherwise it performs f.
-let private fsStr2 (name: string) (opCase: string) (f: string -> string -> unit) : Value =
+let private fsStr2
+    (name: string)
+    (opCase: string)
+    (pre: FsProbe -> string -> string -> string -> unit)
+    (f: string -> string -> unit)
+    : Value =
     VBuiltin(fun a ->
         VBuiltin(fun b ->
             match a, b with
             | VStr src, VStr dst ->
                 let s, d = Session.resolve src, Session.resolve dst
 
-                match capPath2 opCase s d with
+                match capPath2 (fun pr -> pre pr name s d) opCase s d with
                 | Some captured -> captured
                 | None ->
                     f s d
@@ -4156,7 +4233,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              match capPath1 "DeleteFile" r with
+              match capPath1 (fun pr -> preFileDelete pr "File.delete" r) "DeleteFile" r with
               | Some captured -> captured
               | None ->
 
@@ -4165,10 +4242,10 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           | v -> unreachable $"the checker rejects 'File.delete' on {formatValue v}")
       "copy",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "File.copy" "Copy" (doFileCopy "File.copy")
+      fsStr2 "File.copy" "Copy" preFileCopy (doFileCopy "File.copy")
       "move",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "File.move" "Move" (doFileMove "File.move")
+      fsStr2 "File.move" "Move" preFileMove (doFileMove "File.move")
       "size",
       // Size, not int [D:size] — the type is the point: show can
       // render what the type names (a deliberate break)
@@ -4223,7 +4300,7 @@ let private dirMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              match capPath1 "MakeDir" r with
+              match capPath1 (fun pr -> preDirCreate pr "Dir.create" r) "MakeDir" r with
               | Some captured -> captured
               | None ->
 
@@ -4246,7 +4323,7 @@ let private dirMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              match capPath1 "DeleteDir" r with
+              match capPath1 (fun pr -> preDirDelete pr "Dir.delete" r) "DeleteDir" r with
               | Some captured -> captured
               | None ->
 
@@ -4260,7 +4337,7 @@ let private dirMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              match capPath1 "DeleteTree" r with
+              match capPath1 (fun pr -> requireDirIn pr "Dir.deleteAll" r) "DeleteTree" r with
               | Some captured -> captured
               | None ->
 
@@ -4312,11 +4389,11 @@ let private dirMembers: (string * Ty * Value) list =
           | v -> unreachable $"the checker rejects 'Dir.stat' on {formatValue v}")
       "move",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "Dir.move" "MoveDir" (doDirMove "Dir.move")
+      fsStr2 "Dir.move" "MoveDir" preDirMove (doDirMove "Dir.move")
       // the tree copy [D:sized-findings] — see doDirCopy
       "copy",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "Dir.copy" "CopyDir" (doDirCopy "Dir.copy") ]
+      fsStr2 "Dir.copy" "CopyDir" preDirCopy (doDirCopy "Dir.copy") ]
 
 // ---- Float [D:floats]: finite-only; no implicit widening -----------
 let private floatFn (name: string) (f: float -> Value) : Value =

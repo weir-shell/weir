@@ -12469,6 +12469,235 @@ out=$($BIN "$padir/kaa.weir" 2>&1) && fail "a known-after-apply read must refuse
 echo "$out" | grep -qF "known-after-apply" || fail "the known-after-apply teaching must fire: $out"
 echo "e2e ok: plan/apply — a known-after-apply read refuses (located)"
 
+# [D:plan-preconditions] (ruling R4): a captured op checks its
+# preconditions against the plan's simulated state and raises at
+# capture, as the direct call does — every op kind, against real and
+# planned state; a valid chain still applies
+cat > "$padir/pre.weir" <<'WEOF'
+// every captured op checks its preconditions against the plan's simulated state [D:plan-preconditions]
+within tmp root
+    let p n = $"{root}/{n}"
+    File.write (p "a.txt") ["a"]
+    File.write (p "exists.txt") ["e"]
+    Dir.create (p "d")
+    File.write (p "d/in.txt") ["i"]
+    let c0 () =
+        plan
+            File.copy (p "a.txt") (p "exists.txt")
+    match c0 () |> try result with
+    | Ok pl -> print $"copy onto existing: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"copy onto existing: {Str.replace root "$T" e}"
+    let c1 () =
+        plan
+            File.write (p "new.txt") ["n"]
+            File.copy (p "a.txt") (p "new.txt")
+    match c1 () |> try result with
+    | Ok pl -> print $"copy onto a planned write: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"copy onto a planned write: {Str.replace root "$T" e}"
+    let c2 () =
+        plan
+            File.write (p "new.txt") ["n"]
+            File.copy (p "new.txt") (p "new2.txt")
+    match c2 () |> try result with
+    | Ok pl -> print $"copy from planned write: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"copy from planned write: {Str.replace root "$T" e}"
+    let c3 () =
+        plan
+            File.delete (p "missing.txt")
+    match c3 () |> try result with
+    | Ok pl -> print $"delete missing: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"delete missing: {Str.replace root "$T" e}"
+    let c4 () =
+        plan
+            File.delete (p "a.txt")
+            File.delete (p "a.txt")
+    match c4 () |> try result with
+    | Ok pl -> print $"delete twice: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"delete twice: {Str.replace root "$T" e}"
+    let c5 () =
+        plan
+            File.delete (p "a.txt")
+            File.copy (p "a.txt") (p "b.txt")
+    match c5 () |> try result with
+    | Ok pl -> print $"copy from deleted: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"copy from deleted: {Str.replace root "$T" e}"
+    let c6 () =
+        plan
+            File.move (p "nope.txt") (p "b.txt")
+    match c6 () |> try result with
+    | Ok pl -> print $"move from missing: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"move from missing: {Str.replace root "$T" e}"
+    let c7 () =
+        plan
+            File.move (p "a.txt") (p "b.txt")
+            File.move (p "a.txt") (p "c.txt")
+    match c7 () |> try result with
+    | Ok pl -> print $"move twice: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"move twice: {Str.replace root "$T" e}"
+    let c8 () =
+        plan
+            File.move (p "a.txt") (p "b.txt")
+            File.delete (p "b.txt")
+    match c8 () |> try result with
+    | Ok pl -> print $"move then delete target ok: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"move then delete target ok: {Str.replace root "$T" e}"
+    let c9 () =
+        plan
+            Dir.create (p "e")
+            File.write (p "e/x.txt") ["x"]
+            Dir.delete (p "e")
+    match c9 () |> try result with
+    | Ok pl -> print $"delete a dir the plan filled: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"delete a dir the plan filled: {Str.replace root "$T" e}"
+    let c10 () =
+        plan
+            File.delete (p "d/in.txt")
+            Dir.delete (p "d")
+    match c10 () |> try result with
+    | Ok pl -> print $"delete a dir the plan emptied ok: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"delete a dir the plan emptied ok: {Str.replace root "$T" e}"
+    let c11 () =
+        plan
+            Dir.delete (p "d")
+    match c11 () |> try result with
+    | Ok pl -> print $"delete a real non-empty dir: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"delete a real non-empty dir: {Str.replace root "$T" e}"
+    let c12 () =
+        plan
+            File.write (p "zz/x.txt") ["x"]
+    match c12 () |> try result with
+    | Ok pl -> print $"write under a missing dir: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"write under a missing dir: {Str.replace root "$T" e}"
+    let c13 () =
+        plan
+            Dir.create (p "zz/yy")
+            File.write (p "zz/yy/x.txt") ["x"]
+    match c13 () |> try result with
+    | Ok pl -> print $"write under a planned dir ok: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"write under a planned dir ok: {Str.replace root "$T" e}"
+    let c14 () =
+        plan
+            Dir.deleteAll (p "d")
+            File.write (p "d/x.txt") ["x"]
+    match c14 () |> try result with
+    | Ok pl -> print $"write under a deleted tree: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"write under a deleted tree: {Str.replace root "$T" e}"
+    let c15 () =
+        plan
+            File.write (p "d") ["x"]
+    match c15 () |> try result with
+    | Ok pl -> print $"write onto a dir: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"write onto a dir: {Str.replace root "$T" e}"
+    let c16 () =
+        plan
+            Dir.create (p "a.txt/sub")
+    match c16 () |> try result with
+    | Ok pl -> print $"mkdir under a file: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"mkdir under a file: {Str.replace root "$T" e}"
+    let c17 () =
+        plan
+            File.write (p "f.txt") ["x"]
+            Dir.create (p "f.txt")
+    match c17 () |> try result with
+    | Ok pl -> print $"mkdir over a planned file: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"mkdir over a planned file: {Str.replace root "$T" e}"
+    let c18 () =
+        plan
+            Dir.move (p "d") (p "d2")
+            File.copy (p "d2/in.txt") (p "in2.txt")
+            File.delete (p "d/in.txt")
+    match c18 () |> try result with
+    | Ok pl -> print $"dir move then use old: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir move then use old: {Str.replace root "$T" e}"
+    let c19 () =
+        plan
+            Dir.copy (p "d") (p "d3")
+            Dir.copy (p "d") (p "d3")
+    match c19 () |> try result with
+    | Ok pl -> print $"dir copy twice: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir copy twice: {Str.replace root "$T" e}"
+    let c20 () =
+        plan
+            Dir.copy (p "d") (p "d4")
+            Dir.delete (p "d4")
+    match c20 () |> try result with
+    | Ok pl -> print $"dir copy then delete it non-empty: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir copy then delete it non-empty: {Str.replace root "$T" e}"
+    let c21 () =
+        plan
+            Dir.deleteAll (p "nod")
+    match c21 () |> try result with
+    | Ok pl -> print $"deleteAll missing: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"deleteAll missing: {Str.replace root "$T" e}"
+    let c22 () =
+        plan
+            Dir.copy (p "d") (p "d/sub")
+    match c22 () |> try result with
+    | Ok pl -> print $"dir copy into itself: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir copy into itself: {Str.replace root "$T" e}"
+    let c23 () =
+        plan
+            Dir.move (p "nod") (p "x")
+    match c23 () |> try result with
+    | Ok pl -> print $"dir move missing: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir move missing: {Str.replace root "$T" e}"
+    let c24 () =
+        plan
+            File.writeAtomic (p "zz/q.txt") ["x"]
+    match c24 () |> try result with
+    | Ok pl -> print $"writeAtomic under missing: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"writeAtomic under missing: {Str.replace root "$T" e}"
+    let c25 () =
+        plan
+            File.write (p "m1.txt") ["1"]
+            File.copy (p "m1.txt") (p "m2.txt")
+            File.move (p "m2.txt") (p "m3.txt")
+            File.delete (p "m1.txt")
+            Dir.create (p "q")
+            File.move (p "m3.txt") (p "q/m3.txt")
+            Dir.move (p "q") (p "r")
+            File.delete (p "r/m3.txt")
+            Dir.delete (p "r")
+    match c25 () |> try result with
+    | Ok pl -> print $"all valid: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"all valid: {Str.replace root "$T" e}"
+    print $"apply: {Plan.apply (c25 ()) |> try result}"
+    print $"after: {Dir.list root |> Seq.map Path.fileName |> Str.join " "}"
+WEOF
+cat > "$padir/pre.want" <<'WEOF'
+copy onto existing: File.copy: destination exists: $T/exists.txt
+copy onto a planned write: File.copy: destination exists: $T/new.txt
+copy from planned write: ok (2 ops)
+delete missing: File.delete: no such file: $T/missing.txt
+delete twice: File.delete: no such file: $T/a.txt
+copy from deleted: File.copy: no such file: $T/a.txt
+move from missing: File.move: no such file: $T/nope.txt
+move twice: File.move: no such file: $T/a.txt
+move then delete target ok: ok (2 ops)
+delete a dir the plan filled: Dir.delete: not empty: $T/e — Dir.deleteAll removes a tree
+delete a dir the plan emptied ok: ok (2 ops)
+delete a real non-empty dir: Dir.delete: not empty: $T/d — Dir.deleteAll removes a tree
+write under a missing dir: File.write: no such directory: $T/zz
+write under a planned dir ok: ok (2 ops)
+write under a deleted tree: File.write: no such directory: $T/d
+write onto a dir: File.write: $T/d is a directory
+mkdir under a file: Dir.create: $T/a.txt is a file — a directory cannot be created there
+mkdir over a planned file: Dir.create: $T/f.txt is a file — a directory cannot be created there
+dir move then use old: File.delete: no such file: $T/d/in.txt
+dir copy twice: Dir.copy: destination exists: $T/d3
+dir copy then delete it non-empty: Dir.delete: not empty: $T/d4 — Dir.deleteAll removes a tree
+deleteAll missing: Dir.deleteAll: no such directory: $T/nod
+dir copy into itself: Dir.copy: destination $T/d/sub is inside the source $T/d
+dir move missing: Dir.move: no such directory: $T/nod
+writeAtomic under missing: File.writeAtomic: no such directory: $T/zz
+all valid: ok (9 ops)
+apply: Ok (())
+after: a.txt d exists.txt
+WEOF
+out=$($BIN "$padir/pre.weir" 2>&1) || fail "the plan precondition cell failed: $out"
+printf '%s\n' "$out" | tr -d '\r' | sed 's#\\#/#g' | diff "$padir/pre.want" - >/dev/null || fail "plan preconditions at capture diverge: $out"
+echo "e2e ok: plan/apply — every captured op checks its preconditions against the plan's state"
+
 # [D:plan-stale-reads]: every fs read is guarded — a listing after a
 # captured write inside it, a read under a captured deleteAll
 mkdir -p "$padir/sr/tree" && printf 't\n' > "$padir/sr/tree/f"

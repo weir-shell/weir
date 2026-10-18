@@ -999,7 +999,13 @@ let x =
   string * string`, `MakeDir`, `DeleteDir` (empty only), `DeleteTree`
   (`Dir.deleteAll`), `HttpSend of HttpRequest` (a
   mutating method only — an `Other` verb included unless it is a safe one; `show` masks the auth Secret). Content is
-  snapshotted at plan time, so `preview == apply`. The refusals:
+  snapshotted at plan time, so `preview == apply`. Each captured op
+  checks its preconditions at capture against the filesystem as the
+  plan's earlier ops leave it, and raises there with the direct call's
+  error (copy onto an existing or planned file, delete of a missing or
+  already-deleted file, copy/move from a missing source, `Dir.delete`
+  of a dir the plan filled, a write under a missing or deleted dir) —
+  a plan never holds an op certain to fail at apply. The refusals:
   `proc` inside a plan (a spawned binary is uncapturable — plan covers
   weir-native mutation only), `apply` inside a plan (a capture cannot
   be captured — apply OUTSIDE), a known-after-apply read (any file
