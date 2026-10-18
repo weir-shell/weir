@@ -205,7 +205,10 @@ reading the request body may take, and `maxBody` (a `Size`, default
 16MiB) that limits its size. The body is read before a handler slot
 is taken, so a slow upload never ties one up: a client that sends its
 body too slowly gets a 408, and a body larger than `maxBody` gets a
-413 and is never buffered whole.
+413 and is never buffered whole. The handler's `req.body` is decoded
+per the request's `Content-Type` charset (UTF-8 when none is given); a
+body in a charset weir cannot decode — anything but utf-8, utf-16,
+utf-32, us-ascii and iso-8859-1 — gets a 415 and no handler runs.
 
 When the block exits, the port is freed at once and requests still
 waiting in the queue are dropped. Handlers already running get two

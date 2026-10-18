@@ -809,6 +809,9 @@ print $"{key} -> {value}"
   (a `Duration`, OPTIONAL — default 30s) bounds that read (408);
   `maxBody` (a `Size`, OPTIONAL — default 16MiB) bounds its size, a
   larger body answered 413 without being buffered [D:serve-max-body].
+  `req.body` is decoded per the request's declared charset (UTF-8 when
+  none); a charset weir cannot decode is answered 415 before any
+  handler, never guessed at [D:serve-charset].
   The config is `{ port; maxConcurrent }` plus either optional field
   (`{ port = 8080; maxConcurrent = 4; maxBody = 1MiB }`). The handle surface is `Server.port`/`Server.running`/
   `Server.streamErrors` — no `stop` (the scope IS the teardown). ONE type

@@ -5474,6 +5474,21 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                 ignore
                          with _ ->
                              ())
+                    | Serve.BodyCharsetUnknown cs ->
+                        // a body in a charset weir cannot decode
+                        // [D:serve-charset]: refused before the
+                        // handler, never decoded as UTF-8
+                        (try
+                            Serve.writeResponse
+                                ctx
+                                { Status = 415
+                                  Headers = []
+                                  Body =
+                                    Serve.RText
+                                        $"request body charset '{cs}' is not one weir decodes — utf-8, utf-16, utf-32, us-ascii or iso-8859-1" }
+                                ignore
+                         with _ ->
+                             ())
                     | Serve.ResponseHeaderRefused msg ->
                         // a handler returned a header carrying
                         // CR/LF/NUL [D:http-header-bytes] or one
