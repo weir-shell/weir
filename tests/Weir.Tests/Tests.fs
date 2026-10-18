@@ -8932,6 +8932,21 @@ let planApplyTests =
 
               Expect.equal (runFile prog) 0 "a preview path renders CR, LF and ESC visibly"
           }
+          test "an http send preview line renders escapes visibly [D:tty-echo-strict]" {
+              let prog =
+                  [ "let esc = Str.fromBase64 \"Gw==\""
+                    "let cr = Str.fromBase64 \"DQ==\""
+                    "let p ="
+                    "    plan"
+                    "        let _r = Http.send { Http.defaults with method = Post; url = $\"http://x/h{esc}[8m\"; body = Text $\"a{cr}b\" }"
+                    "        ()"
+                    "let line = p |> Plan.preview |> Seq.exactlyOne"
+                    "if Str.contains esc line || Str.contains cr line then fail $\"raw control: {show line}\""
+                    "if not (Str.contains \"/h\\\\x1b[8m\" line) then fail $\"not visible: {show line}\""
+                    "print \"ok\"" ]
+
+              Expect.equal (runFile prog) 0 "an http send preview renders ESC visibly"
+          }
           test "Http.send{post} captures as an HttpSend Op — the per-method split" {
               let prog =
                   [ "let p ="
@@ -27780,6 +27795,118 @@ let hunt3r3UnreadTests =
 
 // hunt 3 round 4's race seams; the signal, serve and REPL halves are e2e
 // cells
+let hunt3r4SafetyTests =
+    testList
+        "hunt-3r4 safety"
+        [ test "NO_PROXY matches as curl does [D:noproxy-curl]" {
+              let cases =
+                  [ "example.com", "sub.example.com", true
+                    "example.com", "example.com", true
+                    "example.com.", "sub.example.com", true
+                    ".example.com", "example.com", true
+                    "example.com", "sub.example.com.", true
+                    "EXAMPLE.com", "a.b.Example.COM", true
+                    "example.com", "notexample.com", false
+                    "*.example.com", "sub.example.com", false
+                    "example.com:443", "example.com", false
+                    "x.org, example.com", "sub.example.com", true
+                    "x.org example.com", "sub.example.com", false
+                    "a.com,*", "anything.net", true
+                    "localhost", "127.0.0.1", false
+                    "127.0.0.1", "127.0.0.1", true
+                    ".0.0.1", "127.0.0.1", false
+                    ".1", "127.0.0.1", false
+                    "127.0.0.0/8", "127.0.0.1", true
+                    "127.9.9.9/8", "127.0.0.1", true
+                    "127.0.0.0/0", "127.0.0.1", false
+                    "0.0.0.0/0", "127.0.0.1", false
+                    "127.0.0.0/ 8", "127.0.0.1", false
+                    "127.0.0.1/33", "127.0.0.1", false
+                    "127.0.0.2/31", "127.0.0.3", true
+                    "127.0.0.1:8080", "127.0.0.1", false
+                    "::1", "[::1]", true
+                    "::1/128", "[::1]", true
+                    "[::1]", "[::1]", false
+                    "[::1]:8080", "[::1]", false
+                    "[::1]/128", "[::1]", false
+                    "fd00::/8", "[fd00::1]", true
+                    "fd00::/8", "[fe80::1]", false ]
+
+              for np, host, want in cases do
+                  Expect.equal (Weir.Http.noProxyMatch np host) want $"NO_PROXY={np} vs {host}"
+          }
+          test "a proxy's refusal and close classify by kind, never by text [D:proxy-refusal-words]" {
+              let tunnel =
+                  System.Net.Http.HttpRequestException(
+                      System.Net.Http.HttpRequestError.ProxyTunnelError,
+                      "The proxy tunnel request to proxy 'http://u:S3cr3t@h:1/' failed with status code '407'.",
+                      null,
+                      System.Nullable System.Net.HttpStatusCode.ProxyAuthenticationRequired
+                  )
+
+              Expect.equal
+                  (Weir.Http.classifyTransport 1000L 1 (System.AggregateException(tunnel :> exn)))
+                  (Weir.Http.ProxyRefused 407)
+                  "a CONNECT refusal carries its status"
+
+              let ended =
+                  System.Net.Http.HttpRequestException(System.Net.Http.HttpRequestError.ResponseEnded, "x")
+
+              Expect.equal
+                  (Weir.Http.classifyTransport 1000L 1 (System.AggregateException(ended :> exn)))
+                  Weir.Http.ConnectionEnded
+                  "an early close is its own case"
+
+              let other =
+                  Weir.Http.transportMessage "h" (Weir.Http.OtherTransport "proxy 'http://u:S3cr3t@h:1/' \u001b[8m")
+
+              Expect.isFalse (other.Contains "S3cr3t") $"userinfo redacted: {other}"
+              Expect.isFalse (other.Contains "\u001b") $"escape visible: {other}"
+              Expect.equal (Weir.Http.redactUrlsIn "at 'http://a:b@h/x' and https://t@k/") "at 'http://***@h/x' and https://***@k/" "every URL"
+          }
+          test "a runtime error escapes the data it quotes [D:error-data-escape]" {
+              // X = "a<CR>b<ESC>[8mc"
+              let x = "(Str.fromBase64 \"YQ1iG1s4bWM=\")"
+
+              for src in
+                  [ $"Float.parse {x}"
+                    $"Duration.parse {x}"
+                    $"Size.parse {x}"
+                    $"Instant.parse {x}"
+                    $"Uuid.parse {x}"
+                    $"File.read {x} |> Seq.length"
+                    $"Env.need {x}"
+                    $"[{x}] |> from json {{| a: int |}}"
+                    $"[\"a: \" + {x}] |> from yaml {{| a: int |}}"
+                    "[\"a = \" + Str.fromBase64 \"MRtbOG0Neg==\"] |> from toml {| a: int |}" ] do
+                  let msg =
+                      try
+                          run src |> ignore
+                          failtest $"expected a raise: {src}"
+                      with e ->
+                          e.Message
+
+                  Expect.isFalse (msg.Contains "\u001b" || msg.Contains "\r") $"raw CR/ESC in: {msg}"
+                  Expect.stringContains msg "\\x1b" $"the ESC renders visibly: {src}"
+              Expect.equal (excerpt "a\nb") "a\\x0ab" "an excerpt shows LF visibly"
+              Expect.equal (quoteData "ok") "ok" "plain data is unchanged"
+          }
+          test "a failed console write marks the writer gone, never raises [D:console-hangup]" {
+              let dead =
+                  { new System.IO.TextWriter() with
+                      member _.Encoding = System.Text.Encoding.UTF8
+                      member _.Write(c: char) : unit = raise (System.IO.IOException "EIO")
+                      member _.Write(s: string) : unit = raise (System.IO.IOException "EIO")
+                      member _.WriteLine(s: string) : unit = raise (System.IO.IOException "EIO")
+                      member _.Flush() : unit = raise (System.IO.IOException "EIO") }
+
+              let w = new HangupWriter(dead)
+              w.Write "x"
+              w.WriteLine "y"
+              w.Flush()
+              Expect.isTrue w.Gone "the writer is gone after the first failure"
+          } ]
+
 let hunt3r4RaceTests =
     testSequenced
     <| testList
@@ -28747,6 +28874,7 @@ let allTests =
           hunt3r3PromptKeyTests
           hunt3r3UnreadTests
           hunt3r4RaceTests
+          hunt3r4SafetyTests
           argsSecretEchoTests
           hunt3BehaviorTests
           docsBinaryTests

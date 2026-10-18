@@ -555,7 +555,7 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
         use resp = result
 
         if not resp.IsSuccessStatusCode then
-            Error $"{url} answered {int resp.StatusCode} ({resp.StatusCode})"
+            Error $"{Http.redactUrl url} answered {int resp.StatusCode} ({resp.StatusCode})"
         else
             let ct =
                 match resp.Content.Headers.ContentType with
@@ -1497,7 +1497,7 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                         | Ok() ->
                             try
                                 writeLock weirDir (others @ [ entry ])
-                                Ok $"added {kind} {name} ({hash.Substring(0, 12)}…) from {url}"
+                                Ok $"added {kind} {name} ({hash.Substring(0, 12)}…) from {Http.redactUrl url}"
                             with ex ->
                                 (try
                                     File.Delete dest
@@ -1565,7 +1565,7 @@ let restore (weirDir: string) : Result<string list, string> =
 
                         // the re-add names the entry's own kind — a module's
                         // locked url is the raw URL `add module` accepts
-                        let readd = $"`weir add {e.Kind} {e.Url} --as {e.Name}`"
+                        let readd = $"`weir add {e.Kind} {Http.redactUrl e.Url} --as {e.Name}`"
 
                         if hash <> e.Sha256 then
                             Error
@@ -1585,7 +1585,7 @@ let restore (weirDir: string) : Result<string list, string> =
                                 if repaired then
                                     $"{e.Kind} {e.Name}: repaired — refetched over a modified copy"
                                 else
-                                    $"{e.Kind} {e.Name}: restored from {e.Url}"
+                                    $"{e.Kind} {e.Name}: restored from {Http.redactUrl e.Url}"
                             ))
 
         match

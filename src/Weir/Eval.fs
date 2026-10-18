@@ -863,7 +863,7 @@ module PlanMode =
                 match frame.TmpRoots |> Seq.tryFind (fun root -> within root (norm p)) with
                 | Some root ->
                     failwith
-                        $"plan: this captures a {case} of '{p}', under the 'within tmp' directory '{root}' opened inside the plan — that directory is deleted when its scope closes, before Plan.apply runs, so apply would fail midway. Build the content in memory and capture the write to its real destination, or do the tmp work outside the plan"
+                        $"plan: this captures a {case} of '{quoteData p}', under the 'within tmp' directory '{quoteData root}' opened inside the plan — that directory is deleted when its scope closes, before Plan.apply runs, so apply would fail midway. Build the content in memory and capture the write to its real destination, or do the tmp work outside the plan"
                 | None -> ()
 
             frame.Ops.Add op
@@ -1073,105 +1073,11 @@ let private cappedPull (cap: int option) (items: seq<Value>) : Value list * bool
         shown |> List.truncate c, shown.Length > c
     | None -> items |> List.ofSeq, false
 
-// hostile bytes from data must not reach a terminal [D:binary-echo]:
-// the length of an SGR sequence (`ESC [ [0-9;:]* m`) starting at i, or
-// 0 [D:tty-color]. SGR sets display attributes only — colour, bold,
-// underline, reset — so it cannot move the cursor, clear the screen,
-// set the title, or write the clipboard; keeping it is safe where the
-// other escape families are not.
-let private sgrLenAt (s: string) (i: int) : int =
-    if i + 1 < s.Length && s.[i + 1] = '[' then
-        let mutable j = i + 2
+// the data sanitizers live in Types [D:tty-echo-strict] — runtime
+// messages quote data through them too [D:error-data-escape]
+let sanitizeTtyData (s: string) : string = Weir.Types.sanitizeTtyData s
 
-        while j < s.Length && (System.Char.IsDigit s.[j] || s.[j] = ';' || s.[j] = ':') do
-            j <- j + 1
-
-        if j < s.Length && s.[j] = 'm' then j - i + 1 else 0
-    else
-        0
-
-// [D:binary-echo] already ruled that a NUL-bearing echo refuses a tty;
-// this is the same rule one class wider, covering the data a renderer
-// prints. A filename or field carrying OSC/DCS escapes, a bare ESC, a
-// cursor/screen CSI, or C0/C1 controls can clear the screen, set the
-// window title, or write the clipboard. So tty-bound data renderers
-// neutralize those bytes: the ESC introducer, C0 controls except \t,
-// \n and a bare CR, DEL, and the C1 range render as a visible \xNN
-// escape so the text stays honest. CR passes [D:tty-cr-pass]: it only
-// returns the cursor, and progress lines rewrite themselves with it.
-// SGR sequences are the other exception [D:tty-color]: display-only,
-// so intentional colour (the Color module, a coloured prompt) survives
-// while every terminal-driving family stays neutralized. Applied only at a tty and only to data — redirected
-// output is byte-faithful.
-// Bidi controls render as a visible \uXXXX too [D:tty-bidi-sanitize]:
-// the text the user reads must match the bytes (Trojan Source).
-let private sanitizeWith (strict: bool) (s: string) : string =
-    // bidi = the embeddings/overrides U+202A..202E, the isolates
-    // U+2066..2069, LRM/RLM (U+200E/200F) and ALM (U+061C)
-    let bidi (c: char) =
-        let n = int c
-        (n >= 0x202A && n <= 0x202E) || (n >= 0x2066 && n <= 0x2069) || n = 0x200E || n = 0x200F || n = 0x061C
-
-    // hostile = ESC (0x1B) the introducer, DEL (0x7F), any C0 control
-    // (< 0x20) except TAB, LF and CR [D:tty-cr-pass], and the C1 range
-    // (0x80..0x9F)
-    let hostile (c: char) =
-        let n = int c
-
-        n = 0x1B
-        || n = 0x7F
-        || (n < 0x20 && c <> '\t' && c <> '\n' && (strict || c <> '\r'))
-        || (n >= 0x80 && n <= 0x9F)
-
-    if not (s |> Seq.exists (fun c -> hostile c || bidi c)) then
-        s
-    else
-        let sb = System.Text.StringBuilder(s.Length)
-        let hex = "0123456789abcdef"
-        let hexU = "0123456789ABCDEF"
-        let mutable i = 0
-
-        while i < s.Length do
-            let c = s.[i]
-
-            if int c = 0x1B then
-                match (if strict then 0 else sgrLenAt s i) with
-                | 0 ->
-                    // a non-SGR escape (OSC/DCS/cursor CSI/lone ESC): the
-                    // introducer renders visible; the rest is now inert text
-                    sb.Append "\\x1b" |> ignore
-                    i <- i + 1
-                | n ->
-                    sb.Append(s.Substring(i, n)) |> ignore // SGR kept verbatim
-                    i <- i + n
-            elif hostile c then
-                let n = int c
-                sb.Append("\\x").Append(hex[(n >>> 4) &&& 0xF]).Append(hex[n &&& 0xF]) |> ignore
-                i <- i + 1
-            elif bidi c then
-                let n = int c
-
-                sb
-                    .Append("\\u")
-                    .Append(hexU[(n >>> 12) &&& 0xF])
-                    .Append(hexU[(n >>> 8) &&& 0xF])
-                    .Append(hexU[(n >>> 4) &&& 0xF])
-                    .Append(hexU[n &&& 0xF])
-                |> ignore
-
-                i <- i + 1
-            else
-                sb.Append c |> ignore
-                i <- i + 1
-
-        sb.ToString()
-
-let sanitizeTtyData (s: string) : string = sanitizeWith false s
-
-/// weir's DATA renderers (the REPL and -e echo, table cells) show a
-/// bare CR and SGR visibly too [D:tty-echo-strict]: what they render is
-/// a value, never the user's intended terminal output
-let sanitizeTtyEcho (s: string) : string = sanitizeWith true s
+let sanitizeTtyEcho (s: string) : string = Weir.Types.sanitizeTtyEcho s
 
 /// sanitize data only when the sink is a tty [D:binary-echo] —
 /// redirected output (a pipe, a file) stays byte-faithful; a terminal
@@ -1747,7 +1653,7 @@ let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) :
         | _ ->
             match parseFloat raw with
             | Ok f -> VUnion("YFloat", Some(VFloat f))
-            | Error _ -> failwith $"{where}: number {raw} is out of float range"
+            | Error _ -> failwith $"{where}: number {quoteData raw} is out of float range"
     | _ -> VUnion("YNull", None)
 
 // a mapping's keys are unique on the wire [D:mapping-dupkeys]: a pair
@@ -1759,7 +1665,7 @@ let private refuseDupKeys (who: string) (keys: string seq) =
     for k in keys do
         if not (seen.Add k) then
             failwith
-                $"{who}: the mapping holds the key '{k}' twice — a document's keys are unique; keep one pair per key before writing"
+                $"{who}: the mapping holds the key '{quoteData k}' twice — a document's keys are unique; keep one pair per key before writing"
 
 let private jsonLine
     (renames: Map<string, Map<string, string>>)
@@ -2112,7 +2018,7 @@ let private jsonDocRead
                         |> String.concat ", "
 
                     failwith
-                        $"{who}: tag '{prefix}{tagField}' is '{tagValue}', which matches no case of {udef.Name} (cases: {cases}) in: {shown}"
+                        $"{who}: tag '{prefix}{tagField}' is '{quoteData tagValue}', which matches no case of {udef.Name} (cases: {cases}) in: {shown}"
 
     // one object element -> one row (the param shadows the document
     // root on purpose: the field readers below say `root` either way);
@@ -2141,7 +2047,7 @@ let private jsonDocRead
                         | System.Text.Json.JsonValueKind.Number ->
                             match e.TryGetInt64() with
                             | true, n -> decodeCoded where c None (Some n)
-                            | _ -> failwith $"{where}: [<{codecName c}>] reads an integer, got {e.GetRawText()}"
+                            | _ -> failwith $"{where}: [<{codecName c}>] reads an integer, got {quoteData (e.GetRawText())}"
                         | k -> failwith $"{where}: [<{codecName c}>] expects a string or a number, got {jsonKindName k}"
 
                     match ty, p.ValueKind with
@@ -2521,7 +2427,7 @@ let private tableRows (who: string) (def: RecordDef) (lines: string list) : Valu
                 | Some i -> fname, fty, i
                 | None ->
                     let want = if wire <> fname then $"'{wire}'" else $"'{fname}'"
-                    failwith $"{who}: missing column {want} for field '{fname}' — headers seen: {headers}")
+                    failwith $"{who}: missing column {want} for field '{fname}' — headers seen: {quoteData headers}")
 
         let cellValue (line: int) (col: Table.Column) (ty: Ty) (raw: string) : Value =
             let at = $"{who}: line {line}, col {col.Start + 1}: column '{col.Header}'"
@@ -2532,15 +2438,15 @@ let private tableRows (who: string) (def: RecordDef) (lines: string list) : Valu
                 | TInt ->
                     match System.Int64.TryParse s with
                     | true, n -> VInt n
-                    | _ -> failwith $"{at}: expected int, got '{s}'"
+                    | _ -> failwith $"{at}: expected int, got '{quoteData s}'"
                 | TFloat ->
                     match parseFloat s with
                     | Ok f -> VFloat f
-                    | Error _ -> failwith $"{at}: expected float, got '{s}'"
+                    | Error _ -> failwith $"{at}: expected float, got '{quoteData s}'"
                 | TBool ->
                     if s = "true" then VBool true
                     elif s = "false" then VBool false
-                    else failwith $"{at}: expected bool (exactly true/false), got '{s}'"
+                    else failwith $"{at}: expected bool (exactly true/false), got '{quoteData s}'"
                 | t -> unreachable $"the checker restricts table cells to scalars: {formatTy t}"
 
             match ty with
@@ -2580,7 +2486,8 @@ let private fromAdapter
     (udefs: Map<string, UnionDef>)
     : Value =
     let holdsSecret = jsonTopHoldsSecret top defs udefs
-    let cite (excerpt: string) = if holdsSecret then secretExcerpt else excerpt
+    let cite (excerpt: string) =
+        if holdsSecret then secretExcerpt else quoteData excerpt
 
     match fmt with
     // one document -> T: join the elements back into the text they
@@ -2713,7 +2620,7 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
         else
             match System.Int64.TryParse raw with
             | true, n -> VInt n
-            | _ -> failwith $"from yaml: line {line}: expected int, got '{raw}'"
+            | _ -> failwith $"from yaml: line {line}: expected int, got '{quoteData raw}'"
     | Yaml.SBool, Yaml.NScalar(raw, quoted, line) ->
         // exactly true/false (Env.load's rule: `yes`/`on`/`1` are
         // data, not booleans — the Norway problem cannot fire)
@@ -2724,7 +2631,7 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
         elif raw = "false" then
             VBool false
         else
-            failwith $"from yaml: line {line}: expected bool (exactly true/false), got '{raw}'"
+            failwith $"from yaml: line {line}: expected bool (exactly true/false), got '{quoteData raw}'"
     | Yaml.SFloat, Yaml.NScalar(raw, quoted, line) ->
         if quoted then
             failwith $"from yaml: line {line}: a quoted scalar is a string; this field expects float"
@@ -2742,11 +2649,11 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
             | "nan"
             | "-nan" ->
                 failwith
-                    $"from yaml: line {line}: '{raw}' is not representable — weir floats are finite (non-finite results raise; there is no value to read into)"
+                    $"from yaml: line {line}: '{quoteData raw}' is not representable — weir floats are finite (non-finite results raise; there is no value to read into)"
             | _ ->
                 match parseFloat raw with
                 | Ok f -> VFloat f
-                | Error _ -> failwith $"from yaml: line {line}: expected float, got '{raw}'"
+                | Error _ -> failwith $"from yaml: line {line}: expected float, got '{quoteData raw}'"
     | Yaml.SStr, Yaml.NScalar(raw, _, _) -> VStr raw
     | Yaml.SSecret, Yaml.NScalar(raw, _, _) -> VSecret raw
     | Yaml.SCodec Iso8601, Yaml.NScalar(raw, _, line) when localDate line raw ->
@@ -2756,7 +2663,7 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
             else "a local date-time"
 
         failwith
-            $"from yaml: line {line}: {raw} is {what} — it has no offset, so it names no instant; write an offset date-time (2024-03-01T10:00:00Z, or +02:00 for the zone), or read it into a string field"
+            $"from yaml: line {line}: {quoteData raw} is {what} — it has no offset, so it names no instant; write an offset date-time (2024-03-01T10:00:00Z, or +02:00 for the zone), or read it into a string field"
     | Yaml.SCodec c, Yaml.NScalar(raw, quoted, line) ->
         let num =
             match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
@@ -2822,7 +2729,7 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
                     let cases = ucases |> List.map (fun (_, w, _) -> w) |> String.concat ", "
 
                     failwith
-                        $"from yaml: line {line}: tag '{tag}' is '{tagValue}', which matches no case of {uname} (cases: {cases})"
+                        $"from yaml: line {line}: tag '{tag}' is '{quoteData tagValue}', which matches no case of {uname} (cases: {cases})"
         | Some(_, n) ->
             failwith $"from yaml: line {Yaml.nodeLine n}: tag field '{tag}' ({uname}) expects a string scalar"
     | Yaml.SSeq inner, Yaml.NSeq(items, _) -> VSeq(items |> List.map (yamlConvert inner) |> List.toSeq)
@@ -3642,11 +3549,11 @@ let private unknownFlagMessage (t: string) (known: string list) (tyOf: string ->
         | Some TBool -> $"unknown flag '{t}' — '{name}' is a presence flag and takes no value"
         | Some TSecret
         | Some(TNamed("Option", [ TSecret ])) ->
-            $"unknown flag '{name}=***' — a flag's value is the next argument: write '{name} <value>'"
+            $"unknown flag '{quoteData name}=***' — a flag's value is the next argument: write '{quoteData name} <value>'"
         | _ -> $"unknown flag '{t}' — a flag's value is the next argument: write '{name} {value}'"
     | i when i > 2 ->
         let name = t.Substring(0, i)
-        $"unknown flag '{name}=…'{didYouMean name known}"
+        $"unknown flag '{quoteData name}=…'{didYouMean name known}"
     | _ -> $"unknown flag '{t}'{didYouMean t known}"
 
 let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
@@ -3895,7 +3802,7 @@ let private argvLoad (target: ArgsTarget) : Value =
                 | [] -> VUnion(c, None)
                 | extra ->
                     failwith (
-                        $"Args.load {udef.Name} {tok}: "
+                        $"Args.load {udef.Name} {quoteData tok}: "
                         + String.concat "; " (extra |> List.map (fun t -> $"unexpected argument '{t}'"))
                     )
             | Some(_, (c, Some _)) ->
@@ -3904,7 +3811,7 @@ let private argvLoad (target: ArgsTarget) : Value =
 
                 VUnion(c, Some payload)
             | None ->
-                failwith $"Args.load {udef.Name}: unknown subcommand '{tok}'{didYouMean tok (table |> List.map fst)}"
+                failwith $"Args.load {udef.Name}: unknown subcommand '{quoteData tok}'{didYouMean tok (table |> List.map fst)}"
 
 // the sigil env slot evaluated to overlay pairs — inside the stream's
 // delay, so Env.fromFile boundary errors keep raise-at-force semantics
@@ -3987,13 +3894,13 @@ and private progOf (env: Env) (h: Check.TCmdHead) : string =
         let s = noNul "a dynamic command head" s
 
         if s = "" then
-            failwith $"the dynamic head ^{display} is empty — nothing to run"
+            failwith $"the dynamic head ^{quoteData display} is empty — nothing to run"
         elif not (Extern.exists s) then
             // a typed home path names its own spelling [D:tilde]
             if display.StartsWith "~/" then
-                failwith $"command not found: {s} (from {display})"
+                failwith $"command not found: {quoteData s} (from {quoteData display})"
             else
-                failwith $"command not found: {s} — the dynamic head ^{display} resolves at run time"
+                failwith $"command not found: {quoteData s} — the dynamic head ^{quoteData display} resolves at run time"
         else
             s
 
@@ -4731,7 +4638,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let resolved = Session.resolve path
 
             if System.IO.Directory.Exists resolved then
-                failwith $"within lock: {resolved} is a directory — the lock is a file (e.g. {resolved}/.lock)"
+                failwith $"within lock: {quoteData resolved} is a directory — the lock is a file (e.g. {quoteData resolved}/.lock)"
 
             let timeoutMs =
                 topts
@@ -4760,9 +4667,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
                      // parent must fail immediately, not spin as "held
                      // elsewhere"
                      | :? System.IO.DirectoryNotFoundException ->
-                         failwith $"within lock: no such directory for {resolved} — the lock file's parent must exist"
+                         failwith $"within lock: no such directory for {quoteData resolved} — the lock file's parent must exist"
                      | :? System.UnauthorizedAccessException ->
-                         failwith $"within lock: cannot open {resolved}: permission denied"
+                         failwith $"within lock: cannot open {quoteData resolved}: permission denied"
                      | :? System.IO.IOException -> None)
                     // POSIX: the lock is an explicit flock — .NET's own is
                     // disabled for weir [D:lock-advisory]
@@ -4777,7 +4684,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     match timeoutMs with
                     | Some ms when sw.ElapsedMilliseconds >= ms ->
                         failwith
-                            $"within lock: timed out after {formatDuration ms} waiting for {resolved} (held elsewhere)"
+                            $"within lock: timed out after {formatDuration ms} waiting for {quoteData resolved} (held elsewhere)"
                     | _ ->
                         Session.sleepInterruptible (System.TimeSpan.FromMilliseconds 25.0)
                         acquire ()
@@ -4801,7 +4708,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let resolved = Session.resolve path
 
             if not (System.IO.Directory.Exists resolved) then
-                failwith $"within cd: no such directory: {resolved}"
+                failwith $"within cd: no such directory: {quoteData resolved}"
 
             let saved = Session.Cwd()
             Session.setCwd resolved
@@ -5348,7 +5255,7 @@ and private evalYamlTpl (env: Env) (tpl: Check.TypedYamlTpl) : Value =
 
         for (k, _) in pairs do
             if not (seen.Add k) then
-                failwith $"yaml: duplicate key '{k}' (generated at runtime)"
+                failwith $"yaml: duplicate key '{quoteData k}' (generated at runtime)"
 
         VUnion("YMap", Some(VSeq(pairs |> List.map (fun (k, v) -> VTuple [ VStr k; v ]) |> List.toSeq)))
 

@@ -3613,14 +3613,14 @@ let private saveDirective (state: State) (path: string) : unit =
                         note ()
                         Console.WriteLine $"#save: wrote {distilled.Length} line(s) to {path} (unformatted)"
                     with ex ->
-                        Console.WriteLine $"#save: could not write {path}: {ex.Message}"
+                        Console.WriteLine $"#save: could not write {quoteData path}: {quoteData ex.Message}"
                 | Ok formatted ->
                     try
                         File.WriteAllLines(path, formatted)
                         note ()
                         Console.WriteLine $"#save: wrote {List.length formatted} line(s) to {path}"
                     with ex ->
-                        Console.WriteLine $"#save: could not write {path}: {ex.Message}"
+                        Console.WriteLine $"#save: could not write {quoteData path}: {quoteData ex.Message}"
 
 let rec private loop (state: State) =
     // an anonymous record bound last line completes its fields now
@@ -3940,7 +3940,7 @@ let private initFilePath () =
 
 /// print one init diagnostic, with its source line and a caret
 let private initDiag (path: string) (line: int) (col: int) (srcLine: string) (msg: string) =
-    Console.Error.WriteLine $"{path}:{line}:{col}: {msg}"
+    Console.Error.WriteLine $"{quoteData path}:{line}:{col}: {msg}"
 
     if srcLine <> "" then
         Console.Error.WriteLine srcLine
@@ -4041,7 +4041,7 @@ let private loadInit (baseState: State) : State =
                 if d.File = path then
                     initDiag path d.Line d.Col (srcLine d.Line) d.Message
                 else
-                    Console.Error.WriteLine $"{d.File}:{d.Line}:{d.Col}: {d.Message}"
+                    Console.Error.WriteLine $"{quoteData d.File}:{d.Line}:{d.Col}: {d.Message}"
 
             notLoaded ()
         | [] ->

@@ -64,7 +64,9 @@ type private State =
       mutable Pos: int
       mutable Line: int }
 
-let private fail (s: State) msg = raise (TomlError(s.Line, msg))
+// a message quotes the document's text [D:error-data-escape]
+let private fail (s: State) msg =
+    raise (TomlError(s.Line, Weir.Types.quoteData msg))
 
 let private eof (s: State) = s.Pos >= s.Src.Length
 let private peekAt (s: State) k = if s.Pos + k < s.Src.Length then s.Src[s.Pos + k] else '\000'

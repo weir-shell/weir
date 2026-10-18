@@ -652,9 +652,13 @@ print $"{key} -> {value}"
   400 then fail …`, a 404 binds); only TRANSPORT failure raises, naming
   the host that failed — a redirect's target, not the origin (and a
   redirect loop — past 50 hops it raises, naming it). The proxy comes
-  from `HTTP_PROXY`/`HTTPS_PROXY`; a `NO_PROXY` entry bypasses it, `*`
-  for every host, a CIDR (`10.0.0.0/8`) for every address it covers; a
-  dead proxy's error names the proxy. `auth` plus an
+  from `HTTP_PROXY`/`HTTPS_PROXY`; a `NO_PROXY` entry bypasses it as
+  curl reads it — `example.com` (or `.example.com`) for the host and
+  every subdomain, trailing dots ignored, `*` for every host, an
+  address or a CIDR (`10.0.0.0/8`, `::1`, bracket-less) for an IP host,
+  no ports. A dead proxy, a proxy refusing the tunnel (407, 403, 502)
+  or closing the connection is named in the error — host:port, never
+  its credentials. `auth` plus an
   explicit `Authorization` header is refused (two credentials). A
   header the wire cannot carry raises before anything is sent, naming
   the header — a CR/LF/NUL byte, a non-token name (`"Bad Name"`), a
@@ -871,7 +875,11 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   message) — at a tty AND detached (a `kill -INT`/`-TERM`/`-HUP` on a
   `setsid`/backgrounded weir unwinds the same way, exit 130/143/129; a
   second signal mid-teardown hard-exits, the double-Ctrl+C escape)
-  [D:sighup-teardown]. `nohup weir …` keeps SIGHUP ignored.
+  [D:sighup-teardown]. `nohup weir …` keeps SIGHUP ignored. A
+  hung-up terminal never aborts weir: console writes after the hangup
+  are dropped, so the cleanups still run whole and the exit is 129
+  [D:console-hangup] (a command's own write to the dead terminal is
+  that command's failure).
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel, a `kill -INT`) tree-kills the running foreground command and
   every fan-out arm's command too, scoped or not [D:sigint-reaps]. A
@@ -901,11 +909,14 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   `always` run first [D:teardown-abandons-reads].
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
   definition — no userspace design closes that hole; and a weir
-  BACKGROUNDED IN AN INTERACTIVE SHELL (`weir … &`/`nohup`, which
-  keeps a controlling terminal) inherits SIGINT ignored — the
-  job-control nohup convention — so a terminal Ctrl+C does not reach
-  it, and neither does a `kill -INT` of its pid (send SIGTERM, or
-  SIGHUP unless `nohup` ignored that too) [D:sigint-ignored-tty]. AND THE MIRROR non-claim: the
+  BACKGROUNDED WHERE JOB CONTROL IS OFF (`weir … &` in a script,
+  `sh -c 'weir … &'`, after `set +m`) with a controlling terminal
+  inherits SIGINT ignored — the shell's rule for a background command
+  — so a terminal Ctrl+C does not reach it, and neither does a `kill
+  -INT` of its pid (send SIGTERM, or SIGHUP unless `nohup` ignored that
+  too) [D:sigint-ignored-tty]. With job control on (`weir … &` or
+  `nohup weir … &` typed at an interactive shell) SIGINT stays live:
+  `kill -INT` works as usual [D:sigint-ignored-jobcontrol]. AND THE MIRROR non-claim: the
   tree-kill weir performs lands as SIGKILL on the CHILDREN too
   (measured: wait = 137), so `within proc` does not run your child's
   cleanup — a child that traps SIGTERM to flush state, remove a
@@ -2710,8 +2721,12 @@ print (show port)
   a progress line can rewrite itself. Redirected, the bytes pass
   unchanged. Renderers that draw a VALUE go further: `show` writes a
   CR as `\r`, and the REPL and `-e` echo (table cells included),
-  `Plan.preview` paths and `weir verify`/`restore` lines show CR and
-  colour escapes visibly.
+  `Plan.preview` lines (paths and an `http send`'s request), `weir
+  verify`/`restore` lines and `weir add sig`'s output (the line and the
+  generated file) show CR and colour escapes visibly. So does a
+  runtime error for the data it quotes — a parse input, a document
+  excerpt, a path, a file name, an env var name — always, piped too:
+  CR, LF and escapes render as `\x0d`, `\x0a`, `\x1b` [D:error-data-escape].
 - `Log.trace/debug/info/warn "msg"` — levelled diagnostics, ALWAYS to
   stderr (stdout is data; there is no stream knob). `WEIR_LOG=level`
   selects (`trace|debug|info|warn|off`; default `info`; invalid

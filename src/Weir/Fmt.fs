@@ -847,7 +847,7 @@ let formatFile (checkOnly: bool) (path: string) : int =
 
                 0
             elif checkOnly then
-                System.Console.Error.WriteLine $"weir fmt: {path} would be reformatted"
+                System.Console.Error.WriteLine $"weir fmt: {Weir.Types.quoteData path} would be reformatted"
                 1
             else
                 try
@@ -867,12 +867,12 @@ let formatFile (checkOnly: bool) (path: string) : int =
                         if List.isEmpty result then "" else String.concat nl result + nl
 
                     System.IO.File.WriteAllText(path, out, System.Text.UTF8Encoding(bom))
-                    System.Console.Error.WriteLine $"weir fmt: formatted {path}"
+                    System.Console.Error.WriteLine $"weir fmt: formatted {Weir.Types.quoteData path}"
                     0
                 with
                 | :? System.UnauthorizedAccessException ->
-                    System.Console.Error.WriteLine $"weir fmt: cannot write {path}: permission denied"
+                    System.Console.Error.WriteLine $"weir fmt: cannot write {Weir.Types.quoteData path}: permission denied"
                     2
                 | :? System.IO.IOException as ex ->
-                    System.Console.Error.WriteLine $"weir fmt: cannot write {path}: {ex.Message}"
+                    System.Console.Error.WriteLine $"weir fmt: cannot write {Weir.Types.quoteData path}: {Weir.Types.quoteData ex.Message}"
                     2

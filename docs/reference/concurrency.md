@@ -251,7 +251,10 @@ kill is SIGKILL, so a child's own cleanup never runs. A descendant that
 was reparented away (`(cmd &)`, a daemon) is out of reach
 ([D:tree-kill-walk]). An inherited SIG_IGN is honoured: SIGINT stays
 unbound when there is a controlling tty, so a pid-directed `kill -INT`
-is dropped too; SIGTERM always works, and SIGHUP does unless it was
+is dropped too. A shell ignores SIGINT for a background command only
+where job control is off (a script, `sh -c '… &'`, `set +m`); an
+interactive shell's `&` and `nohup … &` start weir with SIGINT live
+([D:sigint-ignored-jobcontrol]); SIGTERM always works, and SIGHUP does unless it was
 ignored too ([D:signal-teardown], [D:sigint-reaps],
 [D:sigint-ignored-tty]). An ignored SIGHUP always stays unbound
 ([D:sighup-teardown]).

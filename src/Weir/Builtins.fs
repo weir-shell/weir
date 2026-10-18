@@ -114,8 +114,8 @@ let private lsEnumerate (cwd: string) : seq<Value> =
         try
             DirectoryInfo(cwd).GetFileSystemInfos()
         with
-        | :? System.UnauthorizedAccessException -> failwith $"ls: permission denied: {cwd}"
-        | :? System.IO.IOException as e -> failwith $"ls: cannot access {cwd} — {e.Message}"
+        | :? System.UnauthorizedAccessException -> failwith $"ls: permission denied: {quoteData cwd}"
+        | :? System.IO.IOException as e -> failwith $"ls: cannot access {quoteData cwd} — {quoteData e.Message}"
 
     // sorted by name, ordinal [D:ls-sort]: the third discovery
     // surface joins Dir.list/Path.glob's rule (F# string compare
@@ -419,7 +419,7 @@ let private cdImpl: Value =
             let resolved = Session.resolve path
 
             if not (Directory.Exists resolved) then
-                failwith $"cd: no such directory: {resolved}"
+                failwith $"cd: no such directory: {quoteData resolved}"
 
             Session.setCwd resolved
             // return what was stored, so cd and pwd cannot disagree on shape
@@ -1297,7 +1297,7 @@ let private splitOnceImpl: Value =
                     failwith "splitOnce: the separator cannot be empty"
                 else
                     match s.IndexOf sep with
-                    | -1 -> failwith $"splitOnce: no \"{sep}\" in the input"
+                    | -1 -> failwith $"splitOnce: no \"{quoteData sep}\" in the input"
                     | i -> VTuple [ VStr(s.Substring(0, i)); VStr(s.Substring(i + sep.Length)) ]
             | _ -> unreachable "the checker rejects 'splitOnce' on these arguments"))
 
@@ -1326,7 +1326,7 @@ let private rsplitOnceImpl: Value =
                     failwith "rsplitOnce: the separator cannot be empty"
                 else
                     match s.LastIndexOf sep with
-                    | -1 -> failwith $"rsplitOnce: no \"{sep}\" in the input"
+                    | -1 -> failwith $"rsplitOnce: no \"{quoteData sep}\" in the input"
                     | i -> VTuple [ VStr(s.Substring(0, i)); VStr(s.Substring(i + sep.Length)) ]
             | _ -> unreachable "the checker rejects 'rsplitOnce' on these arguments"))
 
@@ -3120,7 +3120,7 @@ let private pathUnderImpl: Value =
 
                 let escape () : Value =
                     failwith
-                        $"Path.under: '{name}' escapes '{root}' — under confines a path to its base; Path.combine is the unconfined join"
+                        $"Path.under: '{quoteData name}' escapes '{quoteData root}' — under confines a path to its base; Path.combine is the unconfined join"
 
                 if absoluteShaped name then
                     escape ()
@@ -3413,7 +3413,7 @@ let private dotenvEscape =
 
 let private parseDotenvLine (path: string) (lineNo: int) (raw: string) : (string * string) option =
     let bad (why: string) =
-        failwith $"{path}:{lineNo}: {why} — {dotenvEscape}"
+        failwith $"{quoteData path}:{lineNo}: {why} — {dotenvEscape}"
 
     let line = raw.Trim()
 
@@ -3493,19 +3493,19 @@ let private envFromFileImpl: Value =
                     // a missing .env must not leak
                     // FileNotFoundException's text [D:transport-words]
                     if Directory.Exists resolved then
-                        failwith $"Env.fromFile: {resolved} is a directory"
+                        failwith $"Env.fromFile: {quoteData resolved} is a directory"
 
                     if not (File.Exists resolved) then
-                        failwith $"Env.fromFile: no such file: {resolved}"
+                        failwith $"Env.fromFile: no such file: {quoteData resolved}"
 
                     let lines =
                         try
                             readLinesShared resolved
                         with
                         | :? System.UnauthorizedAccessException ->
-                            failwith $"Env.fromFile: permission denied: {resolved}"
+                            failwith $"Env.fromFile: permission denied: {quoteData resolved}"
                         | :? System.IO.IOException as e ->
-                            failwith $"Env.fromFile: cannot access {resolved} — {e.Message}"
+                            failwith $"Env.fromFile: cannot access {quoteData resolved} — {quoteData e.Message}"
 
                     lines
                     |> Seq.indexed
@@ -3584,7 +3584,7 @@ let private envMembers: (string * Ty * Value) list =
           | VStr name ->
               match Session.getEnv name with
               | Some value -> VStr value
-              | None -> failwith $"Env.need: {name} is not set"
+              | None -> failwith $"Env.need: {quoteData name} is not set"
           | v -> unreachable $"the checker rejects 'Env.need' on {formatValue v}")
       "getOr",
       TFun(TStr, TFun(TStr, TStr)),
@@ -3619,28 +3619,28 @@ let private isDangling (r: string) : bool =
 
 let private readGuard (op: string) (r: string) : unit =
     if System.IO.Directory.Exists r then
-        failwith $"{op}: {r} is a directory"
+        failwith $"{op}: {quoteData r} is a directory"
     elif not (File.Exists r) then
-        failwith $"{op}: no such file: {r}"
+        failwith $"{op}: no such file: {quoteData r}"
     elif isDangling r then
-        failwith $"{op}: dangling symlink: {r} — its target does not exist"
+        failwith $"{op}: dangling symlink: {quoteData r} — its target does not exist"
 
 
 let private writeGuard (op: string) (r: string) : unit =
     if System.IO.Directory.Exists r then
-        failwith $"{op}: {r} is a directory"
+        failwith $"{op}: {quoteData r} is a directory"
     else
         let parent = System.IO.Path.GetDirectoryName r
 
         if parent <> "" && not (System.IO.Directory.Exists parent) then
-            failwith $"{op}: no such directory: {parent}"
+            failwith $"{op}: no such directory: {quoteData parent}"
 
 let private ioGuarded (op: string) (r: string) (f: unit -> 'a) : 'a =
     try
         f ()
     with
-    | :? System.UnauthorizedAccessException -> failwith $"{op}: permission denied: {r}"
-    | :? System.IO.IOException as e -> failwith $"{op}: cannot access {r} — {e.Message}"
+    | :? System.UnauthorizedAccessException -> failwith $"{op}: permission denied: {quoteData r}"
+    | :? System.IO.IOException as e -> failwith $"{op}: cannot access {quoteData r} — {quoteData e.Message}"
 
 // ---- plan/apply capture [D:plan-apply] ------------------------------
 // The mutation builtins consult PlanMode: inside a `plan` block they
@@ -3714,36 +3714,36 @@ let private refuseInPlan (op: string) (why: string) : Value option =
 // runs exactly the direct call's checks. `op` names the caller in messages.
 let private doFileDelete (op: string) (r: string) : unit =
     if System.IO.Directory.Exists r then
-        failwith $"{op}: {r} is a directory — Dir.delete removes a directory"
+        failwith $"{op}: {quoteData r} is a directory — Dir.delete removes a directory"
 
     if not (System.IO.File.Exists r) then
-        failwith $"{op}: no such file: {r}"
+        failwith $"{op}: no such file: {quoteData r}"
 
     ioGuarded op r (fun () -> System.IO.File.Delete r)
 
 let private refuseExistingDst (op: string) (dst: string) : unit =
     if System.IO.File.Exists dst || System.IO.Directory.Exists dst || FileInfo(dst).Exists then
-        failwith $"{op}: destination exists: {dst}"
+        failwith $"{op}: destination exists: {quoteData dst}"
 
 let private doFileCopy (op: string) (src: string) (dst: string) : unit =
     if System.IO.Directory.Exists src then
-        failwith $"{op}: {src} is a directory — Dir.copy copies a directory"
+        failwith $"{op}: {quoteData src} is a directory — Dir.copy copies a directory"
 
     if not (System.IO.File.Exists src) then
-        failwith $"{op}: no such file: {src}"
+        failwith $"{op}: no such file: {quoteData src}"
 
     if isDangling src then
-        failwith $"{op}: dangling symlink: {src} — its target does not exist"
+        failwith $"{op}: dangling symlink: {quoteData src} — its target does not exist"
 
     refuseExistingDst op dst
     ioGuarded op src (fun () -> System.IO.File.Copy(src, dst))
 
 let private doFileMove (op: string) (src: string) (dst: string) : unit =
     if System.IO.Directory.Exists src then
-        failwith $"{op}: {src} is a directory — Dir.move moves a directory"
+        failwith $"{op}: {quoteData src} is a directory — Dir.move moves a directory"
 
     if not (System.IO.File.Exists src) then
-        failwith $"{op}: no such file: {src}"
+        failwith $"{op}: no such file: {quoteData src}"
 
     refuseExistingDst op dst
     ioGuarded op src (fun () -> System.IO.File.Move(src, dst))
@@ -3755,16 +3755,16 @@ let private doDirCreate (op: string) (r: string) : unit =
 let private requireDir (op: string) (r: string) : unit =
     if not (System.IO.Directory.Exists r) then
         if System.IO.File.Exists r then
-            failwith $"{op}: {r} is not a directory"
+            failwith $"{op}: {quoteData r} is not a directory"
         else
-            failwith $"{op}: no such directory: {r}"
+            failwith $"{op}: no such directory: {quoteData r}"
 
 let private doDirDelete (op: string) (r: string) : unit =
     requireDir op r
 
     ioGuarded op r (fun () ->
         if System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty |> not then
-            failwith $"{op}: not empty: {r} — Dir.deleteAll removes a tree"
+            failwith $"{op}: not empty: {quoteData r} — Dir.deleteAll removes a tree"
 
         System.IO.Directory.Delete r)
 
@@ -3815,7 +3815,7 @@ let private doDirCopy (op: string) (src: string) (dst: string) : unit =
             System.StringComparison.OrdinalIgnoreCase
 
     if fd.StartsWith(fs + sep, cmp) || System.String.Equals(fd, fs, cmp) then
-        failwith $"{op}: destination {dst} is inside the source {src}"
+        failwith $"{op}: destination {quoteData dst} is inside the source {quoteData src}"
 
     ioGuarded op src (fun () ->
         let rec go (s: string) (d: string) =
@@ -4033,7 +4033,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
               PlanMode.checkRead "File.mode" r
 
               if not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
-                  failwith $"File.mode: no such path: {r}"
+                  failwith $"File.mode: no such path: {quoteData r}"
 
               try
                   let m = System.IO.File.GetUnixFileMode r
@@ -4061,9 +4061,9 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                   // describe the link) fails here for the honest reason,
                   // never as absent
                   if isNull (FileInfo(r).LinkTarget) then
-                      failwith $"File.mode: no such path: {r}"
+                      failwith $"File.mode: no such path: {quoteData r}"
                   else
-                      failwith $"File.mode: dangling symlink: {r} — no target to read a mode from"
+                      failwith $"File.mode: dangling symlink: {quoteData r} — no target to read a mode from"
           | v -> unreachable $"the checker rejects 'File.mode' on {formatValue v}")
       "isExecutable",
       // the mode string's 'x', as a bool [D:port-members]: the owner
@@ -4084,7 +4084,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
               // carries the dir's x bit — the empty string must raise the
               // same located error as a missing path, never answer true.
               if p = "" || not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
-                  failwith $"File.isExecutable: no such path: {r}"
+                  failwith $"File.isExecutable: no such path: {quoteData r}"
 
               try
                   let m = System.IO.File.GetUnixFileMode r
@@ -4097,9 +4097,9 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
               | :? System.IO.DirectoryNotFoundException ->
                   // the read follows; existence does not [D:mode-existence]
                   if isNull (FileInfo(r).LinkTarget) then
-                      failwith $"File.isExecutable: no such path: {r}"
+                      failwith $"File.isExecutable: no such path: {quoteData r}"
                   else
-                      failwith $"File.isExecutable: dangling symlink: {r} — no target to read a mode from"
+                      failwith $"File.isExecutable: dangling symlink: {quoteData r} — no target to read a mode from"
           | v -> unreachable $"the checker rejects 'File.isExecutable' on {formatValue v}")
       "readBytes",
       // the byte-faithful read [D:bytes]: File.read decodes leniently
@@ -4212,7 +4212,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                   if di.Exists then
                       lsRow di
                   else
-                      failwith $"File.stat: no such path: {r}"
+                      failwith $"File.stat: no such path: {quoteData r}"
           | v -> unreachable $"the checker rejects 'File.stat' on {formatValue v}") ]
 
 let private dirMembers: (string * Ty * Value) list =
@@ -4276,7 +4276,7 @@ let private dirMembers: (string * Ty * Value) list =
               PlanMode.checkTree "Dir.list" r
 
               if not (System.IO.Directory.Exists r) then
-                  failwith $"Dir.list: no such directory: {r}"
+                  failwith $"Dir.list: no such directory: {quoteData r}"
 
               // full paths, files and directories, sorted (as glob
               // does), eager (a listing is bounded); ** recursion
@@ -4296,7 +4296,7 @@ let private dirMembers: (string * Ty * Value) list =
               PlanMode.checkTree "Dir.stat" r
 
               if not (System.IO.Directory.Exists r) then
-                  failwith $"Dir.stat: no such directory: {r}"
+                  failwith $"Dir.stat: no such directory: {quoteData r}"
 
               // the rows form of Dir.list [D:dir-stat]: ls's own
               // enumeration and row constructor over the named
@@ -4932,7 +4932,7 @@ let private runRequest (reqV: Value) : Http.Resp =
                 // the unparseable-URL fallback names it in the wait label —
                 // redact userinfo [D:url-redact], matching the transport
                 // error's own fallback
-                Http.redactUrl req.Url
+                quoteData (Http.redactUrl req.Url)
 
         // the send is a boundary and a wait [D:pfirst-join] [D:repl-interrupt]
         Session.checkCancels ()
@@ -5041,7 +5041,7 @@ let private httpExpectImpl: Value =
                     let detail = if snippet = "" then "" else $": {snippet}"
                     let methodName = httpMethodName (recGet "method" f)
 
-                    failwith $"{methodName} {Http.redactUrl url} answered {resp.Status}{detail}"
+                    failwith $"{methodName} {quoteData (Http.redactUrl url)} answered {resp.Status}{detail}"
                 else
                     VSeq(respBodyLines resp)
         | v -> unreachable $"the checker rejects 'Http.expect' on {formatValue v}")
@@ -5152,8 +5152,8 @@ let private previewOp (op: Value) : string =
     | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> $"copy dir {shown s} -> {shown d}"
     | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) -> $"move {shown s} -> {shown d}"
     | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) -> $"move dir {shown s} -> {shown d}"
-    | VUnion("HttpSend", Some req) -> $"http send {formatValue req}"
-    | v -> formatValue v
+    | VUnion("HttpSend", Some req) -> $"http send {shown (formatValue req)}"
+    | v -> shown (formatValue v)
 
 // perform one Op through the real IO [D:plan-apply] — each Op names
 // exactly one mutation builtin, and replays through that builtin's own
@@ -5591,7 +5591,7 @@ let private mapMembers: (string * Ty * Value) list =
               | VStr key, VMap m ->
                   match Map.tryFind key m with
                   | Some v -> v
-                  | None -> failwith $"Map.get: no key \"{key}\""
+                  | None -> failwith $"Map.get: no key \"{quoteData key}\""
               | _ -> unreachable "the checker rejects 'Map.get' on these arguments"))
       "tryGet",
       TFun(TStr, TFun(mapTy tA, TNamed("Option", [ tA ]))),

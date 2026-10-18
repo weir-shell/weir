@@ -3083,7 +3083,8 @@ let private located (path: string) (lineNo: int) (msg: string) : string =
         else
             msg
 
-    $"{path}:{lineNo}: {msg}"
+    // a file name is data [D:error-data-escape]
+    $"{quoteData path}:{lineNo}: {msg}"
 
 // the runtime-error line [D:binary-echo]: an error message may interpolate
 // data (a hostile filename, a tenant name), and error text is a tty-bound
@@ -4734,12 +4735,12 @@ let readSourceFile (path: string) : Result<string list, SourceFault> =
 let readEntryScript (path: string) : Result<string list, string> =
     readSourceFile path
     |> Result.mapError (function
-        | NotFound -> $"no such script: {path}"
-        | IsDirectory -> $"{path} is a directory, not a script"
-        | PermissionDenied -> $"cannot read {path}: permission denied"
-        | NotRegular -> $"cannot read {path}: not a regular file — a script is a text file"
-        | IoFault m -> $"cannot read {path}: {m}"
-        | InvalidUtf8(l, c) -> $"{path}:{l}:{c}: invalid UTF-8 — a source file must be UTF-8; this byte is not")
+        | NotFound -> $"no such script: {quoteData path}"
+        | IsDirectory -> $"{quoteData path} is a directory, not a script"
+        | PermissionDenied -> $"cannot read {quoteData path}: permission denied"
+        | NotRegular -> $"cannot read {quoteData path}: not a regular file — a script is a text file"
+        | IoFault m -> $"cannot read {quoteData path}: {quoteData m}"
+        | InvalidUtf8(l, c) -> $"{quoteData path}:{l}:{c}: invalid UTF-8 — a source file must be UTF-8; this byte is not")
 
 // buffer-over-disk [D:modules-v1]: when the LSP sets this, an imported file's
 // content is read through it (open editor buffers first, then disk) so an
@@ -5240,7 +5241,7 @@ let checkVendoredModule (absPath: string) : Result<int, string> =
             | Error e ->
                 let where =
                     match e.File with
-                    | Some f -> $"{f}:{e.Line}:{e.Col}: "
+                    | Some f -> $"{quoteData f}:{e.Line}:{e.Col}: "
                     | None -> ""
 
                 Error $"{where}{e.Message}"
@@ -6305,8 +6306,10 @@ module SigGen =
                 string (System.Char.ToUpper part[0]) + part.Substring 1)
         |> String.concat ""
 
+    // a tool's --version and help text are data [D:sig-text-sanitize]:
+    // control bytes and escapes render visibly in the generated file
     let private escape (s: string) =
-        s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "\\n")
+        (Eval.sanitizeTtyEcho (s.Replace("\r", ""))).Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n")
 
     let generate (weirDir: string) (tool: string) : Result<string, string> =
         // Flag probes are safe on any tool; a bare word is not — `code
@@ -6455,7 +6458,7 @@ module SigGen =
 
                 line (
                     "/// generated from '"
-                    + tool
+                    + (Eval.sanitizeTtyEcho tool).Replace("\n", "\\x0a")
                     + "' on "
                     + System.DateTime.UtcNow.ToString "yyyy-MM-dd"
                 )
@@ -6580,7 +6583,7 @@ module SigGen =
 
                             let versionNote =
                                 match version with
-                                | Some v -> escape v
+                                | Some v -> v
                                 | None -> $"none — '{tool}' answers neither --version nor version"
 
                             let surfaceNote =
@@ -7797,7 +7800,7 @@ let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
             match diags with
             | d :: _ ->
                 Console.WriteLine(
-                    Color.bold c $"{d.File}"
+                    Color.bold c $"{quoteData d.File}"
                     + ": this does not look like a weir script — the first statement could not be parsed"
                     |> Eval.sanitizeIfTty Console.IsOutputRedirected
                 )
@@ -7814,7 +7817,7 @@ let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
 
             // a message echoes source, paths, patterns [D:tty-diag-sanitize]
             Console.WriteLine(
-                Color.bold c $"{d.File}:{d.Line}:{d.Col}" + $": {sev}: {d.Message}"
+                Color.bold c $"{quoteData d.File}:{d.Line}:{d.Col}" + $": {sev}: {d.Message}"
                 |> Eval.sanitizeIfTty Console.IsOutputRedirected
             )
 
@@ -7961,7 +7964,7 @@ let run (path: string) (scriptArgs: string list) : int =
 
                                     for wl, wc, wm in d.Warnings do
                                         Console.Error.WriteLine(
-                                            $"{path}:{wl}:{wc}: " + Color.yellow c "warning" + $": {wm}"
+                                            $"{quoteData path}:{wl}:{wc}: " + Color.yellow c "warning" + $": {wm}"
                                         )
 
                                     let sameFileMsg =
@@ -7973,7 +7976,7 @@ let run (path: string) (scriptArgs: string list) : int =
 
                                                 let caret = Color.red c (String(' ', max 0 (d.PhysCol - 1)) + "^")
 
-                                                Color.bold c $"{path}:{d.PhysLine}:{d.PhysCol}"
+                                                Color.bold c $"{quoteData path}:{d.PhysLine}:{d.PhysCol}"
                                                 + ": "
                                                 + Color.red c "parse error"
                                                 + $":\n{src}\n{caret}\n{d.Message}"
@@ -7992,7 +7995,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                             let underline =
                                                 Color.red c (String(' ', max 0 (d.PhysCol - 1)) + String('^', width))
 
-                                            Color.bold c $"{path}:{d.PhysLine}:{d.PhysCol}"
+                                            Color.bold c $"{quoteData path}:{d.PhysLine}:{d.PhysCol}"
                                             + ": "
                                             + Color.red c "type error"
                                             + $":\n{src}\n{underline}\n{d.Message}"
@@ -8006,10 +8009,10 @@ let run (path: string) (scriptArgs: string list) : int =
                                             let note =
                                                 match d.Note with
                                                 | Some(nl, nc, nmsg) ->
-                                                    "\n" + Color.bold c $"{path}:{nl}:{nc}" + ": note: " + nmsg
+                                                    "\n" + Color.bold c $"{quoteData path}:{nl}:{nc}" + ": note: " + nmsg
                                                 | None -> ""
 
-                                            Color.bold c $"{mf}:{d.PhysLine}:{d.PhysCol}"
+                                            Color.bold c $"{quoteData mf}:{d.PhysLine}:{d.PhysCol}"
                                             + ": "
                                             + Color.red c "error"
                                             + $": {d.Message}"
@@ -8022,7 +8025,7 @@ let run (path: string) (scriptArgs: string list) : int =
 
                                     for wl, wc, wm in chk.Warnings do
                                         Console.Error.WriteLine(
-                                            $"{path}:{wl}:{wc}: " + Color.yellow c "warning" + $": {wm}"
+                                            $"{quoteData path}:{wl}:{wc}: " + Color.yellow c "warning" + $": {wm}"
                                         )
 
                                     // signature warnings print, signature errors
@@ -8032,7 +8035,7 @@ let run (path: string) (scriptArgs: string list) : int =
 
                                     for d in sigDs |> List.filter (fun d -> d.Severity = "warning") do
                                         Console.Error.WriteLine(
-                                            $"{path}:{d.Line}:{d.Col}: " + Color.yellow c "warning" + $": {d.Message}"
+                                            $"{quoteData path}:{d.Line}:{d.Col}: " + Color.yellow c "warning" + $": {d.Message}"
                                         )
 
                                     // schema contracts gate the run too — check
@@ -8053,7 +8056,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                             Color.red c (String(' ', max 0 (d.Col - 1)) + String('^', width))
 
                                         Error(
-                                            Color.bold c $"{path}:{d.Line}:{d.Col}"
+                                            Color.bold c $"{quoteData path}:{d.Line}:{d.Col}"
                                             + ": "
                                             + Color.red c "schema error"
                                             + $":\n{src}\n{underline}\n{d.Message}"
@@ -8170,7 +8173,7 @@ let run (path: string) (scriptArgs: string list) : int =
                             Color.red c (String(' ', max 0 (f.UCol - 1)) + String('^', max 1 (f.UEndCol - f.UCol)))
 
                         Console.Error.WriteLine(
-                            Color.bold c $"{path}:{f.ULine}:{f.UCol}"
+                            Color.bold c $"{quoteData path}:{f.ULine}:{f.UCol}"
                             + ": "
                             + Color.red c "check error"
                             + $":\n{src}\n{underline}\n{f.UMessage}"
@@ -8187,7 +8190,7 @@ let run (path: string) (scriptArgs: string list) : int =
                         let caret = Color.red c (String(' ', max 0 (d.Col - 1)) + "^")
 
                         Console.Error.WriteLine(
-                            Color.bold c $"{path}:{d.Line}:{d.Col}"
+                            Color.bold c $"{quoteData path}:{d.Line}:{d.Col}"
                             + ": "
                             + Color.red c "check error"
                             + $":\n{src}\n{caret}\n{d.Message}"
@@ -8226,12 +8229,15 @@ let run (path: string) (scriptArgs: string list) : int =
 
                     // the entry as the user wrote it; a module relative to the
                     // working directory when it is below it
+                    // a file name is data [D:error-data-escape]
                     let shownFile (file: string) =
-                        if file = path then
-                            file
-                        else
-                            let rel = IO.Path.GetRelativePath(Environment.CurrentDirectory, file)
-                            if rel.StartsWith ".." || IO.Path.IsPathRooted rel then file else rel
+                        quoteData (
+                            if file = path then
+                                file
+                            else
+                                let rel = IO.Path.GetRelativePath(Environment.CurrentDirectory, file)
+                                if rel.StartsWith ".." || IO.Path.IsPathRooted rel then file else rel
+                        )
 
                     let posOf (exact: bool) (n: obj) =
                         if isNull n then
