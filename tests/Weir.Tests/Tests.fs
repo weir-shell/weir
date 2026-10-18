@@ -9058,7 +9058,8 @@ let planApplyTests =
                     "let esc = Str.fromBase64 \"Gw==\""
                     "let p ="
                     "    plan"
-                    "        File.delete $\"/nowhere/a{cr}x{lf}delete file /b{esc}[8m\""
+                    // a Dir.create: a delete of a missing path refuses at capture [D:plan-preconditions]
+                    "        Dir.create $\"/nowhere/a{cr}x{lf}delete file /b{esc}[8m\""
                     "let line = p |> Plan.preview |> Seq.exactlyOne"
                     "if Str.contains cr line || Str.contains lf line || Str.contains esc line then fail $\"raw control: {show line}\""
                     "if not (Str.contains \"a\\\\x0dx\\\\x0adelete file\" line) then fail $\"not visible: {show line}\""
