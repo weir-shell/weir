@@ -27714,25 +27714,57 @@ let hunt3r2CancelTests =
     testSequenced
     <| testList
         "hunt-3r2 cancellation"
-        [ test "a condemned race group spares a child its cleanup starts [D:teardown-always-spawns]" {
+        [ test "a cut node spares a child its cleanup starts [D:teardown-always-spawns] [D:scope-tree]" {
               skipOnWindows ()
-              let g = Weir.Session.RaceGroup()
-              g.Condemn()
+              let n = Weir.Session.openNode (Weir.Session.currentNode ()) Weir.Session.NodeKind.Arm
+              Weir.Session.cutNode n 1 Weir.Session.CutReason.RaceLost true
               let sleeper () = System.Diagnostics.Process.Start("sleep", "10")
               let spared = sleeper ()
               let killed = sleeper ()
+              Weir.Session.setCurrentNode n
 
               try
-                  Weir.Session.runningCleanup (fun () -> g.Register spared)
-                  g.Register killed
+                  Weir.Session.registerChild killed
                   Expect.isTrue (killed.WaitForExit 5000) "a body's late child dies at registration"
-                  Expect.isFalse spared.HasExited "a cleanup's child runs on"
+
+                  Weir.Session.runningCleanup (fun () ->
+                      Weir.Session.registerChild spared
+                      Expect.isFalse (spared.WaitForExit 300) "a cleanup's child runs on")
               finally
+                  Weir.Session.setCurrentNode null
+                  Weir.Session.closeNode n
+
                   for p in [ spared; killed ] do
+                      Weir.Session.deregisterProc p
+
                       try
                           p.Kill true
                       with _ ->
                           ()
+          }
+          test "a node's children leave it as they exit; a closing node hands the live ones up [D:scope-tree]" {
+              skipOnWindows ()
+              let n = Weir.Session.openNode (Weir.Session.currentNode ()) Weir.Session.NodeKind.Arm
+              Weir.Session.setCurrentNode n
+
+              try
+                  for _ in 1..20 do
+                      let p = System.Diagnostics.Process.Start("true")
+                      Weir.Session.registerChild p
+                      p.WaitForExit()
+                      Weir.Session.deregisterProc p
+
+                  Expect.equal (Weir.Session.ownedCount n) 0 "exited children are gone"
+                  let live = System.Diagnostics.Process.Start("sleep", "10")
+                  Weir.Session.registerChild live
+                  Expect.equal (Weir.Session.ownedCount n) 1 "the live one is owned"
+                  Weir.Session.setCurrentNode null
+                  Weir.Session.closeNode n
+                  Expect.equal (Weir.Session.ownedCount n) 0 "handed up"
+                  Weir.Session.deregisterProc live
+                  live.Kill true
+              finally
+                  Weir.Session.setCurrentNode null
           }
           test "after a REPL ^C a fan-out takes no arm and ends as the interrupt [D:repl-interrupt-fanout]" {
               withTempDir "weir-c4" (fun d ->

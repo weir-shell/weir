@@ -1717,13 +1717,10 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     // with the arms' errors
     let mutable exited: exn = null
     let parentFlow = Session.flowToken ()
-    let parentGroup = Session.enclosingGroup ()
     // linked to the enclosing race's or serve scope's token too, so a cut
     // there stops this fan-out taking arms [D:fanout-exit]
     use fan =
         System.Threading.CancellationTokenSource.CreateLinkedTokenSource(Session.fanToken (), parentFlow)
-    // each worker's running arm's group
-    let groups: Session.RaceGroup[] = Array.zeroCreate workers
     let mutable cutLive = 0
     // this fan-out's node [D:scope-tree]: each arm runs in a node under it
     let fanNode = Session.openNode (Session.currentNode ()) Session.NodeKind.Fan
@@ -1733,10 +1730,8 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
             System.Threading.Interlocked.Exchange(&cutLive, 1) |> ignore
             Session.cutsLive ()
             fan.Cancel()
-
-            for g in groups do
-                if not (isNull (box g)) then
-                    g.Condemn()
+            // the in-flight arms' children die with the cut [D:fanout-exit]
+            Session.cutNode fanNode 1 Session.CutReason.FanExit true
 
     let work (w: int) =
         // a teardown stops new arms [D:teardown-stops-arms] and cuts the
@@ -1759,16 +1754,10 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
 
         while i < arr.Length do
             Session.enterWorker parentCwd
+            // an exit landing as the arm was taken: the arm opens cut,
+            // its children killed as they register
             let armNode = Session.openNode fanNode Session.NodeKind.Arm
             Session.setCurrentNode armNode
-            let group = Session.RaceGroup parentGroup
-            System.Threading.Volatile.Write(&groups[w], group)
-
-            // an exit landing as the arm was taken
-            if not (isNull (System.Threading.Volatile.Read &exited)) then
-                group.Condemn()
-
-            Session.enterRace group
             RunPos.Current <- callNode
 
             try
@@ -1856,8 +1845,6 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
         failwith "pfirst: empty sequence — a race needs at least one arm; guard with Seq.isEmpty"
 
     let parentCwd = Session.Cwd()
-    let parentGroup = Session.enclosingGroup ()
-    let groups = Array.init arr.Length (fun _ -> Session.RaceGroup parentGroup)
     let mutable won = 0
     let mutable failedCount = 0
     let errors = System.Collections.Concurrent.ConcurrentDictionary<int, exn>()
@@ -1876,12 +1863,15 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
     // blamed where the arm raised, as in runParallelWith
     let callNode = RunPos.Current
 
-    // the first outcome ends the race: every other arm is condemned
-    let settle (i: int) (set: unit -> unit) =
+    // the first outcome ends the race: it takes no new arm, and every
+    // other arm is cut, its children killed
+    let settle (mine: Session.Node) (set: unit -> unit) =
         if System.Threading.Interlocked.CompareExchange(&won, 1, 0) = 0 then
-            for j in 0 .. arr.Length - 1 do
-                if j <> i then
-                    groups[j].Condemn()
+            Session.closeToArms raceNode |> ignore
+
+            for other in Session.nodeKids raceNode do
+                if not (obj.ReferenceEquals(other, mine)) then
+                    Session.cutNode other 1 Session.CutReason.RaceLost true
 
             race.Cancel()
             set ()
@@ -1896,21 +1886,24 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
               && not (Session.stopTakingArms ())
               && not (Session.interruptRequested ()) do
             Session.enterWorker parentCwd
-            let armNode = Session.openNode raceNode Session.NodeKind.Arm
-            Session.setCurrentNode armNode
-            Session.enterRace groups[i]
-            Session.enterFlow race.Token
-            RunPos.Current <- callNode
+            // null once the race was won meanwhile: the arm never starts
+            let armNode = Session.tryOpenArm raceNode
+
+            if not (isNull armNode) then
+                Session.setCurrentNode armNode
+                Session.enterFlow race.Token
+                RunPos.Current <- callNode
 
             try
                 try
-                    let v = apply f arr[i]
-                    settle i (fun () -> outcome.TrySetResult v |> ignore)
+                    if not (isNull armNode) then
+                        let v = apply f arr[i]
+                        settle armNode (fun () -> outcome.TrySetResult v |> ignore)
                 with
                 | :? Session.Cancelled -> ()
                 | e when (e :? ExitRequest) || (e :? Session.Interrupted) ->
                     let ex = e
-                    settle i (fun () -> outcome.TrySetException ex |> ignore)
+                    settle armNode (fun () -> outcome.TrySetException ex |> ignore)
                 | e ->
                     pinOnThread e
                     errors[i] <- e
@@ -1919,9 +1912,11 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
                         outcome.TrySetException errors[Seq.min errors.Keys] |> ignore
             finally
                 Session.exitFlow ()
-                Session.exitRace ()
                 Session.setCurrentNode home
-                Session.closeNode armNode
+
+                if not (isNull armNode) then
+                    Session.closeNode armNode
+
                 Session.exitWorker ()
 
             i <- System.Threading.Interlocked.Increment &next

@@ -315,12 +315,6 @@ let private hookInstalled = ref 0
 // collected registration stops handling
 let mutable private hookRoots: obj list = []
 
-// the hook's second customer [D:scoped-procs]: live scoped processes,
-// killed (tree) before the dirs go — a spilling child holds its spill
-// dir open, so the order is load-bearing on Windows
-let private liveProcs =
-    System.Collections.Concurrent.ConcurrentDictionary<int, System.Diagnostics.Process>()
-
 // the teardown kill [D:signal-main-unwind]: spawning stops, then every
 // live child's tree dies exactly once. Spawns hold the gate shared from
 // Process.Start through registration, so the kill (exclusive) sees every
@@ -331,208 +325,6 @@ let private spawnGate =
     new System.Threading.ReaderWriterLockSlim(System.Threading.LockRecursionPolicy.SupportsRecursion)
 
 let mutable private spawningStopped = false
-
-let private killedProcs =
-    System.Collections.Generic.HashSet<System.Diagnostics.Process>(HashIdentity.Reference)
-
-// ---- the cancellation-scope tree [D:scope-tree] ------------------------
-// Every flow (the main flow, a REPL entry, a fan-out or race arm, a serve
-// handler) and every scope that has flows of its own (a race, a fan-out, a
-// serve) is a node; a running cleanup is a shield node. The current node
-// rides one AsyncLocal, so an arm's helpers inherit it. A node owns the
-// children its flow spawned (they leave it as they exit, and a node that
-// closes hands the live ones to its parent) and its cut: a cut marks the
-// node and every node under it, stopping at shields, wakes their waits and,
-// when it kills, tree-kills their children. A flow checks its own node and
-// nothing else.
-type NodeKind =
-    | Root = 0
-    | Flow = 1
-    | Race = 2
-    | Fan = 3
-    | Arm = 4
-    | Serve = 5
-    | Handler = 6
-    | Shield = 7
-
-/// why a node was cut (flags) — what its flows raise follows from it
-module CutReason =
-    let Teardown = 1
-    let Soft = 2
-    let RaceLost = 4
-    let FanExit = 8
-    let ServeCut = 16
-    let HandlerExit = 32
-    let Repl = 64
-
-// a live child and the node that owns it now (a closing node hands its
-// live children to its parent, so the owner moves)
-[<AllowNullLiteral>]
-type private ProcEntry(p: System.Diagnostics.Process, owner: obj) =
-    member _.P = p
-
-    [<DefaultValue>]
-    val mutable Killed: int
-
-    member val Owner: obj = owner with get, set
-
-[<AllowNullLiteral>]
-type Node(parent: Node, kind: NodeKind) =
-    /// 0 uncut, 1 cut, 2 cut through shields (a second REPL ^C)
-    [<DefaultValue>]
-    val mutable Cut: int
-
-    [<DefaultValue>]
-    val mutable Reasons: int
-
-    // a killing cut reached it: children registering now die at once
-    [<DefaultValue>]
-    val mutable Killing: bool
-
-    // takes no new arm (a won race)
-    [<DefaultValue>]
-    val mutable Closed: bool
-
-    // left the tree
-    [<DefaultValue>]
-    val mutable Detached: bool
-
-    [<DefaultValue>]
-    val mutable Cts: System.Threading.CancellationTokenSource
-
-    [<DefaultValue>]
-    val mutable Kids: System.Collections.Generic.HashSet<Node>
-
-    [<DefaultValue>]
-    val mutable internal Procs: System.Collections.Generic.HashSet<obj>
-
-    /// the `exit n` a fan-out or serve scope raises once its flows joined
-    [<DefaultValue>]
-    val mutable Exit: exn
-
-    member _.Parent = parent
-    member _.Kind = kind
-
-// cut nodes still in the tree: the per-builtin check's fast path reads this
-// alone
-let mutable private cutsPending = 0
-
-let private rootNode = Node(null, NodeKind.Root)
-
-let private refEq = HashIdentity.Reference<Node>
-
-/// open a node under `parent`; it is born cut when its parent is (a shield
-/// only by a cut that passes shields)
-let openNode (parent: Node) (kind: NodeKind) : Node =
-    let n = Node(parent, kind)
-
-    lock parent (fun () ->
-        if isNull parent.Kids then
-            parent.Kids <- System.Collections.Generic.HashSet<Node>(refEq)
-
-        parent.Kids.Add n |> ignore
-
-        if parent.Cut > 0 && (kind <> NodeKind.Shield || parent.Cut = 2) then
-            n.Cut <- parent.Cut
-            n.Reasons <- parent.Reasons
-            n.Killing <- parent.Killing && kind <> NodeKind.Shield
-            System.Threading.Interlocked.Increment &cutsPending |> ignore)
-
-    n
-
-// the default flow: the main thread's (and, in-process, every evaluation's
-// with no node of its own)
-let private mainNode = openNode rootNode NodeKind.Flow
-
-let private current = System.Threading.AsyncLocal<Node>()
-
-/// the node this flow runs in
-let currentNode () : Node =
-    match current.Value with
-    | null -> mainNode
-    | n -> n
-
-/// make `n` this flow's node (null: the default flow)
-let setCurrentNode (n: Node) : unit = current.Value <- n
-
-/// leave the tree: the live children go to the parent
-let closeNode (n: Node) : unit =
-    let p = n.Parent
-
-    let detach () =
-        if not n.Detached then
-            n.Detached <- true
-
-            if not (isNull p.Kids) then
-                p.Kids.Remove n |> ignore
-
-            if n.Cut > 0 then
-                System.Threading.Interlocked.Decrement &cutsPending |> ignore
-
-    lock n (fun () -> lock p detach)
-
-// an `always` block in progress on this logical flow [D:teardown-always-spawns]:
-// the teardown stops the body's spawns, never a cleanup's — teardown
-// commands are what `always` is for
-let private cleanupDepth = System.Threading.AsyncLocal<int>()
-
-let mutable private mainThreadId = 0
-
-let private onMainThread () =
-    mainThreadId <> 0
-    && System.Threading.Thread.CurrentThread.ManagedThreadId = mainThreadId
-
-// the main thread inside an `always` cleanup [D:teardown-never-preempts]:
-// the signal watchdog stands down for it, and once the watchdog has
-// fired no cleanup starts on the main thread (the sweep runs it)
-let private watchdogGate = obj ()
-let mutable private mainCleanups = 0
-let mutable private watchdogFired = false
-
-/// run an `always` cleanup: spawns inside it start even after the teardown
-/// kill, a parallel fan-out inside it keeps taking arms, and a requested
-/// teardown never preempts it [D:teardown-never-preempts]
-let runningCleanup (f: unit -> 'a) : 'a =
-    let onMain = onMainThread ()
-
-    if onMain then
-        lock watchdogGate (fun () ->
-            if watchdogFired then
-                // the process is exiting and the sweep owns the cleanups
-                System.Threading.Thread.Sleep System.Threading.Timeout.Infinite
-
-            mainCleanups <- mainCleanups + 1)
-
-    cleanupDepth.Value <- cleanupDepth.Value + 1
-    // the cleanup's own node [D:scope-tree]: no cut from its parent reaches it
-    let home = current.Value
-    let shield = openNode (currentNode ()) NodeKind.Shield
-    current.Value <- shield
-
-    try
-        f ()
-    finally
-        current.Value <- home
-        closeNode shield
-        cleanupDepth.Value <- cleanupDepth.Value - 1
-
-        if onMain then
-            lock watchdogGate (fun () -> mainCleanups <- mainCleanups - 1)
-
-let inCleanup () = cleanupDepth.Value > 0
-
-// the cleanup depth a race, fan-out or serve flow was opened at
-// [D:cleanup-owns-its-cuts]: a cleanup entered inside the flow is spared
-// its cut, while a scope opened inside a cleanup still cuts its own flows
-let private flowBase = System.Threading.AsyncLocal<int>()
-
-let private inFlowCleanup () = cleanupDepth.Value > flowBase.Value
-
-// children an `always` cleanup started: the teardown's kill spares them
-// [D:teardown-never-preempts] — a cleanup runs whole, its commands too;
-// the exit and a second signal still kill them
-let private cleanupProcs =
-    System.Collections.Concurrent.ConcurrentDictionary<System.Diagnostics.Process, unit>(HashIdentity.Reference)
 
 // a tree kill in flight [D:kill-settle]: .NET's Kill(true) on Unix
 // stops the tree, then kills it, so a process exiting between the two
@@ -624,73 +416,341 @@ let settleKills () : unit =
           && clock.ElapsedMilliseconds < 2000L do
         System.Threading.Thread.Sleep 5
 
-// pfirst's loser tree-kill [D:seq-pfirst]: an arm registers its live
-// children in its race group (AsyncLocal — the registration follows
-// the arm's logical context, the same keying as cwd/env). The winner
-// condemns every other group: registered trees die, and a child
-// spawned after condemnation dies at registration (the race window a
-// plain bag would leak). A child an `always` cleanup starts never joins
-// the group — the cut stops the body, never its cleanup
-// [D:teardown-always-spawns]; the race joins the arm, so it joins them.
-// A nested group registers its children with the enclosing arm's group
-// too, so a condemned arm's nested races and fan-outs lose theirs.
-// The bag is made at the first child: every fan-out arm has a group.
-type RaceGroup(parent: RaceGroup option) =
-    let mutable procs: System.Collections.Concurrent.ConcurrentBag<System.Diagnostics.Process> =
-        null
+// ---- the cancellation-scope tree [D:scope-tree] ------------------------
+// Every flow (the main flow, a REPL entry, a fan-out or race arm, a serve
+// handler) and every scope that has flows of its own (a race, a fan-out, a
+// serve) is a node; a running cleanup is a shield node. The current node
+// rides one AsyncLocal, so an arm's helpers inherit it. A node owns the
+// children its flow spawned (they leave it as they exit, and a node that
+// closes hands the live ones to its parent) and its cut: a cut marks the
+// node and every node under it, stopping at shields, wakes their waits and,
+// when it kills, tree-kills their children. A flow checks its own node and
+// nothing else.
+type NodeKind =
+    | Root = 0
+    | Flow = 1
+    | Race = 2
+    | Fan = 3
+    | Arm = 4
+    | Serve = 5
+    | Handler = 6
+    | Shield = 7
 
-    let mutable condemned = false
+/// why a node was cut (flags) — what its flows raise follows from it
+module CutReason =
+    let Teardown = 1
+    let Soft = 2
+    let RaceLost = 4
+    let FanExit = 8
+    let ServeCut = 16
+    let HandlerExit = 32
+    let Repl = 64
 
-    new() = RaceGroup(None)
+[<AllowNullLiteral>]
+type Node(parent: Node, kind: NodeKind) =
+    /// 0 uncut, 1 cut, 2 cut through shields (a second REPL ^C)
+    [<DefaultValue>]
+    val mutable Cut: int
 
-    member this.Register(p: System.Diagnostics.Process) =
-        if inFlowCleanup () then
-            ()
+    [<DefaultValue>]
+    val mutable Reasons: int
+
+    // a killing cut reached it: children registering now die at once
+    [<DefaultValue>]
+    val mutable Killing: bool
+
+    // takes no new arm (a won race)
+    [<DefaultValue>]
+    val mutable Closed: bool
+
+    // left the tree
+    [<DefaultValue>]
+    val mutable Detached: bool
+
+    [<DefaultValue>]
+    val mutable Cts: System.Threading.CancellationTokenSource
+
+    [<DefaultValue>]
+    val mutable Kids: System.Collections.Generic.HashSet<Node>
+
+    [<DefaultValue>]
+    val mutable internal Procs: System.Collections.Generic.HashSet<ProcEntry>
+
+    /// the `exit n` a fan-out or serve scope raises once its flows joined
+    [<DefaultValue>]
+    val mutable Exit: exn
+
+    member _.Parent = parent
+    member _.Kind = kind
+
+// a live child and the node that owns it now: a node that closes hands its
+// live children to its parent, so the owner moves (under both locks)
+and [<AllowNullLiteral>] internal ProcEntry(p: System.Diagnostics.Process, owner: Node) =
+    member _.P = p
+
+    [<DefaultValue>]
+    val mutable Killed: int
+
+    member val Owner: Node = owner with get, set
+
+// the hook's second customer [D:scoped-procs]: every live child, with the
+// node that owns it — the teardown's kill walks the tree, the exit's and the
+// hard exit's kill them all (a spilling child holds its spill dir open, so
+// the kill before the dirs go is load-bearing on Windows)
+let private liveProcs =
+    System.Collections.Concurrent.ConcurrentDictionary<System.Diagnostics.Process, ProcEntry>(
+        HashIdentity.Reference
+    )
+
+// cut nodes still in the tree: the per-builtin check's fast path reads this
+// alone
+let mutable private cutsPending = 0
+
+let private rootNode = Node(null, NodeKind.Root)
+
+let private refEq = HashIdentity.Reference<Node>
+
+/// open a node under `parent`; it is born cut when its parent is (a shield
+/// only by a cut that passes shields)
+let openNode (parent: Node) (kind: NodeKind) : Node =
+    let n = Node(parent, kind)
+
+    lock parent (fun () ->
+        if isNull parent.Kids then
+            parent.Kids <- System.Collections.Generic.HashSet<Node>(refEq)
+
+        parent.Kids.Add n |> ignore
+
+        if parent.Cut > 0 && (kind <> NodeKind.Shield || parent.Cut = 2) then
+            n.Cut <- parent.Cut
+            n.Reasons <- parent.Reasons
+            n.Killing <- parent.Killing && kind <> NodeKind.Shield
+            System.Threading.Interlocked.Increment &cutsPending |> ignore)
+
+    n
+
+// the default flow: the main thread's (and, in-process, every evaluation's
+// with no node of its own)
+let private mainNode = openNode rootNode NodeKind.Flow
+
+let private current = System.Threading.AsyncLocal<Node>()
+
+/// the node this flow runs in
+let currentNode () : Node =
+    match current.Value with
+    | null -> mainNode
+    | n -> n
+
+/// make `n` this flow's node (null: the default flow)
+let setCurrentNode (n: Node) : unit = current.Value <- n
+
+// a child is killed once, whoever reaches it first [D:kill-settle]
+let private killEntry (e: ProcEntry) =
+    if System.Threading.Interlocked.Exchange(&e.Killed, 1) = 0 then
+        killTree e.P
+
+// a node's cut [D:scope-tree]: mark it and every node under it (a shield
+// only by a level-2 cut), cancel the tokens their waits hold and, when the
+// cut kills, tree-kill every child they own — a child registering after it
+// dies at registration. A node opening takes its parent's cut under the
+// parent's lock, so no node escapes a cut in flight
+let rec private cutFrom (n: Node) (level: int) (reason: int) (kill: bool) (origin: bool) =
+    if origin || n.Kind <> NodeKind.Shield || level >= 2 then
+        let mutable kids: Node[] = null
+        let mutable procs: ProcEntry[] = null
+
+        lock n (fun () ->
+            if n.Cut = 0 && not n.Detached then
+                System.Threading.Interlocked.Increment &cutsPending |> ignore
+
+            if level > n.Cut then
+                n.Cut <- level
+
+            n.Reasons <- n.Reasons ||| reason
+
+            if kill && not n.Killing then
+                n.Killing <- true
+
+                if not (isNull n.Procs) then
+                    procs <- Array.ofSeq n.Procs
+
+            if not (isNull n.Kids) then
+                kids <- Array.ofSeq n.Kids)
+
+        match System.Threading.Volatile.Read &n.Cts with
+        | null -> ()
+        | c ->
+            try
+                c.Cancel()
+            with _ ->
+                ()
+
+        if not (isNull procs) then
+            for e in procs do
+                killEntry e
+
+        if not (isNull kids) then
+            for k in kids do
+                cutFrom k level reason kill false
+
+/// cut `n` and its subtree (level 2 passes shields); `kill` tree-kills the
+/// children they own
+let cutNode (n: Node) (level: int) (reason: int) (kill: bool) : unit = cutFrom n level reason kill true
+
+/// the children `n` owns now
+let ownedCount (n: Node) : int =
+    lock n (fun () -> if isNull n.Procs then 0 else n.Procs.Count)
+
+/// the nodes under `n` now
+let nodeKids (n: Node) : Node[] =
+    lock n (fun () -> if isNull n.Kids then [||] else Array.ofSeq n.Kids)
+
+/// a new arm under `parent`, or null once it takes none (won, or cut)
+let tryOpenArm (parent: Node) : Node =
+    let isOpen = lock parent (fun () -> not parent.Closed && parent.Cut = 0)
+
+    if isOpen then openNode parent NodeKind.Arm else null
+
+/// stop `n` taking arms (a race won); true for the one caller that closed it
+let closeToArms (n: Node) : bool =
+    lock n (fun () ->
+        if n.Closed then
+            false
         else
-            match parent with
-            | Some g -> g.Register p
-            | None -> ()
+            n.Closed <- true
+            true)
 
-            // under the lock with Condemn: a child registered as the group
-            // is condemned is either in the bag Condemn kills or killed here
-            let late =
-                lock this (fun () ->
-                    if condemned then
+/// leave the tree; the live children go to the parent
+let closeNode (n: Node) : unit =
+    let p = n.Parent
+
+    let detach () =
+        if not n.Detached then
+            n.Detached <- true
+
+            if not (isNull p.Kids) then
+                p.Kids.Remove n |> ignore
+
+            if n.Cut > 0 then
+                System.Threading.Interlocked.Decrement &cutsPending |> ignore
+
+            // live children outlive their node (a streamed result): the
+            // parent owns them now
+            if not (isNull n.Procs) && n.Procs.Count > 0 then
+                if isNull p.Procs then
+                    p.Procs <- System.Collections.Generic.HashSet<ProcEntry>(HashIdentity.Reference)
+
+                for e in n.Procs do
+                    e.Owner <- p
+                    p.Procs.Add e |> ignore
+
+                    if p.Killing then
+                        killEntry e
+
+                n.Procs.Clear()
+
+    lock n (fun () -> lock p detach)
+
+/// register a child with this flow's node (killed at once when a killing
+/// cut already reached it) [D:scope-tree]
+let registerChild (p: System.Diagnostics.Process) : unit =
+    let n = currentNode ()
+    let e = ProcEntry(p, n)
+    liveProcs[p] <- e
+
+    let late =
+        lock n (fun () ->
+            if n.Killing then
+                true
+            else
+                if isNull n.Procs then
+                    n.Procs <- System.Collections.Generic.HashSet<ProcEntry>(HashIdentity.Reference)
+
+                n.Procs.Add e |> ignore
+                false)
+
+    if late then
+        killEntry e
+
+// a child left: out of the index and out of whichever node owns it now
+let private forgetChild (p: System.Diagnostics.Process) =
+    match liveProcs.TryRemove p with
+    | true, e ->
+        let rec go () =
+            let n = e.Owner
+
+            let removed =
+                lock n (fun () ->
+                    if obj.ReferenceEquals(e.Owner, n) then
+                        if not (isNull n.Procs) then
+                            n.Procs.Remove e |> ignore
+
                         true
                     else
-                        if isNull procs then
-                            procs <- System.Collections.Concurrent.ConcurrentBag<System.Diagnostics.Process>()
-
-                        procs.Add p
                         false)
 
-            if late then
-                killTree p
+            if not removed then
+                go ()
 
-    member this.Condemn() =
-        match
-            lock this (fun () ->
-                condemned <- true
-                procs)
-        with
-        | null -> ()
-        | b ->
-            for p in b do
-                killTree p
+        go ()
+    | _ -> ()
 
-let private raceGroup = System.Threading.AsyncLocal<RaceGroup option>()
+// an `always` block in progress on this logical flow [D:teardown-always-spawns]:
+// the teardown stops the body's spawns, never a cleanup's — teardown
+// commands are what `always` is for
+let private cleanupDepth = System.Threading.AsyncLocal<int>()
 
-let enterRace (g: RaceGroup) : unit = raceGroup.Value <- Some g
-let exitRace () : unit = raceGroup.Value <- None
+let mutable private mainThreadId = 0
 
-/// the group a race or fan-out opened here nests in (none inside a cleanup)
-let enclosingGroup () : RaceGroup option =
-    if inFlowCleanup () then None else raceGroup.Value
+let private onMainThread () =
+    mainThreadId <> 0
+    && System.Threading.Thread.CurrentThread.ManagedThreadId = mainThreadId
 
-let registerChild (p: System.Diagnostics.Process) : unit =
-    match raceGroup.Value with
-    | Some g -> g.Register p
-    | None -> ()
+// the main thread inside an `always` cleanup [D:teardown-never-preempts]:
+// the signal watchdog stands down for it, and once the watchdog has
+// fired no cleanup starts on the main thread (the sweep runs it)
+let private watchdogGate = obj ()
+let mutable private mainCleanups = 0
+let mutable private watchdogFired = false
+
+/// run an `always` cleanup: spawns inside it start even after the teardown
+/// kill, a parallel fan-out inside it keeps taking arms, and a requested
+/// teardown never preempts it [D:teardown-never-preempts]
+let runningCleanup (f: unit -> 'a) : 'a =
+    let onMain = onMainThread ()
+
+    if onMain then
+        lock watchdogGate (fun () ->
+            if watchdogFired then
+                // the process is exiting and the sweep owns the cleanups
+                System.Threading.Thread.Sleep System.Threading.Timeout.Infinite
+
+            mainCleanups <- mainCleanups + 1)
+
+    cleanupDepth.Value <- cleanupDepth.Value + 1
+    // the cleanup's own node [D:scope-tree]: no cut from its parent reaches it
+    let home = current.Value
+    let shield = openNode (currentNode ()) NodeKind.Shield
+    current.Value <- shield
+
+    try
+        f ()
+    finally
+        current.Value <- home
+        closeNode shield
+        cleanupDepth.Value <- cleanupDepth.Value - 1
+
+        if onMain then
+            lock watchdogGate (fun () -> mainCleanups <- mainCleanups - 1)
+
+let inCleanup () = cleanupDepth.Value > 0
+
+// the cleanup depth a race, fan-out or serve flow was opened at
+// [D:cleanup-owns-its-cuts]: a cleanup entered inside the flow is spared
+// its cut, while a scope opened inside a cleanup still cuts its own flows
+let private flowBase = System.Threading.AsyncLocal<int>()
+
+let private inFlowCleanup () = cleanupDepth.Value > flowBase.Value
 
 // ---- the main-thread teardown [D:signal-main-unwind] [D:stdout-epipe] --
 // A signal or a closed stdout ends the script, but the teardown — every
@@ -955,10 +1015,13 @@ let private killLiveChildren (spareCleanups: bool) : unit =
     try
         spawningStopped <- true
 
-        for kv in liveProcs do
-            if not (spareCleanups && cleanupProcs.ContainsKey kv.Value)
-               && killedProcs.Add kv.Value then
-                killTree kv.Value
+        // the teardown's kill walks the tree, sparing what cleanups own
+        // [D:teardown-never-preempts]; the exit's kills every child
+        if spareCleanups then
+            cutNode rootNode 1 CutReason.Teardown true
+        else
+            for kv in liveProcs do
+                killEntry kv.Value
     finally
         spawnGate.ExitWriteLock()
 
@@ -986,10 +1049,10 @@ let private sweepLiveTmpDirs () =
         | _ -> ()
 
     for kv in liveProcs do
-        killTree kv.Value
+        killEntry kv.Value
 
         try
-            kv.Value.WaitForExit()
+            kv.Key.WaitForExit()
         with _ ->
             ()
 
@@ -2275,7 +2338,7 @@ let registerProc (p: System.Diagnostics.Process) : unit =
     if System.Threading.Interlocked.Exchange(hookInstalled, 1) = 0 then
         installExitHook ()
 
-    liveProcs[p.Id] <- p
+    liveProcs.TryAdd(p, ProcEntry(p, currentNode ())) |> ignore
 
 // a foreground child alone installs only a reaper [D:signal-main-unwind]:
 // a pid-targeted TERM, HUP or INT tree-kills the live children, then
@@ -2333,16 +2396,11 @@ let registerForeground (p: System.Diagnostics.Process) : unit =
 
             hookRoots <- (reg :> obj) :: hookRoots
 
-    if inCleanup () then
-        cleanupProcs[p] <- ()
-
-    liveProcs[p.Id] <- p
 
 /// remove `p` under `pid` — only that very process, so a late exit
 /// event never drops a newer child that reused the pid
 let deregisterProcAt (pid: int) (p: System.Diagnostics.Process) : unit =
-    liveProcs.TryRemove(System.Collections.Generic.KeyValuePair(pid, p)) |> ignore
-    cleanupProcs.TryRemove p |> ignore
+    forgetChild p
 
 let deregisterProc (p: System.Diagnostics.Process) : unit = deregisterProcAt p.Id p
 

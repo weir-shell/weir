@@ -5365,9 +5365,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let gate = new System.Threading.SemaphoreSlim(maxConcurrent, maxConcurrent)
             let closing = new System.Threading.CancellationTokenSource()
             let parentCwd = Session.Cwd()
-            // each running handler with its race group [D:serve-cut]
+            // each running handler with its node [D:serve-cut]
             let inflight =
-                System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, Session.RaceGroup>()
+                System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, Session.Node>()
 
             let cut = new System.Threading.CancellationTokenSource()
             // the scope's node [D:scope-tree]: the body runs in it, each
@@ -5400,8 +5400,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // one request on its own thread. Past the drain a handler still
             // running is cut at its next effect boundary [D:serve-cut]: the
             // scope's flow token (the pfirst loser's mechanism) and the
-            // request's race group, whose children die with the cut
-            let runHandler (ctx: Serve.SCtx) (group: Session.RaceGroup) (node: Session.Node) =
+            // request's node, whose children die with the cut
+            let runHandler (ctx: Serve.SCtx) (node: Session.Node) =
                 let mutable seen = None
 
                 try
@@ -5410,7 +5410,6 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     // handler sees the scope's cwd, worker-local
                     Session.enterWorker parentCwd
                     Session.enterFlow cut.Token
-                    Session.enterRace group
 
                     try
                         // the body was read before the slot
@@ -5494,7 +5493,6 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         internalError ctx
                 finally
                     Serve.finish ctx
-                    Session.exitRace ()
                     Session.exitFlow ()
                     Session.exitWorker ()
                     gate.Release() |> ignore
@@ -5521,17 +5519,16 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         match Serve.accept handle with
                         | None -> gate.Release() |> ignore // the server closed — shut down
                         | Some ctx ->
-                            let group = Session.RaceGroup()
                             let node = Session.openNode serveNode Session.NodeKind.Handler
 
                             let worker =
                                 System.Threading.Thread(fun () ->
                                     // the counter keeps the per-builtin check
                                     // live while a handler runs [D:serve-cut]
-                                    Session.racing (fun () -> runHandler ctx group node))
+                                    Session.racing (fun () -> runHandler ctx node))
 
                             worker.IsBackground <- true
-                            inflight[worker] <- group
+                            inflight[worker] <- node
                             worker.Start()
                             go ()
 
@@ -5571,7 +5568,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     cut.Cancel()
 
                     for kv in inflight do
-                        kv.Value.Condemn()
+                        Session.cutNode kv.Value 1 Session.CutReason.ServeCut true
 
                     for kv in inflight do
                         Session.joinThread kv.Key
