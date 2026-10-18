@@ -28460,6 +28460,99 @@ let hunt3BehaviorTests =
               Expect.stringContains g "s: Option<string>" "a string enum stays string"
               Expect.stringContains g "an enum of 0.5, 1.5 — drafted float" "the values in the note"
           }
+          test "schema drafting: [X, {type: null}] in either order is Option<X> for a $ref, array or object [D:schema-null-alt]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["a", "b", "c", "d", "e"],
+                           "$defs": { "Base": { "type": "object", "properties": { "x": { "type": "string" } }, "required": ["x"] } },
+                           "properties": {
+                             "a": { "anyOf": [{ "$ref": "#/$defs/Base" }, { "type": "null" }] },
+                             "b": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/Base" }] },
+                             "c": { "oneOf": [{ "type": "array", "items": { "type": "string" } }, { "type": "null" }] },
+                             "d": { "anyOf": [{ "type": ["null"] }, { "type": "object", "properties": { "y": { "type": "integer" } } }] },
+                             "e": { "anyOf": [{ "type": "integer" }, { "type": "null" }] } } }"""
+
+              Expect.stringContains g "\n    a: Option<Base>\n" "ref, null"
+              Expect.stringContains g "\n    b: Option<Base>\n" "null, ref"
+              Expect.stringContains g "\n    c: Option<seq<string>>\n" "array, null (oneOf)"
+              Expect.stringContains g "\n    d: Option<D>\n" "null, object"
+              Expect.stringContains g "\n    e: Option<int>\n" "a scalar as before"
+              Expect.isFalse (g.Contains "FIRST variant") "no first-variant guess"
+              Expect.isFalse (g.Contains "only null") "never 'allows only null'"
+          }
+          test "schema drafting: a $ref's sibling properties/required merge [D:schema-ref-siblings]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["item"],
+                           "$defs": { "Base": { "type": "object", "properties": { "x": { "type": "string" } }, "required": ["x"] } },
+                           "properties": {
+                             "item": { "$ref": "#/$defs/Base", "properties": { "y": { "type": "integer" } }, "required": ["y"] },
+                             "plain": { "$ref": "#/$defs/Base", "description": "annotations stay annotations" },
+                             "odd": { "$ref": "#/$defs/Base", "items": { "type": "string" } } } }"""
+
+              Expect.stringContains g "type Item = {\n    x: string\n    y: int\n}" "merged, required kept"
+              Expect.stringContains g "a $ref with sibling properties — drafted the merged record" "noted"
+              Expect.stringContains g "plain: Option<Base>" "an annotation sibling is the plain ref"
+              Expect.stringContains g "odd: a $ref with sibling keywords that are not both objects" "never a silent drop"
+          }
+          test "schema: deep in-document pointers and the root # resolve [D:schema-deep-refs]" {
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "definitions": { "opts": { "type": "object", "properties": { "inner": { "type": "object", "properties": { "a": { "type": "string" } } } } } },
+                           "properties": {
+                             "o": { "$ref": "#/definitions/opts" },
+                             "copy": { "$ref": "#/definitions/opts/properties/inner" },
+                             "self": { "$ref": "#" } } }"""
+
+              Expect.stringContains g "copy: Option<Inner>" "a deep pointer drafts its target"
+              Expect.stringContains g "inner: Option<Inner>" "one type for both routes"
+              Expect.stringContains g "self: Option<Yaml>" "# is the root: a cycle drafts the node"
+
+              match Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "x": { "$ref": "#/nope/a" } } }""" with
+              | Error e -> Expect.stringContains e "\"#/nope/a\" does not resolve" "a pointer to nothing refuses"
+              | Ok _ -> failtest "a dangling pointer must refuse"
+
+              match Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "x": { "$ref": "other.json#/a" } } }""" with
+              | Error e -> Expect.stringContains e "does not point into this document" "cross-file stays refused"
+              | Ok _ -> failtest "a cross-file ref must refuse"
+          }
+          test "schema drafting: bool/int-or-string oneOf with a $ref side drafts as inline [D:schema-bool-or-string]" {
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "definitions": { "expr": { "type": "string", "pattern": "^\\$" }, "s": { "type": "string" },
+                                            "level": { "type": "object", "properties": { "a": { "type": "string" } } } },
+                           "properties": {
+                             "cancel": { "oneOf": [{ "type": "boolean" }, { "$ref": "#/definitions/expr" }] },
+                             "port": { "oneOf": [{ "type": "integer" }, { "$ref": "#/definitions/s" }] },
+                             "perm": { "oneOf": [{ "type": "string", "enum": ["read-all"] }, { "$ref": "#/definitions/level" }] },
+                             "any": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "object" }, { "type": "array" }] } } }"""
+
+              Expect.stringContains g "cancel: Option<Yaml>" "bool | $ref string"
+              Expect.stringContains g "cancel: the schema allows boolean/string — drafted Yaml" "the inline note"
+              Expect.stringContains g "port: Option<Yaml>" "int | $ref string"
+              Expect.stringContains g "perm: Option<Yaml>" "one alternative per kind is the mixed draft [D:schema-mixed-kinds]"
+              Expect.stringContains g "any: Option<Yaml>" "any JSON value"
+          }
+          test "schema drafting: an enum containing null drafts Option<T>; the note says null [D:schema-enum-null]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["d", "g", "h", "n"],
+                           "properties": {
+                             "d": { "enum": ["x", null] },
+                             "g": { "enum": [null] },
+                             "h": { "type": ["string", "null"], "enum": ["a", null] },
+                             "n": { "enum": [1, 2, null] } } }"""
+
+              Expect.stringContains g "\n    d: Option<string>\n" "d"
+              Expect.stringContains g "\n    g: Option<string>\n" "g"
+              Expect.stringContains g "\n    h: Option<string>\n" "h"
+              Expect.stringContains g "\n    n: Option<int>\n" "n"
+              Expect.stringContains g "d: an enum of 'x', null — drafted Option<string>" "null unquoted"
+              Expect.stringContains g "n: an enum of 1, 2, null — drafted Option<int>" "a numeric one too"
+              Expect.isFalse (g.Contains "'null'") "never 'null'"
+          }
           test "schema: a root $id, const and the content keywords are admitted and noted [D:schema-const-format]" {
               let g =
                   gen
