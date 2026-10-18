@@ -127,9 +127,10 @@ bicep build --outfile x.json
 ```
 
 The signature records the tool's version: the first line of its
-`--version` output, with runs of whitespace collapsed. (Only the first
-line, because some tools, like az, print pages of environment
-details.) `weir verify` compares it with the installed tool's version
+`--version` output, with runs of whitespace collapsed and a trailing
+list of library versions dropped (curl's `libcurl/8.18.0
+OpenSSL/3.5.5 …`). (Only the first line, because some tools, like az,
+print pages of environment details.) `weir verify` compares it with the installed tool's version
 and reports any difference at all. When the tool updates, run
 `weir add sig` again. If the regenerated file shows no diff, nothing
 that matters to your scripts changed.
@@ -142,25 +143,98 @@ incomplete. Once you have checked the flag list by hand, add
 `let exhaustive = true` to the signature file, and unknown flags
 become errors.
 
-`weir add sig` looks for flags in this order: the tool's fish
-completions, fish completion files shipped with the tool, then its
-`--help`. If the help lists subcommands, it reads each subcommand's
-help too, up to four levels deep (enough for
-`kustomize edit add resource`).
+`weir add sig` reads the tool's own descriptions of itself, best
+first:
+
+- a Cobra tool (gh, docker, kubectl, kustomize, yq): its completion
+  endpoint, `<tool> __complete <command> -`, for every command —
+  exact flag names with their short forms, plugin commands included;
+- git: its command list (`git --list-cmds=builtins`) and, per command,
+  its completion helper and `-h` (run in an empty temporary repository);
+- fish completions the tool prints (`<tool> completion fish`) or ships
+  beside its own install (`<prefix>/share/fish/…` for
+  `<prefix>/bin/<tool>`);
+- a full help the tool's `--help` names: `--help all` (curl),
+  `--help-all` (python), `--v8-options` (node), and GnuPG's
+  `--dump-options`;
+- then `--help` itself, or `-h`/`-help` when `--help` is refused.
+
+The help pages are always read too: they show which flags take a value
+and list the subcommands. Only the words a help page lists under a
+commands heading are ever run as subcommands (`<tool> <command>
+--help`), up to four levels deep and depth-first within a budget per
+top-level command, so `gh pr create` and `docker compose up` are both
+reached. A subcommand whose help is the tool's main page again
+(systemctl's verbs) is not a separate case.
 
 For a tool with subcommands, the signature lists flags per
 subcommand:
 
 - weir uses the longest subcommand path that matches (`jira issue list`
   rather than `jira issue`).
-- Each subcommand accepts its own flags, its parents' flags and the
-  global ones. So `docker ps --detach` gets a warning that names
-  `docker ps`.
+- Each subcommand accepts its own flags and the tool's global ones,
+  which the signature records once, as `type Globals`. So
+  `docker ps --detach` gets a warning that names `docker ps`.
+- A word that names no subcommand the signature knows (a plugin, an
+  alias it never saw, a command it could not walk) ends the check:
+  the flags after it belong to a command weir has no list for.
+- A flag written before the subcommand is checked against the
+  subcommand the line reaches, as Cobra parses it
+  (`gh --repo o/r issue view 3`).
 
 A tool without subcommands gets one flat list of flags. If no flags
 are found at all, `weir add sig` says so. You can also write
 `.weir/sigs/<tool>.weir` by hand, in either form; it's an ordinary
 weir file.
+
+### What a signature records
+
+Each flag is a field; its type says what the flag takes:
+
+```text
+type Cmd = {
+    verbose: bool              // --verbose takes nothing
+    [<Short "o">]
+    output: string             // -o x, -ox, --output x, --output=x
+    color: Option<string>      // only --color=when (the value is attached)
+    [<Wire "-m">]
+    mod: seq<string>           // -m mod: the tool's own options end here
+}
+```
+
+So `docker --context prod ps -a` reads `prod` as the value, and a
+bundle like `tar -xzf a.tgz` is checked letter by letter. A field
+whose `[<Wire>]` starts with a dash has exactly that spelling: a
+second short (`-r` beside `-E`), `-h`, a short-only flag (python's
+`-B`), or a single-dash word.
+
+A few `let`s describe the tool's conventions; an older signature has
+none of them and checks exactly as before (GNU flags, none taking a
+value):
+
+- `let convention = "go"` — Go's flag package: `-name`, `--name`
+  and `-n` are one flag, never bundled. `"find"` — whole single-dash
+  words (`-name`, `-mtime`), and `--x` only where listed. The default
+  is `"gnu"`.
+- `let abbreviations = true` — the tool takes a unique prefix of a
+  long flag (`tar --verb`), as GNU getopt does; detected by asking
+  `--versio`.
+- `let negatable = true` — `--no-x` turns off any switch `--x`
+  (node).
+- `let stopAtOperand = [ "run"; "exec" ]` — in these subcommands
+  (`""` is the tool itself) the first operand ends the tool's options:
+  `docker run --rm alpine sh -c x` checks nothing after `alpine`, and
+  `python3 script.py --verbose` nothing after the script.
+- `let unchecked = [ "log" ]` — subcommands whose flags no source can
+  list (git's `log` and `show` take revision options outside its
+  option parser); a line that reaches one is not checked. `[ "" ]`
+  names the tool itself: npm takes any config key as a flag (`npm
+  <command> --key=value`, its help says), so its generated signature
+  checks none of its flags.
+
+Unknown flags get a did-you-mean when a known flag is close, short
+forms included (`--H` suggests `-H`); a distant match is never
+offered.
 
 ### Checking in CI
 

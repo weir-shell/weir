@@ -26,6 +26,19 @@
 
 ### Changed
 
+- **`weir add sig` signatures stop warning on valid flags.** Generation
+  reads each tool's own self-description (Cobra's `__complete`, git's
+  completion helper, fish completions, `--help all`, `--help-all`,
+  `--v8-options`, `--dump-options`), walks subcommands only from the
+  tool's command tables, and records which flags take a value, the
+  tool's flag convention (GNU, Go, find) and where its own options end.
+  The check reads a flag's value word, checks short bundles letter by
+  letter, stops at a subcommand the signature does not know, and an
+  older signature checks exactly as before. On the survey's twenty
+  common tools the scored lines went from 76 false warnings to none. npm
+  takes any config key as a flag, so its signature is generated with no
+  flag checked.
+
 - **`serve` runs on Kestrel** (ASP.NET Core's server, part of the .NET
   SDK) instead of `HttpListener` — one server on Linux, macOS and
   Windows, and the binary is about 1.7 MB larger. What a client can
