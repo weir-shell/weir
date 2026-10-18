@@ -523,8 +523,52 @@ type private GuardNode(comparer: System.Collections.Generic.IEqualityComparer<st
     member val Below: string = null with get, set
     member val Resolved: string = null with get, set
 
+// one node of a plan's simulated filesystem [D:plan-preconditions]: what
+// the captured ops have made of a path — State 0 unknown (the layer
+// below decides), 1 file, 2 directory, 3 absent; Cleared: nothing below
+// it in the layer beneath counts any more (deleted, overwritten, a fresh
+// copy); Mirror: the path whose layer-beneath contents back this
+// subtree (a copied or moved directory)
+[<AllowNullLiteral>]
+type private SimNode(comparer: System.Collections.Generic.IEqualityComparer<string>) =
+    let mutable kids: System.Collections.Generic.Dictionary<string, SimNode> = null
+
+    member _.Find(k: string) : SimNode =
+        if isNull kids then
+            null
+        else
+            match kids.TryGetValue k with
+            | true, n -> n
+            | _ -> null
+
+    member _.Add(k: string, n: SimNode) =
+        if isNull kids then
+            kids <- System.Collections.Generic.Dictionary(comparer)
+
+        kids[k] <- n
+
+    member _.Clear() = kids <- null
+
+    member _.Names: string list =
+        if isNull kids then [] else List.ofSeq kids.Keys
+
+    member val State = 0 with get, set
+    member val Cleared = false with get, set
+    member val Mirror: string = null with get, set
+
+    member this.Clone() : SimNode =
+        let n = SimNode(comparer, State = this.State, Cleared = this.Cleared, Mirror = this.Mirror)
+
+        for k in this.Names do
+            n.Add(k, this.Find(k).Clone())
+
+        n
+
 type private PlanFrame =
     { Ops: ResizeArray<Value>
+      // the filesystem as the captured ops leave it, over the real one
+      // (or an enclosing plan's) [D:plan-preconditions]
+      Sim: SimNode
       // the target paths captured mutations change [D:plan-apply]: a
       // later read at, under, or — for a listing — above one is
       // known-after-apply and refused [D:plan-stale-reads]. Indexed
@@ -806,6 +850,7 @@ module PlanMode =
     let capturing (f: unit -> unit) : Value list =
         let frame =
             { Ops = ResizeArray()
+              Sim = SimNode(comparer)
               Index = GuardNode(comparer)
               Links = GuardNode(System.StringComparer.Ordinal)
               Files = System.Collections.Generic.Dictionary()
@@ -837,6 +882,227 @@ module PlanMode =
         for frame in stack.Value do
             frame.TmpRoots.Add(norm dir)
 
+    // ---- the simulated filesystem [D:plan-preconditions] ----------------
+    // a captured op checks its preconditions against the state the
+    // plan's earlier ops leave, exactly as the direct call checks the
+    // real filesystem — preview == apply. Kinds: 0 absent, 1 file,
+    // 2 directory, 4 another entry (a dangling link)
+
+    /// the real filesystem's kind of a path
+    let realKind (p: string) : int =
+        if System.IO.File.Exists p then 1
+        elif System.IO.Directory.Exists p then 2
+        elif not (isNull (System.IO.FileInfo(p).LinkTarget)) then 4
+        else 0
+
+    let private compsOf (p: string) = parts (keyOf (norm p))
+
+    let private joinComps (comps: string[]) =
+        if comps = [| "" |] then string sep else System.String.Join(string sep, comps)
+
+    // one layer's view of a path: the state its ops gave it (0 = the
+    // layer below decides), the overlay node there (or null), and the
+    // path to ask the layer below (null when nothing below counts)
+    let private viewIn (root: SimNode) (p: string) : struct (int * SimNode * string) =
+        let comps = compsOf p
+        let mutable node = root
+        let mutable basePath: string = null
+        let mutable baseFrom = 0
+        let mutable cleared = false
+        let mutable result = ValueNone
+        let mutable i = 0
+
+        let below () =
+            if cleared then
+                null
+            elif isNull basePath then
+                joinComps comps
+            elif baseFrom >= comps.Length then
+                basePath
+            else
+                System.IO.Path.Combine(Array.append [| basePath |] comps[baseFrom..])
+
+        while result.IsNone && i < comps.Length do
+            let child = node.Find comps[i]
+            let last = i = comps.Length - 1
+
+            if isNull child then
+                result <- ValueSome(struct ((if cleared then 3 else 0), null, below ()))
+            else
+                node <- child
+
+                if child.State = 3 || (child.State = 1 && not last) then
+                    result <- ValueSome(struct (3, null, null))
+                elif child.State = 1 then
+                    result <- ValueSome(struct (1, child, null))
+                else
+                    if not (isNull child.Mirror) then
+                        basePath <- child.Mirror
+                        baseFrom <- i + 1
+                        cleared <- false
+                    elif child.Cleared then
+                        cleared <- true
+
+                    if last then
+                        let st = if child.State = 2 then 2 elif cleared then 3 else 0
+                        result <- ValueSome(struct (st, child, below ()))
+
+            i <- i + 1
+
+        match result with
+        | ValueSome r -> r
+        | ValueNone -> struct (0, null, p)
+
+    // `real` answers for a path no layer decided — the full kind, or
+    // only as much of it as the caller asks (one stat for "a directory?")
+    let rec private kindWith (real: string -> int) (frames: PlanFrame list) (p: string) : int =
+        match frames with
+        | [] -> real p
+        | f :: outer ->
+            match viewIn f.Sim p with
+            | struct (3, _, _) -> 0
+            | struct (0, _, below) when not (isNull below) -> kindWith real outer below
+            | struct (0, _, _) -> 0
+            | struct (k, _, _) -> k
+
+    let private kindIn frames p = kindWith realKind frames p
+
+    // the real path a view ends at, for the checks only the real
+    // filesystem answers (a dangling link); None when an op made it
+    let rec private realPathIn (frames: PlanFrame list) (p: string) : string option =
+        match frames with
+        | [] -> Some p
+        | f :: outer ->
+            match viewIn f.Sim p with
+            | struct (0, _, below) when not (isNull below) -> realPathIn outer below
+            | _ -> None
+
+    // the entry names a directory holds, before asking each one's kind
+    let rec private namesIn (frames: PlanFrame list) (p: string) : string list =
+        match frames with
+        | [] ->
+            try
+                System.IO.Directory.EnumerateFileSystemEntries p
+                |> Seq.map System.IO.Path.GetFileName
+                |> List.ofSeq
+            with _ ->
+                []
+        | f :: outer ->
+            let struct (_, node, below) = viewIn f.Sim p
+            let mine = if isNull node then [] else node.Names
+            let theirs = if isNull below then [] else namesIn outer below
+            List.distinct (mine @ theirs)
+
+    /// the plan-time kind of a path (0 absent, 1 file, 2 dir, 4 other)
+    let simKind (p: string) : int = kindIn stack.Value p
+
+    /// is the path a directory at plan time?
+    let simIsDir (p: string) : bool =
+        kindWith (fun p -> if System.IO.Directory.Exists p then 2 else 0) stack.Value p = 2
+
+    /// does the plan-time directory hold an entry?
+    let simEmptyDir (p: string) : bool =
+        namesIn stack.Value p
+        |> List.forall (fun n -> kindIn stack.Value (System.IO.Path.Combine(p, n)) = 0)
+
+    /// a dangling link at plan time: only a path no op has touched can be
+    let simDangling (isDangling: string -> bool) (p: string) : bool =
+        match realPathIn stack.Value p with
+        | Some r -> isDangling r
+        | None -> false
+
+    // the top layer's node for a path, created along the way
+    let private ensure (root: SimNode) (p: string) : SimNode =
+        let mutable node = root
+
+        for c in compsOf p do
+            node <-
+                match node.Find c with
+                | null ->
+                    let n = SimNode(comparer)
+                    node.Add(c, n)
+                    n
+                | n -> n
+
+        node
+
+    // every proper ancestor exists as a directory once an entry is made
+    let private markParents (root: SimNode) (p: string) =
+        let comps = compsOf p
+        let mutable node = root
+
+        for i in 0 .. comps.Length - 2 do
+            node <- node.Find comps[i]
+
+            if node.State = 0 || node.State = 3 then
+                if node.State = 3 then
+                    node.Cleared <- true
+
+                node.State <- 2
+
+    let private setLeaf (root: SimNode) (p: string) (state: int) =
+        let n = ensure root p
+        n.Clear()
+        n.State <- state
+        n.Cleared <- true
+        n.Mirror <- null
+
+        if state <> 3 then
+            markParents root p
+
+    // a directory copy: the destination is the source's view, overlay
+    // cloned, the layer beneath mirrored
+    let private copyTree (frames: PlanFrame list) (src: string) (dst: string) =
+        let top = (List.head frames).Sim
+        let struct (_, node, below) = viewIn top src
+
+        let mirror =
+            match below with
+            | null -> null
+            | b -> b
+
+        let d = ensure top dst
+        d.Clear()
+
+        if not (isNull node) then
+            for k in node.Names do
+                d.Add(k, node.Find(k).Clone())
+
+        d.State <- 2
+        d.Cleared <- true
+        d.Mirror <- mirror
+        markParents top dst
+
+    // a captured op's effect on the top layer
+    let private simApply (op: Value) =
+        let frames = stack.Value
+        let top = (List.head frames).Sim
+
+        match op with
+        | VUnion(("WriteFile" | "WriteFileAtomic"), Some(VTuple [ VStr p; _ ])) -> setLeaf top p 1
+        | VUnion("DeleteFile", Some(VStr p))
+        | VUnion("DeleteDir", Some(VStr p))
+        | VUnion("DeleteTree", Some(VStr p)) -> setLeaf top p 3
+        | VUnion("MakeDir", Some(VStr p)) ->
+            let n = ensure top p
+
+            if n.State = 0 || n.State = 3 then
+                if n.State = 3 then
+                    n.Cleared <- true
+
+                n.State <- 2
+
+            markParents top p
+        | VUnion("Copy", Some(VTuple [ VStr _; VStr d ])) -> setLeaf top d 1
+        | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) ->
+            setLeaf top s 3
+            setLeaf top d 1
+        | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> copyTree frames s d
+        | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) ->
+            copyTree frames s d
+            setLeaf top s 3
+        | _ -> ()
+
     // the filesystem paths an Op names (HttpSend names none)
     let private opPaths (op: Value) : string list =
         match op with
@@ -867,6 +1133,7 @@ module PlanMode =
                 | None -> ()
 
             frame.Ops.Add op
+            simApply op
 
             // a write lands where a final symlink points; a delete or
             // move changes the link itself [D:plan-guard-links]
@@ -1623,6 +1890,30 @@ let private decodeCoded (where: string) (c: Codec) (text: string option) (num: i
 // last-wins at its first position, as records and Map read it
 // [D:json-yaml-dupkeys] — a YMap holding both would write YAML weir
 // itself refuses.
+// an integer past int64 in an opaque Yaml node [D:yaml-node-bigint]
+// reads as YFloat (its nearest value, for code that matches it) and
+// remembers its digits by node identity, so a write of that same node
+// emits the digits, not the float; a node built in weir has none
+let private yamlBigDigits =
+    System.Runtime.CompilerServices.ConditionalWeakTable<Value, string>()
+
+let private integerShaped (raw: string) =
+    let r = if raw.StartsWith "-" || raw.StartsWith "+" then raw.Substring 1 else raw
+    r.Length > 0 && r |> Seq.forall System.Char.IsAsciiDigit
+
+let yamlFloatNode (raw: string) (f: float) : Value =
+    let node = VUnion("YFloat", Some(VFloat f))
+
+    if integerShaped raw then
+        yamlBigDigits.AddOrUpdate(node, raw.TrimStart '+')
+
+    node
+
+let yamlBigIntText (node: Value) : string option =
+    match yamlBigDigits.TryGetValue node with
+    | true, t -> Some t
+    | _ -> None
+
 let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) : Value =
     match e.ValueKind with
     | System.Text.Json.JsonValueKind.Object ->
@@ -1652,7 +1943,7 @@ let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) :
         | true, n -> VUnion("YInt", Some(VInt n))
         | _ ->
             match parseFloat raw with
-            | Ok f -> VUnion("YFloat", Some(VFloat f))
+            | Ok f -> yamlFloatNode raw f
             | Error _ -> failwith $"{where}: number {quoteData raw} is out of float range"
     | _ -> VUnion("YNull", None)
 
@@ -1782,6 +2073,7 @@ let private jsonLine
             writer.WriteStartArray()
             items |> Seq.iter write
             writer.WriteEndArray()
+        | VUnion("YFloat", _) when (yamlBigIntText v).IsSome -> writer.WriteRawValue((yamlBigIntText v).Value)
         | VUnion(("YStr" | "YInt" | "YFloat" | "YBool"), Some scalar) -> write scalar
         | VUnion("YNull", None) -> writer.WriteNullValue()
         | v -> unreachable $"the checker rejects 'to json' on {formatValue v}"
@@ -2262,12 +2554,39 @@ let private jsonTopHoldsSecret (top: JsonTop) (defs: Map<string, RecordDef>) (ud
 /// [<Elem "X">] a repeated child, a record a nested element. Every leaf is
 /// text (an element's inner text or an attribute value) — no numbers reach
 /// here, the checker admits string / Option<string> / record / seq only.
+// the XML declaration's encoding name [D:xml-encoding]
+let private xmlDeclEncoding =
+    System.Text.RegularExpressions.Regex
+        @"^\uFEFF?\s*<\?xml\s[^>]*?\bencoding\s*=\s*[""']([A-Za-z][A-Za-z0-9._:-]*)[""']"
+
+// the encodings a declaration may name [D:xml-encoding]: CoreLib's
+// (UTF-8/16/32, US-ASCII, ISO-8859-1) and the code pages the provider
+// adds (windows-125x, ISO-8859-x, KOI8, Shift_JIS, …); registered once,
+// on first need
+let private codePages =
+    lazy (System.Text.Encoding.RegisterProvider System.Text.CodePagesEncodingProvider.Instance)
+
+let private xmlEncoding (who: string) (name: string) : System.Text.Encoding =
+    codePages.Force()
+
+    try
+        System.Text.Encoding.GetEncoding name
+    with _ ->
+        failwith
+            $"{who}: the document declares encoding '{excerpt name}', which weir cannot decode — UTF-8, UTF-16, UTF-32, US-ASCII, ISO-8859-x and the windows-125x code pages read"
+
+/// the input of `from xml`: text (already decoded as UTF-8) or the
+/// document's bytes, which decode per their BOM or declaration
+type XmlInput =
+    | XmlText of string
+    | XmlBytes of byte[]
+
 let private xmlDoc
     (who: string)
     (top: JsonTop)
     (defs: Map<string, RecordDef>)
     (shown: string)
-    (text: string)
+    (input: XmlInput)
     : Value =
     // DTDs are prohibited [D:xml-no-dtd]: no declared entity expands and
     // no external one resolves; XDocument.Parse's defaults would process
@@ -2279,6 +2598,83 @@ let private xmlDoc
             // XDocument.Parse's LoadOptions.None reading
             IgnoreWhitespace = true
         )
+
+    // the declared encoding decides [D:xml-encoding]: text arrived
+    // decoded as UTF-8, so a declaration of another encoding reads only
+    // when the text is ASCII (the same characters in either); bytes
+    // decode per their BOM, else the declaration, else UTF-8
+    let text =
+        match input with
+        | XmlText text ->
+            let m = xmlDeclEncoding.Match text
+
+            if m.Success then
+                let enc = xmlEncoding who m.Groups[1].Value
+
+                if
+                    enc.CodePage <> 65001
+                    && text |> Seq.exists (fun c -> int c > 0x7F && c <> '\uFEFF')
+                then
+                    let tyName =
+                        match top with
+                        | TopRec d -> d.Name
+                        | _ -> "T"
+
+                    failwith
+                        $"{who}: the document declares encoding '{excerpt m.Groups[1].Value}', but it arrived as text, which weir decodes as UTF-8 — read its bytes so the declaration decodes them: File.readBytes path |> from xml {tyName}"
+
+            text
+        | XmlBytes bytes ->
+            let bomLen, bomEnc =
+                if bytes.Length >= 3 && bytes[0] = 0xEFuy && bytes[1] = 0xBBuy && bytes[2] = 0xBFuy then
+                    3, Some(System.Text.UTF8Encoding(false) :> System.Text.Encoding)
+                elif bytes.Length >= 4 && bytes[0] = 0xFFuy && bytes[1] = 0xFEuy && bytes[2] = 0uy && bytes[3] = 0uy then
+                    4, Some(System.Text.UTF32Encoding(false, false) :> System.Text.Encoding)
+                elif bytes.Length >= 4 && bytes[0] = 0uy && bytes[1] = 0uy && bytes[2] = 0xFEuy && bytes[3] = 0xFFuy then
+                    4, Some(System.Text.UTF32Encoding(true, false) :> System.Text.Encoding)
+                elif bytes.Length >= 2 && bytes[0] = 0xFFuy && bytes[1] = 0xFEuy then
+                    2, Some(System.Text.UnicodeEncoding(false, false) :> System.Text.Encoding)
+                elif bytes.Length >= 2 && bytes[0] = 0xFEuy && bytes[1] = 0xFFuy then
+                    2, Some(System.Text.UnicodeEncoding(true, false) :> System.Text.Encoding)
+                elif bytes.Length >= 4 && bytes[0] = 0x3Cuy && bytes[1] = 0uy && bytes[2] = 0x3Fuy && bytes[3] = 0uy then
+                    0, Some(System.Text.UnicodeEncoding(false, false) :> System.Text.Encoding)
+                elif bytes.Length >= 4 && bytes[0] = 0uy && bytes[1] = 0x3Cuy && bytes[2] = 0uy && bytes[3] = 0x3Fuy then
+                    0, Some(System.Text.UnicodeEncoding(true, false) :> System.Text.Encoding)
+                else
+                    0, None
+
+            let enc =
+                match bomEnc with
+                | Some e -> e
+                | None ->
+                    // the declaration is ASCII in every ASCII-compatible
+                    // encoding; read it from the head as Latin-1
+                    let head = System.Text.Encoding.Latin1.GetString(bytes, 0, min bytes.Length 512)
+                    let m = xmlDeclEncoding.Match head
+
+                    if m.Success then
+                        xmlEncoding who m.Groups[1].Value
+                    else
+                        System.Text.UTF8Encoding(false) :> System.Text.Encoding
+
+            // strict: an undecodable byte is an error, never U+FFFD
+            // [D:encoding-law]
+            let strict =
+                System.Text.Encoding.GetEncoding(
+                    enc.CodePage,
+                    System.Text.EncoderFallback.ExceptionFallback,
+                    System.Text.DecoderFallback.ExceptionFallback
+                )
+
+            try
+                strict.GetString(bytes, bomLen, bytes.Length - bomLen)
+            with :? System.Text.DecoderFallbackException ->
+                failwith $"{who}: the document is not valid {enc.WebName} (its declared or default encoding)"
+
+    let shown =
+        match input with
+        | XmlText _ -> shown
+        | XmlBytes _ -> jsonSnippet text
 
     let root =
         try
@@ -2542,7 +2938,14 @@ let private fromAdapter
                 if text.Trim() = "" then
                     failwith "from xml: empty input — expected one XML document"
 
-                xmlDoc "from xml" top defs (cite (jsonSnippet text)) text
+                xmlDoc "from xml" top defs (cite (jsonSnippet text)) (XmlText text)
+            // the document's bytes decode per its BOM or declaration
+            // [D:xml-encoding]
+            | VBytes bytes ->
+                if bytes.Length = 0 then
+                    failwith "from xml: empty input — expected one XML document"
+
+                xmlDoc "from xml" top defs "" (XmlBytes bytes)
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     // header-aligned rows -> seq<T> [D:from-table]: the header must be
     // read before any row slices, so the input materializes here
@@ -2588,7 +2991,7 @@ let yamlScalarValue (raw: string) (quoted: bool) : Value =
             // — `cpu: 1.5` must not render as "1.5" (same as int;
             // parseFloat refuses non-finite so nan/inf text stays string)
             match (if quoted then Error "" else parseFloat raw) with
-            | Ok f -> VUnion("YFloat", Some(VFloat f))
+            | Ok f -> yamlFloatNode raw f
             | Error _ -> VUnion("YStr", Some(VStr raw))
 
 let rec yamlNodeValue (node: Yaml.Node) : Value =
@@ -2925,11 +3328,14 @@ let rec private yamlRender
     let indent2 (lines: string list) =
         lines |> List.map (fun l -> if l = "" then "" else "  " + l)
 
-    let renderMap (entries: (string * Value * Yaml.Shape option) list) : string list =
+    // a None record field omits its key [D:json-option]'s yaml face; a
+    // None pair value is the entry's data and writes null, as to json
+    // does [D:yaml-pair-none]
+    let renderMapWith (omitNone: bool) (entries: (string * Value * Yaml.Shape option) list) : string list =
         entries
         |> List.collect (fun (k, v, g) ->
             match v with
-            | VUnion("None", None) -> [] // omit the key [D:json-option]'s yaml face
+            | VUnion("None", None) when omitNone -> []
             | _ ->
                 let key = Yaml.renderScalar k
 
@@ -2938,6 +3344,8 @@ let rec private yamlRender
                 | Inline s -> [ $"{key}: {s}" ]
                 | Block lines -> $"{key}:" :: indent2 lines
                 | BlockScalar(h, content) -> $"{key}: {h}" :: indent2 content)
+
+    let renderMap = renderMapWith true
 
     let renderSeq (g: Yaml.Shape option) (items: Value list) : string list =
         items
@@ -2984,7 +3392,7 @@ let rec private yamlRender
     | VUuid g -> renderString (formatUuid g)
     | VUnion("YStr", Some(VStr s)) -> renderString s
     | VUnion("YInt", Some(VInt n)) -> Inline(string n)
-    | VUnion("YFloat", Some(VFloat f)) -> Inline(formatFloat f)
+    | VUnion("YFloat", Some(VFloat f)) -> Inline(yamlBigIntText v |> Option.defaultWith (fun () -> formatFloat f))
     | VUnion("YBool", Some(VBool b)) -> Inline(if b then "true" else "false")
     | VUnion("YNull", None) -> Inline ""
     // empty Yaml collections render as the empty flow forms so they
@@ -3066,7 +3474,7 @@ let rec private yamlRender
         if not items.IsEmpty && asPairs |> List.forall Option.isSome then
             let entries = asPairs |> List.map (fun p -> let k, v = Option.get p in k, v, valueGuide)
             refuseDupKeys "to yaml" (entries |> List.map (fun (k, _, _) -> k))
-            mapping (renderMap entries)
+            mapping (renderMapWith false entries)
         elif items.IsEmpty then
             // an empty seq is a flow empty at any depth, so `Some []`
             // reads back `Some []`; the type picks the form
@@ -4635,7 +5043,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             if path = "" then
                 failwith "within lock: the lock path is empty — name a lock file"
 
-            let resolved = Session.resolve path
+            let resolved = Session.resolveFs path
 
             if System.IO.Directory.Exists resolved then
                 failwith $"within lock: {quoteData resolved} is a directory — the lock is a file (e.g. {quoteData resolved}/.lock)"

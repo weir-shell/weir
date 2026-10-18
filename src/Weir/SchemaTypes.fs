@@ -17,11 +17,39 @@ open Weir.Contracts
 /// the last dot-segment of a definition key names the type —
 /// io.k8s.api.core.v1.PodSpec → PodSpec (the $ref-name law); the
 /// segment still rides the identifier sanitizer
+// a pointer key's name segments: its last segments that are not schema
+// keywords or array indexes (#/definitions/opts/properties/inner →
+// inner, opts) [D:schema-deep-refs]
+let private pointerNames (key: string) : string list =
+    let keywords =
+        set
+            [ "properties"
+              "items"
+              "additionalProperties"
+              "anyOf"
+              "oneOf"
+              "allOf"
+              "definitions"
+              "$defs"
+              "components"
+              "schemas" ]
+
+    key.TrimStart('#').Split '/'
+    |> Array.filter (fun seg -> seg <> "" && not (keywords.Contains seg) && not (Seq.forall Char.IsDigit seg))
+    |> Array.map (fun seg -> Uri.UnescapeDataString(seg).Replace("~1", "/").Replace("~0", "~"))
+    |> Array.rev
+    |> List.ofArray
+
 let defStem (key: string) : string =
     let last =
-        match key.Split '.' |> Array.filter (fun s -> s <> "") with
-        | [||] -> key
-        | segs -> Array.last segs
+        if key.StartsWith "#" then
+            match pointerNames key with
+            | n :: _ -> n
+            | [] -> "Root"
+        else
+            match key.Split '.' |> Array.filter (fun s -> s <> "") with
+            | [||] -> key
+            | segs -> Array.last segs
 
     Infer.capitalize (Infer.identStem last)
 
@@ -77,9 +105,56 @@ let generate
 
         match s with
         | SRef key -> resolveRef key
+        | SNullable(SEnum(values, kind)) ->
+            // the enum's null is absence — its note lists it as null
+            // [D:schema-enum-null]
+            opt (enumShape where values kind true)
         | SNullable inner ->
             // nullable → Option, the same wrap optionality takes
             opt (shape desired srcKey parentStem path inner)
+        | SAllOf members ->
+            // a $ref with shape siblings [D:schema-ref-siblings]: all
+            // objects merge into one record (later members win a shared
+            // key, required unions); anything else drafts the first
+            // member and says so
+            let objs =
+                members
+                |> List.map (deref doc.Defs Set.empty)
+                |> List.map (function
+                    | SObject(props, req, add) -> Some(props, req, add)
+                    | _ -> None)
+
+            if objs |> List.forall Option.isSome then
+                let objs = objs |> List.choose id
+
+                let props =
+                    objs
+                    |> List.collect (fun (ps, _, _) -> ps)
+                    |> List.fold
+                        (fun acc (k, v) ->
+                            if acc |> List.exists (fun (k2, _) -> k2 = k) then
+                                acc |> List.map (fun (k2, v2) -> if k2 = k then (k, v) else (k2, v2))
+                            else
+                                acc @ [ (k, v) ])
+                        []
+
+                let required = objs |> List.collect (fun (_, r, _) -> r) |> List.distinct
+
+                let additional =
+                    objs
+                    |> List.map (fun (_, _, a) -> a)
+                    |> List.tryFind (function
+                        | OpenProps -> false
+                        | _ -> true)
+                    |> Option.defaultValue OpenProps
+
+                reg.AddNote $"{where}: a $ref with sibling properties — drafted the merged record"
+                shape desired srcKey parentStem path (SObject(props, required, additional))
+            else
+                reg.AddNote
+                    $"{where}: a $ref with sibling keywords that are not both objects — drafted the reference only; the siblings also apply, verify"
+
+                shape desired srcKey parentStem path (List.head members)
         | SChoice [] -> shape desired srcKey parentStem path SAny
         | SChoice(first :: _) ->
             // the #infer heterogeneous-array posture: first variant +
@@ -87,33 +162,7 @@ let generate
             // schema territory weir does not draft) [D:schema-types]
             reg.AddNote $"{where}: anyOf — drafted the FIRST variant only; verify the rest"
             shape desired srcKey parentStem path first
-        | SEnum(values, "string") ->
-            // bounded v1: enum drafts string, the values ride a note
-            // (a string union is a stated follow-up)
-            reg.AddNote $"{where}: an enum of {enumText values} — drafted string; match the values yourself"
-            "string"
-        | SEnum(values, "mixed") ->
-            // values of differing kinds draft the opaque node
-            // [D:schema-enum-kind]: any one type would refuse the rest
-            let listed = String.concat ", " values
-
-            reg.AddNote
-                $"{where}: an enum mixing kinds ({listed}) — drafted Yaml; match the node's case and value yourself"
-
-            "Yaml"
-        | SEnum(values, kind) ->
-            // a non-string enum drafts its type [D:schema-int-enum]
-            // [D:schema-enum-kind] — string would refuse the document's
-            // own numbers and booleans
-            let ty =
-                match kind with
-                | "integer" -> "int"
-                | "number" -> "float"
-                | _ -> "bool"
-
-            let listed = String.concat ", " values
-            reg.AddNote $"{where}: an enum of {listed} — drafted {ty}; match the values yourself"
-            ty
+        | SEnum(values, kind) -> enumShape where values kind false
         | SIntOrStringFormat inner ->
             // [D:schema-num-or-string]: the int-or-string fix's
             // class, spelled as a string format
@@ -229,6 +278,45 @@ let generate
 
             reg.Claim desired srcKey parentStem rendered
 
+    and enumShape (where: string) (values: string list) (kind: string) (nullable: bool) : string =
+        let withNull (listed: string) =
+            if nullable then listed + ", null" else listed
+
+        let drafted (ty: string) = if nullable then opt ty else ty
+        let asString = drafted "string"
+        let asYaml = drafted "Yaml"
+
+        match kind with
+        | "string" ->
+            // bounded v1: enum drafts string, the values ride a note
+            // (a string union is a stated follow-up)
+            reg.AddNote
+                $"{where}: an enum of {withNull (enumText values)} — drafted {asString}; match the values yourself"
+
+            "string"
+        | "mixed" ->
+            // values of differing kinds draft the opaque node
+            // [D:schema-enum-kind]: any one type would refuse the rest
+            let listed = String.concat ", " values
+
+            reg.AddNote
+                $"{where}: an enum mixing kinds ({withNull listed}) — drafted {asYaml}; match the node's case and value yourself"
+
+            "Yaml"
+        | _ ->
+            // a non-string enum drafts its type [D:schema-int-enum]
+            // [D:schema-enum-kind] — string would refuse the document's
+            // own numbers and booleans
+            let ty =
+                match kind with
+                | "integer" -> "int"
+                | "number" -> "float"
+                | _ -> "bool"
+
+            let listed = String.concat ", " values
+            reg.AddNote $"{where}: an enum of {withNull listed} — drafted {drafted ty}; match the values yourself"
+            ty
+
     and resolveRef (key: string) : string =
         match memo.TryGetValue key with
         | true, Some t -> t
@@ -246,9 +334,14 @@ let generate
             // taken) — the Infer parent-prefix rule with the def path
             // standing in for the parent record
             let parentSeg =
-                match key.Split '.' |> Array.filter (fun s -> s <> "") with
-                | segs when segs.Length >= 2 -> Infer.identStem segs[segs.Length - 2]
-                | _ -> ""
+                if key.StartsWith "#" then
+                    match pointerNames key with
+                    | _ :: parent :: _ -> Infer.identStem parent
+                    | _ -> ""
+                else
+                    match key.Split '.' |> Array.filter (fun s -> s <> "") with
+                    | segs when segs.Length >= 2 -> Infer.identStem segs[segs.Length - 2]
+                    | _ -> ""
 
             let t =
                 match Map.tryFind key doc.Defs with
@@ -261,6 +354,10 @@ let generate
     // the top: a root $ref generates its target under the top name (the
     // user's --as wins over the definition's own); a root object claims
     // the top record directly
+    // `#` is the root itself: a ref to it from inside the tree is a
+    // cycle, drafted as the opaque node [D:schema-deep-refs]
+    memo["#"] <- None
+
     let top =
         match doc.Root with
         | SRef key ->

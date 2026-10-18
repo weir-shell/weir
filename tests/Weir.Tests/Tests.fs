@@ -1566,6 +1566,78 @@ let boundaryTests =
                   [ VStr "a: \".inf\""; VStr "b: \".nan\""; VStr "c: \"-.INF\"" ]
                   "the .inf/.nan family joins the reverse-Norway set"
           }
+          test "to yaml: every 1.1/1.2 resolver form quotes — +.5, y/n, <<, = [D:yaml-plain-resolvers]" {
+              Expect.equal
+                  (run
+                      "[(\"a\", \"+.5\"); (\"b\", \"+.5e3\"); (\"c\", \"-.5\"); (\"d\", \"._5\"); (\"e\", \"y\"); (\"f\", \"N\"); (\"g\", \"<<\"); (\"h\", \"=\"); (\"i\", \".\")] |> to yaml"
+                   |> forceSeq)
+                  [ VStr "a: \"+.5\""
+                    VStr "b: \"+.5e3\""
+                    VStr "c: \"-.5\""
+                    VStr "d: \"._5\""
+                    VStr "e: \"y\""
+                    VStr "f: \"N\""
+                    VStr "g: \"<<\""
+                    VStr "h: \"=\""
+                    VStr "i: ." ]
+                  "no reader types these as a float, bool, merge or value key"
+
+              Expect.equal
+                  (run "[(\"y\", 1); (\"<<\", 2)] |> to yaml" |> forceSeq)
+                  [ VStr "\"y\": 1"; VStr "\"<<\": 2" ]
+                  "keys follow the same law"
+
+              Expect.equal
+                  (run "show (YMap [(\"v\", YStr \"+.5\")] |> to yaml |> from yaml {| v: Yaml |})")
+                  (VStr "{ v = YStr \"+.5\" }")
+                  "weir's own reader reads the string back"
+          }
+          test "to yaml: a None pair value writes null, the key kept [D:yaml-pair-none]" {
+              Expect.equal
+                  (run "[(\"a\", None); (\"b\", Some 1)] |> to yaml" |> forceSeq)
+                  [ VStr "a: null"; VStr "b: 1" ]
+                  "a pair's None is its data, as to json writes it"
+
+              Expect.equal
+                  (run "show ({| m = [(\"a\", None); (\"b\", Some 1)] |} |> to yaml |> from yaml {| m: seq<string * Option<int>> |})")
+                  (VStr "{ m = [(\"a\", None); (\"b\", Some 1)] }")
+                  "the key reads back"
+          }
+          test "an integer past int64 in a Yaml node keeps its digits on write [D:yaml-node-bigint]" {
+              Expect.equal
+                  (run "[\"{\\\"id\\\": 18446744073709551615, \\\"n\\\": -12345678901234567890123}\"] |> from json {| id: Yaml; n: Yaml |} |> to json |> Str.join \"\"")
+                  (VStr "{\"id\":18446744073709551615,\"n\":-12345678901234567890123}")
+                  "json -> json keeps the digits"
+
+              Expect.equal
+                  (run "[\"id: 18446744073709551615\"] |> from yaml {| id: Yaml |} |> to yaml |> Str.join \"\"")
+                  (VStr "id: 18446744073709551615")
+                  "yaml -> yaml keeps the digits"
+
+              Expect.equal
+                  (run "show ([\"id: 18446744073709551615\"] |> from yaml {| id: Yaml |})")
+                  (VStr "{ id = YFloat (1.8446744073709552e+19) }")
+                  "the node still matches as its nearest float"
+
+              Expect.equal
+                  (run "YMap [(\"f\", YFloat 1e19)] |> to yaml |> Str.join \"\"")
+                  (VStr "f: 1e+19")
+                  "a node built in weir writes its float"
+          }
+          test "from yaml: a lone-surrogate escape refuses, as from json does [D:encoding-law]" {
+              Expect.stringContains
+                  (Expect.wantError (Weir.Yaml.scalarCore "\"\\ud800\"") "a lone high surrogate")
+                  "lone surrogate"
+                  "names the cause"
+
+              Expect.isError (Weir.Yaml.scalarCore "\"\\udc00x\"") "a lone low surrogate"
+              Expect.isError (Weir.Yaml.scalarCore "\"\\ud800\\u0041\"") "a high surrogate before a non-low"
+
+              Expect.equal
+                  (Weir.Yaml.scalarCore "\"\\ud83d\\ude00\"")
+                  (Ok(Some("\U0001F600", true)))
+                  "a pair is text"
+          }
           test "to yaml: CR/NEL/LS/PS and controls ESCAPE in quoted scalars — raw they are line breaks [D:yaml-v1]" {
               Expect.equal
                   (run "[(\"a\", Str.fromBase64 \"eA15\"); (\"b\", Str.fromBase64 \"YcKFYg==\")] |> to yaml"
@@ -1753,6 +1825,68 @@ let boundaryTests =
 
               let empty = Expect.throwsC (fun () -> runWith [ "src", VSeq [ VStr "" ] ] "src |> from xml XProj" |> ignore) id
               Expect.stringContains empty.Message "empty input — expected one XML document" ""
+          }
+          test "from xml: bytes decode per the BOM or declaration; text refuses a non-UTF-8 one; unknown refuses [D:xml-encoding]" {
+              System.Text.Encoding.RegisterProvider System.Text.CodePagesEncodingProvider.Instance
+              let xenv = env |> declare "type XT = { Title: string }"
+
+              let b64 (enc: System.Text.Encoding) (decl: string) (title: string) =
+                  System.Convert.ToBase64String(
+                      Array.append (enc.GetPreamble()) (enc.GetBytes($"<?xml version=\"1.0\"{decl}?>\n<Root><Title>{title}</Title></Root>"))
+                  )
+
+              let readBytes (b: string) =
+                  runUnder xenv $"show (Bytes.fromBase64 \"{b}\" |> from xml XT)"
+
+              Expect.equal
+                  (readBytes (b64 System.Text.Encoding.Latin1 " encoding=\"ISO-8859-1\"" "café"))
+                  (VStr "{ Title = \"café\" }")
+                  "ISO-8859-1"
+
+              Expect.equal
+                  (readBytes (b64 (System.Text.Encoding.GetEncoding 1252) " encoding=\"windows-1252\"" "€uro"))
+                  (VStr "{ Title = \"€uro\" }")
+                  "windows-1252 (the code-page provider)"
+
+              Expect.equal
+                  (readBytes (b64 (System.Text.UnicodeEncoding(false, true)) " encoding=\"UTF-16\"" "café"))
+                  (VStr "{ Title = \"café\" }")
+                  "UTF-16 with its BOM"
+
+              Expect.equal
+                  (readBytes (b64 (System.Text.UTF8Encoding(true)) "" "café"))
+                  (VStr "{ Title = \"café\" }")
+                  "a UTF-8 BOM, no declaration"
+
+              let msg (src: string) =
+                  (Expect.throwsC (fun () -> runUnder xenv src |> ignore) id).Message
+
+              let klingon = b64 System.Text.Encoding.ASCII " encoding=\"x-klingon\"" "ab"
+
+              Expect.stringContains
+                  (msg $"Bytes.fromBase64 \"{klingon}\" |> from xml XT")
+                  "declares encoding 'x-klingon', which weir cannot decode"
+                  "an unknown encoding refuses (bytes)"
+
+              Expect.stringContains
+                  (msg "[\"<?xml version='1.0' encoding='x-klingon'?><Root><Title>ab</Title></Root>\"] |> from xml XT")
+                  "which weir cannot decode"
+                  "an unknown encoding refuses (text)"
+
+              Expect.stringContains
+                  (msg "[\"<?xml version='1.0' encoding='ISO-8859-1'?><Root><Title>café</Title></Root>\"] |> from xml XT")
+                  "File.readBytes path |> from xml XT"
+                  "non-ASCII text under a non-UTF-8 declaration teaches the bytes read"
+
+              Expect.equal
+                  (runUnder xenv "show ([\"<?xml version='1.0' encoding='ISO-8859-1'?><Root><Title>ab</Title></Root>\"] |> from xml XT)")
+                  (VStr "{ Title = \"ab\" }")
+                  "ASCII text reads under any ASCII-compatible declaration"
+
+              Expect.stringContains
+                  (msg "Bytes.fromBase64 \"PFJvb3Q+PFRpdGxlPmNhZulgPC9UaXRsZT48L1Jvb3Q+\" |> from xml XT")
+                  "not valid utf-8"
+                  "no declaration: strict UTF-8, never U+FFFD"
           }
           test "from xml: a DTD refuses — no entity expands or resolves [D:xml-no-dtd]" {
               let refuse (doc: string list) =
@@ -8924,7 +9058,8 @@ let planApplyTests =
                     "let esc = Str.fromBase64 \"Gw==\""
                     "let p ="
                     "    plan"
-                    "        File.delete $\"/nowhere/a{cr}x{lf}delete file /b{esc}[8m\""
+                    // a Dir.create: a delete of a missing path refuses at capture [D:plan-preconditions]
+                    "        Dir.create $\"/nowhere/a{cr}x{lf}delete file /b{esc}[8m\""
                     "let line = p |> Plan.preview |> Seq.exactlyOne"
                     "if Str.contains cr line || Str.contains lf line || Str.contains esc line then fail $\"raw control: {show line}\""
                     "if not (Str.contains \"a\\\\x0dx\\\\x0adelete file\" line) then fail $\"not visible: {show line}\""
@@ -28299,13 +28434,37 @@ let hunt3BehaviorTests =
                   (VStr "2024-03-01T10:00:00")
                   "a string field keeps the text"
           }
+          test "from toml and Instant.parse take lowercase t/z and a seconds-less time [D:instant-rfc3339-forms]" {
+              let read v =
+                  $"[\"start = {v}\"] |> from toml HT |> fun r -> show r.start"
+
+              for v, want in
+                  [ "1979-05-27t07:32:00z", "1979-05-27T07:32:00Z"
+                    "1979-05-27T07:32Z", "1979-05-27T07:32:00Z"
+                    "1979-05-27 07:32+02:00", "1979-05-27T05:32:00Z"
+                    "1979-05-27t07:32:00.5z", "1979-05-27T07:32:00.500Z" ] do
+                  Expect.equal (runUnder henv (read v)) (VStr want) v
+
+              Expect.equal
+                  (run "show (Instant.parse \"1979-05-27t07:32:00z\")")
+                  (VStr "1979-05-27T07:32:00Z")
+                  "Instant.parse: lowercase"
+
+              Expect.equal
+                  (runUnder henv "[\"start = 1979-05-27T07:32\"] |> from toml HS |> fun r -> r.start")
+                  (VStr "1979-05-27T07:32")
+                  "a seconds-less local date-time keeps its text"
+
+              Expect.throwsC (fun () -> runUnder henv (read "1979-05-27T07:32") |> ignore) (fun e ->
+                  Expect.stringContains e.Message "a local date-time" "still offset-less")
+          }
           test "duplicate JSON keys into a Yaml field last-win at the first position [D:json-yaml-dupkeys]" {
               let src = doc """{"a": {"x": 1, "y": 2, "x": 3}}"""
               Expect.equal (runUnder henv $"{src} |> from json HN |> to json" |> text) """{"a":{"x":3,"y":2}}""" "json"
 
               Expect.equal
                   (runUnder henv $"{src} |> from json HN |> to yaml |> from yaml HN |> to yaml" |> text)
-                  "a:\n  x: 3\n  y: 2"
+                  "a:\n  x: 3\n  \"y\": 2"
                   "the yaml round trip holds"
           }
           test "a mapping last-wins on read; to json and to yaml refuse a key twice [D:mapping-dupkeys]" {
@@ -28376,7 +28535,7 @@ let hunt3BehaviorTests =
                   "the stream form too"
 
               let n = "{ n = YSeq [YSeq [YInt 1; YSeq [YStr \"x\"]]; YMap [(\"a\", YSeq [YInt 2])]; YSeq []] }"
-              Expect.equal (runUnder kenv $"{n} |> to yaml" |> text) "n:\n  -\n    - 1\n    -\n      - x\n  - a:\n      - 2\n  - []" "a nested YSeq"
+              Expect.equal (runUnder kenv $"{n} |> to yaml" |> text) "\"n\":\n  -\n    - 1\n    -\n      - x\n  - a:\n      - 2\n  - []" "a nested YSeq"
 
               Expect.equal
                   (runUnder kenv $"{n} |> to yaml |> from yaml KN |> to json" |> text)
@@ -28490,6 +28649,99 @@ let hunt3BehaviorTests =
               Expect.stringContains g "an enum mixing kinds (a, 1, true) — drafted Yaml" "its note"
               Expect.stringContains g "s: Option<string>" "a string enum stays string"
               Expect.stringContains g "an enum of 0.5, 1.5 — drafted float" "the values in the note"
+          }
+          test "schema drafting: [X, {type: null}] in either order is Option<X> for a $ref, array or object [D:schema-null-alt]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["a", "b", "c", "d", "e"],
+                           "$defs": { "Base": { "type": "object", "properties": { "x": { "type": "string" } }, "required": ["x"] } },
+                           "properties": {
+                             "a": { "anyOf": [{ "$ref": "#/$defs/Base" }, { "type": "null" }] },
+                             "b": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/Base" }] },
+                             "c": { "oneOf": [{ "type": "array", "items": { "type": "string" } }, { "type": "null" }] },
+                             "d": { "anyOf": [{ "type": ["null"] }, { "type": "object", "properties": { "y": { "type": "integer" } } }] },
+                             "e": { "anyOf": [{ "type": "integer" }, { "type": "null" }] } } }"""
+
+              Expect.stringContains g "\n    a: Option<Base>\n" "ref, null"
+              Expect.stringContains g "\n    b: Option<Base>\n" "null, ref"
+              Expect.stringContains g "\n    c: Option<seq<string>>\n" "array, null (oneOf)"
+              Expect.stringContains g "\n    d: Option<D>\n" "null, object"
+              Expect.stringContains g "\n    e: Option<int>\n" "a scalar as before"
+              Expect.isFalse (g.Contains "FIRST variant") "no first-variant guess"
+              Expect.isFalse (g.Contains "only null") "never 'allows only null'"
+          }
+          test "schema drafting: a $ref's sibling properties/required merge [D:schema-ref-siblings]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["item"],
+                           "$defs": { "Base": { "type": "object", "properties": { "x": { "type": "string" } }, "required": ["x"] } },
+                           "properties": {
+                             "item": { "$ref": "#/$defs/Base", "properties": { "y": { "type": "integer" } }, "required": ["y"] },
+                             "plain": { "$ref": "#/$defs/Base", "description": "annotations stay annotations" },
+                             "odd": { "$ref": "#/$defs/Base", "items": { "type": "string" } } } }"""
+
+              Expect.stringContains g "type Item = {\n    x: string\n    y: int\n}" "merged, required kept"
+              Expect.stringContains g "a $ref with sibling properties — drafted the merged record" "noted"
+              Expect.stringContains g "plain: Option<Base>" "an annotation sibling is the plain ref"
+              Expect.stringContains g "odd: a $ref with sibling keywords that are not both objects" "never a silent drop"
+          }
+          test "schema: deep in-document pointers and the root # resolve [D:schema-deep-refs]" {
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "definitions": { "opts": { "type": "object", "properties": { "inner": { "type": "object", "properties": { "a": { "type": "string" } } } } } },
+                           "properties": {
+                             "o": { "$ref": "#/definitions/opts" },
+                             "copy": { "$ref": "#/definitions/opts/properties/inner" },
+                             "self": { "$ref": "#" } } }"""
+
+              Expect.stringContains g "copy: Option<Inner>" "a deep pointer drafts its target"
+              Expect.stringContains g "inner: Option<Inner>" "one type for both routes"
+              Expect.stringContains g "self: Option<Yaml>" "# is the root: a cycle drafts the node"
+
+              match Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "x": { "$ref": "#/nope/a" } } }""" with
+              | Error e -> Expect.stringContains e "\"#/nope/a\" does not resolve" "a pointer to nothing refuses"
+              | Ok _ -> failtest "a dangling pointer must refuse"
+
+              match Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "x": { "$ref": "other.json#/a" } } }""" with
+              | Error e -> Expect.stringContains e "does not point into this document" "cross-file stays refused"
+              | Ok _ -> failtest "a cross-file ref must refuse"
+          }
+          test "schema drafting: bool/int-or-string oneOf with a $ref side drafts as inline [D:schema-bool-or-string]" {
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "definitions": { "expr": { "type": "string", "pattern": "^\\$" }, "s": { "type": "string" },
+                                            "level": { "type": "object", "properties": { "a": { "type": "string" } } } },
+                           "properties": {
+                             "cancel": { "oneOf": [{ "type": "boolean" }, { "$ref": "#/definitions/expr" }] },
+                             "port": { "oneOf": [{ "type": "integer" }, { "$ref": "#/definitions/s" }] },
+                             "perm": { "oneOf": [{ "type": "string", "enum": ["read-all"] }, { "$ref": "#/definitions/level" }] },
+                             "any": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "object" }, { "type": "array" }] } } }"""
+
+              Expect.stringContains g "cancel: Option<Yaml>" "bool | $ref string"
+              Expect.stringContains g "cancel: the schema allows boolean/string — drafted Yaml" "the inline note"
+              Expect.stringContains g "port: Option<Yaml>" "int | $ref string"
+              Expect.stringContains g "perm: Option<Yaml>" "one alternative per kind is the mixed draft [D:schema-mixed-kinds]"
+              Expect.stringContains g "any: Option<Yaml>" "any JSON value"
+          }
+          test "schema drafting: an enum containing null drafts Option<T>; the note says null [D:schema-enum-null]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["d", "g", "h", "n"],
+                           "properties": {
+                             "d": { "enum": ["x", null] },
+                             "g": { "enum": [null] },
+                             "h": { "type": ["string", "null"], "enum": ["a", null] },
+                             "n": { "enum": [1, 2, null] } } }"""
+
+              Expect.stringContains g "\n    d: Option<string>\n" "d"
+              Expect.stringContains g "\n    g: Option<string>\n" "g"
+              Expect.stringContains g "\n    h: Option<string>\n" "h"
+              Expect.stringContains g "\n    n: Option<int>\n" "n"
+              Expect.stringContains g "d: an enum of 'x', null — drafted Option<string>" "null unquoted"
+              Expect.stringContains g "n: an enum of 1, 2, null — drafted Option<int>" "a numeric one too"
+              Expect.isFalse (g.Contains "'null'") "never 'null'"
           }
           test "schema: a root $id, const and the content keywords are admitted and noted [D:schema-const-format]" {
               let g =

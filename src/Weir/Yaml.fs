@@ -168,6 +168,7 @@ let scalarCore (raw: string) : Result<(string * bool) option, string> =
             let sb = System.Text.StringBuilder()
             let mutable i = 0
             let mutable bad = None
+            let mutable lone = false
 
             let hex (start: int) (len: int) =
                 if start + len <= body.Length then
@@ -223,6 +224,25 @@ let scalarCore (raw: string) : Result<(string * bool) option, string> =
                               i <- i + 2)
                      | 'u' ->
                          (match hex (i + 2) 4 with
+                          // a surrogate escape is text only as a high+low
+                          // pair; a lone one refuses, as from json does
+                          // [D:encoding-law]
+                          | Some v when v >= 0xD800 && v <= 0xDBFF ->
+                              (match
+                                  (if i + 7 < body.Length && body[i + 6] = '\\' && body[i + 7] = 'u' then
+                                       hex (i + 8) 4
+                                   else
+                                       None)
+                               with
+                               | Some lo when lo >= 0xDC00 && lo <= 0xDFFF ->
+                                   sb.Append(char v).Append(char lo) |> ignore
+                                   i <- i + 12
+                               | _ ->
+                                   lone <- true
+                                   i <- i + 6)
+                          | Some v when v >= 0xDC00 && v <= 0xDFFF ->
+                              lone <- true
+                              i <- i + 6
                           | Some v ->
                               sb.Append(char v) |> ignore
                               i <- i + 6
@@ -239,6 +259,8 @@ let scalarCore (raw: string) : Result<(string * bool) option, string> =
             match bad with
             | Some c ->
                 Error $"unsupported escape '\\{c}' (the subset takes \\\" \\\\ \\n \\t \\r \\N \\L \\P \\xNN \\uNNNN)"
+            | None when lone ->
+                Error "a string escape is a lone surrogate (\\uD800-\\uDFFF without its pair), which is not text"
             | None -> Ok(Some(sb.ToString(), true))
     elif t.StartsWith "'" then
         if t.Length < 2 || not (t.EndsWith "'") then
@@ -933,20 +955,40 @@ let parseDocs (numbered: (int * string) list) : Result<Node list, string> =
 
 // ---- the render-side scalar law -------------------------------------------
 
+// the resolvers' number heads [D:yaml-plain-resolvers]: after an
+// optional sign, a digit (1.1/1.2 ints, floats, sexagesimals,
+// timestamps) or a dot before a digit or `_` (`.5`, `+.5e3`, `-._1`);
+// weir's own reader (Int64/Double parse) is checked directly so the
+// write side can never drift from it
 let private looksNumeric (s: string) =
-    s.Length > 0
-    && (System.Char.IsDigit s[0]
-        || ((s[0] = '-' || s[0] = '+' || s[0] = '.')
-            && s.Length > 1
-            && System.Char.IsDigit s[1]))
+    let r = if s.Length > 0 && (s[0] = '-' || s[0] = '+') then s.Substring 1 else s
+
+    (r.Length > 0
+     && (System.Char.IsDigit r[0]
+         || (r[0] = '.' && r.Length > 1 && (System.Char.IsDigit r[1] || r[1] = '_'))))
+    || fst (System.Int64.TryParse s)
+    || fst (
+        System.Double.TryParse(
+            s,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture
+        )
+    )
 
 let private ambiguousPlain =
     // the reverse-Norway set: a plain rendering a YAML reader would
-    // mis-type — booleans in three casings (the 1.1 legacy set), null
-    // forms, and the float specials (.inf/.nan families) — a reader
-    // types those as floats
+    // mis-type — booleans in three casings (the 1.1 legacy set, with
+    // go-yaml v2's y/Y/n/N), null forms, the float specials (.inf/.nan
+    // families) — a reader types those as floats — and 1.1's merge
+    // `<<` and value `=` keys [D:yaml-plain-resolvers]
     set
-        [ "true"
+        [ "y"
+          "Y"
+          "n"
+          "N"
+          "<<"
+          "="
+          "true"
           "false"
           "yes"
           "no"

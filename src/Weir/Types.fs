@@ -1139,7 +1139,15 @@ let private instantFormats =
 // fraction past .NET's 7 digits (nanoseconds); both normalize into the
 // list's spelling — the fraction truncates to ticks, then to ms anyway
 let private instantSpaceSep =
-    System.Text.RegularExpressions.Regex @"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})"
+    System.Text.RegularExpressions.Regex @"^(\d{4}-\d{2}-\d{2})[ t](\d{2}:\d{2})"
+
+// RFC 3339 takes a lowercase `z` too, and TOML 1.1 (as ISO 8601) a time
+// without seconds, which reads as :00 [D:instant-rfc3339-forms]
+let private instantLowerZ =
+    System.Text.RegularExpressions.Regex @"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?)z$"
+
+let private instantNoSeconds =
+    System.Text.RegularExpressions.Regex @"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?=$|[Z+-])"
 
 let private instantLongFrac =
     System.Text.RegularExpressions.Regex @"(T\d{2}:\d{2}:\d{2}\.\d{7})\d+"
@@ -1151,7 +1159,11 @@ let private instantEmptyFrac =
 
 let parseInstantMs (text: string) : Result<int64, string> =
     let t = text.Trim()
-    let norm = instantLongFrac.Replace(instantSpaceSep.Replace(t, "$1T$2"), "$1")
+    let norm =
+        instantSpaceSep.Replace(t, "$1T$2")
+        |> fun n -> instantLowerZ.Replace(n, "$1Z")
+        |> fun n -> instantNoSeconds.Replace(n, "$1:00")
+        |> fun n -> instantLongFrac.Replace(n, "$1")
 
     let refused () =
         Error

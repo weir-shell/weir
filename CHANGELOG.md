@@ -81,6 +81,50 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **A `plan` refuses an op that would fail at apply, where it is
+  captured.** A copy onto an existing (or planned) file, a delete of a
+  missing (or already deleted) file, a copy or move from a missing
+  source, `Dir.delete` of a directory the plan filled and a write
+  under a missing directory were captured, previewed as ordinary steps
+  and failed midway through `Plan.apply`. Each now raises at capture
+  with the same error the direct call gives.
+- **`from xml` reads a document in its declared encoding.** Pipe the
+  bytes: `File.readBytes "legacy.xml" |> from xml Proj` decodes by
+  BOM, else the XML declaration (ISO-8859-x, windows-125x, UTF-16 and
+  the other common code pages), else UTF-8. A text document declaring
+  a non-UTF-8 encoding read `café` as `caf�`; it now refuses unless
+  it is ASCII, and an unknown encoding refuses either way. The binary
+  is about 0.8 MB larger (the code pages).
+- **`File.*` and `Dir.*` resolve `..` after a symlink as the kernel
+  does.** With `L -> real/sub`, `File.read "L/../x"` read `./x` while
+  `cat L/../x` read `real/x`. `cd` keeps the shell's logical `..`.
+- **`to yaml` quotes every string a YAML reader would type.** `+.5`
+  and `+.5e3` read back as floats (weir's own reader too), `y`/`n`
+  as booleans in sigs.k8s.io/yaml, and `<<`/`=` broke PyYAML. Keys
+  follow the same rule.
+- **`to yaml` writes a `None` value in a seq of pairs as `null`.** The
+  key was dropped, so it did not read back.
+- **An integer beyond int64 in a `Yaml` node keeps its digits** when
+  written back to JSON or YAML (it became `1.8446744073709552e+19`).
+- **`from toml` and `Instant.parse` accept lowercase `t`/`z` and a
+  time without seconds** (`1979-05-27t07:32z`, TOML 1.1's
+  `07:32Z`).
+- **A YAML `"\ud800"` escape is refused,** as JSON refuses it; it was
+  read as U+FFFD.
+- **`weir gen types` and `weir add schema`: `anyOf`/`oneOf` of a
+  schema and `null`, in either order, drafts `Option<…>`** of that
+  schema (a `$ref`, array or object included); an enum containing
+  `null` drafts `Option<…>` too, and its note says `null`.
+- **A `$ref` with sibling `properties`/`required` (JSON Schema
+  2020-12) is merged** into one record; the siblings were dropped.
+- **Deep in-document `$ref` pointers and `#` resolve** (tsconfig,
+  package.json, the GitHub workflow schema).
+- **A `oneOf` whose `$ref` side is a string drafts like the inline
+  form** (GitHub Actions' `cancel-in-progress`), and a `oneOf` with one
+  alternative per JSON kind drafts `Yaml`.
+- **The piped REPL no longer runs a `Self.prompt` answer as a
+  command** after an indented `|>` line, a `match` arm or a second
+  `if` body line.
 - **`weir gen types` drafts number-or-string fields and `format:
   int-or-string` as `Yaml`.** Kubernetes `resources.limits`, an HPA
   `target.value` and swagger's IntOrString drafted `string`, which

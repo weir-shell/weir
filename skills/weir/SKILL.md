@@ -546,8 +546,8 @@ print $"{key} -> {value}"
   exact physical time — `t + 24h` means exactly 24 hours). `Instant.now ()`;
   `Instant.parse` reads ISO 8601 (`Z` or numeric offsets, normalized
   to UTC; a bare date is midnight UTC, and a time with no offset is
-  read as UTC — the json/yaml `[<Iso8601>]` codec too; RFC 3339's space separator and
-  fractions past 7 digits read, truncated); `Instant.parseWith`/`tryParseWith`
+  read as UTC — the json/yaml `[<Iso8601>]` codec too; RFC 3339's space separator, lowercase
+  `t`/`z`, a seconds-less `HH:MM` (as :00) and fractions past 7 digits read, truncated); `Instant.parseWith`/`tryParseWith`
   read NAMED formats for log lines and cert dates — `%Y %m %d %e %b
   %H %M %S %f %z`, prefix semantics (the line's tail rides free), no
   `%z` means UTC. `instant - instant` IS a `Duration`
@@ -1010,7 +1010,13 @@ let x =
   string * string`, `MakeDir`, `DeleteDir` (empty only), `DeleteTree`
   (`Dir.deleteAll`), `HttpSend of HttpRequest` (a
   mutating method only — an `Other` verb included unless it is a safe one; `show` masks the auth Secret). Content is
-  snapshotted at plan time, so `preview == apply`. The refusals:
+  snapshotted at plan time, so `preview == apply`. Each captured op
+  checks its preconditions at capture against the filesystem as the
+  plan's earlier ops leave it, and raises there with the direct call's
+  error (copy onto an existing or planned file, delete of a missing or
+  already-deleted file, copy/move from a missing source, `Dir.delete`
+  of a dir the plan filled, a write under a missing or deleted dir) —
+  a plan never holds an op certain to fail at apply. The refusals:
   `proc` inside a plan (a spawned binary is uncapturable — plan covers
   weir-native mutation only), `apply` inside a plan (a capture cannot
   be captured — apply OUTSIDE), a known-after-apply read (any file
@@ -1557,7 +1563,10 @@ ls |> Seq.where (fun f -> f.name |> Str.startsWith "lssort-") |> Seq.iter (fun f
   glob on any row field. It describes a symlink ITSELF (`kind ==
   Symlink`, `target Some` — a dangling link is a row, not an absence),
   matching `ls` — a stated third position beside `**`'s
-  skip-symlinked-dirs law and `File.*`'s follow-as-a-shell-does.
+  skip-symlinked-dirs law and `File.*`'s follow-as-a-shell-does
+  (`..` included: `File.read "L/../x"` steps up from where the link
+  `L` really points, as `cat L/../x` does [D:fs-dotdot-physical];
+  `cd`/`within cd` keep the shell's logical `..`).
   Raises when absent, naming the resolved path — and a glob hit can
   vanish before `stat` reaches it, the same TIMING seam `Seq.freeze`
   documents for glob.
@@ -1854,7 +1863,11 @@ type Bad = C of int
   writes `[]` and an empty `seq<string * _>` `{}` at any depth, so
   `Some []` reads back `Some []` (a Deployment's `args: []`/`labels:
   {}` round-trip) and no document is ever empty text; a seq inside a
-  seq nests block-wise under a bare `-`; ambiguous strings like `"no"`/`"007"` auto-quote. `Yaml`
+  seq nests block-wise under a bare `-`; a `None` PAIR value writes
+  `null` (the key kept); a string any YAML 1.1/1.2 reader would type
+  auto-quotes, keys too (`"no"`/`"007"`/`"+.5"`/`"y"`/`"<<"`/`"="`); an
+  int64-overflowing integer read into a `Yaml` node is a `YFloat` that
+  writes back its digits. `Yaml`
   nodes (`YStr`/`YInt`/`YFloat`/`YBool`/`YNull`/`YSeq`/`YMap`;
   `YMap [("k", YStr "v")]`) render directly —
   `YMap` keeps YOUR key order; record fields render in DECLARATION
@@ -1914,12 +1927,17 @@ type Bad = C of int
   `additionalProperties` becomes the `seq<string * V>` mapping, and
   `$ref` definition names become type names; an int-or-string field
   (a k8s port; `format: int-or-string` too), a number-or-string
-  field (a quantity), a boolean-or-string/number field (`oneOf` too)
-  and a type array mixing a scalar with `array`/`object` (a compose
+  field (a quantity), a boolean-or-string/number field (`oneOf` too, a `$ref`
+  side counting by its target's type), a `oneOf` with one alternative
+  per JSON kind and a type array mixing a scalar with `array`/`object` (a compose
   `command`) draft `Yaml` with a note (8080 stays `YInt`, `"25%"`
   `YStr`, `true` `YBool`) — never a silent pick of one kind;
   an `enum` drafts its declared type, else its values' one kind
-  (`int`, `float`, `bool`, `string`), and a mixed enum drafts `Yaml`;
+  (`int`, `float`, `bool`, `string`), and a mixed enum drafts `Yaml`
+  (a `null` value makes it `Option<…>`); `anyOf`/`oneOf` of X and
+  `{type: null}` (either order) drafts `Option<X>`; a `$ref`'s
+  sibling `properties`/`required` merge into one record; deep
+  in-document pointers and `#` resolve;
   validation keywords (`minLength`, `pattern`, `minimum`, `maxItems`,
   `uniqueItems`, `readOnly`, `const`, `format`, `contentEncoding`, …)
   are accepted but NOT enforced — each gets a `// note: not enforced:`
@@ -2022,7 +2040,11 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   converted (`Str.toInt`), the checker teaches it. `[<Attr>]` fits only
   `string`/`Option<string>`, `[<Elem>]` only a `seq`, the top level is
   one root (`from xml seq<T>` refuses — a repeat is a `seq< >` field),
-  and there is NO `to xml`. A DTD (`<!DOCTYPE …>`) refuses
+  and there is NO `to xml`. `Bytes` read too (`File.readBytes p |>
+  from xml T`): decoded by BOM, else the declaration's encoding (UTF-8/
+  16/32, ASCII, ISO-8859-x, windows-125x, the code pages), else UTF-8,
+  strictly [D:xml-encoding]; text under a non-UTF-8 declaration reads
+  only if ASCII, an unknown encoding refuses. A DTD (`<!DOCTYPE …>`) refuses
   [D:xml-no-dtd] — no declared entity expands or resolves.
   An element that repeats under a `string`/`Option<string>`/record
   field refuses (never silently the first) — declare a `seq< >`. A
