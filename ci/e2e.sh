@@ -39,6 +39,36 @@ awaitTcp() {
 }
 # End-to-end battery against the AOT binary (command-mode Session 4 set).
 set -euo pipefail
+# `grep -q` reads the whole input [D:e2e-grep-drain]: a quiet grep exits at
+# its first match, and under pipefail a writer still sending (`echo "$out" |
+# grep -q`, output past one stdio buffer — 1 KiB on macOS) dies by SIGPIPE
+# and fails a passing check. The wrapper drops `q` from the leading options
+# and discards the output instead; exit codes are grep's.
+grep() {
+    local args=() a opts=1 skip=0 quiet=0
+    for a in "$@"; do
+        if [ "$skip" = 1 ]; then
+            skip=0
+        elif [ "$opts" = 1 ] && [ "$a" = "--" ]; then
+            opts=0
+        elif [ "$opts" = 1 ] && [[ $a == -[!-]* ]]; then
+            [[ $a == *[ef] ]] && skip=1
+            if [[ $a == *q* ]]; then
+                quiet=1
+                a="${a//q/}"
+                [ "$a" = "-" ] && continue
+            fi
+        else
+            opts=0
+        fi
+        args+=("$a")
+    done
+    if [ "$quiet" = 1 ]; then
+        command grep "${args[@]}" >/dev/null
+    else
+        command grep "${args[@]}"
+    fi
+}
 # an unguarded nonzero command under set -e used to kill the battery
 # silently (round 33 — the run ended after a green line with no FAIL at
 # all); the ERR trap names its own line and command. Deliberately no
