@@ -96,3 +96,15 @@ e932f24). Stages A, B and C in parallel (A: Session/Builtins/Proc/Eval
 scopes/Repl/Serve; B: Http/Contracts/Script/Types console/docs; C: Yaml/
 Toml/Xml/SchemaTypes/Plan/Repl lookahead/File paths); A's design note
 reviewed before it codes. D after A. Merge B → C → A → D.
+
+## Status (2026-10-18)
+
+Harness, stages A (the scope tree, R6-R8), B and C landed on plan/hunt3r4f;
+tools/hunt3r4f-repro.weir 30/30 with its controls; storms (single,
+double/triple-signal, --tty) 0 failures over 1600 runs each; the race-tree
+fuzzer 0 bad in 2000 trees. Beside the plan: `from xml` without code
+pages ([D:xml-encoding-builtin], user), MetricsSupport off, e2e's quiet
+greps drain ([D:e2e-grep-drain], a macOS flake), H3R4-04's adaptive
+calibration. Owed: stage D (the nightly storm job) and the serve charset
+refusal; then round 5.
+
