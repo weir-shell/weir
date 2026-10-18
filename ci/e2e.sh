@@ -14060,6 +14060,14 @@ for f in float json path env; do
     printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d) else 0)" \
         || fail "error-data-escape: $f put a raw CR/ESC in the error: $eout"
 done
+# from xml over bytes quotes its excerpt as the text path does
+# [D:xml-encoding]
+printf '<R><a>x\r\033[8mpe</a' > "$ed/bad.xml"
+printf 'type R = { a: string }\nlet r = File.readBytes "%s/bad.xml" |> from xml R\nprint r.a\n' "$ed" > "$ed/xmlb.weir"
+eout=$("$BIN" "$ed/xmlb.weir" 2>&1) && fail "error-data-escape: a bad xml document must fail: $eout"
+echo "$eout" | grep -qF 'x\x0d\x1b[8mpe' || fail "error-data-escape: from xml over bytes must render the quoted CR/ESC visibly: $eout"
+printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d) else 0)" \
+    || fail "error-data-escape: from xml over bytes put a raw CR/ESC in the error: $eout"
 printf 'let x: int = "a"\n' > "$(printf '%s/a\033[8m\rb.weir' "$ed")"
 eout=$("$BIN" check "$(printf '%s/a\033[8m\rb.weir' "$ed")" 2>&1; "$BIN" "$(printf '%s/a\033[8m\rb.weir' "$ed")" 2>&1; "$BIN" "$(printf '%s/z\033[8m\rb.weir' "$ed")" 2>&1 || true)
 echo "$eout" | grep -qF 'no such script' || fail "error-data-escape: a missing script must say so: $eout"

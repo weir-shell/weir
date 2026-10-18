@@ -2585,7 +2585,7 @@ let private xmlDoc
     (who: string)
     (top: JsonTop)
     (defs: Map<string, RecordDef>)
-    (shown: string)
+    (cite: string -> string)
     (input: XmlInput)
     : Value =
     // DTDs are prohibited [D:xml-no-dtd]: no declared entity expands and
@@ -2671,10 +2671,7 @@ let private xmlDoc
             with :? System.Text.DecoderFallbackException ->
                 failwith $"{who}: the document is not valid {enc.WebName} (its declared or default encoding)"
 
-    let shown =
-        match input with
-        | XmlText _ -> shown
-        | XmlBytes _ -> jsonSnippet text
+    let shown = cite (jsonSnippet text)
 
     let root =
         try
@@ -2938,14 +2935,14 @@ let private fromAdapter
                 if text.Trim() = "" then
                     failwith "from xml: empty input — expected one XML document"
 
-                xmlDoc "from xml" top defs (cite (jsonSnippet text)) (XmlText text)
+                xmlDoc "from xml" top defs cite (XmlText text)
             // the document's bytes decode per its BOM or declaration
             // [D:xml-encoding]
             | VBytes bytes ->
                 if bytes.Length = 0 then
                     failwith "from xml: empty input — expected one XML document"
 
-                xmlDoc "from xml" top defs "" (XmlBytes bytes)
+                xmlDoc "from xml" top defs cite (XmlBytes bytes)
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     // header-aligned rows -> seq<T> [D:from-table]: the header must be
     // read before any row slices, so the input materializes here
