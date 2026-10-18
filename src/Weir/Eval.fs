@@ -4943,6 +4943,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 if Session.deregisterAlways hooked then
                     eval env cleanup |> ignore)
 
+        // the main flow's pending cleanup, which the signal backstop runs
+        // if it adopts a stuck main flow [D:scope-tree]
+        let frame = Session.pushFrame claimAndRun
+
         match
             (try
                 Ok(eval env body)
@@ -4952,7 +4956,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         | Ok v ->
             // case 1: a cleanup raise propagates as the scope's raise —
             // unless a signal's hook already claimed the cleanup
-            claimAndRun ()
+            Session.releaseFrame frame claimAndRun
             v
         | Error original ->
             // the cleanup runs weir code while the body's raise unwinds: pin
@@ -4967,7 +4971,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                      b.Exact <- RunPos.Exact)
 
             (try
-                claimAndRun ()
+                Session.releaseFrame frame claimAndRun
              with
              | :? ExitRequest ->
                  // the checker refuses exit inside always; a raise here
@@ -5088,11 +5092,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         acquire ()
 
             let fs = acquire ()
+            let frame = Session.pushFrame fs.Dispose
 
             try
                 eval env body
             finally
-                fs.Dispose()
+                Session.releaseFrame frame fs.Dispose
         | WithinCd ->
             // cd consumes a path [D:within-scopes]: resolved against
             // the current cwd (so nested relative scopes compose),
@@ -5112,20 +5117,26 @@ and eval (env: Env) (te: TypedExpr) : Value =
             Session.setCwd resolved
             Session.enterWithinCd ()
 
-            try
-                eval env body
-            finally
+            let restore () =
                 Session.exitWithinCd ()
                 Session.setCwd saved
-        | WithinEnv ->
-            // env pushes an ambient overlay that child spawns see;
-            // weir's own Env.load is untouched [D:within-scopes]
-            Session.pushEnvOverlay (envPairsOf "within env" (eval env (argOf "env")))
+
+            let frame = Session.pushFrame restore
 
             try
                 eval env body
             finally
-                Session.popEnvOverlay ()
+                Session.releaseFrame frame restore
+        | WithinEnv ->
+            // env pushes an ambient overlay that child spawns see;
+            // weir's own Env.load is untouched [D:within-scopes]
+            Session.pushEnvOverlay (envPairsOf "within env" (eval env (argOf "env")))
+            let frame = Session.pushFrame Session.popEnvOverlay
+
+            try
+                eval env body
+            finally
+                Session.releaseFrame frame Session.popEnvOverlay
         | WithinProc ->
             // the scoped process [D:scoped-procs]: spawn with both
             // streams spilling, bind the handle, and at every exit —
@@ -5175,9 +5186,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                   SpillDir = spill
                   Drain = drain }
 
-            try
-                eval (Map.add binderName (VProc handle) env) body
-            finally
+            let release () =
                 Proc.stopTree p
                 Session.deregisterProc p
                 // pumps settle before the spill dir goes (Windows would
@@ -5190,6 +5199,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
                      ())
 
                 Session.deregisterTmpDir spill
+
+            let frame = Session.pushFrame release
+
+            try
+                eval (Map.add binderName (VProc handle) env) body
+            finally
+                Session.releaseFrame frame release
         | WithinServe ->
             // the scoped listener [D:http-serve]: open the socket,
             // serve on a pool of handler threads (the maxConcurrent
@@ -5534,18 +5550,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
             loopThread.IsBackground <- true
             loopThread.Start()
 
-            try
-                Session.setCurrentNode serveNode
-
-                try
-                    eval (Map.add binderName (VServer handle) env) body
-                finally
-                    Session.setCurrentNode home
-            finally
-                // close the server — frees the port, drops queued requests,
-                // gives in-flight handlers the drain together; idempotent
-                // with the signal sweep [D:serve-drain]. A signal landing
-                // meanwhile holds the watchdog [D:serve-drain-signal]
+            // close the server — frees the port, drops queued requests,
+            // gives in-flight handlers the drain together; idempotent
+            // with the signal sweep [D:serve-drain]. A signal landing
+            // meanwhile holds the watchdog [D:serve-drain-signal]
+            let release () =
                 Session.closingScope (fun () ->
                     Serve.stop handle drainMs
                     closing.Cancel()
@@ -5566,6 +5575,18 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         Session.joinThread kv.Key
 
                     Session.closeNode serveNode)
+
+            let frame = Session.pushFrame release
+
+            try
+                Session.setCurrentNode serveNode
+
+                try
+                    eval (Map.add binderName (VServer handle) env) body
+                finally
+                    Session.setCurrentNode home
+            finally
+                Session.releaseFrame frame release
         | WithinTmp ->
             // kind tmp [D:within-scopes]: a fresh unique directory,
             // bound as the binder for the block; removed on every
@@ -5586,15 +5607,20 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // [D:plan-within-tmp]
             PlanMode.noteTmp dir
 
-            try
-                eval (Map.add binderName (VStr dir) env) body
-            finally
+            let release () =
                 (try
                     System.IO.Directory.Delete(dir, true)
                  with _ ->
                      ())
 
                 Session.deregisterTmpDir dir
+
+            let frame = Session.pushFrame release
+
+            try
+                eval (Map.add binderName (VStr dir) env) body
+            finally
+                Session.releaseFrame frame release
     | TEIf(cond, thn, els) ->
         match eval env cond, els with
         | VBool true, _ -> eval env thn

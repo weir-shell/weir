@@ -757,6 +757,89 @@ let runningCleanup (f: unit -> 'a) : 'a =
 
 let inCleanup () = cleanupDepth.Value > 0
 
+// ---- the main flow's frames [D:scope-tree] -----------------------------
+// Each scope the main flow opens pushes its release (a cleanup, a tmp dir,
+// a proc, a serve close, a lock, a cd or env restore); the scope's own exit
+// claims and runs it. The one other owner is the signal backstop, which
+// adopts a main flow stuck where no boundary comes: it runs the frames
+// still pending, innermost first, and the main thread, if it ever returns,
+// parks at its next claim — no release runs twice or concurrently with an
+// enclosing one. An arm's scopes are never adopted (every wait is cut, so
+// an arm always reaches its own exit): they push nothing.
+
+/// a scope's pending release on the main flow
+[<AllowNullLiteral>]
+type Frame(release: unit -> unit) =
+    member _.Release = release
+
+    [<DefaultValue>]
+    val mutable Claimed: bool
+
+let private mainFrames = System.Collections.Generic.List<Frame>()
+
+/// push a release on the main flow's frames (null off the main flow)
+let pushFrame (release: unit -> unit) : Frame =
+    if onMainThread () then
+        let f = Frame(release)
+        lock watchdogGate (fun () -> mainFrames.Add f)
+        f
+    else
+        null
+
+/// run `f`'s release as its scope exits; when the backstop adopted the main
+/// flow, this thread never runs again
+let releaseFrame (f: Frame) (release: unit -> unit) : unit =
+    if isNull f then
+        release ()
+    else
+        let mine =
+            lock watchdogGate (fun () ->
+                if watchdogFired || f.Claimed then
+                    false
+                else
+                    f.Claimed <- true
+                    mainFrames.Remove f |> ignore
+                    mainCleanups <- mainCleanups + 1
+                    true)
+
+        if not mine then
+            System.Threading.Thread.Sleep System.Threading.Timeout.Infinite
+
+        try
+            release ()
+        finally
+            lock watchdogGate (fun () -> mainCleanups <- mainCleanups - 1)
+
+// the backstop adopts the main flow: its pending releases run here, LIFO,
+// each in a cleanup's node
+let private adoptMain () =
+    let rec next () =
+        let f =
+            lock watchdogGate (fun () ->
+                let mutable i = mainFrames.Count - 1
+
+                while i >= 0 && mainFrames[i].Claimed do
+                    i <- i - 1
+
+                if i < 0 then
+                    null
+                else
+                    let f = mainFrames[i]
+                    f.Claimed <- true
+                    mainFrames.RemoveAt i
+                    f)
+
+        if not (isNull f) then
+            (try
+                runningCleanup f.Release
+             with _ ->
+                 ())
+
+            next ()
+
+    next ()
+
+
 // ---- the main-thread teardown [D:signal-main-unwind] [D:stdout-epipe] --
 // A signal or a closed stdout ends the script, but the teardown — every
 // `always`, every scope's release — runs on the MAIN thread, never in the
@@ -2059,6 +2142,7 @@ let private terminalInterrupt (ctx: System.Runtime.InteropServices.PosixSignalCo
                 | Some f -> f
 
             if standBy 0 then
+                adoptMain ()
                 raiseSigint ())
 
     watch.IsBackground <- true
@@ -2148,6 +2232,7 @@ let private installExitHook () =
                                         | Some f -> f
 
                                     if standBy () then
+                                        adoptMain ()
                                         sweepLiveTmpDirs ()
                                         System.Environment.Exit code)
 
