@@ -1411,7 +1411,8 @@ let h3r4b6 d =
     let o = joined ls
     failing [
         ($"to json keeps 18446744073709551615 and 12345678901234567890123 ('{o}', exit {codeOf r})", codeOf r == 0 && (ls |> Seq.exists (fun l -> (l |> Str.contains "18446744073709551615") && (l |> Str.contains "12345678901234567890123"))))
-        ($"to yaml keeps their digits ('{o}')", (ls |> Seq.contains "id: 18446744073709551615") && (ls |> Seq.contains "n: 12345678901234567890123"))
+        // the key `n` is quoted since B1 (go-yaml v2 reads a bare n as false)
+        ($"to yaml keeps their digits ('{o}')", (ls |> Seq.contains "id: 18446744073709551615") && ((ls |> Seq.contains "n: 12345678901234567890123") || (ls |> Seq.contains "\"n\": 12345678901234567890123")))
     ]
 
 // ---- H3R4-B7: valid TOML offset date-times refused into Instant ----------------
@@ -1440,10 +1441,12 @@ let h3r4b7 d =
 
 // ---- H3R4-B9: from xml ignores a declared non-UTF-8 encoding (R5) --------------
 
-let xmlScript = [
+let xmlScriptWith reader = [
     "type Root = { Title: string }"
-    "print $\"{File.read (Self.args |> Seq.head) |> from xml Root |> try result}\""
+    $"print $\"{{{reader} (Self.args |> Seq.head) |> from xml Root |> try result}}\""
 ]
+
+let xmlScript = xmlScriptWith "File.read"
 
 let ctlXmlUtf8 d =
     File.writeBytes $"{d}/u.xml" (Str.toUtf8 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Root><Title>café</Title></Root>")
@@ -1457,12 +1460,17 @@ let h3r4b9 d =
     // <?xml version="1.0" encoding="ISO-8859-1"?><Root><Title>caf\xe9</Title></Root>
     File.writeBytes $"{d}/l1.xml" (Bytes.fromHex "3c3f786d6c2076657273696f6e3d22312e302220656e636f64696e673d2249534f2d383835392d31223f3e3c526f6f743e3c5469746c653e636166e93c2f5469746c653e3c2f526f6f743e")
     File.writeBytes $"{d}/unk.xml" (Str.toUtf8 "<?xml version=\"1.0\" encoding=\"X-NOPE-9\"?><Root><Title>cafe</Title></Root>")
-    let p = put d "b9.weir" xmlScript
+    // the declared encoding applies to the document's bytes: File.read has
+    // already decoded them as UTF-8, so that text path must refuse, not guess
+    let p = put d "b9.weir" (xmlScriptWith "File.readBytes")
+    let pt = put d "b9t.weir" xmlScript
     let a = runIn d "30" [p; $"{d}/l1.xml"]
     let b = runIn d "30" [p; $"{d}/unk.xml"]
+    let t = runIn d "30" [pt; $"{d}/l1.xml"]
     failing [
-        ($"""an ISO-8859-1 document reads as '{outOf a}' (want Title = "café")""", outOf a == "Ok ({ Title = \"café\" })")
+        ($"""an ISO-8859-1 document's bytes read as '{outOf a}' (want Title = "café")""", outOf a == "Ok ({ Title = \"café\" })")
         ($"""an unknown declared encoding X-NOPE-9 is read anyway ('{outOf b}')""", outOf b |> Str.startsWith "Error")
+        ($"""an ISO-8859-1 document read as text is not refused ('{outOf t}')""", outOf t |> Str.startsWith "Error")
     ]
 
 // ---- H3R4-B10: a YAML lone-surrogate escape reads as U+FFFD --------------------
