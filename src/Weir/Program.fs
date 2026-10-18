@@ -240,9 +240,14 @@ let main argv =
     if Console.IsErrorRedirected then
         Console.Error.NewLine <- "\n"
     else
-        // one choke point for every stderr diagnostic [D:tty-diag-sanitize]
-        Types.Waiting.control <- Console.Error
-        Console.SetError(new Eval.TtyErrWriter(Console.Error))
+        // one choke point for every stderr diagnostic [D:tty-diag-sanitize];
+        // a hung-up terminal's EIO never aborts weir [D:console-hangup]
+        let err = new Types.HangupWriter(Console.Error)
+        Types.Waiting.control <- err
+        Console.SetError(new Eval.TtyErrWriter(err))
+
+    if not Console.IsOutputRedirected then
+        Console.SetOut(new Types.HangupWriter(Console.Out))
 
     // WEIR_LOG validates once, before anything runs — an invalid level
     // is a loud startup error, never a silent fallback [D:log-module]
@@ -378,7 +383,8 @@ let main argv =
 
             (match Script.SigGen.generate weirDir tool with
              | Ok line ->
-                 Console.WriteLine line
+                 // the line quotes the tool's --version [D:sig-text-sanitize]
+                 Console.WriteLine(lockText Console.IsOutputRedirected line)
                  0
              | Error e ->
                  Console.Error.WriteLine $"weir add sig: {e}"
@@ -445,7 +451,7 @@ let main argv =
                          | Error e ->
                              // the error names the source, not the temp
                              // file validation ran against
-                             let e = e.Replace(tmp, src.Url)
+                             let e = e.Replace(tmp, Http.redactUrl src.Url)
                              Console.Error.WriteLine $"weir add module: {e}; nothing was written"
                              1
                          | Ok memberCount ->
@@ -465,7 +471,7 @@ let main argv =
                                   | Some _ -> Console.WriteLine $"module {name}: unchanged ({hash.Substring(0, 12)}…)"
                                   | None ->
                                       Console.WriteLine
-                                          $"added module {name} ({hash.Substring(0, 12)}…, {memberCount} member(s)) from {src.Url}")
+                                          $"added module {name} ({hash.Substring(0, 12)}…, {memberCount} member(s)) from {Http.redactUrl src.Url}")
 
                                  Console.WriteLine $"import it:  import \"weir:{name}\" as {derivedAlias}"
                                  0)

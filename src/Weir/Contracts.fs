@@ -219,7 +219,7 @@ module private Posix =
                 fs.Write(bytes, 0, bytes.Length)
                 Ok()
             with ex ->
-                Error $"cannot write '{path}': {ex.Message}"
+                Error $"cannot write '{Weir.Types.quoteData path}': {Weir.Types.quoteData ex.Message}"
 
 /// write `bytes` to `dest`, which is confined under `root`
 /// [D:lockfile-symlink-confinement]. The parent directory is realpath-
@@ -249,7 +249,7 @@ let writeConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit, s
                     File.WriteAllBytes(dest, bytes)
                     Ok()
                 with ex ->
-                    Error $"cannot write '{dest}': {ex.Message}"
+                    Error $"cannot write '{Weir.Types.quoteData dest}': {Weir.Types.quoteData ex.Message}"
             else
                 Posix.writeNoFollow dest bytes
 
@@ -454,7 +454,7 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
             |> Ok
         with
         | LockShape msg -> Error $"{p}: malformed lockfile — {msg}; re-add the artifact or fix the entry"
-        | ex -> Error $"{p}: cannot read the lockfile: {ex.Message}"
+        | ex -> Error $"{Weir.Types.quoteData p}: cannot read the lockfile: {Weir.Types.quoteData ex.Message}"
 
 let writeLock (weirDir: string) (entries: LockEntry list) : unit =
     use ms = new MemoryStream()
@@ -555,7 +555,7 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
         use resp = result
 
         if not resp.IsSuccessStatusCode then
-            Error $"{url} answered {int resp.StatusCode} ({resp.StatusCode})"
+            Error $"{Http.redactUrl url} answered {int resp.StatusCode} ({resp.StatusCode})"
         else
             let ct =
                 match resp.Content.Headers.ContentType with
@@ -1305,7 +1305,7 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
             with ex ->
                 ex.Message
 
-        Error $"schema {name}: not valid JSON — {why}"
+        Error $"schema {name}: not valid JSON — {Weir.Types.quoteData why}"
     | Ok parsed ->
     try
         use doc = parsed
@@ -1374,7 +1374,7 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
                            Unenforced = List.ofSeq unenforced })
         |> Result.mapError (fun e -> $"schema {name}: {e}")
     with ex ->
-        Error $"schema {name}: not valid JSON — {ex.Message}"
+        Error $"schema {name}: not valid JSON — {Weir.Types.quoteData ex.Message}"
 
 /// follow a chain of pure refs to a shape (a ref-to-a-ref); a ref cycle
 /// with no shape in between lands on SAny — validation relaxes, the
@@ -1497,7 +1497,7 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                         | Ok() ->
                             try
                                 writeLock weirDir (others @ [ entry ])
-                                Ok $"added {kind} {name} ({hash.Substring(0, 12)}…) from {url}"
+                                Ok $"added {kind} {name} ({hash.Substring(0, 12)}…) from {Http.redactUrl url}"
                             with ex ->
                                 (try
                                     File.Delete dest
@@ -1565,7 +1565,7 @@ let restore (weirDir: string) : Result<string list, string> =
 
                         // the re-add names the entry's own kind — a module's
                         // locked url is the raw URL `add module` accepts
-                        let readd = $"`weir add {e.Kind} {e.Url} --as {e.Name}`"
+                        let readd = $"`weir add {e.Kind} {Http.redactUrl e.Url} --as {e.Name}`"
 
                         if hash <> e.Sha256 then
                             Error
@@ -1585,7 +1585,7 @@ let restore (weirDir: string) : Result<string list, string> =
                                 if repaired then
                                     $"{e.Kind} {e.Name}: repaired — refetched over a modified copy"
                                 else
-                                    $"{e.Kind} {e.Name}: restored from {e.Url}"
+                                    $"{e.Kind} {e.Name}: restored from {Http.redactUrl e.Url}"
                             ))
 
         match

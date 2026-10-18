@@ -16,11 +16,14 @@ any scope releases its resource. A reader closing weir's stdout
 no message. A second signal during cleanup exits immediately, so
 pressing Ctrl+C twice gets you out. There are two exceptions, both by design. `kill -9` of weir
 itself skips cleanup (only a lock is still released, by the kernel).
-And a weir started in the background from an interactive shell
-(`weir … &`/`nohup`, which keeps a controlling terminal) starts with
-SIGINT ignored, following the usual job-control convention, so Ctrl+C
-in the terminal does not reach it, and neither does a `kill -INT` of
-its pid. Send it SIGTERM, or SIGHUP unless `nohup` ignored that too. The block is an ordinary block: its statements run
+And a weir started in the background where job control is off (`weir … &`
+in a script, `sh -c 'weir … &'`, after `set +m`) inherits SIGINT ignored,
+the shell's rule for a background command; while it keeps a controlling
+terminal, Ctrl+C in the terminal does not reach it, and neither does a
+`kill -INT` of its pid. Send it SIGTERM, or SIGHUP unless `nohup` ignored
+that too. With job control on (`weir … &` or `nohup weir … &` typed at an
+interactive shell) the job runs in its own process group with SIGINT
+live: a terminal Ctrl+C is not sent to it, and `kill -INT` works as usual. The block is an ordinary block: its statements run
 and the last expression is its value. It also works as a plain
 statement.
 

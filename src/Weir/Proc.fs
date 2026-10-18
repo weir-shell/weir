@@ -68,7 +68,7 @@ let envKeyRefusal (where: string) (k: string) : unit =
         failwith
             $"{where}: the env key '{k}' contains '=' — a child would read it as the variable '{k.Substring(0, k.IndexOf '=')}'; an env name has no '='"
     elif k.Contains '\u0000' then
-        failwith $"{where}: the env key '{k.Replace('\u0000', '?')}' contains a NUL byte — an env name is NUL-free"
+        failwith $"{where}: the env key '{Weir.Types.quoteData (k.Replace('\u0000', '?'))}' contains a NUL byte — an env name is NUL-free"
 
 // no command runs while a module is imported [D:module-import-no-commands]:
 // the check-time walk refuses the direct forms; a helper reached through
@@ -168,7 +168,7 @@ let private spawn
             try
                 Process.Start psi
             with :? System.ComponentModel.Win32Exception ->
-                failwith $"command not found or not executable: {prog}"
+                failwith $"command not found or not executable: {Weir.Types.quoteData prog}"
 
         // a racing arm's children join its group [D:seq-pfirst] — a no-op
         // outside pfirst, and the scoped child owes it too: the spill path
@@ -276,7 +276,7 @@ let private reap (p: Process) =
 /// so every existing catcher (the script runner, the top-level guard,
 /// `orFail`'s siblings) renders exactly as before.
 type CommandFailure(code: int, signalNote: string, shown: string) =
-    inherit exn($"command failed with exit code {code}{signalNote}: {shown}")
+    inherit exn($"command failed with exit code {code}{signalNote}: {Weir.Types.quoteData shown}")
     member _.Code = code
     member _.SignalNote = signalNote
     member _.Shown = shown
@@ -462,7 +462,7 @@ let exec (s: Spec) : unit =
 
     match s.Cwd with
     | Some wd when System.IO.Directory.Exists wd -> System.IO.Directory.SetCurrentDirectory wd
-    | Some wd -> failwith $"the working directory no longer exists: {wd}"
+    | Some wd -> failwith $"the working directory no longer exists: {Weir.Types.quoteData wd}"
     | None -> ()
 
     if System.OperatingSystem.IsWindows() then
@@ -480,7 +480,7 @@ let exec (s: Spec) : unit =
         let argv = Array.append (List.toArray (s.Prog :: s.Args)) [| null |]
         execvp (s.Prog, argv) |> ignore
         // execvp returns only on failure — success replaced the image
-        failwith $"command not found or not executable: {s.Prog}"
+        failwith $"command not found or not executable: {Weir.Types.quoteData s.Prog}"
 
 // stdout relayed to the console as it arrives; the code as the result
 // [D:exit-reifiers]: output goes to the human, the code is the meaning

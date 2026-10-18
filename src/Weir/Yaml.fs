@@ -871,7 +871,7 @@ let rec private parseBlock
 
 /// Parse numbered raw lines into documents (`---` separated, indent-0
 /// separators only; a leading `---` is allowed, a `...` ends a document)
-let parseDocs (numbered: (int * string) list) : Result<Node list, string> =
+let private parseDocsRaw (numbered: (int * string) list) : Result<Node list, string> =
     let content =
         numbered
         |> List.filter (fun (no, raw) ->
@@ -925,6 +925,11 @@ let parseDocs (numbered: (int * string) list) : Result<Node list, string> =
                         | Ok node -> build (node :: acc) rest
 
             build [] (docs |> Seq.map (fun d -> d.ToArray()) |> List.ofSeq)
+
+/// the parse's messages quote the document's keys and scalars
+/// [D:error-data-escape]: they render visibly, never drive the terminal
+let parseDocs (numbered: (int * string) list) : Result<Node list, string> =
+    parseDocsRaw numbered |> Result.mapError Weir.Types.quoteData
 
 // ---- the render-side scalar law -------------------------------------------
 

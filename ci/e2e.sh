@@ -11601,7 +11601,63 @@ WEOF
         out=$(env HTTP_PROXY=http://proxy-weir-e2e.invalid:3128 http_proxy=http://proxy-weir-e2e.invalid:3128 NO_PROXY=example.invalid no_proxy=example.invalid "$BIN" "$hdir/star.weir" 2>&1) && { kill $hsrv 2>/dev/null || true; fail "E4: an unresolvable proxy must fail: $out"; }
         echo "$out" | grep -qF "cannot resolve the proxy proxy-weir-e2e.invalid" || { kill $hsrv 2>/dev/null || true; fail "E4: an unresolvable proxy must be named: $out"; }
         echo "e2e ok: Http a dead proxy's error names the proxy (refused http/https, unresolvable)"
+        # NO_PROXY as curl reads it [D:noproxy-curl]: a name entry covers
+        # its subdomains (a trailing dot ignored), an IP host matches only
+        # an address entry — never a text suffix, a port, a bracketed
+        # literal or a /0. Direct to sub.example.invalid fails on DNS;
+        # through the dead proxy it names the proxy.
+        npOut() { env HTTP_PROXY=http://127.0.0.1:1 http_proxy=http://127.0.0.1:1 NO_PROXY="$1" no_proxy="$1" "$BIN" -e "Http.send (Http.get \"$2\") |> fun r -> r.status" 2>&1; }
+        for np in example.invalid .example.invalid example.invalid. EXAMPLE.invalid 'x.org, example.invalid'; do
+            out=$(npOut "$np" http://sub.example.invalid:1/) && { kill $hsrv 2>/dev/null || true; fail "noproxy-curl: sub.example.invalid must fail: $out"; }
+            echo "$out" | grep -qF "the proxy 127.0.0.1:1" && { kill $hsrv 2>/dev/null || true; fail "noproxy-curl: NO_PROXY=$np must bypass sub.example.invalid: $out"; }
+        done
+        out=$(npOut example.invalid http://notexample.invalid:1/) && { kill $hsrv 2>/dev/null || true; fail "noproxy-curl: notexample.invalid must fail: $out"; }
+        echo "$out" | grep -qF "the proxy 127.0.0.1:1" || { kill $hsrv 2>/dev/null || true; fail "noproxy-curl: example.invalid must not cover notexample.invalid: $out"; }
+        for np in .0.0.1 .1 127.0.0.0/0 0.0.0.0/0 '127.0.0.0/ 8' 127.0.0.1/33 "127.0.0.1:$hport" localhost 'x.org 127.0.0.1'; do
+            out=$(npOut "$np" "http://127.0.0.1:$hport/x") && { kill $hsrv 2>/dev/null || true; fail "noproxy-curl: NO_PROXY=$np must not bypass 127.0.0.1: $out"; }
+            echo "$out" | grep -qF "the proxy 127.0.0.1:1" || { kill $hsrv 2>/dev/null || true; fail "noproxy-curl: NO_PROXY=$np went direct: $out"; }
+        done
+        echo "e2e ok: Http NO_PROXY matches as curl (subdomains, dots, case; no IP suffix, port, /0 or past-width bits)"
     fi
+    # a proxy's refusal names the proxy, never its credentials, never .NET's
+    # text [D:proxy-refusal-words]: 407/403/502 to the CONNECT, and a proxy
+    # that closes the connection (http and https)
+    cat > "$hdir/fakeproxy.py" <<'PROXEOF'
+import socket, sys, threading
+port, mode = int(sys.argv[1]), sys.argv[2]
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", port)); s.listen(50)
+def h(c):
+    d = b""
+    while b"\r\n\r\n" not in d:
+        x = c.recv(4096)
+        if not x: break
+        d += x
+    if mode != "close":
+        c.sendall(b"HTTP/1.1 " + mode.encode() + b" No\r\nProxy-Authenticate: Basic realm=\"x\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    c.close()
+while True:
+    c, _ = s.accept(); threading.Thread(target=h, args=(c,), daemon=True).start()
+PROXEOF
+    for mode in 407 403 502 close; do
+        pport=$((23000 + RANDOM % 2000))
+        python3 "$hdir/fakeproxy.py" "$pport" "$mode" &
+        ppid=$!
+        awaitTcp $pport || { kill $ppid $hsrv 2>/dev/null || true; fail "proxy-refusal: the fake proxy never came up"; }
+        for url in https://weir-target.invalid/x http://weir-target.invalid/x; do
+            [ "$mode" != close ] && [ "${url%%:*}" = http ] && continue
+            out=$(env HTTPS_PROXY="http://ci-bot:S3cr3tPass@127.0.0.1:$pport" https_proxy="http://ci-bot:S3cr3tPass@127.0.0.1:$pport" HTTP_PROXY="http://ci-bot:S3cr3tPass@127.0.0.1:$pport" http_proxy="http://ci-bot:S3cr3tPass@127.0.0.1:$pport" NO_PROXY=example.invalid no_proxy=example.invalid "$BIN" -e "Http.send (Http.get \"$url\") |> fun r -> r.status" 2>&1) && { kill $ppid $hsrv 2>/dev/null || true; fail "proxy-refusal: $mode must fail: $out"; }
+            echo "$out" | grep -qF "S3cr3t" && { kill $ppid $hsrv 2>/dev/null || true; fail "proxy-refusal: $mode leaked the proxy credentials: $out"; }
+            echo "$out" | grep -qiF "proxy tunnel request" && { kill $ppid $hsrv 2>/dev/null || true; fail "proxy-refusal: $mode printed .NET's text: $out"; }
+            if [ "$mode" = close ]; then
+                echo "$out" | grep -qF "the proxy 127.0.0.1:$pport closed the connection before answering" || { kill $ppid $hsrv 2>/dev/null || true; fail "proxy-refusal: a closing proxy must be named ($url): $out"; }
+            else
+                echo "$out" | grep -qF "the proxy 127.0.0.1:$pport refused to tunnel to weir-target.invalid: $mode" || { kill $ppid $hsrv 2>/dev/null || true; fail "proxy-refusal: a $mode must name the proxy: $out"; }
+            fi
+        done
+        kill $ppid 2>/dev/null || true
+        wait $ppid 2>/dev/null || true
+    done
+    echo "e2e ok: Http a proxy refusing the tunnel (407/403/502) or closing is named, credentials never printed"
 
     kill $hsrv 2>/dev/null || true
 
@@ -13726,6 +13782,96 @@ $BIN "$dg/src.weir" 2> "$dg/src.err" || true
 python3 -c "import sys; sys.exit(0 if all(b'\x1b]52;c;DIAG\x07' in open(f,'rb').read() for f in sys.argv[1:]) else 1)" "$dg/imp.out" "$dg/src.err" \
     || fail "tty-diag: redirected diagnostics must stay byte-faithful"
 echo "e2e ok: tty-diag check/run diagnostics (import path, source echo, regex, #sig, no such script) sanitized at a tty, byte-faithful when redirected"
+# a runtime error escapes the data it quotes [D:error-data-escape] — always,
+# piped too: a parse input, a document excerpt, a path, an env var name
+ed="$svdir/errdata"; mkdir -p "$ed"
+printf 'let n = Float.parse (Env.need "X")\nprint $"{n}"\n' > "$ed/float.weir"
+printf 'type T = { a: int }\nlet t = [Env.need "X"] |> from json T\nprint $"{t.a}"\n' > "$ed/json.weir"
+printf 'print (File.read (Env.need "X") |> Seq.length)\n' > "$ed/path.weir"
+printf 'print (Env.need (Env.need "X"))\n' > "$ed/env.weir"
+for f in float json path env; do
+    eout=$(X="$(printf '/no\r\033[8mpe')" "$BIN" "$ed/$f.weir" 2>&1) && fail "error-data-escape: $f must fail: $eout"
+    echo "$eout" | grep -qF '\x0d\x1b[8mpe' || fail "error-data-escape: $f must render the quoted CR/ESC visibly: $eout"
+    printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d) else 0)" \
+        || fail "error-data-escape: $f put a raw CR/ESC in the error: $eout"
+done
+printf 'let x: int = "a"\n' > "$(printf '%s/a\033[8m\rb.weir' "$ed")"
+eout=$("$BIN" check "$(printf '%s/a\033[8m\rb.weir' "$ed")" 2>&1; "$BIN" "$(printf '%s/a\033[8m\rb.weir' "$ed")" 2>&1; "$BIN" "$(printf '%s/z\033[8m\rb.weir' "$ed")" 2>&1 || true)
+echo "$eout" | grep -qF 'no such script' || fail "error-data-escape: a missing script must say so: $eout"
+echo "$eout" | grep -qF 'a\x1b[8m\x0db.weir:1:' || fail "error-data-escape: a diagnostic must name the file visibly: $eout"
+printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b[8m' in d or b'\r' in d) else 0)" \
+    || fail "error-data-escape: a file name put a raw CR/ESC in a diagnostic: $eout"
+echo "e2e ok: error-data-escape runtime errors render the quoted CR/ESC visibly (parse input, json excerpt, path, env name, file name)"
+# Plan.preview renders an http send line's escapes visibly [D:tty-echo-strict]
+cat > "$ed/pv.weir" <<'WEOF'
+let p =
+    plan
+        let _r = Http.send { Http.defaults with method = Post; url = Env.need "U"; body = Text "ping" }
+        ()
+p |> Plan.preview |> Seq.iter print
+WEOF
+pout=$(U="$(printf 'http://127.0.0.1:1/h\033[8m')" "$BIN" "$ed/pv.weir" 2>&1) || fail "tty-echo-strict: the http preview run failed: $pout"
+echo "$pout" | grep -qF 'http send' || fail "tty-echo-strict: no http send line: $pout"
+echo "$pout" | grep -qF '/h\x1b[8m' || fail "tty-echo-strict: an http send preview must render the url's ESC visibly: $pout"
+printf '%s' "$pout" | python3 -c "import sys; sys.exit(1 if b'\x1b' in sys.stdin.buffer.read() else 0)" \
+    || fail "tty-echo-strict: the http send preview put a raw ESC out: $pout"
+echo "e2e ok: tty-echo-strict Plan.preview's http send line shows escapes visibly"
+# weir add sig renders the tool's text as data [D:sig-text-sanitize]
+sg="$svdir/sigtext"; mkdir -p "$sg/bin" "$sg/p"; : > "$sg/p/.git"
+cat > "$sg/bin/evil" <<'SHEOF'
+#!/bin/sh
+case "$*" in
+  --version) printf 'evil 1.0\033]52;c;ZXZpbA==\007\n';;
+  *--help*) printf 'Usage: evil [options]\n\nOptions:\n  --out <file>   write \033]0;T\007 out\n  --ok           fine\n';;
+esac
+SHEOF
+chmod +x "$sg/bin/evil"
+sout=$(cd "$sg/p" && printf 'SLEEP 300\n' | PATH="$sg/bin:$PATH" python3 "$abssink" 6 "$absbin" add sig evil 2>&1)
+echo "$sout" | grep -qF 'version: evil 1.0\\x1b]52;c;ZXZpbA==\\x07' || fail "sig-text: add sig must print the version's OSC visibly at a tty: $sout"
+python3 -c "import sys; d=open('$sg/p/.weir/sigs/evil.weir','rb').read(); sys.exit(1 if (b'\x1b' in d or b'\x07' in d) else 0)" \
+    || fail "sig-text: the generated sig must hold no raw control byte"
+grep -qF 'evil 1.0\\x1b]52' "$sg/p/.weir/sigs/evil.weir" || fail "sig-text: the generated version must show the escape: $(cat "$sg/p/.weir/sigs/evil.weir")"
+printf '#sig evil\nevil --ok\n' > "$sg/p/use.weir"
+cout=$(cd "$sg/p" && PATH="$sg/bin:$PATH" "$absbin" check use.weir 2>&1) || fail "sig-text: the generated sig must still check: $cout"
+echo "e2e ok: sig-text add sig prints and writes the tool's escapes visibly; the sig still checks"
+# a hung-up terminal never aborts weir [D:console-hangup]: the cleanup
+# prints after the hangup, runs whole, and the exit is SIGHUP's
+hu="$svdir/hup"; mkdir -p "$hu"
+cat > "$hu/h.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within
+    File.append log ["body"]
+    [1..400] |> Seq.iter (fun k ->
+        print $"{k}"
+        Duration.sleep 20ms)
+always
+    print "cleanup prints"
+    printerr "cleanup printerr"
+    Log.warn "cleanup logs"
+    File.append log ["cleanup end"]
+WEOF
+hout=$(python3 - "$BIN" "$hu/h.weir" "$hu/h.log" <<'HUPEOF'
+import os, pty, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(sys.argv[1], sys.argv[1:])
+t0 = time.monotonic()
+while time.monotonic() - t0 < 1.5:
+    try: os.read(fd, 65536)
+    except OSError: break
+os.close(fd)
+t1 = time.monotonic(); code = 'HANG'
+while time.monotonic() - t1 < 10:
+    p, st = os.waitpid(pid, os.WNOHANG)
+    if p: code = os.waitstatus_to_exitcode(st); break
+    time.sleep(0.02)
+if code == 'HANG': os.kill(pid, 9); os.waitpid(pid, 0)
+print('EXIT=%s' % code)
+HUPEOF
+)
+case "$hout" in EXIT=129|EXIT=-1) ;; *) fail "console-hangup: a hung-up terminal must end weir by SIGHUP's teardown (129), not abort: $hout" ;; esac
+grep -qxF "cleanup end" "$hu/h.log" || fail "console-hangup: the cleanup must run whole after the hangup: $(cat "$hu/h.log" 2>/dev/null)"
+echo "e2e ok: console-hangup a hung-up terminal unwinds by SIGHUP, the printing cleanup runs whole"
 else
     echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"
 fi

@@ -901,7 +901,7 @@ let tryFlockExclusive (fs: System.IO.FileStream) : bool =
             match System.Runtime.InteropServices.Marshal.GetLastPInvokeError() with
             | e when e = EINTR -> go ()
             | e when e = EWOULDBLOCK -> false
-            | e -> failwith $"within lock: cannot lock {fs.Name} (flock errno {e})"
+            | e -> failwith $"within lock: cannot lock {Weir.Types.quoteData fs.Name} (flock errno {e})"
 
     go ()
 

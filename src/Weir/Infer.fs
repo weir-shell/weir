@@ -75,7 +75,7 @@ let private jsonNode (lines: string seq) : Result<INode, string> =
             System.Text.Json.JsonDocument.Parse(text).Dispose()
             Error "#infer: the sample is not valid JSON"
         with ex ->
-            Error $"#infer: the sample is not valid JSON: {ex.Message}"
+            Error $"#infer: the sample is not valid JSON: {Weir.Types.quoteData ex.Message}"
 
 /// NDJSON — one JSON document per non-blank line, gathered into an array
 let private jsonlNode (lines: string seq) : Result<INode, string> =
@@ -94,7 +94,7 @@ let private jsonlNode (lines: string seq) : Result<INode, string> =
                     System.Text.Json.JsonDocument.Parse(line).Dispose()
                     err <- Some "#infer: a jsonl line is not valid JSON"
                 with ex ->
-                    err <- Some $"#infer: a jsonl line is not valid JSON: {ex.Message}"
+                    err <- Some $"#infer: a jsonl line is not valid JSON: {Weir.Types.quoteData ex.Message}"
 
     match err with
     | Some e -> Error e
