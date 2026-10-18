@@ -3412,6 +3412,38 @@ WEOF
     [ "$code" = "143" ] || fail "a SIGTERM with parked arms in cleanup scopes must exit 143 promptly (got $code)"
     [ "$(tr '\n' ',' < "$dtdir/parkedc.log")" = "cleanup dir=true,cleanup dir=true,END," ] || fail "an abandoned arm's always must run inside its scopes, before the enclosing always: $(tr '\n' ',' < "$dtdir/parkedc.log")"
     [ "$(find "$pctmp" -mindepth 1 -maxdepth 1 | wc -l)" = "0" ] || fail "parked arms: the within tmp dir leaked: $(find "$pctmp")"
+    # the abandoned cleanups run on the main thread, so the watchdog stands
+    # down for them [D:abandoned-arm-cleanup] [D:teardown-joins-arms]: one
+    # longer than its 1s grace still runs whole
+    MK11=$((MK + 11))
+    cat > "$dtdir/parkedw.weir" <<WEOF
+let log = Self.args |> Seq.head
+within
+    [1] |> Seq.piter (fun i ->
+        within
+            let n = sh -c "(setsid sleep $MK11 &); echo started" |> Seq.length
+            File.append log [\$"LATE arm {i} {n}"]
+        always
+            File.append log ["cleanup start"]
+            Duration.sleep 1500ms
+            File.append log ["cleanup end"])
+always
+    File.append log ["END"]
+WEOF
+    rm -f "$dtdir/parkedw.log"
+    setsid "$BIN" "$dtdir/parkedw.weir" "$dtdir/parkedw.log" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    sleep 1
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=timeout
+    for _ in $(seq 1 30); do
+        if ! kill -0 "$wpid" 2>/dev/null; then code=0; wait "$wpid" 2>/dev/null || code=$?; break; fi
+        sleep 0.2
+    done
+    [ "$code" = timeout ] && { kill -9 "$wpid" 2>/dev/null || true; }
+    for p in $(ps -eo pid,args | awk -v m="$MK11" '$2 == "sleep" && $3 == m {print $1}'); do kill -9 "$p" 2>/dev/null || true; done
+    [ "$code" = "143" ] || fail "a SIGTERM over a parked arm with a slow cleanup exits 143 (got $code)"
+    [ "$(tr '\n' ',' < "$dtdir/parkedw.log")" = "cleanup start,cleanup end,END," ] || fail "an abandoned arm's cleanup outlasting the watchdog's grace must run whole: $(tr '\n' ',' < "$dtdir/parkedw.log")"
     echo "e2e ok: a teardown abandons arms parked in a FIFO open/read or an orphan-held pipe; their cleanups run inside the scopes"
 else
     echo "e2e skip: detached-signal pins (POSIX + setsid + pgrep)"
