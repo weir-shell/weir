@@ -13796,7 +13796,7 @@ for f in float json path env; do
         || fail "error-data-escape: $f put a raw CR/ESC in the error: $eout"
 done
 printf 'let x: int = "a"\n' > "$(printf '%s/a\033[8m\rb.weir' "$ed")"
-eout=$("$BIN" check "$(printf '%s/a\033[8m\rb.weir' "$ed")" 2>&1; "$BIN" "$(printf '%s/a\033[8m\rb.weir' "$ed")" 2>&1; "$BIN" "$(printf '%s/z\033[8m\rb.weir' "$ed")" 2>&1)
+eout=$("$BIN" check "$(printf '%s/a\033[8m\rb.weir' "$ed")" 2>&1; "$BIN" "$(printf '%s/a\033[8m\rb.weir' "$ed")" 2>&1; "$BIN" "$(printf '%s/z\033[8m\rb.weir' "$ed")" 2>&1 || true)
 echo "$eout" | grep -qF 'no such script' || fail "error-data-escape: a missing script must say so: $eout"
 echo "$eout" | grep -qF 'a\x1b[8m\x0db.weir:1:' || fail "error-data-escape: a diagnostic must name the file visibly: $eout"
 printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b[8m' in d or b'\r' in d) else 0)" \
@@ -13827,7 +13827,7 @@ esac
 SHEOF
 chmod +x "$sg/bin/evil"
 sout=$(cd "$sg/p" && printf 'SLEEP 300\n' | PATH="$sg/bin:$PATH" python3 "$abssink" 6 "$absbin" add sig evil 2>&1)
-echo "$sout" | grep -qF 'version: evil 1.0\x1b]52;c;ZXZpbA==\x07' || fail "sig-text: add sig must print the version's OSC visibly at a tty: $sout"
+echo "$sout" | grep -qF 'version: evil 1.0\\x1b]52;c;ZXZpbA==\\x07' || fail "sig-text: add sig must print the version's OSC visibly at a tty: $sout"
 python3 -c "import sys; d=open('$sg/p/.weir/sigs/evil.weir','rb').read(); sys.exit(1 if (b'\x1b' in d or b'\x07' in d) else 0)" \
     || fail "sig-text: the generated sig must hold no raw control byte"
 grep -qF 'evil 1.0\\x1b]52' "$sg/p/.weir/sigs/evil.weir" || fail "sig-text: the generated version must show the escape: $(cat "$sg/p/.weir/sigs/evil.weir")"
