@@ -8917,6 +8917,21 @@ let planApplyTests =
 
               Expect.equal (runFile prog) 0 "the token is masked in preview"
           }
+          test "a preview path renders CR, LF and escapes visibly [D:tty-echo-strict]" {
+              let prog =
+                  [ "let cr = Str.fromBase64 \"DQ==\""
+                    "let lf = Str.fromBase64 \"Cg==\""
+                    "let esc = Str.fromBase64 \"Gw==\""
+                    "let p ="
+                    "    plan"
+                    "        File.delete $\"/nowhere/a{cr}x{lf}delete file /b{esc}[8m\""
+                    "let line = p |> Plan.preview |> Seq.exactlyOne"
+                    "if Str.contains cr line || Str.contains lf line || Str.contains esc line then fail $\"raw control: {show line}\""
+                    "if not (Str.contains \"a\\\\x0dx\\\\x0adelete file\" line) then fail $\"not visible: {show line}\""
+                    "print \"ok\"" ]
+
+              Expect.equal (runFile prog) 0 "a preview path renders CR, LF and ESC visibly"
+          }
           test "Http.send{post} captures as an HttpSend Op — the per-method split" {
               let prog =
                   [ "let p ="
@@ -9680,6 +9695,45 @@ let planApplyTests =
               try
                   let folds = System.OperatingSystem.IsWindows() || System.OperatingSystem.IsMacOS()
                   Expect.equal refused folds "the platform's case rule"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          test "stale reads: an in-place write refuses a read through another hard link; an atomic write's does not [D:plan-guard-inode]" {
+              skipOnWindows ()
+              let root = td ()
+              let at (p: string) = System.IO.Path.Combine(root, p)
+              System.IO.Directory.CreateDirectory(at "sub") |> ignore
+              System.IO.File.WriteAllText(at "a.txt", "old\n")
+
+              use ln =
+                  System.Diagnostics.Process.Start("ln", [ at "a.txt"; at "sub/b.txt" ])
+
+              ln.WaitForExit()
+
+              let readAfter (case: string) (read: string) =
+                  let mutable msg = ""
+
+                  Weir.Eval.PlanMode.capturing (fun () ->
+                      Weir.Eval.PlanMode.capture (VUnion(case, Some(VTuple [ VStr(at "a.txt"); VSeq [] ]))) [ at "a.txt" ]
+
+                      msg <-
+                          try
+                              Weir.Eval.PlanMode.checkRead "File.read" (at read)
+                              ""
+                          with Failure m ->
+                              m)
+                  |> ignore
+
+                  msg
+
+              try
+                  let m = readAfter "WriteFile" "sub/b.txt"
+                  Expect.stringContains m "known-after-apply" "the other link refuses"
+                  let a = at "a.txt"
+                  Expect.stringContains m $"targets '{a}', the same file (a hard link)" "the message names the link"
+                  Expect.equal (readAfter "WriteFileAtomic" "sub/b.txt") "" "an atomic write separates the links"
+                  System.IO.File.WriteAllText(at "c.txt", "other\n")
+                  Expect.equal (readAfter "WriteFile" "c.txt") "" "another file reads"
               finally
                   System.IO.Directory.Delete(root, true)
           }
@@ -12413,6 +12467,27 @@ let optionSweepTests =
               expectValue "(Str.replicate 300 \"a😀\")[^1..]" (VStr "😀")
               expectValue "Str.length (Str.replicate 300 \"a😀\")" (VInt 600)
           }
+          test "a long string with no surrogate adds no index entry [D:str-cp-plain]" {
+              let before = CodePoints.indexedForTest ()
+
+              for i in 1..2000 do
+                  let s = string i + String.replicate 300 "a"
+                  Expect.equal (CodePoints.length s) s.Length "a plain length is its UTF-16 length"
+                  Expect.equal (CodePoints.sub s 3 2) (s.Substring(3, 2)) "a plain cut is a UTF-16 cut"
+                  Expect.equal (CodePoints.ofOffset s 7) 7 "a plain position is its offset"
+
+              // parallel suites may index a few strings of their own
+              Expect.isLessThan (CodePoints.indexedForTest () - before) 100 "2000 plain strings left the table alone"
+
+              // the per-thread memo never answers for another string
+              let plain = String.replicate 400 "b"
+              let astral = String.replicate 300 "😀"
+
+              for _ in 1..3 do
+                  Expect.equal (CodePoints.length plain) 400 "the plain string"
+                  Expect.equal (CodePoints.length astral) 300 "the astral string, between plain lookups"
+                  Expect.equal (CodePoints.sub astral 299 1) "😀" "its index still cuts on a pair"
+          }
           test "match on Seq.tryHead pins the full idiom" {
               expectValue "match ls |> Seq.tryHead with | Some f -> f.name | None -> \"empty\"" (VStr "a.txt")
           } ]
@@ -12600,6 +12675,8 @@ let lockfileConfinementTests =
                         entry (full.Replace("\"url\": \"http://x\", ", "")), "missing \"url\""
                         entry (full.Replace("schemas/n.json", "")), "\"path\" is empty"
                         "{ \"artifacts\": [ 3 ] }", "artifacts[0] must be an object"
+                        // [D:lock-print-sanitize]: weir writes schema, module and sig only
+                        entry (full.Replace("\"kind\": \"schema\"", "\"kind\": \"evil\"")), "unknown \"kind\" 'evil'"
                         "[]", "must be a JSON object" ]
 
                   for text, want in cases do
@@ -23221,6 +23298,16 @@ let ttySanitizeTests =
               Expect.stringContains out "\ra\\x1bb\\x1b\n" "CR passes; buffer and char writes are sanitized too"
               Expect.equal (out.Split(char 0x1b).Length - 1) 2 "the only raw ESCs are the SGR pair"
           }
+          test "the DATA renderers escape a bare CR and SGR too [D:tty-echo-strict]" {
+              let esc = string (char 0x1b)
+              let echo = Weir.Eval.sanitizeTtyEcho ("a\rb" + esc + "[8mhidden" + esc + "]0;T\u0007")
+              Expect.equal echo "a\\x0db\\x1b[8mhidden\\x1b]0;T\\x07" "CR, SGR and OSC all visible"
+              Expect.equal (Weir.Eval.sanitizeTtyEcho "a\tb\nc\u202E") "a\tb\nc\\u202E" "TAB/LF pass, bidi visible"
+              // print's sanitizer keeps both [D:tty-cr-pass] [D:tty-color]
+              Expect.equal (Weir.Eval.sanitizeTtyData ("a\r" + esc + "[8m")) ("a\r" + esc + "[8m") "print keeps CR and SGR"
+              // show escapes CR like LF, piped or not
+              expectValue "show (Str.fromBase64 \"YQ1i\")" (VStr "\"a\\rb\"")
+          }
           test "sanitizeIfTty leaves redirected output byte-faithful, sanitizes a tty" {
               let hostile = string (char 0x1b) + "X"
               Expect.equal (Weir.Eval.sanitizeIfTty true hostile) hostile "redirected: raw (a pipe/file is byte-faithful)"
@@ -27558,6 +27645,139 @@ let hunt3r2CancelTests =
                   Weir.Session.exitFlow ()
           } ]
 
+// hunt 3 round 3's cancellation seams; the signal, teardown and serve
+// halves are e2e cells
+let private skipUnlessLinux () =
+    if not (System.OperatingSystem.IsLinux()) then
+        skiptest "Linux (the /proc tree walk, a polled FIFO)"
+
+let hunt3r3TreeKillTests =
+    let gone (pid: int) =
+        let stat = $"/proc/{pid}/stat"
+
+        not (File.Exists stat)
+        || (try
+                let st = File.ReadAllText stat
+                st.Substring(st.LastIndexOf ')' + 2, 1) = "Z"
+            with _ ->
+                true)
+
+    let childrenOf (pid: int) =
+        try
+            File.ReadAllText($"/proc/{pid}/task/{pid}/children").Split(' ', System.StringSplitOptions.RemoveEmptyEntries)
+            |> Array.map int
+            |> List.ofArray
+        with _ ->
+            []
+
+    testList
+        "hunt-3r3 tree kill"
+        [ test "a tree kill walks the tree: grandchildren, a setsid child included [D:tree-kill-walk]" {
+              skipUnlessLinux ()
+
+              use p =
+                  System.Diagnostics.Process.Start("sh", [| "-c"; "setsid sleep 31 & sleep 32 & wait" |])
+
+              let clock = System.Diagnostics.Stopwatch.StartNew()
+              let mutable kids = []
+
+              while List.length kids < 2 && clock.ElapsedMilliseconds < 5000L do
+                  System.Threading.Thread.Sleep 20
+                  kids <- childrenOf p.Id
+
+              try
+                  Expect.equal (List.length kids) 2 "both children started"
+                  Weir.Session.killTree p
+                  Expect.isTrue (p.WaitForExit 5000) "the child dies"
+                  System.Threading.Thread.Sleep 200
+
+                  for k in kids do
+                      Expect.isTrue (gone k) $"grandchild {k} dies with the tree"
+              finally
+                  for k in kids do
+                      try
+                          (System.Diagnostics.Process.GetProcessById k).Kill()
+                      with _ ->
+                          ()
+          } ]
+
+let hunt3r3FifoTests =
+    testSequenced
+    <| testList
+        "hunt-3r3 polled FIFO"
+        [ test "a FIFO read is polled: a cut raises and closes it, the next reader gets the data [D:fifo-read-polled]" {
+              skipUnlessLinux ()
+
+              withTempDir "weir-fifo" (fun d ->
+                  let reg = Path.Combine(d, "plain.txt")
+                  File.WriteAllText(reg, "x")
+                  Expect.isNone (Weir.Session.openPolled reg) "a regular file opens as a file"
+                  let fifo = Path.Combine(d, "f")
+
+                  use mk = System.Diagnostics.Process.Start("mkfifo", [| fifo |])
+                  mk.WaitForExit()
+                  use cts = new System.Threading.CancellationTokenSource()
+
+                  Weir.Session.racing (fun () ->
+                      Weir.Session.enterFlow cts.Token
+
+                      try
+                          System.Threading.Tasks.Task.Run(fun () ->
+                              System.Threading.Thread.Sleep 200
+                              cts.Cancel())
+                          |> ignore
+
+                          let sw = System.Diagnostics.Stopwatch.StartNew()
+
+                          Expect.throwsT<Weir.Session.Cancelled>
+                              (fun () ->
+                                  match Weir.Session.openPolled fifo with
+                                  | Some s ->
+                                      use s = s
+                                      use r = new StreamReader(s)
+                                      r.ReadToEnd() |> ignore
+                                  | None -> failtest "a FIFO is polled")
+                              "the cut raises"
+
+                          Expect.isLessThan sw.ElapsedMilliseconds 3000L "no writer is waited for"
+                      finally
+                          Weir.Session.exitFlow ())
+
+                  let writer =
+                      System.Threading.Tasks.Task.Run(fun () -> File.WriteAllText(fifo, "D1\nD2\n"))
+
+                  match Weir.Session.openPolled fifo with
+                  | Some s ->
+                      use s = s
+                      use r = new StreamReader(s)
+                      Expect.equal (r.ReadToEnd()) "D1\nD2\n" "the next reader gets every byte"
+                  | None -> failtest "a FIFO is polled"
+
+                  Expect.isTrue (writer.Wait 5000) "the writer finished")
+          } ]
+
+let hunt3r3PromptKeyTests =
+    testList
+        "hunt-3r3 tty prompt keys"
+        [ test "a tty answer drops CSI and SS3 key sequences [D:prompt-tty-keys]" {
+              let drop = Weir.Session.Stdin.dropKeySequences
+              Expect.equal (drop "ab\u001b[Dc") "abc" "a left arrow"
+              Expect.equal (drop "\u001bOAx\u001b[1;5Cy\u001b[3~") "xy" "SS3 up, ctrl-right, delete"
+              Expect.equal (drop "plain é") "plain é" "plain text untouched"
+              Expect.equal (drop "a\u001b") "a\u001b" "a lone ESC is kept"
+          } ]
+
+let hunt3r3UnreadTests =
+    testSequenced
+    <| testList
+        "hunt-3r3 stdin put-back"
+        [ test "a line put back is the next prompt's, in order [D:repl-lookahead-unread]" {
+              Weir.Session.Stdin.unread "two"
+              Weir.Session.Stdin.unread "one"
+              Expect.equal (Weir.Session.Stdin.readPromptLine ()) "one" "the last put back is first"
+              Expect.equal (Weir.Session.Stdin.readPromptLine ()) "two" "then the earlier one"
+          } ]
+
 let sweepFindingTests =
     let msgs file lines = diagsIn file lines |> List.map (fun d -> d.Message)
 
@@ -27933,6 +28153,40 @@ let hunt3BehaviorTests =
               Expect.equal (runUnder yenv $"{xs} |> to yaml stream" |> text) "cpu: \"1\"\n---\n{}\n---\ncpu: \"2\"" "the stream form"
               Expect.equal (runUnder yenv $"{xs} |> to yaml stream |> from yaml stream YR |> Seq.length") (VInt 3L) "no document dropped"
           }
+          test "to yaml writes an empty seq [] and an empty pair-seq {} at any depth; nested seqs nest block-wise [D:yaml-empty-typed]" {
+              let kenv =
+                  henv
+                  |> declare "type KC = { name: string; args: Option<seq<string>>; env: Option<seq<string * string>>; ports: seq<int> }"
+                  |> declare "type KM = { labels: Option<seq<string * string>>; annotations: seq<string * string> }"
+                  |> declare "type KD = { metadata: KM; containers: seq<KC>; grid: seq<seq<seq<int>>>; ms: seq<seq<string * int>> }"
+                  |> declare "type KN = { n: Yaml }"
+
+              let d =
+                  "{ metadata = { labels = Some []; annotations = [] }; containers = [{ name = \"a\"; args = Some []; env = Some []; ports = [] }]; grid = [[[1]; []]; []]; ms = [[]; [(\"k\", 1)]] }"
+
+              Expect.equal
+                  (runUnder kenv $"{d} |> to yaml" |> text)
+                  "metadata:\n  labels: {}\n  annotations: {}\ncontainers:\n  - name: a\n    args: []\n    env: {}\n    ports: []\ngrid:\n  -\n    -\n      - 1\n    - []\n  - []\nms:\n  - {}\n  - k: 1"
+                  "Some [] is [], an empty mapping {}, a nested seq under a bare -"
+
+              Expect.equal
+                  (runUnder kenv $"{d} |> to yaml |> from yaml KD |> to json" |> text)
+                  (runUnder kenv $"{d} |> to json" |> text)
+                  "it reads back: Some [] stays Some [], not None"
+
+              Expect.equal
+                  (runUnder kenv $"[{d}; {d}] |> to yaml stream |> from yaml stream KD |> to json" |> text)
+                  (runUnder kenv $"[{d}; {d}] |> to json" |> text)
+                  "the stream form too"
+
+              let n = "{ n = YSeq [YSeq [YInt 1; YSeq [YStr \"x\"]]; YMap [(\"a\", YSeq [YInt 2])]; YSeq []] }"
+              Expect.equal (runUnder kenv $"{n} |> to yaml" |> text) "n:\n  -\n    - 1\n    -\n      - x\n  - a:\n      - 2\n  - []" "a nested YSeq"
+
+              Expect.equal
+                  (runUnder kenv $"{n} |> to yaml |> from yaml KN |> to json" |> text)
+                  (runUnder kenv $"{n} |> to json" |> text)
+                  "it reads back"
+          }
           test "schema drafting: int-or-string is Yaml, an integer enum is int [D:schema-int-or-string][D:schema-int-enum]" {
               let g =
                   gen
@@ -27970,6 +28224,53 @@ let hunt3BehaviorTests =
               Expect.stringContains g "name: Option<string>" "another format drafts its type"
               Expect.stringContains g "// note: not enforced: format on name" "another format is noted, not enforced"
               Expect.isFalse (g.Contains "format on port") "int-or-string is not also 'not enforced'"
+          }
+          test "schema drafting: boolean beside string or number is Yaml [D:schema-bool-or-string]" {
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "properties": {
+                             "cancel": { "type": ["boolean", "string"] },
+                             "bn": { "type": ["boolean", "number"] },
+                             "bis": { "type": ["boolean", "integer", "string"] },
+                             "one": { "oneOf": [{ "type": "boolean" }, { "type": "string" }] },
+                             "nb": { "type": ["boolean", "string", "null"] } } }"""
+
+              for f in [ "cancel"; "bn"; "bis"; "one"; "nb" ] do
+                  Expect.stringContains g $"{f}: Option<Yaml>" $"{f} drafts Yaml"
+
+              Expect.stringContains
+                  g
+                  "// note: cancel: the schema allows boolean/string — drafted Yaml; a bool reads as YBool b, a string as YStr s"
+                  "the note names the cases"
+
+              Expect.stringContains g "bn: the schema allows boolean/number — drafted Yaml; a bool reads as YBool b, a number as YInt n or YFloat f" "bool|number"
+              Expect.stringContains g "bis: the schema allows boolean/integer/string — drafted Yaml; a bool reads as YBool b, an int as YInt n, a string as YStr s" "bool|int|string"
+              Expect.isFalse (g.Contains "drafted string") "never string"
+          }
+          test "schema drafting: a type array mixing a scalar with a container is Yaml, never a silent pick [D:schema-mixed-kinds]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["cmd"],
+                           "properties": {
+                             "cmd": { "type": ["string", "array"], "items": { "type": "string" } },
+                             "runs": { "type": ["string", "array", "null"], "items": { "type": "string" } },
+                             "env": { "type": ["object", "string"], "additionalProperties": { "type": "string" } },
+                             "both": { "type": ["object", "array"] },
+                             "plain": { "type": ["array", "null"], "items": { "type": "string" } } } }"""
+
+              Expect.stringContains g "\n    cmd: Yaml\n" "[string, array] → Yaml"
+              Expect.stringContains g "runs: Option<Yaml>" "nullable once"
+              Expect.stringContains g "env: Option<Yaml>" "[object, string] → Yaml"
+              Expect.stringContains g "both: Option<Yaml>" "[object, array] → Yaml"
+              Expect.stringContains g "plain: Option<seq<string>>" "a nullable array stays an array"
+
+              Expect.stringContains
+                  g
+                  "// note: cmd: the schema allows array/string — drafted Yaml; a string reads as YStr s, a sequence as YSeq items"
+                  "the note names the cases"
+
+              Expect.stringContains g "both: the schema allows array/object — drafted Yaml; a sequence reads as YSeq items, a mapping as YMap entries" "both containers"
           }
           test "schema drafting: a typed enum drafts its type, a mixed enum Yaml [D:schema-enum-kind]" {
               let g =
@@ -28337,6 +28638,21 @@ let hunt3PerfTests =
 
               growsLinearly "write-if-absent, 10k vs 1k" (loop 1000) (loop 10000)
           }
+          test "a plan's stale-read check costs O(depth) per path, not O(depth²) [D:plan-guard-linear]" {
+              let root = tempPath "weir-plandepth"
+
+              let loop depth () =
+                  let mid = System.IO.Path.Combine([| for i in 1..depth -> $"d{i}" |])
+
+                  Weir.Eval.PlanMode.capturing (fun () ->
+                      for i in 1..2000 do
+                          let p = System.IO.Path.Combine(root, mid, $"s{i % 100}", $"f{i}")
+                          Weir.Eval.PlanMode.checkRead "File.exists" p
+                          Weir.Eval.PlanMode.capture (VUnion("WriteFile", Some(VTuple [ VStr p; VSeq [] ]))) [ p ])
+                  |> ignore
+
+              growsLinearly "write-if-absent, depth 300 vs 30" (loop 30) (loop 300)
+          }
           test "refusing deep JSON is linear in its depth [D:json-deep-linear]" {
               let deep n =
                   String.replicate n "{\"a\":" + "1" + String.replicate n "}"
@@ -28357,6 +28673,10 @@ let allTests =
           teardownSeamTests
           hunt3BehaviourTests
           hunt3r2CancelTests
+          hunt3r3TreeKillTests
+          hunt3r3FifoTests
+          hunt3r3PromptKeyTests
+          hunt3r3UnreadTests
           argsSecretEchoTests
           hunt3BehaviorTests
           docsBinaryTests

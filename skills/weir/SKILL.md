@@ -78,7 +78,11 @@ print (show 1)
   to stderr so piped stdout stays data, EOF refuses; it consumes nothing
   past its newline, so later children read the rest; a read cut short —
   a `pfirst` loser, a REPL `^C` — takes no line, the next read gets it
-  [D:stdin-reader]), `Self.pid : int` (the process id),
+  [D:stdin-reader], and never splits one: a line it had begun is
+  finished from the bytes already waiting and stays for the next weir
+  read [D:prompt-cut-whole-line]; at a terminal the line is cooked and
+  arrow/Home/Delete keys are dropped from the answer
+  [D:prompt-tty-keys]), `Self.pid : int` (the process id),
   `Self.scriptPath : string` (the FILE'S OWN absolute path, resolved
   at startup before any `cd`; symlinks unresolved like bash's `$0` —
   an imported module sees its own), and `Self.entryPath : string`
@@ -649,7 +653,8 @@ print $"{key} -> {value}"
   the host that failed — a redirect's target, not the origin (and a
   redirect loop — past 50 hops it raises, naming it). The proxy comes
   from `HTTP_PROXY`/`HTTPS_PROXY`; a `NO_PROXY` entry bypasses it, `*`
-  for every host. `auth` plus an
+  for every host, a CIDR (`10.0.0.0/8`) for every address it covers; a
+  dead proxy's error names the proxy. `auth` plus an
   explicit `Authorization` header is refused (two credentials). A
   header the wire cannot carry raises before anything is sent, naming
   the header — a CR/LF/NUL byte, a non-token name (`"Bad Name"`), a
@@ -705,8 +710,10 @@ print $"{key} -> {value}"
   EFFECT RUNS [D:pfirst-join]; a loser busy in pure computation holds
   the return until it reaches one, and a loser's `always` cleanup
   still runs whole, its commands included (before the return). A
-  loser blocked reading stdin or a FIFO is cut too (POSIX). `exit n`
-  in an arm ends the race and the script, as in `pmap`.
+  loser blocked reading stdin or a FIFO is cut too (POSIX; on Linux the
+  cut closes the FIFO, so a later read gets the writer's data
+  [D:fifo-read-polled]). `exit n` in an arm ends the race and the
+  script, as in `pmap`.
 - A SCOPED background process is `within proc srv = <command>` +
   an indented block [D:scoped-procs]: the scope IS the lifetime —
   at every exit (normal or raise) the process TREE is killed and
@@ -774,8 +781,10 @@ print $"{key} -> {value}"
   finish; past that each is cut at its next builtin call, command,
   sleep or Http send (the `pfirst` loser's cut, its children killed),
   so NO HANDLER EFFECT LANDS AFTER `within serve` RETURNS [D:serve-cut]
-  (its late response is dropped; pure computation may run on, to its
-  next cut).
+  (its late response is dropped); a cut handler's `always` cleanup
+  runs whole, as long as it takes, before the scope returns, and pure
+  computation holds the return as a `pfirst` loser's does
+  [D:serve-cut-joins-cleanup].
   `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
   excess queues; pipelined requests are answered in order. A request
   whose `Host` is not a loopback name (`127.0.0.1`, `localhost`,
@@ -852,13 +861,30 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   second signal mid-teardown hard-exits, the double-Ctrl+C escape)
   [D:sighup-teardown]. `nohup weir …` keeps SIGHUP ignored.
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
-  cancel) tree-kills the running foreground command too, scoped or not.
+  cancel, a `kill -INT`) tree-kills the running foreground command and
+  every fan-out arm's command too, scoped or not [D:sigint-reaps]. A
+  terminal ^C at an unscoped script is not that: when weir is the
+  terminal's foreground group the ^C reached the command too, so weir
+  kills nothing, waits for it (its own ^C handling runs — terraform,
+  make, a Python traceback), then dies by the SIGINT; the cost is that a `kill -INT`
+  of an interactive weir that is the foreground group behaves the same,
+  and its child may survive [D:sigint-terminal-group]; an
+  arm the teardown kills is the teardown, never a "command failed"
+  [D:teardown-kill-not-failure]. The tree kill reaches every
+  descendant still linked to the command by parent pid (a `setsid`
+  child included); one that daemonized away (`(cmd &)`) is out of
+  reach [D:tree-kill-walk]. An `always` cleanup running or about to
+  start when the signal lands runs whole, its commands too, then the
+  signal's exit [D:teardown-never-preempts].
   A `pmap`/`piter`/`pfirst` takes no new arm after the signal (or the
   closed stdout), and arms already running are cut at their next
   builtin call, command, sleep or wait and JOINED before any
   enclosing scope closes [D:teardown-joins-arms] — no arm effect lands
   after a lock is released or an `always` begins; an arm busy in pure
-  computation holds the teardown (a second signal hard-exits).
+  computation holds the teardown (a second signal hard-exits); an arm
+  blocked in a read no cut reaches (a FIFO, a pipe an orphaned
+  grandchild holds) is abandoned, and raises if the read ever returns
+  [D:teardown-abandons-reads].
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
   definition — no userspace design closes that hole; and a weir
   BACKGROUNDED IN AN INTERACTIVE SHELL (`weir … &`/`nohup`, which
@@ -966,8 +992,9 @@ let x =
   earlier captured mutation changes would see stale state — a write in
   `d` makes `Dir.list d` and `Path.glob "d/*"` refuse; a captured
   `Dir.deleteAll d` makes every read under `d` refuse; paths compare
-  through symlinks both ways, case-folded on Windows and macOS, and an
-  inner `plan` sees every enclosing plan's ops), and a captured
+  through symlinks both ways, case-folded on Windows and macOS, a
+  `File.write` also refuses a read through another HARD LINK to its
+  file, and an inner `plan` sees every enclosing plan's ops), and a captured
   op under a `within tmp` dir opened inside the plan (the dir is gone
   before apply — build the content in memory, or do the tmp work
   outside the plan).
@@ -1797,8 +1824,11 @@ type Bad = C of int
   ONE mapping; `xs |> to yaml stream` writes one document per
   element (the bundle write — `to yaml stream |> from yaml stream
   T` roundtrips, `to yaml |> from yaml seq<T>` too). `None` fields
-  omit — a record with every field `None` writes `{}`, and an empty
-  top-level seq `[]`, so no document is ever empty text; ambiguous strings like `"no"`/`"007"` auto-quote. `Yaml`
+  omit — a record with every field `None` writes `{}`; an empty seq
+  writes `[]` and an empty `seq<string * _>` `{}` at any depth, so
+  `Some []` reads back `Some []` (a Deployment's `args: []`/`labels:
+  {}` round-trip) and no document is ever empty text; a seq inside a
+  seq nests block-wise under a bare `-`; ambiguous strings like `"no"`/`"007"` auto-quote. `Yaml`
   nodes (`YStr`/`YInt`/`YFloat`/`YBool`/`YNull`/`YSeq`/`YMap`;
   `YMap [("k", YStr "v")]`) render directly —
   `YMap` keeps YOUR key order; record fields render in DECLARATION
@@ -1857,8 +1887,11 @@ type Bad = C of int
   locked schema, where `required` decides plain-vs-`Option`,
   `additionalProperties` becomes the `seq<string * V>` mapping, and
   `$ref` definition names become type names; an int-or-string field
-  (a k8s port; `format: int-or-string` too) and a number-or-string
-  field (a quantity) draft `Yaml` (8080 stays `YInt`, `"25%"` `YStr`);
+  (a k8s port; `format: int-or-string` too), a number-or-string
+  field (a quantity), a boolean-or-string/number field (`oneOf` too)
+  and a type array mixing a scalar with `array`/`object` (a compose
+  `command`) draft `Yaml` with a note (8080 stays `YInt`, `"25%"`
+  `YStr`, `true` `YBool`) — never a silent pick of one kind;
   an `enum` drafts its declared type, else its values' one kind
   (`int`, `float`, `bool`, `string`), and a mixed enum drafts `Yaml`;
   validation keywords (`minLength`, `pattern`, `minimum`, `maxItems`,
@@ -2657,9 +2690,13 @@ print (show port)
 - `printerr` is `print` to stderr (same argument rule) — diagnostics
   there, data on stdout, so `weir script | next` stays clean. Like
   `print`, at a tty it neutralizes terminal-driving escapes in the
-  text (so do `Log.*`, the `Self.prompt` message, the `-e` echo and
-  weir's own diagnostics); a bare CR passes, so a progress line can
-  rewrite itself. Redirected, the bytes pass unchanged.
+  text (so do `Log.*`, the `Self.prompt` message, the `-e` echo,
+  `Args.load --help` and weir's own diagnostics); a bare CR passes, so
+  a progress line can rewrite itself. Redirected, the bytes pass
+  unchanged. Renderers that draw a VALUE go further: `show` writes a
+  CR as `\r`, and the REPL and `-e` echo (table cells included),
+  `Plan.preview` paths and `weir verify`/`restore` lines show CR and
+  colour escapes visibly.
 - `Log.trace/debug/info/warn "msg"` — levelled diagnostics, ALWAYS to
   stderr (stdout is data; there is no stream knob). `WEIR_LOG=level`
   selects (`trace|debug|info|warn|off`; default `info`; invalid

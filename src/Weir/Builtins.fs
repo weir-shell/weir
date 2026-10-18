@@ -1711,7 +1711,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     // an arm that raises before evaluating anything falls back to the call
     let callNode = RunPos.Current
 
-    let worker () =
+    let work () =
         // a teardown stops new arms [D:teardown-stops-arms] and cuts the
         // in-flight ones at their next boundary [D:teardown-joins-arms]; a
         // REPL ^C stops them too [D:repl-interrupt-fanout]
@@ -1740,6 +1740,9 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
                 Session.exitWorker ()
 
             i <- take ()
+
+    // counted for the teardown's join [D:teardown-abandons-reads]
+    let worker () = Session.armRunning work
 
     // arms are one level deeper [D:parallel-ladder]: set before
     // StartNew so the workers capture depth+1, restored after the join
@@ -1814,7 +1817,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
             race.Cancel()
             set ()
 
-    let worker () =
+    let work () =
         let mutable i = System.Threading.Interlocked.Increment &next
 
         while i < arr.Length
@@ -1848,6 +1851,8 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
                 Session.exitWorker ()
 
             i <- System.Threading.Interlocked.Increment &next
+
+    let worker () = Session.armRunning work
 
     Session.racing (fun () ->
         // arms are one level deeper [D:parallel-ladder]
@@ -2746,11 +2751,26 @@ let private bomAt (fs: FileStream) : bool =
 let private openShared (r: string) : FileStream =
     new FileStream(r, FileMode.Open, FileAccess.Read, FileShare.ReadWrite ||| FileShare.Delete)
 
-// a FIFO's open and read block where no kill reaches: a lost race or a
-// REPL ^C abandons them [D:stdin-reader]
+// a FIFO's open and read block where no kill reaches: on Linux the read
+// is polled beside the cut and the cut closes it [D:fifo-read-polled];
+// elsewhere a lost race, a REPL ^C or a teardown abandons the blocking
+// call [D:stdin-reader] [D:teardown-abandons-reads]
+let private withReadStream (r: string) (f: Stream -> 'a) : 'a =
+    match Session.openPolled r with
+    | Some s ->
+        use s = s
+        f s
+    | None when System.OperatingSystem.IsLinux() ->
+        use s = openShared r
+        f (s :> Stream)
+    | None ->
+        Session.cutBlocking (fun () ->
+            use s = openShared r
+            f (s :> Stream))
+
 let private readLinesShared (r: string) : string[] =
-    Session.cutBlocking (fun () ->
-        use sr = new StreamReader(openShared r)
+    withReadStream r (fun s ->
+        use sr = new StreamReader(s)
         let acc = ResizeArray()
         let mutable line = sr.ReadLine()
 
@@ -2761,15 +2781,14 @@ let private readLinesShared (r: string) : string[] =
         acc.ToArray())
 
 let private readTextShared (r: string) : string =
-    Session.cutBlocking (fun () ->
-        use sr = new StreamReader(openShared r)
+    withReadStream r (fun s ->
+        use sr = new StreamReader(s)
         sr.ReadToEnd())
 
 let private readBytesShared (r: string) : byte[] =
-    Session.cutBlocking (fun () ->
-        use fs = openShared r
+    withReadStream r (fun s ->
         use ms = new MemoryStream()
-        fs.CopyTo ms
+        s.CopyTo ms
         ms.ToArray())
 
 // the whole-file swap behind File.writeAtomic: the payload lands in a
@@ -5057,19 +5076,23 @@ let private planOps (v: Value) : Value seq =
 // an HttpSend request via the recursive renderer, so a preview line
 // never leaks an auth token
 let private previewOp (op: Value) : string =
+    // a path is data: CR, LF and escapes render visibly, so a name cannot
+    // rewrite or forge a preview line [D:tty-echo-strict]
+    let shown (p: string) = (sanitizeTtyEcho p).Replace("\n", "\\x0a")
+
     match op with
     | VUnion("WriteFile", Some(VTuple [ VStr p; VSeq lines ])) ->
-        $"write {p} ({lines |> Seq.length} line(s))"
+        $"write {shown p} ({lines |> Seq.length} line(s))"
     | VUnion("WriteFileAtomic", Some(VTuple [ VStr p; VSeq lines ])) ->
-        $"write {p} atomically ({lines |> Seq.length} line(s))"
-    | VUnion("DeleteFile", Some(VStr p)) -> $"delete file {p}"
-    | VUnion("MakeDir", Some(VStr p)) -> $"make dir {p}"
-    | VUnion("DeleteDir", Some(VStr p)) -> $"delete dir {p}"
-    | VUnion("DeleteTree", Some(VStr p)) -> $"delete tree {p}"
-    | VUnion("Copy", Some(VTuple [ VStr s; VStr d ])) -> $"copy {s} -> {d}"
-    | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> $"copy dir {s} -> {d}"
-    | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) -> $"move {s} -> {d}"
-    | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) -> $"move dir {s} -> {d}"
+        $"write {shown p} atomically ({lines |> Seq.length} line(s))"
+    | VUnion("DeleteFile", Some(VStr p)) -> $"delete file {shown p}"
+    | VUnion("MakeDir", Some(VStr p)) -> $"make dir {shown p}"
+    | VUnion("DeleteDir", Some(VStr p)) -> $"delete dir {shown p}"
+    | VUnion("DeleteTree", Some(VStr p)) -> $"delete tree {shown p}"
+    | VUnion("Copy", Some(VTuple [ VStr s; VStr d ])) -> $"copy {shown s} -> {shown d}"
+    | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> $"copy dir {shown s} -> {shown d}"
+    | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) -> $"move {shown s} -> {shown d}"
+    | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) -> $"move dir {shown s} -> {shown d}"
     | VUnion("HttpSend", Some req) -> $"http send {formatValue req}"
     | v -> formatValue v
 
@@ -5915,6 +5938,8 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
                 | null ->
                     failwith
                         "Self.prompt: stdin is closed (EOF) — no line to read; pipe an answer in, or run at a terminal"
+                // a terminal's arrows are ignored [D:prompt-tty-keys]
+                | line when not System.Console.IsInputRedirected -> VStr(Session.Stdin.dropKeySequences line)
                 | line -> VStr line
             | v -> unreachable $"the checker rejects 'Self.prompt' on {formatValue v}") ]
       "Frontier", frontierMembers

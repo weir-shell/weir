@@ -205,8 +205,39 @@ type private V6NoProxy(inner: Net.IWebProxy) =
 
     let star = lazy (entries.Value |> List.contains "*")
 
+    // a CIDR entry (`10.0.0.0/8`, `fd00::/8`) bypasses every address it
+    // covers, as curl reads it [D:noproxy-cidr]; host bits are ignored
+    let cidrs =
+        lazy
+            (entries.Value
+             |> List.choose (fun e ->
+                 match e.Split '/' with
+                 | [| addr; bits |] ->
+                     match Net.IPAddress.TryParse addr, Int32.TryParse bits with
+                     | (true, a), (true, n) when n >= 0 && n <= 8 * a.GetAddressBytes().Length ->
+                         Some(a.GetAddressBytes(), n)
+                     | _ -> None
+                 | _ -> None))
+
+    let inCidr (u: Uri) =
+        not cidrs.Value.IsEmpty
+        && match Net.IPAddress.TryParse u.DnsSafeHost with
+           | true, host ->
+               let hb = host.GetAddressBytes()
+
+               cidrs.Value
+               |> List.exists (fun (nb, bits) ->
+                   nb.Length = hb.Length
+                   && Seq.forall
+                       (fun i ->
+                           let keep = min 8 (max 0 (bits - 8 * i))
+                           let mask = byte ((0xFF00 >>> keep) &&& 0xFF)
+                           (nb[i] &&& mask) = (hb[i] &&& mask))
+                       [ 0 .. nb.Length - 1 ])
+           | _ -> false
+
     let proxyFor (u: Uri) : Uri =
-        if star.Value then
+        if star.Value || inCidr u then
             null
         elif not (isV6 u) then
             inner.GetProxy u
@@ -225,7 +256,10 @@ type private V6NoProxy(inner: Net.IWebProxy) =
         member _.GetProxy(u: Uri) = proxyFor u
 
         member _.IsBypassed(u: Uri) =
-            if star.Value || isV6 u then isNull (proxyFor u) else inner.IsBypassed u
+            if star.Value || isV6 u || inCidr u then
+                isNull (proxyFor u)
+            else
+                inner.IsBypassed u
 
 /// the host a transport error names: the URL's host, or the whole URL
 /// when it would not parse — redacted [D:url-redact], since a
@@ -246,6 +280,32 @@ let failingPort (url: string) : int =
 /// the environment's proxy for a client handler, NO_PROXY matched as above
 let useEnvProxy (handler: HttpClientHandler) : unit =
     handler.Proxy <- V6NoProxy(HttpClient.DefaultProxy)
+
+/// a transport failure's words and case [D:transport-words]. Through a
+/// proxy, weir's socket only ever reaches the proxy, so a refused or
+/// unresolved connect names the proxy, not the target [D:proxy-err-names-proxy]
+let transportFailure (timeoutMs: int64) (url: string) (ex: exn) : string * TransportError =
+    let proxy =
+        try
+            let p = V6NoProxy(HttpClient.DefaultProxy) :> Net.IWebProxy
+            let u = Uri url
+            if p.IsBypassed u then None else Option.ofObj (p.GetProxy u)
+        with _ ->
+            None
+
+    let direct () =
+        let err = classifyTransport timeoutMs (failingPort url) ex
+        transportMessage (failingHost url) err, err
+
+    match proxy with
+    | None -> direct ()
+    | Some p ->
+        let via = $"(the environment's proxy for {failingHost url}; NO_PROXY lists the hosts that bypass it)"
+
+        match classifyTransport timeoutMs p.Port ex with
+        | Refused port as err -> $"the proxy {p.Host}:{port} refused the connection — nothing is listening there {via}", err
+        | NoSuchHost as err -> $"cannot resolve the proxy {p.Host} — no such host {via}", err
+        | _ -> direct ()
 
 /// send the request. Status is data — a 4xx/5xx is Ok with that status,
 /// never an Error [D:http]. Error is transport failure only, classified
@@ -430,20 +490,16 @@ let send (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string 
               Headers = headers
               Body = body }
     with ex ->
-        let err =
-            match ex with
-            | CharsetUnknown(cs, status) -> UnknownCharset(cs, status)
-            | TooManyRedirects(hops, last) -> RedirectLoop(hops, last)
-            | _ -> classifyTransport req.TimeoutMs (failingPort curUrl) ex
-
         // a loop is the request's own failure (its last hop is in the
         // message); anything else names the hop that failed
-        let named =
-            match err with
-            | RedirectLoop _ -> req.Url
-            | _ -> curUrl
-
-        Error(transportMessage (failingHost named) err, err)
+        match ex with
+        | CharsetUnknown(cs, status) ->
+            let err = UnknownCharset(cs, status)
+            Error(transportMessage (failingHost curUrl) err, err)
+        | TooManyRedirects(hops, last) ->
+            let err = RedirectLoop(hops, last)
+            Error(transportMessage (failingHost req.Url) err, err)
+        | _ -> Error(transportFailure req.TimeoutMs curUrl ex)
 
 /// Basic auth is an encoding, not a prefix: base64(user:pass) [D:http] —
 /// which is why it is a union case the runner encodes, not a header a

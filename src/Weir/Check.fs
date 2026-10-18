@@ -179,7 +179,11 @@ and TypedKind =
         // a VUnion value carries no type name, so the writer keys cases
         unions: Map<string, string * string * bool> *
         // `to yaml stream` [D:yaml-seq-doc]: one document per element
-        stream: bool
+        stream: bool *
+        // the yaml writer's type guide [D:yaml-empty-typed]: the
+        // to-side's shape of one document (None when it has no read
+        // shape, and for json)
+        yamlShape: Yaml.Shape option
     | TEList of items: TypedExpr list
     | TECmd of head: TCmdHead * args: TypedExpr list * env: TypedExpr option
     | TESplat of TypedExpr
@@ -3315,7 +3319,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let! unions = unionWriteTable arg.Span wenv wty
 
                 let tto =
-                    { Kind = TETo("json", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false)
+                    { Kind = TETo("json", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false, None)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = arg.Span }
 
@@ -3893,7 +3897,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let! unions = unionWriteTable toExpr.Span wenv wty
 
                 let tto =
-                    { Kind = TETo(fmt, wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false)
+                    { Kind = TETo(fmt, wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false, None)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -3908,7 +3912,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let! unions = unionWriteTable toExpr.Span wenv wty
 
                 let tto =
-                    { Kind = TETo(fmt, wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false)
+                    { Kind = TETo(fmt, wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false, None)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -3937,8 +3941,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 let! unions = unionWriteTable toExpr.Span wenv wty
 
+                let guide =
+                    match wty with
+                    | TSeq elem -> yamlShape toExpr.Span wenv Set.empty "" elem |> Result.toOption
+                    | _ -> None
+
                 let tto =
-                    { Kind = TETo("yaml", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, true)
+                    { Kind = TETo("yaml", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, true, guide)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -3970,8 +3979,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 let! unions = unionWriteTable toExpr.Span wenv wty
 
+                let guide = yamlShape toExpr.Span wenv Set.empty "" wty |> Result.toOption
+
                 let tto =
-                    { Kind = TETo("yaml", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false)
+                    { Kind = TETo("yaml", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false, guide)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 

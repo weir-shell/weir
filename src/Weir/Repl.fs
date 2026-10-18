@@ -1901,13 +1901,6 @@ let private setupLineEditor () =
 
     loadHistory ()
 
-// one-line pushback for the redirected accumulator [D:repl-multiline]:
-// a peeked line that did not attach to the current statement belongs to
-// the next one — it must survive across readInput calls (a fresh
-// statement is a fresh readRedirected call), so it lives at module
-// scope, not inside the function
-let mutable private pendingLine: string option = None
-
 // the redirected-stdin accumulator [D:repl-multiline]: a piped REPL
 // (printf '…' | weir) has no tty line editor, so it reads physical
 // lines from weir's one stdin reader. A statement that spans lines (heredoc, a
@@ -1928,12 +1921,12 @@ let mutable private pendingLine: string option = None
 // entry, complete or not, as the tty editor's blank-line escape does;
 // at EOF an unclosed buffer is returned the same way, to error normally.
 let private readRedirected () : string =
-    let readLine () =
-        match pendingLine with
-        | Some l ->
-            pendingLine <- None
-            l
-        | None -> Session.Stdin.readLine () // the one reader [D:stdin-reader]
+    let readLine () = Session.Stdin.readLine () // the one reader [D:stdin-reader]
+
+    // a peeked line that did not attach to the current statement belongs to
+    // the next reader [D:repl-multiline]: back into weir's stdin buffer, so a
+    // `Self.prompt` the statement runs takes it [D:repl-lookahead-unread]
+    let pushBack (line: string) = Session.Stdin.unread line
 
     // the completed statement's prompts, emitted once at return so the
     // eval output that follows keeps its order [D:repl-multiline] — a
@@ -1962,7 +1955,7 @@ let private readRedirected () : string =
         // a column-0 directive never continues an open statement: it
         // ends the entry and is read next as its own line
         | line when not (List.isEmpty acc) && line.StartsWith "#" ->
-            pendingLine <- Some line
+            pushBack line
             ret (List.rev acc)
         | line ->
             let acc' = line :: acc
@@ -1991,7 +1984,7 @@ let private readRedirected () : string =
                 | null -> ret buf
                 | next when Script.pipedAttaches buf next -> go (next :: acc')
                 | next ->
-                    pendingLine <- Some next
+                    pushBack next
                     ret buf
 
     go []
@@ -2284,7 +2277,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                         let rendered, hint = Eval.echoValue cap (Eval.echoPrep bv)
 
                         Console.WriteLine
-                            $"{n} : {formatEchoTy sch.Ty} = {Eval.sanitizeTtyData rendered}{Eval.echoTail hint}"
+                            $"{n} : {formatEchoTy sch.Ty} = {Eval.sanitizeTtyEcho rendered}{Eval.echoTail hint}"
                 | _ -> Console.WriteLine $"{n} : {formatEchoTy sch.Ty}"
 
             { state with
@@ -2360,7 +2353,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                     // table's tint is added inside printTable, around
                     // sanitized cells)
                     (if te.Ty = TSeq TStr then
-                         lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyData l))
+                         lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyEcho l))
                      else
                          printTable lines)
 
@@ -2368,7 +2361,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 | None ->
                     let rendered, hint = Eval.echoValue cap ev
                     let tail = Eval.echoTail hint
-                    Console.WriteLine $"{name} : {formatEchoTy te.Ty} = {Eval.sanitizeTtyData rendered}{tail}"
+                    Console.WriteLine $"{name} : {formatEchoTy te.Ty} = {Eval.sanitizeTtyEcho rendered}{tail}"
 
             // a `let` binds its name only — it does not rebind `it`
             // (FSI parity) [D:repl-it]
@@ -2480,7 +2473,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                         | Some(lines, hint) ->
                             // data at the tty is sanitized [D:binary-echo]
                             (if te.Ty = TSeq TStr then
-                                 lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyData l))
+                                 lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyEcho l))
                              else
                                  printTable lines)
 
@@ -2492,7 +2485,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                             // the value stays plain; the type tail recedes
                             // like every other metadata line [D:table-polish]
                             Console.WriteLine(
-                                Eval.sanitizeTtyData rendered
+                                Eval.sanitizeTtyEcho rendered
                                 + Types.Color.dim Types.Color.onStdout.Value $" : {formatEchoTy te.Ty}{tail}"
                             )
                 elif not Console.IsOutputRedirected then

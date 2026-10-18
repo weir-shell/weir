@@ -190,8 +190,12 @@ let private evalOnce (input: string) : int =
                                                 $": {formatEchoTy te.Ty} (binary output — the echo refuses a terminal; redirect to a file, or print deliberately)"
                                         else
                                             let rendered, hint = Eval.echoValue Eval.echoPipedCap v
-                                            // [D:tty-sink-sanitize]
-                                            let rendered = Eval.sanitizeIfTty Console.IsOutputRedirected rendered
+                                            // [D:tty-echo-strict]
+                                            let rendered =
+                                                if Console.IsOutputRedirected then
+                                                    rendered
+                                                else
+                                                    Eval.sanitizeTtyEcho rendered
 
                                             let tail' = Eval.echoTail hint
 
@@ -209,6 +213,11 @@ let private evalOnce (input: string) : int =
                                 1
 
                     execAll valueEnv 0 checked'
+
+// `weir verify`/`restore` lines carry lock.json fields — data, so a
+// tty sees CR and escapes visibly [D:lock-print-sanitize]
+let private lockText (redirected: bool) (s: string) : string =
+    if redirected then s else Eval.sanitizeTtyEcho s
 
 // a script (or -e) tears down on its main thread: signals and a closed
 // stdout end it with their own code [D:signal-main-unwind] [D:stdout-epipe]
@@ -478,10 +487,11 @@ let main argv =
              | Ok weirDir ->
                  match Contracts.restore weirDir with
                  | Ok lines ->
-                     lines |> List.iter Console.WriteLine
+                     lines |> List.iter (fun l -> Console.WriteLine(lockText Console.IsOutputRedirected l))
+
                      0
                  | Error e ->
-                     Console.Error.WriteLine $"weir restore: {e}"
+                     Console.Error.WriteLine $"weir restore: {lockText Console.IsErrorRedirected e}"
                      1)
         | "restore" :: _ ->
             Console.Error.WriteLine "usage: weir restore — re-materialize everything the lock records (hash-verified)"
@@ -494,10 +504,11 @@ let main argv =
              | Ok weirDir ->
                  match Contracts.verify Proc.resolveProg weirDir with
                  | Error e ->
-                     Console.Error.WriteLine $"weir verify: {e}"
+                     Console.Error.WriteLine $"weir verify: {lockText Console.IsErrorRedirected e}"
                      1
                  | Ok(lines, findings) ->
-                     lines |> List.iter Console.WriteLine
+                     lines |> List.iter (fun l -> Console.WriteLine(lockText Console.IsOutputRedirected l))
+
                      if List.isEmpty findings then 0 else 1)
         | "verify" :: _ ->
             Console.Error.WriteLine

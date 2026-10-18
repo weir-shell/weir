@@ -1,6 +1,6 @@
 # PLAN — the third bug hunt (daily-driver W3)
 
-Status: ROUND 1 FIXED (2026-10-16) — 37 confirmed (8 high, 29 medium), all fixed on plan/hunt3 (PLAN-hunt3-fixes, PLAN-kestrel), landed as #376. ROUND 2 FIXED (2026-10-17) — 25 confirmed (8 high, 17 medium; A clean), all fixed on plan/hunt3r2 (PLAN-hunt3r2-fixes, rulings R1-R8), harness tools/hunt3r2-repro.weir 25/25. Round 2 found highs, so ROUND 3 (same areas + regressions from round 2's fixes) is owed after landing.
+Status: ROUND 1 FIXED (2026-10-16) — 37 confirmed (8 high, 29 medium), all fixed on plan/hunt3 (PLAN-hunt3-fixes, PLAN-kestrel), landed as #376. ROUND 2 FIXED (2026-10-17) — 25 confirmed (8 high, 17 medium; A clean), all fixed on plan/hunt3r2 (PLAN-hunt3r2-fixes, rulings R1-R8), harness tools/hunt3r2-repro.weir 25/25. Round 2 found highs, so ROUND 3 (same areas + regressions from round 2's fixes) is owed — landed as #378; ROUND 3 FIXED (2026-10-17) — 22 confirmed (6 high, 16 medium; A clean), all fixed on plan/hunt3r3 (PLAN-hunt3r3-fixes, rulings R1-R4), harness tools/hunt3r3-repro.weir 22/22. Round 3 found highs, so ROUND 4 is owed — invariant-driven (docs/reference/concurrency.md; PLAN-hunt3r4.md).
 
 Source plan: PLAN-daily-driver.md W3. Black-box, medium and above only;
 lows go straight to BACKLOG. The loop stops at the first round with no
@@ -216,3 +216,37 @@ beside its own):
 
 Waves: B+E+F, then C, then D alone. A rides the user's dispatch of
 `hunt3-xplat.yml` on main (ubuntu the control).
+
+## Round 3 (2026-10-17)
+
+Same method, severity and operating rules. Target: main @ 04da379 at
+`/output/tmp/weir-h3r3/Weir`; scratch under `/output/tmp/h3r3-<area>/`.
+Baseline: round 2's findings and repros (`/output/tmp/h3r2-findings.md`,
+`/output/tmp/h3r2-*/`) and its harness `tools/hunt3r2-repro.weir` (25/25
+on main) — a still-reproducing round-2 repro is a finding.
+
+Weighted to what round 2 rewrote (PLAN-hunt3r2-fixes; the DECISIONS rows
+dated 2026-10-17):
+
+- **C + F (heaviest):** the one stdin reader ([D:stdin-reader]) — children
+  inheriting stdin after a cut prompt, Self.stdin vs Self.prompt vs a
+  child interleaved, pipes, FIFOs, a tty; the teardown join
+  ([D:teardown-joins-arms]) and kill settling ([D:kill-settle]) under
+  random signals at scale; serve handler cuts ([D:serve-cut]); REPL ^C
+  ending fan-outs ([D:repl-interrupt-fanout]); pfirst losers' cleanups.
+- **E:** the new diagnostic chokepoints ([D:tty-diag-sanitize]) — any sink
+  missed, legitimate output mangled; withheld excerpts and Secret.map
+  messages ([D:from-secret-excerpt], [D:secret-map-withheld]); CR passing
+  ([D:tty-cr-pass]); NO_PROXY and redirect errors.
+- **B (lighter):** the plan guard index with symlinks and case folding
+  ([D:plan-guard-index], [D:plan-guard-links]); empty yaml documents,
+  duplicate-key refusals, gen types on real schemas.
+- **D (alone, last):** only the new paths — the code-point index cache,
+  O(1) frozen seqs, the linear glob matcher, the guard index, the stdin
+  reader's and pipe-read cut's per-line cost.
+- **A:** the user's `hunt3-xplat.yml` dispatch on 04da379 — round 2's
+  stdin and kill changes have Windows/macOS sides.
+
+Waves: C+F+E, then B, then D alone. Every brief forbids `pkill -f` and
+`pgrep -f` on a pattern from the agent's own command line (wait on a PID);
+the coordinator checks `ps` for leftovers before closing each wave.

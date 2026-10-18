@@ -33,6 +33,18 @@ let private opt (t: string) : string =
 let private kindsText (kinds: Set<string>) =
     String.Join("/", Set.toList kinds)
 
+// how each JSON kind reads into the `Yaml` node, for the drafted-Yaml
+// notes [D:schema-bool-or-string] [D:schema-mixed-kinds]
+let private yamlCasesText (kinds: Set<string>) =
+    [ if kinds.Contains "boolean" then "a bool", "YBool b"
+      if kinds.Contains "number" then "a number", "YInt n or YFloat f"
+      elif kinds.Contains "integer" then "an int", "YInt n"
+      if kinds.Contains "string" then "a string", "YStr s"
+      if kinds.Contains "array" then "a sequence", "YSeq items"
+      if kinds.Contains "object" then "a mapping", "YMap entries" ]
+    |> List.mapi (fun i (what, case) -> if i = 0 then $"{what} reads as {case}" else $"{what} as {case}")
+    |> String.concat ", "
+
 let private enumText (values: string list) =
     values |> List.map (fun v -> $"'{v}'") |> String.concat ", "
 
@@ -152,13 +164,20 @@ let generate
                     reg.AddNote $"{where}: the schema allows only null — drafted Option<string>"
                     "Option<string>"
                 else
-                    // the IntOrString idiom (and any other multi-kind
-                    // scalar): string carries every spelling; the note
-                    // names the conversion decision
-                    reg.AddNote $"{where}: the schema allows {kindsText core} — drafted string; convert deliberately"
-                    "string"
+                    // boolean beside a string or number (GH Actions'
+                    // cancel-in-progress) is the same class
+                    // [D:schema-bool-or-string]: string would refuse
+                    // every bool on read
+                    reg.AddNote $"{where}: the schema allows {kindsText core} — drafted Yaml; {yamlCasesText core}"
+                    "Yaml"
 
             if kinds.Contains "null" then opt text else text
+        | SMixed(kinds, _) ->
+            // a scalar beside a container drafts the node whole
+            // [D:schema-mixed-kinds] — never a silent pick of one side
+            let core = Set.remove "null" kinds
+            reg.AddNote $"{where}: the schema allows {kindsText core} — drafted Yaml; {yamlCasesText core}"
+            if kinds.Contains "null" then opt "Yaml" else "Yaml"
         | SArray items ->
             let elemDesired = Infer.capitalize (Infer.singularize (Infer.identStem desired))
             let itemPath = path + "[]"

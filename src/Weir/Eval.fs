@@ -411,7 +411,12 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
                 | _ -> s, false
 
             let escaped =
-                raw.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\t", "\\t")
+                raw
+                    .Replace("\\", "\\\\")
+                    .Replace("\"", "\\\"")
+                    .Replace("\n", "\\n")
+                    .Replace("\r", "\\r") // [D:tty-echo-strict]
+                    .Replace("\t", "\\t")
 
             let tail = if clipped then "…" else ""
             $"\"{escaped}{tail}\""
@@ -489,22 +494,135 @@ let formatValue (v: Value) : string = formatWith showLimits 0 v
 // cannot cross-contaminate captures. Op is a `VUnion(case, payload)`
 // value (the prelude `Op` type), so equality/show/masking ride the
 // existing Value machinery [D:secret].
+// one node of the guard's component tries [D:plan-guard-linear]: the
+// target index keys a path's components (Target: a target here; Below:
+// a target under it), the link cache keys the components as written
+// (Resolved: where a link at that prefix leads, null for no link)
+[<AllowNullLiteral>]
+type private GuardNode(comparer: System.Collections.Generic.IEqualityComparer<string>) =
+    let mutable kids: System.Collections.Generic.Dictionary<string, GuardNode> = null
+
+    /// the child on edge `k`, or null
+    member _.Find(k: string) : GuardNode =
+        if isNull kids then
+            null
+        else
+            match kids.TryGetValue k with
+            | true, n -> n
+            | _ -> null
+
+    member _.Add(k: string, n: GuardNode) =
+        if isNull kids then
+            kids <- System.Collections.Generic.Dictionary(comparer)
+
+        kids[k] <- n
+
+    member _.IsEmpty = isNull kids
+
+    member val Target: string = null with get, set
+    member val Below: string = null with get, set
+    member val Resolved: string = null with get, set
+
 type private PlanFrame =
     { Ops: ResizeArray<Value>
       // the target paths captured mutations change [D:plan-apply]: a
       // later read at, under, or — for a listing — above one is
       // known-after-apply and refused [D:plan-stale-reads]. Indexed
-      // [D:plan-guard-index]: Targets maps each target's comparison
-      // keys (as written, and through symlinks [D:plan-guard-links]) to
-      // the path a refusal names, Above maps every proper ancestor of a
-      // key to a target below it, so a read costs O(depth) lookups,
-      // never a scan of the captured ops. Session-resolved so a relative
-      // read matches an earlier relative write.
-      Targets: System.Collections.Generic.Dictionary<string, string>
-      Above: System.Collections.Generic.Dictionary<string, string>
+      // [D:plan-guard-index] as a component trie [D:plan-guard-linear]:
+      // each target's comparison keys (as written, and through symlinks
+      // [D:plan-guard-links]) mark their node with the path a refusal
+      // names and every ancestor node with a target below, so a read
+      // costs one walk of its components, never a scan of the captured
+      // ops. Session-resolved so a relative read matches an earlier
+      // relative write.
+      Index: GuardNode
+      // the link cache [D:plan-guard-linear]: every prefix is resolved
+      // once per plan
+      Links: GuardNode
+      // the file identities in-place writes target [D:plan-guard-inode]:
+      // (device, inode) — the Windows file index — to the path a
+      // refusal names
+      Files: System.Collections.Generic.Dictionary<struct (uint64 * uint64), string>
       // `within tmp` dirs opened inside this plan [D:plan-within-tmp]:
       // deleted when their scope closes, before any apply
       TmpRoots: ResizeArray<string> }
+
+// a file's identity [D:plan-guard-inode]: (device, inode) through
+// statx on Linux (one layout on every architecture) and stat on macOS
+// (the 64-bit-inode entry point on x64), (volume serial, file index)
+// through GetFileInformationByHandle on Windows; None when the path is
+// absent or unreadable. A final link is followed, as a read follows it
+module private FileId =
+    open System.Runtime.InteropServices
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private statx(int dirfd, string path, int flags, uint mask, byte[] buf)
+
+    [<DllImport("libc", EntryPoint = "stat", SetLastError = true)>]
+    extern int private statMac(string path, byte[] buf)
+
+    [<DllImport("libc", EntryPoint = "stat$INODE64", SetLastError = true)>]
+    extern int private statMacX64(string path, byte[] buf)
+
+    [<DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)>]
+    extern nativeint private CreateFileW(
+        string name,
+        uint access,
+        uint share,
+        nativeint security,
+        uint disposition,
+        uint flags,
+        nativeint template)
+
+    [<DllImport("kernel32.dll", SetLastError = true)>]
+    extern bool private GetFileInformationByHandle(nativeint handle, byte[] info)
+
+    [<DllImport("kernel32.dll", SetLastError = true)>]
+    extern bool private CloseHandle(nativeint handle)
+
+    let private AT_FDCWD = -100
+    let private STATX_INO = 0x100u
+
+    let private u32 (b: byte[]) (at: int) = uint64 (System.BitConverter.ToUInt32(b, at))
+    let private u64 (b: byte[]) (at: int) = System.BitConverter.ToUInt64(b, at)
+
+    let ofPath (path: string) : struct (uint64 * uint64) voption =
+        try
+            if System.OperatingSystem.IsWindows() then
+                // no access, every share mode, OPEN_EXISTING, BACKUP_SEMANTICS
+                let h = CreateFileW(path, 0u, 7u, 0n, 3u, 0x02000000u, 0n)
+
+                if h = -1n then
+                    ValueNone
+                else
+                    try
+                        let info = Array.zeroCreate<byte> 52
+
+                        if GetFileInformationByHandle(h, info) then
+                            ValueSome(struct (u32 info 28, (u32 info 44 <<< 32) ||| u32 info 48))
+                        else
+                            ValueNone
+                    finally
+                        CloseHandle h |> ignore
+            elif System.OperatingSystem.IsMacOS() then
+                let buf = Array.zeroCreate<byte> 256
+
+                let rc =
+                    if RuntimeInformation.ProcessArchitecture = Architecture.X64 then
+                        statMacX64 (path, buf)
+                    else
+                        statMac (path, buf)
+
+                if rc = 0 then ValueSome(struct (u32 buf 0, u64 buf 8)) else ValueNone
+            else
+                let buf = Array.zeroCreate<byte> 256
+
+                if statx (AT_FDCWD, path, 0, STATX_INO, buf) = 0 then
+                    ValueSome(struct ((u32 buf 136 <<< 32) ||| u32 buf 140, u64 buf 32))
+                else
+                    ValueNone
+        with _ ->
+            ValueNone
 
 module PlanMode =
     let private stack = new System.Threading.ThreadLocal<PlanFrame list>(fun () -> [])
@@ -555,20 +673,10 @@ module PlanMode =
         let s = if windows then p.Replace('/', '\\') else p
         if s.Length > 1 && s[s.Length - 1] = sep then s.TrimEnd sep else s
 
-    // every proper ancestor of a key, the root included
-    let private ancestors (k: string) : string list =
-        let mutable acc = []
-        let mutable i = k.LastIndexOf sep
-
-        while i >= 0 do
-            let a = if i = 0 then string sep else k.Substring(0, i)
-
-            if a <> k then
-                acc <- a :: acc
-
-            i <- if i = 0 then -1 else k.LastIndexOf(sep, i - 1)
-
-        acc
+    // a key's components, the trie's edges: the root separator is the
+    // empty first component, so `/` is [""] and `/a` is [""; "a"]
+    let private parts (k: string) : string[] =
+        if k = string sep then [| "" |] else k.Split sep
 
     // the symlink a path names, or None (absent, not a link, unreadable)
     let private linkOf (p: string) : string option =
@@ -583,50 +691,124 @@ module PlanMode =
     /// resolved [D:plan-guard-links]; components that do not exist stay
     /// as written. `followLeaf = false` keeps the last component as is
     /// — a delete or move acts on a link itself. A loop stops resolving
-    /// after 40 links (the kernel's own bound).
-    let private resolveLinks (followLeaf: bool) (p: string) : string =
-        let rec go (hops: int) (cur: string) (rest: string list) =
-            match rest with
-            | [] -> cur
-            | part :: more ->
-                let next = System.IO.Path.Combine(cur, part)
+    /// after 40 links (the kernel's own bound). Each prefix as written
+    /// is resolved once per plan, through `cache` [D:plan-guard-linear]
+    /// — a path costs one lookup per component, a lstat only for the
+    /// components no earlier path reached
+    let private resolveLinks (cache: GuardNode) (followLeaf: bool) (p: string) : string =
+        let split (s: string) =
+            s.Split([| '/'; sep |], System.StringSplitOptions.RemoveEmptyEntries)
 
-                match (if more.IsEmpty && not followLeaf then None else linkOf next) with
-                | Some target when hops < 40 ->
-                    let full = System.IO.Path.GetFullPath(System.IO.Path.Combine(cur, target))
-                    let root = System.IO.Path.GetPathRoot full
-                    go (hops + 1) root (split (full.Substring root.Length) @ more)
-                | _ -> go hops next more
+        let hops = ref 0
 
-        and split (s: string) =
-            s.Split([| '/'; sep |], System.StringSplitOptions.RemoveEmptyEntries) |> List.ofArray
+        let rec walk (root: string) (comps: string[]) (followLast: bool) : string =
+            let mutable node =
+                match cache.Find root with
+                | null ->
+                    let n = GuardNode(System.StringComparer.Ordinal, Resolved = root)
+                    cache.Add(root, n)
+                    n
+                | n -> n
+
+            // the walk so far is `baseR` plus comps[from .. i-1]: a node
+            // that is no link keeps no string, so a cached walk builds
+            // one path, not one per component
+            let mutable baseR = node.Resolved
+            let mutable from = 0
+
+            let upTo (i: int) =
+                if i <= from then
+                    baseR
+                else
+                    System.IO.Path.Combine(Array.append [| baseR |] comps[from .. i - 1])
+
+            for i in 0 .. comps.Length - 1 do
+                let part = comps[i]
+
+                if i < comps.Length - 1 || followLast then
+                    match node.Find part with
+                    | null ->
+                        let parent = upTo i
+
+                        let resolved =
+                            match linkOf (System.IO.Path.Combine(parent, part)) with
+                            | Some target when hops.Value < 40 ->
+                                hops.Value <- hops.Value + 1
+                                let full = System.IO.Path.GetFullPath(System.IO.Path.Combine(parent, target))
+                                let r = System.IO.Path.GetPathRoot full
+                                walk r (split (full.Substring r.Length)) true
+                            | _ -> null
+
+                        let n = GuardNode(System.StringComparer.Ordinal, Resolved = resolved)
+                        node.Add(part, n)
+                        node <- n
+
+                        if not (isNull resolved) then
+                            baseR <- resolved
+                            from <- i + 1
+                    | n ->
+                        node <- n
+
+                        if not (isNull n.Resolved) then
+                            baseR <- n.Resolved
+                            from <- i + 1
+
+            upTo comps.Length
 
         let full = System.IO.Path.GetFullPath p
         let root = System.IO.Path.GetPathRoot full
-        go 0 root (split (full.Substring root.Length))
+        walk root (split (full.Substring root.Length)) followLeaf
 
     // the keys a path compares under: as written, its directory resolved,
     // and — for an op or read that follows a final link — fully resolved
-    let private keysOf (followLeaf: bool) (p: string) : string list =
+    let private keysOf (cache: GuardNode) (followLeaf: bool) (p: string) : string list =
         let lexical = keyOf (norm p)
 
         let resolved =
             try
-                [ keyOf (resolveLinks false p)
+                [ keyOf (resolveLinks cache false p)
                   if followLeaf then
-                      keyOf (resolveLinks true p) ]
+                      keyOf (resolveLinks cache true p) ]
             with _ ->
                 []
 
         List.distinct (lexical :: resolved)
+
+    // the outermost frame's link cache — one per plan nest
+    let private linkCache () =
+        match List.tryLast stack.Value with
+        | Some f -> f.Links
+        | None -> unreachable "PlanMode.linkCache with no active frame"
+
+    // mark a key's node with its target and every ancestor node with a
+    // target below [D:plan-guard-linear]; the first target recorded wins
+    let private index (frame: PlanFrame) (k: string) (shown: string) =
+        let comps = parts k
+        let mutable node = frame.Index
+
+        for i in 0 .. comps.Length - 1 do
+            node <-
+                match node.Find comps[i] with
+                | null ->
+                    let n = GuardNode(comparer)
+                    node.Add(comps[i], n)
+                    n
+                | n -> n
+
+            if i < comps.Length - 1 then
+                if isNull node.Below then
+                    node.Below <- shown
+            elif isNull node.Target then
+                node.Target <- shown
 
     /// run f while a fresh capture frame is on top; returns the captured
     /// Ops in capture order (the frame is popped on every exit)
     let capturing (f: unit -> unit) : Value list =
         let frame =
             { Ops = ResizeArray()
-              Targets = System.Collections.Generic.Dictionary(comparer)
-              Above = System.Collections.Generic.Dictionary(comparer)
+              Index = GuardNode(comparer)
+              Links = GuardNode(System.StringComparer.Ordinal)
+              Files = System.Collections.Generic.Dictionary()
               TmpRoots = ResizeArray() }
 
         stack.Value <- frame :: stack.Value
@@ -689,43 +871,61 @@ module PlanMode =
             // a write lands where a final symlink points; a delete or
             // move changes the link itself [D:plan-guard-links]
             let followLeaf = case = "WriteFile" || case = "WriteFileAtomic"
+            let cache = linkCache ()
 
             for p in targets do
                 let shown = norm p
 
-                for k in keysOf followLeaf p do
-                    frame.Targets.TryAdd(k, shown) |> ignore
+                for k in keysOf cache followLeaf p do
+                    index frame k shown
 
-                    for a in ancestors k do
-                        frame.Above.TryAdd(a, shown) |> ignore
+                // an in-place write changes the file under every hard
+                // link to it [D:plan-guard-inode]; an atomic write
+                // replaces the inode, so the other links keep their content
+                if case = "WriteFile" then
+                    match FileId.ofPath p with
+                    | ValueSome id -> frame.Files.TryAdd(id, shown) |> ignore
+                    | ValueNone -> ()
         | [] -> unreachable "PlanMode.capture with no active frame"
 
-    let private refuse (op: string) (resolvedPath: string) (enclosing: bool, target: string) =
+    let private refuse (op: string) (resolvedPath: string) (enclosing: bool, target: string, linked: bool) =
         let where = if enclosing then "an enclosing 'plan'" else "this 'plan'"
 
         let what =
-            if target = norm resolvedPath then "targets it"
+            if linked then $"targets '{target}', the same file (a hard link)"
+            elif target = norm resolvedPath then "targets it"
             else $"targets '{target}'"
 
         failwith
             $"{op}: known-after-apply — this reads '{resolvedPath}', but an earlier captured mutation in {where} {what}; the read would see stale state (the mutation is a pending Op, not yet applied). Restructure so the read does not depend on a captured write, or move it out of the plan"
 
-    // the target a key equals or lies under, in one frame
-    let private targetAtOrAbove (frame: PlanFrame) (k: string) : string option =
-        match frame.Targets.TryGetValue k with
-        | true, t -> Some t
-        | _ ->
-            ancestors k
-            |> List.tryPick (fun a ->
-                match frame.Targets.TryGetValue a with
-                | true, t -> Some t
-                | _ -> None)
+    // one walk of a key's components in one frame [D:plan-guard-linear]:
+    // the target the key equals, else the shallowest one above it, else
+    // — when `below` holds — a target under it
+    let private lookup (frame: PlanFrame) (k: string) (below: unit -> bool) : string option =
+        let comps = parts k
+        let mutable node = frame.Index
+        let mutable above: string = null
+        let mutable i = 0
 
-    // the target below a key, in one frame
-    let private targetBelow (frame: PlanFrame) (k: string) : string option =
-        match frame.Above.TryGetValue k with
-        | true, t -> Some t
-        | _ -> None
+        while not (isNull node) && i < comps.Length do
+            node <- node.Find comps[i]
+
+            if not (isNull node) && i < comps.Length - 1 && isNull above then
+                above <- node.Target
+
+            i <- i + 1
+
+        if isNull node then
+            Option.ofObj above
+        elif not (isNull node.Target) then
+            Some node.Target
+        elif not (isNull above) then
+            Some above
+        elif not (isNull node.Below) && below () then
+            Some node.Below
+        else
+            None
 
     // the guard's walk [D:plan-guard-links]: every enclosing frame — an
     // inner plan's read sees an outer plan's pending ops as stale too —
@@ -734,22 +934,31 @@ module PlanMode =
     let private guard (op: string) (resolvedPath: string) (below: unit -> bool) =
         match stack.Value with
         | [] -> ()
-        | frames when frames |> List.forall (fun f -> f.Targets.Count = 0) -> ()
+        | frames when frames |> List.forall (fun f -> f.Index.IsEmpty) -> ()
         | frames ->
-            let keys = keysOf true resolvedPath
+            let keys = keysOf (linkCache ()) true resolvedPath
+
+            // the path's file identity, asked only when a frame holds one
+            // [D:plan-guard-inode]
+            let id =
+                lazy
+                    (if frames |> List.exists (fun f -> f.Files.Count > 0) then
+                         FileId.ofPath resolvedPath
+                     else
+                         ValueNone)
 
             frames
             |> List.indexed
             |> List.tryPick (fun (i, frame) ->
-                keys
-                |> List.tryPick (fun k ->
-                    match targetAtOrAbove frame k with
-                    | Some t -> Some t
-                    | None ->
-                        match targetBelow frame k with
-                        | Some t when below () -> Some t
-                        | _ -> None)
-                |> Option.map (fun t -> i > 0, t))
+                match keys |> List.tryPick (fun k -> lookup frame k below) with
+                | Some t -> Some(i > 0, t, false)
+                | None ->
+                    match id.Value with
+                    | ValueSome fid when frame.Files.Count > 0 ->
+                        match frame.Files.TryGetValue fid with
+                        | true, t -> Some(i > 0, t, true)
+                        | _ -> None
+                    | _ -> None)
             |> Option.iter (refuse op resolvedPath)
 
     /// a read builtin's known-after-apply gate [D:plan-apply]
@@ -896,7 +1105,7 @@ let private sgrLenAt (s: string) (i: int) : int =
 // output is byte-faithful.
 // Bidi controls render as a visible \uXXXX too [D:tty-bidi-sanitize]:
 // the text the user reads must match the bytes (Trojan Source).
-let sanitizeTtyData (s: string) : string =
+let private sanitizeWith (strict: bool) (s: string) : string =
     // bidi = the embeddings/overrides U+202A..202E, the isolates
     // U+2066..2069, LRM/RLM (U+200E/200F) and ALM (U+061C)
     let bidi (c: char) =
@@ -911,7 +1120,7 @@ let sanitizeTtyData (s: string) : string =
 
         n = 0x1B
         || n = 0x7F
-        || (n < 0x20 && c <> '\t' && c <> '\n' && c <> '\r')
+        || (n < 0x20 && c <> '\t' && c <> '\n' && (strict || c <> '\r'))
         || (n >= 0x80 && n <= 0x9F)
 
     if not (s |> Seq.exists (fun c -> hostile c || bidi c)) then
@@ -926,7 +1135,7 @@ let sanitizeTtyData (s: string) : string =
             let c = s.[i]
 
             if int c = 0x1B then
-                match sgrLenAt s i with
+                match (if strict then 0 else sgrLenAt s i) with
                 | 0 ->
                     // a non-SGR escape (OSC/DCS/cursor CSI/lone ESC): the
                     // introducer renders visible; the rest is now inert text
@@ -956,6 +1165,13 @@ let sanitizeTtyData (s: string) : string =
                 i <- i + 1
 
         sb.ToString()
+
+let sanitizeTtyData (s: string) : string = sanitizeWith false s
+
+/// weir's DATA renderers (the REPL and -e echo, table cells) show a
+/// bare CR and SGR visibly too [D:tty-echo-strict]: what they render is
+/// a value, never the user's intended terminal output
+let sanitizeTtyEcho (s: string) : string = sanitizeWith true s
 
 /// sanitize data only when the sink is a tty [D:binary-echo] —
 /// redirected output (a pipe, a file) stays byte-faithful; a terminal
@@ -1111,7 +1327,7 @@ let rec private tableCell (v: Value) : (string * bool) option =
         // the table is a tty-only renderer [D:binary-echo]: a data cell's
         // hostile bytes are neutralized (the tint is added later, around
         // this sanitized text — weir's own colouring is untouched)
-        Some(sanitizeTtyData clipped, false)
+        Some(sanitizeTtyEcho clipped, false)
     | VInt _
     | VFloat _
     | VSize _
@@ -1132,9 +1348,9 @@ let rec private tableCell (v: Value) : (string * bool) option =
 
 /// the lines form [D:echo-lines]: seq<string> presents as its lines
 /// at a tty — the content arrived as lines, and the list-literal
-/// render undid that. Raw and unclipped per line (print parity — a
-/// tab or an escape renders as itself; tty-only, so the piped surface
-/// cannot change); the count clip and the forced/unforced sentence
+/// render undid that. Unclipped per line (a tab renders as itself; CR
+/// and escapes render visibly at the caller [D:tty-echo-strict];
+/// tty-only, so the piped surface cannot change); the count clip and the forced/unforced sentence
 /// ride the footer unchanged. Keyed on the type at the caller
 /// (seq<string> exactly), never content-sniffing.
 let echoLines (cap: int option) (v: Value) : (string list * string option) option =
@@ -2793,6 +3009,7 @@ let rec private yamlRender
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, string * string * bool>)
     (depth: int)
+    (guide: Yaml.Shape option)
     (v: Value)
     : Rendered =
     if depth > yamlMaxDepth then
@@ -2801,26 +3018,30 @@ let rec private yamlRender
     let indent2 (lines: string list) =
         lines |> List.map (fun l -> if l = "" then "" else "  " + l)
 
-    let renderMap (entries: (string * Value) list) : string list =
+    let renderMap (entries: (string * Value * Yaml.Shape option) list) : string list =
         entries
-        |> List.collect (fun (k, v) ->
+        |> List.collect (fun (k, v, g) ->
             match v with
             | VUnion("None", None) -> [] // omit the key [D:json-option]'s yaml face
             | _ ->
                 let key = Yaml.renderScalar k
 
-                match yamlRender renames unions (depth + 1) v with
+                match yamlRender renames unions (depth + 1) g v with
                 | Inline "" -> [ $"{key}:" ]
                 | Inline s -> [ $"{key}: {s}" ]
                 | Block lines -> $"{key}:" :: indent2 lines
                 | BlockScalar(h, content) -> $"{key}: {h}" :: indent2 content)
 
-    let renderSeq (items: Value list) : string list =
+    let renderSeq (g: Yaml.Shape option) (items: Value list) : string list =
         items
         |> List.collect (fun item ->
-            match yamlRender renames unions (depth + 1) item with
+            match yamlRender renames unions (depth + 1) g item with
             | Inline "" -> [ "- null" ]
             | Inline s -> [ $"- {s}" ]
+            // a sequence item nests block-wise under a bare `-`
+            // [D:yaml-empty-typed] — the compact `- - x` is outside the
+            // subset the reader takes
+            | Block(first :: _ as lines) when first = "-" || first.StartsWith "- " -> "-" :: indent2 lines
             | Block lines ->
                 match lines with
                 | [] -> [ "-" ]
@@ -2832,6 +3053,18 @@ let rec private yamlRender
     // null and drops a stream document [D:yaml-empty-doc]
     let mapping (lines: string list) =
         if lines.IsEmpty then Inline "{}" else Block lines
+
+    // the child guides [D:yaml-empty-typed]
+    let fieldGuide (f: string) =
+        match guide with
+        | Some(Yaml.SRec(_, fs)) -> fs |> List.tryPick (fun (n, _, sh) -> if n = f then Some sh else None)
+        | _ -> None
+
+    let itemGuide, valueGuide =
+        match guide with
+        | Some(Yaml.SSeq g) -> Some g, None
+        | Some(Yaml.SPairs g) -> None, Some g
+        | _ -> None, None
 
     match v with
     | VInt n -> Inline(string n)
@@ -2851,19 +3084,25 @@ let rec private yamlRender
     // round-trip [D:yaml-empty-flow] — a bare `key:` reads back as null
     | VUnion("YSeq", Some(VSeq items)) when Seq.isEmpty items -> Inline "[]"
     | VUnion("YMap", Some(VSeq pairs)) when Seq.isEmpty pairs -> Inline "{}"
-    | VUnion("YSeq", Some(VSeq items)) -> Block(renderSeq (List.ofSeq items))
+    | VUnion("YSeq", Some(VSeq items)) -> Block(renderSeq None (List.ofSeq items))
     | VUnion("YMap", Some(VSeq pairs)) ->
         let entries =
             pairs
             |> Seq.map (fun p ->
                 match p with
-                | VTuple [ VStr k; v ] -> k, v
+                | VTuple [ VStr k; v ] -> k, v, None
                 | v -> unreachable $"the checker rejects YMap over {formatValue v}")
             |> List.ofSeq
 
-        refuseDupKeys "to yaml" (List.map fst entries)
+        refuseDupKeys "to yaml" (entries |> List.map (fun (k, _, _) -> k))
         Block(renderMap entries)
-    | VUnion("Some", Some inner) -> yamlRender renames unions (depth + 1) inner
+    | VUnion("Some", Some inner) ->
+        let g =
+            match guide with
+            | Some(Yaml.SOpt g) -> Some g
+            | _ -> None
+
+        yamlRender renames unions (depth + 1) g inner
     | VUnion("None", None) -> Inline "null" // element position; fields omit above
     // a tagged case renders its payload with the tag entry first
     // [D:wire-unions]; the [<Other>] case refuses — nothing faithful
@@ -2875,17 +3114,27 @@ let rec private yamlRender
             failwith
                 $"to yaml: '{c}' is the [<Other>] fallback — it names a tag that matched no case, and nothing faithful can be written from it"
 
+        let caseGuide =
+            match guide with
+            | Some(Yaml.SUnion(_, _, cases, _)) -> cases |> List.tryPick (fun (n, _, p) -> if n = c then p else None)
+            | _ -> None
+
         let payloadEntries =
             match payload with
             | Some(VRecord(rname, fields)) ->
                 let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
 
+                let g (f: string) =
+                    match caseGuide with
+                    | Some(Yaml.SRec(_, fs)) -> fs |> List.tryPick (fun (n, _, sh) -> if n = f then Some sh else None)
+                    | _ -> None
+
                 fields
-                |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv)
+                |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv, g f)
             | None -> []
             | Some v -> unreachable $"the declaration law rejects a tagged payload of {formatValue v}"
 
-        Block(renderMap ((tagField, VStr tagValue) :: payloadEntries))
+        Block(renderMap ((tagField, VStr tagValue, None) :: payloadEntries))
     | VRecord(rname, fields) ->
         // wire keys on the yaml wire too [D:wire-keys]
         let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
@@ -2893,7 +3142,7 @@ let rec private yamlRender
         mapping (
             renderMap (
                 fields
-                |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv)
+                |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv, fieldGuide f)
             )
         )
     | VSeq items ->
@@ -2908,23 +3157,28 @@ let rec private yamlRender
                 | _ -> None)
 
         if not items.IsEmpty && asPairs |> List.forall Option.isSome then
-            let entries = asPairs |> List.map Option.get
-            refuseDupKeys "to yaml" (List.map fst entries)
+            let entries = asPairs |> List.map (fun p -> let k, v = Option.get p in k, v, valueGuide)
+            refuseDupKeys "to yaml" (entries |> List.map (fun (k, _, _) -> k))
             mapping (renderMap entries)
-        elif items.IsEmpty && depth = 0 then
-            // an empty top-level seq is the empty flow sequence, as an
-            // empty Yaml node is [D:yaml-empty-doc]
-            Inline "[]"
+        elif items.IsEmpty then
+            // an empty seq is a flow empty at any depth, so `Some []`
+            // reads back `Some []`; the type picks the form
+            // [D:yaml-empty-typed] — a seq<string * _> is the empty
+            // mapping, any other seq the empty sequence
+            match guide with
+            | Some(Yaml.SPairs _) -> Inline "{}"
+            | _ -> Inline "[]"
         else
-            Block(renderSeq items)
+            Block(renderSeq itemGuide items)
     | v -> unreachable $"the checker rejects 'to yaml' on {formatValue v}"
 
 let private yamlToLines
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, string * string * bool>)
+    (guide: Yaml.Shape option)
     (v: Value)
     : string list =
-    match yamlRender renames unions 0 v with
+    match yamlRender renames unions 0 guide v with
     | Inline s -> [ s ]
     | Block lines -> lines
     | BlockScalar(h, content) -> h :: (content |> List.map (fun l -> if l = "" then "" else "  " + l))
@@ -2933,6 +3187,7 @@ let private yamlToImpl
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, string * string * bool>)
     (stream: bool)
+    (guide: Yaml.Shape option)
     : Value =
     VBuiltin(fun v ->
         match v with
@@ -2941,7 +3196,7 @@ let private yamlToImpl
         // sequence document (yamlRender's own VSeq arm, matching
         // json's array), and a pair-seq is a single mapping document.
         | VSeq items when stream ->
-            let docs = items |> Seq.map (yamlToLines renames unions) |> List.ofSeq
+            let docs = items |> Seq.map (yamlToLines renames unions guide) |> List.ofSeq
 
             let lines =
                 match docs with
@@ -2949,7 +3204,7 @@ let private yamlToImpl
                 | first :: rest -> first @ (rest |> List.collect (fun d -> "---" :: d))
 
             VSeq(lines |> List.map VStr |> List.toSeq)
-        | v -> VSeq(yamlToLines renames unions v |> List.map VStr |> List.toSeq))
+        | v -> VSeq(yamlToLines renames unions guide v |> List.map VStr |> List.toSeq))
 
 let scalarString (what: string) (v: Value) : string =
     match v with
@@ -3617,7 +3872,8 @@ let private argvLoad (target: ArgsTarget) : Value =
     let argv = Session.ScriptArgs
 
     if List.contains "--help" argv || List.contains "-h" argv then
-        printfn "%s" (argvUsage target argv)
+        // the `///` doc text is the script's data [D:tty-help-sanitize]
+        printfn "%s" (argvUsage target argv |> sanitizeIfTty System.Console.IsOutputRedirected)
         raise (ExitRequest 0)
 
     match target with
@@ -4185,16 +4441,16 @@ and eval (env: Env) (te: TypedExpr) : Value =
         match patchBy with
         | None -> tree
         | Some by -> VUnion("|ypatch", Some(VTuple [ VStr(defaultArg by ""); tree ]))
-    | TETo("yaml", renames, codecs, unions, stream) ->
+    | TETo("yaml", renames, codecs, unions, stream, guide) ->
         // coded fields become plain values first [D:wire-codecs]
-        let render = yamlToImpl renames unions stream
+        let render = yamlToImpl renames unions stream guide
         VBuiltin(fun v -> apply render (encodeTree "yaml" codecs v))
-    | TETo("jsonl", renames, codecs, unions, _) ->
+    | TETo("jsonl", renames, codecs, unions, _, _) ->
         VBuiltin(fun v ->
             match v with
             | VSeq items -> VSeq(items |> Seq.map (encodeTree "jsonl" codecs >> jsonLine renames unions >> VStr))
             | v -> unreachable $"the checker rejects 'to jsonl' on {formatValue v}")
-    | TETo(fmt, renames, codecs, unions, _) ->
+    | TETo(fmt, renames, codecs, unions, _, _) ->
         // one document [D:to-jsonl] — the whole value through the same
         // renderer, once; an array document forces its seq (one line
         // cannot stream)
@@ -4375,6 +4631,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         let hooked = Session.registerAlways runCleanup
 
+        // the claim is made inside the cleanup's mark, so a teardown
+        // requested from here on waits for it [D:teardown-never-preempts]
+        let claimAndRun () =
+            Session.runningCleanup (fun () ->
+                if Session.deregisterAlways hooked then
+                    eval env cleanup |> ignore)
+
         match
             (try
                 Ok(eval env body)
@@ -4384,9 +4647,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         | Ok v ->
             // case 1: a cleanup raise propagates as the scope's raise —
             // unless a signal's hook already claimed the cleanup
-            if Session.deregisterAlways hooked then
-                runCleanup ()
-
+            claimAndRun ()
             v
         | Error original ->
             // the cleanup runs weir code while the body's raise unwinds: pin
@@ -4401,8 +4662,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                      b.Exact <- RunPos.Exact)
 
             (try
-                if Session.deregisterAlways hooked then
-                    runCleanup ()
+                claimAndRun ()
              with
              | :? ExitRequest ->
                  // the checker refuses exit inside always; a raise here
@@ -4979,19 +5239,19 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 loopThread.Join 500 |> ignore
 
                 // a handler still running past the drain is cut at its next
-                // effect boundary and joined, so none of its effects lands
-                // after the scope [D:serve-cut]; its writes are dropped and
-                // its result discarded, never raised [D:serve-drain]. Pure
-                // compute may outlive the join — its next boundary is cut
+                // effect boundary and joined whole, its `always` cleanup
+                // included, so none of its effects lands after the scope
+                // [D:serve-cut] [D:serve-cut-joins-cleanup]; its writes are
+                // dropped and its result discarded, never raised
+                // [D:serve-drain]. Pure compute holds the join, as a pfirst
+                // loser's does
                 cut.Cancel()
 
                 for kv in inflight do
                     kv.Value.Condemn()
 
-                let clock = System.Diagnostics.Stopwatch.StartNew()
-
                 for kv in inflight do
-                    kv.Key.Join(max 0 (drainMs - int clock.ElapsedMilliseconds)) |> ignore
+                    Session.joinThread kv.Key
         | WithinTmp ->
             // kind tmp [D:within-scopes]: a fresh unique directory,
             // bound as the binder for the block; removed on every

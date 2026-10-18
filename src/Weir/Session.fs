@@ -272,9 +272,33 @@ let private killedProcs =
 // commands are what `always` is for
 let private cleanupDepth = System.Threading.AsyncLocal<int>()
 
+let mutable private mainThreadId = 0
+
+let private onMainThread () =
+    mainThreadId <> 0
+    && System.Threading.Thread.CurrentThread.ManagedThreadId = mainThreadId
+
+// the main thread inside an `always` cleanup [D:teardown-never-preempts]:
+// the signal watchdog stands down for it, and once the watchdog has
+// fired no cleanup starts on the main thread (the sweep runs it)
+let private watchdogGate = obj ()
+let mutable private mainCleanups = 0
+let mutable private watchdogFired = false
+
 /// run an `always` cleanup: spawns inside it start even after the teardown
-/// kill, and a parallel fan-out inside it keeps taking arms
+/// kill, a parallel fan-out inside it keeps taking arms, and a requested
+/// teardown never preempts it [D:teardown-never-preempts]
 let runningCleanup (f: unit -> 'a) : 'a =
+    let onMain = onMainThread ()
+
+    if onMain then
+        lock watchdogGate (fun () ->
+            if watchdogFired then
+                // the process is exiting and the sweep owns the cleanups
+                System.Threading.Thread.Sleep System.Threading.Timeout.Infinite
+
+            mainCleanups <- mainCleanups + 1)
+
     cleanupDepth.Value <- cleanupDepth.Value + 1
 
     try
@@ -282,12 +306,82 @@ let runningCleanup (f: unit -> 'a) : 'a =
     finally
         cleanupDepth.Value <- cleanupDepth.Value - 1
 
+        if onMain then
+            lock watchdogGate (fun () -> mainCleanups <- mainCleanups - 1)
+
 let inCleanup () = cleanupDepth.Value > 0
+
+// children an `always` cleanup started: the teardown's kill spares them
+// [D:teardown-never-preempts] — a cleanup runs whole, its commands too;
+// the exit and a second signal still kill them
+let private cleanupProcs =
+    System.Collections.Concurrent.ConcurrentDictionary<System.Diagnostics.Process, unit>(HashIdentity.Reference)
 
 // a tree kill in flight [D:kill-settle]: .NET's Kill(true) on Unix
 // stops the tree, then kills it, so a process exiting between the two
 // leaves SIGSTOPped orphans — every exit path settles the kills in flight
 let mutable private killsInFlight = 0
+
+// the tree walk [D:tree-kill-walk]: .NET's Kill(true) reads every
+// process on the box to find one tree, so killing n trees cost n × the
+// process table. On Linux the kernel lists each task's children
+// (/proc/PID/task/TID/children), so the walk costs the tree alone. It
+// covers what Kill(true) covers — every descendant still linked to the
+// child by parent pid, a `setsid` child included; a daemon that forked
+// away from its parent was reparented and is out of reach of both.
+// Elsewhere (or a kernel without the file) Kill(true) stays.
+module private ProcTree =
+    open System.Runtime.InteropServices
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int kill(int pid, int signal)
+
+    let SIGKILL = 9
+    let SIGSTOP = 19
+
+    let available =
+        lazy
+            (System.OperatingSystem.IsLinux()
+             && System.IO.File.Exists(
+                 $"/proc/{System.Environment.ProcessId}/task/{System.Environment.ProcessId}/children"
+             ))
+
+    let childrenOf (pid: int) : int list =
+        try
+            [ for task in System.IO.Directory.EnumerateDirectories $"/proc/{pid}/task" do
+                  let listed =
+                      try
+                          System.IO.File.ReadAllText(System.IO.Path.Combine(task, "children"))
+                      with _ ->
+                          ""
+
+                  for tok in listed.Split(' ', System.StringSplitOptions.RemoveEmptyEntries) do
+                      match System.Int32.TryParse tok with
+                      | true, n -> yield n
+                      | _ -> () ]
+        with _ ->
+            []
+
+    // stop each process before listing its children (a stopped parent
+    // forks no more and reaps none, so no pid in the walk is reused),
+    // then kill leaves first, as Kill(true) stops then kills
+    let killWalk (root: int) : unit =
+        let order = System.Collections.Generic.List<int>()
+        let seen = System.Collections.Generic.HashSet<int>()
+
+        let rec walk (pid: int) =
+            if seen.Add pid then
+                kill (pid, SIGSTOP) |> ignore
+                order.Add pid
+
+                for c in childrenOf pid do
+                    walk c
+
+        try
+            walk root
+        finally
+            for i in order.Count - 1 .. -1 .. 0 do
+                kill (order[i], SIGKILL) |> ignore
 
 /// tree-kill `p` (a dead or reaped process is no error)
 let killTree (p: System.Diagnostics.Process) : unit =
@@ -295,7 +389,11 @@ let killTree (p: System.Diagnostics.Process) : unit =
 
     try
         try
-            p.Kill true
+            if ProcTree.available.Value then
+                if not p.HasExited then
+                    ProcTree.killWalk p.Id
+            else
+                p.Kill true
         with _ ->
             ()
     finally
@@ -354,7 +452,6 @@ let registerChild (p: System.Diagnostics.Process) : unit =
 // request. Registered by the script runner and -e; without a registered
 // main thread (the REPL) the handler keeps the in-handler sweep.
 
-let mutable private mainThreadId = 0
 let mutable private teardownCode = 0
 let mutable private teardownRaised = 0
 
@@ -363,10 +460,6 @@ let teardownWake = new System.Threading.ManualResetEventSlim(false)
 
 let registerMainThread () : unit =
     mainThreadId <- System.Threading.Thread.CurrentThread.ManagedThreadId
-
-let private onMainThread () =
-    mainThreadId <> 0
-    && System.Threading.Thread.CurrentThread.ManagedThreadId = mainThreadId
 
 // what a worker's waits hand to an API (an Http send) once a teardown is
 // requested [D:teardown-joins-arms]
@@ -546,15 +639,17 @@ let gatedSpawn (start: unit -> 'a) : 'a =
     finally
         spawnGate.ExitReadLock()
 
-/// stop spawning and tree-kill every live child not already killed
-let private killLiveChildren () : unit =
+/// stop spawning and tree-kill every live child not already killed; the
+/// teardown spares a cleanup's children [D:teardown-never-preempts]
+let private killLiveChildren (spareCleanups: bool) : unit =
     spawnGate.EnterWriteLock()
 
     try
         spawningStopped <- true
 
         for kv in liveProcs do
-            if killedProcs.Add kv.Value then
+            if not (spareCleanups && cleanupProcs.ContainsKey kv.Value)
+               && killedProcs.Add kv.Value then
                 killTree kv.Value
     finally
         spawnGate.ExitWriteLock()
@@ -625,10 +720,19 @@ module private Libc =
     extern int close(int fd)
 
     [<DllImport("libc", SetLastError = true)>]
+    extern int tcgetpgrp(int fd)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int getpgrp()
+
+    [<DllImport("libc", SetLastError = true)>]
     extern int flock(int fd, int operation)
 
     [<DllImport("libc", SetLastError = true)>]
     extern nativeint read(int fd, nativeint buf, unativeint count)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int64 lseek(int fd, int64 offset, int whence)
 
     [<Struct; StructLayout(LayoutKind.Sequential)>]
     type PollFd =
@@ -666,6 +770,21 @@ module private Libc =
             true
         else
             false
+
+    /// true when weir's process group is its controlling terminal's
+    /// foreground group — a SIGINT then is the terminal's ^C, delivered
+    /// to the whole group [D:sigint-terminal-group]
+    let terminalForeground () : bool =
+        let fd = ``open`` ("/dev/tty", O_RDWR)
+
+        if fd < 0 then
+            false
+        else
+            try
+                let fg = tcgetpgrp fd
+                fg > 0 && fg = getpgrp ()
+            finally
+                close fd |> ignore
 
     /// convert an inherited SIG_IGN on SIGINT to SIG_DFL, leaving every
     /// other disposition untouched (peek by setting SIG_DFL, restore if
@@ -728,6 +847,28 @@ let sigpipeForChildren: Lazy<unit> =
                  | _ -> ()
              | None -> ())
 
+/// the detached-SIGINT reset [D:signal-teardown], once, before the first
+/// SIGINT registration and the first spawn — .NET reads the inherited
+/// disposition when it first starts a process [D:sigint-reaps]
+let resetDetachedSigint: Lazy<unit> =
+    lazy
+        (if
+            not (System.OperatingSystem.IsWindows())
+            && not (replSurvivesSigint.Value)
+            && not (Libc.hasControllingTty ())
+         then
+             Libc.resetSigintIfIgnored () |> ignore)
+
+// a terminal ^C weir waited out ends weir BY the SIGINT, as before any
+// wait [D:sigint-terminal-group] — a calling shell sees the ^C, not an exit
+let mutable private dieBySigint = false
+
+let private raiseSigint () =
+    Libc.signal (Libc.SIGINT, Libc.SIG_DFL) |> ignore
+    ProcTree.kill (System.Environment.ProcessId, Libc.SIGINT) |> ignore
+    System.Threading.Thread.Sleep 1000
+    System.Environment.Exit 130
+
 /// the requested exit code, or `code` when none was requested — the
 /// runner's result, so a request racing a statement's normal end still
 /// exits with the request's code
@@ -737,8 +878,13 @@ let exitCodeOr (code: int) : int =
     | c ->
         // a requested teardown's kill completes before the exit, every
         // other tree kill in flight with it [D:kill-settle]
-        killLiveChildren ()
+        killLiveChildren false
         settleKills ()
+
+        if dieBySigint then
+            System.Console.Out.Flush()
+            raiseSigint ()
+
         c
 
 /// a parallel worker stops taking arms once a teardown is requested
@@ -750,24 +896,46 @@ let stopTakingArms () : bool =
 /// the requested teardown's exit code, or 0 when none is requested
 let teardownRequested () : int = System.Threading.Volatile.Read &teardownCode
 
+/// a command that died of SIGINT while weir is the terminal's foreground
+/// group most likely took the terminal's ^C with weir [D:sigint-terminal-group]:
+/// give the signal handler a moment to request the teardown, so the death
+/// is the ^C, not a command failure
+let settleInterrupt (code: int) : unit =
+    if
+        code = 130
+        && not (System.OperatingSystem.IsWindows())
+        && mainThreadId <> 0
+        && System.Threading.Volatile.Read &teardownCode = 0
+        && Libc.terminalForeground ()
+    then
+        let clock = System.Diagnostics.Stopwatch.StartNew()
+
+        while System.Threading.Volatile.Read &teardownCode = 0
+              && clock.ElapsedMilliseconds < 250L do
+            System.Threading.Thread.Sleep 5
+
 /// raise the requested teardown on the main thread, once: the unwind
 /// then runs the cleanups as ordinary code (which must not be cut short
-/// by the same request again)
+/// by the same request again). A cleanup already running is never
+/// preempted [D:teardown-never-preempts]: the request raises at the
+/// first boundary after it
 let checkTeardown () : unit =
     let c = System.Threading.Volatile.Read &teardownCode
 
     if
         c <> 0
         && onMainThread ()
+        && not (inCleanup ())
         && System.Threading.Interlocked.Exchange(&teardownRaised, 1) = 0
     then
         raise (ExitRequest c)
 
 // a main thread not yet unwinding waits interruptibly; elsewhere (a
-// worker, or a cleanup already running for the request) waits run as
-// written
+// worker, or a cleanup running) waits run as written
 let private interruptible () =
-    onMainThread () && System.Threading.Volatile.Read &teardownRaised = 0
+    onMainThread ()
+    && System.Threading.Volatile.Read &teardownRaised = 0
+    && not (inCleanup ())
 
 // what a runtime-owned wait wakes on: the teardown (main thread, not yet
 // unwinding; any other flow outside a cleanup [D:teardown-joins-arms]), a
@@ -827,15 +995,72 @@ let waitProcess (p: System.Diagnostics.Process) : unit =
         // the no-argument form also waits for redirected streams' EOF
         p.WaitForExit()
 
+// each running fan-out worker, marked while parked in a blocking call no
+// cut reaches [D:teardown-abandons-reads]: the teardown's join stops
+// waiting once every live worker is parked. One mark per worker thread, so
+// a parked read costs no shared write
+[<AllowNullLiteral>]
+type private ArmMark() =
+    [<DefaultValue>]
+    val mutable Parked: int
+
+let private armMarks =
+    System.Collections.Concurrent.ConcurrentDictionary<ArmMark, byte>(HashIdentity.Reference)
+
+let private armMark = new System.Threading.ThreadLocal<ArmMark>()
+
+/// run one fan-out worker (on its own thread), marked for the teardown's join
+let armRunning (f: unit -> 'a) : 'a =
+    let m = ArmMark()
+    let prev = armMark.Value
+    armMark.Value <- m
+    armMarks[m] <- 0uy
+
+    try
+        f ()
+    finally
+        armMarks.TryRemove m |> ignore
+        armMark.Value <- prev
+
+let private parking (f: unit -> 'a) : 'a =
+    match armMark.Value with
+    | null -> f ()
+    | m ->
+        m.Parked <- m.Parked + 1
+
+        try
+            f ()
+        finally
+            m.Parked <- m.Parked - 1
+
+let private allArmsParked () =
+    not armMarks.IsEmpty
+    && armMarks.Keys |> Seq.forall (fun m -> System.Threading.Volatile.Read &m.Parked > 0)
+
+// a blocking call on a flow only the teardown cuts: parked while it blocks,
+// and a teardown landing meanwhile raises as it returns — its result unused
+let private parked (f: unit -> 'a) : 'a =
+    let cut () =
+        if System.Threading.Volatile.Read &teardownCode <> 0 then
+            raise (Cancelled())
+
+    cut ()
+    let v = parking f
+    cut ()
+    v
+
 /// a pipe read a lost race or a REPL ^C cuts: the kill closes a pipe only
 /// when it reaches every holder — an orphaned grandchild keeps one open —
 /// so under a cancel the read waits beside the token and a cut raises
-/// instead of waiting for EOF; the abandoned read's bytes are never used
+/// instead of waiting for EOF; the abandoned read's bytes are never used.
+/// An arm's read only a teardown could cut is parked, and the teardown's
+/// join abandons it [D:teardown-abandons-reads]
 let cutRead
     (read: unit -> 'a)
     (readAsync: System.Threading.CancellationToken -> System.Threading.Tasks.ValueTask<'a>)
     : 'a =
     match waitTokens () with
+    | [] when teardownCuts () -> parked read
     | [] -> read ()
     | _ ->
         checkCancels ()
@@ -865,9 +1090,11 @@ let cutJoin (task: System.Threading.Tasks.Task<'a>) : 'a =
 
 /// a blocking call a lost race or a REPL ^C abandons — a FIFO's open or
 /// read, which no kill reaches [D:stdin-reader]: under a cancel it runs off
-/// the flow and the wait raises; the abandoned call's result is never used
+/// the flow and the wait raises; the abandoned call's result is never used.
+/// Only a teardown could cut it: parked [D:teardown-abandons-reads]
 let cutBlocking (f: unit -> 'a) : 'a =
     match waitTokens () with
+    | [] when teardownCuts () -> parked f
     | [] -> f ()
     | _ ->
         let task = System.Threading.Tasks.Task.Run<'a>(System.Func<'a> f)
@@ -898,14 +1125,28 @@ let waitTask (t: System.Threading.Tasks.Task) : unit =
         if teardownRequested () <> 0 then
             System.Threading.Volatile.Write(&mainJoining, 1)
 
+            // every live arm parked in a call no cut reaches, twice in a
+            // row: the join abandons them [D:teardown-abandons-reads]
+            let mutable streak = 0
+
             try
-                t.Wait()
+                while not (t.Wait 50) && streak < 2 do
+                    streak <- if allArmsParked () then streak + 1 else 0
             with _ ->
                 ()
 
         checkTeardown ()
 
-    t.Wait()
+    // an arm joining its own arms is parked with them
+    if teardownCuts () then parking t.Wait else t.Wait()
+
+/// join a thread (a serve handler) whole; a teardown requested meanwhile
+/// stands the signal watchdog down, as `waitTask` does
+/// [D:serve-cut-joins-cleanup]
+let joinThread (th: System.Threading.Thread) : unit =
+    while not (th.Join 50) do
+        if interruptible () && teardownRequested () <> 0 then
+            System.Threading.Volatile.Write(&mainJoining, 1)
 
 // ---- weir's one stdin reader [D:stdin-reader] --------------------------
 // Self.prompt, Self.stdin and the piped REPL read fd 0 through one buffer,
@@ -940,6 +1181,22 @@ module Stdin =
             while not (Libc.readable 0 50) do
                 raiseWoken ()
 
+    // one read(2) of up to `n` bytes at buf[hi]: the count, or -errno
+    let private readRaw (n: int) : int =
+        let h =
+            System.Runtime.InteropServices.GCHandle.Alloc(buf, System.Runtime.InteropServices.GCHandleType.Pinned)
+
+        try
+            let r = int (Libc.read (0, h.AddrOfPinnedObject() + nativeint hi, unativeint n))
+
+            if r >= 0 then
+                hi <- hi + r
+                r
+            else
+                -System.Runtime.InteropServices.Marshal.GetLastPInvokeError()
+        finally
+            h.Free()
+
     // read up to `n` more bytes into the buffer; 0 at end of input (a
     // read error is the end too)
     let private fill (n: int) : int =
@@ -966,31 +1223,45 @@ module Stdin =
             let rec go () =
                 awaitReadable ()
 
-                let r =
-                    let h =
-                        System.Runtime.InteropServices.GCHandle.Alloc(
-                            buf,
-                            System.Runtime.InteropServices.GCHandleType.Pinned
-                        )
-
-                    try
-                        int (Libc.read (0, h.AddrOfPinnedObject() + nativeint hi, unativeint n))
-                    finally
-                        h.Free()
-
-                if r >= 0 then
-                    hi <- hi + r
-                    r
-                else
-                    match System.Runtime.InteropServices.Marshal.GetLastPInvokeError() with
-                    | e when e = Libc.EINTR -> go ()
-                    | e when e = Libc.EAGAIN ->
-                        // an inherited non-blocking fd 0
-                        Libc.readable 0 50 |> ignore
-                        go ()
-                    | _ -> 0
+                match readRaw n with
+                | r when r >= 0 -> r
+                | e when -e = Libc.EINTR -> go ()
+                | e when -e = Libc.EAGAIN ->
+                    // an inherited non-blocking fd 0
+                    Libc.readable 0 50 |> ignore
+                    go ()
+                | _ -> 0
 
             go ()
+
+    // a cut landing with a line begun in the buffer [D:prompt-cut-whole-line]:
+    // the bytes fd 0 already holds finish that line, so a child spawned next
+    // never starts mid-line; the line stays buffered, unconsumed. Bytes not
+    // yet written are not waited for
+    let private finishBegunLine (stream: bool) =
+        if not (System.OperatingSystem.IsWindows()) && hi > lo then
+            let ended () =
+                let span = System.ReadOnlySpan<byte>(buf, lo, hi - lo)
+
+                if stream then
+                    System.MemoryExtensions.IndexOfAny(span, 10uy, 13uy) >= 0
+                else
+                    System.MemoryExtensions.IndexOf(span, 10uy) >= 0
+
+            let mutable go = not (ended ())
+
+            while go && Libc.readable 0 0 do
+                if hi + 1 > buf.Length then
+                    let bigger = Array.zeroCreate (buf.Length * 2)
+                    System.Buffer.BlockCopy(buf, 0, bigger, 0, hi)
+                    buf <- bigger
+
+                match readRaw 1 with
+                | 1 -> go <- not (ended ())
+                | e when -e = Libc.EINTR -> ()
+                | _ -> go <- false
+
+        scanned <- lo
 
     // the next whole line in the buffer: a stream read breaks at \n, \r
     // and \r\n (a StreamReader's lines), a prompt at \n with one \r before
@@ -1051,7 +1322,14 @@ module Stdin =
                 while line.IsNone && not atEnd do
                     waited <- true
 
-                    if fill chunk = 0 then
+                    let got =
+                        try
+                            fill chunk
+                        with _ ->
+                            finishBegunLine stream
+                            reraise ()
+
+                    if got = 0 then
                         atEnd <- true
 
                     start <- lo
@@ -1080,6 +1358,141 @@ module Stdin =
     /// the next line of the stream (Self.stdin, the piped REPL); null at
     /// the end of input
     let readLine () : string = readWith true
+
+    /// put a line read ahead back in front of the buffer, so the next weir
+    /// reader — a `Self.prompt` included — takes it [D:repl-lookahead-unread]
+    let unread (line: string) : unit =
+        lock gate (fun () ->
+            let bytes = System.Text.Encoding.UTF8.GetBytes(line + "\n")
+            let n = bytes.Length
+
+            if lo >= n then
+                lo <- lo - n
+            else
+                let bigger = Array.zeroCreate (max buf.Length (n + hi - lo))
+                System.Buffer.BlockCopy(buf, lo, bigger, n, hi - lo)
+                hi <- n + hi - lo
+                lo <- 0
+                buf <- bigger
+
+            System.Buffer.BlockCopy(bytes, 0, buf, lo, n)
+            scanned <- lo)
+
+    /// a terminal answer without the key sequences cooked mode passes
+    /// through [D:prompt-tty-keys]: CSI (ESC [ … final) and SS3 (ESC O x) —
+    /// an arrow, Home or Delete is ignored
+    let dropKeySequences (line: string) : string =
+        if not (line.Contains '\u001b') then
+            line
+        else
+            let sb = System.Text.StringBuilder(line.Length)
+            let mutable i = 0
+
+            while i < line.Length do
+                let c = line[i]
+
+                if c = '\u001b' && i + 1 < line.Length && line[i + 1] = '[' then
+                    // parameters and intermediates, then one final byte
+                    let mutable j = i + 2
+
+                    while j < line.Length && line[j] >= '\u0020' && line[j] <= '\u003f' do
+                        j <- j + 1
+
+                    i <- if j < line.Length && line[j] >= '\u0040' && line[j] <= '\u007e' then j + 1 else j
+                elif c = '\u001b' && i + 1 < line.Length && line[i + 1] = 'O' then
+                    i <- min line.Length (i + 3)
+                else
+                    sb.Append c |> ignore
+                    i <- i + 1
+
+            sb.ToString()
+
+// an unseekable path File.read opens — a FIFO, /dev/stdin on a pipe, a
+// tty [D:fifo-read-polled]: opened non-blocking (so the open waits for no
+// writer) and polled beside the cut, so a lost race, a REPL ^C or a
+// teardown raises at the poll and the dispose closes the fd — no thread is
+// left inside read(2) to take a later writer's bytes. Linux, where a
+// fresh reader's poll stays quiet until a writer arrives
+type private PolledFd(fd: int) =
+    inherit System.IO.Stream()
+    let mutable closed = false
+
+    // wait until fd is readable (data, EOF or an error), raising when the
+    // wait is cut
+    let await () =
+        match wakeHandles () with
+        | [] ->
+            while not (Libc.readable fd 1000) do
+                ()
+        | _ ->
+            raiseWoken ()
+
+            while not (Libc.readable fd 50) do
+                raiseWoken ()
+
+    override _.CanRead = true
+    override _.CanSeek = false
+    override _.CanWrite = false
+    override _.Length = raise (System.NotSupportedException())
+
+    override _.Position
+        with get () = raise (System.NotSupportedException())
+        and set (_: int64) = raise (System.NotSupportedException())
+
+    override _.Flush() = ()
+    override _.Seek(_: int64, _: System.IO.SeekOrigin) : int64 = raise (System.NotSupportedException())
+    override _.SetLength(_: int64) = raise (System.NotSupportedException())
+    override _.Write(_: byte[], _: int, _: int) = raise (System.NotSupportedException())
+
+    override _.Read(buffer: byte[], offset: int, count: int) : int =
+        let rec go () =
+            await ()
+
+            let h =
+                System.Runtime.InteropServices.GCHandle.Alloc(
+                    buffer,
+                    System.Runtime.InteropServices.GCHandleType.Pinned
+                )
+
+            let r =
+                try
+                    int (Libc.read (fd, h.AddrOfPinnedObject() + nativeint offset, unativeint count))
+                finally
+                    h.Free()
+
+            if r >= 0 then
+                r
+            else
+                match System.Runtime.InteropServices.Marshal.GetLastPInvokeError() with
+                | e when e = Libc.EINTR || e = Libc.EAGAIN -> go ()
+                | e -> raise (System.IO.IOException $"read failed (errno {e})")
+
+        if count = 0 then 0 else go ()
+
+    override _.Dispose(disposing: bool) =
+        if not closed then
+            closed <- true
+            Libc.close fd |> ignore
+
+        base.Dispose disposing
+
+/// a polled stream for an unseekable path [D:fifo-read-polled]; None for a
+/// seekable one (or off Linux, or a path open(2) refuses) — the caller opens
+/// it as a file
+let openPolled (path: string) : System.IO.Stream option =
+    if not (System.OperatingSystem.IsLinux()) then
+        None
+    else
+        let O_NONBLOCK, O_CLOEXEC = 0x800, 0x80000
+        let fd = Libc.``open`` (path, O_NONBLOCK ||| O_CLOEXEC)
+
+        if fd < 0 then
+            None
+        elif Libc.lseek (fd, 0L, 1) >= 0L then
+            Libc.close fd |> ignore
+            None
+        else
+            Some(new PolledFd(fd) :> System.IO.Stream)
 
 // weir's own stdout, when it is a pipe or file [D:stdout-epipe]: .NET's
 // Unix console stream drops EPIPE, so a closed reader went unnoticed and
@@ -1185,8 +1598,7 @@ let private installExitHook () =
         // A `nohup weir &` keeps its tty and its SIG_IGN — terminal Ctrl+C
         // still cannot kill it. The REPL is interactive (has a tty), so it
         // never trips this and its [D:repl-isig] survival is untouched.
-        if not (replSurvivesSigint.Value) && not (Libc.hasControllingTty ()) then
-            Libc.resetSigintIfIgnored () |> ignore
+        resetDetachedSigint.Force()
 
         // SIGHUP joins them [D:sighup-teardown]: a closed terminal or a
         // `kill -HUP` unwinds like INT/TERM, exit 129; an inherited
@@ -1223,22 +1635,39 @@ let private installExitHook () =
                             let code = signalExitCode ctx.Signal
 
                             requestTeardown code
-                            killLiveChildren ()
+                            killLiveChildren true
 
                             // the backstop: a main thread blocked where
                             // no boundary comes (a network call) cannot
                             // unwind — after a grace period the old
                             // in-handler teardown runs and the process
                             // exits; it runs no statement either. One
-                            // joining arms unwinds next and is left be
+                            // joining arms unwinds next and is left be; one
+                            // in a cleanup runs it whole first
+                            // [D:teardown-never-preempts]
                             let watchdog =
                                 System.Threading.Thread(fun () ->
-                                    System.Threading.Thread.Sleep 1000
+                                    let rec standBy () =
+                                        System.Threading.Thread.Sleep 1000
 
-                                    if
-                                        System.Threading.Volatile.Read &teardownRaised = 0
-                                        && System.Threading.Volatile.Read &mainJoining = 0
-                                    then
+                                        let fire =
+                                            lock watchdogGate (fun () ->
+                                                if
+                                                    System.Threading.Volatile.Read &teardownRaised <> 0
+                                                    || System.Threading.Volatile.Read &mainJoining <> 0
+                                                then
+                                                    Some false
+                                                elif mainCleanups > 0 then
+                                                    None
+                                                else
+                                                    watchdogFired <- true
+                                                    Some true)
+
+                                        match fire with
+                                        | None -> standBy ()
+                                        | Some f -> f
+
+                                    if standBy () then
                                         sweepLiveTmpDirs ()
                                         System.Environment.Exit code)
 
@@ -1270,12 +1699,17 @@ let registerProc (p: System.Diagnostics.Process) : unit =
 
     liveProcs[p.Id] <- p
 
-// a foreground child alone installs only a SIGTERM/SIGHUP reaper
-// [D:signal-main-unwind]: a pid-targeted TERM or HUP tree-kills the live children,
-// then default termination proceeds (weir still dies BY the signal, as
-// before any scope exists; a ^C reaches the child through the group
-// anyway). Once a scope installs the full hook, that hook does the kill
-// as part of its teardown and this one stands down. POSIX only.
+// a foreground child alone installs only a reaper [D:signal-main-unwind]:
+// a pid-targeted TERM, HUP or INT tree-kills the live children, then
+// default termination proceeds (weir still dies BY the signal, as before
+// any scope exists). SIGINT joins them [D:sigint-reaps]: a `kill -INT` of
+// weir's pid reaches no child, and a terminal ^C that already reached the
+// group is the same stop; the REPL survives its ^C and is skipped, an
+// inherited SIG_IGN (a backgrounded weir) keeps the handler unbound. In a
+// script the teardown is requested before the kill, so a child or arm the
+// kill ends is the teardown, never a command failure [D:teardown-kill-not-failure].
+// Once a scope installs the full hook, that hook does the kill as part of
+// its teardown and this one stands down. POSIX only.
 let private fgHookInstalled = ref 0
 
 let registerForeground (p: System.Diagnostics.Process) : unit =
@@ -1283,25 +1717,64 @@ let registerForeground (p: System.Diagnostics.Process) : unit =
         not (System.OperatingSystem.IsWindows())
         && System.Threading.Interlocked.Exchange(fgHookInstalled, 1) = 0
     then
+        resetDetachedSigint.Force()
+
         // a pid-targeted HUP reaps the same way [D:sighup-teardown]
         for posixSig in
             [ System.Runtime.InteropServices.PosixSignal.SIGTERM
-              System.Runtime.InteropServices.PosixSignal.SIGHUP ] do
+              System.Runtime.InteropServices.PosixSignal.SIGHUP
+              System.Runtime.InteropServices.PosixSignal.SIGINT ] do
             let reg =
                 System.Runtime.InteropServices.PosixSignalRegistration.Create(
                     posixSig,
-                    fun _ ->
+                    fun ctx ->
                         // the full hook owns the signal once installed: it must
                         // request the teardown BEFORE any child dies, or the
                         // main thread's wait returns and runs the next statement
-                        if System.Threading.Volatile.Read &hookInstalled.contents = 0 then
-                            for kv in liveProcs do
-                                killTree kv.Value
+                        let sigint = ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
 
-                            settleKills ()
+                        if
+                            System.Threading.Volatile.Read &hookInstalled.contents = 0
+                            && not (replSurvivesSigint.Value && sigint)
+                        then
+                            if sigint && Libc.terminalForeground () then
+                                // the terminal's ^C reached the children with
+                                // weir [D:sigint-terminal-group]: no kill —
+                                // the script waits for its child (its own ^C
+                                // handling runs) and then unwinds; without a
+                                // live child to wait for, it exits after a
+                                // grace period
+                                if mainThreadId <> 0 then
+                                    ctx.Cancel <- true
+                                    dieBySigint <- true
+                                    requestTeardown 130
+
+                                    let watch =
+                                        System.Threading.Thread(fun () ->
+                                            let mutable idle = 0
+
+                                            while System.Threading.Volatile.Read &teardownRaised = 0
+                                                  && idle < 10 do
+                                                System.Threading.Thread.Sleep 100
+                                                idle <- if liveProcs.IsEmpty then idle + 1 else 0
+
+                                            if System.Threading.Volatile.Read &teardownRaised = 0 then
+                                                raiseSigint ())
+
+                                    watch.IsBackground <- true
+                                    watch.Start()
+                            else
+                                if mainThreadId <> 0 then
+                                    requestTeardown (signalExitCode ctx.Signal)
+
+                                killLiveChildren true
+                                settleKills ()
                 )
 
             hookRoots <- (reg :> obj) :: hookRoots
+
+    if inCleanup () then
+        cleanupProcs[p] <- ()
 
     liveProcs[p.Id] <- p
 
@@ -1309,6 +1782,7 @@ let registerForeground (p: System.Diagnostics.Process) : unit =
 /// event never drops a newer child that reused the pid
 let deregisterProcAt (pid: int) (p: System.Diagnostics.Process) : unit =
     liveProcs.TryRemove(System.Collections.Generic.KeyValuePair(pid, p)) |> ignore
+    cleanupProcs.TryRemove p |> ignore
 
 let deregisterProc (p: System.Diagnostics.Process) : unit = deregisterProcAt p.Id p
 
