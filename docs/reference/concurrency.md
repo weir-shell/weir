@@ -103,7 +103,8 @@ cleanup. Only a teardown or a fan-out exit may abandon a flow: a
 fan-out arm parked in a read or wait that no cut reaches is left behind
 once every arm the join waits on has been parked for two polls in a row
 (for the teardown, every live arm; for an `exit n`, that fan-out's own
-arms). The join proposes, re-checks and only then commits, so an arm
+arms and every arm nested under them, so an arm joining a nested race
+or fan-out counts as parked only when that one's arms are parked too). The join proposes, re-checks and only then commits, so an arm
 whose call returns meanwhile is never abandoned, and an abandoned arm
 whose call returns later stops there and never runs again. A read that
 a race, a REPL ^C or the serve cut stops is abandoned too: its bytes are
