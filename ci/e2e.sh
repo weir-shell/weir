@@ -13935,11 +13935,12 @@ echo "$sout" | grep -qF 'a\rb\x1b[8mc' && fail "tty-echo-strict: the REPL echo p
 cat > "$svdir/preview-cr.weir" <<WEOF
 let p =
     plan
-        File.delete \$"/nowhere/a{$X}"
+        Dir.create \$"/nowhere/a{$X}"
 p |> Plan.preview |> Seq.iter print
 WEOF
+# a Dir.create: a delete of a missing path refuses at capture [D:plan-preconditions]
 pout=$($BIN "$svdir/preview-cr.weir" 2>&1) || fail "tty-echo-strict: preview run failed: $pout"
-[ "$pout" = 'delete file /nowhere/aa\x0db\x1b[8mc' ] || fail "tty-echo-strict: a Plan.preview path must render CR and SGR visibly, piped too: $pout"
+[ "$pout" = 'make dir /nowhere/aa\x0db\x1b[8mc' ] || fail "tty-echo-strict: a Plan.preview path must render CR and SGR visibly, piped too: $pout"
 echo "e2e ok: tty-echo-strict the -e/REPL echo, table cells and Plan.preview show CR and SGR visibly; print keeps them"
 # Args.load --help rides the tty sanitizer [D:tty-help-sanitize]
 printf 'type Cli = {\n    /// be verbose \033]0;HELP\007\n    verbose: bool\n}\nlet cli = Args.load Cli\nprint (show cli.verbose)\n' > "$svdir/help-osc.weir"
