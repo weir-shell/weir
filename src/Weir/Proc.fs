@@ -246,15 +246,14 @@ let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process * 
 
     p, rethrowFault
 
-// pipe reads a lost race or a REPL ^C cuts [D:pfirst-join]
-let private readLine (r: System.IO.StreamReader) : string =
-    Session.cutRead r.ReadLine (fun t -> r.ReadLineAsync t)
+// pipe reads a cut stops [D:pfirst-join] [D:scope-tree]: the reader is
+// over the child's stream wrapped by Session.cutStream, so the cut is
+// checked per fill, never per line
+let private readLine (r: System.IO.StreamReader) : string = r.ReadLine()
 
-let private readChars (r: System.IO.StreamReader) (buf: char[]) : int =
-    Session.cutRead (fun () -> r.Read(buf, 0, buf.Length)) (fun t -> r.ReadAsync(System.Memory<char>(buf), t))
+let private readChars (r: System.IO.StreamReader) (buf: char[]) : int = r.Read(buf, 0, buf.Length)
 
-let private readBytes (s: System.IO.Stream) (buf: byte[]) (off: int) (len: int) : int =
-    Session.cutRead (fun () -> s.Read(buf, off, len)) (fun t -> s.ReadAsync(System.Memory<byte>(buf, off, len), t))
+let private readBytes (s: System.IO.Stream) (buf: byte[]) (off: int) (len: int) : int = s.Read(buf, off, len)
 
 // tree-kill then reap — the lifecycle tail shared by the streaming
 // consumers (complete disposes without killing: it has already read
@@ -312,7 +311,7 @@ let linesOf (s: Spec) : seq<string> =
         use _ = p
 
         try
-            let out = p.StandardOutput
+            let out = Session.cutReader p p.StandardOutput
             let mutable line = readLine out
 
             while line <> null do
@@ -338,7 +337,7 @@ let streamSegmentsOf (s: Spec) (onText: string -> unit) (onBreak: unit -> unit) 
     use _ = p
 
     try
-        let out = p.StandardOutput
+        let out = Session.cutReader p p.StandardOutput
         let buf = Array.zeroCreate<char> 4096
         let seg = System.Text.StringBuilder()
 
@@ -489,7 +488,7 @@ let streamCodeOf (s: Spec) : int =
     use _ = p
 
     try
-        let out = p.StandardOutput
+        let out = Session.cutReader p p.StandardOutput
         let mutable line = readLine out
 
         while line <> null do
@@ -677,9 +676,9 @@ let completedOf (s: Spec) : int * seq<string> * seq<string> =
     use _ = p
 
     let stderrTask =
-        System.Threading.Tasks.Task.Run(fun () -> readAllBytes (p.StandardError.BaseStream))
+        System.Threading.Tasks.Task.Run(fun () -> readAllBytes (Session.cutStream p p.StandardError.BaseStream))
 
-    let outBytes = readAllBytes (p.StandardOutput.BaseStream)
+    let outBytes = readAllBytes (Session.cutStream p p.StandardOutput.BaseStream)
     let errBytes = Session.cutJoin stderrTask
     p.WaitForExit()
     producerFault ()
@@ -786,7 +785,7 @@ let chainLinesOf (specs: Spec list) : seq<string> =
                 // the tail is the command→expression edge: same line law
                 // as a single command
                 let _, last = List.last procs
-                let out = last.StandardOutput
+                let out = Session.cutReader last last.StandardOutput
                 let mutable line = readLine out
 
                 while line <> null do
@@ -824,10 +823,11 @@ let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
         try
             let errTasks =
                 procs
-                |> List.map (fun (_, p) -> System.Threading.Tasks.Task.Run(fun () -> readAllBytes p.StandardError.BaseStream))
+                |> List.map (fun (_, p) ->
+                    System.Threading.Tasks.Task.Run(fun () -> readAllBytes (Session.cutStream p p.StandardError.BaseStream)))
 
             let _, last = List.last procs
-            let outBytes = readAllBytes last.StandardOutput.BaseStream
+            let outBytes = readAllBytes (Session.cutStream last last.StandardOutput.BaseStream)
 
             for _, p in procs do
                 p.WaitForExit()
@@ -853,7 +853,7 @@ let chainStreamCodeOf (specs: Spec list) : int =
 
         try
             let _, last = List.last procs
-            let out = last.StandardOutput
+            let out = Session.cutReader last last.StandardOutput
             let mutable line = readLine out
 
             while line <> null do

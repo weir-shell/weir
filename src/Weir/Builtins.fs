@@ -1770,11 +1770,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
 
             i <- take ()
 
-    // counted for the teardown's join and this fan-out's own
-    // [D:teardown-abandons-reads] [D:fanout-exit-reads]
-    let arms = Session.FanArms workers
-    let worker (w: int) () = arms.Run(w, (fun () -> work w))
-    let mutable abandoned = false
+    let worker (w: int) () = work w
 
     // arms are one level deeper [D:parallel-ladder]: set before
     // StartNew so the workers capture depth+1, restored after the join
@@ -1785,7 +1781,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
         let tasks =
             Array.init workers (fun w -> Task.Factory.StartNew(worker w, TaskCreationOptions.LongRunning))
 
-        abandoned <- arms.Join(Task.WhenAll(tasks: Task[]), Session.nodeToken fanNode)
+        Session.waitTask (Task.WhenAll(tasks: Task[]))
     finally
         Session.setParallelDepth depth
         Session.closeNode fanNode
@@ -1901,7 +1897,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
             i <- System.Threading.Interlocked.Increment &next
 
-    let worker () = Session.armRunning work
+    let worker () = work ()
 
     try
         (fun () ->

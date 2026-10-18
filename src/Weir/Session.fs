@@ -1315,144 +1315,9 @@ let waitProcess (p: System.Diagnostics.Process) : unit =
         // the no-argument form also waits for redirected streams' EOF
         p.WaitForExit()
 
-// each running fan-out worker, marked while parked in a blocking call no
-// cut reaches [D:teardown-abandons-reads]: a join stops waiting once every
-// arm it waits on is parked. One mark per worker thread, so a parked read
-// costs no shared write while no cut is live
-[<AllowNullLiteral>]
-type private ArmMark() =
-    [<DefaultValue>]
-    val mutable Parked: int
-
-    // 0 live, 1 a join proposes to abandon the arm, 2 abandoned: an arm
-    // leaving a parked call under a cut waits out a proposal, and an
-    // abandoned arm never runs again — its cleanups are its join's
-    // [D:fanout-exit-reads]
-    [<DefaultValue>]
-    val mutable Abandon: int
-
-    // the arm whose flow opened this one's fan-out or race (null at top)
-    [<DefaultValue>]
-    val mutable Parent: ArmMark
-
-let private armMarks =
-    System.Collections.Concurrent.ConcurrentDictionary<ArmMark, byte>(HashIdentity.Reference)
-
-let private armMark = new System.Threading.ThreadLocal<ArmMark>()
-
-// the arm a flow runs in, inherited by the workers it opens
-let private armOwner = System.Threading.AsyncLocal<ArmMark>()
-
-/// run one fan-out worker (on its own thread), marked for the teardown's join
-let armRunning (f: unit -> 'a) : 'a =
-    let m = ArmMark()
-    m.Parent <- armOwner.Value
-    let prev = armMark.Value
-    let prevOwner = armOwner.Value
-    armMark.Value <- m
-    armOwner.Value <- m
-    armMarks[m] <- 0uy
-
-    try
-        f ()
-    finally
-        armMarks.TryRemove m |> ignore
-        armMark.Value <- prev
-        armOwner.Value <- prevOwner
-
-// a cut is live, so a join may be abandoning parked arms
-let private cutPending () = System.Threading.Volatile.Read &cutsPending <> 0
-
-let private parking (f: unit -> 'a) : 'a =
-    match armMark.Value with
-    | null -> f ()
-    | m ->
-        m.Parked <- m.Parked + 1
-
-        try
-            f ()
-        finally
-            if cutPending () then
-                System.Threading.Interlocked.Decrement &m.Parked |> ignore
-
-                while System.Threading.Volatile.Read &m.Abandon = 1 do
-                    System.Threading.Thread.Sleep 1
-
-                if System.Threading.Volatile.Read &m.Abandon = 2 then
-                    System.Threading.Thread.Sleep System.Threading.Timeout.Infinite
-            else
-                m.Parked <- m.Parked - 1
-
-// abandon `marks` if every one is still parked: propose, check, then commit
-// or withdraw, so no arm runs on past a commit
-let private tryAbandon (marks: ArmMark list) : bool =
-    for m in marks do
-        System.Threading.Interlocked.Exchange(&m.Abandon, 1) |> ignore
-
-    let all =
-        marks
-        |> List.forall (fun m -> System.Threading.Volatile.Read &m.Parked > 0)
-
-    for m in marks do
-        System.Threading.Volatile.Write(&m.Abandon, (if all then 2 else 0))
-
-    all
-
 // the main thread is joining arms for a teardown: it unwinds next, so the
 // signal watchdog stands down [D:teardown-joins-arms]
 let mutable private mainJoining = 0
-
-// wait for `t`; abandon the arms `live` lists once they are all parked, twice
-// in a row — the abandoned ones, or none when `t` ended
-let private abandonParked (t: System.Threading.Tasks.Task) (live: unit -> ArmMark list) : ArmMark list =
-    let mutable streak = 0
-    let mutable abandoned = []
-
-    try
-        while List.isEmpty abandoned && not (t.Wait 50) do
-            if interruptible () && teardownRequested () <> 0 then
-                System.Threading.Volatile.Write(&mainJoining, 1)
-
-            let ms = live ()
-
-            if
-                not (List.isEmpty ms)
-                && ms |> List.forall (fun m -> System.Threading.Volatile.Read &m.Parked > 0)
-            then
-                streak <- streak + 1
-
-                if streak >= 2 && tryAbandon ms then
-                    abandoned <- ms
-            else
-                streak <- 0
-    with _ ->
-        ()
-
-    abandoned
-
-// the pending `always` cleanups an arm registered, with the arm's context:
-// when a join abandons the arm, the joining thread runs them before it
-// unwinds, so none lands after an enclosing scope released
-// [D:abandoned-arm-cleanup]
-let private armAlways =
-    System.Collections.Concurrent.ConcurrentDictionary<int, ArmMark * System.Threading.ExecutionContext>()
-
-let private runAbandonedCleanups (owned: ArmMark list) =
-    for id in armAlways.Keys |> Seq.sortDescending do
-        match armAlways.TryGetValue id with
-        | true, (m, ctx) when owned |> List.exists (fun o -> obj.ReferenceEquals(o, m)) ->
-            match liveAlways.TryRemove id with
-            | true, cleanup ->
-                armAlways.TryRemove id |> ignore
-
-                try
-                    match ctx with
-                    | null -> cleanup ()
-                    | c -> System.Threading.ExecutionContext.Run(c, (fun _ -> cleanup ()), null)
-                with _ ->
-                    ()
-            | _ -> ()
-        | _ -> ()
 
 /// a pipe read a lost race, a fan-out's exit, the serve cut, a REPL ^C or a
 /// teardown cuts: the kill closes a pipe only when it reaches every holder
@@ -1515,10 +1380,94 @@ let cutBlocking (f: unit -> 'a) : 'a =
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ae.InnerException).Throw()
             Unchecked.defaultof<'a>
 
+// a child's pipe, read so that a cut stops it [D:scope-tree]: a fill first
+// asks poll(2) whether the pipe is readable — read(2) is called only then,
+// so a cut never leaves a thread inside it and never consumes the bytes it
+// abandons — and while the pipe is empty it polls beside the flow's node.
+// The cut is checked once per fill, never per line. A soft teardown (the
+// terminal's ^C, which reached the child too) leaves the read be while the
+// child lives; once the child is gone (an orphan holds the pipe) it cuts
+// too [D:sigint-terminal-group]. Windows waits beside the token per fill
+type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Process) =
+    inherit System.IO.Stream()
+
+    let fd =
+        match inner with
+        | :? System.IO.Pipes.PipeStream as ps when not (System.OperatingSystem.IsWindows()) ->
+            int (ps.SafePipeHandle.DangerousGetHandle())
+        | _ -> -1
+
+    // a cut this read honours: any but the soft teardown's, and that one
+    // too once the child has exited
+    let cutNow () =
+        if System.Threading.Volatile.Read &cutsPending <> 0 then
+            let n = currentNode ()
+
+            if n.Cut > 0 && not (unwinding n) then
+                let soft =
+                    (n.Reasons &&& CutReason.Soft) <> 0
+                    && not n.Killing
+                    && (n.Reasons &&& ~~~(CutReason.Teardown ||| CutReason.Soft)) = 0
+
+                if
+                    not soft
+                    || (isNull child
+                        || (try
+                                child.HasExited
+                            with _ ->
+                                true))
+                then
+                    raiseWoken ()
+
+    override _.CanRead = true
+    override _.CanSeek = false
+    override _.CanWrite = false
+    override _.Length = raise (System.NotSupportedException())
+
+    override _.Position
+        with get () = raise (System.NotSupportedException())
+        and set (_: int64) = raise (System.NotSupportedException())
+
+    override _.Flush() = ()
+    override _.Seek(_: int64, _: System.IO.SeekOrigin) : int64 = raise (System.NotSupportedException())
+    override _.SetLength(_: int64) = raise (System.NotSupportedException())
+    override _.Write(_: byte[], _: int, _: int) = raise (System.NotSupportedException())
+
+    override _.Read(buffer: byte[], offset: int, count: int) : int =
+        if count = 0 then
+            0
+        elif fd >= 0 then
+            cutNow ()
+
+            if not (Libc.readable fd 0) then
+                while not (Libc.readable fd 50) do
+                    cutNow ()
+
+            inner.Read(buffer, offset, count)
+        else
+            // Windows: a pipe read is synchronous underneath and ignores
+            // its token, so the fill waits beside the token instead
+            cutRead
+                (fun () -> inner.Read(buffer, offset, count))
+                (fun t -> inner.ReadAsync(System.Memory<byte>(buffer, offset, count), t))
+
+    // the child's pipe is the Process's to close
+    override _.Dispose(_: bool) = ()
+
+/// a child's output stream, cut as the flow is [D:scope-tree]
+let cutStream (child: System.Diagnostics.Process) (s: System.IO.Stream) : System.IO.Stream =
+    new CutStream(s, child) :> System.IO.Stream
+
+/// a reader over a child's output, cut as the flow is: the encoding the
+/// Process gave it, a larger buffer
+let cutReader (child: System.Diagnostics.Process) (r: System.IO.StreamReader) : System.IO.StreamReader =
+    new System.IO.StreamReader(cutStream child r.BaseStream, r.CurrentEncoding, true, 65536)
+
 /// join a task; a teardown request raises on the main thread once the
 /// task's arms, cut at their next boundary, have joined
 /// [D:teardown-joins-arms] — before any enclosing scope closes (pure
-/// compute holds the join; a second signal hard-exits)
+/// compute holds the join; a second signal hard-exits). Every wait is cut,
+/// so no arm is left behind [D:scope-tree]
 let waitTask (t: System.Threading.Tasks.Task) : unit =
     if interruptible () then
         System.Threading.WaitHandle.WaitAny(
@@ -1529,85 +1478,14 @@ let waitTask (t: System.Threading.Tasks.Task) : unit =
         if teardownRequested () <> 0 then
             System.Threading.Volatile.Write(&mainJoining, 1)
 
-            // every live arm parked in a call no cut reaches, twice in a
-            // row: the join abandons them [D:teardown-abandons-reads]
-            match abandonParked t (fun () -> List.ofSeq armMarks.Keys) with
-            | [] -> ()
-            | ms -> runAbandonedCleanups ms
+            try
+                t.Wait()
+            with _ ->
+                ()
 
-        checkTeardown ()
+            checkTeardown ()
 
     t.Wait()
-
-/// the workers of one fan-out, for its own join [D:fanout-exit-reads]
-type FanArms(n: int) =
-    let marks: ArmMark[] = Array.zeroCreate n
-
-    /// run worker `w`, marked as one of this fan-out's arms
-    member _.Run(w: int, f: unit -> unit) : unit =
-        armRunning (fun () ->
-            System.Threading.Volatile.Write(&marks[w], armMark.Value)
-
-            try
-                f ()
-            finally
-                System.Threading.Volatile.Write(&marks[w], null))
-
-    /// join the workers' task. Once the fan-out's cut fires, workers parked
-    /// in a call no cut reaches are abandoned and their pending cleanups
-    /// run here, before the join returns; true when it abandoned any
-    member _.Join(t: System.Threading.Tasks.Task, cut: System.Threading.CancellationToken) : bool =
-        let cutFirst =
-            if interruptible () then
-                System.Threading.WaitHandle.WaitAny(
-                    [| (t :> System.IAsyncResult).AsyncWaitHandle
-                       (tokenOf rootNode false).WaitHandle
-                       cut.WaitHandle |]
-                )
-                |> ignore
-
-                not t.IsCompleted
-                && teardownRequested () = 0
-                && cut.IsCancellationRequested
-            else
-                try
-                    t.Wait cut
-
-                    false
-                with :? System.OperationCanceledException ->
-                    true
-
-        if cutFirst then
-            // this fan-out's arms and every arm nested under them: an arm
-            // parked joining its own fan-out counts only with that one's
-            // arms parked too
-            let live () =
-                let own =
-                    marks
-                    |> Array.choose (fun m -> if isNull m then None else Some m)
-                    |> List.ofArray
-
-                let mine (m: ArmMark) = own |> List.exists (fun o -> obj.ReferenceEquals(o, m))
-
-                let rec under (m: ArmMark) =
-                    not (isNull m) && (mine m || under m.Parent)
-
-                if List.isEmpty own then
-                    []
-                else
-                    own
-                    @ [ for m in armMarks.Keys do
-                            if not (mine m) && under m.Parent then
-                                yield m ]
-
-            match abandonParked t live with
-            | [] -> false
-            | ms ->
-                runAbandonedCleanups ms
-                true
-        else
-            waitTask t
-            false
 
 /// join a thread (a serve handler) whole; a teardown requested meanwhile
 /// stands the signal watchdog down, as `waitTask` does
@@ -1678,13 +1556,37 @@ module Stdin =
     let private winTty () =
         System.OperatingSystem.IsWindows() && not System.Console.IsInputRedirected
 
+    // Windows: a read of fd 0 blocks and ignores cancellation, so one read
+    // runs off the flow and every reader waits for it beside its node's
+    // token [D:scope-tree]; a cut leaves it pending for the next reader,
+    // so no byte is lost and no flow is left inside it
+    let mutable private winPending: System.Threading.Tasks.Task<byte[]> = null
+    let mutable private winPendingLine: System.Threading.Tasks.Task<string> = null
+
+    let private awaitPending (t: System.Threading.Tasks.Task<'a>) : 'a =
+        let tok = waitToken false
+
+        if tok.CanBeCanceled then
+            try
+                t.Wait tok
+            with :? System.OperationCanceledException ->
+                raiseWoken ()
+                t.Wait()
+        else
+            t.Wait()
+
+        t.Result
+
     // wait until fd 0 is readable, raising when the wait is cut
     let private awaitReadable () =
-        if not (System.OperatingSystem.IsWindows()) && not (List.isEmpty (wakeHandles ())) then
-            raiseWoken ()
-
-            while not (Libc.readable 0 50) do
+        if not (System.OperatingSystem.IsWindows()) then
+            if System.Threading.Volatile.Read &cutsPending <> 0 then
                 raiseWoken ()
+
+            if not (Libc.readable 0 0) then
+                while not (Libc.readable 0 50) do
+                    if System.Threading.Volatile.Read &cutsPending <> 0 then
+                        raiseWoken ()
 
     // one read(2) of up to `n` bytes at buf[hi]: the count, or -errno
     let private readRaw (n: int) : int =
@@ -1721,9 +1623,30 @@ module Stdin =
             buf <- bigger
 
         if System.OperatingSystem.IsWindows() then
-            let got = winStdin.Force().Read(buf, hi, n)
-            hi <- hi + got
-            got
+            let t =
+                match winPending with
+                | null ->
+                    let t =
+                        System.Threading.Tasks.Task.Run<byte[]>(fun () ->
+                            let b = Array.zeroCreate<byte> n
+                            let got = winStdin.Force().Read(b, 0, n)
+                            Array.sub b 0 (max 0 got))
+
+                    winPending <- t
+                    t
+                | t -> t
+
+            let bytes = awaitPending t
+            winPending <- null
+
+            if hi + bytes.Length > buf.Length then
+                let bigger = Array.zeroCreate (max (buf.Length * 2) (hi + bytes.Length))
+                System.Buffer.BlockCopy(buf, 0, bigger, 0, hi)
+                buf <- bigger
+
+            System.Buffer.BlockCopy(bytes, 0, buf, hi, bytes.Length)
+            hi <- hi + bytes.Length
+            bytes.Length
         else
             let rec go () =
                 awaitReadable ()
@@ -1810,12 +1733,25 @@ module Stdin =
             None
 
     let private readWith (stream: bool) : string =
-        if winTty () then
-            System.Console.In.ReadLine()
-        else
-            while not (System.Threading.Monitor.TryEnter(gate, 50)) do
-                raiseWoken ()
+        while not (System.Threading.Monitor.TryEnter(gate, 50)) do
+            raiseWoken ()
 
+        if winTty () then
+            try
+                let t =
+                    match winPendingLine with
+                    | null ->
+                        let t = System.Threading.Tasks.Task.Run<string>(fun () -> System.Console.In.ReadLine())
+                        winPendingLine <- t
+                        t
+                    | t -> t
+
+                let line = awaitPending t
+                winPendingLine <- null
+                line
+            finally
+                System.Threading.Monitor.Exit gate
+        else
             try
                 let chunk = if stream then 65536 else 1
                 // where the line taken begins (a fill may move the buffer)
@@ -2313,10 +2249,6 @@ let registerAlways (cleanup: unit -> unit) : int =
 
     let id = System.Threading.Interlocked.Increment alwaysCounter
 
-    match armMark.Value with
-    | null -> ()
-    | m -> armAlways[id] <- (m, System.Threading.ExecutionContext.Capture())
-
     liveAlways[id] <- cleanup
     id
 
@@ -2324,5 +2256,4 @@ let registerAlways (cleanup: unit -> unit) : int =
 // exit hook — the hook claims the same way, so a signal racing a raise
 // cannot run one cleanup twice [D:within-always-any]
 let deregisterAlways (id: int) : bool =
-    armAlways.TryRemove id |> ignore
     fst (liveAlways.TryRemove id)
