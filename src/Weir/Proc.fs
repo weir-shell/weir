@@ -143,10 +143,48 @@ let private spawn
 
     Session.sigpipeForChildren.Force()
     Session.resetDetachedSigint.Force()
-    let psi = ProcessStartInfo(prog)
+    // a cleanup's command at a foreground terminal runs in a group of its
+    // own, through weir's shim [D:cleanup-pgrp]: the program is resolved
+    // here, as the start would, so a missing one fails the same way
+    let viaShim = (Session.cleanupGroupShim ()).IsSome
+
+    let psi =
+        match Session.cleanupGroupShim () with
+        | Some self ->
+            let runnable (path: string) =
+                System.IO.File.Exists path
+                && (System.IO.File.GetUnixFileMode path
+                    &&& (System.IO.UnixFileMode.UserExecute
+                         ||| System.IO.UnixFileMode.GroupExecute
+                         ||| System.IO.UnixFileMode.OtherExecute))
+                   <> enum 0
+
+            let found =
+                if prog.Contains '/' then
+                    Some(Session.resolve prog)
+                else
+                    (match System.Environment.GetEnvironmentVariable "PATH" with
+                     | null -> ""
+                     | v -> v).Split(':', System.StringSplitOptions.RemoveEmptyEntries)
+                    |> Array.map (fun d -> System.IO.Path.Combine(d, prog))
+                    |> Array.tryFind runnable
+
+            match found with
+            | Some path when runnable path ->
+                let psi = ProcessStartInfo(self)
+                psi.ArgumentList.Add Session.Pgrp.marker
+                psi.ArgumentList.Add path
+                psi
+            | _ -> failwith $"command not found or not executable: {Weir.Types.quoteData prog}"
+        | None -> ProcessStartInfo(prog)
 
     for a in args do
         psi.ArgumentList.Add a
+
+    // Windows: a cleanup's command in a new process group, which Ctrl+C
+    // does not reach [D:cleanup-pgrp]
+    if System.OperatingSystem.IsWindows() && Session.inCleanup () then
+        psi.CreateNewProcessGroup <- true
 
     for k, v in ambient do
         psi.Environment[k] <- v
@@ -166,7 +204,10 @@ let private spawn
     Session.gatedSpawn (fun () ->
         let p =
             try
-                Process.Start psi
+                if viaShim then
+                    Session.Pgrp.blockedForStart (fun () -> Process.Start psi)
+                else
+                    Process.Start psi
             with :? System.ComponentModel.Win32Exception ->
                 failwith $"command not found or not executable: {Weir.Types.quoteData prog}"
 

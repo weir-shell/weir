@@ -233,6 +233,17 @@ let private runOnMain (run: unit -> int) : int =
 [<EntryPoint>]
 let main argv =
 
+    // weir as the shim that starts a cleanup's command in a group of its
+    // own [D:cleanup-pgrp]: nothing else runs first
+    if argv.Length >= 2 && argv[0] = Session.Pgrp.marker then
+        Session.Pgrp.execInNewGroup argv[1] argv[2..]
+
+    // weir's own executable for the shim — not a `dotnet Weir.dll` host
+    match Environment.ProcessPath with
+    | null -> ()
+    | p when IO.Path.GetFileNameWithoutExtension p = "dotnet" -> ()
+    | p -> Session.Pgrp.selfPath <- p
+
     // captured output is data: LF on every platform [D:lf-output] —
     // the dual of the content-bytes input ruling (a line ending is
     // not data). A tty is display and keeps the platform newline:

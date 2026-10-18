@@ -1214,6 +1214,130 @@ module private Libc =
             signal (SIGINT, prev) |> ignore
             false
 
+// ---- a cleanup's commands in their own process group [D:cleanup-pgrp] --
+// A terminal ^C reaches the terminal's foreground process group — weir's,
+// and every child that shares it. A cleanup runs whole, its commands too
+// [D:teardown-never-preempts], so a command an `always` cleanup starts at
+// a foreground terminal runs in a group of its own. .NET cannot start a
+// child in a new group on POSIX and a parent cannot move a child that has
+// exec'd, so weir starts itself as a shim that moves into a new group and
+// execs the command: the pid is the command's, so its pipes, its exit
+// and the tree kill are the Process weir holds. The shim ignores
+// SIGTTIN/SIGTTOU (a terminal read gets EIO, never a stop that would wedge
+// the cleanup; output still shows) and gives the command /dev/null for a
+// terminal stdin. Windows starts the child in a new process group, which
+// Ctrl+C does not reach.
+module Pgrp =
+    open System.Runtime.InteropServices
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int setpgid(int pid, int pgid)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern nativeint signal(int signum, nativeint handler)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int sigprocmask(int how, byte[] set, nativeint oldset)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int pthread_sigmask(int how, byte[] set, byte[] oldset)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int sigemptyset(byte[] set)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int sigaddset(byte[] set, int signum)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int isatty(int fd)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int ``open``(string path, int flags)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int dup2(int oldfd, int newfd)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int execv(string path, string[] argv)
+
+    [<DllImport("libc", EntryPoint = "_exit")>]
+    extern void sysExit(int status)
+
+    /// the shim's argv[0] marker (an internal seam, not a command)
+    let marker = "--weir-exec-pgrp"
+
+    /// weir's own executable, set by the CLI entry point: the shim needs
+    /// the real binary (a test host has none)
+    let mutable selfPath: string = null
+
+    // the terminal's job-control signals: INT, QUIT, TSTP
+    let private groupSignals = [ 2; 3; (if System.OperatingSystem.IsLinux() then 20 else 18) ]
+
+    /// start the shim with the terminal's signals blocked on the starting
+    /// thread (the child inherits the mask, weir's other threads still take
+    /// them): a ^C landing before the shim has left weir's group stays
+    /// pending in it, and the shim discards it
+    let blockedForStart (start: unit -> 'a) : 'a =
+        let set = Array.zeroCreate<byte> 128
+        let old = Array.zeroCreate<byte> 128
+        sigemptyset set |> ignore
+
+        for s in groupSignals do
+            sigaddset (set, s) |> ignore
+
+        let SIG_BLOCK, SIG_SETMASK = (if System.OperatingSystem.IsLinux() then 0, 2 else 1, 3)
+        pthread_sigmask (SIG_BLOCK, set, old) |> ignore
+
+        try
+            start ()
+        finally
+            pthread_sigmask (SIG_SETMASK, old, null) |> ignore
+
+    /// run as the shim: a new group, the dispositions a command expects,
+    /// then exec. Never returns
+    let execInNewGroup (prog: string) (args: string[]) : unit =
+        setpgid (0, 0) |> ignore
+        let SIG_DFL, SIG_IGN = nativeint 0, nativeint 1
+
+        // a terminal signal sent while the shim was in weir's group is
+        // pending: ignoring discards it, then the inherited disposition
+        // returns
+        for s in groupSignals do
+            let prev = signal (s, SIG_IGN)
+            signal (s, prev) |> ignore
+
+        let SIGPIPE = 13
+        let SIGTTIN, SIGTTOU = 21, 22
+        signal (SIGTTIN, SIG_IGN) |> ignore
+        signal (SIGTTOU, SIG_IGN) |> ignore
+        signal (SIGPIPE, SIG_DFL) |> ignore
+        // an empty mask: SIG_SETMASK is 2 on Linux, 3 on macOS
+        sigprocmask ((if System.OperatingSystem.IsLinux() then 2 else 3), Array.zeroCreate 128, nativeint 0)
+        |> ignore
+
+        if isatty 0 = 1 then
+            let fd = ``open`` ("/dev/null", 0)
+
+            if fd >= 0 then
+                dup2 (fd, 0) |> ignore
+
+        execv (prog, Array.append (Array.append [| prog |] args) [| null |]) |> ignore
+        eprintfn "command not found or not executable: %s" (Weir.Types.quoteData prog)
+        sysExit 127
+
+/// the shim this spawn goes through, when it runs inside a cleanup at a
+/// terminal whose foreground group is weir's (POSIX): Some weir's path
+let cleanupGroupShim () : string option =
+    if
+        not (isNull Pgrp.selfPath)
+        && not (System.OperatingSystem.IsWindows())
+        && inCleanup ()
+        && Libc.terminalForeground ()
+    then
+        Some Pgrp.selfPath
+    else
+        None
+
 /// an exclusive flock on an open file, without blocking [D:lock-advisory]:
 /// true when taken, false while another open file description holds it.
 /// Released when the stream closes (the kernel's, kill -9 included).
