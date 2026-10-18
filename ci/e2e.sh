@@ -682,6 +682,35 @@ WEOF
         pkill -f "yes epipe$MK\$" 2>/dev/null || true
         fail "a closed stdout must reap the relayed child (yes left running)"
     fi
+    # the closed stdout's teardown kills the children then [D:stdout-epipe]:
+    # an arm waiting on a running command is cut by the kill, not after it
+    cat > "$epdir/arm.weir" <<WEOF
+[1; 2] |> Seq.piter (fun i ->
+    if i == 1 then
+        print "a"
+        Duration.sleep 400ms
+        print "b"
+        print "c"
+    else
+        within proc p = sleep 6.$MK
+            let _code = Proc.wait p
+            ())
+WEOF
+    t0=$(now_ms)
+    res=$( { $BIN "$epdir/arm.weir" 2>"$epdir/err-arm" | head -1 >/dev/null; } ; echo "${PIPESTATUS[0]}")
+    took=$(( $(now_ms) - t0 ))
+    [ "$res" = "141" ] || fail "a closed stdout ends a fan-out with 141 (got $res): $(cat "$epdir/err-arm")"
+    [ "$took" -lt 4000 ] || fail "a closed stdout must kill an arm's waited command at the teardown (took ${took}ms)"
+    # a capture's reader the teardown cut raises as the main flow's own
+    # stop [D:epipe-kills-at-teardown]: exit 143, no "errors occurred" line
+    printf 'within tmp d\n    let _r = sleep 5.%s | complete\n    print "after"\n' "$MK" > "$epdir/cap.weir"
+    $BIN "$epdir/cap.weir" >"$epdir/out-cap" 2>"$epdir/err-cap" &
+    wpid=$!
+    sleep 0.7
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" || code=$?
+    [ "$code" = "143" ] || fail "a SIGTERM during a capture exits 143 (got $code)"
+    [ ! -s "$epdir/err-cap" ] || fail "a SIGTERM during a capture prints no diagnostic: $(cat "$epdir/err-cap")"
     rm -rf "$epdir"
     echo "e2e ok: a closed stdout ends the script with 141, always runs, the child is reaped"
 fi
@@ -3188,6 +3217,44 @@ WEOF
     [ "$(find "$jtmp" -mindepth 1 -maxdepth 1 | wc -l)" = "0" ] || fail "jointmp: an arm recreated the within-tmp dir after the teardown: $(find "$jtmp")"
     echo "e2e ok: a teardown cuts and joins in-flight piter/pmap/pfirst arms before always runs; within tmp leaves nothing"
 
+    # a race won after the teardown still joins its losers before the main
+    # flow unwinds [D:pfirst-join] [D:teardown-joins-arms]: arm 2 is in its
+    # cleanup when the signal lands and wins once it ends; arm 1's cleanup
+    # outlasts that and must still finish before the enclosing always
+    cat > "$dtdir/latewin.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within
+    let w =
+        [1; 2] |> Seq.pfirst (fun i ->
+            match i with
+            | 1 ->
+                within
+                    Duration.sleep 10s
+                always
+                    Duration.sleep 2s
+                    File.append log ["loser cleanup end"]
+                0
+            | _ ->
+                within
+                    Duration.sleep 200ms
+                always
+                    Duration.sleep 1s
+                i)
+    print $"won {w}"
+always
+    File.append log ["outer always"]
+WEOF
+    rm -f "$dtdir/latewin.log"
+    setsid "$BIN" "$dtdir/latewin.weir" "$dtdir/latewin.log" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    sleep 0.5
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" 2>/dev/null || code=$?
+    sleep 2.5
+    [ "$code" = "143" ] || fail "latewin: SIGTERM must exit 143 (got $code)"
+    [ "$(tr '\n' ',' < "$dtdir/latewin.log" 2>/dev/null)" = "loser cleanup end,outer always," ] || fail "a pfirst won after the teardown must join its losers first: $(tr '\n' ',' < "$dtdir/latewin.log" 2>/dev/null)"
+    echo "e2e ok: a pfirst won after the teardown joins its losers, cleanups whole, before the main flow unwinds"
+
     # a signal during pfirst races never leaves SIGSTOPped orphans
     # [D:kill-settle]: .NET's tree kill stops, then kills, so every
     # exit settles the race kills in flight first
@@ -3311,7 +3378,73 @@ WEOF
         done
     done
     rm -f "$dtdir/tff"
-    echo "e2e ok: a teardown abandons arms parked in a FIFO open/read or an orphan-held pipe"
+    # an abandoned arm's pending `always` runs before the enclosing scopes
+    # release [D:abandoned-arm-cleanup]: inside the arm's within tmp, never
+    # after the enclosing always
+    MK10=$((MK + 10))
+    cat > "$dtdir/parkedc.weir" <<WEOF
+let log = Self.args |> Seq.head
+within
+    within tmp d
+        [1; 2] |> Seq.piter (fun i ->
+            within
+                let n = sh -c "(setsid sleep $MK10 &); echo started" |> Seq.length
+                File.append log [\$"LATE arm {i} {n}"]
+            always
+                File.append log [\$"cleanup dir={Dir.exists d}"])
+always
+    File.append log ["END"]
+WEOF
+    rm -f "$dtdir/parkedc.log"
+    pctmp="$dtdir/parkedctmp"
+    mkdir -p "$pctmp"
+    TMPDIR="$pctmp" setsid "$BIN" "$dtdir/parkedc.weir" "$dtdir/parkedc.log" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    sleep 1
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=timeout
+    for _ in $(seq 1 30); do
+        if ! kill -0 "$wpid" 2>/dev/null; then code=0; wait "$wpid" 2>/dev/null || code=$?; break; fi
+        sleep 0.2
+    done
+    [ "$code" = timeout ] && { kill -9 "$wpid" 2>/dev/null || true; }
+    pkill -9 -f "^sleep $MK10\$" 2>/dev/null || true
+    [ "$code" = "143" ] || fail "a SIGTERM with parked arms in cleanup scopes must exit 143 promptly (got $code)"
+    [ "$(tr '\n' ',' < "$dtdir/parkedc.log")" = "cleanup dir=true,cleanup dir=true,END," ] || fail "an abandoned arm's always must run inside its scopes, before the enclosing always: $(tr '\n' ',' < "$dtdir/parkedc.log")"
+    [ "$(find "$pctmp" -mindepth 1 -maxdepth 1 | wc -l)" = "0" ] || fail "parked arms: the within tmp dir leaked: $(find "$pctmp")"
+    # the abandoned cleanups run on the main thread, so the watchdog stands
+    # down for them [D:abandoned-arm-cleanup] [D:teardown-joins-arms]: one
+    # longer than its 1s grace still runs whole
+    MK11=$((MK + 11))
+    cat > "$dtdir/parkedw.weir" <<WEOF
+let log = Self.args |> Seq.head
+within
+    [1] |> Seq.piter (fun i ->
+        within
+            let n = sh -c "(setsid sleep $MK11 &); echo started" |> Seq.length
+            File.append log [\$"LATE arm {i} {n}"]
+        always
+            File.append log ["cleanup start"]
+            Duration.sleep 1500ms
+            File.append log ["cleanup end"])
+always
+    File.append log ["END"]
+WEOF
+    rm -f "$dtdir/parkedw.log"
+    setsid "$BIN" "$dtdir/parkedw.weir" "$dtdir/parkedw.log" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    sleep 1
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=timeout
+    for _ in $(seq 1 30); do
+        if ! kill -0 "$wpid" 2>/dev/null; then code=0; wait "$wpid" 2>/dev/null || code=$?; break; fi
+        sleep 0.2
+    done
+    [ "$code" = timeout ] && { kill -9 "$wpid" 2>/dev/null || true; }
+    for p in $(ps -eo pid,args | awk -v m="$MK11" '$2 == "sleep" && $3 == m {print $1}'); do kill -9 "$p" 2>/dev/null || true; done
+    [ "$code" = "143" ] || fail "a SIGTERM over a parked arm with a slow cleanup exits 143 (got $code)"
+    [ "$(tr '\n' ',' < "$dtdir/parkedw.log")" = "cleanup start,cleanup end,END," ] || fail "an abandoned arm's cleanup outlasting the watchdog's grace must run whole: $(tr '\n' ',' < "$dtdir/parkedw.log")"
+    echo "e2e ok: a teardown abandons arms parked in a FIFO open/read or an orphan-held pipe; their cleanups run inside the scopes"
 else
     echo "e2e skip: detached-signal pins (POSIX + setsid + pgrep)"
 fi
@@ -3488,6 +3621,37 @@ WEOF
     echo "$tout" | grep -qF "EXIT -2" || fail "weir dies by the SIGINT after the child's ^C handling: $tout"
     echo "$tout" | grep -qF "after" && fail "no statement runs after a terminal ^C: $tout"
     echo "$tout" | grep -qF "command failed" && fail "a terminal ^C is not a command failure: $tout"
+
+    # the terminal ^C follows LIVE scopes [D:sigint-terminal-group]: once
+    # the `within tmp` has closed, the ^C is the unscoped one — the child's
+    # handler runs, weir dies by the SIGINT
+    printf '%s\n' 'within tmp d' '    print "scoped"' "sh -c 'trap \"sleep 0.5; echo caught; exit 3\" INT; sleep 7.32 & wait'" 'print "after"' > "$sedir/trapclosed.weir"
+    tout=$(printf 'SLEEP 1000\nSEND \\x03\nSLEEP 2500\n' | python3 "$ptyrun" 6 "$BIN" "$sedir/trapclosed.weir")
+    echo "$tout" | grep -qF "caught" || fail "a terminal ^C after every scope closed is the unscoped one (the child's handler runs): $tout"
+    echo "$tout" | grep -qF "EXIT -2" || fail "a terminal ^C after the scopes closed dies by the SIGINT: $tout"
+    left=$(ps -eo pid,args | awk '$2 == "sleep" && $3 == "7.32" {print $1}')
+    [ -z "$left" ] || kill -9 $left 2>/dev/null || true
+
+    # a second terminal ^C mid-teardown hard-exits [D:signal-teardown]: a
+    # child ignoring the ^C does not hold weir, and it dies with weir
+    printf '%s\n' "sh -c 'trap \"\" INT; sleep 7.42'" 'print "after"' > "$sedir/ignint.weir"
+    t0=$(now_ms)
+    tout=$(printf 'SLEEP 800\nSEND \\x03\nSLEEP 700\nSEND \\x03\nSLEEP 300\n' | python3 "$ptyrun" 12 "$BIN" "$sedir/ignint.weir")
+    took=$(( $(now_ms) - t0 ))
+    left=$(ps -eo pid,args | awk '$2 == "sleep" && $3 == "7.42" {print $1}')
+    [ -z "$left" ] || { kill -9 $left 2>/dev/null; fail "the second ^C's hard exit must kill the ^C-ignoring child"; }
+    echo "$tout" | grep -qF "EXIT -2" || fail "a second terminal ^C dies by the SIGINT: $tout"
+    [ "$took" -lt 5000 ] || fail "a second terminal ^C must hard-exit, not wait out the child (${took}ms): $tout"
+
+    # pure computation holds the terminal ^C's join [D:teardown-joins-arms]:
+    # the grace period does not exit while the arms compute
+    printf '%s\n' 'sh -c "true"' '[1; 2] |> Seq.piter (fun i ->' '    let n = [1..7000000] |> Seq.fold (fun a x -> a + 1) 0' '    print $"arm {i} {n}")' 'print "after"' > "$sedir/purejoin.weir"
+    t0=$(now_ms)
+    tout=$(printf 'SLEEP 500\nSEND \\x03\nSLEEP 300\n' | python3 "$ptyrun" 20 "$BIN" "$sedir/purejoin.weir")
+    took=$(( $(now_ms) - t0 ))
+    echo "$tout" | grep -qF "EXIT -2" || fail "a terminal ^C during a pure-compute join dies by the SIGINT: $tout"
+    echo "$tout" | grep -qE "arm [12] |after" && fail "no arm effect or statement after a terminal ^C: $tout"
+    [ "$took" -gt 2000 ] || fail "the terminal ^C's grace must hold for the pure-compute join (exited at ${took}ms): $tout"
 
     # a tty Self.prompt stays cooked and drops key sequences
     # [D:prompt-tty-keys]: a left arrow (CSI) and an SS3 up arrow typed
@@ -3877,6 +4041,45 @@ SCN
     echo "$iout" | grep -q "AFTER-FANOUT" || fail "the prompt must return after a ^C'd fan-out: $iout"
     [ "$started" -le 6 ] || fail "a ^C'd fan-out kept taking arms ($started of 30 started, 3 in flight at ^C)"
     echo "e2e ok: REPL ^C cuts Self.prompt without taking a line, and stops a command fan-out"
+
+    # ^C at the REPL cuts a serve handler's wait as the interrupt, never as
+    # a handler failure [D:repl-interrupt]: no 500, no streamErrors line —
+    # the client's connection closes unanswered
+    if command -v curl >/dev/null 2>&1; then
+        hidir=$(mkweirtmp)
+        hiport=8494
+        cat > "$hidir/hi.scn" <<SCN
+SLEEP 700
+SEND within serve srv = { port = $hiport; maxConcurrent = 2 } (fun req -> Duration.sleep 10s; HttpServerResponse { status = 200; headers = []; body = Text "late" })\x1b\r
+SLEEP 150
+SEND     print (Str.toUpper "serving")\x1b\r
+SLEEP 150
+SEND     Duration.sleep 30s\x1b\r
+SLEEP 150
+SEND always\x1b\r
+SLEEP 150
+SEND     Duration.sleep 700ms\x1b\r
+SLEEP 150
+SEND     print (Str.toUpper \$"errs={Server.streamErrors srv |> Seq.length}")\r
+SLEEP 2500
+SEND \x03
+SLEEP 3000
+SEND print (Str.toUpper "after-serve")\r
+SLEEP 400
+SEND #quit\r
+SCN
+        ( sleep 2.2; curl -s -o /dev/null -w '%{http_code}' --max-time 20 "http://127.0.0.1:$hiport/" > "$hidir/code" 2>/dev/null; true ) &
+        cpid=$!
+        hout=$(python3 "$ptyrun" 15 "$BIN" < "$hidir/hi.scn" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
+        wait "$cpid" 2>/dev/null || true
+        echo "$hout" | grep -q "SERVING" || fail "the REPL serve probe must start serving: $hout"
+        echo "$hout" | grep -q "ERRS=0" || fail "a ^C'd serve handler must not be recorded as a failure: $(echo "$hout" | grep -aoE 'ERRS=[^\\]*' | tail -1)"
+        echo "$hout" | grep -q "AFTER-SERVE" || fail "the prompt returns after the ^C'd serve: $hout"
+        [ "$(cat "$hidir/code" 2>/dev/null)" = "000" ] || fail "a ^C'd serve handler must close its connection unanswered (got HTTP $(cat "$hidir/code" 2>/dev/null))"
+        echo "e2e ok: REPL ^C cuts a serve handler as the interrupt — no 500, nothing on streamErrors, the connection closes"
+    else
+        echo "e2e skip: REPL ^C serve-handler pin (curl)"
+    fi
 else
     echo "e2e skip: REPL SIGINT pty pins (POSIX + python3)"
 fi
@@ -10405,6 +10608,149 @@ aout=$($BIN "$pfdir/pfalw.weir" 2>&1) || fail "pfirst loser-cleanup script faile
 xrc=0
 $BIN -e '[1; 2] |> Seq.pfirst (fun i -> match i with | 1 -> exit 3 ; 0 | _ -> Duration.sleep 300ms ; i)' >/dev/null 2>&1 || xrc=$?
 [ "$xrc" = "3" ] || fail "exit 3 in a pfirst arm must exit 3 (got $xrc)"
+# exit n in a pmap/piter arm stops the fan-out as it ends a race
+# [D:fanout-exit]: the in-flight arm is cut (its command killed) and joined
+# with its cleanup whole, no new arm starts, and an earlier arm's error
+# never masks the exit. An arm whose read the kill cannot end (a pipe an
+# orphan holds) is abandoned by the join, its cleanup run before the exit
+# [D:fanout-exit-reads]
+MKFX="8.$((MK + 11))"
+for cmd in 'sleep 6; echo x' "(sleep $MKFX &) ; sleep 6"; do
+for fan in 'let _n = [1; 2; 3] |> Seq.pmap body |> Seq.length' '[1; 2; 3] |> Seq.piterWith 3 body' 'let _n = [1; 2; 3] |> Seq.pmapWith 3 body |> Seq.length'; do
+    rm -f "$pfdir/fx.log"
+    cat > "$pfdir/fx.weir" <<WEOF
+let log = "$pfdir/fx.log"
+let body i =
+    match i with
+    | 1 -> fail "one"
+    | 2 ->
+        Duration.sleep 300ms
+        exit 7
+    | _ ->
+        within
+            let _c = sh -c "$cmd" | exitCode
+            File.append log ["late"]
+        always
+            File.append log ["cleanup"]
+$fan
+WEOF
+    xrc=0; t0=$(date +%s)
+    $BIN "$pfdir/fx.weir" >/dev/null 2>&1 || xrc=$?
+    t1=$(date +%s)
+    pkill -9 -f "^sleep $MKFX\$" 2>/dev/null || true
+    [ "$xrc" = "7" ] || fail "exit 7 in a fan-out arm must exit 7, not the earlier arm's error ($cmd; $fan: got $xrc)"
+    [ $((t1 - t0)) -le 3 ] || fail "exit in a fan-out arm must cut the in-flight arm ($cmd; $fan: $((t1 - t0))s)"
+    [ "$(tr '\n' ',' < "$pfdir/fx.log" 2>/dev/null)" = "cleanup," ] || fail "a cut fan-out arm: body cut, cleanup whole ($cmd; $fan): $(tr '\n' ',' < "$pfdir/fx.log" 2>/dev/null)"
+done
+done
+rm -f "$pfdir/fx.log"
+xrc=0; $BIN -e "[1; 2; 3] |> Seq.piterWith 1 (fun i -> File.append \"$pfdir/fx.log\" [show i] ; match i with | 1 -> exit 4 | _ -> ())" >/dev/null 2>&1 || xrc=$?
+[ "$xrc" = "4" ] && [ "$(tr '\n' ',' < "$pfdir/fx.log")" = "1," ] || fail "exit in a piter arm must start no new arm (rc $xrc, arms $(tr '\n' ',' < "$pfdir/fx.log"))"
+echo "e2e ok: exit n in a pmap/piter arm stops the fan-out — no new arm, the in-flight arm cut (an orphan-held read abandoned) with its cleanup whole, never masked"
+# an exit cuts a sibling arm's Proc.wait on a scoped proc opened outside
+# the fan-out, which no group kill reaches [D:fanout-exit-reads]; and a
+# nested fan-out takes no new arm once an enclosing race is won, an
+# enclosing fan-out exits or the serve cut lands [D:fanout-exit]
+MKPW="8.$((MK + 12))"
+cat > "$pfdir/pw.weir" <<WEOF
+within proc srv = sleep $MKPW
+    within
+        [0; 1] |> Seq.piter (fun i ->
+            if i == 0 then
+                let r = Proc.wait srv
+                print \$"LATE waited {r}"
+            else
+                Duration.sleep 200ms
+                exit 7)
+    always
+        print "always"
+WEOF
+xrc=0; t0=$(date +%s)
+pwout=$($BIN "$pfdir/pw.weir" 2>&1) || xrc=$?
+t1=$(date +%s)
+pkill -9 -f "^sleep $MKPW\$" 2>/dev/null || true
+[ "$xrc" = "7" ] && [ "$pwout" = "always" ] && [ $((t1 - t0)) -le 3 ] || fail "exit in a fan-out arm must cut a sibling's Proc.wait on an outer proc (rc $xrc, $((t1 - t0))s): $pwout"
+for outer in race exit serve; do
+    rm -f "$pfdir/na.log"
+    case $outer in
+        race) cat > "$pfdir/na.weir" <<WEOF
+let note s = File.append "$pfdir/na.log" [s]
+let r =
+    [0; 1] |> Seq.pfirst (fun i ->
+        if i == 0 then
+            [0; 1; 2] |> Seq.piterWith 1 (fun j ->
+                within
+                    Duration.sleep 1s
+                always
+                    note \$"inner arm {j} cleanup")
+            0
+        else
+            Duration.sleep 200ms
+            1)
+note \$"returned {r}"
+WEOF
+            want="inner arm 0 cleanup,returned 1," ;;
+        exit) cat > "$pfdir/na.weir" <<WEOF
+let note s = File.append "$pfdir/na.log" [s]
+[0; 1] |> Seq.piter (fun i ->
+    if i == 0 then
+        [0; 1; 2] |> Seq.piterWith 1 (fun j ->
+            within
+                Duration.sleep 1s
+            always
+                note \$"inner arm {j} cleanup")
+    else
+        Duration.sleep 200ms
+        exit 7)
+WEOF
+            want="inner arm 0 cleanup," ;;
+        serve) cat > "$pfdir/na.weir" <<WEOF
+let note s = File.append "$pfdir/na.log" [s]
+let handler = fun req ->
+    [0; 1; 2] |> Seq.piterWith 1 (fun j ->
+        within
+            Duration.sleep 5s
+        always
+            note \$"inner arm {j} cleanup")
+    HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+within serve _srv = { port = 8495; maxConcurrent = 4 } handler
+    poll timeout=8s interval=50ms
+        Net.portOpen 8495
+    within proc _c = curl -s --noproxy "*" -m 20 "http://127.0.0.1:8495/x"
+        Duration.sleep 500ms
+note "returned"
+WEOF
+            want="inner arm 0 cleanup,returned," ;;
+    esac
+    $BIN "$pfdir/na.weir" >/dev/null 2>&1 || true
+    [ "$(tr '\n' ',' < "$pfdir/na.log" 2>/dev/null)" = "$want" ] || fail "a nested fan-out must take no new arm once its enclosing $outer cut it: $(tr '\n' ',' < "$pfdir/na.log" 2>/dev/null)"
+done
+# the exit's join counts an arm joining a nested race as parked only with
+# that race's arms parked: a nested arm's running cleanup holds it
+cat > "$pfdir/nc.weir" <<WEOF
+let note s = File.append "$pfdir/nc.log" [s]
+within
+    [0; 1] |> Seq.piter (fun i ->
+        if i == 0 then
+            let _w =
+                [0] |> Seq.pfirst (fun k ->
+                    within
+                        note "nested body"
+                    always
+                        sh -c "sleep 0.5"
+                        note "nested cleanup"
+                    k)
+            ()
+        else
+            Duration.sleep 100ms
+            exit 5)
+always
+    note "outer always"
+WEOF
+rm -f "$pfdir/nc.log"
+xrc=0; $BIN "$pfdir/nc.weir" >/dev/null 2>&1 || xrc=$?
+[ "$xrc" = "5" ] && [ "$(tr '\n' ',' < "$pfdir/nc.log")" = "nested body,nested cleanup,outer always," ] || fail "a fan-out exit must join a nested race's running cleanup (rc $xrc): $(tr '\n' ',' < "$pfdir/nc.log")"
+echo "e2e ok: a fan-out exit cuts a sibling's Proc.wait on an outer proc; a nested fan-out takes no new arm after an enclosing race win, exit or serve cut"
 
 out=$($BIN -e '[7; 8] |> Seq.pfirst (fun n -> match n with | 7 -> Duration.sleep 200ms ; fail "seven dies" | _ -> fail "eight dies")' 2>&1) && fail "all-failed must raise" || true
 echo "$out" | grep -qF "seven dies" || fail "first error by input order: $out"
@@ -13010,6 +13356,75 @@ WEOF
 out=$($BIN "$svdir/clean.weir" 2>&1) || fail "serve cleanup-join run failed: $out"
 [ "$(tr '\n' ',' < "$svdir/clean.log")" = "handler started,cleanup start,cleanup-cmd,cleanup end,serve returned,lock released," ] || fail "a cut serve handler's always must finish before within serve returns: $(tr '\n' ',' < "$svdir/clean.log")"
 echo "e2e ok: within serve — a cut handler's always cleanup is joined whole before the scope returns"
+
+# a signal landing while `within serve` drains holds the watchdog
+# [D:serve-cut-joins-cleanup]: the cut handler's `always` (longer than the
+# watchdog's 1s) is joined whole, then the signal's exit
+svport18=8493
+if [ "$IS_WINDOWS" != "1" ] && command -v setsid >/dev/null 2>&1; then
+    rm -f "$svdir/dsig.log"
+    cat > "$svdir/dsig.weir" <<WEOF
+let log = "$svdir/dsig.log"
+let handler = fun req ->
+    within
+        File.append log ["handler started"]
+        Duration.sleep 6s
+    always
+        File.append log ["cleanup start"]
+        Duration.sleep 2500ms
+        File.append log ["cleanup end"]
+    HttpServerResponse { status = 200; headers = []; body = Text "late" }
+
+within serve srv = { port = $svport18; maxConcurrent = 2 } handler
+    poll timeout=8s interval=50ms
+        Net.portOpen $svport18
+    within proc client = curl -s --max-time 15 http://127.0.0.1:$svport18/
+        poll timeout=8s interval=50ms
+            File.exists log
+    File.append log ["body done"]
+File.append log ["serve returned"]
+WEOF
+    setsid "$BIN" "$svdir/dsig.weir" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    for _ in $(seq 1 100); do grep -qF "body done" "$svdir/dsig.log" 2>/dev/null && break; sleep 0.05; done
+    sleep 0.2
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" || code=$?
+    [ "$code" = "143" ] || fail "a SIGTERM during the serve drain exits 143 (got $code)"
+    [ "$(tr '\n' ',' < "$svdir/dsig.log")" = "handler started,body done,cleanup start,cleanup end," ] || fail "a signal during the serve drain must join the handler's always whole: $(tr '\n' ',' < "$svdir/dsig.log")"
+    echo "e2e ok: within serve — a signal during the drain holds the watchdog; the cut handler's always runs whole"
+fi
+
+# a serve scope opened inside an `always` cleanup still cuts its own
+# handlers past the drain [D:cleanup-owns-its-cuts]: the cleanup mark
+# spares the cleanup the cuts outside it, never the scope's own
+svport19=8495
+rm -f "$svdir/incl.log"
+cat > "$svdir/incl.weir" <<WEOF
+let log = "$svdir/incl.log"
+let handler = fun req ->
+    File.append log ["handler started"]
+    Duration.sleep 6s
+    File.append log ["handler late"]
+    HttpServerResponse { status = 200; headers = []; body = Text "late" }
+
+within
+    print "body"
+always
+    within serve srv = { port = $svport19; maxConcurrent = 2 } handler
+        poll timeout=8s interval=50ms
+            Net.portOpen $svport19
+        within proc client = curl -s --max-time 10 http://127.0.0.1:$svport19/
+            poll timeout=8s interval=50ms
+                File.exists log
+    File.append log ["serve returned"]
+WEOF
+t0=$(date +%s)
+out=$($BIN "$svdir/incl.weir" 2>&1) || fail "serve-in-cleanup run failed: $out"
+t1=$(date +%s)
+[ "$(tr '\n' ',' < "$svdir/incl.log")" = "handler started,serve returned," ] || fail "a serve scope inside a cleanup must cut its late handler: $(tr '\n' ',' < "$svdir/incl.log")"
+[ $((t1 - t0)) -le 5 ] || fail "a serve scope inside a cleanup waited out its handler ($((t1 - t0))s)"
+echo "e2e ok: within serve inside an always cleanup cuts its own late handler"
 
 # (H3 lows) a queued request whose client already left is never started,
 # and a Stream whose client aborts frees its slot [D:serve-drain]

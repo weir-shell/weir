@@ -5173,6 +5173,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         internalError ctx
                     // cut past the scope: detached, nothing to answer
                     | :? Session.Cancelled -> ()
+                    // a REPL ^C passes through as `exit` does [D:repl-interrupt]:
+                    // the evaluation ends, the connection closes unanswered
+                    | :? Session.Interrupted -> Serve.abandon ctx
                     | ex ->
                         // a handler raise is a 500 — the server
                         // survives one bad request, and the
@@ -5232,26 +5235,28 @@ and eval (env: Env) (te: TypedExpr) : Value =
             finally
                 // close the server — frees the port, drops queued requests,
                 // gives in-flight handlers the drain together; idempotent
-                // with the signal sweep [D:serve-drain]
-                Serve.stop handle drainMs
-                closing.Cancel()
-                Session.deregisterAlways hooked |> ignore
-                loopThread.Join 500 |> ignore
+                // with the signal sweep [D:serve-drain]. A signal landing
+                // meanwhile holds the watchdog [D:serve-drain-signal]
+                Session.closingScope (fun () ->
+                    Serve.stop handle drainMs
+                    closing.Cancel()
+                    Session.deregisterAlways hooked |> ignore
+                    loopThread.Join 500 |> ignore
 
-                // a handler still running past the drain is cut at its next
-                // effect boundary and joined whole, its `always` cleanup
-                // included, so none of its effects lands after the scope
-                // [D:serve-cut] [D:serve-cut-joins-cleanup]; its writes are
-                // dropped and its result discarded, never raised
-                // [D:serve-drain]. Pure compute holds the join, as a pfirst
-                // loser's does
-                cut.Cancel()
+                    // a handler still running past the drain is cut at its next
+                    // effect boundary and joined whole, its `always` cleanup
+                    // included, so none of its effects lands after the scope
+                    // [D:serve-cut] [D:serve-cut-joins-cleanup]; its writes are
+                    // dropped and its result discarded, never raised
+                    // [D:serve-drain]. Pure compute holds the join, as a pfirst
+                    // loser's does
+                    cut.Cancel()
 
-                for kv in inflight do
-                    kv.Value.Condemn()
+                    for kv in inflight do
+                        kv.Value.Condemn()
 
-                for kv in inflight do
-                    Session.joinThread kv.Key
+                    for kv in inflight do
+                        Session.joinThread kv.Key)
         | WithinTmp ->
             // kind tmp [D:within-scopes]: a fresh unique directory,
             // bound as the binder for the block; removed on every

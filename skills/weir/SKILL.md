@@ -697,7 +697,11 @@ print $"{key} -> {value}"
   explicitly and are NEVER reduced: a written number is the author's
   decision, nesting included.
   Every arm runs even if one fails; the first error BY INPUT ORDER
-  rethrows after the join. Workers fork the session:
+  rethrows after the join. The exception is `exit n` in an arm: it
+  stops the fan-out (no new arm; the arms in flight are cut and joined,
+  their `always` cleanups whole; an arm stuck in a read no kill ends
+  is abandoned, its cleanups run first) and the script exits n, never
+  masked by another arm's error [D:fanout-exit] [D:fanout-exit-reads]. Workers fork the session:
   `cd` inside a worker is worker-local and gone at the join — force
   worker output inside the worker (`Seq.head`/`Seq.freeze`) if its cd
   matters. The RACE is `xs |> Seq.pfirst (fun x -> ...)`: the first
@@ -772,7 +776,9 @@ print $"{key} -> {value}"
   non-ASCII value byte, CR/LF) is refused, never dropped: a 500 to the
   client, the header and reason on `Server.streamErrors`. A handler
   that RAISES (or returns a status outside 100–999) answers 500 and is
-  recorded there too (`serve handler on GET /x failed: …`). A HEAD, 1xx, 204 or 304 reply carries no body bytes
+  recorded there too (`serve handler on GET /x failed: …`); a REPL
+  `^C` that cuts a handler is no failure: its connection closes
+  unanswered and nothing is recorded [D:repl-interrupt]. A HEAD, 1xx, 204 or 304 reply carries no body bytes
   whatever the handler returned (HEAD still declares the GET length).
   Framing and hop-by-hop headers a handler returns (`Transfer-Encoding`,
   `Content-Length`, `Connection`, `Keep-Alive`, `TE`, `Trailer`,
@@ -784,7 +790,9 @@ print $"{key} -> {value}"
   (its late response is dropped); a cut handler's `always` cleanup
   runs whole, as long as it takes, before the scope returns, and pure
   computation holds the return as a `pfirst` loser's does
-  [D:serve-cut-joins-cleanup].
+  [D:serve-cut-joins-cleanup]. A script's signal closes it the same way,
+  its handlers cut at once: the close waits at most 2s, then joins
+  their cleanups whole [D:serve-drain-signal].
   `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
   excess queues; pipelined requests are answered in order. A request
   whose `Host` is not a loopback name (`127.0.0.1`, `localhost`,
@@ -819,7 +827,9 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   runs on EVERY exit — normal, `fail`, `exit n`, SIGINT/SIGTERM (not
   `kill -9`, the standing carve-out). On a signal the body's commands
   stop, but the `always` block's commands (and fan-outs) run — teardown
-  commands are what it is for. The rulings: a cleanup raise on
+  commands are what it is for. A `pfirst` or `within serve` opened
+  inside `always` still cuts its own losers and late handlers
+  [D:cleanup-owns-its-cuts]. The rulings: a cleanup raise on
   a CLEAN exit propagates (always is never where a raise disappears);
   when already unwinding, the ORIGINAL error wins and the cleanup's
   own failure goes to stderr with a marker; a failed inner cleanup
@@ -853,8 +863,10 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   backgrounding; compose inside `sh -c`); the block starts on the
   NEXT line (the command owns the rest of its own). THE NON-CLAIM,
   stated: normal exit, raise, SIGINT, SIGTERM and SIGHUP (the
-  terminal closed, `kill -HUP`) all close every scope (on the
-  script's own thread — no statement runs after the signal; a reader
+  terminal closed, `kill -HUP`) all close every scope (a script's on
+  its own thread on POSIX — no statement runs after the signal; the
+  REPL and Windows run the cleanups on the signal thread, still whole,
+  once, LIFO [D:signal-thread-cleanups]; a reader
   closing weir's stdout ends the script the same way, exit 141, no
   message) — at a tty AND detached (a `kill -INT`/`-TERM`/`-HUP` on a
   `setsid`/backgrounded weir unwinds the same way, exit 130/143/129; a
@@ -863,10 +875,12 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel, a `kill -INT`) tree-kills the running foreground command and
   every fan-out arm's command too, scoped or not [D:sigint-reaps]. A
-  terminal ^C at an unscoped script is not that: when weir is the
+  terminal ^C while no `tmp`/`proc`/`serve`/`always` scope is open is
+  not that [D:sigint-live-scopes]: when weir is the
   terminal's foreground group the ^C reached the command too, so weir
   kills nothing, waits for it (its own ^C handling runs — terraform,
-  make, a Python traceback), then dies by the SIGINT; the cost is that a `kill -INT`
+  make, a Python traceback), then dies by the SIGINT (a second ^C
+  kills it and exits at once); the cost is that a `kill -INT`
   of an interactive weir that is the foreground group behaves the same,
   and its child may survive [D:sigint-terminal-group]; an
   arm the teardown kills is the teardown, never a "command failed"
@@ -883,14 +897,15 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   after a lock is released or an `always` begins; an arm busy in pure
   computation holds the teardown (a second signal hard-exits); an arm
   blocked in a read no cut reaches (a FIFO, a pipe an orphaned
-  grandchild holds) is abandoned, and raises if the read ever returns
-  [D:teardown-abandons-reads].
+  grandchild holds) is abandoned and never runs on, its pending
+  `always` run first [D:teardown-abandons-reads].
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
   definition — no userspace design closes that hole; and a weir
   BACKGROUNDED IN AN INTERACTIVE SHELL (`weir … &`/`nohup`, which
   keeps a controlling terminal) inherits SIGINT ignored — the
   job-control nohup convention — so a terminal Ctrl+C does not reach
-  it (send SIGTERM, or `kill -INT` the pid directly). AND THE MIRROR non-claim: the
+  it, and neither does a `kill -INT` of its pid (send SIGTERM, or
+  SIGHUP unless `nohup` ignored that too) [D:sigint-ignored-tty]. AND THE MIRROR non-claim: the
   tree-kill weir performs lands as SIGKILL on the CHILDREN too
   (measured: wait = 137), so `within proc` does not run your child's
   cleanup — a child that traps SIGTERM to flush state, remove a

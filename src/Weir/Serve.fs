@@ -450,6 +450,9 @@ let accept (h: Handle) : SCtx option =
 /// accepted request is finished exactly once, response or not
 let finish (ctx: SCtx) : unit = ctx.Done.TrySetResult() |> ignore
 
+/// close a request's connection unanswered (an interrupted handler)
+let abandon (ctx: SCtx) : unit = detach ctx
+
 /// a well-formed HTTP method is a non-empty RFC 7230 token — tchar only
 /// [D:serve-method]: no control chars, whitespace, or separators. A
 /// malformed token is refused at the boundary (400), the same byte-class

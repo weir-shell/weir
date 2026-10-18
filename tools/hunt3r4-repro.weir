@@ -1,0 +1,947 @@
+#!/usr/bin/env weir
+// Acceptance instrument for dev/plans/PLAN-hunt3r4.md stage 0: one probe per
+// code item of docs/reference/concurrency.md "Discrepancies" (#1-#6, #9-#11;
+// #7, #8 and #12 are docs-only rulings). Each probe prints `H3R4-nn OK` when
+// its item is fixed and `H3R4-nn REPRODUCES (...)` otherwise, naming every
+// sub-case still failing, so one script is both the bug report and the stage
+// gate. A probe whose precondition the host cannot meet prints
+// `H3R4-nn SKIP (...)`, which keeps the gate shut.
+//
+//     weir tools/hunt3r4-repro.weir --bin ./path/to/weir [--only H3R4-03]
+//
+// Labels are the discrepancy numbers, two digits (H3R4-01 … H3R4-11), so
+// `--only H3R4-01` selects #1 alone (and its controls, whose labels carry the
+// probe ids they guard). The judgements follow the FIXED behaviour the
+// invariants and the rulings (#6, #10) describe. #4's third clause (the 1s
+// grace exits without settleKills) has no probe: the grace fires only after
+// ten 100ms polls with no live child, and every tree kill's root stays live
+// until its own kill lands, so no kill is in flight then — a black box
+// cannot see the skipped settle; it is a code-review item.
+//
+// Loud, in every direction:
+//   - a probe that fails to run counts as reproducing, never as a pass;
+//   - a missing instrument (timeout, env, sh, python3, ps, kill, setsid,
+//     /proc) is a named SKIP counted with the failures;
+//   - the exit code is the number of lines keeping the gate shut (failed
+//     probes, failed controls and skips), capped at 255.
+//
+// Every probe is deterministic on the base binary (one run per sub-case, no
+// retry loop): a signal or a ^C lands at a point the fixture marks (a log
+// line, a fixed delay well inside a multi-second window), and timing
+// judgements leave a 2x margin. Pure computation is a `Seq.fold` over a
+// range (no boundary inside); H3R4-04 calibrates its length against an
+// unsignalled run of the same fixture.
+//
+// Signals go to weir's pid ALONE (the signal driver spawns the child in its
+// own session with default dispositions). A terminal ^C is a 0x03 byte
+// written to a pseudo-terminal whose session weir leads, so weir's group is
+// the terminal's foreground group (H3R4-04 H3R4-06 H3R4-11). Orphans are found
+// by a per-run marker — a `sleep <marker>` argv, matched exactly, never by a
+// pattern that could match the harness itself — and killed after counting.
+//
+// CI-robust: every child weir runs under `env -u` of the proxy variables with
+// TMPDIR in its probe dir; the REPL probe pins HOME and every XDG_* dir to its
+// probe dir; `within serve` probes draw candidates from a per-run block
+// (28800-32539, below the ephemeral range and clear of the round-2/3
+// harnesses' blocks) and rerun on a lost bind [D:harness-ports]. Everything
+// binds loopback; nothing leaves the machine.
+//
+// Positive controls (`control-*`) pin the neighbouring behaviour each probe
+// leans on, so no probe can pass by the binary being broken in a new way; a
+// failed control counts toward the exit code.
+//
+// python3 helpers (run `python3 -I`, written into each probe's temp dir from
+// the heredocs below, as in the round-2/3 harnesses) where weir cannot
+// express the shape: a pseudo-terminal driver with exit timing and a
+// side-channel HTTP GET (H3R4-04 06 11), a signal driver with default
+// dispositions and a fresh session (H3R4-01 03 09), and a raw HTTP client
+// (H3R4-02 03 05 11). H3R4-05's `| head -1` pipeline runs under `sh -c`:
+// weir has no spelling for its own stdout closing early.
+
+type Cli = {
+    /// the weir binary under test
+    [<Default "weir">]
+    bin: string
+    /// run only the probes and controls whose label contains this text
+    only: Option<string>
+}
+
+let cli = Args.load Cli
+
+let toolsReady =
+    sh -c "command -v timeout && command -v env && command -v python3 && command -v ps && command -v kill && command -v setsid && test -d /proc/self" | succeeds
+
+// ---- runners ---------------------------------------------------------------
+
+let put dir name lines =
+    let p = $"{dir}/{name}"
+    lines |> File.write p
+    p
+
+let noProxy = [
+    "-u"; "HTTP_PROXY"; "-u"; "http_proxy"; "-u"; "HTTPS_PROXY"; "-u"; "https_proxy"
+    "-u"; "ALL_PROXY"; "-u"; "all_proxy"; "-u"; "NO_PROXY"; "-u"; "no_proxy"
+]
+
+// a child weir in `dir`, proxies stripped, its temp dirs under `dir`
+let runIn dir secs args =
+    within cd dir
+        let r = timeout -k 2 $secs env $@noProxy $"TMPDIR={dir}" $cli.bin $@args | complete
+        r
+
+let outOf { stdout = s } = s |> Str.join "\n"
+let errOf { stderr = s } = s |> Str.join "\n"
+let diagOf r = outOf r + "\n" + errOf r
+let codeOf { exitCode = c } = c
+
+let failing cases =
+    cases |> Seq.where (fun (_, ok) -> not ok) |> Seq.map fst |> Seq.freeze
+
+let hx s = Bytes.toHex (Str.toUtf8 s)
+
+let msOf f =
+    let t0 = Instant.now ()
+    let r = f ()
+    (Duration.toMillis (Instant.now () - t0), r)
+
+let linesOf p = if File.exists p then File.read p |> Seq.freeze else []
+
+let oneLine s = s |> Str.trim |> Str.replace "\n" " | "
+
+let joined ls = ls |> Str.join " | "
+
+// position of the first line equal to `s`
+let posOf ls s = ls |> Seq.indexed |> Seq.tryFind (fun (_, l) -> l == s) |> Option.map fst
+
+// both lines present, `a` first
+let before ls a b =
+    match (posOf ls a, posOf ls b) with
+    | (Some i, Some j) -> i < j
+    | _ -> false
+
+// no line starting with `p` sits after the line `b`
+let noneAfter ls p b =
+    match posOf ls b with
+    | Some j -> not (ls |> Seq.indexed |> Seq.exists (fun (i, l) -> i > j && (l |> Str.startsWith p)))
+    | None -> false
+
+// a per-run marker for `sleep <marker>` children: a float sleep(1) takes,
+// unique to this harness run and this use
+let markOf secs k = $"{secs}.{Self.pid}{k}"
+
+// (pid, stat) of every live `sleep <mark>`, the argv matched exactly
+let sleepersOf mark =
+    let r = ps -eo "pid=,stat=,args=" | complete
+    r.stdout
+    |> Seq.map (fun l -> l |> Str.fields |> Seq.freeze)
+    |> Seq.where (fun f -> (f |> Seq.length) == 4 && f[2] == "sleep" && f[3] == mark)
+    |> Seq.map (fun f -> (f[0], f[1]))
+    |> Seq.freeze
+
+let reap mark =
+    let pids = sleepersOf mark |> Seq.map fst |> Seq.freeze
+    if not (Seq.isEmpty pids) then
+        let _k = kill -9 $@pids | complete
+        ()
+
+// ports [D:harness-ports]: 28800 + 13 blocks of 300, 15 offsets of 20 each
+let basePort = 28800 + (Self.pid % 13) * 300
+
+let portCandidates off =
+    [0..19] |> Seq.map (fun i -> basePort + off * 20 + i) |> Seq.where (fun p -> not (Net.portOpen p))
+
+let lostBind msg = (msg |> Str.contains "cannot listen") || (msg |> Str.contains "Address already in use")
+
+let noPort off = fail $"no port in block {off} could be bound"
+
+// a run serving on a port: rerun on the next candidate while its
+// diagnostics say the bind was lost
+let onFreePort off textOf run =
+    portCandidates off
+    |> Seq.map run
+    |> Seq.tryFind (fun r -> not (lostBind (textOf r)))
+    |> Option.defaultWith (fun () -> noPort off)
+
+// ---- python helpers ----------------------------------------------------------
+
+// a pseudo-terminal whose session the child leads: `HEX <bytes>` /
+// `SLEEP <ms>` / `GET <port>` (a background HTTP GET of / on 127.0.0.1) lines
+// on stdin. Prints the session (CRLF as a newline, a bare CR as <CR>, ESC as
+// <ESC>), then `EXIT <code|timeout>`, `EXITMS <ms from spawn to exit, -1 on
+// timeout>`, `SENT <ms of each HEX write>`, `STATUS <status line|closed|error>`
+// per GET
+let ptyPy = <<<
+    import os, pty, sys, time, select, signal, fcntl, termios, struct, threading, socket
+    timeout = float(sys.argv[1]); cmd = sys.argv[2:]
+    steps = []
+    for line in sys.stdin.read().splitlines():
+        if line.startswith("SLEEP "): steps.append(("sleep", int(line[6:])))
+        elif line.startswith("HEX "): steps.append(("send", bytes.fromhex(line[4:].strip())))
+        elif line.startswith("GET "): steps.append(("get", int(line[4:])))
+    pid, fd = pty.fork()
+    if pid == 0:
+        for sig in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE):
+            signal.signal(sig, signal.SIG_DFL)
+        os.execvp(cmd[0], cmd)
+    t0 = time.monotonic()
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 160, 0, 0))
+    out = b""; code = None; exitms = -1; sent = []; gets = []; threads = []
+    def ms(): return int((time.monotonic() - t0) * 1000)
+    def reap():
+        global code, exitms
+        if code is None:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done: code = os.waitstatus_to_exitcode(status); exitms = ms()
+    def pump(until):
+        global out
+        while time.monotonic() < until:
+            reap()
+            r, _, _ = select.select([fd], [], [], 0.01)
+            if r:
+                try: c = os.read(fd, 65536)
+                except OSError: c = b""
+                if not c:
+                    if code is not None: return
+                    time.sleep(0.01)
+                out += c
+    def get(port):
+        try:
+            s = socket.create_connection(("127.0.0.1", port), timeout=20)
+            s.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n" % port)
+            d = b""
+            while True:
+                x = s.recv(65536)
+                if not x: break
+                d += x
+            gets.append(d.split(b"\r\n")[0].decode("latin-1") or "closed")
+        except Exception as e: gets.append("error " + type(e).__name__)
+    for kind, arg in steps:
+        if code is not None: break
+        if kind == "sleep": pump(time.monotonic() + arg / 1000.0)
+        elif kind == "send":
+            try: os.write(fd, arg); sent.append(ms())
+            except OSError: pass
+        else:
+            t = threading.Thread(target=get, args=(arg,), daemon=True); t.start(); threads.append(t)
+    deadline = time.monotonic() + timeout
+    while code is None and time.monotonic() < deadline: pump(time.monotonic() + 0.05)
+    if code is None:
+        os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0); code = "timeout"
+    else: pump(time.monotonic() + 0.3)
+    for t in threads: t.join(5)
+    text = out.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "<CR>").replace("\x1b", "<ESC>")
+    sys.stdout.write(text)
+    print("\nEXIT", code)
+    print("EXITMS", exitms)
+    print("SENT", " ".join(str(x) for x in sent))
+    for g in gets: print("STATUS", g)
+
+// the signal driver: SIG WHEN ARG TIMEOUT MARK DIR -- argv. Spawns argv in a
+// new session (default dispositions, stdin /dev/null, stdout/stderr to
+// DIR/out, DIR/err), waits for WHEN — `ms` (ARG ms) or `log` (DIR/log holds
+// "BODY DONE", then a random 0..ARG ms) — sends SIG to the child's pid
+// alone, waits up to TIMEOUT s (then HANG: SIGKILL the session), counts the
+// `sleep MARK`s left 300ms later and kills them. One line:
+//     rc=<code|HANG> ms=<signal-to-exit> left=<n> sig=<name>
+let sigPy = <<<
+    import os, sys, time, signal, subprocess, random
+    a = sys.argv[1:]
+    sname, when, arg, tmo, mark, d = a[0], a[1], float(a[2]), float(a[3]), a[4].encode(), a[5]
+    argv = a[7:]
+    sig = getattr(signal, "SIG" + sname)
+    def pre():
+        for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE):
+            signal.signal(s, signal.SIG_DFL)
+    def marked():
+        out = []
+        for e in os.listdir("/proc"):
+            if not e.isdigit(): continue
+            try: v = open("/proc/%s/cmdline" % e, "rb").read().split(b"\0")
+            except OSError: continue
+            if len(v) >= 2 and os.path.basename(v[0]) == b"sleep" and v[1] == mark: out.append(int(e))
+        return out
+    log = os.path.join(d, "log")
+    p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=open(os.path.join(d, "out"), "wb"),
+                         stderr=open(os.path.join(d, "err"), "wb"), preexec_fn=pre, start_new_session=True)
+    t0 = time.monotonic()
+    if when == "ms":
+        time.sleep(arg / 1000.0)
+    else:
+        while time.monotonic() - t0 < 30 and p.poll() is None:
+            try:
+                if "BODY DONE" in open(log).read(): break
+            except OSError: pass
+            time.sleep(0.0005)
+        time.sleep(random.uniform(0, arg / 1000.0))
+    ts = time.monotonic()
+    try: os.kill(p.pid, sig)
+    except ProcessLookupError: pass
+    try: rc = str(p.wait(timeout=tmo))
+    except subprocess.TimeoutExpired:
+        rc = "HANG"
+        try: os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        p.wait()
+    ms = int((time.monotonic() - ts) * 1000)
+    time.sleep(0.3)
+    left = marked()
+    for x in left:
+        try: os.kill(x, signal.SIGKILL)
+        except ProcessLookupError: pass
+    try: os.killpg(p.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError): pass
+    print("rc=%s ms=%d left=%d sig=%s" % (rc, ms, len(left), sname))
+
+// a raw client: one GET, prints the status line
+let cliPy = <<<
+    import socket, sys
+    port = int(sys.argv[1])
+    s = socket.create_connection(("127.0.0.1", port), timeout=15)
+    s.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n" % port)
+    d = b""
+    try:
+        while True:
+            x = s.recv(65536)
+            if not x: break
+            d += x
+    except Exception: pass
+    print(d.split(b"\r\n")[0].decode("latin-1"))
+
+type PtyRun = { text: string; code: string; exitMs: int; sent: seq<int>; statuses: seq<string> }
+
+let fieldOf ls tag =
+    ls |> Seq.tryPick (fun l -> if l |> Str.startsWith (tag + " ") then Some (Str.sub (Str.length tag + 1) (Str.length l - Str.length tag - 1) l) else None)
+
+// one pty session; `args` is the child's argv (env-wrapped here)
+let ptyRun d secs args steps =
+    let py = put d "ptydrive.py" ptyPy
+    within cd d
+        let r = steps | timeout 120 python3 -I $py $secs env $@noProxy $"TMPDIR={d}" $@args | complete
+        let ls = r.stdout |> Seq.freeze
+        let ints s = s |> Str.fields |> Seq.map Str.toInt |> Seq.freeze
+        {
+            text = outOf r
+            code = fieldOf ls "EXIT" |> Option.defaultValue "none"
+            exitMs = fieldOf ls "EXITMS" |> Option.map Str.toInt |> Option.defaultValue -1
+            sent = fieldOf ls "SENT" |> Option.map ints |> Option.defaultValue []
+            statuses = ls |> Seq.choose (fun l -> if l |> Str.startsWith "STATUS " then Some (Str.sub 7 (Str.length l - 7) l) else None) |> Seq.freeze
+        }
+
+let typedLine s = $"HEX {hx s}0d"
+
+// Alt-Enter: a REPL line that continues the entry
+let contLine s = $"HEX {hx s}1b0d"
+
+let ctrlC = "HEX 03"
+
+type SigRun = { rc: string; ms: int; left: int; err: string; summary: string }
+
+// one signalled run through the driver; the script's log is {d}/log
+let sigRun d sig whenKind whenArg tmo mark args =
+    let py = put d "sigdrive.py" sigPy
+    within cd d
+        let r = env $@noProxy $"TMPDIR={d}" python3 -I $py $sig $whenKind $whenArg $tmo $mark $d -- $cli.bin $@args | complete
+        let line = outOf r |> Str.trim
+        let err = linesOf $"{d}/err" |> Str.join "\n"
+        match line with
+        | Regex @"rc=(\S+) ms=(\d+) left=(\d+) sig=(\w+)" (rc, ms, left, s) -> { rc = rc; ms = Str.toInt ms; left = Str.toInt left; err = err; summary = $"SIG{s}, rc={rc}, {ms}ms, {left} left" }
+        | _ -> fail $"the signal driver said '{line}' ({errOf r |> oneLine})"
+
+// pure computation with no boundary inside: about 0.5s per million on an
+// idle core
+let computeLine n = $"[1..{n}] |> Seq.fold (fun a x -> a + 1) 0"
+
+// ---- H3R4-01: a teardown returns from pfirst without joining a loser ----------
+
+// the cleanup arm fails at once and its always marks BODY DONE; the signal
+// lands in that cleanup, the compute arm then wins (no boundary while it
+// computes), and the loser's cleanup has 5s left to run
+let p01Fixture compute hold = $$<<<
+    let log = Self.args |> Seq.head
+    within
+        within lock "p01.lock"
+            let w =
+                ["compute"; "cleanup"] |> Seq.pfirst (fun k ->
+                    if k == "compute" then
+                        let n = $compute
+                        $"compute {n}"
+                    else
+                        within
+                            fail "the loser fails at once"
+                        always
+                            File.append log ["BODY DONE"]
+                            sh -c "sleep $hold"
+                            File.append log ["loser cleanup end"]
+                        "never")
+            File.append log [$"won {w}"]
+    always
+        File.append log ["outer always"]
+
+let p01Script d hold = put d "p01.weir" (p01Fixture (computeLine 2000000) hold)
+
+let ctlPfirstJoins d =
+    let r = runIn d "30" [p01Script d 1; $"{d}/log"]
+    let ls = linesOf $"{d}/log"
+    codeOf r == 0 && Seq.equal ls ["BODY DONE"; "loser cleanup end"; "won compute 2000000"; "outer always"]
+
+let h3r4p01 d =
+    let run = sigRun d "TERM" "log" "50" "20" "0" [p01Script d 5; $"{d}/log"]
+    let ls = linesOf $"{d}/log"
+    failing [
+        ($"""SIGTERM in a loser's cleanup, then an arm wins: the loser's cleanup must finish before the enclosing lock releases and the outer always runs ({run.summary}, log '{joined ls}')""", run.rc == "143" && before ls "loser cleanup end" "outer always")
+    ]
+
+// ---- H3R4-02: pfirst and within serve inside an always cleanup cut nothing -----
+
+let p02Race mark = $$<<<
+    let log = Self.args |> Seq.head
+    within
+        File.append log ["body"]
+    always
+        let w =
+            ["fast"; "sleeper"; "commander"] |> Seq.pfirst (fun k ->
+                if k == "fast" then
+                    Duration.sleep 300ms
+                    "fast"
+                elif k == "sleeper" then
+                    Duration.sleep 3s
+                    File.append log ["sleeper landed"]
+                    k
+                else
+                    sleep $mark
+                    File.append log ["commander landed"]
+                    k)
+        File.append log [$"won {w}"]
+    File.append log ["end"]
+
+// the race outside a cleanup: the same arms, cut
+let p02RaceBare mark = $$<<<
+    let log = Self.args |> Seq.head
+    File.append log ["body"]
+    let w =
+        ["fast"; "sleeper"; "commander"] |> Seq.pfirst (fun k ->
+            if k == "fast" then
+                Duration.sleep 300ms
+                "fast"
+            elif k == "sleeper" then
+                Duration.sleep 3s
+                File.append log ["sleeper landed"]
+                k
+            else
+                sleep $mark
+                File.append log ["commander landed"]
+                k)
+    File.append log [$"won {w}"]
+    File.append log ["end"]
+
+let p02Handler = <<<
+    let log = Self.args |> Seq.head
+    let handler = fun req ->
+        File.append $"{log}.h" ["handler"]
+        Duration.sleep 5s
+        File.append log ["handler landed"]
+        HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+
+let p02ServeIn port = $$<<<
+    within
+        File.append log ["body"]
+    always
+        within serve srv = { port = $port; maxConcurrent = 2 } handler
+            within proc client = python3 -I cli.py $port
+                poll timeout=10s interval=50ms watch=client
+                    File.exists $"{log}.h"
+        File.append log ["serve returned"]
+
+let p02ServeBare port = $$<<<
+    File.append log ["body"]
+    within serve srv = { port = $port; maxConcurrent = 2 } handler
+        within proc client = python3 -I cli.py $port
+            poll timeout=10s interval=50ms watch=client
+                File.exists $"{log}.h"
+    File.append log ["serve returned"]
+
+// a fixture run on a free port; its log is {d}/log
+let serveRun d off fixture =
+    let _c = put d "cli.py" cliPy
+    let log = $"{d}/log"
+    let r =
+        onFreePort off diagOf (fun port ->
+            if File.exists log then File.delete log
+            if File.exists $"{log}.h" then File.delete $"{log}.h"
+            runIn d "40" [put d "serve.weir" (fixture port); log])
+    (r, linesOf log)
+
+let raceRun d fixture mark =
+    let r = runIn d "30" [put d "race.weir" (fixture mark); $"{d}/log"]
+    reap mark
+    (r, linesOf $"{d}/log")
+
+let ctlRaceCuts d =
+    let (r, ls) = raceRun d p02RaceBare (markOf 3 1)
+    codeOf r == 0 && Seq.equal ls ["body"; "won fast"; "end"]
+
+let ctlServeCuts d =
+    let (r, ls) = serveRun d 0 (fun port -> Seq.append p02Handler (p02ServeBare port) |> Seq.freeze)
+    codeOf r == 0 && Seq.equal ls ["body"; "serve returned"]
+
+let h3r4p02 d =
+    let rd = $"{d}/race"
+    let sd = $"{d}/serve"
+    [rd; sd] |> Seq.iter Dir.create
+    let (rr, lr) = raceRun rd p02Race (markOf 3 2)
+    let (rs, ls) = serveRun sd 1 (fun port -> Seq.append p02Handler (p02ServeIn port) |> Seq.freeze)
+    failing [
+        ($"""pfirst inside an always cleanup: the losers (a Duration.sleep, a command) run to completion (exit {codeOf rr}, log '{joined lr}')""", codeOf rr == 0 && Seq.equal lr ["body"; "won fast"; "end"])
+        ($"""within serve inside an always cleanup: the handler is never cut past the drain (exit {codeOf rs}, log '{joined ls}')""", codeOf rs == 0 && Seq.equal ls ["body"; "serve returned"])
+    ]
+
+// ---- H3R4-03: the watchdog fires during the serve drain -----------------------
+
+// the handler parks in a 30s sleep; the serve body marks BODY DONE as its
+// last line (the drain starts) — or sleeps 3s after it (the control: the
+// signal lands in the body). Either way the signal cuts the handler into its
+// 3s cleanup, which must run whole before the outer always
+let p03Fixture port tail = $$<<<
+    let log = Self.args |> Seq.head
+    let handler = fun req ->
+        within
+            File.append $"{log}.h" ["handler body"]
+            Duration.sleep 30s
+        always
+            File.append log ["cleanup start"]
+            sh -c "sleep 3"
+            File.append log ["cleanup end"]
+        HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+
+    within
+        within serve srv = { port = $port; maxConcurrent = 2 } handler
+            within proc client = python3 -I cli.py $port
+                poll timeout=10s interval=50ms watch=client
+                    File.exists $"{log}.h"
+            File.append log ["BODY DONE"]
+            $tail
+    always
+        File.append log ["outer always"]
+
+let p03Run d off tail =
+    let _c = put d "cli.py" cliPy
+    let log = $"{d}/log"
+    let run =
+        onFreePort off (fun r -> r.err) (fun port ->
+            [log; $"{log}.h"] |> Seq.iter (fun f -> if File.exists f then File.delete f)
+            let p = put d "p03.weir" (p03Fixture port tail)
+            sigRun d "TERM" "log" "100" "20" "0" [p; log])
+    (run, linesOf log)
+
+let ctlSignalInServeBody d =
+    let (run, ls) = p03Run d 2 "Duration.sleep 3s"
+    run.rc == "143" && Seq.equal ls ["BODY DONE"; "cleanup start"; "cleanup end"; "outer always"]
+
+let h3r4p03 d =
+    let (run, ls) = p03Run d 3 "()"
+    failing [
+        ($"""SIGTERM while within serve drains: the cut handler's cleanup must run whole before the outer always ({run.summary}, log '{joined ls}')""", run.rc == "143" && Seq.equal ls ["BODY DONE"; "cleanup start"; "cleanup end"; "outer always"])
+    ]
+
+// ---- H3R4-04: the terminal-^C path: no second-^C escape, the grace exits ------
+// ---- during a pure-compute join -----------------------------------------------
+
+// no tmp/proc/serve/always scope anywhere: only the foreground reaper is
+// installed, the terminal-^C path of [D:sigint-terminal-group]
+let p04Ignorer mark = $$<<<
+    sh -c "trap '' INT; sleep $mark"
+    print "after"
+
+let p04Compute n = [
+    "let log = Self.args |> Seq.head"
+    "sh -c \"true\""
+    "[1; 2] |> Seq.piter (fun i ->"
+    $"    let n = {computeLine n}"
+    "    File.append log [$\"arm {i} {n}\"])"
+    "print \"after\""
+]
+
+let p04Trap mark = $$<<<
+    sh -c "trap 'sleep 0.3; echo caught; exit 3' INT; sleep $mark & wait"
+    print "after"
+
+// a terminal ^C at 1s; the child traps it, weir waits for it, then dies by
+// the SIGINT [D:sigint-terminal-group]
+let ctlTerminalCtrlCWaits d =
+    let mark = markOf 8 3
+    let run = ptyRun d "10" [cli.bin; put d "trap.weir" (p04Trap mark)] ["SLEEP 1000"; ctrlC; "SLEEP 2500"]
+    reap mark
+    (run.text |> Str.contains "caught") && run.code == "-2" && not (run.text |> Str.contains "after") && not (run.text |> Str.contains "command failed")
+
+let h3r4p04 d =
+    let ad = $"{d}/ign"
+    let cdir = $"{d}/compute"
+    [ad; cdir] |> Seq.iter Dir.create
+    // (a) a child ignoring ^C: the second ^C must exit at once
+    let mark = markOf 4 7
+    let a = ptyRun ad "12" [cli.bin; put ad "ign.weir" (p04Ignorer mark)] ["SLEEP 800"; ctrlC; "SLEEP 500"; ctrlC; "SLEEP 1500"]
+    reap mark
+    let second = a.sent |> Seq.tryItem 1 |> Option.defaultValue 0
+    let aMs = if a.exitMs < 0 then 99999 else a.exitMs - second
+    // (b) piter arms in pure computation: the join must hold the exit until
+    // they reach a boundary (calibrated by the same fixture unsignalled)
+    let p = put cdir "compute.weir" (p04Compute 5000000)
+    let calib = ptyRun cdir "30" [cli.bin; p; $"{cdir}/calib.log"] []
+    let b = ptyRun cdir "30" [cli.bin; p; $"{cdir}/log"] ["SLEEP 600"; ctrlC; "SLEEP 500"]
+    let landed = linesOf $"{cdir}/log"
+    let calibLog = linesOf $"{cdir}/calib.log" |> joined
+    failing [
+        ($"a second terminal ^C while the child ignores ^C: weir exits {aMs}ms after it (limit 1000ms, EXIT {a.code})", (Seq.length a.sent) == 2 && a.exitMs >= 0 && aMs <= 1000)
+        ($"""the calibration run (EXIT {calib.code}, {calib.exitMs}ms, '{calibLog}')""", calib.code == "0" && calib.exitMs >= 2000)
+        ($"""a terminal ^C while piter arms compute: weir exits at {b.exitMs}ms, before the arms reach a boundary (unsignalled {calib.exitMs}ms; must hold until {calib.exitMs - 700}ms; EXIT {b.code}, log '{joined landed}')""", b.exitMs >= calib.exitMs - 700 && Seq.isEmpty landed && b.code <> "0")
+    ]
+
+// ---- H3R4-05: a closed stdout kills no child until the command ends ------------
+
+// a handler's print meets the closed pipe (EPIPE: the teardown) while the
+// main flow waits on a foreground command — a statement, or a capture
+let p05Fixture port cmd = $$<<<
+    let handler = fun req ->
+        print "h1"
+        Duration.sleep 200ms
+        print "h2"
+        Duration.sleep 200ms
+        print "h3"
+        HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+    print "first"
+    within serve srv = { port = $port; maxConcurrent = 2 } handler
+        within proc c = python3 -I cli.py $port
+            $cmd
+    print "after"
+
+// `weir script | head -1`, the whole pipeline timed; rc and stderr to files
+let headRun d script =
+    within cd d
+        msOf (fun () ->
+            let r = sh -c $"( timeout -k 2 20 env TMPDIR='{d}' '{cli.bin}' '{script}' 2>err; echo $? > rc ) | head -1" | complete
+            (outOf r, linesOf $"{d}/rc" |> Str.join "", linesOf $"{d}/err" |> Str.join " "))
+
+let ctlEpipeStops d =
+    let mark = markOf 5 6
+    let p = put d "c.weir" ["print \"first\""; "Duration.sleep 300ms"; "print \"second\""; $"sleep {mark}"; "print \"after\""]
+    let (ms, (out, rc, _)) = headRun d p
+    let left = sleepersOf mark |> Seq.length
+    reap mark
+    out == "first" && rc == "141" && ms < 2500 && left == 0
+
+let h3r4p05 d =
+    let _c = put d "cli.py" cliPy
+    [("a statement command", "sleep $mark", 1); ("a captured command (| complete)", "let _r = sleep $mark | complete\n        ()", 2)]
+    |> Seq.map (fun (label, cmd, k) ->
+        let mark = markOf 4 (7 + k)
+        let (ms, (out, rc, err)) =
+            onFreePort (3 + k) (fun (_, (_, _, e)) -> e) (fun port ->
+                let p = put d $"p05-{k}.weir" (p05Fixture port (Str.replace "$mark" mark cmd))
+                headRun d p)
+        let left = sleepersOf mark |> Seq.length
+        reap mark
+        ($"`weir script | head -1`, EPIPE while the main flow waits on {label}: weir must exit 141 with no message within 2500ms ({ms}ms, rc {rc}, out '{out}', {left} marked sleep(s) left, stderr '{err}')", out == "first" && rc == "141" && ms < 2500 && left == 0 && err == ""))
+    |> failing
+
+// ---- H3R4-06: the terminal-^C rule follows LIVE scopes (ruling) ---------------
+
+// a scope opens and CLOSES, then the trapping child runs unscoped: a
+// terminal ^C must wait for it as at a script that never had a scope
+let p06Scopes = [
+    ("tmp", fun _ -> ["within tmp t"; "    print \"in tmp\""])
+    ("always", fun _ -> ["within"; "    print \"in body\""; "always"; "    print \"in always\""])
+    ("proc", fun _ -> ["within proc q = sh -c \"exit 0\""; "    print \"in proc\""])
+    ("serve", fun port -> [$"within serve srv = {{ port = {port}; maxConcurrent = 1 }} (fun req -> HttpServerResponse {{ status = 200; headers = []; body = Text \"ok\" }})"; "    print \"in serve\""])
+]
+
+let p06Run d name prefix port mark =
+    let tail = [$"sh -c \"trap 'sleep 0.3; echo caught; exit 3' INT; sleep {mark} & wait\""; "print \"after\""]
+    let p = put d $"p06-{name}.weir" (Seq.append (prefix port) tail |> Seq.freeze)
+    ptyRun d "10" [cli.bin; p] ["SLEEP 1200"; ctrlC; "SLEEP 2500"]
+
+// inside a LIVE scope the ^C is the full hook's: the child is tree-killed
+let ctlLiveScopeKills d =
+    let mark = markOf 8 4
+    let p = put d "live.weir" ["within tmp t"; $"    sh -c \"trap 'sleep 0.3; echo caught; exit 3' INT; sleep {mark} & wait\""; "print \"after\""]
+    let run = ptyRun d "10" [cli.bin; p] ["SLEEP 1200"; ctrlC; "SLEEP 2500"]
+    reap mark
+    not (run.text |> Str.contains "caught") && not (run.text |> Str.contains "after") && run.code <> "timeout" && run.code <> "0"
+
+let h3r4p06 d =
+    p06Scopes
+    |> Seq.indexed
+    |> Seq.pmap (fun (i, (name, prefix)) ->
+        let sd = $"{d}/{name}"
+        Dir.create sd
+        let mark = markOf 8 (10 + i)
+        let run =
+            if name == "serve" then onFreePort 6 (fun r -> r.text) (fun port -> p06Run sd name prefix port mark)
+            else p06Run sd name prefix 0 mark
+        reap mark
+        let caught = run.text |> Str.contains "caught"
+        ($"after a closed within {name}, a terminal ^C at an unscoped command still tree-kills it (caught: {caught}, EXIT {run.code})", caught && run.code == "-2" && not (run.text |> Str.contains "after")))
+    |> Seq.freeze
+    |> failing
+
+// ---- H3R4-09: an abandoned parked arm's always runs after its scopes ----------
+
+// SIGTERM at 1s: arms parked reading a pipe an orphaned grandchild holds (no
+// cut reaches it) are abandoned; their always must not land after the lock
+// they ran under is released and the outer always has run
+let p09Fixture mark = $$<<<
+    let log = Self.args |> Seq.head
+    within
+        within lock "p09.lock"
+            [1; 2] |> Seq.piter (fun i ->
+                within
+                    let n = sh -c "(setsid sleep $mark &); echo started" |> Seq.length
+                    File.append log [$"LATE arm {i} {n}"]
+                always
+                    File.append log [$"arm cleanup {i}"])
+    always
+        File.append log ["after lock released"]
+
+// the same arms parked in a cuttable wait: joined, their always first
+let p09Cut = <<<
+    let log = Self.args |> Seq.head
+    within
+        within lock "p09.lock"
+            [1; 2] |> Seq.piter (fun i ->
+                within
+                    Duration.sleep 30s
+                    File.append log [$"LATE arm {i}"]
+                always
+                    File.append log [$"arm cleanup {i}"])
+    always
+        File.append log ["after lock released"]
+
+let ctlCutArmsJoined d =
+    let run = sigRun d "TERM" "ms" "1000" "10" "0" [put d "c.weir" p09Cut; $"{d}/log"]
+    let ls = linesOf $"{d}/log"
+    run.rc == "143" && (ls |> Seq.length) == 3 && before ls "arm cleanup 1" "after lock released" && before ls "arm cleanup 2" "after lock released"
+
+let h3r4p09 d =
+    let mark = markOf 20 5
+    let run = sigRun d "TERM" "ms" "1000" "10" mark [put d "p09.weir" (p09Fixture mark); $"{d}/log"]
+    reap mark
+    let ls = linesOf $"{d}/log"
+    let late = ls |> Seq.exists (Str.startsWith "LATE")
+    failing [
+        ($"""SIGTERM over arms parked in an uncut read: an abandoned arm's always lands after the lock released ({run.summary}, log '{joined ls}')""", run.rc == "143" && not late && noneAfter ls "arm cleanup" "after lock released")
+    ]
+
+// ---- H3R4-10: exit n in a pmap/piter arm stops the fan-out (ruling) -----------
+
+// width 2: arm 0 sleeps 2s then fails (its always takes 300ms), arm 1 exits 7
+// at 200ms, arms 2 and 3 wait for a slot
+let p10Fixture fanout = $$<<<
+    let log = Self.args |> Seq.head
+    let work i =
+        if i == 0 then
+            within
+                Duration.sleep 2s
+                File.append log ["arm 0 landed"]
+                fail "arm 0 failed"
+            always
+                File.append log ["arm 0 cleanup start"]
+                sh -c "sleep 0.3"
+                File.append log ["arm 0 cleanup end"]
+        elif i == 1 then
+            Duration.sleep 200ms
+            exit 7
+        else
+            File.append log [$"arm {i} started"]
+        i
+    $fanout
+    File.append log ["after"]
+
+let p10Run d kind =
+    let fanout =
+        if kind == "pmap" then "let xs = [0; 1; 2; 3] |> Seq.pmapWith 2 work |> Seq.freeze\nprint (show (Seq.length xs))"
+        else "[0; 1; 2; 3] |> Seq.piterWith 2 (fun i -> print (show (work i)))"
+    let (ms, r) = msOf (fun () -> runIn d "30" [put d $"p10-{kind}.weir" (p10Fixture fanout); $"{d}/{kind}.log"])
+    (ms, r, linesOf $"{d}/{kind}.log")
+
+let ctlPmapLowestError d =
+    let p = put d "c.weir" [
+        "let log = Self.args |> Seq.head"
+        "let work i ="
+        "    if i == 0 then"
+        "        Duration.sleep 300ms"
+        "        fail \"arm 0 failed\""
+        "    elif i == 1 then"
+        "        Duration.sleep 100ms"
+        "        fail \"arm 1 failed\""
+        "    else"
+        "        File.append log [$\"arm {i} started\"]"
+        "    i"
+        "let xs = [0; 1; 2] |> Seq.pmapWith 2 work |> Seq.freeze"
+        "print (show (Seq.length xs))"
+    ]
+    let race = put d "r.weir" ["let w = [\"a\"; \"b\"] |> Seq.pfirst (fun k -> if k == \"a\" then exit 7 else (Duration.sleep 5s; k))"; "print w"]
+    let r = runIn d "30" [p; $"{d}/log"]
+    let rr = runIn d "30" [race]
+    codeOf r == 1 && (errOf r |> Str.contains "arm 0 failed") && not (errOf r |> Str.contains "arm 1 failed") && Seq.equal (linesOf $"{d}/log") ["arm 2 started"] && codeOf rr == 7
+
+let h3r4p10 d =
+    ["pmap"; "piter"]
+    |> Seq.collect (fun kind ->
+        let (ms, r, ls) = p10Run d kind
+        let shown = $"""exit {codeOf r}, {ms}ms, log '{joined ls}', stderr '{errOf r |> oneLine}'"""
+        let cases = [
+            ($"exit 7 in a {kind}With arm exits 7, never masked by arm 0's later error ({shown})", codeOf r == 7 && not (errOf r |> Str.contains "arm 0 failed"))
+            ($"exit 7 in a {kind}With arm: no new arm starts after it", not (ls |> Seq.exists (Str.contains "started")))
+            ($"exit 7 in a {kind}With arm: the in-flight arm 0 is cut, its always joined whole", Seq.equal ls ["arm 0 cleanup start"; "arm 0 cleanup end"] && ms < 1800)
+        ]
+        cases)
+    |> failing
+
+// ---- H3R4-11: a REPL ^C turns a serve handler's wait into a 500 ---------------
+
+let replHome d =
+    Dir.create $"{d}/home"
+    let h = $"{d}/home"
+    ["env"; $"HOME={h}"; $"XDG_CONFIG_HOME={h}/.config"; $"XDG_STATE_HOME={h}/.state"; $"XDG_DATA_HOME={h}/.data"; $"XDG_CACHE_HOME={h}/.cache"; "NO_COLOR=1"; cli.bin]
+
+// the handler waits 20s; the REPL's serve body waits too, its always reads
+// Server.streamErrors 700ms after the ^C
+let p11Steps port = [
+    "SLEEP 2500"
+    typedLine "let h = fun req -> Duration.sleep 20s ; HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }"
+    "SLEEP 800"
+    contLine $"within serve srv = {{ port = {port}; maxConcurrent = 2 }} h"
+    "SLEEP 150"
+    contLine "    within"
+    "SLEEP 150"
+    contLine "        Duration.sleep 20s"
+    "SLEEP 150"
+    contLine "    always"
+    "SLEEP 150"
+    contLine "        Duration.sleep 700ms"
+    "SLEEP 150"
+    typedLine "        Server.streamErrors srv |> Seq.iter (fun e -> print (\"SE=\" + e))"
+    "SLEEP 1200"
+    $"GET {port}"
+    "SLEEP 1000"
+    ctrlC
+    "SLEEP 2500"
+    typedLine "print (Str.toUpper \"still-here\")"
+    "SLEEP 800"
+    "HEX 04"
+    "SLEEP 500"
+]
+
+// the neighbouring rule: a handler that RAISES answers 500 and is recorded
+let ctlHandlerRaise500 d =
+    let _c = put d "cli.py" cliPy
+    let fixture port = [
+        "let h = fun req -> fail \"boom\""
+        $"within serve srv = {{ port = {port}; maxConcurrent = 2 }} h"
+        $"    python3 -I cli.py {port}"
+        "    Server.streamErrors srv |> Seq.iter (fun e -> print (\"SE=\" + e))"
+    ]
+    let r = onFreePort 7 diagOf (fun port -> runIn d "30" [put d "c.weir" (fixture port)])
+    codeOf r == 0 && (outOf r |> Str.contains "HTTP/1.1 500") && (outOf r |> Str.contains "SE=serve handler on GET / failed")
+
+let h3r4p11 d =
+    let run = onFreePort 8 (fun r -> r.text) (fun port -> ptyRun d "6" (replHome d) (p11Steps port))
+    let statuses = run.statuses |> joined
+    let recorded = run.text |> Str.contains "SE=serve handler"
+    failing [
+        ($"""the session survived the ^C (still-here: {run.text |> Str.contains "STILL-HERE"}, EXIT {run.code}, GET '{statuses}')""", (run.text |> Str.contains "STILL-HERE") && (Seq.length run.statuses) == 1)
+        ($"a REPL ^C while a serve handler waits: the client is answered 500 (GET '{statuses}')", not (statuses |> Str.contains " 500"))
+        ($"a REPL ^C while a serve handler waits: Server.streamErrors records a 'serve handler … failed' line ({recorded})", not recorded)
+    ]
+
+// ---- the lists ---------------------------------------------------------------
+
+let controls = [
+    ("control-pfirst-joins (H3R4-01)", ctlPfirstJoins)
+    ("control-race-cuts (H3R4-02)", ctlRaceCuts)
+    ("control-serve-cuts (H3R4-02)", ctlServeCuts)
+    ("control-signal-in-serve-body (H3R4-03)", ctlSignalInServeBody)
+    ("control-terminal-ctrl-c-waits (H3R4-04 H3R4-06)", ctlTerminalCtrlCWaits)
+    ("control-epipe-stops (H3R4-05)", ctlEpipeStops)
+    ("control-live-scope-kills (H3R4-06)", ctlLiveScopeKills)
+    ("control-cut-arms-joined (H3R4-09)", ctlCutArmsJoined)
+    ("control-pmap-lowest-error (H3R4-10)", ctlPmapLowestError)
+    ("control-handler-raise-500 (H3R4-11)", ctlHandlerRaise500)
+]
+
+let probes = [
+    ("H3R4-01", h3r4p01); ("H3R4-02", h3r4p02); ("H3R4-03", h3r4p03); ("H3R4-04", h3r4p04); ("H3R4-05", h3r4p05)
+    ("H3R4-06", h3r4p06); ("H3R4-09", h3r4p09); ("H3R4-10", h3r4p10); ("H3R4-11", h3r4p11)
+]
+
+let selected (label, _) =
+    match cli.only with
+    | Some o -> label |> Str.contains o
+    | None -> true
+
+// ---- the verdict channel ------------------------------------------------------
+
+let record vpath line =
+    print $"  {line}"
+    File.append vpath [line]
+
+// every probe and control gets its own temp dir
+let runProbe vpath (label, probe) =
+    within tmp w
+        let (ms, res) = msOf (fun () -> probe w |> try result)
+        let took = $"[{ms}ms]"
+        match res with
+        | Ok fs when fs |> Seq.isEmpty -> record vpath $"{label} OK {took}"
+        | Ok fs -> record vpath $"""{label} REPRODUCES ({fs |> Str.join "; "}) {took}"""
+        | Error m when m |> Str.contains "SKIP: " -> record vpath $"{label} SKIP ({m})"
+        | Error m -> record vpath $"{label} REPRODUCES (the probe failed to run: {m}) {took}"
+
+let runControl vpath (label, ctl) =
+    within tmp w
+        let (ms, res) = msOf (fun () -> ctl w |> try result)
+        let took = $"[{ms}ms]"
+        match res with
+        | Ok true -> record vpath $"{label} OK {took}"
+        | Ok false -> record vpath $"*** CONTROL FAILED: {label} {took}"
+        | Error m when m |> Str.contains "SKIP: " -> record vpath $"{label} SKIP ({m})"
+        | Error m -> record vpath $"*** CONTROL FAILED: {label} (the control failed to run: {m})"
+
+// ---- the gate ----------------------------------------------------------------
+
+print "third bug hunt, round 4 stage 0 — repro gate (dev/plans/PLAN-hunt3r4.md)"
+print $"  binary: {cli.bin}"
+
+within tmp d
+    let vpath = $"{d}/verdicts"
+    [] |> File.write vpath
+
+    if not toolsReady then
+        record vpath "instruments SKIP (timeout/env/python3/ps/kill/setsid//proc missing) — every item stays OPEN"
+
+    if toolsReady then
+        print ""
+        print "controls"
+        controls |> Seq.where selected |> Seq.iter (runControl vpath)
+        print ""
+        print "probes"
+        probes |> Seq.where selected |> Seq.iter (runProbe vpath)
+
+    print ""
+    let verdicts = File.read vpath |> Seq.freeze
+    let open =
+        verdicts
+        |> Seq.where (fun l ->
+            (l |> Str.contains "REPRODUCES") || (l |> Str.contains "CONTROL FAILED") || (l |> Str.contains "SKIP"))
+        |> Seq.freeze
+
+    let repro = verdicts |> Seq.where (fun l -> l |> Str.contains "REPRODUCES") |> Seq.length
+    let skipped = verdicts |> Seq.where (fun l -> (l |> Str.startsWith "H3R4-") && (l |> Str.contains " SKIP")) |> Seq.length
+    let ok = verdicts |> Seq.where (fun l -> (l |> Str.startsWith "H3R4-") && (l |> Str.contains " OK")) |> Seq.length
+    print $"summary: {ok} probe(s) OK, {repro} REPRODUCE, {skipped} SKIP"
+
+    if open |> Seq.isEmpty then
+        print (if cli.only == None then "ALL ITEMS FIXED" else "ALL SELECTED ITEMS FIXED (--only)")
+    else
+        let n = open |> Seq.length
+        print $"{n} line(s) keep the gate shut (a SKIP or a failed control counts):"
+        open |> Seq.iter (fun l -> print $"  {l}")
+        exit (if n > 255 then 255 else n)
