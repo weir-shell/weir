@@ -12,10 +12,10 @@ that enforces it. The user-facing promises are in
 | flow | runs on | stopped by |
 |---|---|---|
 | main flow | the script's main thread (`Session.registerMainThread`; scripts and `-e` only, the REPL never registers one) | teardown, REPL ^C |
-| fan-out arm (`pmap`/`piter` + `With`) | a LongRunning task per worker (`runParallelWith`, `Session.armRunning`) | teardown, REPL ^C, an enclosing race |
+| fan-out arm (`pmap`/`piter` + `With`) | a LongRunning task per worker (`runParallelWith`, `Session.armRunning`) | teardown, REPL ^C, an enclosing race, an `exit n` in a sibling arm |
 | race arm (`pfirst` + `With`) | the same, plus a race token and a `RaceGroup` per arm (`runRaceWith`) | race win, teardown, REPL ^C |
 | serve handler | a thread per request with its own flow token and `RaceGroup` (`Eval` `WithinServe` `runHandler`) | scope close past the drain, teardown, REPL ^C |
-| `always` cleanup | whatever flow reached it, marked by `Session.runningCleanup` (an AsyncLocal depth, so a fan-out inside it is marked too) | a second REPL ^C, a second signal |
+| `always` cleanup | whatever flow reached it, marked by `Session.runningCleanup` (an AsyncLocal depth, so a fan-out inside it is marked too); a race, fan-out or serve opened inside it records that depth (`flowBase`) and still cuts its own flows | a second REPL ^C, a second signal |
 | REPL evaluation | the REPL thread, bracketed by `beginReplEval`/`endReplEval` | REPL ^C |
 
 Cancellation sources:
@@ -33,6 +33,8 @@ Cancellation sources:
   on the second.
 - **scope close**: `within serve` closing past its 2s drain cancels the
   handlers' flow token and condemns their groups.
+- **fan-out exit**: an `exit n` in a `pmap`/`piter` arm cancels the
+  fan-out's `fanCancel` token and condemns each running arm's group.
 
 A **boundary** is where a flow checks whether it was stopped: every
 builtin call (`Eval.apply` → `checkCancelled`), every spawn
@@ -65,7 +67,9 @@ like `exit` does. Rests on [D:pfirst-join], [D:teardown-joins-arms],
 capture's stderr, a chain's pumps) is off the flow, so the teardown cuts
 it; the flow joining it raises its own stop instead, so the main thread
 raises `ExitRequest` ([D:epipe-kills-at-teardown]). Enforced by `flowCut`
-(race/serve token, gated by the `racesLive` counter), `teardownCuts`,
+(the race, serve or fan-out token, gated by the `racesLive` counter and
+taken relative to the flow's cleanup base, [D:cleanup-owns-its-cuts]),
+`teardownCuts`,
 `checkCancelled`, `checkCancels`, `cutTokens`/`withWaitToken`, `cutJoin`
 (`raiseWoken` before it rethrows a cut helper's cancel), and `Eval`
 `TETry` (which re-raises `OperationCanceledException`).
@@ -73,7 +77,10 @@ raises `ExitRequest` ([D:epipe-kills-at-teardown]). Enforced by `flowCut`
 **I3. A stopped flow's children die with it.** On a race win, the
 winner condemns every other group before it releases its result, and a
 child that registers after the condemn is killed as it registers. Past
-the serve drain, each handler's group is condemned. On a signal or a
+the serve drain, each handler's group is condemned. On a fan-out exit,
+each in-flight arm's group is condemned. Groups nest: a child of a
+nested race or fan-out registers with each enclosing arm's group too, so
+condemning an arm reaches it ([D:fanout-exit]). On a signal or a
 closed stdout, every live child not started by a cleanup is tree-killed
 once, and spawning stops. The exception is a terminal ^C at no live
 scope, which kills nothing (I11). Rests on [D:seq-pfirst],
@@ -91,20 +98,26 @@ read that no cut reaches is left behind once every live arm has been
 parked for two polls in a row, and if the read ever returns, the arm
 raises without using the bytes. A read that a race, a REPL ^C or the
 serve cut stops is abandoned in the same way: its bytes are never used.
-Rests on [D:pfirst-join], [D:teardown-joins-arms],
-[D:teardown-abandons-reads], [D:serve-cut-joins-cleanup]. Enforced by
-`Session.waitTask` (`WhenAll` for pmap/piter, `WhenAny` then `all` for
+When the join abandons parked arms, the main thread first runs their
+pending `always` cleanups, each in its arm's context, so none lands
+after an enclosing scope releases; the watchdog has stood down for the
+join, so a slow one runs whole. Rests on [D:pfirst-join],
+[D:teardown-joins-arms], [D:teardown-abandons-reads],
+[D:abandoned-arm-cleanup], [D:serve-cut-joins-cleanup]. Enforced by
+`Session.waitTask` (`WhenAll` for pmap/piter, one `waitTask all` for
 pfirst), `joinThread` (serve, no cap), `armRunning`/`parking`/`parked`/`allArmsParked`,
-and `cutRead`/`cutBlocking`.
+`armAlways`/`runAbandonedCleanups`, and `cutRead`/`cutBlocking`.
 
 **I5. A stopped fan-out takes no new arm and never returns a partial
 result.** After a teardown it raises `ExitRequest code`. After a REPL ^C
 it raises `Interrupted`, and an arm whose command died of the ^C counts
-as the interrupt, not as a failure. A race takes no new arm once it has
-been won. Rests on [D:teardown-stops-arms], [D:repl-interrupt-fanout],
-[D:seq-pfirst]. Enforced by `take` in `runParallelWith`, the loop guard
-in `runRaceWith`, `stopTakingArms`, `interruptRequested`, and the checks
-that run after the join.
+as the interrupt, not as a failure. An `exit n` in a `pmap`/`piter` arm
+stops the fan-out: no new arm, the in-flight arms cut and joined, then
+the exit, raised before any arm error. A race takes no new arm once it
+has been won. Rests on [D:teardown-stops-arms], [D:repl-interrupt-fanout],
+[D:seq-pfirst], [D:fanout-exit]. Enforced by `take` and `stop` in
+`runParallelWith`, the loop guard in `runRaceWith`, `stopTakingArms`,
+`interruptRequested`, and the checks that run after the join.
 
 **I6. An `always` cleanup runs whole.** Nothing preempts it: not the
 race cut, the serve cut, the teardown, or the first REPL ^C. Its spawns
@@ -116,7 +129,12 @@ exactly once, because its claim is a removal from `liveAlways`. In a
 script on POSIX it runs on the flow that reached it; a backstop sweep
 (the watchdog, the REPL's handler, Windows' `CancelKeyPress`) runs a
 pending one on the signal thread, still whole, once and LIFO. Only a
-second signal or a second REPL ^C cuts it. Rests on [D:within-always],
+second signal or a second REPL ^C cuts it. A race, fan-out or serve
+opened inside a cleanup still cuts its own flows (`inFlowCleanup`, the
+depth past the flow's base, in `flowCut`, `waitTokens`,
+`RaceGroup.Register` and `flowToken`); the absolute mark (`inCleanup`)
+still guards the teardown, the spawn gate, `stopTakingArms` and
+`replToken`. Rests on [D:within-always], [D:cleanup-owns-its-cuts],
 [D:within-always-any], [D:teardown-always-spawns],
 [D:teardown-never-preempts], [D:repl-interrupt], [D:serve-drain-signal],
 [D:signal-thread-cleanups]. Enforced by
@@ -195,8 +213,10 @@ the watchdog in `installExitHook` and the grace in `terminalInterrupt`.
 **I13. A REPL ^C cuts what the evaluation waits on, never pure
 computation.** The REPL token is global, so it reaches every flow of
 the evaluation. Waits inside a cleanup honour only a second ^C. A spawn
-is also a ^C boundary, but a builtin call is not. Tty REPL only: a
-piped REPL has no `interruptRepl`. Rests on [D:repl-interrupt],
+is also a ^C boundary, but a builtin call is not. A serve handler the
+^C cuts closes its connection unanswered (`Serve.abandon`) and records
+nothing on `Server.streamErrors`. Tty REPL only: a piped REPL has no
+`interruptRepl`. Rests on [D:repl-interrupt],
 [D:repl-interrupt-fanout], [D:repl-isig]. Enforced by `replToken`,
 `interruptRepl`, `checkInterrupted`, and `Repl.evalChecked`.
 
@@ -226,16 +246,16 @@ ignored too ([D:signal-teardown], [D:sigint-reaps],
 
 | case | outcome (the rule that wins) |
 |---|---|
-| teardown while a pfirst loser runs its cleanup, after the winner returned | I6: the cleanup runs whole and its commands are spared; the second `waitTask all` joins it (I4); then `ExitRequest` |
+| teardown while a pfirst loser runs its cleanup, after the winner returned | I6: the cleanup runs whole and its commands are spared; `waitTask all` joins it (I4); then `ExitRequest` |
 | teardown while the main thread is in a cleanup, or between a body and its cleanup | I6 over I1: `checkTeardown` skips inside the cleanup and raises at the first node after it |
 | teardown while an arm does pure computation | I4: the join holds and the watchdog stands down (`mainJoining`); only a second signal ends it (I12) |
-| teardown while every arm is parked in an uncut read, one of them holding a `within lock` | I4: the join abandons them after about 100ms and the main flow unwinds. The arm's lock stays held until the process exits, when the kernel releases it. The arm's pending `always` still sits in `liveAlways`, and the ProcessExit sweep runs it (Discrepancies 9) |
+| teardown while every arm is parked in an uncut read, one of them holding a `within lock` | I4: the join abandons them after about 100ms and the main flow unwinds. The arms' pending `always` cleanups run first, on the main thread in each arm's context, before the main flow unwinds (I4). The arm's lock stays held until the process exits, when the kernel releases it |
 | script signal while `within serve` is open or closing | the close still drains: the handlers are cut by the teardown at once (I2), the drain lasts at most 2s, then the cut and the uncapped join (I4); a signal landing during the close holds the watchdog until the close ends (I6) |
-| REPL ^C while `within serve` drains | the drain is not cut (bounded, 2s); handlers' waits raise `Interrupted`, the handler catch-all answers 500 and records a line on `Server.streamErrors`; the join is uncapped, so a pure-compute handler holds the prompt |
+| REPL ^C while `within serve` drains | the drain is not cut (bounded, 2s); handlers' waits raise `Interrupted`, and the handler ends unanswered (its connection closed), with nothing on `Server.streamErrors` (I13); the join is uncapped, so a pure-compute handler holds the prompt |
 | race cut, teardown and REPL ^C on one wait | `raiseWoken`: `checkTeardown` (main), then `Cancelled`, then `Interrupted` |
 | `exit n` in a race arm | ends the race with that raise; losers are condemned and joined |
-| `exit n` in a pmap arm | an ordinary arm error: other arms keep running and the first error by input order is raised (Discrepancies 10) |
-| `pfirst` or `within serve` inside a cleanup | I6 wins over I2/I3: the arms inherit the cleanup mark, so losers are neither cut nor killed (Discrepancies 2) |
+| `exit n` in a pmap/piter arm | stops the fan-out as a race win does: no new arm, the in-flight arms cut (their children killed by their groups) and joined, cleanups whole; then `exit n`, never masked by an arm error (I5) |
+| `pfirst` or `within serve` inside a cleanup | the scope cuts its own losers and late handlers, children killed (I2, I3); the cleanup mark still spares them the outer cuts, so a first signal or REPL ^C does not cut them and a second does (I6) |
 | terminal ^C while a `tmp`/`proc`/`serve`/`always` scope is open | the full hook tree-kills and the main flow unwinds, exit 130 (I11) |
 | terminal ^C after every scope has closed | the unscoped rule: no kill, wait for the child, die by SIGINT (I11) |
 | terminal ^C at no live scope while arms compute | the grace stands down once the main thread joins (`mainJoining`); the join holds until the arms reach a boundary, or a second ^C hard-exits (I4, I12) |
@@ -260,6 +280,11 @@ ignored too ([D:signal-teardown], [D:sigint-reaps],
   an orphan, a main-thread Http send), only the 1s watchdog ends it.
   The watchdog runs the pending cleanups on its own thread, then exits
   ([D:signal-main-unwind], [D:signal-thread-cleanups]).
+- An `exit n` that stops a fan-out does not cut an arm reading a pipe
+  an orphan holds: that arm holds the join ([D:fanout-exit]).
+- An abandoned arm's cleanup runs while its body is still parked, and
+  the arm's own inner lock or tmp dir is released only at process exit
+  ([D:abandoned-arm-cleanup]).
 - A terminal ^C at no live scope waits for a child that ignores it;
   only a second ^C ends that wait ([D:terminal-sigint-teardown]).
 - The REPL has no main thread: TERM/HUP run the sweep in the signal
@@ -271,22 +296,10 @@ Places where the code and a row or the SKILL disagree, as of this
 page. Each needs a ruling, either a code fix or a reworded row. A
 resolved entry keeps its number and names its row.
 
-1. **A teardown can return from pfirst without joining the losers.**
-   `runRaceWith` calls `waitTask (WhenAny(outcome, all))` and then
-   `waitTask all`. If an arm wins after the teardown is requested, the
-   first `waitTask` sees `WhenAny` complete and `checkTeardown` raises
-   `ExitRequest` before the second join runs. The losers are condemned
-   and cut, but a loser that is in its cleanup or in pure computation
-   keeps running while the main flow unwinds. This contradicts
-   [D:pfirst-join] and [D:teardown-joins-arms] ("joins the arms
-   before raising its ExitRequest").
-2. **A race or serve scope inside an `always` cleanup cuts nothing.**
-   `cleanupDepth` flows into the arms (AsyncLocal), so `flowCut` and
-   `waitTokens` ignore the race token and `RaceGroup.Register` registers
-   no child. The losers run to completion and pfirst waits for all of
-   them. Serve handlers opened inside a cleanup are never cut either.
-   This contradicts [D:seq-pfirst], [D:pfirst-join] and [D:serve-cut],
-   which state the contract without that exception.
+1. Resolved: a race won under a teardown joins its losers
+   ([D:pfirst-join], [D:teardown-joins-arms]).
+2. Resolved: a race, fan-out or serve opened inside a cleanup cuts its
+   own flows ([D:cleanup-owns-its-cuts]).
 3. Resolved: a signal during the serve close holds the watchdog
    ([D:serve-drain-signal]).
 4. Resolved: the terminal ^C's teardown has the second-signal escape,
@@ -301,20 +314,11 @@ resolved entry keeps its number and names its row.
 8. Resolved: "on the script's own thread" is scripts on POSIX; the
    backstop sweeps run cleanups on the signal thread
    ([D:signal-thread-cleanups]).
-9. **An abandoned arm's cleanup runs after its scopes are released.** A
-   parked arm inside `within … always` leaves its entry in
-   `liveAlways`, and the ProcessExit sweep runs it after the main flow
-   has released the enclosing locks and tmp dirs. [D:teardown-abandons-reads]
-   does not mention this, and it contradicts [D:teardown-joins-arms]
-   ("no arm effect lands after a lock releases").
-10. **`exit n` in a pmap arm is ranked like any arm error.**
-    `runParallelWith` stores the arm's `ExitRequest` in `errors`, keeps
-    taking arms, and raises the lowest-index error, so an earlier arm's
-    failure masks the exit. The SKILL's pfirst bullet says "`exit n` in
-    an arm ends the race and the script, as in `pmap`".
-11. **A serve handler turns a REPL interrupt into a 500.** `runHandler`'s
-    catch-all records `Interrupted` as a handler failure (a 500 and a
-    `serve handler … failed` line), where [D:repl-interrupt] says the
-    interrupt passes through like `exit`.
+9. Resolved: an abandoned arm's pending cleanup runs on the main
+   thread before the scopes release ([D:abandoned-arm-cleanup]).
+10. Resolved: `exit n` in a pmap/piter arm stops the fan-out and is
+    never masked ([D:fanout-exit]).
+11. Resolved: a REPL ^C in a serve handler closes the connection
+    unanswered and records nothing ([D:repl-interrupt]).
 12. Resolved: a script's signal still drains serve
     ([D:serve-drain-signal]).

@@ -697,7 +697,10 @@ print $"{key} -> {value}"
   explicitly and are NEVER reduced: a written number is the author's
   decision, nesting included.
   Every arm runs even if one fails; the first error BY INPUT ORDER
-  rethrows after the join. Workers fork the session:
+  rethrows after the join. The exception is `exit n` in an arm: it
+  stops the fan-out (no new arm; the arms in flight are cut and joined,
+  their `always` cleanups whole) and the script exits n, never masked
+  by another arm's error [D:fanout-exit]. Workers fork the session:
   `cd` inside a worker is worker-local and gone at the join — force
   worker output inside the worker (`Seq.head`/`Seq.freeze`) if its cd
   matters. The RACE is `xs |> Seq.pfirst (fun x -> ...)`: the first
@@ -772,7 +775,9 @@ print $"{key} -> {value}"
   non-ASCII value byte, CR/LF) is refused, never dropped: a 500 to the
   client, the header and reason on `Server.streamErrors`. A handler
   that RAISES (or returns a status outside 100–999) answers 500 and is
-  recorded there too (`serve handler on GET /x failed: …`). A HEAD, 1xx, 204 or 304 reply carries no body bytes
+  recorded there too (`serve handler on GET /x failed: …`); a REPL
+  `^C` that cuts a handler is no failure: its connection closes
+  unanswered and nothing is recorded [D:repl-interrupt]. A HEAD, 1xx, 204 or 304 reply carries no body bytes
   whatever the handler returned (HEAD still declares the GET length).
   Framing and hop-by-hop headers a handler returns (`Transfer-Encoding`,
   `Content-Length`, `Connection`, `Keep-Alive`, `TE`, `Trailer`,
@@ -821,7 +826,9 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   runs on EVERY exit — normal, `fail`, `exit n`, SIGINT/SIGTERM (not
   `kill -9`, the standing carve-out). On a signal the body's commands
   stop, but the `always` block's commands (and fan-outs) run — teardown
-  commands are what it is for. The rulings: a cleanup raise on
+  commands are what it is for. A `pfirst` or `within serve` opened
+  inside `always` still cuts its own losers and late handlers
+  [D:cleanup-owns-its-cuts]. The rulings: a cleanup raise on
   a CLEAN exit propagates (always is never where a raise disappears);
   when already unwinding, the ORIGINAL error wins and the cleanup's
   own failure goes to stderr with a marker; a failed inner cleanup

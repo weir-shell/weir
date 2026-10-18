@@ -183,7 +183,9 @@ valid header token, or a value with a control or non-ASCII character
 — is never dropped quietly: the client gets a 500 and
 `Server.streamErrors` names the header and why. A handler that raises,
 or returns a status outside 100–999, also gets the client a 500 and
-leaves a line there (`serve handler on GET /x failed: …`).
+leaves a line there (`serve handler on GET /x failed: …`). A REPL ^C
+that interrupts a handler is not a failure: the connection closes
+without an answer and nothing is recorded.
 `maxConcurrent` limits how many handlers run at once, as with
 `Seq.pmapWith`; extra requests wait in a queue, and pipelined requests
 on one connection are answered in order.
