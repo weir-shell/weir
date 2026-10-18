@@ -2381,12 +2381,39 @@ let private jsonTopHoldsSecret (top: JsonTop) (defs: Map<string, RecordDef>) (ud
 /// [<Elem "X">] a repeated child, a record a nested element. Every leaf is
 /// text (an element's inner text or an attribute value) — no numbers reach
 /// here, the checker admits string / Option<string> / record / seq only.
+// the XML declaration's encoding name [D:xml-encoding]
+let private xmlDeclEncoding =
+    System.Text.RegularExpressions.Regex
+        @"^\uFEFF?\s*<\?xml\s[^>]*?\bencoding\s*=\s*[""']([A-Za-z][A-Za-z0-9._:-]*)[""']"
+
+// the encodings a declaration may name [D:xml-encoding]: CoreLib's
+// (UTF-8/16/32, US-ASCII, ISO-8859-1) and the code pages the provider
+// adds (windows-125x, ISO-8859-x, KOI8, Shift_JIS, …); registered once,
+// on first need
+let private codePages =
+    lazy (System.Text.Encoding.RegisterProvider System.Text.CodePagesEncodingProvider.Instance)
+
+let private xmlEncoding (who: string) (name: string) : System.Text.Encoding =
+    codePages.Force()
+
+    try
+        System.Text.Encoding.GetEncoding name
+    with _ ->
+        failwith
+            $"{who}: the document declares encoding '{excerpt name}', which weir cannot decode — UTF-8, UTF-16, UTF-32, US-ASCII, ISO-8859-x and the windows-125x code pages read"
+
+/// the input of `from xml`: text (already decoded as UTF-8) or the
+/// document's bytes, which decode per their BOM or declaration
+type XmlInput =
+    | XmlText of string
+    | XmlBytes of byte[]
+
 let private xmlDoc
     (who: string)
     (top: JsonTop)
     (defs: Map<string, RecordDef>)
     (shown: string)
-    (text: string)
+    (input: XmlInput)
     : Value =
     // DTDs are prohibited [D:xml-no-dtd]: no declared entity expands and
     // no external one resolves; XDocument.Parse's defaults would process
@@ -2398,6 +2425,83 @@ let private xmlDoc
             // XDocument.Parse's LoadOptions.None reading
             IgnoreWhitespace = true
         )
+
+    // the declared encoding decides [D:xml-encoding]: text arrived
+    // decoded as UTF-8, so a declaration of another encoding reads only
+    // when the text is ASCII (the same characters in either); bytes
+    // decode per their BOM, else the declaration, else UTF-8
+    let text =
+        match input with
+        | XmlText text ->
+            let m = xmlDeclEncoding.Match text
+
+            if m.Success then
+                let enc = xmlEncoding who m.Groups[1].Value
+
+                if
+                    enc.CodePage <> 65001
+                    && text |> Seq.exists (fun c -> int c > 0x7F && c <> '\uFEFF')
+                then
+                    let tyName =
+                        match top with
+                        | TopRec d -> d.Name
+                        | _ -> "T"
+
+                    failwith
+                        $"{who}: the document declares encoding '{excerpt m.Groups[1].Value}', but it arrived as text, which weir decodes as UTF-8 — read its bytes so the declaration decodes them: File.readBytes path |> from xml {tyName}"
+
+            text
+        | XmlBytes bytes ->
+            let bomLen, bomEnc =
+                if bytes.Length >= 3 && bytes[0] = 0xEFuy && bytes[1] = 0xBBuy && bytes[2] = 0xBFuy then
+                    3, Some(System.Text.UTF8Encoding(false) :> System.Text.Encoding)
+                elif bytes.Length >= 4 && bytes[0] = 0xFFuy && bytes[1] = 0xFEuy && bytes[2] = 0uy && bytes[3] = 0uy then
+                    4, Some(System.Text.UTF32Encoding(false, false) :> System.Text.Encoding)
+                elif bytes.Length >= 4 && bytes[0] = 0uy && bytes[1] = 0uy && bytes[2] = 0xFEuy && bytes[3] = 0xFFuy then
+                    4, Some(System.Text.UTF32Encoding(true, false) :> System.Text.Encoding)
+                elif bytes.Length >= 2 && bytes[0] = 0xFFuy && bytes[1] = 0xFEuy then
+                    2, Some(System.Text.UnicodeEncoding(false, false) :> System.Text.Encoding)
+                elif bytes.Length >= 2 && bytes[0] = 0xFEuy && bytes[1] = 0xFFuy then
+                    2, Some(System.Text.UnicodeEncoding(true, false) :> System.Text.Encoding)
+                elif bytes.Length >= 4 && bytes[0] = 0x3Cuy && bytes[1] = 0uy && bytes[2] = 0x3Fuy && bytes[3] = 0uy then
+                    0, Some(System.Text.UnicodeEncoding(false, false) :> System.Text.Encoding)
+                elif bytes.Length >= 4 && bytes[0] = 0uy && bytes[1] = 0x3Cuy && bytes[2] = 0uy && bytes[3] = 0x3Fuy then
+                    0, Some(System.Text.UnicodeEncoding(true, false) :> System.Text.Encoding)
+                else
+                    0, None
+
+            let enc =
+                match bomEnc with
+                | Some e -> e
+                | None ->
+                    // the declaration is ASCII in every ASCII-compatible
+                    // encoding; read it from the head as Latin-1
+                    let head = System.Text.Encoding.Latin1.GetString(bytes, 0, min bytes.Length 512)
+                    let m = xmlDeclEncoding.Match head
+
+                    if m.Success then
+                        xmlEncoding who m.Groups[1].Value
+                    else
+                        System.Text.UTF8Encoding(false) :> System.Text.Encoding
+
+            // strict: an undecodable byte is an error, never U+FFFD
+            // [D:encoding-law]
+            let strict =
+                System.Text.Encoding.GetEncoding(
+                    enc.CodePage,
+                    System.Text.EncoderFallback.ExceptionFallback,
+                    System.Text.DecoderFallback.ExceptionFallback
+                )
+
+            try
+                strict.GetString(bytes, bomLen, bytes.Length - bomLen)
+            with :? System.Text.DecoderFallbackException ->
+                failwith $"{who}: the document is not valid {enc.WebName} (its declared or default encoding)"
+
+    let shown =
+        match input with
+        | XmlText _ -> shown
+        | XmlBytes _ -> jsonSnippet text
 
     let root =
         try
@@ -2660,7 +2764,14 @@ let private fromAdapter
                 if text.Trim() = "" then
                     failwith "from xml: empty input — expected one XML document"
 
-                xmlDoc "from xml" top defs (cite (jsonSnippet text)) text
+                xmlDoc "from xml" top defs (cite (jsonSnippet text)) (XmlText text)
+            // the document's bytes decode per its BOM or declaration
+            // [D:xml-encoding]
+            | VBytes bytes ->
+                if bytes.Length = 0 then
+                    failwith "from xml: empty input — expected one XML document"
+
+                xmlDoc "from xml" top defs "" (XmlBytes bytes)
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     // header-aligned rows -> seq<T> [D:from-table]: the header must be
     // read before any row slices, so the input materializes here

@@ -209,6 +209,17 @@ this rather than guessing at a convention XML does not define.
 `from xml seq<T>` (repeated children are read with a `seq< >` field).
 There is no `to xml`.
 
+`from xml` also takes the document's `Bytes`
+(`File.readBytes "legacy.xml" |> from xml Proj`), which are decoded
+by their byte-order mark, else by the encoding the XML declaration
+names, else as UTF-8. UTF-8, UTF-16, UTF-32, US-ASCII, the ISO-8859
+family, the windows-125x code pages and the other common code pages
+(KOI8-R, Shift_JIS, …) are supported; an undecodable byte is an error.
+Text is already decoded as UTF-8, so a text document whose declaration
+names another encoding reads only if it is plain ASCII; otherwise the
+error asks for the bytes. A declared encoding weir does not know is an
+error either way.
+
 ## Aligned tables
 
 `from table T` reads aligned column output, the kind `kubectl` and

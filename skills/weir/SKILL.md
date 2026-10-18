@@ -2020,7 +2020,11 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   converted (`Str.toInt`), the checker teaches it. `[<Attr>]` fits only
   `string`/`Option<string>`, `[<Elem>]` only a `seq`, the top level is
   one root (`from xml seq<T>` refuses — a repeat is a `seq< >` field),
-  and there is NO `to xml`. A DTD (`<!DOCTYPE …>`) refuses
+  and there is NO `to xml`. `Bytes` read too (`File.readBytes p |>
+  from xml T`): decoded by BOM, else the declaration's encoding (UTF-8/
+  16/32, ASCII, ISO-8859-x, windows-125x, the code pages), else UTF-8,
+  strictly [D:xml-encoding]; text under a non-UTF-8 declaration reads
+  only if ASCII, an unknown encoding refuses. A DTD (`<!DOCTYPE …>`) refuses
   [D:xml-no-dtd] — no declared entity expands or resolves.
   An element that repeats under a `string`/`Option<string>`/record
   field refuses (never silently the first) — declare a `seq< >`. A

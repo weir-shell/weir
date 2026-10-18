@@ -1826,6 +1826,68 @@ let boundaryTests =
               let empty = Expect.throwsC (fun () -> runWith [ "src", VSeq [ VStr "" ] ] "src |> from xml XProj" |> ignore) id
               Expect.stringContains empty.Message "empty input — expected one XML document" ""
           }
+          test "from xml: bytes decode per the BOM or declaration; text refuses a non-UTF-8 one; unknown refuses [D:xml-encoding]" {
+              System.Text.Encoding.RegisterProvider System.Text.CodePagesEncodingProvider.Instance
+              let xenv = env |> declare "type XT = { Title: string }"
+
+              let b64 (enc: System.Text.Encoding) (decl: string) (title: string) =
+                  System.Convert.ToBase64String(
+                      Array.append (enc.GetPreamble()) (enc.GetBytes($"<?xml version=\"1.0\"{decl}?>\n<Root><Title>{title}</Title></Root>"))
+                  )
+
+              let readBytes (b: string) =
+                  runUnder xenv $"show (Bytes.fromBase64 \"{b}\" |> from xml XT)"
+
+              Expect.equal
+                  (readBytes (b64 System.Text.Encoding.Latin1 " encoding=\"ISO-8859-1\"" "café"))
+                  (VStr "{ Title = \"café\" }")
+                  "ISO-8859-1"
+
+              Expect.equal
+                  (readBytes (b64 (System.Text.Encoding.GetEncoding 1252) " encoding=\"windows-1252\"" "€uro"))
+                  (VStr "{ Title = \"€uro\" }")
+                  "windows-1252 (the code-page provider)"
+
+              Expect.equal
+                  (readBytes (b64 (System.Text.UnicodeEncoding(false, true)) " encoding=\"UTF-16\"" "café"))
+                  (VStr "{ Title = \"café\" }")
+                  "UTF-16 with its BOM"
+
+              Expect.equal
+                  (readBytes (b64 (System.Text.UTF8Encoding(true)) "" "café"))
+                  (VStr "{ Title = \"café\" }")
+                  "a UTF-8 BOM, no declaration"
+
+              let msg (src: string) =
+                  (Expect.throwsC (fun () -> runUnder xenv src |> ignore) id).Message
+
+              let klingon = b64 System.Text.Encoding.ASCII " encoding=\"x-klingon\"" "ab"
+
+              Expect.stringContains
+                  (msg $"Bytes.fromBase64 \"{klingon}\" |> from xml XT")
+                  "declares encoding 'x-klingon', which weir cannot decode"
+                  "an unknown encoding refuses (bytes)"
+
+              Expect.stringContains
+                  (msg "[\"<?xml version='1.0' encoding='x-klingon'?><Root><Title>ab</Title></Root>\"] |> from xml XT")
+                  "which weir cannot decode"
+                  "an unknown encoding refuses (text)"
+
+              Expect.stringContains
+                  (msg "[\"<?xml version='1.0' encoding='ISO-8859-1'?><Root><Title>café</Title></Root>\"] |> from xml XT")
+                  "File.readBytes path |> from xml XT"
+                  "non-ASCII text under a non-UTF-8 declaration teaches the bytes read"
+
+              Expect.equal
+                  (runUnder xenv "show ([\"<?xml version='1.0' encoding='ISO-8859-1'?><Root><Title>ab</Title></Root>\"] |> from xml XT)")
+                  (VStr "{ Title = \"ab\" }")
+                  "ASCII text reads under any ASCII-compatible declaration"
+
+              Expect.stringContains
+                  (msg "Bytes.fromBase64 \"PFJvb3Q+PFRpdGxlPmNhZulgPC9UaXRsZT48L1Jvb3Q+\" |> from xml XT")
+                  "not valid utf-8"
+                  "no declaration: strict UTF-8, never U+FFFD"
+          }
           test "from xml: a DTD refuses — no entity expands or resolves [D:xml-no-dtd]" {
               let refuse (doc: string list) =
                   (Expect.throwsC (fun () -> runWith [ "src", VSeq(doc |> List.map VStr) ] "src |> from xml XProj" |> ignore) id)
