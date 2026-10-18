@@ -853,6 +853,9 @@ let d1Script = <<<
     let n = Self.args |> Seq.head |> Str.toInt
     let mode = Self.args |> Seq.item 1
     let mid = [1..10] |> Seq.map (fun i -> $"d{i}") |> Str.join "/"
+    // the plan's writes need their directories: an op certain to fail
+    // refuses at capture [D:plan-preconditions]
+    for j in [0..99] do Dir.create $"w/{mid}/s{j}"
     let pl =
         plan
             for i in [1..n] do

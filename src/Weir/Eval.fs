@@ -890,9 +890,9 @@ module PlanMode =
 
     /// the real filesystem's kind of a path
     let realKind (p: string) : int =
-        if System.IO.Directory.Exists p then 2
-        elif System.IO.File.Exists p then 1
-        elif System.IO.FileInfo(p).Exists || not (isNull (System.IO.FileInfo(p).LinkTarget)) then 4
+        if System.IO.File.Exists p then 1
+        elif System.IO.Directory.Exists p then 2
+        elif not (isNull (System.IO.FileInfo(p).LinkTarget)) then 4
         else 0
 
     let private compsOf (p: string) = parts (keyOf (norm p))
@@ -953,15 +953,19 @@ module PlanMode =
         | ValueSome r -> r
         | ValueNone -> struct (0, null, p)
 
-    let rec private kindIn (frames: PlanFrame list) (p: string) : int =
+    // `real` answers for a path no layer decided — the full kind, or
+    // only as much of it as the caller asks (one stat for "a directory?")
+    let rec private kindWith (real: string -> int) (frames: PlanFrame list) (p: string) : int =
         match frames with
-        | [] -> realKind p
+        | [] -> real p
         | f :: outer ->
             match viewIn f.Sim p with
             | struct (3, _, _) -> 0
-            | struct (0, _, below) when not (isNull below) -> kindIn outer below
+            | struct (0, _, below) when not (isNull below) -> kindWith real outer below
             | struct (0, _, _) -> 0
             | struct (k, _, _) -> k
+
+    let private kindIn frames p = kindWith realKind frames p
 
     // the real path a view ends at, for the checks only the real
     // filesystem answers (a dangling link); None when an op made it
@@ -991,6 +995,10 @@ module PlanMode =
 
     /// the plan-time kind of a path (0 absent, 1 file, 2 dir, 4 other)
     let simKind (p: string) : int = kindIn stack.Value p
+
+    /// is the path a directory at plan time?
+    let simIsDir (p: string) : bool =
+        kindWith (fun p -> if System.IO.Directory.Exists p then 2 else 0) stack.Value p = 2
 
     /// does the plan-time directory hold an entry?
     let simEmptyDir (p: string) : bool =

@@ -3632,26 +3632,29 @@ let private readGuard (op: string) (r: string) : unit =
 // refuses at capture exactly what the direct call would
 type private FsProbe =
     { Kind: string -> int // 0 absent, 1 file, 2 dir, 4 another entry
+      IsDir: string -> bool // Kind = 2, in one stat
       EmptyDir: string -> bool
       Dangling: string -> bool }
 
 let private realProbe =
     { Kind = PlanMode.realKind
+      IsDir = System.IO.Directory.Exists
       EmptyDir = fun r -> System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty
       Dangling = isDangling }
 
 let private planProbe =
     { Kind = PlanMode.simKind
+      IsDir = PlanMode.simIsDir
       EmptyDir = PlanMode.simEmptyDir
       Dangling = PlanMode.simDangling isDangling }
 
 let private preWrite (pr: FsProbe) (op: string) (r: string) : unit =
-    if pr.Kind r = 2 then
+    if pr.IsDir r then
         failwith $"{op}: {r} is a directory"
     else
         let parent = System.IO.Path.GetDirectoryName r
 
-        if not (isNull parent) && parent <> "" && pr.Kind parent <> 2 then
+        if not (isNull parent) && parent <> "" && not (pr.IsDir parent) then
             failwith $"{op}: no such directory: {parent}"
 
 let private writeGuard (op: string) (r: string) : unit = preWrite realProbe op r
