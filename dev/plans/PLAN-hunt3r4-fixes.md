@@ -105,6 +105,9 @@ double/triple-signal, --tty) 0 failures over 1600 runs each; the race-tree
 fuzzer 0 bad in 2000 trees. Beside the plan: `from xml` without code
 pages ([D:xml-encoding-builtin], user), MetricsSupport off, e2e's quiet
 greps drain ([D:e2e-grep-drain], a macOS flake), H3R4-04's adaptive
-calibration. Owed: stage D (the nightly storm job) and the serve charset
-refusal; then round 5.
+calibration. Stage D landed (ci/storm, .github/workflows/storm.yml: nightly
+single, several-signal and --tty storms plus the race-tree fuzzer, all
+gating; ~7.5 min of storms locally) and serve answers 415 to a body
+charset weir cannot decode ([D:serve-charset]). Round 4 FIXED; round 5
+(black-box, the exit check) owed.
 
