@@ -219,7 +219,7 @@ module private Posix =
                 fs.Write(bytes, 0, bytes.Length)
                 Ok()
             with ex ->
-                Error $"cannot write '{path}': {ex.Message}"
+                Error $"cannot write '{Weir.Types.quoteData path}': {Weir.Types.quoteData ex.Message}"
 
 /// write `bytes` to `dest`, which is confined under `root`
 /// [D:lockfile-symlink-confinement]. The parent directory is realpath-
@@ -249,7 +249,7 @@ let writeConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit, s
                     File.WriteAllBytes(dest, bytes)
                     Ok()
                 with ex ->
-                    Error $"cannot write '{dest}': {ex.Message}"
+                    Error $"cannot write '{Weir.Types.quoteData dest}': {Weir.Types.quoteData ex.Message}"
             else
                 Posix.writeNoFollow dest bytes
 
@@ -454,7 +454,7 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
             |> Ok
         with
         | LockShape msg -> Error $"{p}: malformed lockfile — {msg}; re-add the artifact or fix the entry"
-        | ex -> Error $"{p}: cannot read the lockfile: {ex.Message}"
+        | ex -> Error $"{Weir.Types.quoteData p}: cannot read the lockfile: {Weir.Types.quoteData ex.Message}"
 
 let writeLock (weirDir: string) (entries: LockEntry list) : unit =
     use ms = new MemoryStream()
@@ -1305,7 +1305,7 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
             with ex ->
                 ex.Message
 
-        Error $"schema {name}: not valid JSON — {why}"
+        Error $"schema {name}: not valid JSON — {Weir.Types.quoteData why}"
     | Ok parsed ->
     try
         use doc = parsed
@@ -1374,7 +1374,7 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
                            Unenforced = List.ofSeq unenforced })
         |> Result.mapError (fun e -> $"schema {name}: {e}")
     with ex ->
-        Error $"schema {name}: not valid JSON — {ex.Message}"
+        Error $"schema {name}: not valid JSON — {Weir.Types.quoteData ex.Message}"
 
 /// follow a chain of pure refs to a shape (a ref-to-a-ref); a ref cycle
 /// with no shape in between lands on SAny — validation relaxes, the
