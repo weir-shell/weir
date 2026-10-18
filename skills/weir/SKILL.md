@@ -80,7 +80,10 @@ print (show 1)
   a `pfirst` loser, a REPL `^C` — takes no line, the next read gets it
   [D:stdin-reader], and never splits one: a line it had begun is
   finished from the bytes already waiting and stays for the next weir
-  read [D:prompt-cut-whole-line]; at a terminal the line is cooked and
+  read [D:prompt-cut-whole-line] — before a child that reads stdin
+  starts, weir finishes a line it began, so no reader ever sees half a
+  line; a `Self.stdin` cut before its first read leaves the stream
+  unread; at a terminal the line is cooked and
   arrow/Home/Delete keys are dropped from the answer
   [D:prompt-tty-keys]), `Self.pid : int` (the process id),
   `Self.scriptPath : string` (the FILE'S OWN absolute path, resolved
@@ -703,9 +706,9 @@ print $"{key} -> {value}"
   Every arm runs even if one fails; the first error BY INPUT ORDER
   rethrows after the join. The exception is `exit n` in an arm: it
   stops the fan-out (no new arm; the arms in flight are cut and joined,
-  their `always` cleanups whole; an arm stuck in a read no kill ends
-  is abandoned, its cleanups run first) and the script exits n, never
-  masked by another arm's error [D:fanout-exit] [D:fanout-exit-reads]. Workers fork the session:
+  their `always` cleanups whole — a read is cut too, even of a pipe
+  an orphan holds) and the script exits n, never masked by another
+  arm's error [D:fanout-exit] [D:scope-tree]. Workers fork the session:
   `cd` inside a worker is worker-local and gone at the join — force
   worker output inside the worker (`Seq.head`/`Seq.freeze`) if its cd
   matters. The RACE is `xs |> Seq.pfirst (fun x -> ...)`: the first
@@ -715,8 +718,9 @@ print $"{key} -> {value}"
   Losers are cancelled at their next builtin call, command, sleep or
   Http send (an in-flight request is cut), and `pfirst` waits for
   every loser before returning — AFTER `pfirst` RETURNS, NO LOSER
-  EFFECT RUNS [D:pfirst-join]; a loser busy in pure computation holds
-  the return until it reaches one, and a loser's `always` cleanup
+  EFFECT RUNS [D:pfirst-join]; every evaluated step is a boundary, so
+  only a builtin's own loop (`Seq.length` of a huge range) holds the
+  return until it ends, and a loser's `always` cleanup
   still runs whole, its commands included (before the return). A
   loser blocked reading stdin or a FIFO is cut too (POSIX; on Linux the
   cut closes the FIFO, so a later read gets the writer's data
@@ -867,19 +871,22 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   backgrounding; compose inside `sh -c`); the block starts on the
   NEXT line (the command owns the rest of its own). THE NON-CLAIM,
   stated: normal exit, raise, SIGINT, SIGTERM and SIGHUP (the
-  terminal closed, `kill -HUP`) all close every scope (a script's on
-  its own thread on POSIX — no statement runs after the signal; the
-  REPL and Windows run the cleanups on the signal thread, still whole,
-  once, LIFO [D:signal-thread-cleanups]; a reader
-  closing weir's stdout ends the script the same way, exit 141, no
-  message) — at a tty AND detached (a `kill -INT`/`-TERM`/`-HUP` on a
-  `setsid`/backgrounded weir unwinds the same way, exit 130/143/129; a
-  second signal mid-teardown hard-exits, the double-Ctrl+C escape)
-  [D:sighup-teardown]. `nohup weir …` keeps SIGHUP ignored. A
-  hung-up terminal never aborts weir: console writes after the hangup
-  are dropped, so the cleanups still run whole and the exit is 129
-  [D:console-hangup] (a command's own write to the dead terminal is
-  that command's failure).
+  terminal closed, `kill -HUP`) all close every scope (on the flow's
+  own thread — the script's, a REPL entry's, on Windows too — so no
+  statement runs after the signal; a flow stuck where no step comes
+  has its cleanups run by a 1s backstop, still whole, once, LIFO
+  [D:scope-tree]; a reader closing weir's stdout ends the script the
+  same way, exit 141, no message) — at a tty AND detached (a
+  `kill -INT`/`-TERM`/`-HUP` on a `setsid`/backgrounded weir unwinds
+  the same way) [D:sighup-teardown]. After the unwind weir dies BY the
+  signal, scoped or not (`$?` 130/143/129; a calling bash loop stops at
+  one ^C) [D:die-by-signal]. A second signal hard-exits at once, the
+  double-Ctrl+C escape: no cleanup runs or runs on, every child dies,
+  and weir dies by the FIRST signal [D:hard-exit]. `nohup weir …`
+  keeps SIGHUP ignored. A hung-up terminal never aborts weir: console
+  writes after the hangup are dropped, so the cleanups still run whole
+  and weir dies by the SIGHUP [D:console-hangup] (a command's own write
+  to the dead terminal is that command's failure).
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel, a `kill -INT`) tree-kills the running foreground command and
   every fan-out arm's command too, scoped or not [D:sigint-reaps]. A
@@ -897,16 +904,18 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   child included); one that daemonized away (`(cmd &)`) is out of
   reach [D:tree-kill-walk]. An `always` cleanup running or about to
   start when the signal lands runs whole, its commands too, then the
-  signal's exit [D:teardown-never-preempts].
+  signal's exit [D:teardown-never-preempts]; at a terminal its commands
+  run in a process group of their own, so a terminal ^C cannot reach
+  them (their output shows; they cannot read the terminal)
+  [D:cleanup-pgrp].
   A `pmap`/`piter`/`pfirst` takes no new arm after the signal (or the
   closed stdout), and arms already running are cut at their next
   builtin call, command, sleep or wait and JOINED before any
   enclosing scope closes [D:teardown-joins-arms] — no arm effect lands
-  after a lock is released or an `always` begins; an arm busy in pure
-  computation holds the teardown (a second signal hard-exits); an arm
-  blocked in a read no cut reaches (a FIFO, a pipe an orphaned
-  grandchild holds) is abandoned and never runs on, its pending
-  `always` run first [D:teardown-abandons-reads].
+  after a lock is released or an `always` begins; a read is cut too
+  (a FIFO, a pipe an orphaned grandchild holds), so only an arm busy
+  in a builtin's own loop holds the teardown (a second signal
+  hard-exits) [D:scope-tree].
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
   definition — no userspace design closes that hole; and a weir
   BACKGROUNDED WHERE JOB CONTROL IS OFF (`weir … &` in a script,
@@ -1442,7 +1451,9 @@ print x
   Http request, a `Self.prompt` (which takes no line) — is cut where
   it stands (in a `pmap`/`piter` arm too); a fan-out takes no new arm,
   and an arm whose command died of the `^C` is the interrupt, not a
-  failure [D:repl-interrupt-fanout]. `within`'s scopes close as on any raise; an `always` block
+  failure [D:repl-interrupt-fanout]. An entry of several statements
+  is one evaluation: a `^C` or a failure ends all of it [D:scope-tree].
+  `within`'s scopes close as on any raise; an `always` block
   runs as written unless `^C` is pressed again. At an idle prompt
   `^C` clears the line. Pure computation is not interrupted: it runs
   to its next wait, which then stops.

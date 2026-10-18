@@ -1810,7 +1810,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     out
 
 // the race [D:seq-pfirst]: the first success wins; losers' spawned
-// process trees are killed via their RaceGroup, so their failures are
+// process trees are killed with their nodes, so their failures are
 // swallowed by construction. Losers are cancelled cooperatively
 // [D:pfirst-join]: the race's token stops each at its next boundary
 // (a builtin call, spawn, sleep, Http send), and the race joins every
@@ -2803,7 +2803,7 @@ let private openShared (r: string) : FileStream =
 // a FIFO's open and read block where no kill reaches: on Linux the read
 // is polled beside the cut and the cut closes it [D:fifo-read-polled];
 // elsewhere a lost race, a REPL ^C or a teardown abandons the blocking
-// call [D:stdin-reader] [D:teardown-abandons-reads]
+// call, run off the flow [D:stdin-reader] [D:scope-tree]
 let private withReadStream (r: string) (f: Stream -> 'a) : 'a =
     match Session.openPolled r with
     | Some s ->

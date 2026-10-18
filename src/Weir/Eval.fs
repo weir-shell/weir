@@ -5564,8 +5564,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             // close the server — frees the port, drops queued requests,
             // gives in-flight handlers the drain together; idempotent
-            // with the signal sweep [D:serve-drain]. A signal landing
-            // meanwhile holds the watchdog [D:serve-drain-signal]
+            // [D:serve-drain]. A signal landing meanwhile holds the
+            // backstop [D:serve-drain-signal]
             let release () =
                 Session.closingScope (fun () ->
                     Serve.stop handle drainMs

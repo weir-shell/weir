@@ -726,8 +726,8 @@ let private onMainThread () =
     && System.Threading.Thread.CurrentThread.ManagedThreadId = mainThreadId
 
 // the main thread inside an `always` cleanup [D:teardown-never-preempts]:
-// the signal watchdog stands down for it, and once the watchdog has
-// fired no cleanup starts on the main thread (the sweep runs it)
+// the signal backstop stands by for it, and once the backstop has
+// adopted the main flow no cleanup starts on the main thread
 let private watchdogGate = obj ()
 let mutable private mainCleanups = 0
 let mutable private watchdogFired = false
@@ -744,7 +744,7 @@ let runningCleanup (f: unit -> 'a) : 'a =
     if onMain then
         lock watchdogGate (fun () ->
             if watchdogFired then
-                // the process is exiting and the sweep owns the cleanups
+                // the backstop adopted the flow: it owns the cleanups
                 System.Threading.Thread.Sleep System.Threading.Timeout.Infinite
 
             mainCleanups <- mainCleanups + 1)
@@ -860,8 +860,9 @@ let private adoptMain () =
 // root (killing what the flows wait on, sparing what cleanups own); the
 // main thread raises ExitRequest at its next evaluation or wait boundary
 // and unwinds through its scopes, so no statement runs after the request.
-// Registered by the script runner and -e; without a registered main
-// thread (the REPL) the handler keeps the in-handler sweep.
+// Registered by the script runner and -e; a REPL entry stands in for it
+// meanwhile, and with no flow at all the handler kills, sweeps the dirs
+// and dies [D:scope-tree].
 
 let mutable private teardownCode = 0
 let mutable private teardownRaised = 0
@@ -1592,7 +1593,7 @@ let waitOrCancel (span: System.TimeSpan) (token: System.Threading.CancellationTo
 
 /// wait for a process to exit; the flow's cut raises — the process may be
 /// one no kill of the cut reaches, a `within proc` opened outside a fan-out
-/// [D:fanout-exit-reads]; a soft teardown (the terminal's ^C) waits for it
+/// [D:scope-tree]; a soft teardown (the terminal's ^C) waits for it
 /// [D:sigint-terminal-group]
 let waitProcess (p: System.Diagnostics.Process) : unit =
     checkCancels ()

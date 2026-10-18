@@ -124,6 +124,34 @@
 - **The piped REPL no longer runs a `Self.prompt` answer as a
   command** after an indented `|>` line, a `match` arm or a second
   `if` body line.
+- **A second Ctrl+C or signal exits at once.** It ran the remaining
+  `always` cleanups on top of the one already running (out of order,
+  sometimes waiting out a `sleep 30` and needing a third signal); now
+  no cleanup runs after it, every child is killed, and weir dies by
+  the first signal.
+- **A script stopped by a signal dies by it.** After its cleanups a
+  scoped script exited 130/143/129; it now dies by the SIGINT,
+  SIGTERM or SIGHUP itself, as an unscoped one did, so a bash loop
+  around it stops at one Ctrl+C. `$?` is unchanged.
+- **Ctrl+C no longer kills the commands an `always` cleanup runs.** At
+  a terminal they run in a process group of their own, so the cleanup
+  finishes; they can still print, but not read the terminal.
+- **`exit n` in a `serve` handler exits n.** It was reported as a 500
+  (`failed: ExitRequest`) and the script went on; now the scope stops,
+  its handlers finish their cleanups, and the script exits n.
+- **Ctrl+C or a failure ends a whole multi-statement REPL entry.** The
+  entry's later statements, commands included, still ran.
+- **Commands run inside a `pmap`/`piter`/`pfirst` arm no longer grow
+  memory.** Each one stayed registered until the arm ended (about
+  2.5KB a command).
+- **A `pfirst` arm reading a pipe no longer slows the read.** 10
+  million lines through `cat` in a race arm took 4s instead of under
+  one; every read is cut by its flow without a per-line cost.
+- **A detached weir that never runs a command dies by `kill -INT`.** An
+  inherited ignored SIGINT was reset only at the first command.
+- **A `Self.stdin` race loser that read nothing no longer uses up
+  stdin**, and a `Self.prompt` cut mid-line no longer glues its half
+  line onto the next one a child or a later prompt read.
 - **`weir gen types` drafts number-or-string fields and `format:
   int-or-string` as `Yaml`.** Kubernetes `resources.limits`, an HPA
   `target.value` and swagger's IntOrString drafted `string`, which
