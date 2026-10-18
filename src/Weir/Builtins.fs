@@ -1741,34 +1741,40 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
             else
                 System.Threading.Interlocked.Increment &next
 
+        // one node per worker [D:scope-tree]: a fan-out's arms are only
+        // ever cut together (the fan-out's own cut, or one reaching it), so
+        // the worker's items share it — no node per item. An exit landing
+        // as the worker starts opens it cut, its children killed as they
+        // register
         let home = Session.currentNode ()
-        let mutable i = take ()
+        let armNode = Session.openNode fanNode Session.NodeKind.Arm
+        Session.setCurrentNode armNode
 
-        while i < arr.Length do
-            Session.enterWorker parentCwd
-            // an exit landing as the arm was taken: the arm opens cut,
-            // its children killed as they register
-            let armNode = Session.openNode fanNode Session.NodeKind.Arm
-            Session.setCurrentNode armNode
-            RunPos.Current <- callNode
+        try
+            let mutable i = take ()
 
-            try
+            while i < arr.Length do
+                Session.enterWorker parentCwd
+                RunPos.Current <- callNode
+
                 try
-                    out[i] <- apply f arr[i]
-                with
-                | :? ExitRequest as e -> stop e
-                | e ->
-                    pinOnThread e
-                    // every arm still runs (data parallelism does not
-                    // half-finish); the first error by input order
-                    // rethrows after the join
-                    errors[i] <- e
-            finally
-                Session.setCurrentNode home
-                Session.closeNode armNode
-                Session.exitWorker ()
+                    try
+                        out[i] <- apply f arr[i]
+                    with
+                    | :? ExitRequest as e -> stop e
+                    | e ->
+                        pinOnThread e
+                        // every arm still runs (data parallelism does not
+                        // half-finish); the first error by input order
+                        // rethrows after the join
+                        errors[i] <- e
+                finally
+                    Session.exitWorker ()
 
-            i <- take ()
+                i <- take ()
+        finally
+            Session.setCurrentNode home
+            Session.closeNode armNode
 
     let worker (w: int) () = work w
 

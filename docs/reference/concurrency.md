@@ -20,7 +20,7 @@ reader, a chain's pumps, a `cutBlocking` call) run in the flow's node.
 | flow | the main flow (`runOnMain`); a REPL entry (`beginReplEval`) | the main thread; the REPL thread, which stands in for it during an entry | its parent; a REPL ^C (the entry's node) |
 | race | `runRaceWith` | nobody (the opener joins) | its parent; its win closes it to new arms |
 | fan-out | `runParallelWith` | nobody (the opener joins) | its parent; an `exit n` in an arm |
-| arm | each item a race or fan-out takes | a LongRunning worker | its parent; a race win cuts every arm but the winner |
+| arm | each item a race takes; each worker of a fan-out (its arms are only ever cut together) | a LongRunning worker | its parent; a race win cuts every arm but the winner |
 | serve | `within serve` | the body (the flow enters it) | its parent; an `exit n` in a handler |
 | handler | each request | a thread per request | its parent; the close past the drain |
 | shield | a running `always` cleanup (`runningCleanup`) | the cleanup | only a cut that passes shields: a second REPL ^C |
