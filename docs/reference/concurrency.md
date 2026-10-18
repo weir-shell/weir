@@ -61,10 +61,14 @@ Scripts and `-e`. The next evaluated node or interruptible wait raises
 next boundary once it is stopped.** A stopped arm raises `Cancelled`, a
 REPL interrupt raises `Interrupted`. Both pass through `try` and retry
 like `exit` does. Rests on [D:pfirst-join], [D:teardown-joins-arms],
-[D:repl-interrupt], [D:serve-cut]. Enforced by `flowCut` (race/serve token,
-gated by the `racesLive` counter), `teardownCuts`, `checkCancelled`,
-`checkCancels`, `cutTokens`/`withWaitToken`, and `Eval` `TETry` (which
-re-raises `OperationCanceledException`).
+[D:repl-interrupt], [D:serve-cut]. A helper task reading for a flow (a
+capture's stderr, a chain's pumps) is off the flow, so the teardown cuts
+it; the flow joining it raises its own stop instead, so the main thread
+raises `ExitRequest` ([D:epipe-kills-at-teardown]). Enforced by `flowCut`
+(race/serve token, gated by the `racesLive` counter), `teardownCuts`,
+`checkCancelled`, `checkCancels`, `cutTokens`/`withWaitToken`, `cutJoin`
+(`raiseWoken` before it rethrows a cut helper's cancel), and `Eval`
+`TETry` (which re-raises `OperationCanceledException`).
 
 **I3. A stopped flow's children die with it.** On a race win, the
 winner condemns every other group before it releases its result, and a

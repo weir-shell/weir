@@ -701,6 +701,16 @@ WEOF
     took=$(( $(now_ms) - t0 ))
     [ "$res" = "141" ] || fail "a closed stdout ends a fan-out with 141 (got $res): $(cat "$epdir/err-arm")"
     [ "$took" -lt 4000 ] || fail "a closed stdout must kill an arm's waited command at the teardown (took ${took}ms)"
+    # a capture's reader the teardown cut raises as the main flow's own
+    # stop [D:epipe-kills-at-teardown]: exit 143, no "errors occurred" line
+    printf 'within tmp d\n    let _r = sleep 5.%s | complete\n    print "after"\n' "$MK" > "$epdir/cap.weir"
+    $BIN "$epdir/cap.weir" >"$epdir/out-cap" 2>"$epdir/err-cap" &
+    wpid=$!
+    sleep 0.7
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" || code=$?
+    [ "$code" = "143" ] || fail "a SIGTERM during a capture exits 143 (got $code)"
+    [ ! -s "$epdir/err-cap" ] || fail "a SIGTERM during a capture prints no diagnostic: $(cat "$epdir/err-cap")"
     rm -rf "$epdir"
     echo "e2e ok: a closed stdout ends the script with 141, always runs, the child is reaped"
 fi

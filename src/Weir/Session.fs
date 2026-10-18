@@ -1087,9 +1087,17 @@ let cutRead
                     checkCancels ()
                     raise (System.OperationCanceledException t))
 
-/// join a reader task under the same cut as `cutRead`
+/// join a reader task under the same cut as `cutRead`; a reader the
+/// teardown cut (it runs off the flow, so the teardown cuts it) raises as
+/// the joining flow's own stop — the main thread's ExitRequest
+/// [D:epipe-kills-at-teardown]
 let cutJoin (task: System.Threading.Tasks.Task<'a>) : 'a =
-    cutRead (fun () -> task.Result) (fun _ -> System.Threading.Tasks.ValueTask<'a>(task))
+    try
+        cutRead (fun () -> task.Result) (fun _ -> System.Threading.Tasks.ValueTask<'a>(task))
+    with :? System.AggregateException as ae when (ae.InnerException :? System.OperationCanceledException) ->
+        raiseWoken ()
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ae.InnerException).Throw()
+        Unchecked.defaultof<'a>
 
 /// a blocking call a lost race or a REPL ^C abandons — a FIFO's open or
 /// read, which no kill reaches [D:stdin-reader]: under a cancel it runs off
