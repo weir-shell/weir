@@ -11,3 +11,5 @@ Rulings (user, all as recommended):
 - #8 qualify the docs: "on the script's own thread" is scripts on POSIX; REPL and Windows run cleanups on the signal thread, still whole/once/LIFO.
 - #10 exit n in a pmap/piter arm stops the fan-out like pfirst (no new arm, in-flight cut + joined, cleanups whole), exits n, never masked.
 - #12 a signal still drains serve (≤2s, then cut, cleanups joined); correct the serve-drain row.
+
+Stage 0 status (2026-10-18): done. Fixed #1 #2 #3 #4 #5 #9 #10 #11 (plus #5's capture-reader "errors occurred" line); rulings #6 #7 #8 #10 #12 applied in code and docs; docs/reference/concurrency.md Discrepancies 1-12 all resolved. Gate: tools/hunt3r4-repro.weir 9/9 with its controls, rides linux-hunts and local.sh. Residuals (concurrency.md): an exit-stopped fan-out does not cut an arm reading an orphan-held pipe; an abandoned arm's cleanup runs while its body is still parked. Next: black-box round 4, then the nightly signal-stress job. Round 4 is not done.
