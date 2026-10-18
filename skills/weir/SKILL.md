@@ -546,8 +546,8 @@ print $"{key} -> {value}"
   exact physical time — `t + 24h` means exactly 24 hours). `Instant.now ()`;
   `Instant.parse` reads ISO 8601 (`Z` or numeric offsets, normalized
   to UTC; a bare date is midnight UTC, and a time with no offset is
-  read as UTC — the json/yaml `[<Iso8601>]` codec too; RFC 3339's space separator and
-  fractions past 7 digits read, truncated); `Instant.parseWith`/`tryParseWith`
+  read as UTC — the json/yaml `[<Iso8601>]` codec too; RFC 3339's space separator, lowercase
+  `t`/`z`, a seconds-less `HH:MM` (as :00) and fractions past 7 digits read, truncated); `Instant.parseWith`/`tryParseWith`
   read NAMED formats for log lines and cert dates — `%Y %m %d %e %b
   %H %M %S %f %z`, prefix semantics (the line's tail rides free), no
   `%z` means UTC. `instant - instant` IS a `Duration`
@@ -1843,7 +1843,11 @@ type Bad = C of int
   writes `[]` and an empty `seq<string * _>` `{}` at any depth, so
   `Some []` reads back `Some []` (a Deployment's `args: []`/`labels:
   {}` round-trip) and no document is ever empty text; a seq inside a
-  seq nests block-wise under a bare `-`; ambiguous strings like `"no"`/`"007"` auto-quote. `Yaml`
+  seq nests block-wise under a bare `-`; a `None` PAIR value writes
+  `null` (the key kept); a string any YAML 1.1/1.2 reader would type
+  auto-quotes, keys too (`"no"`/`"007"`/`"+.5"`/`"y"`/`"<<"`/`"="`); an
+  int64-overflowing integer read into a `Yaml` node is a `YFloat` that
+  writes back its digits. `Yaml`
   nodes (`YStr`/`YInt`/`YFloat`/`YBool`/`YNull`/`YSeq`/`YMap`;
   `YMap [("k", YStr "v")]`) render directly —
   `YMap` keeps YOUR key order; record fields render in DECLARATION

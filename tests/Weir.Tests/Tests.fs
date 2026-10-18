@@ -1566,6 +1566,78 @@ let boundaryTests =
                   [ VStr "a: \".inf\""; VStr "b: \".nan\""; VStr "c: \"-.INF\"" ]
                   "the .inf/.nan family joins the reverse-Norway set"
           }
+          test "to yaml: every 1.1/1.2 resolver form quotes — +.5, y/n, <<, = [D:yaml-plain-resolvers]" {
+              Expect.equal
+                  (run
+                      "[(\"a\", \"+.5\"); (\"b\", \"+.5e3\"); (\"c\", \"-.5\"); (\"d\", \"._5\"); (\"e\", \"y\"); (\"f\", \"N\"); (\"g\", \"<<\"); (\"h\", \"=\"); (\"i\", \".\")] |> to yaml"
+                   |> forceSeq)
+                  [ VStr "a: \"+.5\""
+                    VStr "b: \"+.5e3\""
+                    VStr "c: \"-.5\""
+                    VStr "d: \"._5\""
+                    VStr "e: \"y\""
+                    VStr "f: \"N\""
+                    VStr "g: \"<<\""
+                    VStr "h: \"=\""
+                    VStr "i: ." ]
+                  "no reader types these as a float, bool, merge or value key"
+
+              Expect.equal
+                  (run "[(\"y\", 1); (\"<<\", 2)] |> to yaml" |> forceSeq)
+                  [ VStr "\"y\": 1"; VStr "\"<<\": 2" ]
+                  "keys follow the same law"
+
+              Expect.equal
+                  (run "show (YMap [(\"v\", YStr \"+.5\")] |> to yaml |> from yaml {| v: Yaml |})")
+                  (VStr "{ v = YStr \"+.5\" }")
+                  "weir's own reader reads the string back"
+          }
+          test "to yaml: a None pair value writes null, the key kept [D:yaml-pair-none]" {
+              Expect.equal
+                  (run "[(\"a\", None); (\"b\", Some 1)] |> to yaml" |> forceSeq)
+                  [ VStr "a: null"; VStr "b: 1" ]
+                  "a pair's None is its data, as to json writes it"
+
+              Expect.equal
+                  (run "show ({| m = [(\"a\", None); (\"b\", Some 1)] |} |> to yaml |> from yaml {| m: seq<string * Option<int>> |})")
+                  (VStr "{ m = [(\"a\", None); (\"b\", Some 1)] }")
+                  "the key reads back"
+          }
+          test "an integer past int64 in a Yaml node keeps its digits on write [D:yaml-node-bigint]" {
+              Expect.equal
+                  (run "[\"{\\\"id\\\": 18446744073709551615, \\\"n\\\": -12345678901234567890123}\"] |> from json {| id: Yaml; n: Yaml |} |> to json |> Str.join \"\"")
+                  (VStr "{\"id\":18446744073709551615,\"n\":-12345678901234567890123}")
+                  "json -> json keeps the digits"
+
+              Expect.equal
+                  (run "[\"id: 18446744073709551615\"] |> from yaml {| id: Yaml |} |> to yaml |> Str.join \"\"")
+                  (VStr "id: 18446744073709551615")
+                  "yaml -> yaml keeps the digits"
+
+              Expect.equal
+                  (run "show ([\"id: 18446744073709551615\"] |> from yaml {| id: Yaml |})")
+                  (VStr "{ id = YFloat (1.8446744073709552e+19) }")
+                  "the node still matches as its nearest float"
+
+              Expect.equal
+                  (run "YMap [(\"f\", YFloat 1e19)] |> to yaml |> Str.join \"\"")
+                  (VStr "f: 1e+19")
+                  "a node built in weir writes its float"
+          }
+          test "from yaml: a lone-surrogate escape refuses, as from json does [D:encoding-law]" {
+              Expect.stringContains
+                  (Expect.wantError (Weir.Yaml.scalarCore "\"\\ud800\"") "a lone high surrogate")
+                  "lone surrogate"
+                  "names the cause"
+
+              Expect.isError (Weir.Yaml.scalarCore "\"\\udc00x\"") "a lone low surrogate"
+              Expect.isError (Weir.Yaml.scalarCore "\"\\ud800\\u0041\"") "a high surrogate before a non-low"
+
+              Expect.equal
+                  (Weir.Yaml.scalarCore "\"\\ud83d\\ude00\"")
+                  (Ok(Some("\U0001F600", true)))
+                  "a pair is text"
+          }
           test "to yaml: CR/NEL/LS/PS and controls ESCAPE in quoted scalars — raw they are line breaks [D:yaml-v1]" {
               Expect.equal
                   (run "[(\"a\", Str.fromBase64 \"eA15\"); (\"b\", Str.fromBase64 \"YcKFYg==\")] |> to yaml"
@@ -28172,13 +28244,37 @@ let hunt3BehaviorTests =
                   (VStr "2024-03-01T10:00:00")
                   "a string field keeps the text"
           }
+          test "from toml and Instant.parse take lowercase t/z and a seconds-less time [D:instant-rfc3339-forms]" {
+              let read v =
+                  $"[\"start = {v}\"] |> from toml HT |> fun r -> show r.start"
+
+              for v, want in
+                  [ "1979-05-27t07:32:00z", "1979-05-27T07:32:00Z"
+                    "1979-05-27T07:32Z", "1979-05-27T07:32:00Z"
+                    "1979-05-27 07:32+02:00", "1979-05-27T05:32:00Z"
+                    "1979-05-27t07:32:00.5z", "1979-05-27T07:32:00.500Z" ] do
+                  Expect.equal (runUnder henv (read v)) (VStr want) v
+
+              Expect.equal
+                  (run "show (Instant.parse \"1979-05-27t07:32:00z\")")
+                  (VStr "1979-05-27T07:32:00Z")
+                  "Instant.parse: lowercase"
+
+              Expect.equal
+                  (runUnder henv "[\"start = 1979-05-27T07:32\"] |> from toml HS |> fun r -> r.start")
+                  (VStr "1979-05-27T07:32")
+                  "a seconds-less local date-time keeps its text"
+
+              Expect.throwsC (fun () -> runUnder henv (read "1979-05-27T07:32") |> ignore) (fun e ->
+                  Expect.stringContains e.Message "a local date-time" "still offset-less")
+          }
           test "duplicate JSON keys into a Yaml field last-win at the first position [D:json-yaml-dupkeys]" {
               let src = doc """{"a": {"x": 1, "y": 2, "x": 3}}"""
               Expect.equal (runUnder henv $"{src} |> from json HN |> to json" |> text) """{"a":{"x":3,"y":2}}""" "json"
 
               Expect.equal
                   (runUnder henv $"{src} |> from json HN |> to yaml |> from yaml HN |> to yaml" |> text)
-                  "a:\n  x: 3\n  y: 2"
+                  "a:\n  x: 3\n  \"y\": 2"
                   "the yaml round trip holds"
           }
           test "a mapping last-wins on read; to json and to yaml refuse a key twice [D:mapping-dupkeys]" {
@@ -28249,7 +28345,7 @@ let hunt3BehaviorTests =
                   "the stream form too"
 
               let n = "{ n = YSeq [YSeq [YInt 1; YSeq [YStr \"x\"]]; YMap [(\"a\", YSeq [YInt 2])]; YSeq []] }"
-              Expect.equal (runUnder kenv $"{n} |> to yaml" |> text) "n:\n  -\n    - 1\n    -\n      - x\n  - a:\n      - 2\n  - []" "a nested YSeq"
+              Expect.equal (runUnder kenv $"{n} |> to yaml" |> text) "\"n\":\n  -\n    - 1\n    -\n      - x\n  - a:\n      - 2\n  - []" "a nested YSeq"
 
               Expect.equal
                   (runUnder kenv $"{n} |> to yaml |> from yaml KN |> to json" |> text)

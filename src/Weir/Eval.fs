@@ -1717,6 +1717,30 @@ let private decodeCoded (where: string) (c: Codec) (text: string option) (num: i
 // last-wins at its first position, as records and Map read it
 // [D:json-yaml-dupkeys] — a YMap holding both would write YAML weir
 // itself refuses.
+// an integer past int64 in an opaque Yaml node [D:yaml-node-bigint]
+// reads as YFloat (its nearest value, for code that matches it) and
+// remembers its digits by node identity, so a write of that same node
+// emits the digits, not the float; a node built in weir has none
+let private yamlBigDigits =
+    System.Runtime.CompilerServices.ConditionalWeakTable<Value, string>()
+
+let private integerShaped (raw: string) =
+    let r = if raw.StartsWith "-" || raw.StartsWith "+" then raw.Substring 1 else raw
+    r.Length > 0 && r |> Seq.forall System.Char.IsAsciiDigit
+
+let yamlFloatNode (raw: string) (f: float) : Value =
+    let node = VUnion("YFloat", Some(VFloat f))
+
+    if integerShaped raw then
+        yamlBigDigits.AddOrUpdate(node, raw.TrimStart '+')
+
+    node
+
+let yamlBigIntText (node: Value) : string option =
+    match yamlBigDigits.TryGetValue node with
+    | true, t -> Some t
+    | _ -> None
+
 let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) : Value =
     match e.ValueKind with
     | System.Text.Json.JsonValueKind.Object ->
@@ -1746,7 +1770,7 @@ let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) :
         | true, n -> VUnion("YInt", Some(VInt n))
         | _ ->
             match parseFloat raw with
-            | Ok f -> VUnion("YFloat", Some(VFloat f))
+            | Ok f -> yamlFloatNode raw f
             | Error _ -> failwith $"{where}: number {raw} is out of float range"
     | _ -> VUnion("YNull", None)
 
@@ -1876,6 +1900,7 @@ let private jsonLine
             writer.WriteStartArray()
             items |> Seq.iter write
             writer.WriteEndArray()
+        | VUnion("YFloat", _) when (yamlBigIntText v).IsSome -> writer.WriteRawValue((yamlBigIntText v).Value)
         | VUnion(("YStr" | "YInt" | "YFloat" | "YBool"), Some scalar) -> write scalar
         | VUnion("YNull", None) -> writer.WriteNullValue()
         | v -> unreachable $"the checker rejects 'to json' on {formatValue v}"
@@ -2681,7 +2706,7 @@ let yamlScalarValue (raw: string) (quoted: bool) : Value =
             // — `cpu: 1.5` must not render as "1.5" (same as int;
             // parseFloat refuses non-finite so nan/inf text stays string)
             match (if quoted then Error "" else parseFloat raw) with
-            | Ok f -> VUnion("YFloat", Some(VFloat f))
+            | Ok f -> yamlFloatNode raw f
             | Error _ -> VUnion("YStr", Some(VStr raw))
 
 let rec yamlNodeValue (node: Yaml.Node) : Value =
@@ -3018,11 +3043,14 @@ let rec private yamlRender
     let indent2 (lines: string list) =
         lines |> List.map (fun l -> if l = "" then "" else "  " + l)
 
-    let renderMap (entries: (string * Value * Yaml.Shape option) list) : string list =
+    // a None record field omits its key [D:json-option]'s yaml face; a
+    // None pair value is the entry's data and writes null, as to json
+    // does [D:yaml-pair-none]
+    let renderMapWith (omitNone: bool) (entries: (string * Value * Yaml.Shape option) list) : string list =
         entries
         |> List.collect (fun (k, v, g) ->
             match v with
-            | VUnion("None", None) -> [] // omit the key [D:json-option]'s yaml face
+            | VUnion("None", None) when omitNone -> []
             | _ ->
                 let key = Yaml.renderScalar k
 
@@ -3031,6 +3059,8 @@ let rec private yamlRender
                 | Inline s -> [ $"{key}: {s}" ]
                 | Block lines -> $"{key}:" :: indent2 lines
                 | BlockScalar(h, content) -> $"{key}: {h}" :: indent2 content)
+
+    let renderMap = renderMapWith true
 
     let renderSeq (g: Yaml.Shape option) (items: Value list) : string list =
         items
@@ -3077,7 +3107,7 @@ let rec private yamlRender
     | VUuid g -> renderString (formatUuid g)
     | VUnion("YStr", Some(VStr s)) -> renderString s
     | VUnion("YInt", Some(VInt n)) -> Inline(string n)
-    | VUnion("YFloat", Some(VFloat f)) -> Inline(formatFloat f)
+    | VUnion("YFloat", Some(VFloat f)) -> Inline(yamlBigIntText v |> Option.defaultWith (fun () -> formatFloat f))
     | VUnion("YBool", Some(VBool b)) -> Inline(if b then "true" else "false")
     | VUnion("YNull", None) -> Inline ""
     // empty Yaml collections render as the empty flow forms so they
@@ -3159,7 +3189,7 @@ let rec private yamlRender
         if not items.IsEmpty && asPairs |> List.forall Option.isSome then
             let entries = asPairs |> List.map (fun p -> let k, v = Option.get p in k, v, valueGuide)
             refuseDupKeys "to yaml" (entries |> List.map (fun (k, _, _) -> k))
-            mapping (renderMap entries)
+            mapping (renderMapWith false entries)
         elif items.IsEmpty then
             // an empty seq is a flow empty at any depth, so `Some []`
             // reads back `Some []`; the type picks the form
