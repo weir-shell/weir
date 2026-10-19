@@ -49,6 +49,10 @@ also: `tools/sig-score.weir` loses no live line.
 - **R9** pid-cgroup exhaustion ("Failed to create the thread pool", then
   deaf to SIGTERM; base same): BACKLOG low.
 
+- **R10 (D-2)** a group-directed TERM/HUP that kills a cleanup's command
+  is the signal's, not a failure: no message, the cleanup's remaining
+  steps run whole (I6/I7), then weir dies by the signal.
+
 ## Stage A — signals, terminal, scopes (`fix/h3r5f-core`)
 
 Session/Proc/Repl/console. The R1/R7 shim and the console-write policy
@@ -145,6 +149,18 @@ Http/Args/`weir add`.
 Extend `ci/storm` and storm.yml with the paths C1 found it can't reach:
 ^\, group-directed TERM/HUP, tty hangup, the REPL (C1's ptysig.py/grp.py,
 C2's repl_storm.py), cleanup commands reading the tty. Gating once A lands.
+
+## Stage E — what the widened storm found (`fix/h3r5f-storm-found`)
+
+Stage D's new modes found three open in the merged branch, counted as
+`known` until fixed; E fixes them and deletes the exemptions so the
+nightly gates in full.
+
+- **D-1** a REPL ^C during a command inside a `within` body ends the
+  entry with `↳ exit 130`, never "command failed … 130".
+- **R10 (D-2)**.
+- **D-3** a second signal while a cleanup's pager holds the terminal raw
+  leaves it restored (I12; the rest of C1-2).
 
 ## Order
 
