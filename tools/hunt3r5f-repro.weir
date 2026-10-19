@@ -874,32 +874,33 @@ let h3r5c18 d =
 // ---- H3R5-C21: a REPL ^C with no wait ahead in the entry is dropped (R6) --------
 
 // one REPL entry typed line by line (Alt-Enter), a ^C `at` ms after it, then
-// a probe line proving the session survived. Late work prints in uppercase
+// a probe line `after` ms later proving the session survived (long enough
+// for a pure-compute statement to finish). Late work prints in uppercase
 // (Str.toUpper) so the typed echo never matches
-let c21Session d entry at =
+let c21Session d entry at after =
     let typed = entry |> Seq.indexed |> Seq.collect (fun (i, l) -> if i == (Seq.length entry) - 1 then [typedLine l] else [contLine l; "SLEEP 150"]) |> Seq.freeze
-    let steps = Seq.concat [["SLEEP 2500"]; typed; [$"SLEEP {at}"; ctrlC; "SLEEP 3000"; typedLine "print (Str.toUpper \"still-here\")"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]] |> Seq.freeze
+    let steps = Seq.concat [["SLEEP 2500"]; typed; [$"SLEEP {at}"; ctrlC; $"SLEEP {after}"; typedLine "print (Str.toUpper \"still-here\")"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]] |> Seq.freeze
     ptyRun d "15" (replArgv d) steps
 
 let c21Cases d = [
-    ("during an always cleanup", ["within"; "    print \"body\""; "always"; "    Duration.sleep 1500ms"; $"File.write \"{d}/late.txt\" [\"late\"]"; "print (Str.toUpper \"late-cleanup\")"], "LATE-CLEANUP")
-    ("during pure compute", ["let n = [1..24000000] |> Seq.map (fun i -> i % 7) |> Seq.length"; "print (Str.toUpper $\"late-compute {n}\")"], "LATE-COMPUTE")
-    ("killing a | exitCode child", ["let c = sh -c \"sleep 5\" | exitCode"; "print (Str.toUpper $\"late-exitcode {c}\")"], "LATE-EXITCODE")
+    ("during an always cleanup", 3000, ["within"; "    print \"body\""; "always"; "    Duration.sleep 1500ms"; $"File.write \"{d}/late.txt\" [\"late\"]"; "print (Str.toUpper \"late-cleanup\")"], "LATE-CLEANUP")
+    ("during pure compute", 10000, ["let n = [1..16000000] |> Seq.map (fun i -> i % 7) |> Seq.length"; "print (Str.toUpper $\"late-compute {n}\")"], "LATE-COMPUTE")
+    ("killing a | exitCode child", 3000, ["let c = sh -c \"sleep 5\" | exitCode"; "print (Str.toUpper $\"late-exitcode {c}\")"], "LATE-EXITCODE")
 ]
 
 // a ^C during an entry's command ends the entry (C23, fixed)
 let ctlDReplCommandCut d =
-    let run = c21Session d ["sh -c \"sleep 3\""; "print (Str.toUpper \"late-command\")"] 800
+    let run = c21Session d ["sh -c \"sleep 3\""; "print (Str.toUpper \"late-command\")"] 800 3000
     let t = run.text
     (t |> Str.contains "exit 130") && not (t |> Str.contains "LATE-COMMAND") && (t |> Str.contains "STILL-HERE")
 
 let h3r5c21 d =
     c21Cases d
     |> Seq.indexed
-    |> Seq.map (fun (k, (label, entry, late)) ->
+    |> Seq.map (fun (k, (label, after, entry, late)) ->
         let sd = $"{d}/r{k}"
         Dir.create sd
-        let run = c21Session sd (entry |> Seq.map (Str.replace $"{d}/" $"{sd}/") |> Seq.freeze) 800
+        let run = c21Session sd (entry |> Seq.map (Str.replace $"{d}/" $"{sd}/") |> Seq.freeze) 800 after
         let t = run.text
         let wrote = File.exists $"{sd}/late.txt"
         ($"a REPL ^C {label}: the entry must end with exit 130, the rest unrun, the session alive (exit 130: {t |> Str.contains "exit 130"}, {late}: {t |> Str.contains late}, late write: {wrote}, STILL-HERE: {t |> Str.contains "STILL-HERE"})", (t |> Str.contains "exit 130") && not (t |> Str.contains late) && not wrote && (t |> Str.contains "STILL-HERE")))
