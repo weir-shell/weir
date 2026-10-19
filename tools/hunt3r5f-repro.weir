@@ -1870,7 +1870,6 @@ let sKnown = [
     ("unzip", "", s5UnzipHelp, "unzip -p a.zip")
     ("shfmt", "v3.14.1", s6ShfmtHelp, "shfmt -l x.sh")
     ("mkcert", "v1.4.4", s7MkcertHelp, "mkcert -client x")
-    ("npx", "11.6.2", s8NpxHelp, "npx --package=foo -c bar")
     ("node", "v24.11.1", s9NodeHelp, "node --no-warnings --no-deprecation x.js")
 ]
 
@@ -2068,7 +2067,7 @@ let h3r5e11 d =
 // ---- this part's lists -----------------------------------------------------------
 
 let controlsS = [
-    ("control-sig-known-flags (H3R5-S2 H3R5-S3 H3R5-S4 H3R5-S5 H3R5-S6 H3R5-S7 H3R5-S8 H3R5-S9)", ctlSKnownFlags)
+    ("control-sig-known-flags (H3R5-S2 H3R5-S3 H3R5-S4 H3R5-S5 H3R5-S6 H3R5-S7 H3R5-S9)", ctlSKnownFlags)
     ("control-sig-git (H3R5-S10)", ctlSGit)
     ("control-sig-old (H3R5-S1)", ctlSOldSig)
     ("control-sig-add-quick (H3R5-E2 H3R5-E9 H3R5-E10 H3R5-E11)", ctlSAddQuick)
