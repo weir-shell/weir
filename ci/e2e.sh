@@ -11666,11 +11666,22 @@ WEOF
 chmod +x "$sgdir/proj/lib/jp"
 if [ "$IS_WINDOWS" != "1" ]; then
 out=$($BIN add sig ./lib/jp 2>&1) || fail "add sig on a path-y tool: $out"
-test -f .weir/sigs/_lib_jp.weir || fail "the sig file is FLAT under sigs/: $(find .weir/sigs -name '*jp*')"
-head -1 .weir/sigs/_lib_jp.weir | grep -qE '^module [A-Z]' || fail "a path-y tool mints a legal module name"
+# (injective [D:sig-probe-bounds]: `.` leading and `/` as %XX)
+test -f .weir/sigs/%2E%2Flib%2Fjp.weir || fail "the sig file is FLAT under sigs/: $(find .weir/sigs -name '*jp*')"
+head -1 .weir/sigs/%2E%2Flib%2Fjp.weir | grep -qE '^module [A-Z]' || fail "a path-y tool mints a legal module name"
 printf '#sig ./lib/jp\n./lib/jp --clena\nprint "d"\n' > jp.weir
 out=$($BIN check jp.weir 2>&1)
 echo "$out" | grep -qF "Did you mean '--clean'?" || fail "the path-y sig round-trips: $out"
+# a signature the lock records under the old name is still read, and
+# regeneration supersedes it
+mv .weir/sigs/%2E%2Flib%2Fjp.weir .weir/sigs/_lib_jp.weir
+sed 's#"sigs/%2E%2Flib%2Fjp.weir"#"sigs/_lib_jp.weir"#' .weir/lock.json > lock.tmp && mv lock.tmp .weir/lock.json
+grep -qF '"sigs/_lib_jp.weir"' .weir/lock.json || fail "the legacy lock path is in place"
+out=$($BIN check jp.weir 2>&1)
+echo "$out" | grep -qF "Did you mean '--clean'?" || fail "a legacy-named sig the lock records is still read: $out"
+$BIN add sig ./lib/jp >/dev/null 2>&1 || fail "regenerating over a legacy-named sig"
+test -f .weir/sigs/_lib_jp.weir && fail "the legacy-named sig survived its regeneration" || true
+test -f .weir/sigs/%2E%2Flib%2Fjp.weir || fail "regeneration writes the injective name"
 abs=$(cd "$sgdir/proj/lib" && pwd)/jp
 $BIN add sig "$abs" >/dev/null 2>&1 || fail "an absolute tool path must generate"
 find .weir/sigs -maxdepth 1 -name '*jp.weir' | grep -q . || fail "the absolute path stays INSIDE .weir/sigs"
