@@ -240,9 +240,10 @@ statement; `settleReplInterrupt` when a data-code child died of SIGINT).
 **I14. The platform split.** On Linux, FIFO and unseekable `File.read`
 (and `File.sha256`, a `File.copy` source) opens non-blocking and polls
 beside the cut, so the cut closes the fd ([D:fifo-read-polled],
-`openPolled`, `PolledFd`); a FIFO that `File.write`/`append`/`writeAtomic`/
-`writeBytes` opens waits for its reader and for room the same way
-([D:fifo-ops-polled], `openPolledWrite`, `PolledWriteFd`). On macOS a
+`openPolled`, `PolledFd`); a FIFO that `File.write`/`append`/`writeBytes`
+opens waits for its reader and for room the same way
+([D:fifo-ops-polled], `openPolledWrite`, `PolledWriteFd`);
+`File.writeAtomic` refuses a FIFO. On macOS a
 FIFO's open and read run off the flow (`cutBlocking`), and an abandoned
 read may take one later write; a FIFO write there is not cut. A child's pipe is polled before each fill on
 POSIX; on Windows the fill waits beside the token. The tree walk is

@@ -14783,8 +14783,6 @@ let r =
                 File.write f ["x"]
             elif op == "append" then
                 File.append f ["x"]
-            elif op == "writeAtomic" then
-                File.writeAtomic f ["x"]
             elif op == "writeBytes" then
                 File.writeBytes f (Str.toUtf8 "x")
             "op"
@@ -14793,16 +14791,27 @@ let r =
             "timer")
 print $"{op}: r={r}"
 WEOF
-    for op in sha256 copy write append writeAtomic writeBytes; do
+    for op in sha256 copy write append writeBytes; do
         rm -rf "$ff/d" "$ff/p"; mkdir -p "$ff/d"; mkfifo "$ff/p"
         out=$(timeout -s KILL 10 "$BIN" "$ff/arm.weir" "$op" "$ff/p" "$ff/d" 2>&1) || true
         [ "$out" = "$op: r=timer" ] || fail "File.$op on a peerless FIFO is cut by a race win: $out"
     done
+    # writeAtomic refuses a FIFO at once, leaving it a FIFO, nothing written
+    rm -rf "$ff/p"; mkfifo "$ff/p"
+    out=$(timeout -s KILL 10 "$BIN" -e "File.writeAtomic \"$ff/p\" [\"x\"]" 2>&1) && fail "File.writeAtomic on a FIFO must refuse: $out"
+    echo "$out" | grep -qF "is a FIFO — an atomic replace has no meaning there; use File.write" || fail "File.writeAtomic on a FIFO names the refusal: $out"
+    [ -p "$ff/p" ] || fail "File.writeAtomic on a FIFO leaves it a FIFO"
+    [ -z "$(ls -A "$ff" | grep -v '^p$' | grep -v '^d$' | grep -v '^arm.weir$')" ] || fail "File.writeAtomic on a FIFO writes nothing: $(ls -A "$ff")"
+    printf '%s\n' 'let p = Self.args |> Seq.head' 'let pl =' '    plan' '        File.writeAtomic p ["x"]' 'print $"captured {Plan.isEmpty pl}"' > "$ff/plan.weir"
+    out=$(timeout -s KILL 10 "$BIN" "$ff/plan.weir" "$ff/p" 2>&1) && fail "a plan capturing File.writeAtomic onto a FIFO must refuse: $out"
+    echo "$out" | grep -qF "is a FIFO" || fail "a plan's File.writeAtomic onto a FIFO refuses at capture: $out"
+    [ -p "$ff/p" ] || fail "a plan's refused writeAtomic leaves the FIFO"
+    rm -f "$ff/plan.weir"
     (sleep 0.3; cat "$ff/p" > "$ff/got") &
     "$BIN" -e "File.write \"$ff/p\" [\"hello\"; \"fifo\"]" || fail "File.write to a FIFO with a reader writes"
     wait
     [ "$(tr '\n' , < "$ff/got")" = "hello,fifo," ] || fail "File.write to a FIFO delivers the lines: $(cat "$ff/got")"
-    echo "e2e ok: File.sha256/copy/write/append/writeAtomic/writeBytes on a FIFO are cut by a race win; a read FIFO gets the write"
+    echo "e2e ok: File.sha256/copy/write/append/writeBytes on a FIFO are cut by a race win; writeAtomic refuses one (direct and at plan capture); a read FIFO gets the write"
 fi
 
 # Proc.wait returns at the exit, not at a 50ms poll (D1)

@@ -185,11 +185,11 @@
 - **Ctrl+C at the REPL stops a multi-statement entry even when nothing
   was waiting** — during a cleanup, pure computation, or a child whose
   exit code is the value (`| exitCode`). The rest of the entry ran.
-- **`File.sha256`, `File.copy`, `File.write`, `File.append`,
-  `File.writeAtomic` and `File.writeBytes` on a FIFO are cut** by a race
-  win, a fan-out's exit and the first signal, as `File.read` is (Linux).
-  They waited for the other end forever. `File.writeAtomic` writes into
-  a FIFO as `File.write` does.
+- **`File.sha256`, `File.copy`, `File.write`, `File.append` and
+  `File.writeBytes` on a FIFO are cut** by a race win, a fan-out's exit
+  and the first signal, as `File.read` is (Linux). They waited for the
+  other end forever. `File.writeAtomic` on a FIFO refuses (an atomic
+  replace has no meaning there; use `File.write`); it blocked.
 - **`Proc.wait` returns when the process exits.** It woke every 50 ms,
   so a loop of short processes ran ~70x slower.
 - **A command killed by a group-wide SIGHUP, SIGQUIT or SIGTERM is not

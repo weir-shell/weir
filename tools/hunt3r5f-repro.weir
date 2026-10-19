@@ -991,8 +991,17 @@ let h3r5c22 d =
         |> Seq.take 6
         |> Seq.indexed
         |> Seq.pmapWith 6 (fun (k, (label, op)) ->
-            let r = c22RaceRun d k op
-            ($"{label} on a peerless FIFO in a pfirst loser: the race win must cut it (exit {codeOf r}, out '{outOf r}')", codeOf r == 0 && outOf r == "r=timer"))
+            if label == "File.writeAtomic" then
+                // ruled: an atomic replace of a FIFO refuses, fast, and leaves
+                // it a FIFO — run alone, as a race drops a raising loser
+                let sd = $"{d}/race{k}"
+                let f = c22Fifo sd
+                let r = runIn sd "4" [put sd "wa.weir" ["let f = Self.args |> Seq.head"; "File.writeAtomic f [\"x\"]"]; f]
+                let stillFifo = sh -c $"test -p '{f}'" | succeeds
+                ($"{label} on a FIFO refuses at once, the FIFO kept (exit {codeOf r}, err '{errOf r}', still a FIFO {stillFifo})", codeOf r <> 0 && (errOf r |> Str.contains "is a FIFO") && stillFifo)
+            else
+                let r = c22RaceRun d k op
+                ($"{label} on a peerless FIFO in a pfirst loser: the race win must cut it (exit {codeOf r}, out '{outOf r}')", codeOf r == 0 && outOf r == "r=timer"))
         |> Seq.freeze
     let ed = $"{d}/exit"
     let ef = c22Fifo ed

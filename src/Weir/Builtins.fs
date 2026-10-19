@@ -2859,6 +2859,12 @@ let private readBytesShared (r: string) : byte[] =
 // new one, never a window. The rename replaces the symlink's TARGET,
 // not the link; the inode changes (hardlinks split, held handles and
 // tail -f keep the old file, a single-file bind mount into a container breaks).
+// a FIFO has no file to replace: an atomic replace refuses rather than
+// rename a regular file over the channel [D:fifo-ops-polled]
+let private refuseFifoAtomic (op: string) (r: string) : unit =
+    if Session.isFifo r then
+        failwith $"{op}: {quoteData r} is a FIFO — an atomic replace has no meaning there; use File.write"
+
 let private atomicReplace (r: string) (lines: Value seq) : unit =
     let target =
         let fi = FileInfo r
@@ -4011,21 +4017,14 @@ let private fileMembers: (string * Ty * Value) list =
               | VStr path, VSeq lines ->
                   let r = Session.resolveFs path
 
+                  refuseFifoAtomic "File.writeAtomic" r
+
                   match capWrite "File.writeAtomic" "WriteFileAtomic" r lines with
                   | Some captured -> captured
                   | None ->
                   writeGuard "File.writeAtomic" r
 
-                  ioGuarded "File.writeAtomic" r (fun () ->
-                      match Session.openPolledWrite r with
-                      | Some s ->
-                          // a FIFO has nothing to replace: written as
-                          // File.write writes it, cut the same way
-                          // [D:fifo-ops-polled]
-                          use s = s
-                          let payload = writePayload false lines
-                          s.Write(payload, 0, payload.Length)
-                      | None -> atomicReplace r lines)
+                  ioGuarded "File.writeAtomic" r (fun () -> atomicReplace r lines)
 
                   VUnit
               | _ -> unreachable "the checker rejects 'File.writeAtomic' on these arguments"))
@@ -5310,6 +5309,7 @@ let private applyOp (op: Value) : unit =
             fs.Write(payload, 0, payload.Length))
     | VUnion("WriteFileAtomic", Some(VTuple [ VStr r; VSeq lines ])) ->
         writeGuard "Plan.apply (WriteFileAtomic)" r
+        refuseFifoAtomic "Plan.apply (WriteFileAtomic)" r
         ioGuarded "Plan.apply (WriteFileAtomic)" r (fun () -> atomicReplace r lines)
     | VUnion("DeleteFile", Some(VStr r)) -> doFileDelete "Plan.apply (DeleteFile)" r
     | VUnion("MakeDir", Some(VStr r)) -> doDirCreate "Plan.apply (MakeDir)" r
@@ -7258,7 +7258,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path"; "lines" ])
           "File.writeAtomic",
           (bd
-              "Write a sequence of lines by replacing the whole file at once: the content goes to a temp file in the same directory, is flushed to disk, and is then renamed over the target. Readers see either the complete old file or the complete new one, and a failed write leaves the original intact. For a symlink, the file it points to is replaced, not the link; the file's permissions and any existing BOM are kept. Because the file is a new inode, hard links are separated, open handles and tail -f keep seeing the old file, and a single-file bind mount into a container stops updating; use File.write when you need an in-place write. Inside a plan it records a WriteFileAtomic op, and apply replaces the file the same way."
+              "Write a sequence of lines by replacing the whole file at once: the content goes to a temp file in the same directory, is flushed to disk, and is then renamed over the target. Readers see either the complete old file or the complete new one, and a failed write leaves the original intact. For a symlink, the file it points to is replaced, not the link; the file's permissions and any existing BOM are kept. Because the file is a new inode, hard links are separated, open handles and tail -f keep seeing the old file, and a single-file bind mount into a container stops updating; use File.write when you need an in-place write. Inside a plan it records a WriteFileAtomic op, and apply replaces the file the same way. A FIFO refuses: use File.write."
               None
               None
            |> named [ "path"; "lines" ])
