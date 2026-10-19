@@ -461,8 +461,9 @@ let headSlotAt (before: string) : HeadSlot =
 // offered every record field weir knows, unioned). The head test is
 // the resolver's own approximation: an identifier- or path-shaped
 // first token that no binding, builtin, or module claims — or a ^
-// forced external.
-let private commandArgvPosition (env: TypeEnv) (before: string) : bool =
+// forced external. `anyHead` drops the claimed-name test: a `$`
+// splice word is argv-like after any head [D:argv-splice-complete].
+let private commandArgvPosition (env: TypeEnv) (anyHead: bool) (before: string) : bool =
     let stmt =
         let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
         (if i >= 0 then before.Substring(i + 1) else before).TrimStart()
@@ -523,8 +524,8 @@ let private commandArgvPosition (env: TypeEnv) (before: string) : bool =
             && (System.Char.IsLetter h[0] || h[0] = '_')
             && not (h.Contains '.')
             && not (Weir.Parser.keywords.Contains h)
-            && not (Map.containsKey h env.Values)
-            && not (Map.containsKey h env.Modules)
+            && (anyHead
+                || not (Map.containsKey h env.Values) && not (Map.containsKey h env.Modules))
 
 // a word at a path parameter position [D:path-param-completion]:
 // cd is a builtin, so the argv gate correctly does not apply — the
@@ -937,24 +938,42 @@ let rec suggestScopedWith
             // PATH cache — bare (the word starts after the sigil), at
             // the statement head and the let-RHS alike
             Extern.names () |> Set.filter (fun n -> n.StartsWith word && n <> word) |> Set.toList
-        elif commandArgvPosition env before then
+        elif
+            (before.EndsWith "$" || before.EndsWith "$@")
+            && commandArgvPosition env true before
+        then
+            // a `$name` splice [D:argv-splice-complete]: `$` is not a word
+            // char, so the word starts after it and `before` ends with `$`
+            // (or `$@`); offer the bindings the checker admits there (bare —
+            // the sigil is already typed), so `--location $l<TAB>` completes
+            // to `$location`. A record also splices through a field
+            // ([D:field-splices]: `$r.n`, `$@r.fs`). After any head — an
+            // external, a builtin like ls/cd, a ^forced one, a let-RHS
+            let splat = before.EndsWith "$@"
+
+            let admits (ty: Ty) =
+                match ty with
+                | TNamed(n, _) when
+                    (match Map.tryFind n env.Types with
+                     | Some(Record _) -> true
+                     | _ -> false)
+                    ->
+                    true
+                | TSeq TStr -> splat
+                | ty -> not splat && Weir.Check.argvSpliceable ty
+
+            env.Values
+            |> Map.toList
+            |> List.choose (fun (n, sch) ->
+                if Types.isUserName n && n.StartsWith word && n <> word && admits sch.Ty then
+                    Some n
+                else
+                    None)
+            |> List.sort
+        elif commandArgvPosition env false before then
             // argv position [D:complete-argv]: paths, nothing else — the
-            // pool, fields, and members are expression furniture. Except a
-            // `$name` splice [D:argv-splice-complete]: `$` is not a word
-            // char, so the word starts after it and `before` ends with `$`;
-            // offer the session's bindings (bare — the `$` is already typed),
-            // so `--location $l<TAB>` completes to `$location`.
-            if before.EndsWith "$" then
-                env.Values
-                |> Map.toList
-                |> List.choose (fun (n, _) ->
-                    if Types.isUserName n && n.StartsWith word && n <> word then
-                        Some n
-                    else
-                        None)
-                |> List.sort
-            else
-                filesystemComplete word |> argvPaths
+            // pool, fields, and members are expression furniture
+            filesystemComplete word |> argvPaths
         elif pathParamAt before then
             // a path position wants paths and string bindings — `cd
             // target` applies the binding, so hard-removing identifiers

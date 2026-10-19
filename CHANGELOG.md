@@ -98,6 +98,14 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **REPL: Tab after `$` offers only what can be spliced there.** `git
+  tag $t<Tab>` listed every Prelude function (`take`, `toInt`,
+  `tryHead`, …) beside your own bindings. After `$` in command argv
+  Tab now offers just the bindings a `$x` argument accepts (string,
+  int, bool, Secret, Uuid, or a record for `$r.field`); after `$@`,
+  `seq<string>` bindings. Functions are never offered. The same holds
+  after a builtin head (`ls`, `cd`), a `^`-forced head and a let's
+  command RHS.
 - **`weir add sig` cannot hang or run out of memory on a tool's help.**
   A help that leaves a daemon holding its output, or prints without
   end, hung generation or grew it to gigabytes. Each probe now gets 15s,

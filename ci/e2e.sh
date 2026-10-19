@@ -174,6 +174,7 @@ replPtyProbes() {
         replProbe repl-b repl-pathquote.py "repl path-quote completion" "e2e ok: repl path completion quotes in expression position, bare in command-argv [D:repl-path-quote]"
         replProbe repl-b repl-mapkeys.py "repl map-key completion" "e2e ok: repl map-key completion — a bound value's keys inside a Map lookup literal; a pipeline receiver stays silent [D:value-key-complete]"
         replProbe repl-b repl-anon-complete.py "repl anonymous-record field completion" "e2e ok: repl an anonymous record's fields complete on the next line [D:anon-literals]"
+        replProbe repl-b repl-splice-complete.py "repl \$ splice completion" "e2e ok: repl a \$ splice completes only the bindings the checker admits there, after an external or builtin head [D:argv-splice-complete]"
         replProbe repl-a repl-multiline.py "repl multiline editor" "e2e ok: repl 2D buffer, Enter-completeness, whole-entry history, wrap at two widths"
     fi
 }

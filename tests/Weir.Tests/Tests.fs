@@ -3994,6 +3994,48 @@ let completionTests =
               let bare = ask "az vm list-usage --location loc"
               Expect.isFalse (List.contains "location" bare) "a non-splice argv word is not a binding pool"
           }
+          test "a $ splice offers only the bindings the checker admits there, after any head [D:argv-splice-complete]" {
+              // the REPL's env carries the Prelude's bare functions
+              // (take, toInt, tryHead…); `git tag $t<TAB>` offered them all
+              let mono = Weir.Types.mono
+              let fnTy = Weir.Types.TFun(Weir.Types.TStr, Weir.Types.TStr)
+
+              let envT =
+                  { env with
+                      Values =
+                          env.Values
+                          |> Map.add "tag" (mono Weir.Types.TStr)
+                          |> Map.add "tcount" (mono Weir.Types.TInt)
+                          |> Map.add "tflag" (mono Weir.Types.TBool)
+                          |> Map.add "tid" (mono Weir.Types.TUuid)
+                          |> Map.add "tpoint" (mono (Weir.Types.TNamed("Point", [])))
+                          |> Map.add "tags" (mono (Weir.Types.TSeq Weir.Types.TStr))
+                          |> Map.add "tfn" (mono fnTy)
+                          |> Map.add "tdur" (mono Weir.Types.TDur) }
+
+              Expect.isTrue (Map.containsKey "take" envT.Values && Map.containsKey "tryHead" envT.Values) "fixture: the Prelude's functions are in scope"
+
+              let ask (text: string) =
+                  Weir.Complete.suggest envT text (Weir.Complete.wordStartAt text text.Length)
+
+              let scalar = [ "tag"; "tcount"; "tflag"; "tid"; "tpoint" ]
+
+              for line in
+                  [ "git tag $t"
+                    "ls -l $t"
+                    "cd $t"
+                    "^git tag $t"
+                    "let v = git tag $t"
+                    "let v = ^ls $t"
+                    "git log | grep $t" ] do
+                  Expect.equal (ask line) scalar $"{line}: the $x-spliceable bindings exactly (a record splices through a field)"
+
+              for line in [ "git tag $@t"; "let v = ls -l $@t" ] do
+                  Expect.equal (ask line) [ "tags"; "tpoint" ] $"{line}: $@ offers seq<string> bindings (and records, for a field)"
+
+              // a non-$ word keeps its own pool
+              Expect.isFalse (List.contains "tag" (ask "git tag t")) "a bare argv word is not a binding pool"
+          }
           test "a line-head '#' completes the session directives, bare [D:repl-directives]" {
               // bare names: the editor's word starts after the '#', so
               // replacement yields `#help` — never `##help` or `head`
