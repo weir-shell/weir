@@ -3959,6 +3959,16 @@ PYEOF
     [ -z "$left" ] || { kill -9 $left 2>/dev/null; fail "the hard exit kills the raw-mode cleanup command"; }
     echo "e2e ok: a second signal while a cleanup's command holds the terminal raw restores it at the hard exit"
 
+    # an Alt+Enter whose ESC and CR the terminal read apart (a fast paste,
+    # a loaded box) is still the newline, not Esc's abandon; a lone Esc
+    # still abandons the buffer [D:repl-esc-enter]
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND print (Str.toUpper "esc-a")' 'SEND \x1b' 'SLEEP 20' 'SEND \r' 'SLEEP 100' 'SEND print (Str.toUpper "esc-b")\r' 'SLEEP 600' 'SEND print (Str.toUpper "esc-c")' 'SEND \x1b' 'SLEEP 300' 'SEND print (Str.toUpper "esc-d")\r' 'SLEEP 600' 'SEND \x04' 'SLEEP 400' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 12 "$BIN")
+    for want in ESC-A ESC-B ESC-D; do
+        echo "$tout" | grep -qF "$want" || fail "a split Alt+Enter is a newline, a lone Esc abandons: '$want' expected: $tout"
+    done
+    echo "$tout" | grep -qF "ESC-C" && fail "a lone Esc abandons the buffer: $tout"
+    echo "e2e ok: an Alt+Enter read as Esc then Enter is still the newline; a lone Esc abandons"
+
     # C23: a tty REPL entry of several statements is one evaluation — a ^C
     # or a failure ends the whole entry, the session goes on
     tout=$(printf '%s\n' 'SLEEP 2500' 'SEND Duration.sleep 2s\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-two")\x1b\r' 'SLEEP 150' 'SEND sh -c "sleep 2; echo late-three | tr a-z A-Z"\r' 'SLEEP 700' 'SEND \x03' 'SLEEP 3500' 'SEND fail "boom"\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "after-fail")\r' 'SLEEP 1000' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" python3 "$ptyrun" 15 "$BIN")

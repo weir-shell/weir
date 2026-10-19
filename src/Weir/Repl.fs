@@ -1352,6 +1352,30 @@ let private readKey () =
     else
         ttyIo (fun () -> Console.ReadKey(intercept = true))
 
+/// after a bare Esc: is an Enter right behind it (within 50ms)? Alt+Enter
+/// is ESC CR, and .NET reads a lone ESC as Escape when the CR has not
+/// arrived yet. A key that is not Enter stays queued for the editor
+let private escThenEnter () : bool =
+    let clock = Diagnostics.Stopwatch.StartNew()
+
+    let rec next () =
+        if typeAhead.Count > 0 then Some(typeAhead.Peek())
+        elif ttyIo (fun () -> Console.KeyAvailable) then
+            let k = ttyIo (fun () -> Console.ReadKey(intercept = true))
+            typeAhead.Enqueue k
+            Some k
+        elif clock.ElapsedMilliseconds < 50L then
+            Threading.Thread.Sleep 2
+            next ()
+        else
+            None
+
+    match next () with
+    | Some k when k.Key = ConsoleKey.Enter || k.KeyChar = '\r' ->
+        typeAhead.Dequeue() |> ignore
+        true
+    | _ -> false
+
 let private deriveContPrompt (w: int) =
     let on = Types.Color.onStdout.Value
 
@@ -1625,6 +1649,11 @@ let private readLineTty () : string option =
             toEnd ()
             Console.WriteLine "^C"
             result <- Some(Some "")
+        | ConsoleKey.Escape when escThenEnter () ->
+            // Alt+Enter whose two bytes the terminal read apart (a fast
+            // paste, a loaded box): the newline, not an abandon
+            // [D:repl-esc-enter]
+            insertNewline ()
         | ConsoleKey.Escape ->
             // Esc mid-buffer: abandon the whole buffer [D:repl-multiline]
             toEnd ()

@@ -98,6 +98,10 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **A pasted multi-line REPL entry no longer loses its first lines.**
+  When Alt+Enter's two bytes arrived apart, the Esc was read alone and
+  threw the buffer away; an Esc with an Enter right behind it is now
+  the newline.
 - **Ctrl+C at the REPL on a command inside a `within` body shows
   `↳ exit 130`.** It printed `error: command failed with exit code 130`.
 - **A group-directed SIGTERM or SIGHUP no longer cuts an `always`
