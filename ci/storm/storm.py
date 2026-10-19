@@ -34,7 +34,7 @@ Then judge:
   cuterr  `// storm-cut-err: AFTER | UNLESS | TEXT`: one signal landed, a log line starts with AFTER and none
           with UNLESS => TEXT on stderr (unless a hangup took the pty weir's stderr wrote to)
   cpu     `// storm-cpu-max: S`: weir and the children it reaped used at most S s of CPU
-A run whose only issues match an open finding (known_of) counts as `known`, not bad.
+A run whose only issues match an open finding (known_of; none is open) counts as `known`, not bad.
 A fixture line `// storm-feed: TEXT MS` (--tty only; TEXT with backslash escapes) types TEXT every MS ms from
 U(0, WINDOW + 1s) until weir exits (a reader at the terminal, e.g. a pager in a cleanup, gets its keys).
 Log grammar written by fixtures: `O path` scope body began, `B path ...` body effect,
@@ -57,21 +57,9 @@ if not sys.platform.startswith('linux'):
 HERE = os.path.dirname(os.path.abspath(__file__))
 SIGS = {'INT': signal.SIGINT, 'TERM': signal.SIGTERM, 'HUP': signal.SIGHUP, 'QUIT': signal.SIGQUIT, 'HANGUP': signal.SIGHUP}
 KEYS = {'INT': b'\x03', 'QUIT': b'\x1c'}
-# open findings (hunt 3 round 5 stage D): a run whose only issues are one of these counts as `known`, not bad;
-# delete the entry once its fix lands.
-#  group-cleanup-cmd (ruling owed): a group-directed TERM/HUP that lands while a cleanup's command runs kills
-#    that command too; its death fails the cleanup ("command failed with exit code 143/129"), which stops there.
-#  raw-after-hard-exit: a hard exit (a second signal) while a cleanup's command holds the terminal raw (a
-#    pager) leaves it raw: every time for a second ^\, TERM or HUP, rarely for ^C^C (as the pager starts).
-KNOWN_GROUP_CLEANUP = re.compile(r'command failed with exit code (129|143)')
-
+# open findings: a run whose only issues are one of these counts as `known`, not bad; add an entry here
+# (returning its name) while a finding is open, delete it once its fix lands. None is open.
 def known_of(a, sent, issues, err):
-    if not issues: return None
-    if a.group and any(i.startswith('whole:') for i in issues) and all(
-            i.startswith('whole:') or (i.startswith('stderr:') and KNOWN_GROUP_CLEANUP.search(err)) for i in issues):
-        return 'group-cleanup-cmd'
-    if a.tty and len(sent) > 1 and all(i.startswith('ttymode:') for i in issues):
-        return 'raw-after-hard-exit'
     return None
 LOST_BIND = re.compile(r'cannot listen|Address already in use')
 BAD_ERR = re.compile(r'internal error|Unhandled|Exception|   at |System\.|One or more errors|command failed|TaskScheduler', re.I)

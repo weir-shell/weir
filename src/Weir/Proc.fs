@@ -336,14 +336,7 @@ type CommandFailure(code: int, signalNote: string, shown: string) =
     member _.SignalNote = signalNote
     member _.Shown = shown
 
-let private raiseNonzero (s: Spec) (code: int) =
-    // a child killed by a teardown is the teardown's, not a failure
-    // [D:signal-main-unwind] — on an arm too, which the teardown cuts
-    // [D:teardown-kill-not-failure]; a terminal ^C's death likewise
-    // [D:sigint-terminal-group]
-    Session.settleInterrupt code
-    Session.checkTeardown ()
-    Session.checkCancelled ()
+let private raiseFailure (s: Spec) (code: int) : unit =
     let shown = showArgv (s.Prog :: s.Args)
 
     let signalNote =
@@ -357,6 +350,27 @@ let private raiseNonzero (s: Spec) (code: int) =
         | _ -> ""
 
     raise (CommandFailure(code, signalNote, shown))
+
+let private raiseNonzero (s: Spec) (code: int) : unit =
+    // a child killed by a teardown is the teardown's, not a failure
+    // [D:signal-main-unwind] — on an arm too, which the teardown cuts
+    // [D:teardown-kill-not-failure]; a terminal ^C's death likewise
+    // [D:sigint-terminal-group]
+    Session.settleInterrupt code
+    Session.checkTeardown ()
+    Session.checkCancelled ()
+
+    // a REPL ^C's death is the interrupt, inside a scope's body too
+    // [D:repl-interrupt]
+    if code = 130 then
+        Session.settleReplInterrupt code |> ignore
+        Session.checkInterrupted ()
+
+    // a cleanup's command the teardown's own signal killed (a
+    // group-directed TERM/HUP) is the signal's: the cleanup runs on whole
+    // [D:cleanup-group-signal]
+    if not (Session.cleanupKilledByTeardown code) then
+        raiseFailure s code
 
 // ---- the consumers (the output axis) -------------------------------
 

@@ -149,12 +149,20 @@ rule), `releaseFrame`, `backstopVerdict` (`mainCleanups`, `mainClosing`
 from `closingScope`), and `Eval` `TEAlways` `claimAndRun`.
 
 **I7. A command killed by the teardown is the teardown, never a
-`command failed`.** Rests on [D:teardown-kill-not-failure],
-[D:sigint-terminal-group]. Enforced by `Proc.raiseNonzero`, which calls
-`settleInterrupt` (a 130 death while weir is the foreground group, or a
-129, 131 or 143 death, which a group-directed signal causes, waits up to
-250ms for the request; not in the REPL), then `checkTeardown`, then
-`checkCancelled`. The dispatch requests the teardown before it kills.
+`command failed`.** A cleanup's command that the teardown's own signal
+killed (a group-directed TERM or HUP reaches it with weir) is the
+signal's too: no message, and the cleanup runs on whole (I6), its
+fan-out arms too; in a race's arm inside the cleanup it still fails
+that arm. In the
+REPL a command a ^C killed is the interrupt, inside a scope's body too:
+the entry ends with `↳ exit 130`. Rests on [D:teardown-kill-not-failure],
+[D:sigint-terminal-group], [D:cleanup-group-signal]. Enforced by
+`Proc.raiseNonzero`, which calls `settleInterrupt` (a 130 death while
+weir is the foreground group, or a 129, 131 or 143 death, which a
+group-directed signal causes, waits up to 250ms for the request; not in
+the REPL), then `checkTeardown`, then `checkCancelled`, then
+`checkInterrupted` for a 130, then `cleanupKilledByTeardown`. The
+dispatch requests the teardown before it kills.
 
 **I8. Every exit settles the tree kills in flight.** It waits up to 2s
 for the in-flight count to reach zero, so no SIGSTOPped orphan
@@ -204,7 +212,9 @@ TERM's teardown, [D:sigquit-teardown]). The tty REPL survives its SIGINT. Rests 
 **I12. A second signal hard-exits at once.** Every flow parks at its
 next runtime point (a boundary, a spawn, a frame claim, a cleanup's
 start, the exit), every child dies (a cleanup's too), the kills settle,
-the registered dirs go, the terminal is restored, and weir dies by the
+the registered dirs go, the terminal is restored (the REPL's mode, or
+the mode a script started with, which a killed cleanup's pager may have
+left raw), and weir dies by the
 FIRST signal of the teardown (141 for a closed stdout, which also counts
 as the first). No cleanup runs and none runs on; a third signal changes
 nothing. A main flow stuck where no boundary comes (a builtin's own

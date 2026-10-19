@@ -98,6 +98,16 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **Ctrl+C at the REPL on a command inside a `within` body shows
+  `↳ exit 130`.** It printed `error: command failed with exit code 130`.
+- **A group-directed SIGTERM or SIGHUP no longer cuts an `always`
+  cleanup short.** Without a terminal it killed the cleanup's running
+  command too, which failed the cleanup ("command failed with exit code
+  143") and skipped its remaining steps; that death is now the signal's,
+  the cleanup finishes, then weir dies by the signal.
+- **A second signal while a cleanup's pager has the terminal restores
+  the terminal.** The hard exit killed the pager and left the terminal
+  without echo.
 - **REPL: Tab after `$` offers only what can be spliced there.** `git
   tag $t<Tab>` listed every Prelude function (`take`, `toInt`,
   `tryHead`, …) beside your own bindings. After `$` in command argv

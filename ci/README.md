@@ -38,8 +38,8 @@ lives on) and `--mode kill` (TERM/HUP/hangup at the prompt or mid-entry:
 death by the signal, terminal restored). Then `ci/storm/fuzz.py`, random
 fan-out/race trees against a discrete-event oracle. Unlike
 harnesses.yml they gate: any failing run exits 1; a run whose only
-issues are an open finding's (storm.py `known_of`, repl.py
-`KNOWN_SCOPED_130`) prints as `known`, not bad. Each writes
+issues are an open finding's (storm.py `known_of`; none is open)
+prints as `known`, not bad. Each writes
 `runs.jsonl`/`trees.jsonl` and `summary.json` into its work dir and
 keeps the failing run dirs; the job uploads them as `storm-results`.
 Locally (Linux, never /tmp):

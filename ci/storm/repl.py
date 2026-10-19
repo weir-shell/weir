@@ -22,8 +22,8 @@ is calibrated unsignalled first (from its first log line to DONE = CAL). Modes:
         whole    mid-entry: storm.py's judge with one signal (cleanups whole, nothing after a cut)
 Both modes also judge: orphan (nothing left in the session or carrying TAG, 300ms after exit), tmp (RUNDIR/tmp
 empty), ttymode (unless hung up: the pty is cooked again after exit), stderr (storm.py's BAD_ERR over everything
-weir wrote), hang (each wait bounded by TIMEOUT s). A run matching KNOWN_SCOPED_130 (an open finding) counts as
-`known`, not bad. Writes OUT/runs.jsonl and OUT/summary.json; failing run dirs
+weir wrote), hang (each wait bounded by TIMEOUT s). A run matching an open finding would count as `known`, not
+bad (none is open). Writes OUT/runs.jsonl and OUT/summary.json; failing run dirs
 (log, tty transcript) are kept. Exit 0 if every run passed, 1 otherwise.
 """
 import os, sys, time, json, random, signal, argparse, shutil, re, importlib.util
@@ -34,9 +34,6 @@ _spec = importlib.util.spec_from_file_location('storm', os.path.join(HERE, 'stor
 storm = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(storm)
 PROMPT = b'weir> '
 EXIT130 = '↳ exit 130'.encode()
-# open finding (hunt 3 round 5 stage D): a REPL ^C while a foreground command runs inside a `within`/`within tmp`
-# body prints this error instead of `↳ exit 130` (nothing after it runs). Remove once fixed.
-KNOWN_SCOPED_130 = re.compile(r'error: command failed with exit code 130 \(SIGINT[^\n]*\n?')
 ANSI = re.compile(rb'\x1b\[[0-9;?]*[A-Za-z]|\x1b[=>]|\r')
 
 class Buf:
@@ -189,10 +186,8 @@ def one(a, name, cal, r, rng):
     if tty_bad: issues.append('ttymode:%s off' % ','.join(tty_bad))
     out = ANSI.sub(b'', bytes(buf.b)).decode(errors='replace')
     if err_file: out += open(d + '/err', 'rb').read().decode(errors='replace')
+    # an open finding would be counted apart here, as storm.py's known_of does; none is open
     known = None
-    if kind == 'INT' and 'exit130:none' in issues and KNOWN_SCOPED_130.search(out):
-        # counted apart, never bad: the open finding below, the rest of the oracle still applies
-        known = 'repl-scoped-cmd-130'; issues.remove('exit130:none'); out = KNOWN_SCOPED_130.sub('', out)
     if storm.BAD_ERR.search(out): issues.append('stderr:%r' % storm.BAD_ERR.search(out).group(0))
     rec = dict(entry=name, run=r, kind=kind, phase=phase, at=int(at * 1000) if phase == 'entry' else None,
                rc=rc, issues=issues, known=known, tail=ls[-6:], out=out.strip()[-300:])

@@ -235,6 +235,8 @@ let private runOnMain (run: unit -> int) : int =
     Session.resetDetachedSigint.Force()
     Session.registerMainThread ()
     Session.armStdout ()
+    // the mode a hard exit puts back [D:hard-exit]
+    Session.saveTerminal ()
     run () |> Session.exitCodeOr
 
 [<EntryPoint>]

@@ -3870,6 +3870,95 @@ PYEOF
     [ "$(echo "$tout" | grep -o "exit 130" | wc -l)" -ge 2 ] || fail "each ^C'd entry shows exit 130: $tout"
     echo "e2e ok: a REPL ^C that cut no wait (a | exitCode child, pure compute) ends the entry with exit 130"
 
+    # D-1: a REPL ^C killing a command inside a `within` body ends the entry
+    # with exit 130, never "command failed … 130" [D:repl-interrupt]
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND within\x1b\r' 'SLEEP 100' 'SEND     sleep 3.41\x1b\r' 'SLEEP 100' 'SEND always\x1b\r' 'SLEEP 100' 'SEND     print (Str.toUpper "cl-ran")\r' 'SLEEP 800' 'SEND \x03' 'SLEEP 1500' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 15 "$BIN")
+    for want in "CL-RAN" "exit 130" "STILL-HERE"; do
+        echo "$tout" | grep -qF "$want" || fail "a REPL ^C in a within body: '$want' expected: $tout"
+    done
+    echo "$tout" | grep -qF "command failed" && fail "a REPL ^C in a within body is the interrupt, never 'command failed': $tout"
+    echo "e2e ok: a REPL ^C killing a command in a within body ends the entry with exit 130"
+
+    # R10 (D-2): a group-directed TERM/HUP (no tty) that kills a cleanup's
+    # command is the signal's — no message, the cleanup runs on whole, then
+    # weir dies by the signal [D:cleanup-group-signal]
+    cat > "$stdir/r10.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within
+    File.append log ["body"]
+always
+    File.append log ["cleanup start"]
+    sh -c "sleep 3.43"
+    File.append log ["cleanup end"]
+File.append log ["LATE"]
+WEOF
+    cat > "$stdir/grp.py" <<'PYEOF'
+import os, sys, time, signal, subprocess
+sig = getattr(signal, 'SIG' + sys.argv[1]); log = sys.argv[2]; argv = sys.argv[3:]
+def pre():
+    for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE): signal.signal(s, signal.SIG_DFL)
+p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, preexec_fn=pre, start_new_session=True)
+def has(l):
+    try: return l in open(log).read().splitlines()
+    except OSError: return False
+t0 = time.monotonic()
+while not has('cleanup start') and time.monotonic() - t0 < 8: time.sleep(0.02)
+time.sleep(0.3); os.killpg(p.pid, sig)
+try: _, e = p.communicate(timeout=10)
+except subprocess.TimeoutExpired: os.killpg(p.pid, signal.SIGKILL); _, e = p.communicate()
+print('status %s err %s' % (p.returncode, e.decode(errors='replace').replace('\n', ' | ')))
+PYEOF
+    for sg in TERM:-15 HUP:-1; do
+        rm -f "$stdir/r10.log"
+        r=$(python3 "$stdir/grp.py" "${sg%%:*}" "$stdir/r10.log" "$BIN" "$stdir/r10.weir" "$stdir/r10.log")
+        case "$r" in "status ${sg#*:} err "*) ;; *) fail "a group SIG${sg%%:*} during a cleanup's command: weir dies by it: $r" ;; esac
+        echo "$r" | grep -q "command failed" && fail "a group SIG${sg%%:*} killing a cleanup's command is never 'command failed': $r"
+        [ "$(stlog "$stdir/r10.log")" = "body,cleanup start,cleanup end," ] || fail "a group SIG${sg%%:*} during a cleanup's command: the cleanup runs on whole, nothing after: $(stlog "$stdir/r10.log")"
+    done
+    # ... its fan-out arms' commands too
+    printf '%s\n' 'let log = Self.args |> Seq.head' 'within' '    File.append log ["body"]' 'always' '    File.append log ["cleanup start"]' '    [1; 2] |> Seq.piter (fun _ -> sh -c "sleep 3.45")' '    File.append log ["cleanup end"]' > "$stdir/r10b.weir"
+    rm -f "$stdir/r10.log"
+    r=$(python3 "$stdir/grp.py" TERM "$stdir/r10.log" "$BIN" "$stdir/r10b.weir" "$stdir/r10.log")
+    case "$r" in "status -15 err "*) ;; *) fail "a group SIGTERM during a cleanup's fan-out: weir dies by it, no message: $r" ;; esac
+    [ "$(stlog "$stdir/r10.log")" = "body,cleanup start,cleanup end," ] || fail "a group SIGTERM during a cleanup's fan-out: the cleanup runs on whole: $(stlog "$stdir/r10.log")"
+    echo "e2e ok: a group-directed TERM/HUP killing a cleanup's command is the signal's — the cleanup runs on whole, then the death"
+
+    # D-3: a second signal while a cleanup's command holds the terminal raw
+    # puts the terminal back at the hard exit [D:hard-exit]
+    printf '%s\n' 'within' '    print "body"' 'always' '    sh -c "stty -icanon -echo; sleep 3.44"' > "$stdir/d3.weir"
+    cat > "$stdir/d3.py" <<'PYEOF'
+import os, pty, sys, time, select, signal, termios
+pid, fd = pty.fork()
+if pid == 0:
+    for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM): signal.signal(s, signal.SIG_DFL)
+    os.execv(sys.argv[2], sys.argv[2:])
+def pump(d):
+    t = time.monotonic()
+    while time.monotonic() - t < d:
+        if select.select([fd], [], [], 0.02)[0]:
+            try: os.read(fd, 65536)
+            except OSError: return
+pump(0.8)
+os.write(fd, b'\x03'); pump(0.3)
+if sys.argv[1] == 'QUIT': os.write(fd, b'\x1c')
+else: os.kill(pid, getattr(signal, 'SIG' + sys.argv[1]))
+t = time.monotonic(); code = 'HANG'
+while time.monotonic() - t < 5:
+    p, st = os.waitpid(pid, os.WNOHANG)
+    if p: code = os.waitstatus_to_exitcode(st); break
+    pump(0.02)
+if code == 'HANG': os.kill(pid, 9); os.waitpid(pid, 0)
+lf = termios.tcgetattr(fd)[3]
+print('%s icanon=%d echo=%d' % (code, bool(lf & termios.ICANON), bool(lf & termios.ECHO)))
+PYEOF
+    for second in QUIT TERM HUP; do
+        r=$(python3 "$stdir/d3.py" "$second" "$BIN" "$stdir/d3.weir")
+        echo "$r" | grep -q "^-2 icanon=1 echo=1$" || fail "a second signal ($second) while a cleanup's command holds the terminal raw restores it: $r"
+    done
+    left=$(ps -eo pid,args | awk '$2 == "sleep" && $3 == "3.44" {print $1}')
+    [ -z "$left" ] || { kill -9 $left 2>/dev/null; fail "the hard exit kills the raw-mode cleanup command"; }
+    echo "e2e ok: a second signal while a cleanup's command holds the terminal raw restores it at the hard exit"
+
     # C23: a tty REPL entry of several statements is one evaluation — a ^C
     # or a failure ends the whole entry, the session goes on
     tout=$(printf '%s\n' 'SLEEP 2500' 'SEND Duration.sleep 2s\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-two")\x1b\r' 'SLEEP 150' 'SEND sh -c "sleep 2; echo late-three | tr a-z A-Z"\r' 'SLEEP 700' 'SEND \x03' 'SLEEP 3500' 'SEND fail "boom"\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "after-fail")\r' 'SLEEP 1000' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" python3 "$ptyrun" 15 "$BIN")

@@ -1192,6 +1192,13 @@ module private Libc =
     [<DllImport("libc", SetLastError = true)>]
     extern int prctl(int option, unativeint arg2, unativeint arg3, unativeint arg4, unativeint arg5)
 
+    // struct termios fits 128 bytes on Linux and macOS
+    [<DllImport("libc", SetLastError = true)>]
+    extern int tcgetattr(int fd, byte[] termios)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int tcsetattr(int fd, int optionalActions, byte[] termios)
+
     [<Struct; StructLayout(LayoutKind.Sequential)>]
     type PollFd =
         val mutable fd: int
@@ -1416,6 +1423,36 @@ let nullClosedStderr () : unit =
             Libc.dup2 (fd, 2) |> ignore
             Libc.close fd |> ignore
 
+/// the terminal's mode when a script started at it as the foreground
+/// group: a hard exit kills a cleanup's command that set it raw (a pager)
+/// and puts it back [D:hard-exit]
+let mutable private savedTerminal: byte[] = null
+
+let saveTerminal () : unit =
+    if not (System.OperatingSystem.IsWindows()) && Libc.terminalForeground () then
+        let fd = Libc.``open`` ("/dev/tty", Libc.O_RDWR)
+
+        if fd >= 0 then
+            try
+                let buf = Array.zeroCreate<byte> 128
+
+                if Libc.tcgetattr (fd, buf) = 0 then
+                    savedTerminal <- buf
+            finally
+                Libc.close fd |> ignore
+
+/// put the saved mode back, only while weir is still the foreground group
+/// (a background group's tcsetattr would stop it)
+let private restoreTerminal () : unit =
+    if not (isNull savedTerminal) && Libc.terminalForeground () then
+        let fd = Libc.``open`` ("/dev/tty", Libc.O_RDWR)
+
+        if fd >= 0 then
+            try
+                Libc.tcsetattr (fd, 0, savedTerminal) |> ignore
+            finally
+                Libc.close fd |> ignore
+
 /// restores what weir changed about the terminal before it dies (the REPL's
 /// raw mode) — set by the REPL
 let mutable beforeDie: unit -> unit = ignore
@@ -1501,6 +1538,25 @@ let stopTakingArms () : bool =
 
 /// the requested teardown's exit code, or 0 when none is requested
 let teardownRequested () : int = System.Threading.Volatile.Read &teardownCode
+
+/// a cleanup's command that died by the teardown's own signal (a
+/// group-directed TERM/HUP reaches it with weir) is the signal's, not a
+/// failure: the cleanup runs on whole [D:cleanup-group-signal], its
+/// fan-out arms too. A race's arm inside it still fails, so a loser never
+/// goes on as if its command had finished and wins
+let cleanupKilledByTeardown (code: int) : bool =
+    // up to the cleanup's shield: is this flow inside a race?
+    let rec inRace (n: Node) =
+        match n with
+        | null -> false
+        | n when n.Kind = NodeKind.Shield -> false
+        | n when n.Kind = NodeKind.Race -> true
+        | n -> inRace n.Parent
+
+    code > 128
+    && inCleanup ()
+    && code = System.Threading.Volatile.Read &teardownCode
+    && not (inRace (currentNode ()))
 
 /// a command that died of SIGINT while weir is the terminal's foreground
 /// group most likely took the terminal's ^C with weir [D:sigint-terminal-group];
@@ -2498,6 +2554,7 @@ let private hardExit (code: int) =
         killEntry kv.Value
 
     settleKills ()
+    restoreTerminal ()
 
     for kv in liveTmpDirs do
         try
