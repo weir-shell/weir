@@ -1866,7 +1866,17 @@ type Bad = C of int
   top-level SEQUENCE document -> `seq<T>` (nested records, seqs,
   `seq<string * string>` for labels, `Option`; bool is EXACTLY
   true/false; plain `null`/`Null`/`NULL`/`~` and an empty value are
-  null -> `None`, quoted `"null"` is a string; anchors rejected). A plain value holding `: ` (`f: a: b`) refuses, as every YAML reader does — quote it. A block sequence reads in BOTH indent
+  null -> `None`, quoted `"null"` is a string; anchors rejected;
+  indentation is SPACES only — a tab there refuses, a tab before `#`
+  starts a comment; a plain value trims only space/tab). NUMBERS are
+  YAML 1.2 core [D:yaml-number-text]: `0x1F`/`0o17` are ints, `.inf`/
+  `.nan` numbers; a LEADING ZERO (`0644`) is decimal 644 to 1.2 but
+  OCTAL 420 to YAML 1.1 readers (PyYAML, kubectl) — a `Yaml` node
+  (`Yaml.parse`/`yaml patch`) keeps such a number's TEXT and `to yaml`
+  writes it back unchanged (a Pod's `defaultMode: 0644` survives a
+  patch), while reading `0644` into an `int` field REFUSES (write
+  `0o644`, `644`, or quote it); 1.1-only forms (`1_000`, `0b101`,
+  `1:20`) are strings, written quoted. A plain value holding `: ` (`f: a: b`) refuses, as every YAML reader does — quote it. A block sequence reads in BOTH indent
   styles — indented under its key OR at the SAME column as its key
   (kubectl's `items:` / `- apiVersion: v1` flush-left form). Only the
   EMPTY flow collections `{}` and `[]` are read (into an empty
@@ -1892,7 +1902,9 @@ type Bad = C of int
   `null` (the key kept); a string any YAML 1.1/1.2 reader would type
   auto-quotes, keys too (`"no"`/`"007"`/`"+.5"`/`"y"`/`"<<"`/`"="`); an
   int64-overflowing integer read into a `Yaml` node is a `YFloat` that
-  writes back its digits. `Yaml`
+  writes back its digits (into an `int` field it refuses, suggesting
+  `Yaml`); an exponent float writes with a dot and signed exponent
+  (`1.0e-05`, a 1.1 reader's float). `Yaml`
   nodes (`YStr`/`YInt`/`YFloat`/`YBool`/`YNull`/`YSeq`/`YMap`;
   `YMap [("k", YStr "v")]`) render directly —
   `YMap` keeps YOUR key order; record fields render in DECLARATION
@@ -2068,8 +2080,14 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   and there is NO `to xml`. `Bytes` read too (`File.readBytes p |>
   from xml T`): decoded by BOM, else the declaration's encoding (UTF-8/
   16/32, ASCII, ISO-8859-1 only — convert others with iconv), else
-  UTF-8, strictly [D:xml-encoding] [D:xml-encoding-builtin]; text under a non-UTF-8 declaration
-  reads only if ASCII, an unknown encoding refuses. A DTD (`<!DOCTYPE …>`) refuses
+  UTF-8, strictly [D:xml-encoding] [D:xml-encoding-builtin]; `utf8`/`Latin-1`
+  spellings accepted; a pure-ASCII document reads under ANY declared
+  label (a `Windows-1252` `.vcproj`), non-ASCII under an undecodable
+  one refuses (iconv to UTF-8 AND change the declaration), a malformed
+  label refuses [D:xml-labels]; text under a non-UTF-8 declaration
+  reads only if ASCII. Element text is read AS WRITTEN — whitespace-only
+  text (`&#32;`, `  `) is kept, as `xml.etree` reads it
+  [D:xml-whitespace]. A DTD (`<!DOCTYPE …>`) refuses
   [D:xml-no-dtd] — no declared entity expands or resolves.
   An element that repeats under a `string`/`Option<string>`/record
   field refuses (never silently the first) — declare a `seq< >`. A

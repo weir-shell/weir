@@ -92,8 +92,28 @@ counts |> Map.pairs |> Seq.iter (fun (k, n) -> print $"{k}={n}")
 scalar's type in both directions: `rate: 1.5` is a number, `"1.5"` is
 a string. An empty value and the plain words `null`, `Null`, `NULL`
 and `~` are null (YAML 1.2's core schema): `None` in an `Option`
-field, an error in a required one; `"null"` is a string. A quoted
-scalar may continue on more deeply indented lines,
+field, an error in a required one; `"null"` is a string. Indentation
+is spaces only: a tab where indentation is read is an error naming
+the line, and a tab before `#` starts a comment as a space does. A
+plain value trims only spaces and tabs, so a no-break space or U+3000
+is part of the value.
+
+Numbers follow YAML 1.2's core schema, which differs from the YAML 1.1
+readers many tools still use (PyYAML, kubectl's go-yaml v2):
+
+- `0x1F` and `0o17` are ints, and `.inf`/`.nan` are numbers. Reading
+  one into a `Yaml` node (`Yaml.parse`, `yaml patch`) keeps its text,
+  so `to yaml` writes it back unchanged. A non-finite number has no
+  weir value, so the node holds it as a `YStr` that still writes plain.
+- A leading zero (`0644`) is decimal 644 in YAML 1.2 but octal 420 to a
+  1.1 reader. A `Yaml` node keeps the text, so a round trip that never
+  touches a Pod's `defaultMode: 0644` writes it back as it was. Reading
+  a leading-zero literal into an `int` field is an error: write
+  `0o644` for octal, `644` for decimal, or quote it for a string.
+- 1.1-only forms (`1_000`, `0b101`, `1:20`) are strings, and `to yaml`
+  quotes them so a 1.1 reader keeps them strings too.
+
+A quoted scalar may continue on more deeply indented lines,
 as in kubectl's long `message:` values:
 
 - the closing quote ends it
@@ -126,8 +146,12 @@ so the key reads back. A string that any YAML 1.1 or 1.2 reader would
 take as another type is quoted, keys included: number forms such as
 `007`, `1e5` and `+.5`, the boolean words (`yes`, `on`, `y`, `N`, …),
 the null forms, `.inf`/`.nan`, and the merge and value keys `<<` and
-`=`. An integer beyond int64 read into a `Yaml` node is a `YFloat`
-there, but writing that node back gives its original digits. Each form reads back with the matching reader
+`=`. A float written in exponent form carries a dot and a signed
+exponent (`1.0e-05`), which YAML 1.1 readers need to see a number. An
+integer beyond int64 read into a `Yaml` node is a `YFloat`
+there, but writing that node back gives its original digits (through
+`try` too); reading one into an `int` field is an error that suggests
+`Yaml`, since a `float` would round it. Each form reads back with the matching reader
 (`to yaml |> from yaml seq<T>`,
 `to yaml stream |> from yaml stream T`). A multiline string is
 written as a block scalar. The `yaml` template literal (with checked
@@ -199,6 +223,10 @@ let proj =
 print $"{Seq.length proj.refs} refs, {Seq.length proj.groups} property groups"
 ```
 
+An element's text is read as written, whitespace included:
+`<Sep>&#32;</Sep>` reads `" "` and `<Two>  </Two>` reads `"  "`, as
+Python's `xml.etree` does; an empty element reads `""`.
+
 Every XML leaf is text, so a field is `string`, `Option<string>` (a
 present-or-absent element or attribute), a record, or a `seq` of a
 string or record — nothing else. A numeric or boolean field is
@@ -213,13 +241,17 @@ There is no `to xml`.
 (`File.readBytes "legacy.xml" |> from xml Proj`), which are decoded
 by their byte-order mark, else by the encoding the XML declaration
 names, else as UTF-8. UTF-8, UTF-16, UTF-32, US-ASCII and ISO-8859-1
-are supported; any other declared encoding (windows-1252, Shift_JIS, …)
-is an error naming it — convert the file to UTF-8 first (`iconv`). An
-undecodable byte is an error.
+are supported, including the spellings `utf8`, `UTF8` and `Latin-1`.
+A plain-ASCII document reads under any declared encoding, so a Visual
+Studio 2008 `.vcproj` labelled `Windows-1252` reads. Non-ASCII content
+under an encoding weir cannot decode (windows-1252, Shift_JIS, …) is an
+error naming it: convert the file to UTF-8 (`iconv`) and change the
+declaration to `encoding="UTF-8"`. A malformed encoding name
+(`" windows-1252"`, `"ebcdic;"`) is an error, and an undecodable byte
+is an error.
 Text is already decoded as UTF-8, so a text document whose declaration
 names another encoding reads only if it is plain ASCII; otherwise the
-error asks for the bytes. A declared encoding weir does not know is an
-error either way.
+error asks for the bytes.
 
 ## Aligned tables
 

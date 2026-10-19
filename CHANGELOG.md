@@ -490,6 +490,42 @@
   now reused until the next edit.
 - **`from xml` refuses mixed content in a text field.** `<n>a<b/>c</n>`
   read as `"ac"`; it is now an error naming `<n>`, `<b>` and the field.
+- **A YAML round trip keeps `defaultMode: 0644`.** weir reads YAML 1.2,
+  where `0644` is decimal 644; YAML 1.1 readers such as kubectl read it
+  as octal 420. `Yaml.parse |> Yaml.merge p |> to yaml` rewrote it as
+  `644`, which kubectl then applied as a different mode. A `Yaml` node
+  now keeps the text of a leading-zero number, `0x1F`, `0o17` and
+  `.inf`, and writes it back unchanged. Reading `0644` into an `int`
+  field is now an error: write `0o644`, `644`, or quote it.
+- **`to yaml` writes exponent floats as `1.0e-05`.** `1e-05` and
+  `1e+21` read as strings to YAML 1.1 readers.
+- **Tabs in YAML.** A tab used as indentation flattened a nested
+  mapping without an error; it now refuses, naming the line. A tab
+  before `#` starts a comment (`port: 8080<TAB># http` read the comment
+  into the value).
+- **YAML keeps no-break spaces.** A plain value or key trimmed NBSP and
+  U+3000; only spaces and tabs trim now.
+- **A block-scalar line starting with `%` is content.** An Apache
+  `LogFormat` ConfigMap (`%h %l %u`) was refused as a directive, and so
+  was weir's own `to yaml` of such a string.
+- **`to yaml` never writes U+2028 raw in a block scalar.** Other YAML
+  readers take it as a line break; such a string is written quoted.
+- **`from xml` reads ASCII documents under any declared encoding.** A
+  Visual Studio 2008 `.vcproj` labelled `Windows-1252` was refused; so
+  were `UTF8` and `Latin-1`. Non-ASCII content under an encoding weir
+  cannot decode still refuses, and the hint now also says to change the
+  declaration. A malformed label such as `" windows-1252"` refuses
+  instead of being read as UTF-8.
+- **`from xml` keeps whitespace-only text** (`&#32;`, `&#9;`, two
+  spaces), as Python's `xml.etree` reads it; it read as `""`.
+- **`try` keeps a `Yaml` node's digits past int64**, as a plain `let`
+  does.
+- **An integer past int64 into an `int` field suggests `Yaml`**, not
+  `float`, which would round it. `gen types` drafts `format: uint64` as
+  `Yaml`.
+- **`gen types` notes a required and nullable field** — its `Option`
+  writes `None` as an omitted key, not `null` — and an enum's note lists
+  `null` only when the enum holds it and the type allows it.
 
 ## v0.0.74
 

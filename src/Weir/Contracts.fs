@@ -829,7 +829,9 @@ type Schema =
     // `kind`: the declared scalar type, else the values' one JSON kind
     // ("integer" | "number" | "boolean" | "string"), "mixed" when they
     // differ [D:schema-int-enum] [D:schema-enum-kind]
-    | SEnum of values: string list * kind: string
+    // `nullListed`: null is one of the values AND the type allows it —
+    // the note lists it only then [D:schema-enum-null]
+    | SEnum of values: string list * kind: string * nullListed: bool
     | SObject of props: (string * Schema) list * required: string list * additional: AdditionalProps
     | SArray of items: Schema
     // an in-document reference, resolved via SchemaDoc.Defs — the name
@@ -843,6 +845,9 @@ type Schema =
     // `format: int-or-string` on a string: the scalar is widened to
     // integer/string; the generator notes the format [D:schema-num-or-string]
     | SIntOrStringFormat of Schema
+    // `format: uint64` on an integer: values past int64 exist, so the
+    // generator drafts the digit-keeping Yaml node [D:schema-uint64]
+    | SUint64Format of Schema
     // a type array mixing a scalar with array/object (or array with
     // object): one alternative per kind — SScalar, SObject, SArray —
     // the value's node kind picks the one it validates against
@@ -1206,9 +1211,13 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                         // a null member (or a null in the type list) is
                         // absence: the enum drafts Option<T> over the rest
                         // [D:schema-enum-null]
-                        let hasNull =
+                        let enumNull =
                             e.EnumerateArray() |> Seq.exists (fun v -> v.ValueKind = Text.Json.JsonValueKind.Null)
-                            || (typeKinds |> Option.exists (fun ks -> ks.Contains "null"))
+
+                        let hasNull = enumNull || (typeKinds |> Option.exists (fun ks -> ks.Contains "null"))
+
+                        let nullListed =
+                            enumNull && (typeKinds |> Option.forall (fun ks -> ks.Contains "null"))
 
                         let values =
                             e.EnumerateArray()
@@ -1250,9 +1259,9 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                             Ok(
                                 match values, hasNull with
                                 | [], true -> SScalar(Set.singleton "null")
-                                | [], false -> SEnum(values, kind)
-                                | _, true -> SNullable(SEnum(values, kind))
-                                | _, false -> SEnum(values, kind)
+                                | [], false -> SEnum(values, kind, false)
+                                | _, true -> SNullable(SEnum(values, kind, nullListed))
+                                | _, false -> SEnum(values, kind, false)
                             )
                         )
                     | None ->
@@ -1391,6 +1400,13 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                                          | None -> false)
                                      ->
                                      Ok(SIntOrStringFormat(SScalar(Set.add "integer" kinds)))
+                                 | Some kinds when
+                                     Set.remove "null" kinds = Set.singleton "integer"
+                                     && (match getProp "format" with
+                                         | Some f -> f.ValueKind = Text.Json.JsonValueKind.String && f.GetString() = "uint64"
+                                         | None -> false)
+                                     ->
+                                     Ok(SUint64Format(SScalar kinds))
                                  | Some kinds when not kinds.IsEmpty -> Ok(SScalar kinds)
                                  // the k8s int-or-string marker alone, no
                                  // type: the anyOf idiom's own kinds
@@ -1458,7 +1474,8 @@ let rec private refsOf (s: Schema) : string list =
            | _ -> [])
     | SArray items -> refsOf items
     | SNullable inner
-    | SIntOrStringFormat inner -> refsOf inner
+    | SIntOrStringFormat inner
+    | SUint64Format inner -> refsOf inner
     | SChoice alts
     | SAllOf alts
     | SMixed(_, alts) -> alts |> List.collect refsOf
@@ -2103,7 +2120,8 @@ let rec validateTpl
     // nullable: a null scalar passes; anything else validates the inner
     | SNullable _, Check.TYtScalar(raw, quoted, _) when literalKind raw quoted = "null" -> []
     | SNullable inner, tpl -> validateTpl name defs path inner tpl
-    | SIntOrStringFormat inner, tpl -> validateTpl name defs path inner tpl
+    | SIntOrStringFormat inner, tpl
+    | SUint64Format inner, tpl -> validateTpl name defs path inner tpl
     // the node's kind picks its alternative [D:schema-mixed-kinds]
     | SMixed(kinds, alts), tpl ->
         let pick =
@@ -2197,12 +2215,12 @@ let rec validateTpl
             [ span, $"schema {name}: {fieldName path} expects {kindsText kinds}, got a block scalar (string)" ]
     | SScalar _, Check.TYtMap(_, span) -> [ span, $"schema {name}: {fieldName path} expects a scalar, got a mapping" ]
     | SScalar _, Check.TYtSeq(_, span) -> [ span, $"schema {name}: {fieldName path} expects a scalar, got a sequence" ]
-    | SEnum(values, _), Check.TYtScalar(raw, _, span) ->
+    | SEnum(values, _, _), Check.TYtScalar(raw, _, span) ->
         if List.contains raw values then
             []
         else
             [ span, $"schema {name}: {fieldName path} expects {enumText values}, got '{raw}'" ]
-    | SEnum(values, _), Check.TYtBlock(text, span) ->
+    | SEnum(values, _, _), Check.TYtBlock(text, span) ->
         if List.contains text values then
             []
         else
@@ -2231,7 +2249,8 @@ and private spliceCheck
     | SChoice _ -> []
     | SAllOf members -> members |> List.collect (fun m -> spliceCheck name defs path m te) |> List.distinct
     | SNullable inner
-    | SIntOrStringFormat inner -> spliceCheck name defs path inner te
+    | SIntOrStringFormat inner
+    | SUint64Format inner -> spliceCheck name defs path inner te
     // a seq checks against the array alternative, a scalar type against
     // the scalar one; any other splice skips [D:schema-mixed-kinds]
     | SMixed(_, alts) ->

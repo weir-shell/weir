@@ -2035,26 +2035,86 @@ let private decodeCoded (where: string) (c: Codec) (text: string option) (num: i
 // an integer past int64 in an opaque Yaml node [D:yaml-node-bigint]
 // reads as YFloat (its nearest value, for code that matches it) and
 // remembers its digits by node identity, so a write of that same node
-// emits the digits, not the float; a node built in weir has none
-let private yamlBigDigits =
+// emits the digits, not the float; a node built in weir has none.
+// A plain number whose text weir would not write back the same way —
+// a leading-zero int, 0x/0o, .inf/.nan — remembers its text the same
+// way and `to yaml` writes it unchanged [D:yaml-number-text]
+let private yamlSourceText =
     System.Runtime.CompilerServices.ConditionalWeakTable<Value, string>()
 
 let private integerShaped (raw: string) =
     let r = if raw.StartsWith "-" || raw.StartsWith "+" then raw.Substring 1 else raw
     r.Length > 0 && r |> Seq.forall System.Char.IsAsciiDigit
 
+let private withSourceText (raw: string) (node: Value) : Value =
+    yamlSourceText.AddOrUpdate(node, raw)
+    node
+
 let yamlFloatNode (raw: string) (f: float) : Value =
     let node = VUnion("YFloat", Some(VFloat f))
 
     if integerShaped raw then
-        yamlBigDigits.AddOrUpdate(node, raw.TrimStart '+')
-
-    node
+        withSourceText (raw.TrimStart '+') node
+    else
+        node
 
 let yamlBigIntText (node: Value) : string option =
-    match yamlBigDigits.TryGetValue node with
+    match node with
+    | VUnion("YFloat", _) ->
+        match yamlSourceText.TryGetValue node with
+        | true, t -> Some t
+        | _ -> None
+    | _ -> None
+
+/// the plain text a read scalar node writes back as [D:yaml-number-text]
+let yamlPlainText (node: Value) : string option =
+    match yamlSourceText.TryGetValue node with
     | true, t -> Some t
     | _ -> None
+
+/// `0644`, `-007`: YAML 1.2 reads decimal, YAML 1.1 readers octal (or a
+/// string, with an 8 or 9) [D:yaml-number-text]
+let yamlLeadingZero (raw: string) =
+    let r = if raw.StartsWith "-" || raw.StartsWith "+" then raw.Substring 1 else raw
+    r.Length > 1 && r[0] = '0' && r |> Seq.forall System.Char.IsAsciiDigit
+
+/// the YAML 1.2 core schema's other ints: 0x1F, 0o17 (unsigned) —
+/// Some (Some n) in range, Some None past int64, None for any other text
+let yamlCoreRadixInt (raw: string) : int64 option option =
+    let digits (radix: int) (ok: char -> bool) =
+        let d = raw.Substring 2
+
+        if d.Length > 0 && d |> Seq.forall ok then
+            let mutable acc = 0I
+
+            for c in d do
+                acc <- acc * bigint radix + bigint (System.Convert.ToInt32(string c, 16))
+
+            Some(if acc <= bigint System.Int64.MaxValue then Some(int64 acc) else None)
+        else
+            None
+
+    if raw.StartsWith "0x" then digits 16 System.Uri.IsHexDigit
+    elif raw.StartsWith "0o" then digits 8 (fun c -> c >= '0' && c <= '7')
+    else None
+
+/// the YAML 1.2 core schema's non-finite floats — numbers to every
+/// reader, no value a weir float holds [D:yaml-number-text]
+let yamlCoreNonFinite (raw: string) =
+    match raw with
+    | ".inf"
+    | ".Inf"
+    | ".INF"
+    | "+.inf"
+    | "+.Inf"
+    | "+.INF"
+    | "-.inf"
+    | "-.Inf"
+    | "-.INF"
+    | ".nan"
+    | ".NaN"
+    | ".NAN" -> true
+    | _ -> false
 
 let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) : Value =
     match e.ValueKind with
@@ -2311,7 +2371,9 @@ let private jsonDocRead
                 if raw.Contains '.' || raw.Contains 'e' || raw.Contains 'E' then
                     failwith $"{who}: field '{name}' expected int, got a decimal number — declare it float"
                 else
-                    failwith $"{who}: field '{name}': number out of int range — declare it float"
+                    // a float would round it [D:yaml-node-bigint]
+                    failwith
+                        $"{who}: field '{name}': {excerpt raw} is out of int range (int64) — declare it Yaml to keep its digits (a float would round them)"
         | TFloat, System.Text.Json.JsonValueKind.Number ->
             // integer-shaped numbers widen here [D:floats-boundaries]:
             // JSON has one number type, and this is a parse, not weir
@@ -2696,19 +2758,43 @@ let private jsonTopHoldsSecret (top: JsonTop) (defs: Map<string, RecordDef>) (ud
 /// [<Elem "X">] a repeated child, a record a nested element. Every leaf is
 /// text (an element's inner text or an attribute value) — no numbers reach
 /// here, the checker admits string / Option<string> / record / seq only.
-// the XML declaration's encoding name [D:xml-encoding]
+// the XML declaration's encoding value, whatever its quotes hold — a
+// malformed name refuses rather than reading as no declaration
+// [D:xml-encoding] [D:xml-labels]
 let private xmlDeclEncoding =
     System.Text.RegularExpressions.Regex
-        @"^\uFEFF?\s*<\?xml\s[^>]*?\bencoding\s*=\s*[""']([A-Za-z][A-Za-z0-9._:-]*)[""']"
+        @"^\uFEFF?\s*<\?xml\s[^>]*?\bencoding\s*=\s*(?:""([^""]*)""|'([^']*)')"
+
+// XML's EncName production
+let private xmlEncName =
+    System.Text.RegularExpressions.Regex @"^[A-Za-z][A-Za-z0-9._-]*$"
+
+let private xmlDeclName (who: string) (m: System.Text.RegularExpressions.Match) : string =
+    let name = if m.Groups[1].Success then m.Groups[1].Value else m.Groups[2].Value
+
+    if xmlEncName.IsMatch name then
+        name
+    else
+        failwith
+            $"{who}: the XML declaration's encoding name '{excerpt name}' is malformed — an encoding name is a letter followed by letters, digits, '.', '_' or '-' (encoding=\"UTF-8\")"
 
 // the encodings a declaration may name: CoreLib's alone (UTF-8/16/32,
-// US-ASCII, ISO-8859-1) — no code-page provider [D:xml-encoding-builtin]
-let private xmlEncoding (who: string) (name: string) : System.Text.Encoding =
-    try
-        System.Text.Encoding.GetEncoding name
-    with _ ->
-        failwith
-            $"{who}: the document declares encoding '{excerpt name}', which weir cannot decode — UTF-8, UTF-16, UTF-32, US-ASCII and ISO-8859-1 read; convert others to UTF-8 first (iconv -f {excerpt name} -t UTF-8)"
+// US-ASCII, ISO-8859-1) plus the utf8/Latin-1 spellings — no code-page
+// provider [D:xml-encoding-builtin]; None = a name weir cannot decode,
+// which still reads a pure-ASCII document [D:xml-labels]
+let private xmlEncoding (name: string) : System.Text.Encoding option =
+    match name.ToLowerInvariant().Replace("-", "").Replace("_", "") with
+    | "utf8" -> Some(System.Text.UTF8Encoding(false) :> System.Text.Encoding)
+    | "latin1" -> Some System.Text.Encoding.Latin1
+    | _ ->
+        try
+            Some(System.Text.Encoding.GetEncoding name)
+        with _ ->
+            None
+
+let private xmlUndecodable (who: string) (name: string) =
+    failwith
+        $"{who}: the document declares encoding '{excerpt name}', which weir cannot decode, and holds non-ASCII characters — UTF-8, UTF-16, UTF-32, US-ASCII and ISO-8859-1 read; convert it to UTF-8 (iconv -f {excerpt name} -t UTF-8) and change the declaration to encoding=\"UTF-8\""
 
 /// the input of `from xml`: text (already decoded as UTF-8) or the
 /// document's bytes, which decode per their BOM or declaration
@@ -2730,8 +2816,9 @@ let private xmlDoc
         System.Xml.XmlReaderSettings(
             DtdProcessing = System.Xml.DtdProcessing.Prohibit,
             XmlResolver = null,
-            // XDocument.Parse's LoadOptions.None reading
-            IgnoreWhitespace = true
+            // whitespace-only text is text, as xml.etree reads it
+            // [D:xml-whitespace]
+            IgnoreWhitespace = false
         )
 
     // the declared encoding decides [D:xml-encoding]: text arrived
@@ -2744,19 +2831,20 @@ let private xmlDoc
             let m = xmlDeclEncoding.Match text
 
             if m.Success then
-                let enc = xmlEncoding who m.Groups[1].Value
+                let name = xmlDeclName who m
+                let nonAscii = text |> Seq.exists (fun c -> int c > 0x7F && c <> '\uFEFF')
 
-                if
-                    enc.CodePage <> 65001
-                    && text |> Seq.exists (fun c -> int c > 0x7F && c <> '\uFEFF')
-                then
+                match xmlEncoding name with
+                | None when nonAscii -> xmlUndecodable who name
+                | Some enc when enc.CodePage <> 65001 && nonAscii ->
                     let tyName =
                         match top with
                         | TopRec d -> d.Name
                         | _ -> "T"
 
                     failwith
-                        $"{who}: the document declares encoding '{excerpt m.Groups[1].Value}', but it arrived as text, which weir decodes as UTF-8 — read its bytes so the declaration decodes them: File.readBytes path |> from xml {tyName}"
+                        $"{who}: the document declares encoding '{excerpt name}', but it arrived as text, which weir decodes as UTF-8 — read its bytes so the declaration decodes them: File.readBytes path |> from xml {tyName}"
+                | _ -> ()
 
             text
         | XmlBytes bytes ->
@@ -2788,7 +2876,15 @@ let private xmlDoc
                     let m = xmlDeclEncoding.Match head
 
                     if m.Success then
-                        xmlEncoding who m.Groups[1].Value
+                        let name = xmlDeclName who m
+
+                        match xmlEncoding name with
+                        | Some e -> e
+                        // pure ASCII reads the same under any
+                        // ASCII-compatible label [D:xml-labels]
+                        | None when bytes |> Array.forall (fun b -> b < 0x80uy) ->
+                            System.Text.Encoding.ASCII
+                        | None -> xmlUndecodable who name
                     else
                         System.Text.UTF8Encoding(false) :> System.Text.Encoding
 
@@ -3115,8 +3211,17 @@ let yamlScalarValue (raw: string) (quoted: bool) : Value =
         VUnion("YNull", None)
     elif not quoted && (raw = "true" || raw = "false") then
         VUnion("YBool", Some(VBool(raw = "true")))
+    elif not quoted && yamlCoreNonFinite raw then
+        // no float holds it: the text rides a YStr and writes back
+        // plain [D:yaml-number-text]
+        withSourceText raw (VUnion("YStr", Some(VStr raw)))
     else
+        match (if quoted then None else yamlCoreRadixInt raw) with
+        | Some(Some n) -> withSourceText raw (VUnion("YInt", Some(VInt n)))
+        | Some None -> withSourceText raw (VUnion("YStr", Some(VStr raw)))
+        | None ->
         match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
+        | true, n when yamlLeadingZero raw -> withSourceText raw (VUnion("YInt", Some(VInt n)))
         | true, n -> VUnion("YInt", Some(VInt n))
         | _ ->
             // unquoted float-shaped literals self-type [D:floats-boundaries]
@@ -3154,8 +3259,32 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
             failwith $"from yaml: line {line}: a quoted scalar is a string; this field expects int"
         else
             match System.Int64.TryParse raw with
+            | true, n when yamlLeadingZero raw ->
+                // ruling R3 [D:yaml-number-text]: 1.2 reads decimal, the
+                // 1.1 readers beside weir (PyYAML, kubectl) do not
+                let r = raw.TrimStart('-', '+')
+
+                let theirs, octal =
+                    if r |> Seq.forall (fun c -> c <= '7') then
+                        // the core schema's 0o form is unsigned
+                        $"octal ({System.Convert.ToInt64(r, 8)})",
+                        (if r = raw then $"0o{(r.TrimStart '0').PadLeft(1, '0')} for octal, " else "")
+                    else
+                        "a string", ""
+
+                failwith
+                    $"from yaml: line {line}: '{quoteData raw}' has a leading zero — YAML 1.2 (weir) reads decimal {n}, YAML 1.1 readers (PyYAML, kubectl) read it as {theirs}; write {octal}{n} for decimal, or quote it for a string"
             | true, n -> VInt n
-            | _ -> failwith $"from yaml: line {line}: expected int, got '{quoteData raw}'"
+            | _ ->
+                match yamlCoreRadixInt raw with
+                | Some(Some n) -> VInt n
+                | Some None ->
+                    failwith
+                        $"from yaml: line {line}: '{quoteData raw}' is out of int range (int64) — declare the field Yaml to keep its text"
+                | None when integerShaped raw ->
+                    failwith
+                        $"from yaml: line {line}: '{quoteData raw}' is out of int range (int64) — declare the field Yaml to keep its digits (a float would round them)"
+                | None -> failwith $"from yaml: line {line}: expected int, got '{quoteData raw}'"
     | Yaml.SBool, Yaml.NScalar(raw, quoted, line) ->
         // exactly true/false (Env.load's rule: `yes`/`on`/`1` are
         // data, not booleans — the Norway problem cannot fire)
@@ -3408,9 +3537,30 @@ type private Rendered =
 // with more have no form in the subset (`|+` is rejected) and fall
 // back below, since dropping bytes is the one thing a renderer must
 // never do
+// an exponent float carries a dot and a signed exponent (1.0e-05): a
+// YAML 1.1 reader (PyYAML) loads `1e-05` as a string [D:yaml-interop]
+let private yamlFloat (f: float) : string =
+    let s = formatFloat f
+    let e = s.IndexOf 'e'
+
+    if e < 0 then
+        s
+    else
+        let mant = s.Substring(0, e)
+        let exp = s.Substring(e + 1)
+        let mant = if mant.Contains '.' then mant else mant + ".0"
+        let exp = if exp.StartsWith "-" || exp.StartsWith "+" then exp else "+" + exp
+        mant + "e" + exp
+
 let private renderString (s: string) : Rendered =
+    // U+2028/U+2029 are line breaks to a YAML reader, so block content
+    // cannot carry them; the quoted form escapes them [D:block-scalars]
     let tame =
-        s |> Seq.forall (fun c -> not (System.Char.IsControl c) || c = '\n' || c = '\t')
+        s
+        |> Seq.forall (fun c ->
+            (not (System.Char.IsControl c) || c = '\n' || c = '\t')
+            && c <> '\u2028'
+            && c <> '\u2029')
 
     // multiple trailing newlines have no block form in the subset (`|+`
     // is rejected) — they fall back to the quoted-with-escapes spelling:
@@ -3515,16 +3665,19 @@ let rec private yamlRender
 
     match v with
     | VInt n -> Inline(string n)
-    | VFloat f -> Inline(formatFloat f)
+    | VFloat f -> Inline(yamlFloat f)
     | VDur n -> Inline(formatDuration n)
     | VSize b -> Inline(formatSize b)
     | VBool b -> Inline(if b then "true" else "false")
     | VStr s -> renderString s
     // the canonical text [D:wire-table], quoted when YAML would misread it
     | VUuid g -> renderString (formatUuid g)
-    | VUnion("YStr", Some(VStr s)) -> renderString s
-    | VUnion("YInt", Some(VInt n)) -> Inline(string n)
-    | VUnion("YFloat", Some(VFloat f)) -> Inline(yamlBigIntText v |> Option.defaultWith (fun () -> formatFloat f))
+    | VUnion("YStr", Some(VStr s)) ->
+        match yamlPlainText v with
+        | Some t -> Inline t
+        | None -> renderString s
+    | VUnion("YInt", Some(VInt n)) -> Inline(yamlPlainText v |> Option.defaultWith (fun () -> string n))
+    | VUnion("YFloat", Some(VFloat f)) -> Inline(yamlPlainText v |> Option.defaultWith (fun () -> yamlFloat f))
     | VUnion("YBool", Some(VBool b)) -> Inline(if b then "true" else "false")
     | VUnion("YNull", None) -> Inline ""
     // empty Yaml collections render as the empty flow forms so they
@@ -4460,7 +4613,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
             match v with
             | VSeq items -> VSeq(items |> Seq.map force |> Seq.toArray :> seq<Value>)
             | VRecord(n, fields) -> VRecord(n, fields |> List.map (fun (k, x) -> k, force x))
-            | VUnion(c, Some p) -> VUnion(c, Some(force p))
+            // a scalar node keeps its identity — the digits/text a read
+            // node remembers ride it [D:yaml-node-bigint]
+            | VUnion(c, Some p) ->
+                let p' = force p
+                if obj.ReferenceEquals(p, p') then v else VUnion(c, Some p')
             | VTuple xs -> VTuple(List.map force xs)
             | VMap m -> VMap(Map.map (fun _ x -> force x) m)
             | v -> v
