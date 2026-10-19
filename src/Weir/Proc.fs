@@ -540,7 +540,7 @@ let streamCodeOf (s: Spec) : int =
 
         p.WaitForExit()
         producerFault ()
-        p.ExitCode
+        Session.settleReplInterrupt p.ExitCode
     finally
         reap p
 
@@ -725,7 +725,7 @@ let completedOf (s: Spec) : int * seq<string> * seq<string> =
     let errBytes = Session.cutJoin stderrTask
     p.WaitForExit()
     producerFault ()
-    p.ExitCode, linesView outBytes true, linesView errBytes false
+    Session.settleReplInterrupt p.ExitCode, linesView outBytes true, linesView errBytes false
 
 // ---- the byte chain [D:byte-pipes]: raw command→command hops -------
 // A hop makes no value, so weir does not hold the bytes
@@ -880,7 +880,7 @@ let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
             let errLines =
                 errTasks |> List.map (fun t -> linesView (Session.cutJoin t) false |> List.ofSeq) |> List.concat
 
-            chainCode procs pumps, linesView outBytes true, (errLines :> seq<string>)
+            Session.settleReplInterrupt(chainCode procs pumps), linesView outBytes true, (errLines :> seq<string>)
         finally
             for _, p in procs do
                 reap p
@@ -908,7 +908,7 @@ let chainStreamCodeOf (specs: Spec list) : int =
 
             producerFault ()
 
-            chainCode procs pumps
+            Session.settleReplInterrupt(chainCode procs pumps)
         finally
             for _, p in procs do
                 reap p

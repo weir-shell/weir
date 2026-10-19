@@ -1468,6 +1468,25 @@ let settleInterrupt (code: int) : unit =
               && clock.ElapsedMilliseconds < 250L do
             System.Threading.Thread.Sleep 5
 
+/// a REPL child whose code is data (`| exitCode`, `| complete`) died of
+/// SIGINT at the terminal: most likely the ^C, whose handler may not have
+/// cut the entry yet — give it a moment, so the entry ends after this
+/// statement [D:repl-entry-check]. Returns the code
+let settleReplInterrupt (code: int) : int =
+    if
+        code = 130
+        && replFlow
+        && not (System.OperatingSystem.IsWindows())
+        && not (interruptRequested ())
+        && Libc.terminalForeground ()
+    then
+        let clock = System.Diagnostics.Stopwatch.StartNew()
+
+        while not (interruptRequested ()) && clock.ElapsedMilliseconds < 250L do
+            System.Threading.Thread.Sleep 5
+
+    code
+
 /// raise the requested teardown on the main thread, once: the unwind
 /// then runs the cleanups as ordinary code (which must not be cut short
 /// by the same request again). A cleanup already running is never

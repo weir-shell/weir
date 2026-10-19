@@ -235,7 +235,7 @@ connection unanswered (`Serve.abandon`) and records nothing on
 [D:repl-isig], [D:repl-entry-check]. Enforced by `interruptRepl`,
 `checkInterrupted`, `beginReplEval`/`endReplEval` (nested: an entry's),
 and the REPL's multi-statement fold (`interruptRequested` after each
-statement).
+statement; `settleReplInterrupt` when a data-code child died of SIGINT).
 
 **I14. The platform split.** On Linux, FIFO and unseekable `File.read`
 (and `File.sha256`, a `File.copy` source) opens non-blocking and polls
