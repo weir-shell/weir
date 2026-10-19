@@ -22,7 +22,7 @@ stops being true fails the build.
   type is what the flag takes (`bool` nothing, `string` one value,
   `Option<string>` an attached one, `seq<string>` its value and then
   the tool's options end), and `let convention`/`abbreviations`/
-  `negatable`/`stopAtOperand`/`unchecked` describe the tool — see
+  `negatable`/`dashWords`/`stopAtOperand`/`unchecked` describe the tool — see
   docs/tooling.md. Vendoring: `weir add
   module <src>//<file>@<ref> --as <name>` (then `import "weir:<name>"
   as M`), `weir restore` re-materializes the lock's files, `weir

@@ -1860,7 +1860,7 @@ let versionIdentity (line: string) : string =
     | Some i -> String.Join(" ", words[.. i - 1])
     | None -> String.Join(" ", words)
 
-/// one bounded probe's outcome [D:sig-version-probe]: the exit code (None
+/// one bounded probe's outcome [D:sig-probe-bounds]: the exit code (None
 /// when the time bound killed it), the two streams as read, and whether a
 /// stream passed the byte bound (the rest was never read)
 type ProbeOutput =
@@ -1879,7 +1879,7 @@ let probeMaxBytes = 4 * 1024 * 1024
 /// left holding stdout never closes them
 let probeGraceMs = 1000
 
-// the probe's own process group [D:sig-version-probe]: .NET cannot start a
+// the probe's own process group [D:sig-probe-bounds]: .NET cannot start a
 // child in a new group, so on Linux the probe is a posix_spawn with
 // POSIX_SPAWN_SETPGROUP, read through poll — every bound (time, the
 // drain after exit, bytes) ends in one kill of the group. A daemon that
@@ -2221,7 +2221,7 @@ let private runProbeManaged (prog: string) (args: string list) (cwd: string) : P
 
 let mutable private nativeProbe = OperatingSystem.IsLinux()
 
-/// run `<prog> <args>` as a probe [D:sig-version-probe]: stdin empty, the
+/// run `<prog> <args>` as a probe [D:sig-probe-bounds]: stdin empty, the
 /// cwd `cwd` or a fresh temp dir (removed after), bounded in time
 /// (probeTimeoutMs, then probeGraceMs to drain after the exit) and bytes
 /// (probeMaxBytes per stream), the probe's process group killed at any

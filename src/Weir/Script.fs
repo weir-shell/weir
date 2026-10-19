@@ -5573,7 +5573,7 @@ type SigInfo =
       // `--no-x` for any switch `--x` (node)
       Negatable: bool
       // a single-dash word no shorts spell is the tool's own value
-      // (kill's `-<signal>`: `-TERM`) [D:sig-conventions]
+      // (kill's `-<signal>`: `-TERM`) [D:sig-help-shapes]
       DashWords: bool
       // case keys whose first operand ends the tool's own options
       // (`docker run IMAGE …`, an interpreter's script) [D:sig-operand-stop]
@@ -6071,7 +6071,7 @@ let sigCmdDiagnostics
 
                     let sev = if si.Exhaustive then "error" else "warning"
 
-                    // an older signature [D:sig-arity]: every field bool and
+                    // an older signature [D:sig-arity] [D:sig-help-shapes]: every field bool and
                     // none of the convention lets — it checks as it always
                     // did, a multi-letter single-dash word unread (`-fsSL`,
                     // `-i.bak`, `-TERM`)
@@ -6394,11 +6394,11 @@ let sigCmdDiagnostics
 // persists.
 module SigGen =
     // the probes whose output passed the byte bound, for the generated
-    // file's note [D:sig-version-probe]
+    // file's note [D:sig-probe-bounds]
     let private cutProbes = System.Collections.Concurrent.ConcurrentQueue<string>()
 
     let private runIn (cwd: string option) (anyExit: bool) (tool: string) (args: string list) : string option =
-        // the bounded probe [D:sig-version-probe]: empty stdin (a
+        // the bounded probe [D:sig-probe-bounds]: empty stdin (a
         // stdin-reader must not hang generation), a fresh temp cwd, a
         // time and a byte bound, the probe's process group killed
         match (try Contracts.runProbe (Proc.resolveProg tool) args cwd with _ -> None) with
@@ -6549,7 +6549,7 @@ module SigGen =
                     let spelled =
                         if dashes = 1 && at st = '<' && s.IndexOf('>', st) > 0 then
                             // kill's `-<signal>`: any dash word, no spelling of
-                            // its own (the help states it [D:sig-conventions])
+                            // its own (the help states it [D:sig-help-shapes])
                             s.IndexOf('>', st) + 1
                         elif dashes = 1 && letters.Success then
                             // perl's `-[mM]`: each letter a short
@@ -6988,6 +6988,7 @@ module SigGen =
     // usage ending at its command after its options (`stdbuf [OPTION]...
     // COMMAND` — bat's bare `bat <COMMAND>` is a subcommand slot), bash's
     // `script-file ...`. Every usage line counts (flock, bash list several)
+    // [D:sig-help-shapes]
     let private stopsAtOperand (helpText: string) =
         let lines = helpText.Split '\n'
 
@@ -7015,7 +7016,7 @@ module SigGen =
 
     // a listed switch `--no-x` has its `--x` (node's `--no-deprecation`:
     // `--deprecation` is valid); a tool that lacks it costs a missed typo,
-    // never a false warning
+    // never a false warning [D:sig-help-shapes]
     let private withPositives (fs: Flag list) : Flag list =
         let have = fs |> List.map (fun f -> f.Long) |> Set.ofList
 
@@ -7362,6 +7363,7 @@ module SigGen =
                         // stash push): the words its usage lines name right
                         // after `git <c>` and its bracketed options; only
                         // those whose helper answers become cases
+                        // [D:sig-help-shapes]
                         let subsOf (c: string) : string list =
                             match runAny [ c; "-h" ] with
                             | None -> []
@@ -7715,7 +7717,7 @@ module SigGen =
                 line "/// by default; add `let exhaustive = true` once verified by hand)"
 
                 // a probe whose output passed the byte bound was read in
-                // part [D:sig-version-probe]
+                // part [D:sig-probe-bounds]
                 let cutNote =
                     match cutProbes |> Seq.distinct |> List.ofSeq with
                     | [] -> ""

@@ -210,7 +210,7 @@ second short (`-r` beside `-E`), `-h`, a short-only flag (python's
 
 A few `let`s describe the tool's conventions; an older signature has
 none of them and checks exactly as before (GNU flags, none taking a
-value):
+value, a multi-letter single-dash word like `-fsSL` never read):
 
 - `let convention = "go"` — Go's flag package: `-name`, `--name`
   and `-n` are one flag, never bundled. `"find"` — whole single-dash
@@ -221,6 +221,9 @@ value):
   `--versio`.
 - `let negatable = true` — `--no-x` turns off any switch `--x`
   (node).
+- `let dashWords = true` — a single-dash word that does not start
+  with a known short is the tool's own value (kill's `-<signal>`:
+  `kill -TERM 1`).
 - `let stopAtOperand = [ "run"; "exec" ]` — in these subcommands
   (`""` is the tool itself) the first operand ends the tool's options:
   `docker run --rm alpine sh -c x` checks nothing after `alpine`, and
