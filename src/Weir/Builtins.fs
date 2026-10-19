@@ -1063,8 +1063,15 @@ let private globWalk (rootFs: string) (pattern: string) : seq<string> =
                             if realDir sub then
                                 yield! walk sub (prefix + name + "/") ("**" :: rest)
                 | seg :: rest when not (hasWild seg) ->
-                    // literal segments echo without enumeration
-                    let sub = System.IO.Path.Combine(dirFs, seg)
+                    // literal segments echo without enumeration; `..`
+                    // steps up physically, as File.*/Dir.* resolve it
+                    // [D:fs-dotdot-physical] — an enumeration would
+                    // collapse it lexically
+                    let sub =
+                        if seg = ".." then
+                            Session.resolveFs (System.IO.Path.Combine(dirFs, seg))
+                        else
+                            System.IO.Path.Combine(dirFs, seg)
 
                     match rest with
                     | [] ->
@@ -1123,7 +1130,7 @@ let private globImpl: Value =
                     |> List.toArray
                     |> Array.takeWhile (fun seg -> not (seg |> Seq.exists (fun c -> c = '*' || c = '?' || c = '[')))
 
-                PlanMode.checkTree "Path.glob" (System.IO.Path.GetFullPath(System.IO.Path.Combine(Array.append [| rootOf () |] literal)))
+                PlanMode.checkTree "Path.glob" (Session.resolveFs (System.IO.Path.Combine(Array.append [| rootOf () |] literal)))
 
             VSeq(Seq.delay (fun () -> globWalk (rootOf ()) pat |> Seq.map VStr))
         | _ -> unreachable "the checker rejects 'glob' on this argument")
@@ -3630,28 +3637,35 @@ type private FsProbe =
     { Kind: string -> int // 0 absent, 1 file, 2 dir, 4 another entry
       IsDir: string -> bool // Kind = 2, in one stat
       EmptyDir: string -> bool
-      Dangling: string -> bool }
+      Dangling: string -> bool
+      Canon: string -> string } // every symlink followed
 
 let private realProbe =
     { Kind = PlanMode.realKind
       IsDir = System.IO.Directory.Exists
       EmptyDir = fun r -> System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty
-      Dangling = isDangling }
+      Dangling = isDangling
+      Canon = PlanMode.realCanon }
 
 let private planProbe =
     { Kind = PlanMode.simKind
       IsDir = PlanMode.simIsDir
       EmptyDir = PlanMode.simEmptyDir
-      Dangling = PlanMode.simDangling isDangling }
+      Dangling = PlanMode.simDangling isDangling
+      Canon = PlanMode.simCanon }
+
+// a new entry's parent must be a directory
+let private requireParent (pr: FsProbe) (op: string) (r: string) : unit =
+    let parent = System.IO.Path.GetDirectoryName r
+
+    if not (isNull parent) && parent <> "" && not (pr.IsDir parent) then
+        failwith $"{op}: no such directory: {quoteData parent}"
 
 let private preWrite (pr: FsProbe) (op: string) (r: string) : unit =
     if pr.IsDir r then
         failwith $"{op}: {quoteData r} is a directory"
     else
-        let parent = System.IO.Path.GetDirectoryName r
-
-        if not (isNull parent) && parent <> "" && not (pr.IsDir parent) then
-            failwith $"{op}: no such directory: {quoteData parent}"
+        requireParent pr op r
 
 let private writeGuard (op: string) (r: string) : unit = preWrite realProbe op r
 
@@ -3774,6 +3788,7 @@ let private preFileCopy (pr: FsProbe) (op: string) (src: string) (dst: string) :
         failwith $"{op}: dangling symlink: {quoteData src} — its target does not exist"
 
     refuseExistingDst pr op dst
+    requireParent pr op dst
 
 let private doFileCopy (op: string) (src: string) (dst: string) : unit =
     preFileCopy realProbe op src dst
@@ -3789,6 +3804,7 @@ let private preFileMove (pr: FsProbe) (op: string) (src: string) (dst: string) :
         failwith $"{op}: no such file: {quoteData src}"
 
     refuseExistingDst pr op dst
+    requireParent pr op dst
 
 let private doFileMove (op: string) (src: string) (dst: string) : unit =
     preFileMove realProbe op src dst
@@ -3837,9 +3853,39 @@ let private doDirDeleteAll (op: string) (r: string) : unit =
     requireDir op r
     ioGuarded op r (fun () -> System.IO.Directory.Delete(r, true))
 
+// a destination inside the source: a copy would copy into itself, a
+// move cannot happen (EINVAL). Symlinks are followed on the
+// destination's parent and — for a copy, which reads through a final
+// link — the source, so a link cannot hide the nesting; a move renames
+// a final link itself
+let private refuseIntoSelf (pr: FsProbe) (op: string) (followSrc: bool) (src: string) (dst: string) : unit =
+    let sep = string System.IO.Path.DirectorySeparatorChar
+    let trim (p: string) = System.IO.Path.TrimEndingDirectorySeparator p
+
+    let underParent (p: string) =
+        let full = trim (System.IO.Path.GetFullPath p)
+
+        match System.IO.Path.GetDirectoryName full with
+        | null -> full
+        | parent -> System.IO.Path.Combine(pr.Canon parent, System.IO.Path.GetFileName full)
+
+    let fs = trim (if followSrc then pr.Canon src else underParent src)
+    let fd = trim (underParent dst)
+
+    let cmp =
+        if System.OperatingSystem.IsLinux() then
+            System.StringComparison.Ordinal
+        else
+            System.StringComparison.OrdinalIgnoreCase
+
+    if fd.StartsWith(fs + sep, cmp) || System.String.Equals(fd, fs, cmp) then
+        failwith $"{op}: destination {quoteData dst} is inside the source {quoteData src}"
+
 let private preDirMove (pr: FsProbe) (op: string) (src: string) (dst: string) : unit =
     requireDirIn pr op src
     refuseExistingDst pr op dst
+    refuseIntoSelf pr op false src dst
+    requireParent pr op dst
 
 let private doDirMove (op: string) (src: string) (dst: string) : unit =
     preDirMove realProbe op src dst
@@ -3855,35 +3901,7 @@ let private doDirMove (op: string) (src: string) (dst: string) : unit =
 let private preDirCopy (pr: FsProbe) (op: string) (src: string) (dst: string) : unit =
     requireDirIn pr op src
     refuseExistingDst pr op dst
-
-    let sep = string System.IO.Path.DirectorySeparatorChar
-
-    // a final symlink is resolved on both sides (the source itself, the
-    // destination's parent), so a link cannot hide the nesting
-    let real (p: string) =
-        let full = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath p)
-
-        match DirectoryInfo(full).ResolveLinkTarget true with
-        | null -> full
-        | t -> System.IO.Path.TrimEndingDirectorySeparator t.FullName
-
-    let fs = real src
-
-    let fd =
-        let full = System.IO.Path.GetFullPath dst
-
-        match System.IO.Path.GetDirectoryName full with
-        | null -> full
-        | parent -> System.IO.Path.Combine(real parent, System.IO.Path.GetFileName full)
-
-    let cmp =
-        if System.OperatingSystem.IsLinux() then
-            System.StringComparison.Ordinal
-        else
-            System.StringComparison.OrdinalIgnoreCase
-
-    if fd.StartsWith(fs + sep, cmp) || System.String.Equals(fd, fs, cmp) then
-        failwith $"{op}: destination {quoteData dst} is inside the source {quoteData src}"
+    refuseIntoSelf pr op true src dst
 
 let private doDirCopy (op: string) (src: string) (dst: string) : unit =
     preDirCopy realProbe op src dst

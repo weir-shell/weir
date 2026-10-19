@@ -1032,7 +1032,10 @@ let x =
   plan's earlier ops leave it, and raises there with the direct call's
   error (copy onto an existing or planned file, delete of a missing or
   already-deleted file, copy/move from a missing source, `Dir.delete`
-  of a dir the plan filled, a write under a missing or deleted dir) —
+  of a dir the plan filled, a write, copy or move into a missing or
+  deleted dir, a `Dir.copy`/`Dir.move` into its own subtree), following
+  symlinks as the kernel will (a write through `L` lands where `L`
+  points; a delete or move acts on the link itself) —
   a plan never holds an op certain to fail at apply. The refusals:
   `proc` inside a plan (a spawned binary is uncapturable — plan covers
   weir-native mutation only), `apply` inside a plan (a capture cannot
@@ -1586,7 +1589,8 @@ ls |> Seq.where (fun f -> f.name |> Str.startsWith "lssort-") |> Seq.iter (fun f
   matching `ls` — a stated third position beside `**`'s
   skip-symlinked-dirs law and `File.*`'s follow-as-a-shell-does
   (`..` included: `File.read "L/../x"` steps up from where the link
-  `L` really points, as `cat L/../x` does [D:fs-dotdot-physical];
+  `L` really points, as `cat L/../x` does [D:fs-dotdot-physical], and
+  `Path.glob "L/../*"` walks the same place;
   `cd`/`within cd` keep the shell's logical `..`).
   Raises when absent, naming the resolved path — and a glob hit can
   vanish before `stat` reaches it, the same TIMING seam `Seq.freeze`

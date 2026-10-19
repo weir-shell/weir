@@ -4560,6 +4560,39 @@ WEOF
     expect "Dir.list L/.. lists real" "list: sub x.txt y.txt" "$out"
     expect "File.copy L/.. is physical" "copied: true" "$out"
     expect "the plan guard keys the physical path" "known-after-apply" "$out"
+    cat > "$dddir/g.weir" <<'WEOF'
+// Path.glob steps `..` up physically too; the plan simulation follows links [D:fs-dotdot-physical] [D:plan-preconditions]
+let base = Self.args |> Seq.head
+print $"glob: {Path.glob $"{base}/L/../*.txt" |> Seq.map Path.fileName |> Str.join " "}"
+within cd $"{base}/L"
+    print $"glob in L: {Path.glob "../*.txt" |> Str.join " "} {Path.glob "../*.txt" |> Seq.map File.read |> Seq.concat |> Str.join " "}"
+let alias () =
+    plan
+        File.write $"{base}/L/n.txt" ["n"]
+        File.copy $"{base}/x.txt" $"{base}/real/sub/n.txt"
+match alias () |> try result with
+| Ok _ -> print "alias: captured"
+| Error e -> print $"alias: {Str.replace base "$T" e}"
+let dangle () =
+    plan
+        Dir.deleteAll $"{base}/real/sub"
+        File.write $"{base}/L/x" ["x"]
+match dangle () |> try result with
+| Ok _ -> print "dangle: captured"
+| Error e -> print $"dangle: {Str.replace base "$T" e}"
+let through () =
+    plan
+        Dir.create $"{base}/L/k"
+        File.write $"{base}/real/sub/k/f" ["f"]
+        Dir.move $"{base}/L" $"{base}/real/sub/L2"
+print $"through: {through () |> Plan.preview |> Seq.length} ops"
+WEOF
+    out=$($BIN "$dddir/g.weir" "$dddir" 2>&1) || fail "the dotdot glob/simulation cell failed: $out"
+    expect "Path.glob L/.. is physical" "glob: x.txt y.txt z.txt" "$out"
+    expect "Path.glob ../ within cd L is physical and File.read reads its hits" "glob in L: ../x.txt ../y.txt ../z.txt inner w inner" "$out"
+    expect "a write through a link meets a copy onto its real path" "alias: File.copy: destination exists: \$T/real/sub/n.txt" "$out"
+    expect "a write through a link whose target the plan deleted refuses" "dangle: File.write: no such directory: \$T/L" "$out"
+    expect "a mkdir through a link backs a write at its real path; a link renames into its target" "through: 3 ops" "$out"
     rm -rf "$dddir"
 fi
 
@@ -12989,6 +13022,61 @@ within tmp root
     match c24 () |> try result with
     | Ok pl -> print $"writeAtomic under missing: ok ({pl |> Plan.preview |> Seq.length} ops)"
     | Error e -> print $"writeAtomic under missing: {Str.replace root "$T" e}"
+    let c26 () =
+        plan
+            Dir.create (p "made")
+            Dir.copy (p "made") (p "made2")
+    match c26 () |> try result with
+    | Ok pl -> print $"dir copy of a planned dir ok: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir copy of a planned dir ok: {Str.replace root "$T" e}"
+    let c27 () =
+        plan
+            Dir.move (p "d") (p "dm")
+            Dir.copy (p "dm") (p "dm2")
+    match c27 () |> try result with
+    | Ok pl -> print $"dir copy of a moved dir ok: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir copy of a moved dir ok: {Str.replace root "$T" e}"
+    let c28 () =
+        plan
+            Dir.create (p "np")
+            Dir.copy (p "d") (p "np/d")
+    match c28 () |> try result with
+    | Ok pl -> print $"dir copy into a planned parent ok: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir copy into a planned parent ok: {Str.replace root "$T" e}"
+    let c29 () =
+        plan
+            File.copy (p "a.txt") (p "nodir/a.txt")
+    match c29 () |> try result with
+    | Ok pl -> print $"copy into a missing dir: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"copy into a missing dir: {Str.replace root "$T" e}"
+    let c30 () =
+        plan
+            File.move (p "a.txt") (p "nodir/a.txt")
+    match c30 () |> try result with
+    | Ok pl -> print $"move into a missing dir: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"move into a missing dir: {Str.replace root "$T" e}"
+    let c31 () =
+        plan
+            Dir.move (p "d") (p "nodir/d")
+    match c31 () |> try result with
+    | Ok pl -> print $"dir move into a missing dir: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir move into a missing dir: {Str.replace root "$T" e}"
+    let c32 () =
+        plan
+            Dir.deleteAll (p "d")
+            File.copy (p "a.txt") (p "d/a.txt")
+    match c32 () |> try result with
+    | Ok pl -> print $"copy into a deleted dir: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"copy into a deleted dir: {Str.replace root "$T" e}"
+    let c33 () =
+        plan
+            Dir.move (p "d") (p "d/sub")
+    match c33 () |> try result with
+    | Ok pl -> print $"dir move into itself: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir move into itself: {Str.replace root "$T" e}"
+    match Dir.move (p "d") (p "d/sub") |> try result with
+    | Ok _ -> print "direct dir move into itself: ok"
+    | Error e -> print $"direct dir move into itself: {Str.replace root "$T" e}"
     let c25 () =
         plan
             File.write (p "m1.txt") ["1"]
@@ -13032,6 +13120,15 @@ deleteAll missing: Dir.deleteAll: no such directory: $T/nod
 dir copy into itself: Dir.copy: destination $T/d/sub is inside the source $T/d
 dir move missing: Dir.move: no such directory: $T/nod
 writeAtomic under missing: File.writeAtomic: no such directory: $T/zz
+dir copy of a planned dir ok: ok (2 ops)
+dir copy of a moved dir ok: ok (2 ops)
+dir copy into a planned parent ok: ok (2 ops)
+copy into a missing dir: File.copy: no such directory: $T/nodir
+move into a missing dir: File.move: no such directory: $T/nodir
+dir move into a missing dir: Dir.move: no such directory: $T/nodir
+copy into a deleted dir: File.copy: no such directory: $T/d
+dir move into itself: Dir.move: destination $T/d/sub is inside the source $T/d
+direct dir move into itself: Dir.move: destination $T/d/sub is inside the source $T/d
 all valid: ok (9 ops)
 apply: Ok (())
 after: a.txt d exists.txt

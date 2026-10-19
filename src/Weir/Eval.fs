@@ -583,6 +583,9 @@ type private PlanFrame =
       // the link cache [D:plan-guard-linear]: every prefix is resolved
       // once per plan
       Links: GuardNode
+      // the simulation's link cache [D:plan-preconditions]: a real path
+      // to its symlink's target, null for no link — read once per plan
+      SimLinks: System.Collections.Generic.Dictionary<string, string>
       // the file identities in-place writes target [D:plan-guard-inode]:
       // (device, inode) — the Windows file index — to the path a
       // refusal names
@@ -853,6 +856,7 @@ module PlanMode =
               Sim = SimNode(comparer)
               Index = GuardNode(comparer)
               Links = GuardNode(System.StringComparer.Ordinal)
+              SimLinks = System.Collections.Generic.Dictionary(System.StringComparer.Ordinal)
               Files = System.Collections.Generic.Dictionary()
               TmpRoots = ResizeArray() }
 
@@ -993,23 +997,114 @@ module PlanMode =
             let theirs = if isNull below then [] else namesIn outer below
             List.distinct (mine @ theirs)
 
-    /// the plan-time kind of a path (0 absent, 1 file, 2 dir, 4 other)
-    let simKind (p: string) : int = kindIn stack.Value p
+    // `p` (absolute) with its symlinks followed as the layers see them,
+    // as the kernel resolves a path: an entry no op touched is a link
+    // when its real path is one; an entry an op made never is (a plan
+    // makes no links). `followLast = false` keeps the last component — a
+    // delete or move acts on a link itself. `..` steps up from the
+    // resolved prefix (physical). A loop stops after 40 links, the
+    // kernel's bound. Also says whether the last component was a link
+    let private canonIn (frames: PlanFrame list) (followLast: bool) (p: string) : struct (string * bool) =
+        let seps = [| '/'; sep |]
+        let split (s: string) = s.Split(seps, System.StringSplitOptions.RemoveEmptyEntries) |> List.ofArray
+
+        let cache =
+            match List.tryLast frames with
+            | Some f -> f.SimLinks
+            | None -> null
+
+        let linkAt (r: string) : string =
+            if isNull cache then
+                Option.toObj (linkOf r)
+            else
+                match cache.TryGetValue r with
+                | true, t -> t
+                | _ ->
+                    let t = Option.toObj (linkOf r)
+                    cache[r] <- t
+                    t
+
+        let full = System.IO.Path.GetFullPath p
+        let mutable cur = System.IO.Path.GetPathRoot full
+        let mutable pending = split (full.Substring cur.Length)
+        let mutable hops = 0
+        let mutable lastLink = false
+
+        while not pending.IsEmpty do
+            let part = pending.Head
+            pending <- pending.Tail
+
+            if part = "." then
+                ()
+            elif part = ".." then
+                match System.IO.Path.GetDirectoryName cur with
+                | null -> ()
+                | parent -> cur <- parent
+            else
+                let next = System.IO.Path.Combine(cur, part)
+
+                let target =
+                    if (pending.IsEmpty && not followLast) || hops >= 40 then
+                        null
+                    else
+                        match realPathIn frames next with
+                        | Some r -> linkAt r
+                        | None -> null
+
+                if isNull target then
+                    cur <- next
+                else
+                    hops <- hops + 1
+                    lastLink <- lastLink || pending.IsEmpty
+
+                    if System.IO.Path.IsPathRooted target then
+                        let t = System.IO.Path.GetFullPath target
+                        cur <- System.IO.Path.GetPathRoot t
+                        pending <- split (t.Substring cur.Length) @ pending
+                    else
+                        pending <- split target @ pending
+
+        struct (cur, lastLink)
+
+    let private canon (followLast: bool) (p: string) =
+        let struct (c, _) = canonIn stack.Value followLast p
+        c
+
+    /// a path with its symlinks followed, on the real filesystem
+    let realCanon (p: string) : string =
+        let struct (c, _) = canonIn [] true p
+        c
+
+    /// a path with its symlinks followed, as the plan leaves them
+    let simCanon (p: string) : string = canon true p
+
+    /// the plan-time kind of a path (0 absent, 1 file, 2 dir, 4 other —
+    /// a link whose target the plan removed dangles)
+    let simKind (p: string) : int =
+        let struct (c, viaLink) = canonIn stack.Value true p
+
+        match kindIn stack.Value c with
+        | 0 when viaLink -> 4
+        | k -> k
 
     /// is the path a directory at plan time?
     let simIsDir (p: string) : bool =
-        kindWith (fun p -> if System.IO.Directory.Exists p then 2 else 0) stack.Value p = 2
+        kindWith (fun p -> if System.IO.Directory.Exists p then 2 else 0) stack.Value (canon true p) = 2
 
     /// does the plan-time directory hold an entry?
     let simEmptyDir (p: string) : bool =
-        namesIn stack.Value p
-        |> List.forall (fun n -> kindIn stack.Value (System.IO.Path.Combine(p, n)) = 0)
+        let c = canon true p
 
-    /// a dangling link at plan time: only a path no op has touched can be
+        namesIn stack.Value c
+        |> List.forall (fun n -> kindIn stack.Value (System.IO.Path.Combine(c, n)) = 0)
+
+    /// a dangling link at plan time: a link whose target the plan
+    /// removed, or a real one no op has touched
     let simDangling (isDangling: string -> bool) (p: string) : bool =
-        match realPathIn stack.Value p with
-        | Some r -> isDangling r
-        | None -> false
+        simKind p = 4
+        || (match realPathIn stack.Value (canon false p) with
+            | Some r -> isDangling r
+            | None -> false)
 
     // the top layer's node for a path, created along the way
     let private ensure (root: SimNode) (p: string) : SimNode =
@@ -1074,16 +1169,21 @@ module PlanMode =
         markParents top dst
 
     // a captured op's effect on the top layer
+    // — on the path its symlinks lead to: a write or mkdir lands where a
+    // final link points, a delete or move acts on the link itself
     let private simApply (op: Value) =
         let frames = stack.Value
         let top = (List.head frames).Sim
+        let entry = canon false
+        let through = canon true
 
         match op with
-        | VUnion(("WriteFile" | "WriteFileAtomic"), Some(VTuple [ VStr p; _ ])) -> setLeaf top p 1
+        | VUnion(("WriteFile" | "WriteFileAtomic"), Some(VTuple [ VStr p; _ ])) -> setLeaf top (through p) 1
         | VUnion("DeleteFile", Some(VStr p))
         | VUnion("DeleteDir", Some(VStr p))
-        | VUnion("DeleteTree", Some(VStr p)) -> setLeaf top p 3
+        | VUnion("DeleteTree", Some(VStr p)) -> setLeaf top (entry p) 3
         | VUnion("MakeDir", Some(VStr p)) ->
+            let p = through p
             let n = ensure top p
 
             if n.State = 0 || n.State = 3 then
@@ -1093,13 +1193,15 @@ module PlanMode =
                 n.State <- 2
 
             markParents top p
-        | VUnion("Copy", Some(VTuple [ VStr _; VStr d ])) -> setLeaf top d 1
+        | VUnion("Copy", Some(VTuple [ VStr _; VStr d ])) -> setLeaf top (entry d) 1
         | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) ->
+            let s, d = entry s, entry d
             setLeaf top s 3
             setLeaf top d 1
-        | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> copyTree frames s d
+        | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> copyTree frames (through s) (entry d)
         | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) ->
-            copyTree frames s d
+            let from, s, d = through s, entry s, entry d
+            copyTree frames from d
             setLeaf top s 3
         | _ -> ()
 
