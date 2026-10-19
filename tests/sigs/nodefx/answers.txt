@@ -1,0 +1,28 @@
+=== --version
+v22.23.3
+=== --help
+Usage: nodefx [options] [ script.js ] [arguments]
+       nodefx inspect [options] [ script.js | host:port ] [arguments]
+
+Options:
+  --enable-source-maps        Source Map V3 support for stack traces
+  -e, --eval=...              evaluate script
+  --input-type=...            set module type for string input
+  --inspect-brk[=[host:]port]
+                              activate inspector on host:port and break
+  --max-old-space-size=...    the heap size
+  --no-warnings               silence all process warnings
+  --test                      launch test runner on startup
+  --test-reporter=...         report test output using the given reporter
+  --trace-warnings            show stack traces on process warnings
+  --v8-options                print V8 command line options
+=== --v8-options
+The following syntax for options is accepted (both '-' and '--' are ok):
+  --flag        (bool flags only)
+  --no-flag     (bool flags only)
+
+Options:
+  --stack-size (default size of stack region v8 is allowed to use (in kBytes))
+        type: int  default: --stack-size=984
+  --experimental-require-module (allow require of ES modules)
+        type: bool  default: --no-experimental-require-module

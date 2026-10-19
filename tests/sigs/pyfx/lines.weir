@@ -1,0 +1,7 @@
+#sig pyfx
+pyfx -m pytest -x --tb=short // clean
+pyfx -u -B script.py --verbose // clean
+pyfx -X importtime -c x // clean
+pyfx --versoin // typo: --versoin
+pyfx --version // clean
+pyfx -Z x.py // typo: -Z

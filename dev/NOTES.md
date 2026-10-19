@@ -1,5 +1,50 @@
 # Spike Notes
 
+## Command signatures that help — the scored survey (2026-10-18)
+
+The survey (21 tools, `weir add sig` then a typo/clean line set per tool)
+said a generated signature was good on clap and modern cobra tools and
+harmful on the most-scripted ones: valid flags warned about twice as often
+as typos were caught (FP 76 against TP 56 over the 20 tools with lines).
+
+The gate (`tools/sig-score.weir`, ~40 KB under tests/sigs) is one sample
+per help FORMAT, not per tool — trimmed real output replayed by argv, cut
+to what the parsers read; a probe a sample has no answer for fails it, so
+a phantom word is a red gate. Base binary against the samples, then now:
+
+| sample | covers | base TP/FP/FN | now |
+|---|---|---|---|
+| cobrafx | `__complete` + help per command, plugins (`compose*`), aliases, globals record, `run IMAGE` stop, a flag before the subcommand | 6/13/1 | 7/0/0 |
+| gitfx | `--list-cmds=builtins`, helper-all, `-h` with `--[no-]`, log unchecked | 3/7/1 | 3/0/0 (+1 known) |
+| fishfx | a shipped fish file, short- and long-form syntax, `-o`, `-r` | no sig | 3/0/0 |
+| gnufx | several shorts per row, short-only, `-i[SUFFIX]`, `--x=VALUE`, abbreviations (`--wildcard` ambiguous) | 3/7/1 | 4/0/0 |
+| pyfx | `--help-all`, `-c cmd :`, "terminates option list", the script stop | 1/3/1 | 2/0/0 |
+| gofx | Go single-dash rows | 0/1/2 | 2/0/0 |
+| findfx | find predicates, `-O3` | 1/0/2 | 3/0/0 |
+| clapfx | clap rows, bundles with a value | 1/1/1 | 2/0/0 |
+| curlfx | `--help all`, the version-line trim | 3/13/0, untrimmed | 3/0/0 |
+| phantomfx | jq's `Command options:`, journalctl's flags under `Commands:` | 3/0/0, 5 phantom probes | 3/0/0 |
+| sysfx | verbs sharing one help page | 3/1/0, 16 phantom probes | 3/0/0 |
+| gpgfx | GnuPG's `--dump-options` | 2/14/0 | 2/0/0 |
+| nodefx | `--v8-options`, `--no-x` | 3/3/0 | 3/0/0 |
+| openfx | a help that takes any config key as a flag (npm's shape) | 0/2/0 | 0/0/0 |
+
+`--live` reruns the scoring against the installed tools (tests/sigs/live,
+the survey's lines with three verdicts corrected: `curl -Q` is `--quote`,
+`tar --verbos` is a valid prefix, `tar --wildcard` is ambiguous) — a
+report, never a gate. On the survey box all 19 installed tools score
+FP 0, FN 0 (git log's miss documented). npm left the gate by ruling: it
+takes any config key as a flag, so its signature is generated unchecked.
+
+The decisions: [D:sig-arity] (the field type is the arity — no new
+attribute), [D:sig-conventions] (module lets; a dash Wire is a field's
+one spelling), [D:sig-operand-stop] (the check walks the line),
+[D:sig-unwalked], [D:sig-open-tool], [D:sig-sources],
+[D:sig-version-identity]. Still weak: revision options git does not list,
+cobra hidden flags, long-form fish conditions (`-n
+__fish_seen_subcommand_from`) flattened onto the tool, and a sig of a
+tool with hundreds of commands is large (docker ~150 KB).
+
 ## Recovery positions (2026-10-16)
 
 Invariant 8's two red classes [D:fuzz-hunt2-invariants], closed.

@@ -1,0 +1,8 @@
+#sig findfx
+findfx . -nmae x // typo: -nmae
+findfx . -iname x -deleet // typo: -deleet
+findfx . --maxdepth 1 // typo: --maxdepth
+findfx . -name "*.md" -type f -mtime -7 // clean
+findfx /x -maxdepth 1 -type d -print0 // clean
+findfx -L . -newer f -exec rm {} + // clean
+findfx -O3 . -empty -o -name x // clean

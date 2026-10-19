@@ -1,0 +1,9 @@
+#sig nodefx
+nodefx --experimental-strip-tyeps app.ts // typo: --experimental-strip-tyeps
+nodefx --enable-source-maps --trace-warnigns app.js // typo: --trace-warnigns
+nodefx -Z app.js // typo: -Z
+nodefx --inspect-brk app.js // clean
+nodefx --max-old-space-size=4096 --stack-size=2000 app.js // clean
+nodefx -e "1" --input-type=module // clean
+nodefx app.js --port 3000 // clean
+nodefx --test --test-reporter=spec --no-experimental-require-module // clean

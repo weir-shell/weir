@@ -1,0 +1,21 @@
+=== --version
+gofx v1.9.3
+=== --help
+Usage:
+	gofx [flags] [address] [list|describe] [symbol]
+
+The 'address' is only optional when used with 'list' or 'describe' and a
+protoset or proto flag is provided.
+
+Available flags:
+  -H value
+    	Additional headers in 'name: value' format.
+  -d string
+    	Data for request contents.
+  -import-path value
+    	The path to a directory from which proto sources can be imported.
+  -max-time float
+    	The maximum total time the operation can take, in seconds.
+  -plaintext
+    	Use plain-text HTTP/2 when connecting to server (no TLS).
+  -v	Enable verbose output.

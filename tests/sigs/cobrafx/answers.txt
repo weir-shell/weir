@@ -1,0 +1,201 @@
+=== --version
+cobrafx version v2.1.0, build dfc520d
+=== --help
+Usage:  cobrafx [OPTIONS] COMMAND
+
+A self-sufficient runtime
+
+Common Commands:
+  run         Create and run a new container from an image
+  ps          List containers
+
+Management Commands:
+  compose*    Docker Compose
+  pr          Manage pull requests
+
+Commands:
+  completion  Generate the autocompletion script for the specified shell
+
+Global Options:
+      --context string   Name of the context to use
+  -D, --debug            Enable debug mode
+  -H, --host string      Daemon socket to connect to
+=== completion fish
+complete -c cobrafx -e
+function __cobrafx_perform_completion
+    set -l results (eval $args[1] __complete $args[2..-1] 2>/dev/null)
+end
+=== __complete -
+--context	Name of the context
+--debug	Enable debug mode
+-D	Enable debug mode
+--help	Help
+--host	Daemon socket
+-H	Daemon socket
+:4
+=== run --help
+Usage:  cobrafx run [OPTIONS] IMAGE [COMMAND] [ARG...]
+
+Create and run a new container from an image
+
+Aliases:
+  cobrafx container run, cobrafx run
+
+Options:
+  -d, --detach         Run container in background
+  -e, --env list       Set environment variables
+      --name string    Assign a name to the container
+      --rm             Automatically remove the container when it exits
+=== __complete run -
+--help	Help
+--detach	Run container in background
+-d	Run container in background
+--env	Set environment variables
+-e	Set environment variables
+--name	Assign a name
+--rm	Automatically remove
+--context	Name of the context
+--debug	Enable debug mode
+-D	Enable debug mode
+--host	Daemon socket
+-H	Daemon socket
+:4
+=== ps --help
+Usage:  cobrafx ps [OPTIONS]
+
+List containers
+
+Aliases:
+  cobrafx container ls, cobrafx ps, cobrafx ls
+
+Options:
+  -a, --all             Show all containers
+      --format string   Format output using a custom template
+=== __complete ps -
+--help	Help
+--all	Show all containers
+-a	Show all containers
+--format	Format output
+--context	Name of the context
+--debug	Enable debug mode
+-D	Enable debug mode
+--host	Daemon socket
+-H	Daemon socket
+:4
+=== compose --help
+Usage:  cobrafx compose [OPTIONS] COMMAND
+
+Define and run multi-container applications
+
+Options:
+  -f, --file stringArray   Compose configuration files
+
+Commands:
+  up          Create and start containers
+=== __complete compose -
+--help	Help
+--file	Compose configuration files
+-f	Compose configuration files
+--context	Name of the context
+--debug	Enable debug mode
+-D	Enable debug mode
+--host	Daemon socket
+-H	Daemon socket
+:4
+=== compose up --help
+Usage:  cobrafx compose up [OPTIONS] [SERVICE...]
+
+Options:
+      --build     Build images before starting containers
+  -d, --detach    Detached mode
+=== __complete compose up -
+--help	Help
+--build	Build images
+--detach	Detached mode
+-d	Detached mode
+--file	Compose configuration files
+-f	Compose configuration files
+--context	Name of the context
+--debug	Enable debug mode
+-D	Enable debug mode
+--host	Daemon socket
+-H	Daemon socket
+:4
+=== pr --help
+Work with GitHub pull requests.
+
+USAGE
+  cobrafx pr <command> [flags]
+
+GENERAL COMMANDS
+  create:        Create a pull request
+  view:          View a pull request
+
+INHERITED FLAGS
+      --help                     Show help for command
+  -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format
+=== __complete pr -
+--help	Help
+--repo	Select another repository
+-R	Select another repository
+--context	Name of the context
+--debug	Enable debug mode
+-D	Enable debug mode
+--host	Daemon socket
+-H	Daemon socket
+:4
+=== pr create --help
+Create a pull request on GitHub.
+
+USAGE
+  cobrafx pr create [flags]
+
+ALIASES
+  cobrafx pr new
+
+FLAGS
+  -B, --base branch          The branch into which you want your code merged
+  -d, --draft                Mark pull request as a draft
+  -t, --title string         Title for the pull request
+
+INHERITED FLAGS
+  -R, --repo [HOST/]OWNER/REPO   Select another repository
+=== __complete pr create -
+--help	Help
+--base	The branch
+-B	The branch
+--draft	Mark as draft
+-d	Mark as draft
+--title	Title
+-t	Title
+--repo	Select another repository
+-R	Select another repository
+--context	Name of the context
+--debug	Enable debug mode
+-D	Enable debug mode
+--host	Daemon socket
+-H	Daemon socket
+:4
+=== pr view --help
+Display the title, body, and other information about a pull request.
+
+USAGE
+  cobrafx pr view [<number> | <url> | <branch>] [flags]
+
+FLAGS
+  -w, --web    Open a pull request in the browser
+
+INHERITED FLAGS
+  -R, --repo [HOST/]OWNER/REPO   Select another repository
+=== __complete pr view -
+--help	Help
+--web	Open in the browser
+-w	Open in the browser
+--repo	Select another repository
+-R	Select another repository
+--context	Name of the context
+--debug	Enable debug mode
+-D	Enable debug mode
+--host	Daemon socket
+-H	Daemon socket
+:4

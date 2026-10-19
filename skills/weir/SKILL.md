@@ -18,7 +18,12 @@ stops being true fails the build.
   binary and writes `.weir/sigs/<tool>.weir` (+ lock entry); a script
   opts in with a `#sig <tool>` line at its top, and `weir check` then
   checks that tool's flags (unknown flag = warning; `let exhaustive =
-  true` in the sig file makes it an error). Vendoring: `weir add
+  true` in the sig file makes it an error). In a sig file a field's
+  type is what the flag takes (`bool` nothing, `string` one value,
+  `Option<string>` an attached one, `seq<string>` its value and then
+  the tool's options end), and `let convention`/`abbreviations`/
+  `negatable`/`stopAtOperand`/`unchecked` describe the tool — see
+  docs/tooling.md. Vendoring: `weir add
   module <src>//<file>@<ref> --as <name>` (then `import "weir:<name>"
   as M`), `weir restore` re-materializes the lock's files, `weir
   verify` diffs them against the lock (exit 1 on drift). See

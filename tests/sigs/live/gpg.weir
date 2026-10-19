@@ -1,0 +1,10 @@
+#sig gpg
+gpg --armor --detach-sign --local-usr K f // typo: --local-usr
+gpg --batch --yess --import k.asc // typo: --yess
+gpg --batch --yes --import key.asc // clean
+gpg --verify f.sig f // clean
+gpg --keyserver hkps://x --recv-keys K // clean
+gpg --pinentry-mode loopback --passphrase-fd 0 -d f // clean
+gpg --list-secret-keys --with-colons // clean
+gpg --dearmor f // clean
+gpg --export-secret-keys -a K // clean

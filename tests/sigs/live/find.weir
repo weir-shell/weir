@@ -1,0 +1,7 @@
+#sig find
+find . -nmae x // typo: -nmae
+find . -iname x -deleet // typo: -deleet
+find . --maxdepth 1 // typo: --maxdepth
+find . -name "*.md" -type f -mtime -7 // clean
+find /x -maxdepth 1 -type d -print0 // clean
+find -L . -newer f // clean

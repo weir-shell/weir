@@ -1,0 +1,7 @@
+#sig rg
+rg --files-with-matchs foo // typo: --files-with-matchs
+rg -Z2 foo // typo: -Z2
+rg -n --hidden -g "!.git" foo // clean
+rg -l --type rust foo // clean
+rg --no-ignore-vcs -S foo // clean
+rg -uuu foo // clean

@@ -1,0 +1,10 @@
+#sig jq
+jq -n --arg k v --argjosn j 1 .x // typo: --argjosn
+jq --raw-ouput .a f // typo: --raw-ouput
+jq -X .a f // typo: -X
+jq -r .name f.json // clean
+jq -c --slurp ".[]" a.json // clean
+jq -e .ok f // clean
+jq -S --tab . f // clean
+jq -rc .a f // clean
+jq --indent 4 . f // clean

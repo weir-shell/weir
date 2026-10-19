@@ -1,0 +1,13 @@
+#sig node
+node --experimental-strip-tyeps app.ts // typo: --experimental-strip-tyeps
+node --enable-source-maps --trace-warnigns app.js // typo: --trace-warnigns
+node -Z app.js // typo: -Z
+node --inspect-brk app.js // clean
+node --max-old-space-size=4096 app.js // clean
+node -e "1" --input-type=module // clean
+node app.js --port 3000 // clean
+node --test --test-reporter=spec // clean
+node --no-warnings app.js // clean
+node --no-experimental-require-module app.js // clean
+node --no-deprecation app.js // clean
+node --stack-size=2000 app.js // clean

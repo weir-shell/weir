@@ -1,0 +1,6 @@
+#sig clapfx
+clapfx --extention md // typo: --extention
+clapfx -H -e md -t f --exclude .git // clean
+clapfx --max-depth 2 -x echo // clean
+clapfx -He md -h // clean
+clapfx -Hq // typo: -q

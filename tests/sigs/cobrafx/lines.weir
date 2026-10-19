@@ -1,0 +1,18 @@
+#sig cobrafx
+cobrafx --context prod ps -a // clean
+cobrafx --contxt prod ps // typo: --contxt
+cobrafx ps --context x --all // clean
+cobrafx ps -ax // typo: -x
+cobrafx ls -a --formt x // typo: --formt
+cobrafx container ls -a // clean
+cobrafx -H tcp://x run -d img // clean
+cobrafx run --rm -e A=1 --nmae web img // typo: --nmae
+cobrafx run --rm alpine sh -c "echo hi" // clean
+cobrafx compose -f a.yml up -d --buld // typo: --buld
+cobrafx compose up --build -d // clean
+cobrafx pr create --title t -d --base main // clean
+cobrafx pr new --draft // clean
+cobrafx pr create -Z // typo: -Z
+cobrafx --repo o/r pr view 3 --web // clean
+cobrafx pr view 3 -R o/r --webb // typo: --webb
+cobrafx pr merge --squash // clean

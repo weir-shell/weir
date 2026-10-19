@@ -1,0 +1,9 @@
+#sig python3
+python3 --versoin // typo: --versoin
+python3 -Z x.py // typo: -Z
+python3 -m venv .venv // clean
+python3 -u -B script.py // clean
+python3 -X importtime -c x // clean
+python3 -I -E -s -c x // clean
+python3 script.py --verbose // clean
+python3 -m pytest -x --tb=short // clean

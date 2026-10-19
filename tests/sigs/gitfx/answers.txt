@@ -1,0 +1,60 @@
+=== --version
+git version 2.53.0
+=== --help
+usage: git [-v | --version] [-h | --help] [-C <path>] [-c <name>=<value>]
+           [--exec-path[=<path>]] [--html-path] [--man-path] [--info-path]
+           [-p | --paginate | -P | --no-pager] [--no-replace-objects] [--bare]
+           [--git-dir=<path>] [--work-tree=<path>] [--namespace=<name>]
+           <command> [<args>]
+
+These are common Git commands used in various situations:
+
+start a working area (see also: git help tutorial)
+   clone     Clone a repository into a new directory
+=== --list-cmds=builtins
+commit
+log
+status
+=== commit --weir-probe-unknown --git-completion-helper-all
+@exit 129
+error: unknown option `weir-probe-unknown'
+usage: git commit [<options>] [--] <pathspec>...
+=== commit --git-completion-helper-all
+--quiet --verbose --file= --message= --amend --allow-empty --all --no-verify --author= -- --no-quiet --no-verbose --no-file --no-message
+=== commit -h
+@exit 129
+usage: git commit [-a | --interactive | --patch] [-s] [-v] [-u[<mode>]] [--amend]
+                  [-F <file> | -m <msg>] [--reset-author] [--allow-empty]
+
+    -q, --[no-]quiet      suppress summary after successful commit
+    -v, --[no-]verbose    show diff in commit message template
+
+Commit message options
+    -F, --[no-]file <file>
+                          read message from file
+    --[no-]author <author>
+                          override author for commit
+    -m, --[no-]message <message>
+                          commit message
+
+Commit contents options
+    -a, --[no-]all        commit all changed files
+    -n, --no-verify       bypass pre-commit and commit-msg hooks
+=== log --weir-probe-unknown --git-completion-helper-all
+--quiet --source --decorate --no-quiet
+=== status --weir-probe-unknown --git-completion-helper-all
+@exit 129
+error: unknown option `weir-probe-unknown'
+=== status --git-completion-helper-all
+--verbose --short --branch --porcelain --untracked-files -- --no-verbose --no-short --no-branch
+=== status -h
+@exit 129
+usage: git status [<options>] [--] [<pathspec>...]
+
+    -v, --[no-]verbose    be verbose
+    -s, --[no-]short      show status concisely
+    -b, --[no-]branch     show branch information
+    --[no-]porcelain[=<version>]
+                          machine-readable output
+    -u, --[no-]untracked-files[=<mode>]
+                          show untracked files

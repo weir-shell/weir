@@ -1,0 +1,8 @@
+#sig gofx
+gofx -plaintext -d "{}" localhost:1 svc/M // clean
+gofx --plaintext --max-time 5 localhost:1 list // clean
+gofx -H "a: b" -v localhost:1 list // clean
+gofx --H "a: b" h:1 list // clean
+gofx -plaintextt localhost:1 list // typo: -plaintextt
+gofx -max-tme 3 h:1 list // typo: -max-tme
+gofx -import-path p -d x h:1 s/M // clean

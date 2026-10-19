@@ -1,0 +1,6 @@
+=== --version
+fishfx 15.1.0
+=== --help
+fishfx 15.1.0
+USAGE:
+    fishfx [OPTIONS] PATTERN [PATH ...]

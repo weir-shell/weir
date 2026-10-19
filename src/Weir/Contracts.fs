@@ -1826,6 +1826,23 @@ type VersionProbe =
 let stripAnsi (text: string) : string =
     Text.RegularExpressions.Regex.Replace(text, "\x1b\\[[0-9;?]*[A-Za-z]", "")
 
+/// a version line's identity [D:sig-version-identity]: whitespace collapsed,
+/// and a trailing library list dropped (curl's `libcurl/8.18.0
+/// OpenSSL/3.5.5 zlib/1.3.1 …` — three or more `name/version` words in a
+/// row) — a library bump is the environment, not the tool. Idempotent,
+/// so verify compares a recorded identity of either vintage through it.
+let versionIdentity (line: string) : string =
+    let words = Text.RegularExpressions.Regex.Replace(line.Trim(), "\\s+", " ").Split ' '
+    let lib (w: string) = Text.RegularExpressions.Regex.IsMatch(w, "^[A-Za-z][\\w.+-]*/v?[0-9]")
+
+    let cut =
+        [ 1 .. words.Length - 3 ]
+        |> List.tryFind (fun i -> lib words[i] && lib words[i + 1] && lib words[i + 2])
+
+    match cut with
+    | Some i -> String.Join(" ", words[.. i - 1])
+    | None -> String.Join(" ", words)
+
 /// one probe rung: spawn `<tool> <arg>` and read the exit code.
 /// stdin is null and the cwd a fresh temp dir — probing the bare
 /// `version` word must not hang a stdin-reader (`grep version`) or
@@ -1874,7 +1891,7 @@ let private probeRung (resolve: string -> string) (tool: string) (arg: string) :
                     |> Array.tryFind (fun l -> l.Trim() <> "")
                     |> Option.defaultValue text
 
-                ToolVersion(Text.RegularExpressions.Regex.Replace(firstLine.Trim(), "\s+", " "))
+                ToolVersion(versionIdentity firstLine)
     with _ ->
         ToolAbsent
 
@@ -1964,7 +1981,7 @@ let verify (resolve: string -> string) (weirDir: string) : Result<string list * 
 
                             lines.Add
                                 $"{e.Kind} {e.Name}: VERSION MISMATCH — the installed tool answers neither --version nor version, the signature records '{recorded.Trim()}' — regenerate: weir add sig {e.Name}"
-                        | ToolVersion actual when actual.Trim() <> recorded.Trim() ->
+                        | ToolVersion actual when versionIdentity actual <> versionIdentity recorded ->
                             findings.Add(VersionMismatch(e, actual))
 
                             lines.Add

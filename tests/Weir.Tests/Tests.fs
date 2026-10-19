@@ -20378,6 +20378,12 @@ let sigTests =
 
         ds |> List.filter (fun d -> d.Code = "sig")
 
+    // the flags a line warns on, in order
+    let sigWarns (sigSource: string list) (line: string) : string list =
+        withSigTree sigSource (fun root ->
+            diagsFor root [] [ "#sig fixtool"; line ]
+            |> List.map (fun d -> (d.Message.Split '\'')[1]))
+
     testList
         "Command signatures [D:command-signatures]"
         [ test "unknown long flag warns with did-you-mean, naming the declaring line" {
@@ -20558,6 +20564,250 @@ let sigTests =
                   match ds with
                   | [ d ] -> Expect.stringContains d.Message "no type `Cmd`" "the surface is Cmd by name"
                   | other -> failtest $"unexpected {other.Length}")
+          }
+          // the check's model [D:sig-arity] [D:sig-conventions]
+          // [D:sig-operand-stop] [D:sig-unwalked]: each case is (sig, line,
+          // the flags it must warn on — nothing else)
+          test "an older all-bool GNU signature checks as it always did" {
+              let old =
+                  [ "module Fixtool"
+                    "type Cmd = {"
+                    "    verbose: bool"
+                    "    [<Short \"o\">]"
+                    "    output: bool"
+                    "}" ]
+
+              for line, want in
+                  [ "fixtool --output x --verbse", [ "--verbse" ]
+                    "fixtool -o x -z", [ "-z" ]
+                    "fixtool --output=x y", []
+                    // a bool never takes the next word: -o does not eat --verbse
+                    "fixtool -o --verbse", [ "--verbse" ]
+                    "fixtool -- --verbse", [] ] do
+                  Expect.equal (sigWarns old line) want line
+          }
+          test "values: a valued flag takes its word, globals check at every level, an unknown subcommand ends the check" {
+              let dock =
+                  [ "module Fixtool"
+                    "type Globals = {"
+                    "    context: string"
+                    "    [<Short \"H\">]"
+                    "    host: string"
+                    "}"
+                    "type PsFlags = {"
+                    "    [<Short \"a\">]"
+                    "    all: bool"
+                    "}"
+                    "type NetFlags = { quiet: bool }"
+                    "type NetCreateFlags = {"
+                    "    [<Short \"d\">]"
+                    "    driver: string"
+                    "}"
+                    "type RunFlags = {"
+                    "    rm: bool"
+                    "    [<Short \"d\">]"
+                    "    detach: bool"
+                    "    name: string"
+                    "}"
+                    "let stopAtOperand = [ \"run\" ]"
+                    "type Cmd = Ps of PsFlags | Network of NetFlags | NetworkCreate of NetCreateFlags | Run of RunFlags" ]
+
+              for line, want in
+                  [ "fixtool --context prod ps -a", []
+                    "fixtool --context=prod ps -a --al", [ "--al" ]
+                    "fixtool --contxt prod ps", [ "--contxt" ]
+                    "fixtool ps --context x -a", []
+                    // a parent's own flag is not its child's (cobra's local flags)
+                    "fixtool network create -d bridge net1 --quiet", [ "--quiet" ]
+                    "fixtool network --quiet create -d bridge net1", []
+                    "fixtool network creat --whatever", []
+                    "fixtool -H tcp://x run --rm img sh -c x --whatever", []
+                    "fixtool run --nmae web img", [ "--nmae" ]
+                    "fixtool run -d --rm img", []
+                    "fixtool compose up -d --buld", [] ] do
+                  Expect.equal (sigWarns dock line) want line
+          }
+          test "a spliced word holds its place: a flag's value, or an operand naming no case" {
+              let dock =
+                  [ "module Fixtool"
+                    "type Globals = { context: string }"
+                    "type PsFlags = { all: bool }"
+                    "type Cmd = Ps of PsFlags" ]
+
+              withSigTree dock (fun root ->
+                  let ds =
+                      diagsFor root [] [ "#sig fixtool"; "let c = \"prod\""; "fixtool --context $c ps --al"; "fixtool $c --al" ]
+
+                  Expect.equal (ds |> List.map (fun d -> d.Line, (d.Message.Split '\'')[1])) [ 3, "--al" ] "")
+          }
+          test "an unchecked case ends the check: its flags are open" {
+              let git =
+                  [ "module Fixtool"
+                    "type LogFlags = { follow: bool }"
+                    "type CommitFlags = { amend: bool }"
+                    "let unchecked = [ \"log\" ]"
+                    "type Cmd = Log of LogFlags | Commit of CommitFlags" ]
+
+              Expect.equal (sigWarns git "fixtool log --oneline --graphh") [] "log"
+              Expect.equal (sigWarns git "fixtool commit --amendd") [ "--amendd" ] "commit"
+
+              // "" names the tool itself [D:sig-open-tool]: none of its lines check
+              let npm =
+                  [ "module Fixtool"
+                    "type Cmd = { save: bool }"
+                    "let unchecked = [ \"\" ]" ]
+
+              Expect.equal (sigWarns npm "fixtool install --prefix /x --sav") [] "an open tool"
+          }
+          test "short bundles check letter by letter; a valued letter takes the rest of the word or the next" {
+              let tar =
+                  [ "module Fixtool"
+                    "type Cmd = {"
+                    "    [<Short \"x\">]"
+                    "    extract: bool"
+                    "    [<Short \"z\">]"
+                    "    gzip: bool"
+                    "    [<Short \"f\">]"
+                    "    file: string"
+                    "    inPlace: Option<string>"
+                    "    [<Wire \"-i\">]"
+                    "    shorti: Option<string>"
+                    "}" ]
+
+              for line, want in
+                  [ "fixtool -xzf a.tgz", []
+                    "fixtool -fx", []
+                    "fixtool -i.bak -zi.bak x", []
+                    "fixtool -xqf a", [ "-q" ]
+                    "fixtool --in-place=.bak --inplace", [ "--inplace" ] ] do
+                  Expect.equal (sigWarns tar line) want line
+
+              withSigTree tar (fun root ->
+                  let d = diagsFor root [] [ "#sig fixtool"; "fixtool -xqf a" ] |> List.exactlyOne
+                  Expect.stringContains d.Message "unknown flag '-q' (in '-xqf') for fixtool" "the bundle is quoted")
+          }
+          test "an option that ends the tool's options, and an interpreter's operand stop" {
+              let py =
+                  [ "module Fixtool"
+                    "type Cmd = {"
+                    "    [<Wire \"-m\">]"
+                    "    optm: seq<string>"
+                    "    [<Wire \"-B\">]"
+                    "    optB: bool"
+                    "    [<Wire \"-X\">]"
+                    "    optX: string"
+                    "    help: bool"
+                    "    [<Wire \"-h\">]"
+                    "    shorth: bool"
+                    "}"
+                    "let stopAtOperand = [ \"\" ]" ]
+
+              for line, want in
+                  [ "fixtool -m pytest -x --tb=short", []
+                    "fixtool -B -X importtime -h -Z x.py", [ "-Z" ]
+                    "fixtool script.py --verbose", []
+                    "fixtool --b x.py", [ "--b" ] ] do
+                  Expect.equal (sigWarns py line) want line
+          }
+          test "the Go convention: -x, -long and --long are one flag, no bundles" {
+              let go =
+                  [ "module Fixtool"
+                    "let convention = \"go\""
+                    "type Cmd = {"
+                    "    [<Wire \"-plaintext\">]"
+                    "    plaintext: bool"
+                    "    [<Wire \"-H\">]"
+                    "    header: string"
+                    "    [<Wire \"-max-time\">]"
+                    "    maxTime: string"
+                    "}" ]
+
+              for line, want in
+                  [ "fixtool -plaintext -H x h:1 list", []
+                    "fixtool --plaintext --max-time 5 --H x h:1 list", []
+                    "fixtool -max-time=5 h", []
+                    "fixtool -plaintextt h", [ "-plaintextt" ]
+                    "fixtool -max-tme 3 h", [ "-max-tme" ] ] do
+                  Expect.equal (sigWarns go line) want line
+
+              withSigTree go (fun root ->
+                  let d = diagsFor root [] [ "#sig fixtool"; "fixtool --plaintextt h" ] |> List.exactlyOne
+                  Expect.stringContains d.Message "Did you mean '--plaintext'?" "the suggestion keeps the typed dashes")
+          }
+          test "the find convention: whole single-dash words; -- only where listed" {
+              let find =
+                  [ "module Fixtool"
+                    "let convention = \"find\""
+                    "type Cmd = {"
+                    "    [<Wire \"-name\">]"
+                    "    name: string"
+                    "    [<Wire \"-delete\">]"
+                    "    delete: bool"
+                    "    [<Wire \"-maxdepth\">]"
+                    "    maxdepth: string"
+                    "    [<Wire \"-mtime\">]"
+                    "    mtime: string"
+                    "    [<Wire \"-L\">]"
+                    "    follow: bool"
+                    "    [<Wire \"-O\">]"
+                    "    opt: Option<string>"
+                    "    [<Wire \"--help\">]"
+                    "    help: bool"
+                    "}" ]
+
+              for line, want in
+                  [ "fixtool . -nmae x", [ "-nmae" ]
+                    "fixtool . --maxdepth 1", [ "--maxdepth" ]
+                    "fixtool -L . -name x -mtime -7 -delete", []
+                    "fixtool -O3 . -maxdepth 1", []
+                    "fixtool --help", [] ] do
+                  Expect.equal (sigWarns find line) want line
+          }
+          test "abbreviations and negation are the tool's, declared" {
+              let gnu =
+                  [ "module Fixtool"
+                    "let abbreviations = true"
+                    "let negatable = true"
+                    "type Cmd = {"
+                    "    verbose: bool"
+                    "    version: bool"
+                    "    wildcards: bool"
+                    "    stackSize: string"
+                    "}" ]
+
+              for line, want in
+                  [ "fixtool --wildcard --verbos x", []
+                    "fixtool --ver", [ "--ver" ]
+                    "fixtool --no-wildcards --no-verbose", []
+                    "fixtool --no-stack-size", [ "--no-stack-size" ] ] do
+                  Expect.equal (sigWarns gnu line) want line
+
+              let plain = gnu |> List.filter (fun l -> not (l.StartsWith "let "))
+              Expect.equal (sigWarns plain "fixtool --wildcard --no-verbose") [ "--wildcard"; "--no-verbose" ] "absent lets: neither"
+          }
+          test "did-you-mean offers shorts and refuses distant matches" {
+              let s =
+                  [ "module Fixtool"
+                    "type Cmd = {"
+                    "    vv: bool"
+                    "    [<Short \"H\">]"
+                    "    header: string"
+                    "}" ]
+
+              withSigTree s (fun root ->
+                  match diagsFor root [] [ "#sig fixtool"; "fixtool --H x"; "fixtool --q" ] with
+                  | [ h; q ] ->
+                      Expect.stringContains h.Message "Did you mean '-H'?" "a short is a candidate"
+                      Expect.isFalse (q.Message.Contains "Did you mean") $"a one-letter name borrows nothing: {q.Message}"
+                  | other -> failtest $"expected two, got {other.Length}")
+          }
+          test "an unknown convention is a load error at the directive" {
+              let s = [ "module Fixtool"; "let convention = \"bsd\""; "type Cmd = { x: bool }" ]
+
+              withSigTree s (fun root ->
+                  let d = diagsFor root [] [ "#sig fixtool"; "print \"x\"" ] |> List.exactlyOne
+                  Expect.equal d.Line 1 "at the directive"
+                  Expect.stringContains d.Message "names no flag convention" "")
           } ]
 
 let ifSucceedsTests =

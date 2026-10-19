@@ -1,0 +1,22 @@
+#sig docker
+docker run --rm -it -e A=1 -v /a:/b --nmae web nginx // typo: --nmae
+docker build -t img:1 -f Dockerfile --build-arg A=1 --no-cach . // typo: --no-cach
+docker compose up -d --buld // typo: --buld
+docker ps -a --format x --filtr status=exited // typo: --filtr
+docker volume rm --forcee v // typo: --forcee
+docker push --all-tag img // typo: --all-tag
+docker run -X img // typo: -X
+docker network create -d bridge net1 // clean
+docker exec -it web sh // clean
+docker image prune -af // clean
+docker logs -f --tail 100 web // clean
+docker container ls --all // clean
+docker run -p 8080:80 -d nginx // clean
+docker --context prod ps // clean
+docker compose -f a.yml down --volumes // clean
+docker buildx build --platform linux/amd64 --push . // clean
+docker --context prod ps -a // clean
+docker -H tcp://x:2375 run --rm img // clean
+docker run --name web -d nginx // clean
+docker run --rm alpine sh -c "echo hi" // clean
+docker exec web ls -la /tmp // clean

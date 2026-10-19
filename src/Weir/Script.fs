@@ -5526,16 +5526,58 @@ let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) li
                 |> List.map (fun (sp, m) -> mk sp m)))
 
 // ---- external contracts: command signatures [D:command-signatures] --------
+// a flag's value shape, read off its field type [D:sig-arity]: bool takes
+// no value word; Option<_> takes an attached value only (`--color=never`,
+// `-i.bak`); seq<_> takes its value and ends the tool's own options
+// (python's `-m mod`); any other type takes one value, attached or the
+// next word. Every older signature is all-bool — no flag consumes a word,
+// the check it always had.
+type SigArity =
+    | ANone
+    | AOpt
+    | AOne
+    | ARest
+
+// one case's spellings. Longs: `--x` names; Shorts: one-letter `-x`
+// (explicit [<Short>] or a two-character dash Wire — weir's own
+// derivation is a convention, and a signature records a foreign tool's
+// facts); Literals: dash-spelled words matched whole (`-plaintext`,
+// find's `-name`) [D:sig-conventions]
+type SigSurface =
+    { Longs: Map<string, SigArity>
+      Shorts: Map<string, SigArity>
+      Literals: Map<string, SigArity> }
+
+let emptySigSurface =
+    { Longs = Map.empty
+      Shorts = Map.empty
+      Literals = Map.empty }
+
 // a loaded signature's checkable surface. Subs: kebab-cased subcommand
-// -> (long-flag set, explicit-short set); the "" key is the flag-only
-// shape (Cmd declared as a record). Shorts are explicit [<Short>] only —
-// weir's own derivation is a convention, and a signature records a
-// foreign tool's facts.
+// -> (long-flag set, short set), the globals folded in (what completion
+// offers); the "" key is the flag-only shape (Cmd declared as a record).
+// Surfaces carries the same cases with arity, Globals the `type Globals`
+// record checked at every level, and the module lets the tool's
+// convention [D:sig-conventions].
 type SigInfo =
     { Tool: string
       DeclLine: int
       Exhaustive: bool
       Subs: Map<string, Set<string> * Set<string>>
+      Surfaces: Map<string, SigSurface>
+      Globals: SigSurface option
+      // "gnu" (default), "go", "find" [D:sig-conventions]
+      Convention: string
+      // GNU getopt's unique-prefix longs (`--verb` for `--verbose`)
+      Abbreviations: bool
+      // `--no-x` for any switch `--x` (node)
+      Negatable: bool
+      // case keys whose first operand ends the tool's own options
+      // (`docker run IMAGE …`, an interpreter's script) [D:sig-operand-stop]
+      StopAtOperand: Set<string>
+      // case keys whose flags no source could list (git log's revision
+      // options): reaching one ends the check [D:sig-unwalked]
+      Unchecked: Set<string>
       // the resolved sig file, its recorded version, and each surface's
       // record type name — what hover/definition need to reach the
       // declaration site [D:lsp-cross-file]
@@ -5543,7 +5585,7 @@ type SigInfo =
       Version: string
       SubRecords: Map<string, string> }
 
-let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
+let private sigSurface (def: RecordDef) : SigSurface =
     let positional f =
         match Map.tryFind f def.Attrs with
         | Some specs -> specs |> List.exists (fun (n, _) -> n = "Positional")
@@ -5564,14 +5606,69 @@ let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
                 | _ -> None)
         | None -> []
 
-    let longs =
-        def.Fields
-        |> List.filter (fun (f, _) -> not (positional f))
-        |> List.collect (fun (f, _) -> Weir.Argv.kebabFlag f :: wiresOf f)
-        |> Set.ofList
+    let arityOf ty =
+        match ty with
+        | TBool -> ANone
+        | TNamed("Option", _) -> AOpt
+        | TSeq _ -> ARest
+        | _ -> AOne
 
-    let shorts = Weir.Argv.explicitShorts def |> List.map snd |> Set.ofList
-    longs, shorts
+    let explicit = Weir.Argv.explicitShorts def |> Map.ofList
+    let shortOf f = Map.tryFind f explicit
+
+    def.Fields
+    |> List.filter (fun (f, _) -> not (positional f))
+    |> List.fold
+        (fun (acc: SigSurface) (f, ty) ->
+            let a = arityOf ty
+            let wires = wiresOf f
+            // a dash-spelled Wire is the field's one spelling
+            // [D:sig-conventions]: a short-only row (`-B`), a second short,
+            // a Go or find word, `-h` (no [<Short "h">] exists) — the field
+            // name is then a label, never a `--long`
+            let dashed = wires |> List.exists (fun w -> w.StartsWith "-")
+
+            let acc =
+                if dashed then
+                    acc
+                else
+                    { acc with
+                        Longs = Map.add (Weir.Argv.kebabFlag f) a acc.Longs }
+
+            let acc =
+                wires
+                |> List.fold
+                    (fun (acc: SigSurface) (w: string) ->
+                        if w.StartsWith "--" then
+                            { acc with
+                                Longs = Map.add (w.Substring 2) a acc.Longs }
+                        elif w.StartsWith "-" && w.Length = 2 then
+                            { acc with
+                                Shorts = Map.add (w.Substring 1) a acc.Shorts }
+                        elif w.StartsWith "-" then
+                            { acc with
+                                Literals = Map.add w a acc.Literals }
+                        else
+                            { acc with Longs = Map.add w a acc.Longs })
+                    acc
+
+            match shortOf f with
+            | Some sh -> { acc with Shorts = Map.add sh a acc.Shorts }
+            | None -> acc)
+        emptySigSurface
+
+// later spellings never displace earlier ones: a case's own flag keeps
+// its arity over a global of the same name
+let private mergeSurface (a: SigSurface) (b: SigSurface) : SigSurface =
+    let into (m: Map<string, SigArity>) (n: Map<string, SigArity>) =
+        n |> Map.fold (fun acc k v -> if Map.containsKey k acc then acc else Map.add k v acc) m
+
+    { Longs = into a.Longs b.Longs
+      Shorts = into a.Shorts b.Shorts
+      Literals = into a.Literals b.Literals }
+
+let private surfaceSets (s: SigSurface) : Set<string> * Set<string> =
+    (s.Longs |> Map.keys |> Set.ofSeq), (s.Shorts |> Map.keys |> Set.ofSeq)
 
 /// a PATH-y tool name ("./rooz/v3/lib/jp", "~/.azure/bin/bicep") maps
 /// to one flat filename under .weir/sigs — separators become '_'
@@ -5686,6 +5783,61 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                             | (n, Record rd) when n = name -> Some rd
                             | _ -> None)
 
+                    let letStrs name =
+                        lm.Body
+                        |> List.tryPick (function
+                            | _, CLet(n, te) when n = name ->
+                                match te.Kind with
+                                | Check.TEList items ->
+                                    Some(
+                                        items
+                                        |> List.choose (fun i ->
+                                            match i.Kind with
+                                            | Check.TEStr s -> Some s
+                                            | _ -> None)
+                                    )
+                                | _ -> None
+                            | _ -> None)
+
+                    // the convention lets [D:sig-conventions]: absent = GNU,
+                    // no abbreviations, no negation, no operand stop — what
+                    // every older signature meant. Paths in the lists are
+                    // written as typed (`image prune`); "" is the top level
+                    let keysOf name =
+                        letStrs name
+                        |> Option.defaultValue []
+                        |> List.map (fun p -> p.Trim().Replace(" ", "-"))
+                        |> Set.ofList
+
+                    let convention = letStr "convention" |> Option.defaultValue "gnu"
+
+                    if not (List.contains convention [ "gnu"; "go"; "find" ]) then
+                        diags.Add(
+                            mk
+                                decl.Line
+                                $"#sig {decl.Tool}: `let convention = \"{convention}\"` names no flag convention — use \"gnu\" (the default), \"go\" or \"find\""
+                        )
+
+                    let globals = recordOf "Globals" |> Option.map sigSurface
+
+                    let info surfaces subRecords =
+                        let g = globals |> Option.defaultValue emptySigSurface
+
+                        { Tool = decl.Tool
+                          DeclLine = decl.Line
+                          Exhaustive = letBool "exhaustive" |> Option.defaultValue false
+                          Subs = surfaces |> Map.map (fun _ sf -> surfaceSets (mergeSurface sf g))
+                          Surfaces = surfaces
+                          Globals = globals
+                          Convention = convention
+                          Abbreviations = letBool "abbreviations" |> Option.defaultValue false
+                          Negatable = letBool "negatable" |> Option.defaultValue false
+                          StopAtOperand = keysOf "stopAtOperand"
+                          Unchecked = keysOf "unchecked"
+                          SigPath = sigFile
+                          Version = letStr "version" |> Option.defaultValue ""
+                          SubRecords = subRecords }
+
                     match lm.TypeDefs |> List.tryFind (fun (n, _) -> n = "Cmd") with
                     | None ->
                         diags.Add(
@@ -5693,26 +5845,18 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                 decl.Line
                                 $"#sig {decl.Tool}: the signature declares no type `Cmd` — the command surface is the type named Cmd (a union of subcommands, or a record of flags)"
                         )
-                    | Some(_, Record rd) ->
-                        infos.Add
-                            { Tool = decl.Tool
-                              DeclLine = decl.Line
-                              Exhaustive = letBool "exhaustive" |> Option.defaultValue false
-                              Subs = Map [ "", sigFlagSets rd ]
-                              SigPath = sigFile
-                              Version = letStr "version" |> Option.defaultValue ""
-                              SubRecords = Map [ "", "Cmd" ] }
+                    | Some(_, Record rd) -> infos.Add(info (Map [ "", sigSurface rd ]) (Map [ "", "Cmd" ]))
                     | Some(_, Union ud) ->
-                        let subs =
+                        let surfaces =
                             ud.Cases
                             |> List.map (fun (case, payload) ->
                                 let flags =
                                     match payload with
                                     | Some(TNamed(rn, [])) ->
                                         match recordOf rn with
-                                        | Some rd -> sigFlagSets rd
-                                        | None -> Set.empty, Set.empty
-                                    | _ -> Set.empty, Set.empty
+                                        | Some rd -> sigSurface rd
+                                        | None -> emptySigSurface
+                                    | _ -> emptySigSurface
 
                                 Weir.Argv.kebabFlag case, flags)
                             |> Map.ofList
@@ -5725,14 +5869,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                 | _ -> None)
                             |> Map.ofList
 
-                        infos.Add
-                            { Tool = decl.Tool
-                              DeclLine = decl.Line
-                              Exhaustive = letBool "exhaustive" |> Option.defaultValue false
-                              Subs = subs
-                              SigPath = sigFile
-                              Version = letStr "version" |> Option.defaultValue ""
-                              SubRecords = subRecords }
+                        infos.Add(info surfaces subRecords)
 
     List.ofSeq diags, List.ofSeq infos
 
@@ -5837,142 +5974,379 @@ let sigCmdDiagnostics
                 match Map.tryFind prog byTool with
                 | None -> []
                 | Some si ->
+                    // a spliced word is a placeholder: its text is unknown
+                    // at check, but it still takes its place — a flag's
+                    // value, or an operand naming no case
                     let words =
                         args
-                        |> List.choose (fun a ->
+                        |> List.map (fun a ->
                             match a.Kind with
-                            | Check.TEStr w -> Some(w, a.Span)
-                            | _ -> None)
+                            | Check.TEStr w -> Some w, a.Span
+                            | _ -> None, a.Span)
 
-                    let surface =
-                        match Map.tryFind "" si.Subs with
-                        | Some fs -> Some(None, fs)
-                        | None ->
-                            // the longest run of leading sub words wins
-                            // [D:scoped-sigs]: `issue list` matches the
-                            // IssueList case before falling back to Issue —
-                            // tokens join kebab-style, the loader's own key
-                            let run =
-                                words
-                                |> List.skipWhile (fun (w, _) -> w.StartsWith "-")
-                                |> List.takeWhile (fun (w, _) -> not (w.StartsWith "-"))
-                                |> List.truncate 4
-                                |> List.map fst
+                    let scoped = not (Map.containsKey "" si.Surfaces)
+                    let globals = si.Globals |> Option.defaultValue emptySigSurface
+
+                    // the top level: the flat record, or `type Globals`; a
+                    // scoped sig without one checks the case intersection —
+                    // what rides every case is global — and an empty
+                    // intersection (hand-written unions that never
+                    // duplicate) checks nothing there [D:scoped-sigs]
+                    let rootSurface =
+                        match Map.tryFind "" si.Surfaces, si.Globals with
+                        | Some sf, _ -> Some(mergeSurface sf globals)
+                        | None, Some g -> Some g
+                        | None, None ->
+                            match si.Surfaces |> Map.toList |> List.map snd with
+                            | [] -> None
+                            | c0 :: rest ->
+                                let inter (pick: SigSurface -> Map<string, SigArity>) =
+                                    pick c0 |> Map.filter (fun k _ -> rest |> List.forall (fun c -> Map.containsKey k (pick c)))
+
+                                let longs = inter (fun c -> c.Longs)
+
+                                if longs.IsEmpty then
+                                    None
+                                else
+                                    Some
+                                        { Longs = longs
+                                          Shorts = inter (fun c -> c.Shorts)
+                                          Literals = inter (fun c -> c.Literals) }
+
+                    let surfaceAt key =
+                        if key = "" then
+                            rootSurface
+                        else
+                            Map.tryFind key si.Surfaces |> Option.map (fun sf -> mergeSurface sf globals)
+
+                    let hasChildren key =
+                        scoped && (key = "" || si.Surfaces |> Map.exists (fun k _ -> k.StartsWith(key + "-")))
+
+                    // a scoped surface names its case in the warning, as
+                    // typed (`gh issue list`) [D:scoped-sigs]
+                    let toolAndSub (typed: string list) = String.concat " " (si.Tool :: typed)
+
+                    let sev = if si.Exhaustive then "error" else "warning"
+
+                    let note =
+                        if si.Exhaustive then
+                            $"(#sig {si.Tool}, line {si.DeclLine}; exhaustive signature)"
+                        else
+                            $"(#sig {si.Tool}, line {si.DeclLine}; partial signature — a scraped surface may be incomplete)"
+
+                    let mk (sp: Span) (msg: string) =
+                        let l1, c1 = translate ll sp.Start.Col
+                        let l2, c2 = translate ll (max sp.Start.Col (sp.End.Col - 1))
+
+                        { File = path
+                          Line = l1
+                          Col = c1
+                          EndLine = Some l2
+                          EndCol = Some(c2 + 1)
+                          Severity = sev
+                          Code = "sig"
+                          Message = msg }
+
+                    // did-you-mean over the spellings the convention takes
+                    // [D:sig-conventions]: shorts count (`--H` -> `-H`), a
+                    // distant match is no suggestion (a one-letter name
+                    // never borrows a two-letter one)
+                    let dym (typed: string) (cands: string seq) =
+                        let bare = typed.TrimStart '-'
+                        let limit = if bare.Length <= 3 then 1 else 2
+
+                        // names compare without their dashes: `--H` is one
+                        // dash from `-H`, zero letters
+                        cands
+                        |> Seq.filter (fun c -> c <> typed)
+                        |> Seq.map (fun c -> c, editDistance bare (c.TrimStart '-'))
+                        |> Seq.filter (fun (_, d) -> d = 0 || (d <= limit && d < bare.Length))
+                        |> Seq.sortBy (fun (c, d) -> d, abs (c.Length - typed.Length), c)
+                        |> Seq.tryHead
+                        |> Option.map (fun (c, _) -> $". Did you mean '{c}'?")
+                        |> Option.defaultValue ""
+
+                    let spellings (sf: SigSurface) =
+                        Seq.concat
+                            [ sf.Longs |> Map.keys |> Seq.map (fun l -> "--" + l)
+                              sf.Shorts |> Map.keys |> Seq.map (fun s -> "-" + s)
+                              sf.Literals |> Map.keys |> Seq.map id ]
+
+                    // the value-word step after a flag: 0 none, 1 the next
+                    // word, 2 the tool's options end here, 3 the next word,
+                    // then they end
+                    let after (a: SigArity) (attached: bool) =
+                        match a with
+                        | ANone
+                        | AOpt -> 0
+                        | AOne -> if attached then 0 else 1
+                        | ARest -> if attached then 2 else 3
+
+                    let unknown (sf: SigSurface) typed (shown: string) (sp: Span) =
+                        mk sp $"unknown flag '{shown}' for {toolAndSub typed}{dym shown (spellings sf)} {note}"
+
+                    // one flag word against one surface: the diagnostics and
+                    // the value-word step
+                    let checkFlag (sf: SigSurface) typed (w: string) (sp: Span) : Diagnostic list * int =
+                        let name, attached =
+                            match w.IndexOf '=' with
+                            | -1 -> w, false
+                            | i -> w.Substring(0, i), true
+
+                        match si.Convention with
+                        | "go" ->
+                            // `-x`, `-long`, `--long` are one flag (Go's flag
+                            // package); no bundles
+                            let bare = name.TrimStart '-'
 
                             let hit =
-                                [ List.length run .. -1 .. 1 ]
-                                |> List.tryPick (fun n ->
-                                    let toks = run |> List.truncate n
-                                    let key = String.concat "-" toks
-
-                                    Map.tryFind key si.Subs
-                                    |> Option.map (fun fs -> Some(String.concat " " toks), fs))
+                                [ Map.tryFind bare sf.Longs
+                                  Map.tryFind bare sf.Shorts
+                                  Map.tryFind ("-" + bare) sf.Literals
+                                  Map.tryFind ("--" + bare) sf.Literals ]
+                                |> List.tryPick id
 
                             match hit with
-                            | Some hit -> Some hit
+                            | Some a -> [], after a attached
+                            | None when name.StartsWith "---" -> [ unknown sf typed name sp ], 0
                             | None ->
-                                // a sub-less line on a scoped sig checks the
-                                // globals: what rides every case is global,
-                                // so the intersection is the global set
-                                // [D:scoped-sigs]. Empty intersection
-                                // (hand-written unions that never duplicate)
-                                // keeps the L2 skip — claude's flag-only
-                                // lines check, git's sub-less lines stay
-                                // silent
-                                match si.Subs |> Map.toList |> List.map snd with
-                                | [] -> None
-                                | (l0, s0) :: rest ->
-                                    let longs = rest |> List.fold (fun acc (l, _) -> Set.intersect acc l) l0
+                                let goSpellings =
+                                    spellings sf |> Seq.map (fun s -> (if name.StartsWith "--" then "--" else "-") + s.TrimStart '-')
 
-                                    let shorts = rest |> List.fold (fun acc (_, sh) -> Set.intersect acc sh) s0
+                                [ mk sp $"unknown flag '{name}' for {toolAndSub typed}{dym name goSpellings} {note}" ], 0
+                        | "find" ->
+                            // whole words: a predicate (`-name`), a listed
+                            // `--help`; a one-letter option may carry its
+                            // value attached (`-O3`)
+                            let exact =
+                                [ Map.tryFind name sf.Literals
+                                  (if name.StartsWith "--" then
+                                       Map.tryFind (name.Substring 2) sf.Longs
+                                   elif name.Length = 2 then
+                                       Map.tryFind (name.Substring 1) sf.Shorts
+                                   else
+                                       None) ]
+                                |> List.tryPick id
 
-                                    if longs.IsEmpty then None else Some(None, (longs, shorts))
+                            let glued () =
+                                Seq.append
+                                    (sf.Shorts |> Map.toSeq |> Seq.map (fun (k, a) -> "-" + k, a))
+                                    (sf.Literals |> Map.toSeq |> Seq.filter (fun (k, _) -> k.Length = 2))
+                                |> Seq.tryFind (fun (k, a) -> (a = AOne || a = AOpt) && w.StartsWith k && w.Length > 2)
 
-                    match surface with
-                    | None -> [] // no matching subcommand, no shared globals: L2 stops here
-                    | Some(subName, (longs, shorts)) ->
-                        // a scoped surface names its case in the warning
-                        // [D:scoped-sigs]
-                        let toolAndSub =
-                            match subName with
-                            | Some sub -> $"{si.Tool} {sub}"
-                            | None -> si.Tool
+                            match exact with
+                            | Some a -> [], after a attached
+                            | None ->
+                                match glued () with
+                                | Some _ -> [], 0
+                                | None -> [ unknown sf typed name sp ], 0
+                        | _ ->
+                            if w.StartsWith "--" then
+                                let long = name.Substring 2
 
-                        let sev = if si.Exhaustive then "error" else "warning"
-
-                        let note =
-                            if si.Exhaustive then
-                                $"(#sig {si.Tool}, line {si.DeclLine}; exhaustive signature)"
-                            else
-                                $"(#sig {si.Tool}, line {si.DeclLine}; partial signature — a scraped surface may be incomplete)"
-
-                        let mk (sp: Span) (msg: string) =
-                            let l1, c1 = translate ll sp.Start.Col
-                            let l2, c2 = translate ll (max sp.Start.Col (sp.End.Col - 1))
-
-                            { File = path
-                              Line = l1
-                              Col = c1
-                              EndLine = Some l2
-                              EndCol = Some(c2 + 1)
-                              Severity = sev
-                              Code = "sig"
-                              Message = msg }
-
-                        let rec check acc ws =
-                            match ws with
-                            | [] -> acc
-                            | ("--", _) :: _ -> acc // end-of-flags: everything after is operands
-                            | (w: string, sp) :: rest when w.StartsWith "--" ->
-                                let name = w.Substring(2).Split('=')[0]
-
-                                let acc =
-                                    if longs.Contains name then
-                                        acc
+                                let negated () =
+                                    if si.Negatable && long.StartsWith "no-" then
+                                        match Map.tryFind (long.Substring 3) sf.Longs with
+                                        | Some(ANone | AOpt) -> Some ANone
+                                        | _ -> None
                                     else
-                                        let dym =
-                                            Weir.Types.didYouMean ("--" + name) (longs |> Seq.map (fun l -> "--" + l))
+                                        None
 
-                                        mk sp $"unknown flag '--{name}' for {toolAndSub}{dym} {note}" :: acc
+                                // getopt_long's unique prefix [D:sig-conventions]
+                                let abbreviated () =
+                                    if si.Abbreviations && long.Length >= 2 then
+                                        match sf.Longs |> Map.toList |> List.filter (fun (k, _) -> k.StartsWith long) with
+                                        | [ (_, a) ] -> Some a
+                                        | _ -> None
+                                    else
+                                        None
 
-                                check acc rest
-                            | (w, sp) :: rest when w.StartsWith "-" && w.Length = 2 && not (System.Char.IsDigit w[1]) ->
+                                let hit =
+                                    match Map.tryFind long sf.Longs with
+                                    | Some a -> Some a
+                                    | None ->
+                                        match Map.tryFind name sf.Literals with
+                                        | Some a -> Some a
+                                        | None -> negated () |> Option.orElse (abbreviated ())
+
+                                match hit with
+                                | Some a -> [], after a attached
+                                | None -> [ unknown sf typed name sp ], 0
+                            else
+                                match Map.tryFind name sf.Literals with
+                                | Some a -> [], after a attached
+                                | None when System.Char.IsDigit w[1] -> [], 0 // `-1`, `-7`: a count or a value, never a flag
                                 // a surface that recorded no shorts has no
                                 // evidence to warn on (BSD grep's help is
                                 // usage-only — the harvest sees longs, never
                                 // the short bundle) [D:sig-version-probe]
-                                let acc =
-                                    if shorts.IsEmpty || shorts.Contains(w.Substring 1) then
-                                        acc
+                                | None when sf.Shorts.IsEmpty -> [], 0
+                                | None ->
+                                    // a bundle, letter by letter: a value-taking
+                                    // letter takes the rest of the word (`-n5`,
+                                    // `-i.bak`) or the next one (`-xzf a.tgz`)
+                                    let rec bundle i =
+                                        if i >= w.Length then
+                                            [], 0
+                                        else
+                                            let c = string w[i]
+
+                                            match Map.tryFind c sf.Shorts with
+                                            | None ->
+                                                let inWord = if w.Length > 2 then $" (in '{w}')" else ""
+
+                                                [ mk sp $"unknown flag '-{c}'{inWord} for {toolAndSub typed} {note}" ], 0
+                                            | Some ANone -> bundle (i + 1)
+                                            | Some a -> [], after a (i + 1 < w.Length)
+
+                                    bundle 1
+
+                    let isFlag (w: string) = w.Length > 1 && w[0] = '-'
+
+                    // the longest run of operand words naming a case under key
+                    let subAt key (ws: (string option * Span) list) =
+                        let run =
+                            ws
+                            |> List.takeWhile (fun (w, _) ->
+                                match w with
+                                | Some w -> not (isFlag w)
+                                | None -> false)
+                            |> List.truncate 4
+                            |> List.choose fst
+
+                        [ List.length run .. -1 .. 1 ]
+                        |> List.tryPick (fun n ->
+                            let toks = run |> List.truncate n
+                            let k = String.concat "-" (if key = "" then toks else key :: toks)
+                            if Map.containsKey k si.Surfaces then Some(n, k, toks) else None)
+
+                    // where the rest of the line lands, diagnostics aside:
+                    // flags step over their known values, operands descend
+                    let rec reach key typed (ws: (string option * Span) list) =
+                        match ws with
+                        | [] -> key, typed
+                        | (Some "--", _) :: _ -> key, typed
+                        | (Some w, sp) :: rest when isFlag w ->
+                            match surfaceAt key with
+                            | Some sf ->
+                                match checkFlag sf typed w sp with
+                                | [], 1 ->
+                                    match rest with
+                                    | _ :: r -> reach key typed r
+                                    | [] -> key, typed
+                                | _ -> reach key typed rest
+                            | None -> reach key typed rest
+                        | _ ->
+                            if hasChildren key then
+                                match subAt key ws with
+                                | Some(n, k, toks) when not (Set.contains k si.Unchecked) -> reach k (typed @ toks) (List.skip n ws)
+                                | _ -> key, typed
+                            else
+                                key, typed
+
+                    // the walk [D:sig-operand-stop]: flags check against the
+                    // case reached so far; an operand either names a deeper
+                    // case (the longest run of operand words wins —
+                    // `issue list` beats `issue`), or, under a case with
+                    // children, is a subcommand the signature does not know
+                    // and ends the check (its flags are not its parent's);
+                    // a leaf's operands are permuted GNU-style unless its
+                    // case stops at the first one
+                    let rec walk acc key typed (ws: (string option * Span) list) =
+                        match ws with
+                        | [] -> acc
+                        | (Some "--", _) :: _ -> acc // end-of-flags: everything after is operands
+                        | (Some w, sp) :: rest when isFlag w ->
+                            match surfaceAt key with
+                            | None -> walk acc key typed rest // no evidence at this level (L2 discipline)
+                            | Some sf ->
+                                let ds, step = checkFlag sf typed w sp
+
+                                // a flag the level does not know, written before
+                                // the subcommand, is judged by the case the line
+                                // reaches — cobra parses every flag at the final
+                                // command (`gh --repo o/r issue view`), its
+                                // value word included [D:scoped-sigs]
+                                let ds, step =
+                                    if ds.IsEmpty || not (hasChildren key) then
+                                        ds, step
                                     else
-                                        mk sp $"unknown flag '{w}' for {toolAndSub} {note}" :: acc
+                                        let deeper ws =
+                                            match reach key typed ws with
+                                            | k, t when k <> key -> Some(k, t)
+                                            | _ -> None
 
-                                check acc rest
-                            | _ :: rest -> check acc rest
+                                        let landed =
+                                            match deeper rest with
+                                            | Some r -> Some(r, false)
+                                            | None ->
+                                                match rest with
+                                                | (Some v, _) :: tail when not (isFlag v) -> deeper tail |> Option.map (fun r -> r, true)
+                                                | _ -> None
 
-                        check [] words |> List.rev))
+                                        match landed with
+                                        | Some((k, t), tookValue) ->
+                                            match surfaceAt k with
+                                            | Some deep ->
+                                                match checkFlag deep t w sp with
+                                                | [], st -> [], (if tookValue then 1 else st)
+                                                | ds2, _ -> ds2, step
+                                            | None -> ds, step
+                                        | None -> ds, step
+
+                                let acc = List.rev ds @ acc
+
+                                match step, rest with
+                                | 0, _ -> walk acc key typed rest
+                                | 1, _ :: rest' -> walk acc key typed rest'
+                                | 1, [] -> acc
+                                | _ -> acc
+                        | _ :: rest ->
+                            if hasChildren key then
+                                match subAt key ws with
+                                | Some(_, k, _) when Set.contains k si.Unchecked -> acc
+                                | Some(n, k, toks) -> walk acc k (typed @ toks) (List.skip n ws)
+                                | None -> acc
+                            elif Set.contains key si.StopAtOperand then
+                                acc
+                            else
+                                walk acc key typed rest
+
+                    // `unchecked` naming the tool itself ("") checks none of
+                    // its lines [D:sig-open-tool]
+                    if Set.contains "" si.Unchecked then
+                        []
+                    else
+                        walk [] "" [] words |> List.rev))
 
 // ---- `weir add sig <tool>`: generation [D:command-signatures] --------------
-// Three sources in fidelity order, the chosen one recorded in the
-// provenance comment and the lock's Url slot ("generated:<source>"):
-// a completion endpoint (`<tool> completion fish` — Cobra/clap emit
-// parseable `complete` lines), a shipped fish completion file, then
-// `--help` scraping. v1 generates a flat surface (one Cmd record —
-// flags across the whole line); splitting into subcommand records is
-// the hand edit the provenance comment invites. The generated file
-// is validated (loads as a signature) before anything persists.
+// Sources in fidelity order [D:sig-sources], the chosen one recorded in the
+// provenance comment and the lock's Url slot ("generated:<source>"): a
+// cobra tool's `__complete` endpoint, git's own command list and
+// completion helper, a completion endpoint or shipped fish file, a
+// full-help switch the help names (`--help all`, `--dump-options`,
+// `--help-all`, `--v8-options`), then `--help` rows (and `-h`/`-help`
+// when `--help` refuses). The help pages always ride along: they carry
+// the arities and the subcommand tables. Subcommands are walked from the
+// tables only — a word the tool did not list as a command is never run.
+// The generated file is validated (loads as a signature) before anything
+// persists.
 module SigGen =
-    let private runToolWith (anyExit: bool) (tool: string) (args: string) : string option =
+    let private runIn (cwd: string option) (anyExit: bool) (tool: string) (args: string list) : string option =
         // probeRung's guards [D:sig-version-probe]: null stdin (a
         // stdin-reader must not hang generation), temp cwd, async reads
         // ahead of a bounded wait, kill on expiry
         try
-            let psi = System.Diagnostics.ProcessStartInfo(Proc.resolveProg tool, args)
+            let psi = System.Diagnostics.ProcessStartInfo(Proc.resolveProg tool)
+
+            for a in args do
+                psi.ArgumentList.Add a
+
             psi.RedirectStandardOutput <- true
             psi.RedirectStandardError <- true
             psi.RedirectStandardInput <- true
             psi.UseShellExecute <- false
-            psi.WorkingDirectory <- IO.Path.GetTempPath()
+            psi.WorkingDirectory <- cwd |> Option.defaultValue (IO.Path.GetTempPath())
             use p = System.Diagnostics.Process.Start psi
             p.StandardInput.Close()
             let outTask = p.StandardOutput.ReadToEndAsync()
@@ -5990,175 +6364,310 @@ module SigGen =
 
                 match Contracts.stripAnsi (if out.Trim() <> "" then out else errTask.Result) with
                 | blank when blank.Trim() = "" -> None
-                | text -> Some text
+                | text -> Some(text.Replace("\r", ""))
             else
                 None
         with _ ->
             None
 
-    let private runTool = runToolWith false
+    let private runTool = runIn None false
 
     // BSD grep's --help exits 2 with the usage on stderr — a nonzero
     // exit's dump is harvest-only material [D:sig-version-probe]:
     // never structured rows, never the walk, never a bare-word gate
-    let private runToolAnyExit = runToolWith true
+    let private runToolAnyExit = runIn None true
 
-    // one discovered flag: long name (kebab), optional short, optional doc
+    // one discovered flag: its spellings (a `--long`, one-letter shorts,
+    // whole dash words), the value it takes when known, a doc
     type private Flag =
         { Long: string
-          Short: string option
+          Shorts: string list
+          Literals: string list
+          Arity: SigArity option
           Doc: string option }
+
+    let private noFlag =
+        { Long = ""
+          Shorts = []
+          Literals = []
+          Arity = None
+          Doc = None }
 
     let private legalLong (l: string) =
         l.Length > 0
-        && System.Char.IsLetter l[0]
-        && l |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '-')
+        && System.Char.IsLetterOrDigit l[0]
+        && l |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '-' || c = '_')
 
-    let private parseFish (text: string) (tool: string) : Flag list =
-        // `complete -c <tool> … -l long [-s x] [-d 'desc']` — token walk,
-        // quote-aware enough for the -d payload
-        let flags = System.Collections.Generic.Dictionary<string, Flag>()
+    let private legalShort (s: string) =
+        s.Length = 1 && (System.Char.IsLetterOrDigit s[0] || s = "?" || s = "#" || s = "@")
 
-        for line in text.Split '\n' do
-            let t = line.Trim()
+    let private keyOf (f: Flag) =
+        if f.Long <> "" then "--" + f.Long
+        else
+            match f.Shorts, f.Literals with
+            | s :: _, _ -> "-" + s
+            | [], l :: _ -> l
+            | [], [] -> ""
 
-            if t.StartsWith "complete " && t.Contains $"-c {tool}" then
-                let tokens =
-                    System.Text.RegularExpressions.Regex.Matches(t, "'[^']*'|\"[^\"]*\"|\\S+")
-                    |> Seq.map (fun m -> m.Value.Trim([| '\''; '"' |]))
-                    |> List.ofSeq
+    // one flag per spelling key, first source wins on arity and doc;
+    // spellings union
+    let private mergeFlags (lists: Flag list list) : Flag list =
+        let byKey = System.Collections.Generic.Dictionary<string, Flag>()
+        let order = ResizeArray<string>()
+        // a short or literal already owned by a long never starts its own flag
+        let owner = System.Collections.Generic.Dictionary<string, string>()
 
-                let rec walk (long: string option) (short: string option) (doc: string option) toks =
-                    match toks with
-                    | "-l" :: v :: rest -> walk (Some v) short doc rest
-                    | "-s" :: v :: rest -> walk long (Some v) doc rest
-                    | "-d" :: v :: rest -> walk long short (Some v) rest
-                    | _ :: rest -> walk long short doc rest
-                    | [] -> long, short, doc
+        for f in List.concat lists do
+            let k0 = keyOf f
 
-                match walk None None None tokens with
-                | Some l, sh, d when legalLong l ->
-                    if not (flags.ContainsKey l) then
-                        flags[l] <- { Long = l; Short = sh; Doc = d }
-                | _ -> ()
+            let k =
+                if f.Long = "" then
+                    match owner.TryGetValue k0 with
+                    | true, o -> o
+                    | _ -> k0
+                else
+                    k0
 
-        flags.Values |> List.ofSeq
+            if k <> "" then
+                match byKey.TryGetValue k with
+                | true, g ->
+                    byKey[k] <-
+                        { g with
+                            Shorts = g.Shorts @ (f.Shorts |> List.filter (fun s -> not (List.contains s g.Shorts)))
+                            Literals = g.Literals @ (f.Literals |> List.filter (fun s -> not (List.contains s g.Literals)))
+                            Arity = g.Arity |> Option.orElse f.Arity
+                            Doc = g.Doc |> Option.orElse f.Doc }
+                | _ ->
+                    byKey[k] <- f
+                    order.Add k
+
+                let g = byKey[k]
+
+                for s in g.Shorts do
+                    owner["-" + s] <- k
+
+                for l in g.Literals do
+                    owner[l] <- k
+
+        // a short-only entry recorded before its long arrived folds in
+        [ for k in order do
+              let f = byKey[k]
+
+              if f.Long <> "" || not (owner.ContainsKey k && owner[k] <> k) then
+                  yield f ]
+
+    // ---- the parsers ----------------------------------------------------
+
+    let private allCaps (t: string) =
+        t.Length > 0
+        && System.Char.IsUpper t[0]
+        && t |> Seq.forall (fun c -> System.Char.IsUpper c || System.Char.IsDigit c || "_-|.:[]".Contains c)
+
+    // the head of a help row: its spellings and the value shape, then the
+    // doc. `-o, --outfile <x>  doc`, `--file=ARCHIVE`, `-i[SUFFIX],
+    // --in-place[=SUFFIX]`, `-E, -r, --regexp-extended`, cobra's
+    // `-a, --attach list   doc`, python's `-c cmd : doc`, Go's `-H value`.
+    // None when the line does not start with a spelling.
+    let private parseRow (line: string) : Flag option =
+        // git's `--[no-]quiet` is the long `--quiet` (its helper lists
+        // the `--no-` form apart)
+        let s = line.TrimStart().Replace("--[no-]", "--")
+
+        if not (s.StartsWith "-") || s.StartsWith "--- " || s = "--" || s.StartsWith "-- " then
+            None
+        else
+            let mutable pos = 0
+            let mutable longs = []
+            let mutable shorts = []
+            let mutable literals = []
+            let mutable arity: SigArity option = None
+            let mutable go = true
+            let n = s.Length
+            let at i = if i < n then s[i] else '\000'
+
+            let readWhile (i: int) (pred: char -> bool) =
+                let mutable j = i
+
+                while j < n && pred s[j] do
+                    j <- j + 1
+
+                j
+
+            while go do
+                // one spelling, `+x` toggles skipped (fzf)
+                if at pos = '+' then
+                    pos <- readWhile pos (fun c -> c <> ' ' && c <> ',')
+                elif at pos = '-' then
+                    let dashes = if at (pos + 1) = '-' then 2 else 1
+                    let st = pos + dashes
+                    let e = readWhile st (fun c -> System.Char.IsLetterOrDigit c || c = '-' || c = '_' || c = '?' || c = '#' || c = '@')
+                    let name = s.Substring(st, e - st)
+
+                    if name = "" || (name.Length > 1 && not (System.Char.IsLetterOrDigit name[0])) then
+                        go <- false
+                    else
+                        if dashes = 2 then
+                            if legalLong name then longs <- longs @ [ name ]
+                        elif name.Length = 1 then
+                            if legalShort name then shorts <- shorts @ [ name ]
+                        elif legalLong name then
+                            literals <- literals @ [ "-" + name ]
+
+                        pos <- e
+                        // the value shape glued to the spelling
+                        if at pos = '[' then
+                            arity <- Some AOpt
+                            pos <- readWhile pos (fun c -> c <> ' ' && c <> ',')
+                        elif at pos = '=' then
+                            arity <- Some AOne
+                            pos <- readWhile pos (fun c -> c <> ' ' && c <> ',')
+                        elif at pos = ' ' && at (pos + 1) <> ' ' && at (pos + 1) <> '-' && at (pos + 1) <> '\000' then
+                            // ` <x>`, ` VALUE`, ` [X]`, ` cmd :`, cobra's
+                            // ` string   doc` — one word, then a gap,
+                            // a comma, a colon or the end of the line
+                            let ts = pos + 1
+                            let te = readWhile ts (fun c -> c <> ' ' && c <> ',')
+                            let tok = s.Substring(ts, te - ts)
+                            let tail = s.Substring te
+                            let gapAfter = tail = "" || tail.StartsWith "  " || tail.StartsWith ", " || tail.StartsWith "," || tail.StartsWith " :" || tail.StartsWith ":"
+
+                            let placeholder =
+                                (tok.StartsWith "<" && tok.TrimEnd(':').EndsWith ">")
+                                || (tok.StartsWith "[" && tok.EndsWith "]")
+                                || allCaps (tok.TrimEnd(':', ','))
+                                || tok = "..."
+                                || (gapAfter
+                                    && tok.Length > 0
+                                    && System.Char.IsLower tok[0]
+                                    && tok.TrimEnd(':', ',') |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || "|-_.[]<>=".Contains c))
+
+                            // az's `[Required]` marks the flag, not a value
+                            if tok = "[Required]" then
+                                pos <- te
+                            elif placeholder then
+                                arity <- Some(if tok.StartsWith "[" then AOpt else AOne)
+                                pos <- te
+
+                        // the next spelling: `, -x`, ` | -x`, `|-x`, `, `
+                        let rest = s.Substring pos
+
+                        if rest.StartsWith ", -" || rest.StartsWith ",-" then
+                            pos <- pos + (if rest.StartsWith ", " then 2 else 1)
+                        elif rest.StartsWith " | -" then
+                            pos <- pos + 3
+                        elif rest.StartsWith "|-" then
+                            pos <- pos + 1
+                        elif rest.StartsWith " -" && not (rest.StartsWith "  ") then
+                            // journalctl's `-h --help`, az's `--uri --url -u`
+                            // (no comma)
+                            pos <- pos + 1
+                        elif longs.IsEmpty && not shorts.IsEmpty && rest.StartsWith "  " && rest.TrimStart().StartsWith "--" then
+                            // a box table's `-d    --dates` (the column gap)
+                            pos <- pos + (rest.Length - rest.TrimStart().Length)
+                        else
+                            go <- false
+                else
+                    go <- false
+
+            if longs.IsEmpty && shorts.IsEmpty && literals.IsEmpty then
+                None
+            else
+                let doc = s.Substring(min pos n).Trim().TrimStart(':').Trim()
+
+                // the tool's own options end at this one (python's `-c cmd`,
+                // `-m mod`) [D:sig-arity]
+                let arity =
+                    if doc.Contains "terminates option list" then Some ARest else arity
+
+                Some
+                    { Long = List.tryHead longs |> Option.defaultValue ""
+                      Shorts = shorts
+                      Literals = literals
+                      Arity = arity
+                      Doc = (if doc = "" then None else Some doc) }
+
+    // every long a row names beyond its first is an alias of it (`-n,
+    // --quiet, --silent`; az's `--name --alias -n`): they become their own
+    // flags with the row's arity
+    let private rowAliases (line: string) : Flag list =
+        let s = line.TrimStart().Replace("--[no-]", "--")
+
+        if not (s.StartsWith "-") then
+            []
+        else
+            // spellings up to the doc gap only
+            let head =
+                match s.IndexOf "  " with
+                | -1 -> s
+                | i -> s.Substring(0, i)
+
+            System.Text.RegularExpressions.Regex.Matches(head, "(?:^|[\\s,|])--([A-Za-z0-9][A-Za-z0-9_-]*)")
+            |> Seq.map (fun m -> m.Groups[1].Value)
+            |> Seq.distinct
+            |> List.ofSeq
+            |> function
+                | _ :: aliases -> aliases |> List.map (fun l -> { noFlag with Long = l })
+                | [] -> []
 
     let private parseHelp (text: string) : Flag list =
-        // `  -o, --outfile <x>  desc` / `  --stdout  desc` — the usual
-        // help shapes; unreliable by design, a starting point
-        let flags = System.Collections.Generic.Dictionary<string, Flag>()
-
-        // Go-flag rows (micro): `-clean` / `-config-dir dir`, description
-        // on the next line — single-dash multi-char is a long (Go accepts
-        // --clean too); the last flag with no doc adopts a following
-        // deeper prose line
-        let mutable lastDocless: string option = None
+        let flags = ResizeArray<Flag>()
+        // a docless row adopts the next deeper prose line (Go's flag
+        // package, git's -h)
+        let mutable docless = -1
+        let mutable rowIndent = 0
 
         for raw in text.Split '\n' do
             // broot draws its options as a box table — the border and
             // column glyphs (U+2500..U+257F) become spaces and the rows
             // collapse into the standard `-d  --dates  desc` shape
-            let line = System.Text.RegularExpressions.Regex.Replace(raw, "[\u2500-\u257F]", " ")
+            let line = System.Text.RegularExpressions.Regex.Replace(raw, "[─-╿]", " ")
+            let indent = line.Length - line.TrimStart().Length
 
-            let goRow =
-                System.Text.RegularExpressions.Regex.Match(line, "^\\s*-([a-zA-Z][a-zA-Z0-9-]+)( \\S+)?\\s*$")
+            match parseRow line with
+            | None when docless >= 0 && line.Trim() <> "" && indent > rowIndent ->
+                flags[docless] <- { flags[docless] with Doc = Some(line.Trim()) }
+                docless <- -1
+            | None -> if line.Trim() <> "" then docless <- -1
+            | Some f ->
+                docless <- (if f.Doc.IsNone then flags.Count else -1)
+                rowIndent <- indent
+                let aliases = rowAliases line |> List.map (fun a -> { a with Arity = f.Arity; Doc = f.Doc })
+                flags.Add f
+                flags.AddRange aliases
 
-            let m =
-                System.Text.RegularExpressions.Regex.Match(
-                    line,
-                    // `+s, --no-sort` — fzf-style off toggles: the +x is
-                    // skipped, never recorded as a short. The tail is
-                    // walked procedurally: az spells rows as
-                    // `--flag --alias -s [Required] : doc`
-                    "^\\s+(?:(?:-(\\w)|\\+\\w),?\\s+)?--([a-zA-Z][a-zA-Z0-9-]*)(.*)$"
-                )
+                // python's `-h : … (also -? or --help)`: the doc names more
+                // spellings of the same flag
+                match f.Doc with
+                | Some d ->
+                    for m in System.Text.RegularExpressions.Regex.Matches(d, "\\(also ([^)]*)\\)") do
+                        for t in m.Groups[1].Value.Split([| ' '; ',' |], StringSplitOptions.RemoveEmptyEntries) do
+                            if t.StartsWith "--" && legalLong (t.Substring 2) then
+                                flags.Add { noFlag with Long = t.Substring 2; Arity = f.Arity }
+                            elif t.Length = 2 && t[0] = '-' && legalShort (t.Substring 1) then
+                                flags.Add { noFlag with Shorts = [ t.Substring 1 ]; Arity = f.Arity }
+                | None -> ()
 
-            if goRow.Success && not m.Success then
-                let long = goRow.Groups[1].Value
+        mergeFlags [ List.ofSeq flags ]
 
-                if legalLong long && not (flags.ContainsKey long) then
-                    flags[long] <-
-                        { Long = long
-                          Short = None
-                          Doc = None }
+    // usage brackets: `[-w|--workspace <name>]`, `[--json]`, git's
+    // `[-C <path>] [--exec-path[=<path>]] [-p | --paginate | -P]`
+    let private parseUsage (text: string) : Flag list =
+        let flags = ResizeArray<Flag>()
 
-                    lastDocless <- Some long
-            elif
-                not m.Success
-                && line.StartsWith "        "
-                && line.Trim() <> ""
-                && not (line.TrimStart().StartsWith "-")
-            then
-                match lastDocless with
-                | Some l when flags.ContainsKey l && flags[l].Doc.IsNone ->
-                    flags[l] <-
-                        { flags[l] with
-                            Doc = Some(line.Trim()) }
+        for m in System.Text.RegularExpressions.Regex.Matches(text, "\\[((?:[^\\[\\]]|\\[[^\\[\\]]*\\])*)\\]") do
+            let inner = m.Groups[1].Value.Trim()
 
-                    lastDocless <- None
-                | _ -> ()
-            elif m.Success then
-                let long = m.Groups[2].Value
+            if inner.StartsWith "-" then
+                for alt in inner.Split '|' do
+                    let a = alt.Trim()
 
-                let mutable short = if m.Groups[1].Success then Some m.Groups[1].Value else None
+                    if a.StartsWith "-" then
+                        // a nested `[-w|--workspace <x> ...]` repeat is the same flag
+                        match parseRow ("  " + a.Replace("--[no-]", "--")) with
+                        | Some f -> flags.Add { f with Doc = None }
+                        | None -> ()
 
-                let aliases = ResizeArray<string>()
-
-                // walk the tail: aliases and shorts join the flag, arg
-                // shapes (=X, <x>, [X], bare all-caps) are skipped, and the
-                // doc starts at az's `:` or the first prose word
-                let mutable rest = m.Groups[3].Value.TrimStart()
-                let mutable walking = true
-
-                while walking && rest <> "" do
-                    let tok, tail =
-                        match rest.IndexOf ' ' with
-                        | -1 -> rest, ""
-                        | i -> rest.Substring(0, i), rest.Substring(i + 1).TrimStart()
-
-                    if tok = "," then
-                        // claude spells `--allowedTools, --allowed-tools <x>` —
-                        // the bare comma between aliases is separator noise
-                        rest <- tail
-                    elif tok.StartsWith "--" && legalLong (tok.TrimEnd(',').TrimStart '-') then
-                        aliases.Add(tok.TrimEnd(',').TrimStart '-')
-                        rest <- tail
-                    elif tok.Length = 2 && tok[0] = '-' && System.Char.IsLetterOrDigit tok[1] then
-                        if short.IsNone then
-                            short <- Some(string tok[1])
-
-                        rest <- tail
-                    elif
-                        tok.StartsWith "="
-                        || (tok.StartsWith "<" && tok.EndsWith ">")
-                        || (tok.StartsWith "[" && tok.EndsWith "]")
-                        || (tok.Length > 1 && tok |> Seq.forall (fun c -> System.Char.IsUpper c || c = '_'))
-                    then
-                        rest <- tail
-                    elif tok = ":" then
-                        rest <- tail
-                        walking <- false
-                    else
-                        walking <- false
-
-                let doc = rest.TrimStart(':', ' ')
-
-                let record l =
-                    if legalLong l && not (flags.ContainsKey l) then
-                        flags[l] <-
-                            { Long = l
-                              Short = (if l = long then short else None)
-                              Doc = (let d = doc.Trim() in if d = "" then None else Some d) }
-
-                record long
-
-                for a in aliases do
-                    record a
-
-                lastDocless <- None
-
-        flags.Values |> List.ofSeq
+        mergeFlags [ List.ofSeq flags ]
 
     // the last-resort pass [D:sig-version-probe]: a usage-table help
     // (weir's own: `weir check [--json] <script>`) has no flag rows, so
@@ -6170,145 +6679,339 @@ module SigGen =
         |> Seq.map (fun m -> m.Groups[1].Value)
         |> Seq.filter legalLong
         |> Seq.distinct
-        |> Seq.map (fun long ->
-            { Long = long
-              Short = None
-              Doc = None })
+        |> Seq.map (fun long -> { noFlag with Long = long })
         |> List.ofSeq
 
-    // subcommand tokens advertised by a help page: indented first words
-    // under any heading ending in "commands:" (Cobra's "Available
-    // Commands:", kubectl's grouped "Basic Commands (Beginner):").
-    // `help`/`completion` are noise on every such tool and are skipped.
-    let private subcommandTokens (helpText: string) : string list =
+    // fish `complete` lines, both spellings: `-c tool -s x -l long -o old
+    // -d desc -r` and `--command tool --short-option x --long-option long
+    // --old-option old --description desc --require-parameter`; `-r`/`-x`
+    // (and their long forms) mark a value
+    let private parseFish (text: string) (tool: string) : Flag list =
+        let flags = ResizeArray<Flag>()
+
+        for line in text.Split '\n' do
+            let t = line.Trim()
+
+            if t.StartsWith "complete " then
+                let tokens =
+                    System.Text.RegularExpressions.Regex.Matches(t, "'(?:[^'\\\\]|\\\\.)*'|\"[^\"]*\"|\\S+")
+                    |> Seq.map (fun m -> m.Value.Trim([| '\''; '"' |]))
+                    |> List.ofSeq
+
+                let rec walk (cmd: string option) (f: Flag) toks =
+                    match toks with
+                    | ("-c" | "--command") :: v :: rest -> walk (Some v) f rest
+                    | ("-l" | "--long-option") :: v :: rest -> walk cmd { f with Long = (if f.Long = "" then v else f.Long) } rest
+                    | ("-s" | "--short-option") :: v :: rest -> walk cmd { f with Shorts = f.Shorts @ [ v ] } rest
+                    | ("-o" | "--old-option") :: v :: rest -> walk cmd { f with Literals = f.Literals @ [ "-" + v ] } rest
+                    | ("-d" | "--description") :: v :: rest -> walk cmd { f with Doc = Some v } rest
+                    | ("-r" | "--require-parameter" | "-x" | "--exclusive") :: rest -> walk cmd { f with Arity = Some AOne } rest
+                    | ("-n" | "--condition" | "-a" | "--arguments" | "-w" | "--wraps" | "-k" | "--keep-order") :: _ :: rest ->
+                        walk cmd f rest
+                    | _ :: rest -> walk cmd f rest
+                    | [] -> cmd, f
+
+                match walk None noFlag tokens with
+                | Some c, f when c = tool ->
+                    let f =
+                        { f with
+                            Shorts = f.Shorts |> List.filter legalShort
+                            Literals = f.Literals |> List.filter (fun l -> legalLong (l.Substring 1)) }
+
+                    if (f.Long <> "" && legalLong f.Long) || not f.Shorts.IsEmpty || not f.Literals.IsEmpty then
+                        flags.Add(if legalLong f.Long then f else { f with Long = "" })
+                | _ -> ()
+
+        mergeFlags [ List.ofSeq flags ]
+
+    // cobra's `__complete <path> -`: `--flag<TAB>doc` lines, a flag's
+    // short right after it with the same doc, then the `:N` directive
+    let private parseCobraComplete (text: string) : Flag list =
+        let rows =
+            text.Split '\n'
+            |> Array.choose (fun l ->
+                let name, doc =
+                    match l.IndexOf '\t' with
+                    | -1 -> l.Trim(), ""
+                    | i -> l.Substring(0, i).Trim(), l.Substring(i + 1).Trim()
+
+                if name.StartsWith "-" && not (name.StartsWith ":") then Some(name, doc) else None)
+            |> List.ofArray
+
+        let rec go (acc: Flag list) rows =
+            match rows with
+            | [] -> List.rev acc
+            | (n: string, d) :: rest when n.StartsWith "--" ->
+                let long = n.Substring 2
+
+                match rest with
+                | (s: string, d2) :: rest' when s.Length = 2 && not (s.StartsWith "--") && d2 = d ->
+                    go ({ noFlag with Long = long; Shorts = [ s.Substring 1 ]; Doc = (if d = "" then None else Some d) } :: acc) rest'
+                | _ -> go ({ noFlag with Long = long; Doc = (if d = "" then None else Some d) } :: acc) rest
+            | (s, d) :: rest when s.Length = 2 ->
+                go ({ noFlag with Shorts = [ s.Substring 1 ]; Doc = (if d = "" then None else Some d) } :: acc) rest
+            | _ :: rest -> go acc rest
+
+        go [] rows
+        |> List.map (fun f -> { f with Shorts = f.Shorts |> List.filter legalShort })
+        |> List.filter (fun f -> (f.Long = "" || legalLong f.Long) && (f.Long <> "" || not f.Shorts.IsEmpty))
+        |> fun fs -> mergeFlags [ fs ]
+
+    // git's `--git-completion-helper`: one line of `--x`, `--y=` (a
+    // value), then `--` and the `--no-x` forms
+    let private parseGitHelper (text: string) : Flag list =
+        text.Split([| ' '; '\n'; '\t' |], StringSplitOptions.RemoveEmptyEntries)
+        |> Array.choose (fun t ->
+            if t.StartsWith "--" && t.Length > 2 then
+                let v = t.EndsWith "="
+                let name = t.Substring(2).TrimEnd '='
+
+                if legalLong name then
+                    Some { noFlag with Long = name; Arity = Some(if v then AOne else ANone) }
+                else
+                    None
+            else
+                None)
+        |> List.ofArray
+        |> fun fs -> mergeFlags [ fs ]
+
+    // V8's `--v8-options`: `  --name (doc)` then `type: bool  default: …`
+    let private parseV8 (text: string) : Flag list =
+        let lines = text.Split '\n'
+
+        [ for i in 0 .. lines.Length - 1 do
+              let m = System.Text.RegularExpressions.Regex.Match(lines[i], "^  --([a-z0-9][a-z0-9_-]*) \\((.*)\\)\\s*$")
+
+              if m.Success then
+                  let ty =
+                      if i + 1 < lines.Length then
+                          let t = System.Text.RegularExpressions.Regex.Match(lines[i + 1], "type: (\\S+)")
+                          if t.Success then t.Groups[1].Value else ""
+                      else
+                          ""
+
+                  yield
+                      { noFlag with
+                          Long = m.Groups[1].Value.Replace('_', '-')
+                          Arity = Some(if ty = "bool" || ty = "maybe_bool" then ANone else AOne)
+                          Doc = Some m.Groups[2].Value } ]
+        |> fun fs -> mergeFlags [ fs ]
+
+    // gpg's `--dump-options`: one `--name` per line
+    let private parseDump (text: string) : Flag list =
+        text.Split '\n'
+        |> Array.choose (fun l ->
+            let t = l.Trim()
+
+            if t.StartsWith "--" && legalLong (t.Substring 2) then
+                Some { noFlag with Long = t.Substring 2 }
+            else
+                None)
+        |> List.ofArray
+        |> fun fs -> mergeFlags [ fs ]
+
+    // find's predicates: single-dash words, several per line, a value
+    // when an all-caps word or N follows (`-name PATTERN`, `-mtime N`)
+    let private parsePredicates (text: string) : Flag list =
+        [ for line in text.Split '\n' do
+              let toks = line.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries)
+
+              for i in 0 .. toks.Length - 1 do
+                  let t = toks[i]
+
+                  if t.Length > 2 && t[0] = '-' && t[1] <> '-' && legalLong (t.Substring 1) && System.Char.IsLower t[1] then
+                      let next = if i + 1 < toks.Length then toks[i + 1] else ""
+
+                      let arity =
+                          if next = "COMMAND" then ARest
+                          elif next <> "" && (allCaps next || next.StartsWith "[" || next = "N" || next.StartsWith "N[") then AOne
+                          else ANone
+
+                      yield { noFlag with Literals = [ t ]; Arity = Some arity } ]
+        |> fun fs -> mergeFlags [ fs ]
+
+    // a heading names a command table: non-indented, mentions commands,
+    // never options/flags/usage, ends with a colon or is an all-caps banner
+    let private isCommandHeading (line: string) =
+        let low = line.ToLowerInvariant()
+
+        line.Length > 0
+        && not (System.Char.IsWhiteSpace line[0])
+        && not (line.StartsWith "-")
+        && low.Contains "command"
+        && not (low.Contains "option" || low.Contains "flag" || low.Contains "usage")
+        && (line.TrimEnd().EndsWith ":" || line = line.ToUpperInvariant())
+
+    // the phantom filter [D:sig-sources]: the words a help page lists as
+    // its commands — rows at the table's own indent whose first word
+    // starts with a letter and ends at a gap, a colon (gh's `auth:`), an
+    // argument shape (systemctl's `list-units [PATTERN...]`) or the line;
+    // a prose line, a description column, a deeper continuation, a flag
+    // row never count. npm's comma-separated table counts word by word.
+    let private commandTokens (helpText: string) : string list =
         let subs = ResizeArray<string>()
         let mutable inSection = false
+        let mutable indent = -1
+
+        let word (t: string) =
+            t.Length > 1
+            && System.Char.IsLower t[0]
+            && t |> Seq.forall (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
 
         for raw in helpText.Split '\n' do
             let line = raw.TrimEnd()
 
-            // a heading is non-indented and names commands — with a
-            // colon (Cobra's "Available Commands:") or as an all-caps
-            // banner (jira's "MAIN COMMANDS" / "OTHER COMMANDS")
-            if
-                line.Length > 0
-                && not (System.Char.IsWhiteSpace line[0])
-                && line.ToLowerInvariant().Contains "command"
-                && (line.EndsWith ":" || line = line.ToUpperInvariant())
-            then
+            if isCommandHeading line then
                 inSection <- true
-            elif line = "" || (line.Length > 0 && not (System.Char.IsWhiteSpace line[0])) then
+                indent <- -1
+            elif line.Length > 0 && not (System.Char.IsWhiteSpace line[0]) then
                 inSection <- false
+            elif inSection && line.Trim() <> "" then
+                let ind = line.Length - line.TrimStart().Length
 
-            if inSection && line.StartsWith "  " then
-                // gh spells its command tables `auth:  Authenticate…` —
-                // the trailing colon is punctuation, not the token
-                let tok = (line.TrimStart().Split(' ') |> Array.head).TrimEnd ':'
+                if indent < 0 then
+                    indent <- ind
 
-                if
-                    tok.Length > 1
-                    && tok
-                       |> Seq.forall (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
-                    && not (subs.Contains tok)
-                then
-                    subs.Add tok
+                if ind = indent then
+                    let body = line.TrimStart()
+
+                    if body.Contains ", " && body.Split(',') |> Array.forall (fun p -> word (p.Trim()) || p.Trim() = "") then
+                        for p in body.Split ',' do
+                            let w = p.Trim()
+
+                            if word w && not (subs.Contains w) then
+                                subs.Add w
+                    else
+                        let m =
+                            System.Text.RegularExpressions.Regex.Match(body, "^([a-z][a-z0-9-]*)\\*?:?(?:$|  |: | \\[| <| \\{| [A-Z][A-Z0-9_.]*(?:\\.\\.\\.)?(?: |$))")
+
+                        if m.Success then
+                            let w = m.Groups[1].Value
+
+                            if word w && not (subs.Contains w) then
+                                subs.Add w
 
         List.ofSeq subs
 
-    // the subcommand walk [D:sig-version-probe]: Cobra-family tools
-    // (jira, kubectl) keep the real flags under `tool sub --help` — the
-    // flat surface unions them (flags checked across the whole line is
-    // the flat model's own charter). Depth 2 (`jira issue list`),
-    // budget-capped; structured rows only, never the harvest (a
-    // sub-page harvest over-collects).
-    // provenance kept [D:scoped-sigs]: flags group under their level-1
-    // subcommand (deeper levels flatten into their root's group), so
-    // the emitter can scope. Depth 4 (`kustomize edit add resource`),
-    // breadth-first under the budget — levels complete in order, so a
-    // big tool degrades to shallow-but-wide, never deep-but-lopsided
-    let private walkSubFlags (tool: string) (topHelp: string) : (string * Flag list) list * int * int =
-        let groups = System.Collections.Generic.Dictionary<string, ResizeArray<Flag>>()
-        let order = ResizeArray<string>()
-        let mutable budget = 60
-        let mutable probed = 0
-        let mutable answered = 0
+    // the usage line ends the tool's own options at the first operand
+    // [D:sig-operand-stop]: `docker run [OPTIONS] IMAGE [COMMAND] [ARG...]`,
+    // `python3 [option] ... [-c cmd | -m mod | file | -] [arg] ...`,
+    // `node [options] [ script.js ] [arguments]`, `ssh … destination
+    // [command [argument ...]]` — an operand followed by the arguments it
+    // hands on
+    let private stopsAtOperand (helpText: string) =
+        let usage =
+            helpText.Split '\n'
+            |> Array.tryFindIndex (fun l -> l.TrimStart().ToLowerInvariant().StartsWith "usage")
+            |> Option.map (fun i ->
+                let l = (helpText.Split '\n')[i]
+                let after = l.Substring(l.ToLowerInvariant().IndexOf "usage" + 5).TrimStart(':', ' ')
 
-        // breadth-first: level 1 completes before level 2 spends a
-        // probe — depth-first lets an early subcommand's children starve
-        // the rest of docker's forty top-level commands
-        // help/completion are advertised everywhere and walk nowhere
-        let noise sub = sub = "help" || sub = "completion"
+                if after.Trim() = "" && i + 1 < (helpText.Split '\n').Length then
+                    (helpText.Split '\n')[i + 1]
+                else
+                    after)
+            |> Option.defaultValue ""
 
-        let mutable level =
-            [ for sub in subcommandTokens topHelp do
-                  if not (noise sub) then
-                      "", sub ]
+        System.Text.RegularExpressions.Regex.IsMatch(
+            usage,
+            "(?i)(\\bcommand\\]?\\s+\\[?[\\w-]*arg(s|uments?)?\\b|\\[arg\\]\\s*\\.\\.\\.|\\[arguments\\]|\\[args\\.\\.\\.\\])"
+        )
 
-        for _ in 1..4 do
-            let next = ResizeArray<string * string>()
+    // ---- the walk -------------------------------------------------------
 
-            for prefix, sub in level do
-                if budget > 0 then
-                    budget <- budget - 1
-                    probed <- probed + 1
+    // one walked case: its path words, own flags, and whether its first
+    // operand ends the tool's options
+    type private Node =
+        { Path: string list
+          Flags: Flag list
+          Stop: bool
+          // other spellings of the same command (cobra's Aliases:
+          // `eval-all, ea`; `docker container run, docker run`) — recorded
+          // as cases of the same record, never probed
+          Aliases: string list list }
 
-                    match runTool tool $"{prefix}{sub} --help" with
-                    | None -> ()
-                    | Some subHelp ->
-                        answered <- answered + 1
-                        let path = $"{prefix}{sub}"
+    let private aliasesOf (toolName: string) (path: string list) (page: string) : string list list =
+        let lines = page.Split '\n'
 
-                        if not (groups.ContainsKey path) then
-                            groups[path] <- ResizeArray<Flag>()
-                            order.Add path
+        match lines |> Array.tryFindIndex (fun l -> let t = l.Trim() in t = "Aliases:" || t = "ALIASES") with
+        | None -> []
+        | Some i ->
+            lines
+            |> Array.skip (i + 1)
+            |> Array.takeWhile (fun l -> l.StartsWith " " && l.Trim() <> "")
+            |> Array.collect (fun l -> l.Split ',')
+            |> Array.map (fun e -> e.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries) |> List.ofArray)
+            |> Array.choose (fun ws ->
+                match ws with
+                | [ w ] -> Some((List.truncate (path.Length - 1) path) @ [ w ])
+                | t :: rest when t = toolName && not rest.IsEmpty -> Some rest
+                | _ -> None)
+            |> Array.filter (fun a -> a <> path && a |> List.forall (fun w -> w.Length > 0 && System.Char.IsLetter w[0]))
+            |> Array.distinct
+            |> List.ofArray
 
-                        groups[path].AddRange(parseHelp subHelp)
+    // depth-first per top-level command, each with its own budget, so a
+    // tool with forty commands still reaches `gh pr create` and `docker
+    // compose up` [D:sig-sources]. A page identical to its parent's is the
+    // tool ignoring the word (systemctl, whose verbs share one help): no
+    // case, no descent. `flagsAt` reads one node's flags from its page.
+    let private walkTree
+        (toolName: string)
+        (topHelp: string)
+        (probeHelp: string list -> string option)
+        (flagsAt: string list -> string -> Flag list)
+        : Node list * int =
+        // help/completion are listed everywhere and walk nowhere
+        let noise k = k = "help" || k = "completion"
 
-                        for deeper in subcommandTokens subHelp do
-                            if not (noise deeper) then
-                                next.Add($"{prefix}{sub} ", deeper)
+        // one top-level command's subtree, depth-first, on its own budget
+        let walkTop (top: string) : Node list * int =
+            let nodes = ResizeArray<Node>()
+            let budget = ref 40
+            let probed = ref 0
 
-            level <- List.ofSeq next
+            let rec visit (path: string list) (parentPage: string) =
+                if budget.Value > 0 && path.Length <= 4 then
+                    budget.Value <- budget.Value - 1
+                    probed.Value <- probed.Value + 1
 
-        [ for root in order do
-              if groups[root].Count > 0 then
-                  root, List.ofSeq groups[root] ],
-        probed,
-        answered
+                    match probeHelp path with
+                    | Some page when page.Trim() <> parentPage.Trim() && page.Trim() <> topHelp.Trim() ->
+                        let kids = commandTokens page |> List.filter (fun k -> not (noise k) && not (List.contains k path))
 
-    // the source label rides the sig comment — a harvested surface is
-    // weaker lineage than parsed rows, and says so
-    let private helpSurface
-        (tool: string)
-        (topHelp: string option)
-        (harvestOnly: string option)
-        : string * Flag list * (string * Flag list) list =
-        match topHelp with
-        | None ->
-            match harvestOnly with
-            | Some dump ->
-                match harvestHelp dump with
-                | [] -> "help", [], []
-                | fs -> "help-scan", fs, []
-            | None -> "help", [], []
-        | Some text ->
-            let source, top =
-                match parseHelp text with
-                | [] -> "help-scan", harvestHelp text
-                | fs -> "help", fs
+                        nodes.Add
+                            { Path = path
+                              Flags = flagsAt path page
+                              Stop = kids.IsEmpty && stopsAtOperand page
+                              Aliases = aliasesOf toolName path page }
 
-            match walkSubFlags tool text with
-            // the walk's outcome is observable either way [D:sig-version-probe]:
-            // "help" alone cannot say whether subcommands were never
-            // advertised, never answered, or answered nothing — the counts do
-            | [], 0, _ -> source, top, []
-            | [], probed, answered ->
-                $"{source} (walked {probed} subcommand help(s), {answered} answered, none yielded flags)", top, []
-            | groups, _, _ -> source + "+subs", top, groups
+                        for k in kids do
+                            visit (path @ [ k ]) page
+                    | _ -> ()
+
+            visit [ top ] topHelp
+            List.ofSeq nodes, probed.Value
+
+        // the subtrees are independent: eight at a time (gh and docker
+        // spend seconds per hundred probes), joined in the tables' order,
+        // so the signature is the same however the probes interleave
+        let tops = commandTokens topHelp |> List.filter (noise >> not) |> List.truncate 100 |> Array.ofList
+        let results = Array.create tops.Length ([], 0)
+
+        System.Threading.Tasks.Parallel.For(
+            0,
+            tops.Length,
+            System.Threading.Tasks.ParallelOptions(MaxDegreeOfParallelism = 8),
+            fun i -> results[i] <- walkTop tops[i]
+        )
+        |> ignore
+
+        (results |> Array.toList |> List.collect fst), (results |> Array.sumBy snd)
 
     let private fieldName (long: string) =
         // inverse kebab: dry-run -> dryRun
-        long.Split '-'
+        long.Split([| '-'; '_' |])
         |> Array.mapi (fun i part ->
             if i = 0 || part = "" then
                 part
@@ -6321,12 +7024,45 @@ module SigGen =
     let private escape (s: string) =
         (Eval.sanitizeTtyEcho (s.Replace("\r", ""))).Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n")
 
+    // where a tool's own fish completion sits: beside its install prefix
+    // (`<prefix>/bin/tool` -> `<prefix>/share/fish/…`), the PATH entry's
+    // and the real file's [D:sig-sources] — never another install's
+    let private shippedFish (tool: string) : string option =
+        let name = IO.Path.GetFileName tool
+
+        let resolved =
+            if tool.Contains '/' then
+                Some(IO.Path.GetFullPath tool)
+            else
+                Extern.resolveFile tool
+
+        let real (p: string) =
+            try
+                match IO.File.ResolveLinkTarget(p, true) with
+                | null -> p
+                | t -> t.FullName
+            with _ ->
+                p
+
+        match resolved with
+        | None -> None
+        | Some bin ->
+            [ bin; real bin ]
+            |> List.distinct
+            |> List.collect (fun b ->
+                match IO.Path.GetDirectoryName b |> Option.ofObj |> Option.bind (IO.Path.GetDirectoryName >> Option.ofObj) with
+                | Some prefix ->
+                    [ IO.Path.Combine(prefix, "share", "fish", "vendor_completions.d", name + ".fish")
+                      IO.Path.Combine(prefix, "share", "fish", "completions", name + ".fish") ]
+                | None -> [])
+            |> List.tryFind IO.File.Exists
+
     let generate (weirDir: string) (tool: string) : Result<string, string> =
         // Flag probes are safe on any tool; a bare word is not — `code
         // completion fish` opens VS Code on two files
         // [D:sig-version-probe]. Bare-word probes (completion fish, the
-        // version word) run only when the tool's own --help advertises
-        // that subcommand.
+        // version word, a subcommand's help) run only for words the tool's
+        // own --help lists as commands.
         match Contracts.probeVersionFlag Proc.resolveProg tool with
         | Contracts.ToolAbsent ->
             // a file that exists but would not run is a different wrong
@@ -6337,16 +7073,27 @@ module SigGen =
             else
                 Error $"'{tool}' is not on PATH — generation probes the installed binary"
         | rung1 ->
-            let topHelp = runTool tool "--help"
+            let topHelp = runTool tool [ "--help" ]
 
             // exit-0 help only gates and walks; a refused --help still
-            // yields its usage dump to the harvest below
+            // yields its usage dump to the harvest below, and a tool that
+            // answers `-h` or `-help` instead gets those rows
             let harvestOnly =
                 match topHelp with
                 | Some _ -> None
-                | None -> runToolAnyExit tool "--help"
+                | None -> runToolAnyExit tool [ "--help" ]
 
-            let advertised = topHelp |> Option.map subcommandTokens |> Option.defaultValue []
+            let topHelp =
+                match topHelp with
+                | Some t -> Some t
+                | None ->
+                    [ [ "-h" ]; [ "-help" ] ]
+                    |> List.tryPick (fun a ->
+                        match runTool tool a with
+                        | Some t when (parseHelp t).Length > 0 -> Some t
+                        | _ -> None)
+
+            let advertised = topHelp |> Option.map commandTokens |> Option.defaultValue []
 
             // a tool that refuses --version has no recorded identity
             // [D:sig-version-probe] — the refusal's usage dump is not a
@@ -6362,34 +7109,282 @@ module SigGen =
 
             let fishText =
                 if List.contains "completion" advertised then
-                    runTool tool "completion fish"
+                    runTool tool [ "completion"; "fish" ]
                 else
                     None
 
-            let source, flags, subGroups =
+            let help = topHelp |> Option.defaultValue ""
+            let helpRows = parseHelp help
+
+            // the cobra endpoint: its fish script — printed, or the one it
+            // ships — calls `<tool> __complete`
+            let cobra =
                 match fishText with
-                | Some text when text.Contains "complete " ->
-                    match parseFish text tool with
-                    | [] -> helpSurface tool topHelp harvestOnly
-                    | fs -> "completion-fish", fs, []
-                | _ ->
-                    let shipped =
-                        [ $"/usr/share/fish/completions/{tool}.fish"
-                          $"/usr/share/fish/vendor_completions.d/{tool}.fish" ]
-                        |> List.tryFind IO.File.Exists
-
-                    match shipped with
+                | Some t -> t.Contains "__complete"
+                | None ->
+                    match shippedFish tool with
                     | Some f ->
-                        match parseFish (IO.File.ReadAllText f) tool with
-                        | [] -> helpSurface tool topHelp harvestOnly
-                        | fs -> "fish-file", fs, []
-                    | None -> helpSurface tool topHelp harvestOnly
+                        try
+                            (IO.File.ReadAllText f).Contains "__complete"
+                        with _ ->
+                            false
+                    | None -> false
 
-            match flags, subGroups with
+            let isGit =
+                match version with
+                | Some v -> v.StartsWith "git version "
+                | None -> false
+
+            // the full-help switches a help page names [D:sig-sources]
+            // (GnuPG's tools answer --dump-options without naming it)
+            let gnupg =
+                match version with
+                | Some v -> v.Contains "(GnuPG)"
+                | None -> false
+
+            let fullHelp =
+                [ "--help all", [ "--help"; "all" ], parseHelp
+                  "--help-all", [ "--help-all" ], parseHelp
+                  "--dump-options", [ "--dump-options" ], parseDump
+                  "--v8-options", [ "--v8-options" ], parseV8 ]
+                |> List.filter (fun (mention, _, _) -> help.Contains mention || (gnupg && mention = "--dump-options"))
+                |> List.choose (fun (mention, argv, parse) ->
+                    runTool tool argv |> Option.map (fun t -> mention, parse t))
+
+            // the convention [D:sig-conventions]: find's predicates (lines
+            // listing several single-dash words), Go's flag package (rows
+            // that are single-dash words, one per line, no `--long` rows)
+            let isGoRow (l: string) =
+                System.Text.RegularExpressions.Regex.IsMatch(l, "^\\s{0,4}-[A-Za-z][\\w.-]*( [A-Za-z][\\w.]*)?\\s*$")
+
+            let goRows = help.Split '\n' |> Array.filter isGoRow |> Array.length
+
+            let predicateLines =
+                help.Split '\n'
+                |> Array.filter (fun l ->
+                    l.StartsWith " "
+                    && not (isGoRow l)
+                    && (l.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                        |> Array.filter (fun t -> t.Length > 2 && t[0] = '-' && System.Char.IsLower t[1])
+                        |> Array.length) >= 2)
+                |> Array.length
+
+            let longRows = helpRows |> List.filter (fun f -> f.Long <> "") |> List.length
+
+            let convention =
+                if isGit || cobra then "gnu"
+                elif goRows >= 2 && longRows <= 2 then "go"
+                elif predicateLines >= 3 && longRows <= 3 then "find"
+                else "gnu"
+
+            // a Go row is a long under another dash count: one spelling per
+            // flag, single-letter ones too
+            let goFlags (fs: Flag list) =
+                fs
+                |> List.map (fun f ->
+                    let words = (f.Literals |> List.map (fun l -> l.TrimStart '-')) @ f.Shorts @ (if f.Long <> "" then [ f.Long ] else [])
+                    { f with Long = ""; Shorts = []; Literals = words |> List.distinct |> List.map (fun w -> "-" + w) })
+
+            let gitCwd () =
+                // git's helper needs a repository: an empty one in a temp
+                // dir, discarded after the probes
+                let d = IO.Path.Combine(IO.Path.GetTempPath(), $"weir-siggit-{System.Guid.NewGuid():N}")
+                IO.Directory.CreateDirectory(IO.Path.Combine(d, ".git", "objects")) |> ignore
+                IO.Directory.CreateDirectory(IO.Path.Combine(d, ".git", "refs")) |> ignore
+                IO.File.WriteAllText(IO.Path.Combine(d, ".git", "HEAD"), "ref: refs/heads/main\n")
+                d
+
+            let source, flags, nodes, unchecked, walkNote =
+                if isGit then
+                    // git [D:sig-sources]: its own builtin list; per builtin
+                    // the completion helper (longs, `=` a value) and `-h`
+                    // (shorts and arities). A builtin that passes an
+                    // unknown option on (log, show: revision options
+                    // outside parse-options) cannot be listed — unchecked
+                    let d = gitCwd ()
+
+                    try
+                        let run args = runIn (Some d) false tool args
+                        let runAny args = runIn (Some d) true tool args
+
+                        let builtins =
+                            run [ "--list-cmds=builtins" ]
+                            |> Option.map (fun t -> t.Split('\n', StringSplitOptions.RemoveEmptyEntries) |> Array.map (fun s -> s.Trim()) |> List.ofArray)
+                            |> Option.defaultValue []
+                            |> List.filter (fun c -> c.Length > 1 && System.Char.IsLower c[0] && c |> Seq.forall (fun ch -> System.Char.IsLower ch || System.Char.IsDigit ch || ch = '-'))
+                            |> List.truncate 200
+
+                        let mutable opened = []
+
+                        let nodes =
+                            builtins
+                            |> List.choose (fun c ->
+                                match run [ c; "--weir-probe-unknown"; "--git-completion-helper-all" ] with
+                                | Some _ ->
+                                    opened <- c :: opened
+                                    Some { Path = [ c ]; Flags = []; Stop = false; Aliases = [] }
+                                | None ->
+                                    // `-all` lists the hidden options too (--allow-empty)
+                                    match run [ c; "--git-completion-helper-all" ] with
+                                    | Some h when (parseGitHelper h).Length > 0 ->
+                                        let dashH =
+                                            runAny [ c; "-h" ]
+                                            |> Option.map (fun t -> mergeFlags [ parseHelp t; parseUsage t ])
+                                            |> Option.defaultValue []
+                                        let byLong = dashH |> List.filter (fun f -> f.Long <> "") |> List.map (fun f -> f.Long, f) |> Map.ofList
+
+                                        let helper =
+                                            parseGitHelper h
+                                            |> List.map (fun f ->
+                                                match Map.tryFind f.Long byLong with
+                                                | Some r -> { f with Shorts = r.Shorts; Doc = r.Doc; Arity = (if f.Arity = Some AOne then Some AOne else r.Arity |> Option.orElse f.Arity) }
+                                                | None -> f)
+
+                                        Some { Path = [ c ]; Flags = mergeFlags [ helper; dashH ]; Stop = false; Aliases = [] }
+                                    | _ -> None)
+
+                        let globals = mergeFlags [ parseUsage help; helpRows ]
+                        "git-helper", globals, nodes, List.rev opened, ""
+                    finally
+                        try
+                            IO.Directory.Delete(d, true)
+                        with _ ->
+                            ()
+                elif cobra then
+                    // cobra [D:sig-sources]: per command, `__complete <path> -`
+                    // lists its flags with shorts (plugins answer too), the
+                    // help page its arities and its subcommands
+                    let complete path = runTool tool ("__complete" :: path @ [ "-" ]) |> Option.map parseCobraComplete |> Option.defaultValue []
+
+                    let arityFrom (rows: Flag list) (fs: Flag list) =
+                        let byKey = rows |> List.map (fun f -> keyOf f, f) |> Map.ofList
+
+                        fs
+                        |> List.map (fun f ->
+                            match Map.tryFind (keyOf f) byKey with
+                            | Some r -> { f with Arity = f.Arity |> Option.orElse r.Arity; Doc = f.Doc |> Option.orElse r.Doc }
+                            | None -> f)
+
+                    let flagsAt path page =
+                        let rows = parseHelp page
+                        mergeFlags [ arityFrom rows (complete path); rows ]
+
+                    let nodes, probed = walkTree (IO.Path.GetFileName tool) help (fun p -> runTool tool (p @ [ "--help" ])) flagsAt
+                    let root = mergeFlags [ arityFrom helpRows (complete []); helpRows ]
+                    "cobra-complete", root, nodes, [], (if nodes.IsEmpty && probed > 0 then $" (walked {probed} subcommand help(s), none yielded a case)" else "")
+                else
+                    let fish =
+                        match fishText with
+                        | Some t when t.Contains "complete " ->
+                            match parseFish t (IO.Path.GetFileName tool) with
+                            | [] -> None
+                            | fs -> Some("completion-fish", fs)
+                        | _ ->
+                            shippedFish tool
+                            |> Option.bind (fun f ->
+                                match parseFish (IO.File.ReadAllText f) (IO.Path.GetFileName tool) with
+                                | [] -> None
+                                | fs -> Some("fish-file", fs))
+
+                    let full = fullHelp |> List.collect snd
+
+                    let source, top =
+                        match fish, fullHelp with
+                        | _, (mention, _) :: _ when not full.IsEmpty ->
+                            // `--help all` and `--help-all` are one source
+                            let label = mention.TrimStart('-').Replace(" ", "-")
+                            (if label = "help-all" then label else "help+" + label), mergeFlags [ full; helpRows ]
+                        | Some(label, fs), _ -> label, mergeFlags [ fs; helpRows ]
+                        | None, _ ->
+                            match topHelp with
+                            | Some _ when not helpRows.IsEmpty -> "help", helpRows
+                            | Some t ->
+                                match parseUsage t with
+                                | [] -> "help-scan", harvestHelp t
+                                | fs -> "help-scan", fs
+                            | None ->
+                                match harvestOnly with
+                                | Some dump ->
+                                    match harvestHelp dump with
+                                    | [] -> "help", []
+                                    | fs -> "help-scan", fs
+                                | None -> "help", []
+
+                    let top =
+                        match convention with
+                        | "go" -> goFlags top
+                        | "find" ->
+                            // the usage's options: `-L` whole, `-Olevel` a
+                            // letter with its value glued
+                            let usage =
+                                parseUsage help
+                                |> List.map (fun f ->
+                                    let glued, whole = f.Literals |> List.partition (fun l -> System.Text.RegularExpressions.Regex.IsMatch(l, "^-[A-Z][a-z]+$"))
+
+                                    { f with
+                                        Literals = whole @ (f.Shorts |> List.map (fun s -> "-" + s)) @ (glued |> List.map (fun l -> l.Substring(0, 2)))
+                                        Shorts = []
+                                        Arity = (if glued.IsEmpty then f.Arity else Some AOpt) })
+
+                            mergeFlags [ parsePredicates help; usage; top ]
+                        | _ -> top
+
+                    // a refused --help still lists its commands (npm exits 1
+                    // on a full page): the walk reads a recognized command
+                    // table from either [D:sig-sources]
+                    match topHelp |> Option.orElse harvestOnly with
+                    // an open surface [D:sig-open-tool]: the help says any
+                    // config key is a flag (npm's `npm <command>
+                    // --key=value`) — no list can be complete, so the tool
+                    // is recorded unchecked and its commands are not walked
+                    | Some t when t.Contains "--key=value" -> source, top, [], [ "" ], ""
+                    | Some t when convention = "gnu" ->
+                        // a sub page's rows: its own help, or its usage brackets (npm)
+                        let flagsAt _ page =
+                            match parseHelp page with
+                            | [] -> parseUsage page
+                            | fs -> mergeFlags [ fs; parseUsage page ]
+
+                        let nodes, probed = walkTree (IO.Path.GetFileName tool) t (fun p -> runTool tool (p @ [ "--help" ])) flagsAt
+
+                        let note =
+                            if nodes.IsEmpty && probed > 0 then
+                                $" (walked {probed} subcommand help(s), none yielded a case)"
+                            else
+                                ""
+
+                        source, top, nodes, [], note
+                    | _ -> source, top, [], [], ""
+
+            // GNU getopt's unique-prefix longs [D:sig-conventions]: the
+            // tool answers `--versio` exactly as `--version`. Asked only of
+            // a help that spells values getopt_long's way (`--file=ARCHIVE`)
+            // — a tool that launches on an unknown flag (an editor) is
+            // never handed one
+            let abbreviations =
+                convention = "gnu"
+                && not cobra
+                && not isGit
+                && System.Text.RegularExpressions.Regex.IsMatch(help, "--[a-z][a-z0-9-]*=[A-Z<\\[]")
+                && (match version with
+                    | Some v ->
+                        match runTool tool [ "--versio" ] with
+                        | Some out ->
+                            let first = out.Split('\n') |> Array.tryFind (fun l -> l.Trim() <> "") |> Option.defaultValue ""
+                            System.Text.RegularExpressions.Regex.Replace(first.Trim(), "\\s+", " ") = v
+                        | None -> false
+                    | None -> false)
+
+            // V8 documents `--no-flag` for every bool flag, node for its own
+            let negatable = fullHelp |> List.exists (fun (m, _) -> m = "--v8-options")
+
+            let topStop = advertised.IsEmpty && stopsAtOperand help
+
+            match flags, nodes with
             | [], [] ->
                 Error
                     $"'{tool}': found no flags to record (probed: completion fish, shipped fish files, --help) — write .weir/sigs/{tool}.weir by hand"
-            | flags, subGroups ->
+            | flags, nodes ->
                 // a path-y tool name must still mint a legal module
                 // name: letters and digits only, letter-first (an
                 // absolute path would otherwise mint `module /Users…`)
@@ -6403,55 +7398,123 @@ module SigGen =
                 let sb = System.Text.StringBuilder()
                 let line (l: string) = sb.AppendLine l |> ignore
 
-                // one record body, shared by the flat shape and every
-                // union case: same-camel spellings merge (the field
-                // carries one Wire for the spelling its kebab does not
-                // cover), shorts dedup within the record (per case —
-                // docker's -a on all and all-tags live apart), and
-                // keyword longs take the Flag suffix
+                // one record body [D:sig-arity]: a field per spelling group.
+                // The long names the field (Wire when its camel cannot
+                // round-trip, Flag suffix on a keyword), the first short
+                // rides [<Short>]; every further spelling — a second
+                // short, `-h`, a short-only row, a Go or find word — is its
+                // own field with a dash Wire. Shorts and words dedup within
+                // the record (per case — docker's -a on all and all-tags
+                // live apart); the arity is the field's type.
                 let renderRecord (name: string) (flags: Flag list) =
                     line $"type {name} = {{"
+                    let names = System.Collections.Generic.HashSet<string>()
+                    let taken = System.Collections.Generic.HashSet<string>()
 
-                    let flags =
-                        let taken = System.Collections.Generic.HashSet<string>()
+                    let uniq (n: string) =
+                        let n = if Set.contains n Weir.Parser.keywords then n + "Flag" else n
+                        let mutable c = n
+                        let mutable i = 2
 
-                        flags
-                        |> List.sortBy (fun f -> f.Long)
-                        |> List.map (fun f ->
-                            match f.Short with
-                            | Some sh when not (taken.Add sh) -> { f with Short = None }
-                            | _ -> f)
+                        while not (names.Add c) do
+                            c <- $"{n}{i}"
+                            i <- i + 1
 
-                    let grouped = flags |> List.groupBy (fun f -> fieldName f.Long) |> List.sortBy fst
+                        c
 
-                    for fname, group in grouped do
-                        match group |> List.tryPick (fun g -> g.Doc) with
+                    let ty =
+                        function
+                        | Some AOne -> "string"
+                        | Some AOpt -> "Option<string>"
+                        | Some ARest -> "seq<string>"
+                        | _ -> "bool"
+
+                    let field (doc: string option) (attrs: string list) (fname: string) (arity: SigArity option) =
+                        match doc with
                         | Some d -> line $"    /// {escape d}"
                         | None -> ()
-
-                        let fname =
-                            if Set.contains fname Weir.Parser.keywords then
-                                fname + "Flag"
-                            else
-                                fname
-
-                        let covered = Weir.Argv.kebabFlag fname
-
-                        let attrs =
-                            match group |> List.tryFind (fun g -> g.Long <> covered) with
-                            | Some g -> [ $"Wire \"{g.Long}\"" ]
-                            | None -> []
-
-                        let attrs =
-                            match group |> List.tryPick (fun g -> g.Short) with
-                            | Some sh when sh.Length = 1 && sh <> "h" -> attrs @ [ $"Short \"{sh}\"" ]
-                            | _ -> attrs
 
                         if not attrs.IsEmpty then
                             let joined = String.concat "; " attrs
                             line $"    [<{joined}>]"
 
-                        line $"    {fname}: bool"
+                        line $"    {fname}: {ty arity}"
+
+                    let spellingName (sp: string) =
+                        let bare = sp.TrimStart '-'
+
+                        if bare.Length = 1 then
+                            if System.Char.IsLetterOrDigit bare[0] then "short" + bare else $"shortX{int bare[0]:X}"
+                        else
+                            let camel = fieldName bare
+                            if camel <> "" && System.Char.IsLetter camel[0] then camel else "dashWord"
+
+                    // same-camel spellings share a field (claude's
+                    // --allowedTools and --allowed-tools): the kebab one is
+                    // the field's own, the other rides its one Wire
+                    let twins =
+                        flags
+                        |> List.filter (fun f -> f.Long <> "")
+                        |> List.groupBy (fun f -> fieldName f.Long)
+                        |> List.choose (fun (camel, g) ->
+                            match g with
+                            | [ _; _ ] when not (Set.contains camel Weir.Parser.keywords) ->
+                                match g |> List.partition (fun f -> f.Long = Weir.Argv.kebabFlag camel) with
+                                | [ own ], [ other ] -> Some(own.Long, other)
+                                | _ -> None
+                            | _ -> None)
+                        |> Map.ofList
+
+                    let twinned = twins |> Map.values |> Seq.map (fun f -> f.Long) |> Set.ofSeq
+
+                    let ordered =
+                        flags
+                        |> List.filter (fun f -> not (Set.contains f.Long twinned))
+                        |> List.sortBy (fun f -> (if f.Long <> "" then f.Long else keyOf f).TrimStart('-').ToLowerInvariant(), keyOf f)
+
+                    for f in ordered do
+                        let twin = Map.tryFind f.Long twins
+
+                        let f =
+                            match twin with
+                            | Some t ->
+                                { f with
+                                    Shorts = f.Shorts @ t.Shorts
+                                    Literals = f.Literals @ t.Literals
+                                    Doc = f.Doc |> Option.orElse t.Doc }
+                            | None -> f
+
+                        let shorts = f.Shorts |> List.filter (fun s -> taken.Add("-" + s))
+                        let words = f.Literals |> List.filter (fun w -> taken.Add w)
+
+                        let extra =
+                            if f.Long <> "" && taken.Add("--" + f.Long) then
+                                let camel = fieldName f.Long
+                                let fname = uniq (if camel <> "" && System.Char.IsLetter camel[0] then camel else "flag" + camel)
+                                let covered = Weir.Argv.kebabFlag fname
+
+                                let attrs =
+                                    match twin with
+                                    | Some t when taken.Add("--" + t.Long) -> [ $"Wire \"{escape t.Long}\"" ]
+                                    | _ -> if covered <> f.Long then [ $"Wire \"{escape f.Long}\"" ] else []
+
+                                match shorts with
+                                | s :: rest when s <> "h" && s.Length = 1 && System.Char.IsLetterOrDigit s[0] ->
+                                    field f.Doc (attrs @ [ $"Short \"{s}\"" ]) fname f.Arity
+                                    rest
+                                | _ ->
+                                    field f.Doc attrs fname f.Arity
+                                    shorts
+                            else
+                                shorts
+
+                        let docOnce = if f.Long = "" then f.Doc else None
+
+                        for s in extra do
+                            field docOnce [ $"Wire \"-{escape s}\"" ] (uniq (spellingName s)) f.Arity
+
+                        for w in words do
+                            field docOnce [ $"Wire \"{escape w}\"" ] (uniq (spellingName w)) f.Arity
 
                     line "}"
 
@@ -6462,7 +7525,7 @@ module SigGen =
                 let caseName (path: string) =
                     let camel = fieldName (path.Replace(" ", "-"))
                     let pascal = string (System.Char.ToUpper camel[0]) + camel.Substring 1
-                    if pascal = "Cmd" then "CmdCmd" else pascal
+                    if pascal = "Cmd" || pascal = "Globals" then pascal + "Cmd" else pascal
 
                 line $"module {moduleName}"
 
@@ -6473,16 +7536,17 @@ module SigGen =
                     + System.DateTime.UtcNow.ToString "yyyy-MM-dd"
                 )
 
-                line $"/// source: {source} — a scraped surface may be incomplete (partial"
+                let fullSource = source + (if nodes.IsEmpty then "" else "+subs") + walkNote
+                line $"/// source: {fullSource} — a scraped surface may be incomplete (partial"
                 line "/// by default; add `let exhaustive = true` once verified by hand)"
 
-                if subGroups.IsEmpty then
+                if nodes.IsEmpty then
                     line "/// flat surface: flags checked across the whole line — split into"
                     line "/// subcommand records by hand if the tool warrants it"
                 else
                     line "/// scoped surface [D:scoped-sigs]: the LONGEST matching subcommand"
                     line "/// path picks the case (issue list beats issue); a case checks its"
-                    line "/// own flags plus its ancestors' and the globals"
+                    line "/// own flags and the Globals; an unlisted subcommand is not checked"
 
                 match version with
                 | Some v -> line $"let version = \"{escape v}\""
@@ -6490,55 +7554,109 @@ module SigGen =
                     line
                         "// no `let version`: the tool answers neither --version nor the version subcommand, so there is no identity to record"
 
-                if subGroups.IsEmpty then
+                // the convention lets [D:sig-conventions]
+                if convention <> "gnu" then
+                    line $"let convention = \"{convention}\""
+
+                if abbreviations then
+                    line "/// the tool takes a unique prefix of a long flag (`--verb` for `--verbose`)"
+                    line "let abbreviations = true"
+
+                if negatable then
+                    line "/// `--no-x` turns off any switch `--x`"
+                    line "let negatable = true"
+
+                let caseKey (path: string list) = String.concat " " path
+
+                let stops =
+                    [ if topStop && nodes.IsEmpty then
+                          yield ""
+                      for n in nodes do
+                          if n.Stop then
+                              yield caseKey n.Path
+
+                              for a in n.Aliases do
+                                  yield caseKey a ]
+
+                if not stops.IsEmpty then
+                    line "/// the first operand of these ends the tool's own options (what follows is"
+                    line "/// handed on — a container's command, a script's arguments)"
+                    let joined = stops |> List.map (fun s -> $"\"{escape s}\"") |> String.concat "; "
+                    line $"let stopAtOperand = [ {joined} ]"
+
+                if unchecked = [ "" ] then
+                    line "/// the tool takes any config key as a flag (its help: `--key=value`):"
+                    line "/// no flag on its lines is checked [D:sig-open-tool]"
+                    line "let unchecked = [ \"\" ]"
+                elif not unchecked.IsEmpty then
+                    line "/// these pass options the source cannot list (git's revision options):"
+                    line "/// reaching one ends the check"
+                    let joined = unchecked |> List.map (fun s -> $"\"{escape s}\"") |> String.concat "; "
+                    line $"let unchecked = [ {joined} ]"
+
+                if nodes.IsEmpty then
                     renderRecord "Cmd" flags
                 else
-                    // load-bearing: no global merge exists in the
-                    // checker, so top-level flags join every case —
-                    // and so do each ancestor path's flags (`jira issue
-                    // list` carries issue's own flags too); nearest
-                    // definition wins on a field collision
-                    let globalByField = flags |> List.map (fun f -> fieldName f.Long, f)
-                    let byPath = subGroups |> Map.ofList
+                    // globals once [D:sig-sources]: the top level's flags
+                    // are checked at every level, so no case repeats them;
+                    // a help-walked case also carries its ancestors' own
+                    // flags (`jira issue list` takes issue's), a cobra case
+                    // lists its inherited ones itself
+                    let globalKeys = flags |> List.map keyOf |> Set.ofList
+                    let byPath = nodes |> List.map (fun n -> n.Path, n.Flags) |> Map.ofList
+
+                    let walked = nodes |> List.map (fun n -> caseKey n.Path) |> Set.ofList
 
                     let cases =
-                        subGroups
-                        |> List.distinctBy (fun (path, _) -> caseName path)
-                        |> List.map (fun (path, gflags) ->
-                            let parts = path.Split ' '
-
+                        nodes
+                        |> List.distinctBy (fun n -> caseName (caseKey n.Path))
+                        |> List.map (fun n ->
                             let ancestors =
-                                [ for n in parts.Length - 1 .. -1 .. 1 do
-                                      let anc = String.concat " " (Array.truncate n parts)
+                                if cobra || isGit then
+                                    []
+                                else
+                                    [ for k in n.Path.Length - 1 .. -1 .. 1 do
+                                          match Map.tryFind (List.truncate k n.Path) byPath with
+                                          | Some fs -> yield! fs
+                                          | None -> () ]
 
-                                      match Map.tryFind anc byPath with
-                                      | Some fs -> yield! fs
-                                      | None -> () ]
+                            let own =
+                                mergeFlags [ n.Flags; ancestors ]
+                                |> List.filter (fun f -> not (Set.contains (keyOf f) globalKeys))
 
-                            let mutable have = gflags |> List.map (fun f -> fieldName f.Long) |> Set.ofList
+                            n, caseName (caseKey n.Path), own)
 
-                            let inherited =
-                                (ancestors @ (globalByField |> List.map snd))
-                                |> List.filter (fun f ->
-                                    let fn = fieldName f.Long
+                    if not flags.IsEmpty then
+                        renderRecord "Globals" flags
 
-                                    if Set.contains fn have then
-                                        false
-                                    else
-                                        have <- Set.add fn have
-                                        true)
-
-                            path, caseName path, gflags @ inherited)
-
-                    for _, cn, cflags in cases do
-                        renderRecord $"{cn}Flags" cflags
+                    for _, cn, own in cases do
+                        if not own.IsEmpty then
+                            renderRecord $"{cn}Flags" own
 
                     line "type Cmd ="
 
-                    for sub, cn, _ in cases do
+                    let aliasCases =
+                        [ for n, cn, own in cases do
+                              for a in n.Aliases do
+                                  if not (Set.contains (caseKey a) walked) then
+                                      yield caseName (caseKey a), cn, own ]
+                        |> List.distinctBy (fun (an, _, _) -> an)
+                        |> List.filter (fun (an, _, _) -> cases |> List.forall (fun (_, cn, _) -> cn <> an))
+
+                    for an, cn, own in aliasCases do
+                        if own.IsEmpty then
+                            line $"    | {an}"
+                        else
+                            line $"    | {an} of {cn}Flags"
+
+                    for _, cn, own in cases do
                         // the matching key is the kebab of the case — it
-                        // must round-trip to the sub token the user types
-                        line $"    | {cn} of {cn}Flags"
+                        // must round-trip to the sub token the user types;
+                        // a case with no flags of its own takes the Globals
+                        if own.IsEmpty then
+                            line $"    | {cn}"
+                        else
+                            line $"    | {cn} of {cn}Flags"
 
                 let text = sb.ToString()
 
@@ -6579,7 +7697,7 @@ module SigGen =
                         let entry: Contracts.LockEntry =
                             { Kind = "sig"
                               Name = tool
-                              Url = $"generated:{source}"
+                              Url = "generated:" + source + (if nodes.IsEmpty then "" else "+subs")
                               Sha256 = Contracts.sha256Hex bytes
                               Path = IO.Path.Combine("sigs", sigFileName tool)
                               Version = version }
@@ -6597,18 +7715,19 @@ module SigGen =
                                 | None -> $"none — '{tool}' answers neither --version nor version"
 
                             let surfaceNote =
-                                if subGroups.IsEmpty then
+                                if nodes.IsEmpty then
                                     $"{flags.Length} flag(s)"
                                 else
                                     let total =
-                                        (flags @ (subGroups |> List.collect snd))
-                                        |> List.distinctBy (fun f -> f.Long)
+                                        (flags @ (nodes |> List.collect (fun n -> n.Flags)))
+                                        |> List.map keyOf
+                                        |> List.distinct
                                         |> List.length
 
-                                    $"{total} flag(s) across {subGroups.Length} subcommand case(s)"
+                                    $"{total} flag(s) across {nodes.Length} subcommand case(s)"
 
                             Ok
-                                $"added sig {tool} ({surfaceNote}, source: {source}, version: {versionNote}) — partial by default; verify and mark exhaustive by hand"
+                                $"added sig {tool} ({surfaceNote}, source: {fullSource}, version: {versionNote}) — partial by default; verify and mark exhaustive by hand"
                 finally
                     try
                         IO.File.Delete tmp

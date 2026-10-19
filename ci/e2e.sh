@@ -11428,7 +11428,7 @@ BEOF
 fi
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig cobratool 2>&1) || fail "add sig cobratool: $out"
 echo "$out" | grep -qF "source: help+subs" || fail "the walk labels its lineage: $out"
-grep -qF "jql: bool" .weir/sigs/cobratool.weir || fail "the depth-2 walk found --jql"
+grep -qF "jql: string" .weir/sigs/cobratool.weir || fail "the depth-2 walk found --jql, value-taking [D:sig-arity]"
 # the scoping receipt [D:scoped-sigs]: provenance kept, the union emitted —
 # a flag on the wrong subcommand warns naming the case; globals ride
 # every case; a line with no subcommand token stays the L2 skip
@@ -11482,7 +11482,10 @@ out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig kwtool 2>&1) || f
 grep -qF '[<Wire "type"; Short "t">]' .weir/sigs/kwtool.weir || fail "Wire and Short share one attr bracket"
 # subcommands reusing a short: first holder keeps it, the union still validates
 grep -qF "allTags: bool" .weir/sigs/kwtool.weir || fail "the dup-short flag keeps its long"
-grep -c 'Short "a"' .weir/sigs/kwtool.weir | grep -qx 1 || fail "exactly one field holds -a"
+# (the globals are their own record [D:sig-sources]: the wait case holds
+# only its own -a)
+awk '/^type WaitFlags/,/^}/' .weir/sigs/kwtool.weir | grep -c 'Short "a"' | grep -qx 1 || fail "exactly one field of the wait case holds -a"
+awk '/^type WaitFlags/,/^}/' .weir/sigs/kwtool.weir | grep -A1 'Short "a"' | grep -qF "allTags" || fail "the wait case's -a is its own --all-tags"
 # open-by-default tools (the VS Code shape [D:sig-version-probe]): a bare
 # word would open things — bare-word probes run only when --help
 # advertises the subcommand, so generation must spawn none here
@@ -11532,7 +11535,8 @@ exit 1
 WEOF
 chmod +x bin/gotool
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig gotool 2>&1) || fail "add sig gotool: $out"
-grep -qF "configDir: bool" .weir/sigs/gotool.weir || fail "single-dash longs record"
+grep -qF "configDir: string" .weir/sigs/gotool.weir || fail "single-dash longs record, \`-config-dir dir\` taking a value"
+grep -qF 'let convention = "go"' .weir/sigs/gotool.weir || fail "Go rows set the Go convention [D:sig-conventions]"
 grep -qF "/// Clean the configuration directory and exit" .weir/sigs/gotool.weir || fail "next-line docs attach"
 # usage-only help on a nonzero exit (BSD grep): the dump harvests; a
 # short never warns on a surface that recorded no shorts
@@ -11563,8 +11567,28 @@ esac
 WEOF
 chmod +x bin/ghtool
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig ghtool 2>&1) || fail "add sig ghtool: $out"
-grep -qF "branch: bool" .weir/sigs/ghtool.weir || fail "colon-suffixed command tokens walk"
-grep -qF "track4: bool" .weir/sigs/ghtool.weir || fail "the walk reaches depth 4"
+grep -qF "branch: string" .weir/sigs/ghtool.weir || fail "colon-suffixed command tokens walk"
+grep -qF "track4: string" .weir/sigs/ghtool.weir || fail "the walk reaches depth 4"
+# the phantom filter [D:sig-sources]: the walk runs only the words a
+# command table lists — never an options section's continuation line
+# (jq's "Command options:"), a flag row under a "Commands:" heading
+# (journalctl, gpg) or a prose line; every argv the generator ran is logged
+cat > bin/phantool <<'WEOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$PHANT_LOG"
+case "$*" in
+  "--version") echo "phantool 1.0"; exit 0;;
+  "--help") printf 'Usage: phantool [options] <filter>\n\nCommand options:\n  -n, --null-input          use null as the single input\n                            the value; read each line\n      --tab                 use tabs\n\nCommands:\n  -h --help        Show this help\n     --sign        make a signature\n  build [PATTERN]  Build the thing\n                   then run it\n  the docs say this is prose\n'; exit 0;;
+  "build --help") printf 'Flags:\n      --fast   Skip checks\n'; exit 0;;
+  *) exit 1;;
+esac
+WEOF
+chmod +x bin/phantool
+rm -f "$sgdir/phant.log"
+out=$(PHANT_LOG="$sgdir/phant.log" PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig phantool 2>&1) || fail "add sig phantool: $out"
+bad=$(grep -vxE -- '--version|--help|--versio|build --help' "$sgdir/phant.log" || true)
+[ -z "$bad" ] || fail "the generator ran words no command table lists: $bad"
+grep -qxF 'build --help' "$sgdir/phant.log" || fail "the listed command walks: $(cat "$sgdir/phant.log")"
 # PATH-y tool names [D:scoped-sigs]: one flat file under sigs/ (never a
 # nested tree, never an escape from .weir), a legal module name, and
 # the #sig round-trip on the spelling the script uses

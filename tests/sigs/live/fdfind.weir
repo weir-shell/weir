@@ -1,0 +1,4 @@
+#sig fdfind
+fdfind --extention md // typo: --extention
+fdfind -H -e md -t f --exclude .git // clean
+fdfind --max-depth 2 -x echo // clean

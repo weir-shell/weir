@@ -1,0 +1,14 @@
+#sig git
+git commit -m "msg" --amendd // typo: --amendd
+git log --oneline -n 5 --graphh // miss: --graphh — git log parses revision options outside parse-options; its completion helper cannot list them, so the case is unchecked
+git -C /tmp status --porcelainn // typo: --porcelainn
+git push --force-with-lease origin main --set-upstreem // typo: --set-upstreem
+git checkout -b feature --trackk // typo: --trackk
+git fetch --prune --tagz // typo: --tagz
+git commit -Zm x // typo: -Zm
+git rev-parse --abbrev-ref HEAD // clean
+git diff --name-only --cached // clean
+git clone --depth 1 --branch main https://x/y.git // clean
+git log -1 --format=%H // clean
+git commit -am x // clean
+git -c user.name=x commit --allow-empty -m x // clean
