@@ -84,6 +84,14 @@ jobs:
       - name: race-tree fuzzer
         if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
         run: python3 -I ci/storm/fuzz.py --bin ~/.local/bin/weir --out "$RUNNER_TEMP/storm/fuzz" --trees "$TREES" --jobs 3
+      # a report, never a gate [D:sig-sources]: `weir add sig` against the
+      # runner's installed tools, scored on tests/sigs/live — versions drift
+      - name: command signatures, live report (not a gate)
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/storm"
+          ~/.local/bin/weir tools/sig-score.weir --bin ~/.local/bin/weir --live | tee "$RUNNER_TEMP/storm/sig-live.txt"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
