@@ -14700,10 +14700,11 @@ cw="$svdir/cw"; mkdir -p "$cw"
 printf '%s\n' 'within' '    printerr "progress"' '    Log.warn "a log line"' '    print "body-done"' 'always' '    print "cleanup-ran"' 'fail "x"' > "$cw/f.weir"
 for redir in full closed; do
     [ "$redir" = full ] && [ ! -e /dev/full ] && continue
+    rc=0
     if [ "$redir" = full ]; then
-        out=$("$BIN" "$cw/f.weir" 2>/dev/full); rc=$?
+        out=$("$BIN" "$cw/f.weir" 2>/dev/full) || rc=$?
     else
-        out=$("$BIN" "$cw/f.weir" 2>&-); rc=$?
+        out=$("$BIN" "$cw/f.weir" 2>&-) || rc=$?
     fi
     [ "$rc" = 1 ] || fail "console-write: a $redir stderr keeps the run's exit 1, never an abort: rc=$rc out=$out"
     [ "$(echo "$out" | tr '\n' ,)" = "body-done,cleanup-ran," ] || fail "console-write: a $redir stderr runs the script and its cleanup: $out"
@@ -14792,9 +14793,9 @@ fi
 
 # Proc.wait returns at the exit, not at a 50ms poll (D1)
 printf '%s\n' 'for i in [1..60] do' '    within proc p = sh -c "exit 0"' '        let _c = Proc.wait p' '        ()' 'print "done"' > "$svdir/pw.weir"
-pws=$(date +%s%N)
+pws=$(now_ms)
 out=$("$BIN" "$svdir/pw.weir" 2>&1)
-pwms=$(( ($(date +%s%N) - pws) / 1000000 ))
+pwms=$(( $(now_ms) - pws ))
 [ "$out" = "done" ] || fail "Proc.wait loop: $out"
 [ "$pwms" -lt 2500 ] || fail "60 Proc.wait calls take ${pwms}ms — Proc.wait must wake at the exit, not poll 50ms"
 echo "e2e ok: Proc.wait wakes at the exit (60 waits in ${pwms}ms)"
