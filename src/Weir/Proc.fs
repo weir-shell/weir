@@ -68,7 +68,7 @@ let envKeyRefusal (where: string) (k: string) : unit =
         failwith
             $"{where}: the env key '{k}' contains '=' — a child would read it as the variable '{k.Substring(0, k.IndexOf '=')}'; an env name has no '='"
     elif k.Contains '\u0000' then
-        failwith $"{where}: the env key '{k.Replace('\u0000', '?')}' contains a NUL byte — an env name is NUL-free"
+        failwith $"{where}: the env key '{Weir.Types.quoteData (k.Replace('\u0000', '?'))}' contains a NUL byte — an env name is NUL-free"
 
 // no command runs while a module is imported [D:module-import-no-commands]:
 // the check-time walk refuses the direct forms; a helper reached through
@@ -143,10 +143,48 @@ let private spawn
 
     Session.sigpipeForChildren.Force()
     Session.resetDetachedSigint.Force()
-    let psi = ProcessStartInfo(prog)
+    // a cleanup's command at a foreground terminal runs in a group of its
+    // own, through weir's shim [D:cleanup-pgrp]: the program is resolved
+    // here, as the start would, so a missing one fails the same way
+    let viaShim = (Session.cleanupGroupShim ()).IsSome
+
+    let psi =
+        match Session.cleanupGroupShim () with
+        | Some self ->
+            let runnable (path: string) =
+                System.IO.File.Exists path
+                && (System.IO.File.GetUnixFileMode path
+                    &&& (System.IO.UnixFileMode.UserExecute
+                         ||| System.IO.UnixFileMode.GroupExecute
+                         ||| System.IO.UnixFileMode.OtherExecute))
+                   <> enum 0
+
+            let found =
+                if prog.Contains '/' then
+                    Some(Session.resolve prog)
+                else
+                    (match System.Environment.GetEnvironmentVariable "PATH" with
+                     | null -> ""
+                     | v -> v).Split(':', System.StringSplitOptions.RemoveEmptyEntries)
+                    |> Array.map (fun d -> System.IO.Path.Combine(d, prog))
+                    |> Array.tryFind runnable
+
+            match found with
+            | Some path when runnable path ->
+                let psi = ProcessStartInfo(self)
+                psi.ArgumentList.Add Session.Pgrp.marker
+                psi.ArgumentList.Add path
+                psi
+            | _ -> failwith $"command not found or not executable: {Weir.Types.quoteData prog}"
+        | None -> ProcessStartInfo(prog)
 
     for a in args do
         psi.ArgumentList.Add a
+
+    // Windows: a cleanup's command in a new process group, which Ctrl+C
+    // does not reach [D:cleanup-pgrp]
+    if System.OperatingSystem.IsWindows() && Session.inCleanup () then
+        psi.CreateNewProcessGroup <- true
 
     for k, v in ambient do
         psi.Environment[k] <- v
@@ -160,15 +198,23 @@ let private spawn
     psi.RedirectStandardError <- redirectErr
     psi.RedirectStandardInput <- redirectIn
 
+    // a child reading weir's stdin starts after any line weir began
+    // [D:prompt-cut-whole-line]
+    if not redirectIn then
+        Session.Stdin.finishForChild ()
+
     // start through registration inside the spawn gate: the teardown kill
     // sees every started child, and none starts after it
     // [D:signal-main-unwind]
     Session.gatedSpawn (fun () ->
         let p =
             try
-                Process.Start psi
+                if viaShim then
+                    Session.Pgrp.blockedForStart (fun () -> Process.Start psi)
+                else
+                    Process.Start psi
             with :? System.ComponentModel.Win32Exception ->
-                failwith $"command not found or not executable: {prog}"
+                failwith $"command not found or not executable: {Weir.Types.quoteData prog}"
 
         // a racing arm's children join its group [D:seq-pfirst] — a no-op
         // outside pfirst, and the scoped child owes it too: the spill path
@@ -246,15 +292,14 @@ let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process * 
 
     p, rethrowFault
 
-// pipe reads a lost race or a REPL ^C cuts [D:pfirst-join]
-let private readLine (r: System.IO.StreamReader) : string =
-    Session.cutRead r.ReadLine (fun t -> r.ReadLineAsync t)
+// pipe reads a cut stops [D:pfirst-join] [D:scope-tree]: the reader is
+// over the child's stream wrapped by Session.cutStream, so the cut is
+// checked per fill, never per line
+let private readLine (r: System.IO.StreamReader) : string = r.ReadLine()
 
-let private readChars (r: System.IO.StreamReader) (buf: char[]) : int =
-    Session.cutRead (fun () -> r.Read(buf, 0, buf.Length)) (fun t -> r.ReadAsync(System.Memory<char>(buf), t))
+let private readChars (r: System.IO.StreamReader) (buf: char[]) : int = r.Read(buf, 0, buf.Length)
 
-let private readBytes (s: System.IO.Stream) (buf: byte[]) (off: int) (len: int) : int =
-    Session.cutRead (fun () -> s.Read(buf, off, len)) (fun t -> s.ReadAsync(System.Memory<byte>(buf, off, len), t))
+let private readBytes (s: System.IO.Stream) (buf: byte[]) (off: int) (len: int) : int = s.Read(buf, off, len)
 
 // tree-kill then reap — the lifecycle tail shared by the streaming
 // consumers (complete disposes without killing: it has already read
@@ -276,7 +321,7 @@ let private reap (p: Process) =
 /// so every existing catcher (the script runner, the top-level guard,
 /// `orFail`'s siblings) renders exactly as before.
 type CommandFailure(code: int, signalNote: string, shown: string) =
-    inherit exn($"command failed with exit code {code}{signalNote}: {shown}")
+    inherit exn($"command failed with exit code {code}{signalNote}: {Weir.Types.quoteData shown}")
     member _.Code = code
     member _.SignalNote = signalNote
     member _.Shown = shown
@@ -312,7 +357,7 @@ let linesOf (s: Spec) : seq<string> =
         use _ = p
 
         try
-            let out = p.StandardOutput
+            let out = Session.cutReader p p.StandardOutput
             let mutable line = readLine out
 
             while line <> null do
@@ -338,7 +383,7 @@ let streamSegmentsOf (s: Spec) (onText: string -> unit) (onBreak: unit -> unit) 
     use _ = p
 
     try
-        let out = p.StandardOutput
+        let out = Session.cutReader p p.StandardOutput
         let buf = Array.zeroCreate<char> 4096
         let seg = System.Text.StringBuilder()
 
@@ -462,7 +507,7 @@ let exec (s: Spec) : unit =
 
     match s.Cwd with
     | Some wd when System.IO.Directory.Exists wd -> System.IO.Directory.SetCurrentDirectory wd
-    | Some wd -> failwith $"the working directory no longer exists: {wd}"
+    | Some wd -> failwith $"the working directory no longer exists: {Weir.Types.quoteData wd}"
     | None -> ()
 
     if System.OperatingSystem.IsWindows() then
@@ -480,7 +525,7 @@ let exec (s: Spec) : unit =
         let argv = Array.append (List.toArray (s.Prog :: s.Args)) [| null |]
         execvp (s.Prog, argv) |> ignore
         // execvp returns only on failure — success replaced the image
-        failwith $"command not found or not executable: {s.Prog}"
+        failwith $"command not found or not executable: {Weir.Types.quoteData s.Prog}"
 
 // stdout relayed to the console as it arrives; the code as the result
 // [D:exit-reifiers]: output goes to the human, the code is the meaning
@@ -489,7 +534,7 @@ let streamCodeOf (s: Spec) : int =
     use _ = p
 
     try
-        let out = p.StandardOutput
+        let out = Session.cutReader p p.StandardOutput
         let mutable line = readLine out
 
         while line <> null do
@@ -677,9 +722,9 @@ let completedOf (s: Spec) : int * seq<string> * seq<string> =
     use _ = p
 
     let stderrTask =
-        System.Threading.Tasks.Task.Run(fun () -> readAllBytes (p.StandardError.BaseStream))
+        System.Threading.Tasks.Task.Run(fun () -> readAllBytes (Session.cutStream p p.StandardError.BaseStream))
 
-    let outBytes = readAllBytes (p.StandardOutput.BaseStream)
+    let outBytes = readAllBytes (Session.cutStream p p.StandardOutput.BaseStream)
     let errBytes = Session.cutJoin stderrTask
     p.WaitForExit()
     producerFault ()
@@ -786,7 +831,7 @@ let chainLinesOf (specs: Spec list) : seq<string> =
                 // the tail is the command→expression edge: same line law
                 // as a single command
                 let _, last = List.last procs
-                let out = last.StandardOutput
+                let out = Session.cutReader last last.StandardOutput
                 let mutable line = readLine out
 
                 while line <> null do
@@ -824,10 +869,11 @@ let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
         try
             let errTasks =
                 procs
-                |> List.map (fun (_, p) -> System.Threading.Tasks.Task.Run(fun () -> readAllBytes p.StandardError.BaseStream))
+                |> List.map (fun (_, p) ->
+                    System.Threading.Tasks.Task.Run(fun () -> readAllBytes (Session.cutStream p p.StandardError.BaseStream)))
 
             let _, last = List.last procs
-            let outBytes = readAllBytes last.StandardOutput.BaseStream
+            let outBytes = readAllBytes (Session.cutStream last last.StandardOutput.BaseStream)
 
             for _, p in procs do
                 p.WaitForExit()
@@ -853,7 +899,7 @@ let chainStreamCodeOf (specs: Spec list) : int =
 
         try
             let _, last = List.last procs
-            let out = last.StandardOutput
+            let out = Session.cutReader last last.StandardOutput
             let mutable line = readLine out
 
             while line <> null do

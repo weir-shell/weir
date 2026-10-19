@@ -39,6 +39,36 @@ awaitTcp() {
 }
 # End-to-end battery against the AOT binary (command-mode Session 4 set).
 set -euo pipefail
+# `grep -q` reads the whole input [D:e2e-grep-drain]: a quiet grep exits at
+# its first match, and under pipefail a writer still sending (`echo "$out" |
+# grep -q`, output past one stdio buffer — 1 KiB on macOS) dies by SIGPIPE
+# and fails a passing check. The wrapper drops `q` from the leading options
+# and discards the output instead; exit codes are grep's.
+grep() {
+    local args=() a opts=1 skip=0 quiet=0
+    for a in "$@"; do
+        if [ "$skip" = 1 ]; then
+            skip=0
+        elif [ "$opts" = 1 ] && [ "$a" = "--" ]; then
+            opts=0
+        elif [ "$opts" = 1 ] && [[ $a == -[!-]* ]]; then
+            [[ $a == *[ef] ]] && skip=1
+            if [[ $a == *q* ]]; then
+                quiet=1
+                a="${a//q/}"
+                [ "$a" = "-" ] && continue
+            fi
+        else
+            opts=0
+        fi
+        args+=("$a")
+    done
+    if [ "$quiet" = 1 ]; then
+        command grep "${args[@]}" >/dev/null
+    else
+        command grep "${args[@]}"
+    fi
+}
 # an unguarded nonzero command under set -e used to kill the battery
 # silently (round 33 — the run ended after a green line with no FAIL at
 # all); the ERR trap names its own line and command. Deliberately no
@@ -3573,6 +3603,202 @@ if [ "$IS_WINDOWS" = "0" ]; then
 fi
 rm -rf "$h54dir"
 
+# ---- the scope tree [D:scope-tree] -------------------------------------------
+# hunt-3 round 4 stage A: the second signal's hard exit (C1-1), death by the
+# signal after the unwind (R7, C1-4), a cleanup's commands in their own
+# group (R8, C1-2), the detached SIGINT reset at start (C1-6), a REPL entry
+# as one evaluation (C23), a cut Self.stdin loser (C24), `exit n` in a serve
+# handler (R2, C25), a cut prompt's partial line (R3, F5). sig.py reports
+# the raw status (-n: died by signal n), which bash's $? cannot tell apart
+# from an exit 128+n
+if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
+    stdir=$(mkweirtmp)
+    ptyrun="$(dirname "$0")/../tests/pty/pty-run.py"
+    cat > "$stdir/sig.py" <<'PYEOF'
+# sig.py TIMEOUT [--ign SIG] STEP... -- argv; STEP: wait:FILE:LINE | sleep:MS | kill:SIG
+import os, sys, time, signal, subprocess
+a = sys.argv[1:]; tmo = float(a.pop(0)); ign = None
+if a[0] == '--ign':
+    a.pop(0); ign = getattr(signal, 'SIG' + a.pop(0))
+i = a.index('--'); steps, argv = a[:i], a[i + 1:]
+def pre():
+    for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE):
+        signal.signal(s, signal.SIG_DFL)
+    if ign:
+        signal.signal(ign, signal.SIG_IGN)
+p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, preexec_fn=pre, start_new_session=True)
+t0 = time.monotonic(); last = t0
+for st in steps:
+    k, _, v = st.partition(':')
+    if k == 'wait':
+        f, _, line = v.partition(':')
+        while time.monotonic() - t0 < tmo:
+            try:
+                if line in open(f).read().splitlines():
+                    break
+            except OSError:
+                pass
+            time.sleep(0.02)
+    elif k == 'sleep':
+        time.sleep(int(v) / 1000)
+    elif k == 'kill':
+        os.kill(p.pid, getattr(signal, 'SIG' + v)); last = time.monotonic()
+try:
+    rc = p.wait(timeout=max(0.1, tmo - (time.monotonic() - t0)))
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL); p.wait(); rc = 'HANG'
+out = p.stdout.read().decode(errors='replace').replace('\n', ' | ')
+print('status %s after %d out %s' % (rc, (time.monotonic() - last) * 1000, out))
+PYEOF
+    stlog() { tr '\n' ',' < "$1" 2>/dev/null; }
+
+    # C1-1: a second signal while an inner cleanup runs and an outer one is
+    # pending exits at once [D:hard-exit]: no cleanup starts, the running
+    # one's command dies, one code — the first signal's death
+    cat > "$stdir/hard.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+let ev s = File.append log [s]
+within
+    within
+        ev "body"
+        sleep 31.61
+    always
+        ev "inner start"
+        sleep 31.62
+        ev "inner end"
+always
+    ev "outer start"
+WEOF
+    for pair in "TERM:TERM:-15" "INT:TERM:-2" "HUP:INT:-1"; do
+        s1=${pair%%:*}; rest=${pair#*:}; s2=${rest%%:*}; want=${rest#*:}
+        rm -f "$stdir/hard.log"
+        r=$(python3 "$stdir/sig.py" 15 "wait:$stdir/hard.log:body" "kill:$s1" "wait:$stdir/hard.log:inner start" sleep:300 "kill:$s2" -- "$BIN" "$stdir/hard.weir" "$stdir/hard.log")
+        left=$(ps -eo pid,args | awk '$2 == "sleep" && ($3 == "31.61" || $3 == "31.62") {print $1}')
+        [ -z "$left" ] || { kill -9 $left 2>/dev/null; fail "a second signal's hard exit must kill the cleanup's command ($pair)"; }
+        [ "$(stlog "$stdir/hard.log")" = "body,inner start," ] || fail "a second signal ($pair) runs no cleanup and lets none run on: $(stlog "$stdir/hard.log")"
+        echo "$r" | grep -q "^status $want " || fail "a second signal ($pair) dies by the first signal: $r"
+        ms=$(echo "$r" | awk '{print $4}')
+        [ "$ms" -lt 1000 ] || fail "a second signal ($pair) exits at once (${ms}ms): $r"
+        echo "$r" | grep -q "command failed" && fail "a second signal ($pair) reports no command failure: $r"
+    done
+    echo "e2e ok: a second signal hard-exits at once — no cleanup runs, the running one's command dies, weir dies by the first signal"
+
+    # R7 (C1-4): after the unwind weir dies BY the signal, scoped or not
+    cat > "$stdir/r7.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within
+    File.append log ["body"]
+    Duration.sleep 30s
+always
+    File.append log ["cleanup"]
+WEOF
+    printf '%s\n' 'let log = Self.args |> Seq.head' 'sh -c "true"' 'File.append log ["body"]' 'Duration.sleep 30s' > "$stdir/r7u.weir"
+    for case in "r7:TERM:-15" "r7:INT:-2" "r7:HUP:-1" "r7u:TERM:-15" "r7u:INT:-2"; do
+        f=${case%%:*}; rest=${case#*:}; sig=${rest%%:*}; want=${rest#*:}
+        rm -f "$stdir/r7.log"
+        r=$(python3 "$stdir/sig.py" 10 "wait:$stdir/r7.log:body" "kill:$sig" -- "$BIN" "$stdir/$f.weir" "$stdir/r7.log")
+        echo "$r" | grep -q "^status $want " || fail "a SIG$sig ($f) ends weir by the signal after the unwind [D:die-by-signal]: $r"
+        [ "$f" = "r7u" ] || [ "$(stlog "$stdir/r7.log")" = "body,cleanup," ] || fail "a SIG$sig runs the cleanup first: $(stlog "$stdir/r7.log")"
+    done
+    echo "e2e ok: after the unwind weir dies by its signal — INT, TERM, HUP, scoped or not"
+
+    # C1-6: an inherited SIG_IGN SIGINT without a tty is reset at start, so a
+    # poller that never spawns dies by a kill -INT
+    printf '%s\n' 'Duration.sleep 3s' 'print "after"' > "$stdir/ign.weir"
+    r=$(python3 "$stdir/sig.py" 10 --ign INT sleep:500 kill:INT -- "$BIN" "$stdir/ign.weir")
+    echo "$r" | grep -q "^status -2 " || fail "an inherited SIG_IGN SIGINT without a tty is reset at start: $r"
+    echo "$r" | grep -q "out after" && fail "nothing runs after the SIGINT: $r"
+    echo "e2e ok: an inherited SIG_IGN SIGINT without a tty is reset at start — kill -INT ends a poller"
+
+    # R8 (C1-2): a terminal ^C during an always does not reach the cleanup's
+    # command (its own process group); the cleanup ends whole, then weir dies
+    # by the SIGINT [D:cleanup-pgrp]
+    cat > "$stdir/pg.weir" <<'WEOF'
+within
+    print "body"
+always
+    print "cleanup start"
+    sh -c "sleep 1.2; echo cmd-done"
+    sh -c "trap 'echo trapped' INT; sleep 0.4; echo trap-done"
+    print "cleanup end"
+print "after"
+WEOF
+    tout=$(printf 'SLEEP 600\nSEND \\x03\nSLEEP 3000\n' | python3 "$ptyrun" 8 "$BIN" "$stdir/pg.weir")
+    for want in "cmd-done" "trap-done" "cleanup end" "EXIT -2"; do
+        echo "$tout" | grep -qF "$want" || fail "a terminal ^C during an always: '$want' expected: $tout"
+    done
+    echo "$tout" | grep -qE "trapped|command failed|after" && fail "a terminal ^C never reaches a cleanup's command: $tout"
+    echo "e2e ok: a terminal ^C never reaches a cleanup's command — its own process group; the cleanup ends whole, then the SIGINT"
+
+    # C23: a tty REPL entry of several statements is one evaluation — a ^C
+    # or a failure ends the whole entry, the session goes on
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND Duration.sleep 2s\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-two")\x1b\r' 'SLEEP 150' 'SEND sh -c "sleep 2; echo late-three | tr a-z A-Z"\r' 'SLEEP 700' 'SEND \x03' 'SLEEP 3500' 'SEND fail "boom"\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "after-fail")\r' 'SLEEP 1000' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" python3 "$ptyrun" 15 "$BIN")
+    echo "$tout" | grep -qF "STILL-HERE" || fail "the REPL survives an entry's ^C and failure: $tout"
+    echo "$tout" | grep -qE "LATE-TWO|LATE-THREE|AFTER-FAIL" && fail "a ^C or a failure ends the whole REPL entry: $tout"
+    echo "e2e ok: a REPL entry is one evaluation — a ^C or a failure ends all of it, the session goes on"
+
+    # C24: a Self.stdin race loser cut before any byte read nothing — the
+    # next Self.stdin reads the whole input
+    cat > "$stdir/c24.weir" <<'WEOF'
+let a =
+    ["read"; "to"] |> Seq.pfirst (fun k ->
+        if k == "to" then
+            Duration.sleep 300ms
+            "timeout"
+        else
+            Self.stdin |> Seq.head)
+print $"race={a}"
+let rest = Self.stdin |> Seq.freeze
+print $"""rest={rest |> Str.join ","}"""
+WEOF
+    out=$( (sleep 1; printf 'L1\nL2\n') | timeout 10 "$BIN" "$stdir/c24.weir" 2>&1) || true
+    echo "$out" | grep -qx "race=timeout" || fail "the stdin race's timer wins: $out"
+    echo "$out" | grep -qx "rest=L1,L2" || fail "a Self.stdin loser cut before reading leaves stdin whole: $out"
+    echo "e2e ok: a Self.stdin race loser cut before any byte is no enumeration — the next one reads the whole input"
+
+    # R3 (F5): a cut Self.prompt's partial line never splices — a child
+    # reading stdin next starts at the line after, the line stays whole
+    printf '%s\n' 'let w = [1; 2] |> Seq.pfirst (fun i -> if i == 1 then Self.prompt "" else (Duration.sleep 300ms; "timer"))' 'print $"winner={w}"' 'let c = sh -c "read l; echo child=$l" | text' 'print c' 'let b = Self.prompt ""' 'print $"prompt2={b}"' > "$stdir/f5.weir"
+    out=$( (printf 'L'; sleep 0.6; printf '1\nL2\nL3\n') | timeout 10 "$BIN" "$stdir/f5.weir" 2>&1) || true
+    echo "$out" | grep -qx "child=L2" || fail "a child after a cut prompt's partial line reads the next whole line: $out"
+    echo "$out" | grep -q "prompt2=L1$" || fail "the cut prompt's line stays whole for the next prompt: $out"
+    echo "e2e ok: a cut prompt's partial line never splices — finished whole before a child reads stdin"
+
+    # R2 (C25): `exit n` in a serve handler stops the scope — the parked
+    # handler is cut with its cleanup whole, nothing after the scope runs,
+    # weir exits n [D:serve-handler-exit]
+    svportT=8493
+    cat > "$stdir/c25.weir" <<WEOF
+let log = Self.args |> Seq.head
+let handler = fun req ->
+    match req.path with
+    | "/park" ->
+        within
+            Duration.sleep 30s
+            File.append log ["LATE park"]
+        always
+            File.append log ["park cleanup"]
+        HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+    | _ ->
+        exit 7
+        HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+within serve srv = { port = $svportT; maxConcurrent = 4 } handler
+    within proc _c = curl -s -m 10 "http://127.0.0.1:$svportT/park"
+        Duration.sleep 300ms
+        let _r = Http.send { Http.defaults with url = "http://127.0.0.1:$svportT/x" } |> try result
+        Duration.sleep 2s
+        File.append log ["LATE body"]
+File.append log ["LATE after"]
+WEOF
+    rm -f "$stdir/c25.log"
+    code=0; out=$(timeout 20 "$BIN" "$stdir/c25.weir" "$stdir/c25.log" 2>&1) || code=$?
+    [ "$code" = "7" ] || fail "exit 7 in a serve handler exits 7 (got $code): $out"
+    [ "$(stlog "$stdir/c25.log")" = "park cleanup," ] || fail "the handler's exit cuts the parked handler, its cleanup whole, nothing after: $(stlog "$stdir/c25.log")"
+    echo "$out" | grep -q "ExitRequest" && fail "a handler's exit names no internal exception: $out"
+    echo "e2e ok: exit n in a serve handler stops the scope — handlers cut and joined, cleanups whole, then exit n"
+    rm -rf "$stdir"
+fi
+
 # ---- streaming statement echo [D:stream-echo] -------------------------------
 # the general pty instrument (tests/pty/pty-run.py — built for these
 # pins, deliberately general: C14 TTY-contention and the REPL SIGINT
@@ -3644,8 +3870,9 @@ WEOF
     [ "$took" -lt 5000 ] || fail "a second terminal ^C must hard-exit, not wait out the child (${took}ms): $tout"
 
     # pure computation holds the terminal ^C's join [D:teardown-joins-arms]:
-    # the grace period does not exit while the arms compute
-    printf '%s\n' 'sh -c "true"' '[1; 2] |> Seq.piter (fun i ->' '    let n = [1..7000000] |> Seq.fold (fun a x -> a + 1) 0' '    print $"arm {i} {n}")' 'print "after"' > "$sedir/purejoin.weir"
+    # the grace period does not exit while the arms compute — a builtin's
+    # own loop, since every evaluated node is a boundary [D:scope-tree]
+    printf '%s\n' 'sh -c "true"' '[1; 2] |> Seq.piter (fun i ->' '    let n = [1..300000000] |> Seq.length' '    print $"arm {i} {n}")' 'print "after"' > "$sedir/purejoin.weir"
     t0=$(now_ms)
     tout=$(printf 'SLEEP 500\nSEND \\x03\nSLEEP 300\n' | python3 "$ptyrun" 20 "$BIN" "$sedir/purejoin.weir")
     took=$(( $(now_ms) - t0 ))
@@ -4300,6 +4527,41 @@ printf 'let m = File.read "m.json" |> from json Map<int, int>\n' > "$mvdir/mk.we
 out=$( cd "$mvdir" && $BIN check mk.weir 2>&1 ) && fail "Map<int, …> in the slot must refuse: $out"
 expect "the slot's int key teaches" "Map keys are strings only" "$out"
 rm -rf "$mvdir"
+
+# ---- `..` after a symlink is physical [D:fs-dotdot-physical] -----------------
+# L -> real/sub: File.* resolve L/.. to real, as the kernel (cat) does, and
+# the plan guard sees the write it lands under its real path
+if [ "$IS_WINDOWS" != "1" ]; then
+    dddir=$(mkweirtmp)
+    mkdir -p "$dddir/real/sub"
+    echo inner > "$dddir/real/x.txt"
+    echo top > "$dddir/x.txt"
+    ln -s real/sub "$dddir/L"
+    cat > "$dddir/t.weir" <<'WEOF'
+// L -> real/sub: `L/..` is real, as the kernel resolves it [D:fs-dotdot-physical]
+let base = Self.args |> Seq.head
+print $"read: {File.read $"{base}/L/../x.txt" |> Str.join ""}"
+["w"] |> File.write $"{base}/L/../y.txt"
+print $"landed: {File.exists $"{base}/real/y.txt"} {File.exists $"{base}/y.txt"}"
+print $"exists: {File.exists $"{base}/L/../x.txt"} dir: {Dir.exists $"{base}/L/../sub"}"
+print $"list: {Dir.list $"{base}/L/.." |> Seq.map Path.fileName |> Str.join " "}"
+File.copy $"{base}/L/../x.txt" $"{base}/L/../z.txt"
+print $"copied: {File.exists $"{base}/real/z.txt"}"
+let _guarded =
+    plan
+        File.write $"{base}/L/../p.txt" ["p"]
+        print $"{File.read $"{base}/real/p.txt" |> Seq.length}"
+print "unreached"
+WEOF
+    out=$($BIN "$dddir/t.weir" "$dddir" 2>&1) && fail "the dotdot cell's plan read must refuse: $out"
+    expect "File.read L/.. is physical" "read: inner" "$out"
+    expect "File.write L/.. lands where the kernel puts it" "landed: true false" "$out"
+    expect "File.exists/Dir.exists L/.. are physical" "exists: true dir: true" "$out"
+    expect "Dir.list L/.. lists real" "list: sub x.txt y.txt" "$out"
+    expect "File.copy L/.. is physical" "copied: true" "$out"
+    expect "the plan guard keys the physical path" "known-after-apply" "$out"
+    rm -rf "$dddir"
+fi
 
 # ---- FileRow reshape [D:filerow] --------------------------------------------
 # kind/target over a real symlink, and File.mode against the platform's
@@ -11601,7 +11863,63 @@ WEOF
         out=$(env HTTP_PROXY=http://proxy-weir-e2e.invalid:3128 http_proxy=http://proxy-weir-e2e.invalid:3128 NO_PROXY=example.invalid no_proxy=example.invalid "$BIN" "$hdir/star.weir" 2>&1) && { kill $hsrv 2>/dev/null || true; fail "E4: an unresolvable proxy must fail: $out"; }
         echo "$out" | grep -qF "cannot resolve the proxy proxy-weir-e2e.invalid" || { kill $hsrv 2>/dev/null || true; fail "E4: an unresolvable proxy must be named: $out"; }
         echo "e2e ok: Http a dead proxy's error names the proxy (refused http/https, unresolvable)"
+        # NO_PROXY as curl reads it [D:noproxy-curl]: a name entry covers
+        # its subdomains (a trailing dot ignored), an IP host matches only
+        # an address entry — never a text suffix, a port, a bracketed
+        # literal or a /0. Direct to sub.example.invalid fails on DNS;
+        # through the dead proxy it names the proxy.
+        npOut() { env HTTP_PROXY=http://127.0.0.1:1 http_proxy=http://127.0.0.1:1 NO_PROXY="$1" no_proxy="$1" "$BIN" -e "Http.send (Http.get \"$2\") |> fun r -> r.status" 2>&1; }
+        for np in example.invalid .example.invalid example.invalid. EXAMPLE.invalid 'x.org, example.invalid'; do
+            out=$(npOut "$np" http://sub.example.invalid:1/) && { kill $hsrv 2>/dev/null || true; fail "noproxy-curl: sub.example.invalid must fail: $out"; }
+            echo "$out" | grep -qF "the proxy 127.0.0.1:1" && { kill $hsrv 2>/dev/null || true; fail "noproxy-curl: NO_PROXY=$np must bypass sub.example.invalid: $out"; }
+        done
+        out=$(npOut example.invalid http://notexample.invalid:1/) && { kill $hsrv 2>/dev/null || true; fail "noproxy-curl: notexample.invalid must fail: $out"; }
+        echo "$out" | grep -qF "the proxy 127.0.0.1:1" || { kill $hsrv 2>/dev/null || true; fail "noproxy-curl: example.invalid must not cover notexample.invalid: $out"; }
+        for np in .0.0.1 .1 127.0.0.0/0 0.0.0.0/0 '127.0.0.0/ 8' 127.0.0.1/33 "127.0.0.1:$hport" localhost 'x.org 127.0.0.1'; do
+            out=$(npOut "$np" "http://127.0.0.1:$hport/x") && { kill $hsrv 2>/dev/null || true; fail "noproxy-curl: NO_PROXY=$np must not bypass 127.0.0.1: $out"; }
+            echo "$out" | grep -qF "the proxy 127.0.0.1:1" || { kill $hsrv 2>/dev/null || true; fail "noproxy-curl: NO_PROXY=$np went direct: $out"; }
+        done
+        echo "e2e ok: Http NO_PROXY matches as curl (subdomains, dots, case; no IP suffix, port, /0 or past-width bits)"
     fi
+    # a proxy's refusal names the proxy, never its credentials, never .NET's
+    # text [D:proxy-refusal-words]: 407/403/502 to the CONNECT, and a proxy
+    # that closes the connection (http and https)
+    cat > "$hdir/fakeproxy.py" <<'PROXEOF'
+import socket, sys, threading
+port, mode = int(sys.argv[1]), sys.argv[2]
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", port)); s.listen(50)
+def h(c):
+    d = b""
+    while b"\r\n\r\n" not in d:
+        x = c.recv(4096)
+        if not x: break
+        d += x
+    if mode != "close":
+        c.sendall(b"HTTP/1.1 " + mode.encode() + b" No\r\nProxy-Authenticate: Basic realm=\"x\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    c.close()
+while True:
+    c, _ = s.accept(); threading.Thread(target=h, args=(c,), daemon=True).start()
+PROXEOF
+    for mode in 407 403 502 close; do
+        pport=$((23000 + RANDOM % 2000))
+        python3 "$hdir/fakeproxy.py" "$pport" "$mode" &
+        ppid=$!
+        awaitTcp $pport || { kill $ppid $hsrv 2>/dev/null || true; fail "proxy-refusal: the fake proxy never came up"; }
+        for url in https://weir-target.invalid/x http://weir-target.invalid/x; do
+            [ "$mode" != close ] && [ "${url%%:*}" = http ] && continue
+            out=$(env HTTPS_PROXY="http://ci-bot:S3cr3tPass@127.0.0.1:$pport" https_proxy="http://ci-bot:S3cr3tPass@127.0.0.1:$pport" HTTP_PROXY="http://ci-bot:S3cr3tPass@127.0.0.1:$pport" http_proxy="http://ci-bot:S3cr3tPass@127.0.0.1:$pport" NO_PROXY=example.invalid no_proxy=example.invalid "$BIN" -e "Http.send (Http.get \"$url\") |> fun r -> r.status" 2>&1) && { kill $ppid $hsrv 2>/dev/null || true; fail "proxy-refusal: $mode must fail: $out"; }
+            echo "$out" | grep -qF "S3cr3t" && { kill $ppid $hsrv 2>/dev/null || true; fail "proxy-refusal: $mode leaked the proxy credentials: $out"; }
+            echo "$out" | grep -qiF "proxy tunnel request" && { kill $ppid $hsrv 2>/dev/null || true; fail "proxy-refusal: $mode printed .NET's text: $out"; }
+            if [ "$mode" = close ]; then
+                echo "$out" | grep -qF "the proxy 127.0.0.1:$pport closed the connection before answering" || { kill $ppid $hsrv 2>/dev/null || true; fail "proxy-refusal: a closing proxy must be named ($url): $out"; }
+            else
+                echo "$out" | grep -qF "the proxy 127.0.0.1:$pport refused to tunnel to weir-target.invalid: $mode" || { kill $ppid $hsrv 2>/dev/null || true; fail "proxy-refusal: a $mode must name the proxy: $out"; }
+            fi
+        done
+        kill $ppid 2>/dev/null || true
+        wait $ppid 2>/dev/null || true
+    done
+    echo "e2e ok: Http a proxy refusing the tunnel (407/403/502) or closing is named, credentials never printed"
 
     kill $hsrv 2>/dev/null || true
 
@@ -12469,6 +12787,235 @@ out=$($BIN "$padir/kaa.weir" 2>&1) && fail "a known-after-apply read must refuse
 echo "$out" | grep -qF "known-after-apply" || fail "the known-after-apply teaching must fire: $out"
 echo "e2e ok: plan/apply — a known-after-apply read refuses (located)"
 
+# [D:plan-preconditions] (ruling R4): a captured op checks its
+# preconditions against the plan's simulated state and raises at
+# capture, as the direct call does — every op kind, against real and
+# planned state; a valid chain still applies
+cat > "$padir/pre.weir" <<'WEOF'
+// every captured op checks its preconditions against the plan's simulated state [D:plan-preconditions]
+within tmp root
+    let p n = $"{root}/{n}"
+    File.write (p "a.txt") ["a"]
+    File.write (p "exists.txt") ["e"]
+    Dir.create (p "d")
+    File.write (p "d/in.txt") ["i"]
+    let c0 () =
+        plan
+            File.copy (p "a.txt") (p "exists.txt")
+    match c0 () |> try result with
+    | Ok pl -> print $"copy onto existing: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"copy onto existing: {Str.replace root "$T" e}"
+    let c1 () =
+        plan
+            File.write (p "new.txt") ["n"]
+            File.copy (p "a.txt") (p "new.txt")
+    match c1 () |> try result with
+    | Ok pl -> print $"copy onto a planned write: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"copy onto a planned write: {Str.replace root "$T" e}"
+    let c2 () =
+        plan
+            File.write (p "new.txt") ["n"]
+            File.copy (p "new.txt") (p "new2.txt")
+    match c2 () |> try result with
+    | Ok pl -> print $"copy from planned write: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"copy from planned write: {Str.replace root "$T" e}"
+    let c3 () =
+        plan
+            File.delete (p "missing.txt")
+    match c3 () |> try result with
+    | Ok pl -> print $"delete missing: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"delete missing: {Str.replace root "$T" e}"
+    let c4 () =
+        plan
+            File.delete (p "a.txt")
+            File.delete (p "a.txt")
+    match c4 () |> try result with
+    | Ok pl -> print $"delete twice: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"delete twice: {Str.replace root "$T" e}"
+    let c5 () =
+        plan
+            File.delete (p "a.txt")
+            File.copy (p "a.txt") (p "b.txt")
+    match c5 () |> try result with
+    | Ok pl -> print $"copy from deleted: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"copy from deleted: {Str.replace root "$T" e}"
+    let c6 () =
+        plan
+            File.move (p "nope.txt") (p "b.txt")
+    match c6 () |> try result with
+    | Ok pl -> print $"move from missing: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"move from missing: {Str.replace root "$T" e}"
+    let c7 () =
+        plan
+            File.move (p "a.txt") (p "b.txt")
+            File.move (p "a.txt") (p "c.txt")
+    match c7 () |> try result with
+    | Ok pl -> print $"move twice: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"move twice: {Str.replace root "$T" e}"
+    let c8 () =
+        plan
+            File.move (p "a.txt") (p "b.txt")
+            File.delete (p "b.txt")
+    match c8 () |> try result with
+    | Ok pl -> print $"move then delete target ok: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"move then delete target ok: {Str.replace root "$T" e}"
+    let c9 () =
+        plan
+            Dir.create (p "e")
+            File.write (p "e/x.txt") ["x"]
+            Dir.delete (p "e")
+    match c9 () |> try result with
+    | Ok pl -> print $"delete a dir the plan filled: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"delete a dir the plan filled: {Str.replace root "$T" e}"
+    let c10 () =
+        plan
+            File.delete (p "d/in.txt")
+            Dir.delete (p "d")
+    match c10 () |> try result with
+    | Ok pl -> print $"delete a dir the plan emptied ok: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"delete a dir the plan emptied ok: {Str.replace root "$T" e}"
+    let c11 () =
+        plan
+            Dir.delete (p "d")
+    match c11 () |> try result with
+    | Ok pl -> print $"delete a real non-empty dir: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"delete a real non-empty dir: {Str.replace root "$T" e}"
+    let c12 () =
+        plan
+            File.write (p "zz/x.txt") ["x"]
+    match c12 () |> try result with
+    | Ok pl -> print $"write under a missing dir: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"write under a missing dir: {Str.replace root "$T" e}"
+    let c13 () =
+        plan
+            Dir.create (p "zz/yy")
+            File.write (p "zz/yy/x.txt") ["x"]
+    match c13 () |> try result with
+    | Ok pl -> print $"write under a planned dir ok: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"write under a planned dir ok: {Str.replace root "$T" e}"
+    let c14 () =
+        plan
+            Dir.deleteAll (p "d")
+            File.write (p "d/x.txt") ["x"]
+    match c14 () |> try result with
+    | Ok pl -> print $"write under a deleted tree: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"write under a deleted tree: {Str.replace root "$T" e}"
+    let c15 () =
+        plan
+            File.write (p "d") ["x"]
+    match c15 () |> try result with
+    | Ok pl -> print $"write onto a dir: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"write onto a dir: {Str.replace root "$T" e}"
+    let c16 () =
+        plan
+            Dir.create (p "a.txt/sub")
+    match c16 () |> try result with
+    | Ok pl -> print $"mkdir under a file: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"mkdir under a file: {Str.replace root "$T" e}"
+    let c17 () =
+        plan
+            File.write (p "f.txt") ["x"]
+            Dir.create (p "f.txt")
+    match c17 () |> try result with
+    | Ok pl -> print $"mkdir over a planned file: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"mkdir over a planned file: {Str.replace root "$T" e}"
+    let c18 () =
+        plan
+            Dir.move (p "d") (p "d2")
+            File.copy (p "d2/in.txt") (p "in2.txt")
+            File.delete (p "d/in.txt")
+    match c18 () |> try result with
+    | Ok pl -> print $"dir move then use old: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir move then use old: {Str.replace root "$T" e}"
+    let c19 () =
+        plan
+            Dir.copy (p "d") (p "d3")
+            Dir.copy (p "d") (p "d3")
+    match c19 () |> try result with
+    | Ok pl -> print $"dir copy twice: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir copy twice: {Str.replace root "$T" e}"
+    let c20 () =
+        plan
+            Dir.copy (p "d") (p "d4")
+            Dir.delete (p "d4")
+    match c20 () |> try result with
+    | Ok pl -> print $"dir copy then delete it non-empty: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir copy then delete it non-empty: {Str.replace root "$T" e}"
+    let c21 () =
+        plan
+            Dir.deleteAll (p "nod")
+    match c21 () |> try result with
+    | Ok pl -> print $"deleteAll missing: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"deleteAll missing: {Str.replace root "$T" e}"
+    let c22 () =
+        plan
+            Dir.copy (p "d") (p "d/sub")
+    match c22 () |> try result with
+    | Ok pl -> print $"dir copy into itself: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir copy into itself: {Str.replace root "$T" e}"
+    let c23 () =
+        plan
+            Dir.move (p "nod") (p "x")
+    match c23 () |> try result with
+    | Ok pl -> print $"dir move missing: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir move missing: {Str.replace root "$T" e}"
+    let c24 () =
+        plan
+            File.writeAtomic (p "zz/q.txt") ["x"]
+    match c24 () |> try result with
+    | Ok pl -> print $"writeAtomic under missing: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"writeAtomic under missing: {Str.replace root "$T" e}"
+    let c25 () =
+        plan
+            File.write (p "m1.txt") ["1"]
+            File.copy (p "m1.txt") (p "m2.txt")
+            File.move (p "m2.txt") (p "m3.txt")
+            File.delete (p "m1.txt")
+            Dir.create (p "q")
+            File.move (p "m3.txt") (p "q/m3.txt")
+            Dir.move (p "q") (p "r")
+            File.delete (p "r/m3.txt")
+            Dir.delete (p "r")
+    match c25 () |> try result with
+    | Ok pl -> print $"all valid: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"all valid: {Str.replace root "$T" e}"
+    print $"apply: {Plan.apply (c25 ()) |> try result}"
+    print $"after: {Dir.list root |> Seq.map Path.fileName |> Str.join " "}"
+WEOF
+cat > "$padir/pre.want" <<'WEOF'
+copy onto existing: File.copy: destination exists: $T/exists.txt
+copy onto a planned write: File.copy: destination exists: $T/new.txt
+copy from planned write: ok (2 ops)
+delete missing: File.delete: no such file: $T/missing.txt
+delete twice: File.delete: no such file: $T/a.txt
+copy from deleted: File.copy: no such file: $T/a.txt
+move from missing: File.move: no such file: $T/nope.txt
+move twice: File.move: no such file: $T/a.txt
+move then delete target ok: ok (2 ops)
+delete a dir the plan filled: Dir.delete: not empty: $T/e — Dir.deleteAll removes a tree
+delete a dir the plan emptied ok: ok (2 ops)
+delete a real non-empty dir: Dir.delete: not empty: $T/d — Dir.deleteAll removes a tree
+write under a missing dir: File.write: no such directory: $T/zz
+write under a planned dir ok: ok (2 ops)
+write under a deleted tree: File.write: no such directory: $T/d
+write onto a dir: File.write: $T/d is a directory
+mkdir under a file: Dir.create: $T/a.txt is a file — a directory cannot be created there
+mkdir over a planned file: Dir.create: $T/f.txt is a file — a directory cannot be created there
+dir move then use old: File.delete: no such file: $T/d/in.txt
+dir copy twice: Dir.copy: destination exists: $T/d3
+dir copy then delete it non-empty: Dir.delete: not empty: $T/d4 — Dir.deleteAll removes a tree
+deleteAll missing: Dir.deleteAll: no such directory: $T/nod
+dir copy into itself: Dir.copy: destination $T/d/sub is inside the source $T/d
+dir move missing: Dir.move: no such directory: $T/nod
+writeAtomic under missing: File.writeAtomic: no such directory: $T/zz
+all valid: ok (9 ops)
+apply: Ok (())
+after: a.txt d exists.txt
+WEOF
+out=$($BIN "$padir/pre.weir" 2>&1) || fail "the plan precondition cell failed: $out"
+printf '%s\n' "$out" | tr -d '\r' | sed 's#\\#/#g' | diff "$padir/pre.want" - >/dev/null || fail "plan preconditions at capture diverge: $out"
+echo "e2e ok: plan/apply — every captured op checks its preconditions against the plan's state"
+
 # [D:plan-stale-reads]: every fs read is guarded — a listing after a
 # captured write inside it, a read under a captured deleteAll
 mkdir -p "$padir/sr/tree" && printf 't\n' > "$padir/sr/tree/f"
@@ -13073,6 +13620,39 @@ echo "$out" | grep -qF "status=HTTP/1.1 200 OK body=len=16" || fail "H20: a body
 echo "$out" | grep -qF "status=HTTP/1.1 413" || fail "H20: a body past maxBody must be 413: $out"
 echo "e2e ok: within serve — H20 maxBody answers 413 past the bound"
 
+# a request body in a charset weir cannot decode is answered 415 before
+# the handler [D:serve-charset], never decoded as UTF-8 with U+FFFD; a
+# known charset still decodes per its declaration
+svport20=8487
+cat > "$svdir/charset.py" <<'PYEOF'
+import socket, sys
+port, cs, body = int(sys.argv[1]), sys.argv[2], bytes.fromhex(sys.argv[3])
+s = socket.socket(); s.connect(('127.0.0.1', port))
+s.sendall(('POST /x HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain; charset=%s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n' % (cs, len(body))).encode() + body)
+d = b''
+while True:
+    c = s.recv(4096)
+    if not c: break
+    d += c
+# UTF-8 bytes, not print: Windows' Python writes a pipe in the ANSI code page
+sys.stdout.buffer.write(('%s status=%s body=%s\n' % (cs, d.split(b'\r\n', 1)[0].decode(), d.split(b'\r\n\r\n', 1)[-1].decode())).encode('utf-8'))
+PYEOF
+cat > "$svdir/charset.weir" <<WEOF
+within serve srv = { port = $svport20; maxConcurrent = 2 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text \$"handled={req.body}" })
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport20
+    let unknown = sh -c "python3 '$svdir/charset.py' $svport20 x-weir-none e961" | complete
+    unknown.stdout |> Seq.iter print
+    let latin = sh -c "python3 '$svdir/charset.py' $svport20 iso-8859-1 e961" | complete
+    latin.stdout |> Seq.iter print
+WEOF
+out=$($BIN "$svdir/charset.weir" 2>&1) || fail "serve charset run failed: $out"
+echo "$out" | grep -qF "x-weir-none status=HTTP/1.1 415" || fail "a body in an unknown charset must be 415: $out"
+echo "$out" | grep -qF "request body charset 'x-weir-none' is not one weir decodes" || fail "the 415 must name the charset: $out"
+echo "$out" | grep -q "x-weir-none.*handled=" && fail "a body in an unknown charset must never reach the handler: $out"
+echo "$out" | grep -qF "iso-8859-1 status=HTTP/1.1 200 OK body=handled=éa" || fail "a declared iso-8859-1 body must decode per its charset: $out"
+echo "e2e ok: within serve — a body in an unknown charset is answered 415 before the handler"
+
 # ---- serve on Kestrel [D:serve-kestrel]: the wire, end to end ----------
 # Pipelining, repeated headers (F10) and one-response-per-request (H3-E6)
 # on the AOT binary through a weir handler; a raw socket referees the
@@ -13671,11 +14251,12 @@ echo "$sout" | grep -qF 'a\rb\x1b[8mc' && fail "tty-echo-strict: the REPL echo p
 cat > "$svdir/preview-cr.weir" <<WEOF
 let p =
     plan
-        File.delete \$"/nowhere/a{$X}"
+        Dir.create \$"/nowhere/a{$X}"
 p |> Plan.preview |> Seq.iter print
 WEOF
+# a Dir.create: a delete of a missing path refuses at capture [D:plan-preconditions]
 pout=$($BIN "$svdir/preview-cr.weir" 2>&1) || fail "tty-echo-strict: preview run failed: $pout"
-[ "$pout" = 'delete file /nowhere/aa\x0db\x1b[8mc' ] || fail "tty-echo-strict: a Plan.preview path must render CR and SGR visibly, piped too: $pout"
+[ "$pout" = 'make dir /nowhere/aa\x0db\x1b[8mc' ] || fail "tty-echo-strict: a Plan.preview path must render CR and SGR visibly, piped too: $pout"
 echo "e2e ok: tty-echo-strict the -e/REPL echo, table cells and Plan.preview show CR and SGR visibly; print keeps them"
 # Args.load --help rides the tty sanitizer [D:tty-help-sanitize]
 printf 'type Cli = {\n    /// be verbose \033]0;HELP\007\n    verbose: bool\n}\nlet cli = Args.load Cli\nprint (show cli.verbose)\n' > "$svdir/help-osc.weir"
@@ -13726,6 +14307,104 @@ $BIN "$dg/src.weir" 2> "$dg/src.err" || true
 python3 -c "import sys; sys.exit(0 if all(b'\x1b]52;c;DIAG\x07' in open(f,'rb').read() for f in sys.argv[1:]) else 1)" "$dg/imp.out" "$dg/src.err" \
     || fail "tty-diag: redirected diagnostics must stay byte-faithful"
 echo "e2e ok: tty-diag check/run diagnostics (import path, source echo, regex, #sig, no such script) sanitized at a tty, byte-faithful when redirected"
+# a runtime error escapes the data it quotes [D:error-data-escape] — always,
+# piped too: a parse input, a document excerpt, a path, an env var name
+ed="$svdir/errdata"; mkdir -p "$ed"
+printf 'let n = Float.parse (Env.need "X")\nprint $"{n}"\n' > "$ed/float.weir"
+printf 'type T = { a: int }\nlet t = [Env.need "X"] |> from json T\nprint $"{t.a}"\n' > "$ed/json.weir"
+printf 'print (File.read (Env.need "X") |> Seq.length)\n' > "$ed/path.weir"
+printf 'print (Env.need (Env.need "X"))\n' > "$ed/env.weir"
+for f in float json path env; do
+    eout=$(X="$(printf '/no\r\033[8mpe')" "$BIN" "$ed/$f.weir" 2>&1) && fail "error-data-escape: $f must fail: $eout"
+    echo "$eout" | grep -qF '\x0d\x1b[8mpe' || fail "error-data-escape: $f must render the quoted CR/ESC visibly: $eout"
+    printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d) else 0)" \
+        || fail "error-data-escape: $f put a raw CR/ESC in the error: $eout"
+done
+# from xml over bytes quotes its excerpt as the text path does
+# [D:xml-encoding]
+printf '<R><a>x\r\033[8mpe</a' > "$ed/bad.xml"
+printf 'type R = { a: string }\nlet r = File.readBytes "%s/bad.xml" |> from xml R\nprint r.a\n' "$ed" > "$ed/xmlb.weir"
+eout=$("$BIN" "$ed/xmlb.weir" 2>&1) && fail "error-data-escape: a bad xml document must fail: $eout"
+echo "$eout" | grep -qF 'x\x0d\x1b[8mpe' || fail "error-data-escape: from xml over bytes must render the quoted CR/ESC visibly: $eout"
+printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d) else 0)" \
+    || fail "error-data-escape: from xml over bytes put a raw CR/ESC in the error: $eout"
+printf 'let x: int = "a"\n' > "$(printf '%s/a\033[8m\rb.weir' "$ed")"
+eout=$("$BIN" check "$(printf '%s/a\033[8m\rb.weir' "$ed")" 2>&1; "$BIN" "$(printf '%s/a\033[8m\rb.weir' "$ed")" 2>&1; "$BIN" "$(printf '%s/z\033[8m\rb.weir' "$ed")" 2>&1 || true)
+echo "$eout" | grep -qF 'no such script' || fail "error-data-escape: a missing script must say so: $eout"
+echo "$eout" | grep -qF 'a\x1b[8m\x0db.weir:1:' || fail "error-data-escape: a diagnostic must name the file visibly: $eout"
+printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b[8m' in d or b'\r' in d) else 0)" \
+    || fail "error-data-escape: a file name put a raw CR/ESC in a diagnostic: $eout"
+echo "e2e ok: error-data-escape runtime errors render the quoted CR/ESC visibly (parse input, json excerpt, path, env name, file name)"
+# Plan.preview renders an http send line's escapes visibly [D:tty-echo-strict]
+cat > "$ed/pv.weir" <<'WEOF'
+let p =
+    plan
+        let _r = Http.send { Http.defaults with method = Post; url = Env.need "U"; body = Text "ping" }
+        ()
+p |> Plan.preview |> Seq.iter print
+WEOF
+pout=$(U="$(printf 'http://127.0.0.1:1/h\033[8m')" "$BIN" "$ed/pv.weir" 2>&1) || fail "tty-echo-strict: the http preview run failed: $pout"
+echo "$pout" | grep -qF 'http send' || fail "tty-echo-strict: no http send line: $pout"
+echo "$pout" | grep -qF '/h\x1b[8m' || fail "tty-echo-strict: an http send preview must render the url's ESC visibly: $pout"
+printf '%s' "$pout" | python3 -c "import sys; sys.exit(1 if b'\x1b' in sys.stdin.buffer.read() else 0)" \
+    || fail "tty-echo-strict: the http send preview put a raw ESC out: $pout"
+echo "e2e ok: tty-echo-strict Plan.preview's http send line shows escapes visibly"
+# weir add sig renders the tool's text as data [D:sig-text-sanitize]
+sg="$svdir/sigtext"; mkdir -p "$sg/bin" "$sg/p"; : > "$sg/p/.git"
+cat > "$sg/bin/evil" <<'SHEOF'
+#!/bin/sh
+case "$*" in
+  --version) printf 'evil 1.0\033]52;c;ZXZpbA==\007\n';;
+  *--help*) printf 'Usage: evil [options]\n\nOptions:\n  --out <file>   write \033]0;T\007 out\n  --ok           fine\n';;
+esac
+SHEOF
+chmod +x "$sg/bin/evil"
+sout=$(cd "$sg/p" && printf 'SLEEP 300\n' | PATH="$sg/bin:$PATH" python3 "$abssink" 6 "$absbin" add sig evil 2>&1)
+echo "$sout" | grep -qF 'version: evil 1.0\\x1b]52;c;ZXZpbA==\\x07' || fail "sig-text: add sig must print the version's OSC visibly at a tty: $sout"
+python3 -c "import sys; d=open('$sg/p/.weir/sigs/evil.weir','rb').read(); sys.exit(1 if (b'\x1b' in d or b'\x07' in d) else 0)" \
+    || fail "sig-text: the generated sig must hold no raw control byte"
+grep -qF 'evil 1.0\\x1b]52' "$sg/p/.weir/sigs/evil.weir" || fail "sig-text: the generated version must show the escape: $(cat "$sg/p/.weir/sigs/evil.weir")"
+printf '#sig evil\nevil --ok\n' > "$sg/p/use.weir"
+cout=$(cd "$sg/p" && PATH="$sg/bin:$PATH" "$absbin" check use.weir 2>&1) || fail "sig-text: the generated sig must still check: $cout"
+echo "e2e ok: sig-text add sig prints and writes the tool's escapes visibly; the sig still checks"
+# a hung-up terminal never aborts weir [D:console-hangup]: the cleanup
+# prints after the hangup, runs whole, and the exit is SIGHUP's
+hu="$svdir/hup"; mkdir -p "$hu"
+cat > "$hu/h.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within
+    File.append log ["body"]
+    [1..400] |> Seq.iter (fun k ->
+        print $"{k}"
+        Duration.sleep 20ms)
+always
+    print "cleanup prints"
+    printerr "cleanup printerr"
+    Log.warn "cleanup logs"
+    File.append log ["cleanup end"]
+WEOF
+hout=$(python3 - "$BIN" "$hu/h.weir" "$hu/h.log" <<'HUPEOF'
+import os, pty, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(sys.argv[1], sys.argv[1:])
+t0 = time.monotonic()
+while time.monotonic() - t0 < 1.5:
+    try: os.read(fd, 65536)
+    except OSError: break
+os.close(fd)
+t1 = time.monotonic(); code = 'HANG'
+while time.monotonic() - t1 < 10:
+    p, st = os.waitpid(pid, os.WNOHANG)
+    if p: code = os.waitstatus_to_exitcode(st); break
+    time.sleep(0.02)
+if code == 'HANG': os.kill(pid, 9); os.waitpid(pid, 0)
+print('EXIT=%s' % code)
+HUPEOF
+)
+case "$hout" in EXIT=129|EXIT=-1) ;; *) fail "console-hangup: a hung-up terminal must end weir by SIGHUP's teardown (129), not abort: $hout" ;; esac
+grep -qxF "cleanup end" "$hu/h.log" || fail "console-hangup: the cleanup must run whole after the hangup: $(cat "$hu/h.log" 2>/dev/null)"
+echo "e2e ok: console-hangup a hung-up terminal unwinds by SIGHUP, the printing cleanup runs whole"
 else
     echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"
 fi
@@ -13942,6 +14621,52 @@ echo "$out" | grep -qF "ok=[ANSWER]" || fail "a piped REPL Self.prompt must read
 echo "$out" | grep -qF "two=[#echo]" || fail "a looked-ahead directive line must reach the prompt: $out"
 echo "$out" | grep -qF "unknown command" && fail "the prompt's answer ran as a command: $out"
 echo "e2e ok: piped REPL — Self.prompt reads the line after its statement"
+# an attached lookahead line is judged like a read one — every
+# continuation shape (|> tails, a match's arms, an if's body and else, a
+# for body, a bracket) leaves the answers after it to its prompts, in order
+cat >"$w2dir/cont.txt" <<'WEOF'
+[1]
+    |> Seq.iter (fun _ -> print $"P1=[{Self.prompt "q?"}]")
+ANS1
+let a = Self.prompt "q?"
+        |> Str.toUpper
+ans2
+print $"A2=[{a}]"
+[1]
+    |> Seq.map id
+    |> Seq.iter (fun _ -> print $"P3=[{Self.prompt "q?"}]")
+ANS3
+match Self.prompt "q?" with
+| "M" -> print "M4=yes"
+| _ -> print "M4=no"
+M
+if true then
+    print $"A5=[{Self.prompt "q?"}]"
+    print $"B5=[{Self.prompt "q?"}]"
+ANS5a
+ANS5b
+if true then
+    print $"I6=[{Self.prompt "q?"}]"
+else
+    print "no"
+ANS6
+for i in [1; 2] do
+    print $"F7=[{Self.prompt "q?"}]"
+F7a
+F7b
+let xs = [
+    Self.prompt "q?"
+]
+B8
+print $"B8=[{xs |> Str.join ","}]"
+print "end"
+WEOF
+out=$(cd "$w2dir" && XDG_CONFIG_HOME="$w2dir/cfg" XDG_STATE_HOME="$w2dir/st" "$BIN" <"$w2dir/cont.txt" 2>&1)
+for want in "P1=[ANS1]" "A2=[ANS2]" "P3=[ANS3]" "M4=yes" "A5=[ANS5a]" "B5=[ANS5b]" "I6=[ANS6]" "F7=[F7a]" "F7=[F7b]" "B8=[B8]" "end"; do
+    echo "$out" | grep -qF -- "$want" || fail "piped REPL continuation shapes: expected $want in: $out"
+done
+echo "$out" | grep -qE "unknown command|parse error|continuation without" && fail "a looked-ahead answer ran as code: $out"
+echo "e2e ok: piped REPL — every continuation shape leaves its answers to its prompts, in order"
 # GUIDE "Lazy values": the stated outputs of the within cd / within env example
 cat >"$w2dir/lazy.weir" <<'WEOF'
 Dir.create "proj/src"

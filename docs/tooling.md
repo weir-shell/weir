@@ -250,7 +250,12 @@ the drafted type breaks. The schema knows what no sample can:
   becomes `Option<…>`
 - `additionalProperties` becomes a `seq<string * V>` mapping
 - `$ref` definition names become type names
-  (`io.k8s.api.core.v1.PodSpec` → `PodSpec`)
+  (`io.k8s.api.core.v1.PodSpec` → `PodSpec`); a deeper in-document
+  pointer (`#/definitions/opts/properties/inner`) names its type from
+  its last segment, and `#` is the whole schema (a reference to it from
+  inside is a cycle, drafted as `Yaml` below)
+- a `$ref` with sibling `properties`/`required` (JSON Schema 2020-12)
+  is merged into one record, with a note
 
 More of the mapping:
 
@@ -261,13 +266,19 @@ More of the mapping:
 - an `enum` becomes `string` plus a `//` note listing the values
   (string unions are planned); an enum under `type: boolean`,
   `integer` or `number`, or of values that are all one such kind,
-  becomes `bool`, `int` or `float`; an enum mixing kinds becomes `Yaml`
+  becomes `bool`, `int` or `float`; an enum mixing kinds becomes `Yaml`;
+  a `null` among the values makes it `Option<…>`
+- an `anyOf` or `oneOf` of one schema and `{"type": "null"}`, in
+  either order, becomes `Option<…>` of that schema
 - a field that can be an integer or a string (`anyOf` of the two,
   `x-kubernetes-int-or-string`, as Kubernetes ports are, or `type:
   string` with `format: int-or-string`) becomes `Yaml`: `8080` reads
   as `YInt 8080` and `"25%"` as `YStr "25%"`, and both write back
   unchanged to JSON and YAML; so does a number-or-string field (a
-  Kubernetes quantity such as `cpu: 1` or `cpu: "500m"`)
+  Kubernetes quantity such as `cpu: 1` or `cpu: "500m"`); a `oneOf`
+  alternative that is a `$ref` counts by its target's type, and a
+  `oneOf` with one alternative per JSON kind (a string or an object,
+  say) becomes `Yaml` too
 - a `const` drafts its type (`type`, or the value's own kind)
 - each validation keyword the schema uses gets one
   `// note: not enforced: …` line naming where it appears

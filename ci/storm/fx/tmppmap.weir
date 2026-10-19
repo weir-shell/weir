@@ -1,0 +1,37 @@
+// within tmp + pmap arms writing into the dir, each arm with always; outer always
+let a = Self.args |> Seq.freeze
+let log = a[0]
+let tag = a[1]
+let ev s = File.append log [s]
+within
+    ev "O outer"
+    within tmp d
+        ev "O outer/tmp"
+        let rs =
+            [0..3] |> Seq.pmap (fun i ->
+                within
+                    ev $"O outer/tmp/fan/arm{i}"
+                    [1..6] |> Seq.iter (fun k ->
+                        ev $"B outer/tmp/fan/arm{i} {k}"
+                        [$"{k}"] |> File.write $"{d}/f{i}-{k}"
+                        let o = sh -c $"sleep 0.03{tag}; echo {i}{k}"
+                        let _l = o |> Seq.length
+                        Duration.sleep 30ms)
+                always
+                    ev $"S outer/tmp/fan/arm{i}"
+                    ["c"] |> File.write $"{d}/c{i}"
+                    sh -c $"sleep 0.05{tag}"
+                    ev $"E outer/tmp/fan/arm{i}"
+                i)
+        ev "J outer/tmp/fan"
+        ev $"B outer/tmp sum {rs |> Seq.sum}"
+    always
+        ev "S outer/tmp"
+        let n = Dir.list d |> Seq.length
+        sleep $"0.04{tag}"
+        ev $"E outer/tmp {n}"
+always
+    ev "S outer"
+    Duration.sleep 30ms
+    ev "E outer"
+ev "DONE"

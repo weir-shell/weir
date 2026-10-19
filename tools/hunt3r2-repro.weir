@@ -898,6 +898,9 @@ let timedRun d secs src args = msOf (fun () -> runIn d secs (Seq.append [put d $
 
 let d1Script = <<<
     let n = Self.args |> Seq.head |> Str.toInt
+    // the plan's writes need their directories: an op certain to fail
+    // refuses at capture [D:plan-preconditions]
+    for j in [0..99] do Dir.create $"w/s{j}"
     let pl =
         plan
             for i in [1..n] do

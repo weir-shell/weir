@@ -206,6 +206,74 @@ let resolve (path: string) : string =
 
     System.IO.Path.GetFullPath(System.IO.Path.Combine(Cwd(), path))
 
+/// a filesystem builtin's path [D:fs-dotdot-physical]: `..` steps up
+/// from where the path so far physically is — the symlinks before it
+/// followed, as the kernel (and so `cat L/../x`) resolves it — where
+/// `resolve` collapses `..` lexically (right for a `cd`, which a shell
+/// tracks logically). A path without `..` is resolved as `resolve` does;
+/// components after the last `..` stay as written
+let resolveFs (path: string) : string =
+    let combined =
+        if path.Contains '\000' then
+            resolve path // the NUL refusal
+        else
+            System.IO.Path.Combine(Cwd(), path)
+
+    let seps = [| '/'; System.IO.Path.DirectorySeparatorChar |]
+
+    let segsOf (p: string) =
+        let root = System.IO.Path.GetPathRoot p
+        root, p.Substring(root.Length).Split(seps, System.StringSplitOptions.RemoveEmptyEntries)
+
+    let _, segs = segsOf combined
+
+    if not (segs |> Array.contains "..") then
+        System.IO.Path.GetFullPath combined
+    else
+        let mutable hops = 0
+
+        let parentOf (p: string) =
+            match System.IO.Path.GetDirectoryName p with
+            | null -> p
+            | parent -> parent
+
+        // every symlink in `p` followed (40 hops, the kernel's bound)
+        let rec realOf (p: string) : string =
+            let root, segs = segsOf p
+            let mutable acc = root
+
+            for seg in segs do
+                if seg = "." then
+                    ()
+                elif seg = ".." then
+                    acc <- parentOf acc
+                else
+                    let next = System.IO.Path.Combine(acc, seg)
+
+                    let target =
+                        try
+                            System.IO.FileInfo(next).LinkTarget
+                        with _ ->
+                            null
+
+                    if not (isNull target) && hops < 40 then
+                        hops <- hops + 1
+                        acc <- realOf (System.IO.Path.Combine(acc, target))
+                    else
+                        acc <- next
+
+            acc
+
+        let root, segs = segsOf combined
+        let mutable cur = root
+
+        for seg in segs do
+            if seg = "." then ()
+            elif seg = ".." then cur <- parentOf (realOf cur)
+            else cur <- System.IO.Path.Combine(cur, seg)
+
+        System.IO.Path.GetFullPath cur
+
 /// a temp dir only its owner can enter [D:private-temp] — 0700 on POSIX,
 /// mkdtemp's convention: child output and scratch content are the script's
 let createPrivateDir (dir: string) : unit =
@@ -247,12 +315,6 @@ let private hookInstalled = ref 0
 // collected registration stops handling
 let mutable private hookRoots: obj list = []
 
-// the hook's second customer [D:scoped-procs]: live scoped processes,
-// killed (tree) before the dirs go — a spilling child holds its spill
-// dir open, so the order is load-bearing on Windows
-let private liveProcs =
-    System.Collections.Concurrent.ConcurrentDictionary<int, System.Diagnostics.Process>()
-
 // the teardown kill [D:signal-main-unwind]: spawning stops, then every
 // live child's tree dies exactly once. Spawns hold the gate shared from
 // Process.Start through registration, so the kill (exclusive) sees every
@@ -263,66 +325,6 @@ let private spawnGate =
     new System.Threading.ReaderWriterLockSlim(System.Threading.LockRecursionPolicy.SupportsRecursion)
 
 let mutable private spawningStopped = false
-
-let private killedProcs =
-    System.Collections.Generic.HashSet<System.Diagnostics.Process>(HashIdentity.Reference)
-
-// an `always` block in progress on this logical flow [D:teardown-always-spawns]:
-// the teardown stops the body's spawns, never a cleanup's — teardown
-// commands are what `always` is for
-let private cleanupDepth = System.Threading.AsyncLocal<int>()
-
-let mutable private mainThreadId = 0
-
-let private onMainThread () =
-    mainThreadId <> 0
-    && System.Threading.Thread.CurrentThread.ManagedThreadId = mainThreadId
-
-// the main thread inside an `always` cleanup [D:teardown-never-preempts]:
-// the signal watchdog stands down for it, and once the watchdog has
-// fired no cleanup starts on the main thread (the sweep runs it)
-let private watchdogGate = obj ()
-let mutable private mainCleanups = 0
-let mutable private watchdogFired = false
-
-/// run an `always` cleanup: spawns inside it start even after the teardown
-/// kill, a parallel fan-out inside it keeps taking arms, and a requested
-/// teardown never preempts it [D:teardown-never-preempts]
-let runningCleanup (f: unit -> 'a) : 'a =
-    let onMain = onMainThread ()
-
-    if onMain then
-        lock watchdogGate (fun () ->
-            if watchdogFired then
-                // the process is exiting and the sweep owns the cleanups
-                System.Threading.Thread.Sleep System.Threading.Timeout.Infinite
-
-            mainCleanups <- mainCleanups + 1)
-
-    cleanupDepth.Value <- cleanupDepth.Value + 1
-
-    try
-        f ()
-    finally
-        cleanupDepth.Value <- cleanupDepth.Value - 1
-
-        if onMain then
-            lock watchdogGate (fun () -> mainCleanups <- mainCleanups - 1)
-
-let inCleanup () = cleanupDepth.Value > 0
-
-// the cleanup depth a race, fan-out or serve flow was opened at
-// [D:cleanup-owns-its-cuts]: a cleanup entered inside the flow is spared
-// its cut, while a scope opened inside a cleanup still cuts its own flows
-let private flowBase = System.Threading.AsyncLocal<int>()
-
-let private inFlowCleanup () = cleanupDepth.Value > flowBase.Value
-
-// children an `always` cleanup started: the teardown's kill spares them
-// [D:teardown-never-preempts] — a cleanup runs whole, its commands too;
-// the exit and a second signal still kill them
-let private cleanupProcs =
-    System.Collections.Concurrent.ConcurrentDictionary<System.Diagnostics.Process, unit>(HashIdentity.Reference)
 
 // a tree kill in flight [D:kill-settle]: .NET's Kill(true) on Unix
 // stops the tree, then kills it, so a process exiting between the two
@@ -414,115 +416,494 @@ let settleKills () : unit =
           && clock.ElapsedMilliseconds < 2000L do
         System.Threading.Thread.Sleep 5
 
-// pfirst's loser tree-kill [D:seq-pfirst]: an arm registers its live
-// children in its race group (AsyncLocal — the registration follows
-// the arm's logical context, the same keying as cwd/env). The winner
-// condemns every other group: registered trees die, and a child
-// spawned after condemnation dies at registration (the race window a
-// plain bag would leak). A child an `always` cleanup starts never joins
-// the group — the cut stops the body, never its cleanup
-// [D:teardown-always-spawns]; the race joins the arm, so it joins them.
-// A nested group registers its children with the enclosing arm's group
-// too, so a condemned arm's nested races and fan-outs lose theirs.
-// The bag is made at the first child: every fan-out arm has a group.
-type RaceGroup(parent: RaceGroup option) =
-    let mutable procs: System.Collections.Concurrent.ConcurrentBag<System.Diagnostics.Process> =
-        null
+// ---- the cancellation-scope tree [D:scope-tree] ------------------------
+// Every flow (the main flow, a REPL entry, a fan-out or race arm, a serve
+// handler) and every scope that has flows of its own (a race, a fan-out, a
+// serve) is a node; a running cleanup is a shield node. The current node
+// rides one AsyncLocal, so an arm's helpers inherit it. A node owns the
+// children its flow spawned (they leave it as they exit, and a node that
+// closes hands the live ones to its parent) and its cut: a cut marks the
+// node and every node under it, stopping at shields, wakes their waits and,
+// when it kills, tree-kills their children. A flow checks its own node and
+// nothing else.
+type NodeKind =
+    | Root = 0
+    | Flow = 1
+    | Race = 2
+    | Fan = 3
+    | Arm = 4
+    | Serve = 5
+    | Handler = 6
+    | Shield = 7
 
-    let mutable condemned = false
+/// why a node was cut (flags) — what its flows raise follows from it
+module CutReason =
+    let Teardown = 1
+    let Soft = 2
+    let RaceLost = 4
+    let FanExit = 8
+    let ServeCut = 16
+    let HandlerExit = 32
+    let Repl = 64
 
-    new() = RaceGroup(None)
+[<AllowNullLiteral>]
+type Node(parent: Node, kind: NodeKind) =
+    /// 0 uncut, 1 cut, 2 cut through shields (a second REPL ^C)
+    [<DefaultValue>]
+    val mutable Cut: int
 
-    member this.Register(p: System.Diagnostics.Process) =
-        if inFlowCleanup () then
-            ()
+    [<DefaultValue>]
+    val mutable Reasons: int
+
+    // a killing cut reached it: children registering now die at once
+    [<DefaultValue>]
+    val mutable Killing: bool
+
+    // takes no new arm (a won race)
+    [<DefaultValue>]
+    val mutable Closed: bool
+
+    // left the tree
+    [<DefaultValue>]
+    val mutable Detached: bool
+
+    [<DefaultValue>]
+    val mutable Cts: System.Threading.CancellationTokenSource
+
+    // the token a wait on a child holds: a soft teardown leaves it be
+    [<DefaultValue>]
+    val mutable HardCts: System.Threading.CancellationTokenSource
+
+    [<DefaultValue>]
+    val mutable Kids: System.Collections.Generic.HashSet<Node>
+
+    [<DefaultValue>]
+    val mutable internal Procs: System.Collections.Generic.HashSet<ProcEntry>
+
+    /// the `exit n` a fan-out or serve scope raises once its flows joined
+    [<DefaultValue>]
+    val mutable Exit: exn
+
+    member _.Parent = parent
+    member _.Kind = kind
+
+// a live child and the node that owns it now: a node that closes hands its
+// live children to its parent, so the owner moves (under both locks)
+and [<AllowNullLiteral>] internal ProcEntry(p: System.Diagnostics.Process, owner: Node) =
+    member _.P = p
+
+    [<DefaultValue>]
+    val mutable Killed: int
+
+    member val Owner: Node = owner with get, set
+
+// the hook's second customer [D:scoped-procs]: every live child, with the
+// node that owns it — the teardown's kill walks the tree, the exit's and the
+// hard exit's kill them all (a spilling child holds its spill dir open, so
+// the kill before the dirs go is load-bearing on Windows)
+let private liveProcs =
+    System.Collections.Concurrent.ConcurrentDictionary<System.Diagnostics.Process, ProcEntry>(
+        HashIdentity.Reference
+    )
+
+// cut nodes still in the tree: the per-builtin check's fast path reads this
+// alone
+let mutable private cutsPending = 0
+
+// the hard exit froze every flow [D:hard-exit]: a flow reaching any runtime
+// point now parks there, never to run again
+let mutable private hardExiting = 0
+
+let private park () =
+    System.Threading.Thread.Sleep System.Threading.Timeout.Infinite
+
+let private rootNode = Node(null, NodeKind.Root)
+
+let private refEq = HashIdentity.Reference<Node>
+
+/// open a node under `parent`; it is born cut when its parent is (a shield
+/// only by a cut that passes shields)
+let openNode (parent: Node) (kind: NodeKind) : Node =
+    let n = Node(parent, kind)
+
+    lock parent (fun () ->
+        if isNull parent.Kids then
+            parent.Kids <- System.Collections.Generic.HashSet<Node>(refEq)
+
+        parent.Kids.Add n |> ignore
+
+        if parent.Cut > 0 && (kind <> NodeKind.Shield || parent.Cut = 2) then
+            n.Cut <- parent.Cut
+            n.Reasons <- parent.Reasons
+            n.Killing <- parent.Killing && kind <> NodeKind.Shield
+            System.Threading.Interlocked.Increment &cutsPending |> ignore)
+
+    n
+
+// the default flow: the main thread's (and, in-process, every evaluation's
+// with no node of its own)
+let private mainNode = openNode rootNode NodeKind.Flow
+
+let private current = System.Threading.AsyncLocal<Node>()
+
+/// the node this flow runs in
+let currentNode () : Node =
+    match current.Value with
+    | null -> mainNode
+    | n -> n
+
+/// make `n` this flow's node (null: the default flow)
+let setCurrentNode (n: Node) : unit = current.Value <- n
+
+// a child is killed once, whoever reaches it first [D:kill-settle]
+let private killEntry (e: ProcEntry) =
+    if System.Threading.Interlocked.Exchange(&e.Killed, 1) = 0 then
+        killTree e.P
+
+// a node's cut [D:scope-tree]: mark it and every node under it (a shield
+// only by a level-2 cut), cancel the tokens their waits hold and, when the
+// cut kills, tree-kill every child they own — a child registering after it
+// dies at registration. A node opening takes its parent's cut under the
+// parent's lock, so no node escapes a cut in flight
+let rec private cutFrom (n: Node) (level: int) (reason: int) (kill: bool) (origin: bool) =
+    if origin || n.Kind <> NodeKind.Shield || level >= 2 then
+        let mutable kids: Node[] = null
+        let mutable procs: ProcEntry[] = null
+
+        lock n (fun () ->
+            if n.Cut = 0 && not n.Detached then
+                System.Threading.Interlocked.Increment &cutsPending |> ignore
+
+            if level > n.Cut then
+                n.Cut <- level
+
+            n.Reasons <- n.Reasons ||| reason
+
+            if kill && not n.Killing then
+                n.Killing <- true
+
+                if not (isNull n.Procs) then
+                    procs <- Array.ofSeq n.Procs
+
+            if not (isNull n.Kids) then
+                kids <- Array.ofSeq n.Kids)
+
+        let soft =
+            (n.Reasons &&& CutReason.Soft) <> 0
+            && not n.Killing
+            && (n.Reasons &&& ~~~(CutReason.Teardown ||| CutReason.Soft)) = 0
+
+        for c in [ System.Threading.Volatile.Read &n.Cts
+                   (if soft then null else System.Threading.Volatile.Read &n.HardCts) ] do
+            if not (isNull c) then
+                try
+                    c.Cancel()
+                with _ ->
+                    ()
+
+        if not (isNull procs) then
+            for e in procs do
+                killEntry e
+
+        if not (isNull kids) then
+            for k in kids do
+                cutFrom k level reason kill false
+
+/// cut `n` and its subtree (level 2 passes shields); `kill` tree-kills the
+/// children they own
+let cutNode (n: Node) (level: int) (reason: int) (kill: bool) : unit = cutFrom n level reason kill true
+
+/// the children `n` owns now
+let ownedCount (n: Node) : int =
+    lock n (fun () -> if isNull n.Procs then 0 else n.Procs.Count)
+
+/// has a cut reached `n`?
+let isCut (n: Node) : bool = n.Cut > 0
+
+/// the nodes under `n` now
+let nodeKids (n: Node) : Node[] =
+    lock n (fun () -> if isNull n.Kids then [||] else Array.ofSeq n.Kids)
+
+/// a new arm under `parent`, or null once it takes none (won, or cut)
+let tryOpenArm (parent: Node) : Node =
+    let isOpen = lock parent (fun () -> not parent.Closed && parent.Cut = 0)
+
+    if isOpen then openNode parent NodeKind.Arm else null
+
+/// stop `n` taking arms (a race won); true for the one caller that closed it
+let closeToArms (n: Node) : bool =
+    lock n (fun () ->
+        if n.Closed then
+            false
         else
-            match parent with
-            | Some g -> g.Register p
-            | None -> ()
+            n.Closed <- true
+            true)
 
-            // under the lock with Condemn: a child registered as the group
-            // is condemned is either in the bag Condemn kills or killed here
-            let late =
-                lock this (fun () ->
-                    if condemned then
+/// leave the tree; the live children go to the parent
+let closeNode (n: Node) : unit =
+    let p = n.Parent
+
+    let detach () =
+        if not n.Detached then
+            n.Detached <- true
+
+            if not (isNull p.Kids) then
+                p.Kids.Remove n |> ignore
+
+            if n.Cut > 0 then
+                System.Threading.Interlocked.Decrement &cutsPending |> ignore
+
+            // live children outlive their node (a streamed result): the
+            // parent owns them now
+            if not (isNull n.Procs) && n.Procs.Count > 0 then
+                if isNull p.Procs then
+                    p.Procs <- System.Collections.Generic.HashSet<ProcEntry>(HashIdentity.Reference)
+
+                for e in n.Procs do
+                    e.Owner <- p
+                    p.Procs.Add e |> ignore
+
+                    if p.Killing then
+                        killEntry e
+
+                n.Procs.Clear()
+
+    lock n (fun () -> lock p detach)
+
+/// register a child with this flow's node (killed at once when a killing
+/// cut already reached it) [D:scope-tree]
+let registerChild (p: System.Diagnostics.Process) : unit =
+    let n = currentNode ()
+    let e = ProcEntry(p, n)
+    liveProcs[p] <- e
+
+    let late =
+        lock n (fun () ->
+            if n.Killing then
+                true
+            else
+                if isNull n.Procs then
+                    n.Procs <- System.Collections.Generic.HashSet<ProcEntry>(HashIdentity.Reference)
+
+                n.Procs.Add e |> ignore
+                false)
+
+    if late then
+        killEntry e
+
+// a child left: out of the index and out of whichever node owns it now
+let private forgetChild (p: System.Diagnostics.Process) =
+    match liveProcs.TryRemove p with
+    | true, e ->
+        let rec go () =
+            let n = e.Owner
+
+            let removed =
+                lock n (fun () ->
+                    if obj.ReferenceEquals(e.Owner, n) then
+                        if not (isNull n.Procs) then
+                            n.Procs.Remove e |> ignore
+
                         true
                     else
-                        if isNull procs then
-                            procs <- System.Collections.Concurrent.ConcurrentBag<System.Diagnostics.Process>()
-
-                        procs.Add p
                         false)
 
-            if late then
-                killTree p
+            if not removed then
+                go ()
 
-    member this.Condemn() =
-        match
-            lock this (fun () ->
-                condemned <- true
-                procs)
-        with
-        | null -> ()
-        | b ->
-            for p in b do
-                killTree p
+        go ()
+    | _ -> ()
 
-let private raceGroup = System.Threading.AsyncLocal<RaceGroup option>()
+// an `always` block in progress on this logical flow [D:teardown-always-spawns]:
+// the teardown stops the body's spawns, never a cleanup's — teardown
+// commands are what `always` is for
+let private cleanupDepth = System.Threading.AsyncLocal<int>()
 
-let enterRace (g: RaceGroup) : unit = raceGroup.Value <- Some g
-let exitRace () : unit = raceGroup.Value <- None
+let mutable private mainThreadId = 0
 
-/// the group a race or fan-out opened here nests in (none inside a cleanup)
-let enclosingGroup () : RaceGroup option =
-    if inFlowCleanup () then None else raceGroup.Value
+let private onMainThread () =
+    mainThreadId <> 0
+    && System.Threading.Thread.CurrentThread.ManagedThreadId = mainThreadId
 
-let registerChild (p: System.Diagnostics.Process) : unit =
-    match raceGroup.Value with
-    | Some g -> g.Register p
-    | None -> ()
+// the main thread inside an `always` cleanup [D:teardown-never-preempts]:
+// the signal backstop stands by for it, and once the backstop has
+// adopted the main flow no cleanup starts on the main thread
+let private watchdogGate = obj ()
+let mutable private mainCleanups = 0
+let mutable private watchdogFired = false
+
+/// run an `always` cleanup: spawns inside it start even after the teardown
+/// kill, a parallel fan-out inside it keeps taking arms, and a requested
+/// teardown never preempts it [D:teardown-never-preempts]
+let runningCleanup (f: unit -> 'a) : 'a =
+    if System.Threading.Volatile.Read &hardExiting <> 0 then
+        park ()
+
+    let onMain = onMainThread ()
+
+    if onMain then
+        lock watchdogGate (fun () ->
+            if watchdogFired then
+                // the backstop adopted the flow: it owns the cleanups
+                System.Threading.Thread.Sleep System.Threading.Timeout.Infinite
+
+            mainCleanups <- mainCleanups + 1)
+
+    cleanupDepth.Value <- cleanupDepth.Value + 1
+    // the cleanup's own node [D:scope-tree]: no cut from its parent reaches it
+    let home = current.Value
+    let shield = openNode (currentNode ()) NodeKind.Shield
+    current.Value <- shield
+
+    try
+        f ()
+    finally
+        current.Value <- home
+        closeNode shield
+        cleanupDepth.Value <- cleanupDepth.Value - 1
+
+        if onMain then
+            lock watchdogGate (fun () -> mainCleanups <- mainCleanups - 1)
+
+let inCleanup () = cleanupDepth.Value > 0
+
+// ---- the main flow's frames [D:scope-tree] -----------------------------
+// Each scope the main flow opens pushes its release (a cleanup, a tmp dir,
+// a proc, a serve close, a lock, a cd or env restore); the scope's own exit
+// claims and runs it. The one other owner is the signal backstop, which
+// adopts a main flow stuck where no boundary comes: it runs the frames
+// still pending, innermost first, and the main thread, if it ever returns,
+// parks at its next claim — no release runs twice or concurrently with an
+// enclosing one. An arm's scopes are never adopted (every wait is cut, so
+// an arm always reaches its own exit): they push nothing.
+
+/// a scope's pending release on the main flow
+[<AllowNullLiteral>]
+type Frame(release: unit -> unit) =
+    member _.Release = release
+
+    [<DefaultValue>]
+    val mutable Claimed: bool
+
+let private mainFrames = System.Collections.Generic.List<Frame>()
+
+/// push a release on the main flow's frames (null off the main flow)
+let pushFrame (release: unit -> unit) : Frame =
+    if onMainThread () then
+        let f = Frame(release)
+        lock watchdogGate (fun () -> mainFrames.Add f)
+        f
+    else
+        null
+
+/// run `f`'s release as its scope exits; when the backstop adopted the main
+/// flow, this thread never runs again
+let releaseFrame (f: Frame) (release: unit -> unit) : unit =
+    if isNull f then
+        release ()
+    else
+        if System.Threading.Volatile.Read &hardExiting <> 0 then
+            park ()
+
+        let mine =
+            lock watchdogGate (fun () ->
+                if watchdogFired || f.Claimed then
+                    false
+                else
+                    f.Claimed <- true
+                    mainFrames.Remove f |> ignore
+                    mainCleanups <- mainCleanups + 1
+                    true)
+
+        if not mine then
+            System.Threading.Thread.Sleep System.Threading.Timeout.Infinite
+
+        try
+            release ()
+        finally
+            lock watchdogGate (fun () -> mainCleanups <- mainCleanups - 1)
+
+// the backstop adopts the main flow: its pending releases run here, LIFO,
+// each in a cleanup's node
+let private adoptMain () =
+    let rec next () =
+        let f =
+            lock watchdogGate (fun () ->
+                let mutable i = mainFrames.Count - 1
+
+                while i >= 0 && mainFrames[i].Claimed do
+                    i <- i - 1
+
+                if i < 0 then
+                    null
+                else
+                    let f = mainFrames[i]
+                    f.Claimed <- true
+                    mainFrames.RemoveAt i
+                    f)
+
+        if not (isNull f) then
+            (try
+                runningCleanup f.Release
+             with _ ->
+                 ())
+
+            next ()
+
+    next ()
+
 
 // ---- the main-thread teardown [D:signal-main-unwind] [D:stdout-epipe] --
 // A signal or a closed stdout ends the script, but the teardown — every
 // `always`, every scope's release — runs on the MAIN thread, never in the
-// signal handler: the handler records the exit code, kills the scoped
-// children (what the main thread waits on) and wakes interruptible waits;
-// the main thread raises ExitRequest at its next evaluation or wait
-// boundary and unwinds through its scopes, so no statement runs after the
-// request. Registered by the script runner and -e; without a registered
-// main thread (the REPL) the handler keeps the in-handler sweep.
+// signal handler: the handler records the exit code and cuts the tree's
+// root (killing what the flows wait on, sparing what cleanups own); the
+// main thread raises ExitRequest at its next evaluation or wait boundary
+// and unwinds through its scopes, so no statement runs after the request.
+// Registered by the script runner and -e; a REPL entry stands in for it
+// meanwhile, and with no flow at all the handler kills, sweeps the dirs
+// and dies [D:scope-tree].
 
 let mutable private teardownCode = 0
 let mutable private teardownRaised = 0
 
-/// interruptible waits block on this; set when a teardown is requested
-let teardownWake = new System.Threading.ManualResetEventSlim(false)
+// a second signal during teardown hard-exits [D:signal-teardown]
+// [D:hard-exit] — the shell's double-Ctrl+C escape, so a slow or stuck
+// cleanup can never wedge a supervisor. Set by the first signal and by a
+// closed stdout's teardown
+let private tearingDown = ref 0
+
+// the REPL's evaluation is the flow a teardown unwinds (its thread stands
+// in for the main thread meanwhile)
+let mutable private replFlow = false
 
 let registerMainThread () : unit =
     mainThreadId <- System.Threading.Thread.CurrentThread.ManagedThreadId
 
-// what a worker's waits hand to an API (an Http send) once a teardown is
-// requested [D:teardown-joins-arms]
-let private teardownCut = new System.Threading.CancellationTokenSource()
-
-/// record a teardown's exit code — the first request wins
-let requestTeardown (code: int) : unit =
+/// record a teardown's exit code — the first request wins — and cut the
+/// tree's root [D:scope-tree]: every flow outside a cleanup stops at its
+/// next boundary. `soft`: the terminal's ^C reached the children with
+/// weir, so a wait on a child lasts while the child does
+/// [D:sigint-terminal-group]
+let private requestTeardownWith (soft: bool) (code: int) : unit =
     System.Threading.Interlocked.CompareExchange(&teardownCode, code, 0) |> ignore
-    teardownWake.Set()
 
-    try
-        teardownCut.Cancel()
-    with _ ->
-        ()
+    let reason =
+        if soft then
+            CutReason.Teardown ||| CutReason.Soft
+        else
+            CutReason.Teardown
+
+    cutNode rootNode 1 reason false
+
+let requestTeardown (code: int) : unit = requestTeardownWith false code
 
 // ---- cooperative cancellation [D:pfirst-join] [D:repl-interrupt] -------
-// Three requests stop a flow at its next runtime-owned boundary: a pfirst
-// arm that lost the race or a serve handler past its scope (its flow
-// token, AsyncLocal — the logical context), a ^C at the REPL (a session
-// token, global — every wait of the evaluation), and a requested teardown
-// for every flow off the main thread [D:teardown-joins-arms]. Each raises
-// an OperationCanceledException, which `try` and retry pass through as
-// they pass `exit`.
+// A cut stops a flow at its next runtime-owned boundary [D:scope-tree]: a
+// race's loser, a fan-out's arms after an `exit n`, a serve handler past
+// the drain, a REPL evaluation's flows after ^C, every flow after a
+// teardown. Each raises an OperationCanceledException, which `try` and
+// retry pass through as they pass `exit`.
 
 /// a pfirst loser stopped at a boundary — swallowed by the race
 type Cancelled() =
@@ -532,182 +913,145 @@ type Cancelled() =
 type Interrupted() =
     inherit System.OperationCanceledException("interrupted (SIGINT — interrupted/cancelled)")
 
-let private flowCancel = System.Threading.AsyncLocal<System.Threading.CancellationToken>()
+// the cuts a flow raises Cancelled for (a teardown off the main thread too)
+let private cancelReasons =
+    CutReason.RaceLost
+    ||| CutReason.FanExit
+    ||| CutReason.ServeCut
+    ||| CutReason.HandlerExit
 
-// races in flight: the fast path of the per-builtin check reads this
-// alone, never the AsyncLocal
-let mutable private racesLive = 0
+let private cancelledBy (n: Node) =
+    let r = n.Reasons
 
-// a pmap/piter arm's cut: an `exit n` in a sibling arm stops the fan-out
-// [D:fanout-exit]. Kept apart from the race token so a fan-out arm's reads
-// and process waits stay as they are; sleeps, Http sends and builtin calls
-// honour it, and the arm's children die by its group
-let private fanCancel = System.Threading.AsyncLocal<System.Threading.CancellationToken>()
+    (r &&& cancelReasons) <> 0
+    || ((r &&& CutReason.Teardown) <> 0 && not (onMainThread ()))
 
-/// the flow's cancel token (CancellationToken.None outside a race, or
-/// inside a cleanup the flow entered)
-let flowToken () : System.Threading.CancellationToken =
-    if inFlowCleanup () then
-        System.Threading.CancellationToken.None
-    else
-        flowCancel.Value
-
-/// the enclosing fan-out's cut, as `flowToken`
-let fanToken () : System.Threading.CancellationToken =
-    if inFlowCleanup () then
-        System.Threading.CancellationToken.None
-    else
-        fanCancel.Value
-
-let enterFlow (t: System.Threading.CancellationToken) : unit =
-    flowCancel.Value <- t
-    fanCancel.Value <- System.Threading.CancellationToken.None
-    flowBase.Value <- cleanupDepth.Value
-
-/// enter a fan-out arm: the enclosing flow's token (taken by `flowToken`
-/// where the fan-out opened) plus the fan-out's own cut
-let enterFan (flow: System.Threading.CancellationToken) (fan: System.Threading.CancellationToken) : unit =
-    flowCancel.Value <- flow
-    fanCancel.Value <- fan
-    flowBase.Value <- cleanupDepth.Value
-
-let exitFlow () : unit =
-    flowCancel.Value <- System.Threading.CancellationToken.None
-    fanCancel.Value <- System.Threading.CancellationToken.None
-    flowBase.Value <- 0
-
-/// a flow token may now be cancelled: the per-builtin check reads it
-let cutsLive () : unit =
-    System.Threading.Interlocked.Increment &racesLive |> ignore
-
-let cutsDone () : unit =
-    System.Threading.Interlocked.Decrement &racesLive |> ignore
-
-/// run a race (or a serve scope's handlers): the counter gates the
-/// per-builtin check
-let racing (f: unit -> 'a) : 'a =
-    cutsLive ()
-
-    try
-        f ()
-    finally
-        cutsDone ()
-
-// a lost race stops the body, never an `always` cleanup — the race joins
-// the loser, so its cleanup still runs before pfirst returns
-let private flowCut () =
-    System.Threading.Volatile.Read &racesLive <> 0
-    && (flowCancel.Value.IsCancellationRequested
-        || fanCancel.Value.IsCancellationRequested)
-    && not (inFlowCleanup ())
-
-// a requested teardown cuts every flow off the main thread outside an
-// `always` cleanup [D:teardown-joins-arms] — the main thread unwinds by
-// ExitRequest, joining the arms first
-let private teardownCuts () =
-    mainThreadId <> 0 && not (onMainThread ()) && not (inCleanup ())
-
-/// raise Cancelled when this flow lost a race or is torn down — the effect
-/// boundary
+/// raise Cancelled when this flow's node was cut (a race lost, a fan-out
+/// exit, the serve cut, a teardown off the main thread) — the effect boundary
 let checkCancelled () : unit =
-    if
-        flowCut ()
-        || (System.Threading.Volatile.Read &teardownCode <> 0 && teardownCuts ())
-    then
-        raise (Cancelled())
+    if System.Threading.Volatile.Read &cutsPending <> 0 then
+        if System.Threading.Volatile.Read &hardExiting <> 0 then
+            park ()
 
-// the REPL's interrupt, one evaluation at a time: the first ^C cancels
-// `replCut` (every wait outside an `always` cleanup), a further ^C also
-// `replCutCleanup` — a cleanup runs as written unless ^C is pressed again
-let mutable private replCut: System.Threading.CancellationTokenSource = null
-let mutable private replCutCleanup: System.Threading.CancellationTokenSource = null
+        let n = currentNode ()
+
+        if n.Cut > 0 && cancelledBy n then
+            raise (Cancelled())
+
+// the REPL's interrupt, one evaluation at a time: the first ^C cuts the
+// evaluation's node (every wait outside an `always` cleanup), a further ^C
+// cuts through the cleanups too — a cleanup runs as written unless ^C is
+// pressed again
 let mutable private replInterrupts = 0
+let mutable private replNode: Node = null
 
-/// arm a fresh interrupt for one REPL evaluation
-let beginReplEval () : unit =
+// an entry's statements share one evaluation: the nested begin/end of each
+// statement's evaluation inside an entry's are no-ops
+let mutable private replDepth = 0
+
+let private beginReplEvalNode () =
     replInterrupts <- 0
-    replCut <- new System.Threading.CancellationTokenSource()
-    replCutCleanup <- new System.Threading.CancellationTokenSource()
+    let n = openNode rootNode NodeKind.Flow
+    System.Threading.Volatile.Write(&replNode, n)
+    current.Value <- n
+    replFlow <- true
+    System.Threading.Volatile.Write(&mainThreadId, System.Threading.Thread.CurrentThread.ManagedThreadId)
 
-/// disarm after the evaluation (a late ^C then cancels nothing)
+let private endReplEvalNode () =
+    match System.Threading.Interlocked.Exchange(&replNode, null) with
+    | null -> ()
+    | n ->
+        System.Threading.Volatile.Write(&mainThreadId, 0)
+        replFlow <- false
+        current.Value <- null
+        closeNode n
+
+/// arm a fresh interrupt for one REPL evaluation (an entry, or a statement
+/// outside one): its own node [D:scope-tree]
+let beginReplEval () : unit =
+    replDepth <- replDepth + 1
+
+    if replDepth = 1 then
+        beginReplEvalNode ()
+
+/// disarm after the evaluation (a late ^C then cuts nothing)
 let endReplEval () : unit =
-    let a, b = replCut, replCutCleanup
-    replCut <- null
-    replCutCleanup <- null
+    replDepth <- max 0 (replDepth - 1)
 
-    for c in [ a; b ] do
-        if not (isNull c) then
-            c.Dispose()
+    if replDepth = 0 then
+        endReplEvalNode ()
 
-/// the REPL's SIGINT handler: cancel the evaluation's waits
+/// the REPL's SIGINT handler: cut the evaluation's waits
 let interruptRepl () : unit =
-    let n = System.Threading.Interlocked.Increment &replInterrupts
+    let k = System.Threading.Interlocked.Increment &replInterrupts
 
-    try
-        match replCut with
-        | null -> ()
-        | c -> c.Cancel()
-
-        if n >= 2 then
-            match replCutCleanup with
-            | null -> ()
-            | c -> c.Cancel()
-    with :? System.ObjectDisposedException ->
-        ()
-
-/// the REPL interrupt token for this flow's waits
-let private replToken () : System.Threading.CancellationToken =
-    let src = if inCleanup () then replCutCleanup else replCut
-
-    match src with
-    | null -> System.Threading.CancellationToken.None
-    | c ->
-        try
-            c.Token
-        with :? System.ObjectDisposedException ->
-            System.Threading.CancellationToken.None
+    match System.Threading.Volatile.Read &replNode with
+    | null -> ()
+    | n -> cutNode n (if k >= 2 then 2 else 1) CutReason.Repl false
 
 /// has ^C cut this evaluation's waits? (a fan-out stops taking arms)
-let interruptRequested () : bool = (replToken ()).IsCancellationRequested
+let interruptRequested () : bool =
+    System.Threading.Volatile.Read &cutsPending <> 0
+    && (let n = currentNode () in n.Cut > 0 && (n.Reasons &&& CutReason.Repl) <> 0)
 
 /// raise Interrupted when ^C cut this evaluation's waits
 let checkInterrupted () : unit =
     if interruptRequested () then
         raise (Interrupted())
 
-/// the tokens a runtime-owned wait honours, beyond the teardown
-let private waitTokens () : System.Threading.CancellationToken list =
-    [ flowToken (); replToken () ]
-    |> List.filter (fun t -> t.CanBeCanceled)
-
 /// raise whichever cancel stopped this flow (the race's, then ^C's)
 let checkCancels () : unit =
     checkCancelled ()
     checkInterrupted ()
 
-// the enclosing fan-out's cut, for the waits that honour it
-let private fanTokens () : System.Threading.CancellationToken list =
-    match fanToken () with
-    | t when t.CanBeCanceled -> [ t ]
-    | _ -> []
+// a node's token, made at the first wait that needs one; cancelled by the
+// node's cut. `hard`: the one a wait on a child holds — a soft teardown
+// (the terminal's ^C, which reached the child too) leaves it uncancelled
+let private tokenOf (n: Node) (hard: bool) : System.Threading.CancellationToken =
+    lock n (fun () ->
+        let soft = n.Cut > 0 && (n.Reasons &&& CutReason.Soft) <> 0 && not n.Killing && (n.Reasons &&& ~~~(CutReason.Teardown ||| CutReason.Soft)) = 0
 
-// the wait tokens plus, off the main thread, the teardown's
-// [D:teardown-joins-arms]
-let private cutTokens () : System.Threading.CancellationToken list =
-    waitTokens ()
-    @ (if teardownCuts () then [ teardownCut.Token ] else [])
-    @ fanTokens ()
+        if hard then
+            if isNull n.HardCts then
+                n.HardCts <- new System.Threading.CancellationTokenSource()
 
-/// run `f` with one token that cancels when this flow's waits are cut —
+                if n.Cut > 0 && not soft then
+                    n.HardCts.Cancel()
+
+            n.HardCts.Token
+        else
+            if isNull n.Cts then
+                n.Cts <- new System.Threading.CancellationTokenSource()
+
+                if n.Cut > 0 then
+                    n.Cts.Cancel()
+
+            n.Cts.Token)
+
+/// `n`'s token (a join waiting for its arms to stop)
+let nodeToken (n: Node) : System.Threading.CancellationToken = tokenOf n false
+
+// the main thread unwinding a teardown: its waits run as written
+// [D:signal-main-unwind] — the cleanups it runs are not cut short by the
+// request they serve
+let private unwinding (n: Node) =
+    onMainThread ()
+    && System.Threading.Volatile.Read &teardownRaised <> 0
+    && (n.Reasons &&& ~~~(CutReason.Teardown ||| CutReason.Soft)) = 0
+
+/// the token this flow's waits honour (None while the main thread unwinds)
+let private waitToken (hard: bool) : System.Threading.CancellationToken =
+    let n = currentNode ()
+
+    if n.Cut > 0 && unwinding n then
+        System.Threading.CancellationToken.None
+    else
+        tokenOf n hard
+
+/// run `f` with the token that cancels when this flow's waits are cut —
 /// for a wait the runtime hands to an API (an Http send); `checkCancels`
 /// after it names why
-let withWaitToken (f: System.Threading.CancellationToken -> 'a) : 'a =
-    match cutTokens () with
-    | [] -> f System.Threading.CancellationToken.None
-    | [ t ] -> f t
-    | ts ->
-        use linked = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(Array.ofList ts)
-        f linked.Token
+let withWaitToken (f: System.Threading.CancellationToken -> 'a) : 'a = f (waitToken false)
 
 /// run a process start + registration inside the spawn gate; refuses once
 /// the teardown kill has run, except inside an `always` cleanup
@@ -718,7 +1062,9 @@ let gatedSpawn (start: unit -> 'a) : 'a =
     spawnGate.EnterReadLock()
 
     try
-        if spawningStopped && not (inCleanup ()) then
+        // a killing cut reached this flow (outside a cleanup, whose node
+        // no outer cut reaches)
+        if (currentNode ()).Killing then
             failwith "the script is being torn down — no new command starts"
 
         start ()
@@ -733,10 +1079,13 @@ let private killLiveChildren (spareCleanups: bool) : unit =
     try
         spawningStopped <- true
 
-        for kv in liveProcs do
-            if not (spareCleanups && cleanupProcs.ContainsKey kv.Value)
-               && killedProcs.Add kv.Value then
-                killTree kv.Value
+        // the teardown's kill walks the tree, sparing what cleanups own
+        // [D:teardown-never-preempts]; the exit's kills every child
+        if spareCleanups then
+            cutNode rootNode 1 CutReason.Teardown true
+        else
+            for kv in liveProcs do
+                killEntry kv.Value
     finally
         spawnGate.ExitWriteLock()
 
@@ -746,28 +1095,22 @@ let private killLiveChildren (spareCleanups: bool) : unit =
 // so a second hook firing (SIGTERM then ProcessExit) cannot run one
 // twice.
 let private liveAlways =
-    System.Collections.Concurrent.ConcurrentDictionary<int, unit -> unit>()
+    System.Collections.Concurrent.ConcurrentDictionary<int, unit>()
 
 let private alwaysCounter = ref 0
 
-let private sweepLiveTmpDirs () =
-    // runs at exit while finallys may also be running: a vanished dir is
-    // benign (the double-delete pin's territory), and the hook must
-    // never throw during exit
-    for id in liveAlways.Keys |> Seq.sortDescending do
-        match liveAlways.TryRemove id with
-        | true, cleanup ->
-            try
-                cleanup ()
-            with _ ->
-                ()
-        | _ -> ()
-
+// the exit's sweep [D:exit-hook]: every live child killed (a spilling child
+// holds its spill dir open, so the kill is load-bearing on Windows), every
+// kill in flight settled, every registered dir deleted. No cleanup runs
+// here: each scope's own owner ran its cleanups [D:scope-tree]. It runs at
+// exit while other threads may still be about, so a vanished dir is
+// benign and it never throws
+let private sweepDirs () =
     for kv in liveProcs do
-        killTree kv.Value
+        killEntry kv.Value
 
         try
-            kv.Value.WaitForExit()
+            kv.Key.WaitForExit 1000 |> ignore
         with _ ->
             ()
 
@@ -819,6 +1162,10 @@ module private Libc =
 
     [<DllImport("libc", SetLastError = true)>]
     extern int64 lseek(int fd, int64 offset, int whence)
+
+    // the exit that runs no managed code (no ProcessExit sweep)
+    [<DllImport("libc", EntryPoint = "_exit")>]
+    extern void sysExit(int status)
 
     [<Struct; StructLayout(LayoutKind.Sequential)>]
     type PollFd =
@@ -885,6 +1232,130 @@ module private Libc =
             signal (SIGINT, prev) |> ignore
             false
 
+// ---- a cleanup's commands in their own process group [D:cleanup-pgrp] --
+// A terminal ^C reaches the terminal's foreground process group — weir's,
+// and every child that shares it. A cleanup runs whole, its commands too
+// [D:teardown-never-preempts], so a command an `always` cleanup starts at
+// a foreground terminal runs in a group of its own. .NET cannot start a
+// child in a new group on POSIX and a parent cannot move a child that has
+// exec'd, so weir starts itself as a shim that moves into a new group and
+// execs the command: the pid is the command's, so its pipes, its exit
+// and the tree kill are the Process weir holds. The shim ignores
+// SIGTTIN/SIGTTOU (a terminal read gets EIO, never a stop that would wedge
+// the cleanup; output still shows) and gives the command /dev/null for a
+// terminal stdin. Windows starts the child in a new process group, which
+// Ctrl+C does not reach.
+module Pgrp =
+    open System.Runtime.InteropServices
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int setpgid(int pid, int pgid)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern nativeint signal(int signum, nativeint handler)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int sigprocmask(int how, byte[] set, nativeint oldset)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int pthread_sigmask(int how, byte[] set, byte[] oldset)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int sigemptyset(byte[] set)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int sigaddset(byte[] set, int signum)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int isatty(int fd)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int ``open``(string path, int flags)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int dup2(int oldfd, int newfd)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int execv(string path, string[] argv)
+
+    [<DllImport("libc", EntryPoint = "_exit")>]
+    extern void sysExit(int status)
+
+    /// the shim's argv[0] marker (an internal seam, not a command)
+    let marker = "--weir-exec-pgrp"
+
+    /// weir's own executable, set by the CLI entry point: the shim needs
+    /// the real binary (a test host has none)
+    let mutable selfPath: string = null
+
+    // the terminal's job-control signals: INT, QUIT, TSTP
+    let private groupSignals = [ 2; 3; (if System.OperatingSystem.IsLinux() then 20 else 18) ]
+
+    /// start the shim with the terminal's signals blocked on the starting
+    /// thread (the child inherits the mask, weir's other threads still take
+    /// them): a ^C landing before the shim has left weir's group stays
+    /// pending in it, and the shim discards it
+    let blockedForStart (start: unit -> 'a) : 'a =
+        let set = Array.zeroCreate<byte> 128
+        let old = Array.zeroCreate<byte> 128
+        sigemptyset set |> ignore
+
+        for s in groupSignals do
+            sigaddset (set, s) |> ignore
+
+        let SIG_BLOCK, SIG_SETMASK = (if System.OperatingSystem.IsLinux() then 0, 2 else 1, 3)
+        pthread_sigmask (SIG_BLOCK, set, old) |> ignore
+
+        try
+            start ()
+        finally
+            pthread_sigmask (SIG_SETMASK, old, null) |> ignore
+
+    /// run as the shim: a new group, the dispositions a command expects,
+    /// then exec. Never returns
+    let execInNewGroup (prog: string) (args: string[]) : unit =
+        setpgid (0, 0) |> ignore
+        let SIG_DFL, SIG_IGN = nativeint 0, nativeint 1
+
+        // a terminal signal sent while the shim was in weir's group is
+        // pending: ignoring discards it, then the inherited disposition
+        // returns
+        for s in groupSignals do
+            let prev = signal (s, SIG_IGN)
+            signal (s, prev) |> ignore
+
+        let SIGPIPE = 13
+        let SIGTTIN, SIGTTOU = 21, 22
+        signal (SIGTTIN, SIG_IGN) |> ignore
+        signal (SIGTTOU, SIG_IGN) |> ignore
+        signal (SIGPIPE, SIG_DFL) |> ignore
+        // an empty mask: SIG_SETMASK is 2 on Linux, 3 on macOS
+        sigprocmask ((if System.OperatingSystem.IsLinux() then 2 else 3), Array.zeroCreate 128, nativeint 0)
+        |> ignore
+
+        if isatty 0 = 1 then
+            let fd = ``open`` ("/dev/null", 0)
+
+            if fd >= 0 then
+                dup2 (fd, 0) |> ignore
+
+        execv (prog, Array.append (Array.append [| prog |] args) [| null |]) |> ignore
+        eprintfn "command not found or not executable: %s" (Weir.Types.quoteData prog)
+        sysExit 127
+
+/// the shim this spawn goes through, when it runs inside a cleanup at a
+/// terminal whose foreground group is weir's (POSIX): Some weir's path
+let cleanupGroupShim () : string option =
+    if
+        not (isNull Pgrp.selfPath)
+        && not (System.OperatingSystem.IsWindows())
+        && inCleanup ()
+        && Libc.terminalForeground ()
+    then
+        Some Pgrp.selfPath
+    else
+        None
+
 /// an exclusive flock on an open file, without blocking [D:lock-advisory]:
 /// true when taken, false while another open file description holds it.
 /// Released when the stream closes (the kernel's, kill -9 included).
@@ -901,7 +1372,7 @@ let tryFlockExclusive (fs: System.IO.FileStream) : bool =
             match System.Runtime.InteropServices.Marshal.GetLastPInvokeError() with
             | e when e = EINTR -> go ()
             | e when e = EWOULDBLOCK -> false
-            | e -> failwith $"within lock: cannot lock {fs.Name} (flock errno {e})"
+            | e -> failwith $"within lock: cannot lock {Weir.Types.quoteData fs.Name} (flock errno {e})"
 
     go ()
 
@@ -945,22 +1416,60 @@ let resetDetachedSigint: Lazy<unit> =
          then
              Libc.resetSigintIfIgnored () |> ignore)
 
-// a terminal ^C weir waited out ends weir BY the SIGINT, as before any
-// wait [D:sigint-terminal-group] — a calling shell sees the ^C, not an exit
-let mutable private dieBySigint = false
+/// restores what weir changed about the terminal before it dies (the REPL's
+/// raw mode) — set by the REPL
+let mutable beforeDie: unit -> unit = ignore
 
-let private raiseSigint () =
-    // the tree kills in flight settle first [D:kill-settle]
+// ends weir with a teardown's code [D:die-by-signal]: after the unwind
+// (or the backstop's, or the hard exit), INT/TERM/HUP end it BY the signal,
+// as an unscoped weir dies, so a calling shell sees the signal (bash's
+// wait-and-cooperative-exit); the handler .NET installed is replaced by
+// the default first. A closed stdout's 141 is an exit. Windows has no
+// death by signal: a Ctrl+C exits as the console ends a process. Only the
+// flow's own exit flushes: a backstop or a hard exit may be dying because
+// a write is stuck, and a flush would wait on it
+let private dieByFlushing (flush: bool) (code: int) : unit =
+    if flush then
+        try
+            System.Console.Out.Flush()
+            System.Console.Error.Flush()
+        with _ ->
+            ()
+
     settleKills ()
-    Libc.signal (Libc.SIGINT, Libc.SIG_DFL) |> ignore
-    ProcTree.kill (System.Environment.ProcessId, Libc.SIGINT) |> ignore
-    System.Threading.Thread.Sleep 1000
-    System.Environment.Exit 130
+
+    (try
+        beforeDie ()
+     with _ ->
+         ())
+
+    if System.OperatingSystem.IsWindows() then
+        System.Environment.Exit(if code = 130 then -1073741510 else code)
+    else
+        let signum =
+            match code with
+            | 130 -> 2
+            | 143 -> 15
+            | 129 -> 1
+            | _ -> 0
+
+        if signum <> 0 then
+            Libc.signal (signum, Libc.SIG_DFL) |> ignore
+            ProcTree.kill (System.Environment.ProcessId, signum) |> ignore
+            System.Threading.Thread.Sleep 1000
+
+        Libc.sysExit code
+
+let private dieBy (code: int) : unit = dieByFlushing false code
 
 /// the requested exit code, or `code` when none was requested — the
 /// runner's result, so a request racing a statement's normal end still
-/// exits with the request's code
+/// exits with the request's code; a signal's teardown dies by the signal
+/// [D:die-by-signal]
 let exitCodeOr (code: int) : int =
+    if System.Threading.Volatile.Read &hardExiting <> 0 then
+        park ()
+
     match System.Threading.Volatile.Read &teardownCode with
     | 0 -> code
     | c ->
@@ -969,15 +1478,15 @@ let exitCodeOr (code: int) : int =
         killLiveChildren false
         settleKills ()
 
-        if dieBySigint then
-            System.Console.Out.Flush()
-            raiseSigint ()
+        if c <> 141 then
+            sweepDirs ()
+            dieByFlushing true c
 
         c
 
 /// a parallel worker stops taking arms once a teardown is requested
 /// (a signal, a closed stdout) [D:teardown-stops-arms] — unless the
-/// fan-out runs inside an `always` cleanup
+/// fan-out runs inside an `always` cleanup, whose node no teardown reaches
 let stopTakingArms () : bool =
     System.Threading.Volatile.Read &teardownCode <> 0 && not (inCleanup ())
 
@@ -993,6 +1502,7 @@ let settleInterrupt (code: int) : unit =
         code = 130
         && not (System.OperatingSystem.IsWindows())
         && mainThreadId <> 0
+        && not replFlow
         && System.Threading.Volatile.Read &teardownCode = 0
         && Libc.terminalForeground ()
     then
@@ -1005,8 +1515,8 @@ let settleInterrupt (code: int) : unit =
 /// raise the requested teardown on the main thread, once: the unwind
 /// then runs the cleanups as ordinary code (which must not be cut short
 /// by the same request again). A cleanup already running is never
-/// preempted [D:teardown-never-preempts]: the request raises at the
-/// first boundary after it
+/// preempted [D:teardown-never-preempts]: its node is no teardown's, so
+/// the request raises at the first boundary after it
 let checkTeardown () : unit =
     let c = System.Threading.Volatile.Read &teardownCode
 
@@ -1018,6 +1528,22 @@ let checkTeardown () : unit =
     then
         raise (ExitRequest c)
 
+/// every evaluated node is a boundary, on every flow [D:scope-tree]: the
+/// main thread raises a teardown's ExitRequest (once), any flow its cut's
+/// Cancelled. One read while nothing is cut
+let evalBoundary () : unit =
+    if System.Threading.Volatile.Read &cutsPending <> 0 then
+        if System.Threading.Volatile.Read &hardExiting <> 0 then
+            park ()
+
+        let n = currentNode ()
+
+        if n.Cut > 0 then
+            checkTeardown ()
+
+            if cancelledBy n then
+                raise (Cancelled())
+
 // a main thread not yet unwinding waits interruptibly; elsewhere (a
 // worker, or a cleanup running) waits run as written
 let private interruptible () =
@@ -1025,12 +1551,11 @@ let private interruptible () =
     && System.Threading.Volatile.Read &teardownRaised = 0
     && not (inCleanup ())
 
-// what a runtime-owned wait wakes on: the teardown (main thread, not yet
-// unwinding; any other flow outside a cleanup [D:teardown-joins-arms]), a
-// lost race, a REPL ^C [D:repl-interrupt]
+// what a runtime-owned wait wakes on: its node's cut [D:scope-tree]
 let private wakeHandles () : System.Threading.WaitHandle list =
-    (if interruptible () then [ teardownWake.WaitHandle ] else [])
-    @ (cutTokens () |> List.map (fun t -> t.WaitHandle))
+    match waitToken false with
+    | t when t.CanBeCanceled -> [ t.WaitHandle ]
+    | _ -> []
 
 let private raiseWoken () =
     checkTeardown ()
@@ -1066,234 +1591,64 @@ let waitOrCancel (span: System.TimeSpan) (token: System.Threading.CancellationTo
         raiseWoken ()
         i = 0
 
-/// wait for a process to exit; a lost race, a fan-out's exit or a REPL ^C
-/// raises — the process may be one no group kill reaches, a `within proc`
-/// opened outside the fan-out [D:fanout-exit-reads] (a signal's or a closed
-/// stdout's teardown kills the child, which ends the wait; a terminal ^C's
-/// waits for it [D:sigint-terminal-group])
+/// wait for a process to exit; the flow's cut raises — the process may be
+/// one no kill of the cut reaches, a `within proc` opened outside a fan-out
+/// [D:scope-tree]; a soft teardown (the terminal's ^C) waits for it
+/// [D:sigint-terminal-group]
 let waitProcess (p: System.Diagnostics.Process) : unit =
     checkCancels ()
 
-    match waitTokens () @ fanTokens () with
-    | [] -> p.WaitForExit()
-    | ts ->
-        let hs = ts |> List.map (fun t -> t.WaitHandle) |> Array.ofList
-
+    match waitToken true with
+    | t when not t.CanBeCanceled -> p.WaitForExit()
+    | t ->
         while not (p.WaitForExit 0) do
-            System.Threading.WaitHandle.WaitAny(hs, 50) |> ignore
-            checkCancels ()
+            t.WaitHandle.WaitOne 50 |> ignore
+
+            if t.IsCancellationRequested then
+                raiseWoken ()
 
         // the no-argument form also waits for redirected streams' EOF
         p.WaitForExit()
-
-// each running fan-out worker, marked while parked in a blocking call no
-// cut reaches [D:teardown-abandons-reads]: a join stops waiting once every
-// arm it waits on is parked. One mark per worker thread, so a parked read
-// costs no shared write while no cut is live
-[<AllowNullLiteral>]
-type private ArmMark() =
-    [<DefaultValue>]
-    val mutable Parked: int
-
-    // 0 live, 1 a join proposes to abandon the arm, 2 abandoned: an arm
-    // leaving a parked call under a cut waits out a proposal, and an
-    // abandoned arm never runs again — its cleanups are its join's
-    // [D:fanout-exit-reads]
-    [<DefaultValue>]
-    val mutable Abandon: int
-
-    // the arm whose flow opened this one's fan-out or race (null at top)
-    [<DefaultValue>]
-    val mutable Parent: ArmMark
-
-let private armMarks =
-    System.Collections.Concurrent.ConcurrentDictionary<ArmMark, byte>(HashIdentity.Reference)
-
-let private armMark = new System.Threading.ThreadLocal<ArmMark>()
-
-// the arm a flow runs in, inherited by the workers it opens
-let private armOwner = System.Threading.AsyncLocal<ArmMark>()
-
-/// run one fan-out worker (on its own thread), marked for the teardown's join
-let armRunning (f: unit -> 'a) : 'a =
-    let m = ArmMark()
-    m.Parent <- armOwner.Value
-    let prev = armMark.Value
-    let prevOwner = armOwner.Value
-    armMark.Value <- m
-    armOwner.Value <- m
-    armMarks[m] <- 0uy
-
-    try
-        f ()
-    finally
-        armMarks.TryRemove m |> ignore
-        armMark.Value <- prev
-        armOwner.Value <- prevOwner
-
-// a cut is live, so a join may be abandoning parked arms
-let private cutPending () =
-    System.Threading.Volatile.Read &teardownCode <> 0
-    || System.Threading.Volatile.Read &racesLive <> 0
-
-let private parking (f: unit -> 'a) : 'a =
-    match armMark.Value with
-    | null -> f ()
-    | m ->
-        m.Parked <- m.Parked + 1
-
-        try
-            f ()
-        finally
-            if cutPending () then
-                System.Threading.Interlocked.Decrement &m.Parked |> ignore
-
-                while System.Threading.Volatile.Read &m.Abandon = 1 do
-                    System.Threading.Thread.Sleep 1
-
-                if System.Threading.Volatile.Read &m.Abandon = 2 then
-                    System.Threading.Thread.Sleep System.Threading.Timeout.Infinite
-            else
-                m.Parked <- m.Parked - 1
-
-// abandon `marks` if every one is still parked: propose, check, then commit
-// or withdraw, so no arm runs on past a commit
-let private tryAbandon (marks: ArmMark list) : bool =
-    for m in marks do
-        System.Threading.Interlocked.Exchange(&m.Abandon, 1) |> ignore
-
-    let all =
-        marks
-        |> List.forall (fun m -> System.Threading.Volatile.Read &m.Parked > 0)
-
-    for m in marks do
-        System.Threading.Volatile.Write(&m.Abandon, (if all then 2 else 0))
-
-    all
 
 // the main thread is joining arms for a teardown: it unwinds next, so the
 // signal watchdog stands down [D:teardown-joins-arms]
 let mutable private mainJoining = 0
 
-// wait for `t`; abandon the arms `live` lists once they are all parked, twice
-// in a row — the abandoned ones, or none when `t` ended
-let private abandonParked (t: System.Threading.Tasks.Task) (live: unit -> ArmMark list) : ArmMark list =
-    let mutable streak = 0
-    let mutable abandoned = []
-
-    try
-        while List.isEmpty abandoned && not (t.Wait 50) do
-            if interruptible () && teardownRequested () <> 0 then
-                System.Threading.Volatile.Write(&mainJoining, 1)
-
-            let ms = live ()
-
-            if
-                not (List.isEmpty ms)
-                && ms |> List.forall (fun m -> System.Threading.Volatile.Read &m.Parked > 0)
-            then
-                streak <- streak + 1
-
-                if streak >= 2 && tryAbandon ms then
-                    abandoned <- ms
-            else
-                streak <- 0
-    with _ ->
-        ()
-
-    abandoned
-
-// the pending `always` cleanups an arm registered, with the arm's context:
-// when a join abandons the arm, the joining thread runs them before it
-// unwinds, so none lands after an enclosing scope released
-// [D:abandoned-arm-cleanup]
-let private armAlways =
-    System.Collections.Concurrent.ConcurrentDictionary<int, ArmMark * System.Threading.ExecutionContext>()
-
-let private runAbandonedCleanups (owned: ArmMark list) =
-    for id in armAlways.Keys |> Seq.sortDescending do
-        match armAlways.TryGetValue id with
-        | true, (m, ctx) when owned |> List.exists (fun o -> obj.ReferenceEquals(o, m)) ->
-            match liveAlways.TryRemove id with
-            | true, cleanup ->
-                armAlways.TryRemove id |> ignore
-
-                try
-                    match ctx with
-                    | null -> cleanup ()
-                    | c -> System.Threading.ExecutionContext.Run(c, (fun _ -> cleanup ()), null)
-                with _ ->
-                    ()
-            | _ -> ()
-        | _ -> ()
-
-// the enclosing fan-out's cut has fired on this flow
-let private fanCut () =
-    System.Threading.Volatile.Read &racesLive <> 0
-    && (fanToken ()).IsCancellationRequested
-
-// a fan-out arm outside a cleanup it entered: its uncut calls are parked,
-// so the fan-out's join can abandon them once its cut fires
-// [D:fanout-exit-reads]
-let private fanParks () =
-    not (isNull armMark.Value)
-    && not (inFlowCleanup ())
-    && fanCancel.Value.CanBeCanceled
-
-// a blocking call on a flow only the teardown or a fan-out's cut stops:
-// parked while it blocks, and a cut landing meanwhile raises as it
-// returns — its result unused
-let private parked (f: unit -> 'a) : 'a =
-    let cut () =
-        if
-            (System.Threading.Volatile.Read &teardownCode <> 0 && teardownCuts ())
-            || fanCut ()
-        then
-            raise (Cancelled())
-
-    cut ()
-    let v = parking f
-    cut ()
-    v
-
-/// a pipe read a lost race or a REPL ^C cuts: the kill closes a pipe only
-/// when it reaches every holder — an orphaned grandchild keeps one open —
-/// so under a cancel the read waits beside the token and a cut raises
-/// instead of waiting for EOF; the abandoned read's bytes are never used.
-/// An arm's read only a teardown or its fan-out's exit could cut is parked,
-/// and that join abandons it [D:teardown-abandons-reads] [D:fanout-exit-reads]
+/// a pipe read a lost race, a fan-out's exit, the serve cut, a REPL ^C or a
+/// teardown cuts: the kill closes a pipe only when it reaches every holder
+/// — an orphaned grandchild keeps one open — so the read waits beside the
+/// flow's token and a cut raises instead of waiting for EOF; the abandoned
+/// read's bytes are never used. A soft teardown (the terminal's ^C) leaves
+/// the read be: the child took the ^C too [D:sigint-terminal-group]
 let cutRead
     (read: unit -> 'a)
     (readAsync: System.Threading.CancellationToken -> System.Threading.Tasks.ValueTask<'a>)
     : 'a =
-    match waitTokens () with
-    | [] when teardownCuts () || fanParks () -> parked read
-    | [] -> read ()
-    | _ ->
+    match waitToken true with
+    | t when not t.CanBeCanceled -> read ()
+    | t ->
         checkCancels ()
+        let vt = readAsync t
 
-        withWaitToken (fun t ->
-            let vt = readAsync t
+        if vt.IsCompletedSuccessfully then
+            vt.Result
+        else
+            let task = vt.AsTask()
 
-            if vt.IsCompletedSuccessfully then
-                vt.Result
-            else
-                let task = vt.AsTask()
-
-                try
-                    // Wait(t), not the read's own token: a Windows pipe read
-                    // is synchronous underneath and ignores cancellation
-                    task.Wait t
-                    task.Result
-                with
-                | :? System.OperationCanceledException
-                | :? System.AggregateException when t.IsCancellationRequested ->
-                    checkCancels ()
-                    raise (System.OperationCanceledException t))
+            try
+                // Wait(t), not the read's own token: a Windows pipe read
+                // is synchronous underneath and ignores cancellation
+                task.Wait t
+                task.Result
+            with
+            | :? System.OperationCanceledException
+            | :? System.AggregateException when t.IsCancellationRequested ->
+                raiseWoken ()
+                raise (System.OperationCanceledException t)
 
 /// join a reader task under the same cut as `cutRead`; a reader the
-/// teardown cut (it runs off the flow, so the teardown cuts it) raises as
-/// the joining flow's own stop — the main thread's ExitRequest
+/// teardown cut (it runs in the flow's node, so the teardown cuts it) raises
+/// as the joining flow's own stop — the main thread's ExitRequest
 /// [D:epipe-kills-at-teardown]
 let cutJoin (task: System.Threading.Tasks.Task<'a>) : 'a =
     try
@@ -1303,15 +1658,12 @@ let cutJoin (task: System.Threading.Tasks.Task<'a>) : 'a =
         System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ae.InnerException).Throw()
         Unchecked.defaultof<'a>
 
-/// a blocking call a lost race or a REPL ^C abandons — a FIFO's open or
-/// read, which no kill reaches [D:stdin-reader]: under a cancel it runs off
-/// the flow and the wait raises; the abandoned call's result is never used.
-/// Only a teardown or a fan-out's exit could cut it: parked
-/// [D:teardown-abandons-reads]
+/// a blocking call a cut abandons — a FIFO's open or read, which no kill
+/// reaches [D:stdin-reader]: it runs off the flow and the wait raises; the
+/// abandoned call's result is never used
 let cutBlocking (f: unit -> 'a) : 'a =
-    match waitTokens () with
-    | [] when teardownCuts () || fanParks () -> parked f
-    | [] -> f ()
+    match waitToken false with
+    | t when not t.CanBeCanceled -> f ()
     | _ ->
         let task = System.Threading.Tasks.Task.Run<'a>(System.Func<'a> f)
 
@@ -1323,103 +1675,112 @@ let cutBlocking (f: unit -> 'a) : 'a =
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ae.InnerException).Throw()
             Unchecked.defaultof<'a>
 
+// a child's pipe, read so that a cut stops it [D:scope-tree]: a fill first
+// asks poll(2) whether the pipe is readable — read(2) is called only then,
+// so a cut never leaves a thread inside it and never consumes the bytes it
+// abandons — and while the pipe is empty it polls beside the flow's node.
+// The cut is checked once per fill, never per line. A soft teardown (the
+// terminal's ^C, which reached the child too) leaves the read be while the
+// child lives; once the child is gone (an orphan holds the pipe) it cuts
+// too [D:sigint-terminal-group]. Windows waits beside the token per fill
+type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Process) =
+    inherit System.IO.Stream()
+
+    let fd =
+        match inner with
+        | :? System.IO.Pipes.PipeStream as ps when not (System.OperatingSystem.IsWindows()) ->
+            int (ps.SafePipeHandle.DangerousGetHandle())
+        | _ -> -1
+
+    // a cut this read honours: any but the soft teardown's, and that one
+    // too once the child has exited
+    let cutNow () =
+        if System.Threading.Volatile.Read &cutsPending <> 0 then
+            let n = currentNode ()
+
+            if n.Cut > 0 && not (unwinding n) then
+                let soft =
+                    (n.Reasons &&& CutReason.Soft) <> 0
+                    && not n.Killing
+                    && (n.Reasons &&& ~~~(CutReason.Teardown ||| CutReason.Soft)) = 0
+
+                if
+                    not soft
+                    || (isNull child
+                        || (try
+                                child.HasExited
+                            with _ ->
+                                true))
+                then
+                    raiseWoken ()
+
+    override _.CanRead = true
+    override _.CanSeek = false
+    override _.CanWrite = false
+    override _.Length = raise (System.NotSupportedException())
+
+    override _.Position
+        with get () = raise (System.NotSupportedException())
+        and set (_: int64) = raise (System.NotSupportedException())
+
+    override _.Flush() = ()
+    override _.Seek(_: int64, _: System.IO.SeekOrigin) : int64 = raise (System.NotSupportedException())
+    override _.SetLength(_: int64) = raise (System.NotSupportedException())
+    override _.Write(_: byte[], _: int, _: int) = raise (System.NotSupportedException())
+
+    override _.Read(buffer: byte[], offset: int, count: int) : int =
+        if count = 0 then
+            0
+        elif fd >= 0 then
+            cutNow ()
+
+            if not (Libc.readable fd 0) then
+                while not (Libc.readable fd 50) do
+                    cutNow ()
+
+            inner.Read(buffer, offset, count)
+        else
+            // Windows: a pipe read is synchronous underneath and ignores
+            // its token, so the fill waits beside the token instead
+            cutRead
+                (fun () -> inner.Read(buffer, offset, count))
+                (fun t -> inner.ReadAsync(System.Memory<byte>(buffer, offset, count), t))
+
+    // the child's pipe is the Process's to close
+    override _.Dispose(_: bool) = ()
+
+/// a child's output stream, cut as the flow is [D:scope-tree]
+let cutStream (child: System.Diagnostics.Process) (s: System.IO.Stream) : System.IO.Stream =
+    new CutStream(s, child) :> System.IO.Stream
+
+/// a reader over a child's output, cut as the flow is: the encoding the
+/// Process gave it, a larger buffer
+let cutReader (child: System.Diagnostics.Process) (r: System.IO.StreamReader) : System.IO.StreamReader =
+    new System.IO.StreamReader(cutStream child r.BaseStream, r.CurrentEncoding, true, 65536)
+
 /// join a task; a teardown request raises on the main thread once the
 /// task's arms, cut at their next boundary, have joined
 /// [D:teardown-joins-arms] — before any enclosing scope closes (pure
-/// compute holds the join; a second signal hard-exits)
+/// compute holds the join; a second signal hard-exits). Every wait is cut,
+/// so no arm is left behind [D:scope-tree]
 let waitTask (t: System.Threading.Tasks.Task) : unit =
     if interruptible () then
         System.Threading.WaitHandle.WaitAny(
-            [| (t :> System.IAsyncResult).AsyncWaitHandle; teardownWake.WaitHandle |]
+            [| (t :> System.IAsyncResult).AsyncWaitHandle; (tokenOf rootNode false).WaitHandle |]
         )
         |> ignore
 
         if teardownRequested () <> 0 then
             System.Threading.Volatile.Write(&mainJoining, 1)
 
-            // every live arm parked in a call no cut reaches, twice in a
-            // row: the join abandons them [D:teardown-abandons-reads]
-            match abandonParked t (fun () -> List.ofSeq armMarks.Keys) with
-            | [] -> ()
-            | ms -> runAbandonedCleanups ms
-
-        checkTeardown ()
-
-    // an arm joining its own arms is parked with them
-    if teardownCuts () then parking t.Wait else t.Wait()
-
-/// the workers of one fan-out, for its own join [D:fanout-exit-reads]
-type FanArms(n: int) =
-    let marks: ArmMark[] = Array.zeroCreate n
-
-    /// run worker `w`, marked as one of this fan-out's arms
-    member _.Run(w: int, f: unit -> unit) : unit =
-        armRunning (fun () ->
-            System.Threading.Volatile.Write(&marks[w], armMark.Value)
-
             try
-                f ()
-            finally
-                System.Threading.Volatile.Write(&marks[w], null))
+                t.Wait()
+            with _ ->
+                ()
 
-    /// join the workers' task. Once the fan-out's cut fires, workers parked
-    /// in a call no cut reaches are abandoned and their pending cleanups
-    /// run here, before the join returns; true when it abandoned any
-    member _.Join(t: System.Threading.Tasks.Task, cut: System.Threading.CancellationToken) : bool =
-        let cutFirst =
-            if interruptible () then
-                System.Threading.WaitHandle.WaitAny(
-                    [| (t :> System.IAsyncResult).AsyncWaitHandle
-                       teardownWake.WaitHandle
-                       cut.WaitHandle |]
-                )
-                |> ignore
+            checkTeardown ()
 
-                not t.IsCompleted
-                && teardownRequested () = 0
-                && cut.IsCancellationRequested
-            else
-                try
-                    if teardownCuts () then
-                        parking (fun () -> t.Wait cut)
-                    else
-                        t.Wait cut
-
-                    false
-                with :? System.OperationCanceledException ->
-                    true
-
-        if cutFirst then
-            // this fan-out's arms and every arm nested under them: an arm
-            // parked joining its own fan-out counts only with that one's
-            // arms parked too
-            let live () =
-                let own =
-                    marks
-                    |> Array.choose (fun m -> if isNull m then None else Some m)
-                    |> List.ofArray
-
-                let mine (m: ArmMark) = own |> List.exists (fun o -> obj.ReferenceEquals(o, m))
-
-                let rec under (m: ArmMark) =
-                    not (isNull m) && (mine m || under m.Parent)
-
-                if List.isEmpty own then
-                    []
-                else
-                    own
-                    @ [ for m in armMarks.Keys do
-                            if not (mine m) && under m.Parent then
-                                yield m ]
-
-            match abandonParked t live with
-            | [] -> false
-            | ms ->
-                runAbandonedCleanups ms
-                true
-        else
-            waitTask t
-            false
+    t.Wait()
 
 /// join a thread (a serve handler) whole; a teardown requested meanwhile
 /// stands the signal watchdog down, as `waitTask` does
@@ -1490,13 +1851,37 @@ module Stdin =
     let private winTty () =
         System.OperatingSystem.IsWindows() && not System.Console.IsInputRedirected
 
+    // Windows: a read of fd 0 blocks and ignores cancellation, so one read
+    // runs off the flow and every reader waits for it beside its node's
+    // token [D:scope-tree]; a cut leaves it pending for the next reader,
+    // so no byte is lost and no flow is left inside it
+    let mutable private winPending: System.Threading.Tasks.Task<byte[]> = null
+    let mutable private winPendingLine: System.Threading.Tasks.Task<string> = null
+
+    let private awaitPending (t: System.Threading.Tasks.Task<'a>) : 'a =
+        let tok = waitToken false
+
+        if tok.CanBeCanceled then
+            try
+                t.Wait tok
+            with :? System.OperationCanceledException ->
+                raiseWoken ()
+                t.Wait()
+        else
+            t.Wait()
+
+        t.Result
+
     // wait until fd 0 is readable, raising when the wait is cut
     let private awaitReadable () =
-        if not (System.OperatingSystem.IsWindows()) && not (List.isEmpty (wakeHandles ())) then
-            raiseWoken ()
-
-            while not (Libc.readable 0 50) do
+        if not (System.OperatingSystem.IsWindows()) then
+            if System.Threading.Volatile.Read &cutsPending <> 0 then
                 raiseWoken ()
+
+            if not (Libc.readable 0 0) then
+                while not (Libc.readable 0 50) do
+                    if System.Threading.Volatile.Read &cutsPending <> 0 then
+                        raiseWoken ()
 
     // one read(2) of up to `n` bytes at buf[hi]: the count, or -errno
     let private readRaw (n: int) : int =
@@ -1533,9 +1918,30 @@ module Stdin =
             buf <- bigger
 
         if System.OperatingSystem.IsWindows() then
-            let got = winStdin.Force().Read(buf, hi, n)
-            hi <- hi + got
-            got
+            let t =
+                match winPending with
+                | null ->
+                    let t =
+                        System.Threading.Tasks.Task.Run<byte[]>(fun () ->
+                            let b = Array.zeroCreate<byte> n
+                            let got = winStdin.Force().Read(b, 0, n)
+                            Array.sub b 0 (max 0 got))
+
+                    winPending <- t
+                    t
+                | t -> t
+
+            let bytes = awaitPending t
+            winPending <- null
+
+            if hi + bytes.Length > buf.Length then
+                let bigger = Array.zeroCreate (max (buf.Length * 2) (hi + bytes.Length))
+                System.Buffer.BlockCopy(buf, 0, bigger, 0, hi)
+                buf <- bigger
+
+            System.Buffer.BlockCopy(bytes, 0, buf, hi, bytes.Length)
+            hi <- hi + bytes.Length
+            bytes.Length
         else
             let rec go () =
                 awaitReadable ()
@@ -1622,12 +2028,25 @@ module Stdin =
             None
 
     let private readWith (stream: bool) : string =
-        if winTty () then
-            System.Console.In.ReadLine()
-        else
-            while not (System.Threading.Monitor.TryEnter(gate, 50)) do
-                raiseWoken ()
+        while not (System.Threading.Monitor.TryEnter(gate, 50)) do
+            raiseWoken ()
 
+        if winTty () then
+            try
+                let t =
+                    match winPendingLine with
+                    | null ->
+                        let t = System.Threading.Tasks.Task.Run<string>(fun () -> System.Console.In.ReadLine())
+                        winPendingLine <- t
+                        t
+                    | t -> t
+
+                let line = awaitPending t
+                winPendingLine <- null
+                line
+            finally
+                System.Threading.Monitor.Exit gate
+        else
             try
                 let chunk = if stream then 65536 else 1
                 // where the line taken begins (a fill may move the buffer)
@@ -1665,6 +2084,34 @@ module Stdin =
                     l
                 | Some l -> l
                 | None -> null
+            finally
+                System.Threading.Monitor.Exit gate
+
+    /// a child about to read fd 0 while weir holds a begun line — a cut
+    /// prompt's partial one [D:prompt-cut-whole-line]: the rest of that line
+    /// is read first (waiting for it, cut as the flow is), so the line stays
+    /// whole in weir's buffer for its next reader and the child starts at
+    /// the line after — no reader sees a line that was not written
+    let finishForChild () =
+        if not (System.OperatingSystem.IsWindows()) && hi > lo && buf[hi - 1] <> 10uy then
+            while not (System.Threading.Monitor.TryEnter(gate, 50)) do
+                raiseWoken ()
+
+            try
+                let mutable go = hi > lo && buf[hi - 1] <> 10uy
+
+                while go do
+                    awaitReadable ()
+
+                    if hi + 1 > buf.Length then
+                        let bigger = Array.zeroCreate (buf.Length * 2)
+                        System.Buffer.BlockCopy(buf, 0, bigger, 0, hi)
+                        buf <- bigger
+
+                    match readRaw 1 with
+                    | 1 -> go <- buf[hi - 1] <> 10uy
+                    | e when -e = Libc.EINTR || -e = Libc.EAGAIN -> ()
+                    | _ -> go <- false
             finally
                 System.Threading.Monitor.Exit gate
 
@@ -1830,6 +2277,8 @@ type private EpipeWriter(inner: System.IO.StreamWriter) =
             // errno as the HResult
             with :? System.IO.IOException as e when e.HResult = 32 ->
                 dead <- true
+                // a signal from here on is the second [D:hard-exit]
+                System.Threading.Interlocked.Exchange(tearingDown, 1) |> ignore
                 requestTeardown 141
                 // the signal teardown's kill: what the flows wait on dies
                 // now, not at the exit [D:epipe-kills-at-teardown]
@@ -1883,12 +2332,6 @@ let armStdout () : unit =
             inner.NewLine <- System.Console.Out.NewLine
             System.Console.SetOut(System.IO.TextWriter.Synchronized(new EpipeWriter(inner)))
 
-// a second signal during teardown hard-exits [D:signal-teardown] — the
-// shell's double-Ctrl+C escape, so a slow or stuck cleanup can never
-// wedge a supervisor. The first signal sets this and runs the sweep;
-// default termination then carries the conventional 128 + signal.
-let private tearingDown = ref 0
-
 // 128 + the signal number, the shell's convention
 let private signalExitCode (s: System.Runtime.InteropServices.PosixSignal) =
     match s with
@@ -1896,72 +2339,119 @@ let private signalExitCode (s: System.Runtime.InteropServices.PosixSignal) =
     | System.Runtime.InteropServices.PosixSignal.SIGHUP -> 129
     | _ -> 130
 
-// a live tmp/proc/serve/always scope: the full hook's SIGINT is a tree
-// kill only while one is open — a terminal ^C after every scope has
-// closed is the unscoped one [D:sigint-live-scopes] (a `within proc`
-// holds its spill dir for its lifetime)
+// a live tmp/proc/serve/always scope: SIGINT is a tree kill only while one
+// is open — a terminal ^C after every scope has closed is the unscoped one
+// [D:sigint-live-scopes] (a `within proc` holds its spill dir for its
+// lifetime)
 let private scoped () =
     not liveTmpDirs.IsEmpty || not liveAlways.IsEmpty
 
-// the second signal's hard exit [D:signal-teardown]: the sweep (the
-// foreground reaper alone has no ProcessExit hook to run it), then 128 +
-// the signal; a second ^C after a terminal ^C dies by the SIGINT
+// the second signal's hard exit [D:hard-exit]: no cleanup runs and none
+// keeps running — every thread parks at its next runtime point, every
+// child dies (a cleanup's too), the kills settle, the registered dirs go,
+// and weir dies by the teardown's FIRST signal; one code, whatever thread
+// wins
 let private hardExit (code: int) =
-    sweepLiveTmpDirs ()
+    System.Threading.Volatile.Write(&hardExiting, 1)
+    System.Threading.Interlocked.Add(&cutsPending, 1 <<< 20) |> ignore
+    spawnGate.TryEnterWriteLock 1000 |> ignore
 
-    if dieBySigint && code = 130 then
-        raiseSigint ()
+    for kv in liveProcs do
+        killEntry kv.Value
 
-    System.Environment.Exit code
+    settleKills ()
+
+    for kv in liveTmpDirs do
+        try
+            System.IO.Directory.Delete(kv.Key, true)
+        with _ ->
+            ()
+
+    System.Threading.Interlocked.CompareExchange(&teardownCode, code, 0) |> ignore
+    dieBy (System.Threading.Volatile.Read &teardownCode)
+
+// the signal backstop [D:teardown-never-preempts]: a main flow blocked
+// where no boundary comes (a builtin's own loop, a stalled write) cannot
+// unwind — after `graceMs` (and each `pollMs` after) the backstop's verdict
+// holds while it runs a cleanup, closes a scope or joins; otherwise the
+// backstop adopts the main flow, runs its pending frames and dies
+let private startBackstop (graceMs: int) (pollMs: int) (ready: unit -> bool) (code: int) =
+    let watch =
+        System.Threading.Thread(fun () ->
+            System.Threading.Thread.Sleep graceMs
+
+            let rec standBy () =
+                match backstopVerdict (ready ()) with
+                | None ->
+                    System.Threading.Thread.Sleep pollMs
+                    standBy ()
+                | Some f -> f
+
+            if standBy () then
+                adoptMain ()
+                sweepDirs ()
+                dieBy code)
+
+    watch.IsBackground <- true
+    watch.Start()
 
 // the terminal's ^C reached the children with weir [D:sigint-terminal-group]:
 // no kill — the script waits for its child (its own ^C handling runs) and
 // then unwinds; without a live child to wait for, it exits after a grace
 // period, held as the watchdog is (a cleanup, a scope close, a join)
 // [D:terminal-sigint-teardown]
-let private terminalInterrupt (ctx: System.Runtime.InteropServices.PosixSignalContext) =
-    ctx.Cancel <- true
-    dieBySigint <- true
-    requestTeardown 130
+let private terminalInterrupt () =
+    requestTeardownWith true 130
 
-    let watch =
-        System.Threading.Thread(fun () ->
-            let rec standBy idle =
-                System.Threading.Thread.Sleep 100
-                let idle = if liveProcs.IsEmpty then idle + 1 else 0
+    let idle = ref 0
 
-                match backstopVerdict (idle >= 10) with
-                | None -> standBy idle
-                | Some f -> f
+    let ready () =
+        idle.Value <- (if liveProcs.IsEmpty then idle.Value + 1 else 0)
+        idle.Value >= 10
 
-            if standBy 0 then
-                raiseSigint ())
+    startBackstop 100 100 ready 130
 
-    watch.IsBackground <- true
-    watch.Start()
+// one signal dispatch [D:scope-tree]: the REPL's own ^C, the hard exit, the
+// terminal's unscoped ^C, the teardown — or, with no flow to unwind (the
+// REPL between entries, a subcommand), the exit's sweep and the signal's
+// death
+let private onSignal (ctx: System.Runtime.InteropServices.PosixSignalContext) =
+    let sigint = ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
+    let code = signalExitCode ctx.Signal
+
+    // a SIGINT the REPL cancels is not a death [D:repl-isig]
+    if replSurvivesSigint.Value && sigint then
+        ()
+    elif System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
+        ctx.Cancel <- true
+        hardExit code
+    elif System.Threading.Volatile.Read &mainThreadId = 0 then
+        ctx.Cancel <- true
+        System.Threading.Interlocked.CompareExchange(&teardownCode, code, 0) |> ignore
+        killLiveChildren false
+        sweepDirs ()
+        dieBy code
+    elif sigint && not (scoped ()) && Libc.terminalForeground () then
+        ctx.Cancel <- true
+        terminalInterrupt ()
+    else
+        // first signal, a flow running: it tears down [D:signal-main-unwind]
+        // — what it waits on is cut and killed, its cleanups' spared
+        ctx.Cancel <- true
+        requestTeardown code
+        killLiveChildren true
+        startBackstop 1000 1000 (fun () -> true) code
 
 let private installExitHook () =
-    // normal process exit — the pfirst exit-race customer: a background
+    // a normal process exit — the pfirst exit-race customer: a background
     // loser killed mid-finally no longer leaks its dir
-    System.AppDomain.CurrentDomain.ProcessExit.Add(fun _ -> sweepLiveTmpDirs ())
+    System.AppDomain.CurrentDomain.ProcessExit.Add(fun _ -> sweepDirs ())
 
-    // SIGINT/SIGTERM — the Ctrl-C customer. POSIX arm only: Create
-    // throws on Windows (the SIGWINCH guard's lesson [D:windows-v1]);
-    // Windows takes Console.CancelKeyPress instead. After the handler,
-    // default termination proceeds (Cancel stays false) — sweep, then die.
+    // SIGINT/SIGTERM/SIGHUP. POSIX arm only: Create throws on Windows (the
+    // SIGWINCH guard's lesson [D:windows-v1]); Windows takes
+    // Console.CancelKeyPress, through the same teardown.
     if not (System.OperatingSystem.IsWindows()) then
-        // the detached-SIGINT reset [D:signal-teardown]: a shell
-        // backgrounding weir in a non-interactive context sets SIGINT
-        // (and SIGQUIT) to SIG_IGN — the job-control nohup convention —
-        // and .NET honours an inherited SIG_IGN, so PosixSignalRegistration
-        // never installs and a `kill -INT` on a detached supervisor is a
-        // no-op (only SIGKILL stops it, no scope unwind). We reset SIGINT
-        // to SIG_DFL only when there is no controlling terminal: a truly
-        // detached process has no terminal Ctrl+C to protect against, so
-        // any SIGINT it receives is an explicit stop that must tear down.
-        // A `nohup weir &` keeps its tty and its SIG_IGN — terminal Ctrl+C
-        // still cannot kill it. The REPL is interactive (has a tty), so it
-        // never trips this and its [D:repl-isig] survival is untouched.
+        // the detached-SIGINT reset [D:signal-teardown], done at start too
         resetDetachedSigint.Force()
 
         // SIGHUP joins them [D:sighup-teardown]: a closed terminal or a
@@ -1972,174 +2462,61 @@ let private installExitHook () =
               System.Runtime.InteropServices.PosixSignal.SIGTERM
               System.Runtime.InteropServices.PosixSignal.SIGHUP ] do
             let reg =
-                System.Runtime.InteropServices.PosixSignalRegistration.Create(
-                    posixSig,
-                    fun ctx ->
-                        // a SIGINT the REPL cancels is not a death —
-                        // the dirs stay live [D:repl-isig]
-                        if
-                            replSurvivesSigint.Value
-                            && ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
-                        then
-                            ()
-                        // a second signal mid-teardown hard-exits
-                        // [D:signal-teardown] — the double-Ctrl+C escape,
-                        // 128 + the signal
-                        elif System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
-                            hardExit (signalExitCode ctx.Signal)
-                        elif
-                            mainThreadId <> 0
-                            && ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
-                            && not (scoped ())
-                            && Libc.terminalForeground ()
-                        then
-                            terminalInterrupt ctx
-                        elif mainThreadId <> 0 then
-                            // first signal, a script running: the main
-                            // thread tears down [D:signal-main-unwind] —
-                            // kill what it waits on, wake its sleeps, and
-                            // keep the process alive for the unwind
-                            ctx.Cancel <- true
-
-                            let code = signalExitCode ctx.Signal
-
-                            requestTeardown code
-                            killLiveChildren true
-
-                            // the backstop: a main thread blocked where
-                            // no boundary comes (a network call) cannot
-                            // unwind — after a grace period the old
-                            // in-handler teardown runs and the process
-                            // exits; it runs no statement either. One
-                            // joining arms unwinds next and is left be; one
-                            // in a cleanup or closing a scope runs it whole
-                            // first [D:teardown-never-preempts]
-                            let watchdog =
-                                System.Threading.Thread(fun () ->
-                                    let rec standBy () =
-                                        System.Threading.Thread.Sleep 1000
-
-                                        match backstopVerdict true with
-                                        | None -> standBy ()
-                                        | Some f -> f
-
-                                    if standBy () then
-                                        sweepLiveTmpDirs ()
-                                        System.Environment.Exit code)
-
-                            watchdog.IsBackground <- true
-                            watchdog.Start()
-                        else
-                            // first signal, no script main thread (the
-                            // REPL): run the one teardown, then let
-                            // default termination carry 128 + signal (Cancel
-                            // stays false)
-                            sweepLiveTmpDirs ()
-                )
+                System.Runtime.InteropServices.PosixSignalRegistration.Create(posixSig, onSignal)
 
             hookRoots <- (reg :> obj) :: hookRoots
     else
-        System.Console.CancelKeyPress.Add(fun _ -> sweepLiveTmpDirs ())
+        System.Console.CancelKeyPress.Add(fun e ->
+            e.Cancel <- true
 
-let registerTmpDir (dir: string) : unit =
+            if System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
+                hardExit 130
+            elif System.Threading.Volatile.Read &mainThreadId = 0 then
+                System.Threading.Interlocked.CompareExchange(&teardownCode, 130, 0) |> ignore
+                killLiveChildren false
+                sweepDirs ()
+                dieBy 130
+            else
+                requestTeardown 130
+                killLiveChildren true
+                startBackstop 1000 1000 (fun () -> true) 130)
+
+let private ensureHook () =
     if System.Threading.Interlocked.Exchange(hookInstalled, 1) = 0 then
         installExitHook ()
 
+let registerTmpDir (dir: string) : unit =
+    ensureHook ()
     liveTmpDirs[dir] <- ()
 
 let deregisterTmpDir (dir: string) : unit = liveTmpDirs.TryRemove dir |> ignore
 
 let registerProc (p: System.Diagnostics.Process) : unit =
-    if System.Threading.Interlocked.Exchange(hookInstalled, 1) = 0 then
-        installExitHook ()
+    ensureHook ()
+    liveProcs.TryAdd(p, ProcEntry(p, currentNode ())) |> ignore
 
-    liveProcs[p.Id] <- p
+/// a spawned child: the signal hook is installed (POSIX), so a signal
+/// tears down — a pid-targeted TERM, HUP or INT tree-kills the live
+/// children [D:signal-main-unwind] [D:sigint-reaps]; the teardown is
+/// requested before the kill, so a child or arm the kill ends is the
+/// teardown, never a command failure [D:teardown-kill-not-failure]
+let registerForeground (_: System.Diagnostics.Process) : unit =
+    if not (System.OperatingSystem.IsWindows()) then
+        ensureHook ()
 
-// a foreground child alone installs only a reaper [D:signal-main-unwind]:
-// a pid-targeted TERM, HUP or INT tree-kills the live children, then
-// default termination proceeds (weir still dies BY the signal, as before
-// any scope exists). SIGINT joins them [D:sigint-reaps]: a `kill -INT` of
-// weir's pid reaches no child, and a terminal ^C that already reached the
-// group is the same stop; the REPL survives its ^C and is skipped, an
-// inherited SIG_IGN (a backgrounded weir) keeps the handler unbound. In a
-// script the teardown is requested before the kill, so a child or arm the
-// kill ends is the teardown, never a command failure [D:teardown-kill-not-failure].
-// Once a scope installs the full hook, that hook does the kill as part of
-// its teardown, and takes the terminal ^C while no scope is live; this one
-// stands down. POSIX only.
-let private fgHookInstalled = ref 0
-
-let registerForeground (p: System.Diagnostics.Process) : unit =
-    if
-        not (System.OperatingSystem.IsWindows())
-        && System.Threading.Interlocked.Exchange(fgHookInstalled, 1) = 0
-    then
-        resetDetachedSigint.Force()
-
-        // a pid-targeted HUP reaps the same way [D:sighup-teardown]
-        for posixSig in
-            [ System.Runtime.InteropServices.PosixSignal.SIGTERM
-              System.Runtime.InteropServices.PosixSignal.SIGHUP
-              System.Runtime.InteropServices.PosixSignal.SIGINT ] do
-            let reg =
-                System.Runtime.InteropServices.PosixSignalRegistration.Create(
-                    posixSig,
-                    fun ctx ->
-                        // the full hook owns the signal once installed: it must
-                        // request the teardown BEFORE any child dies, or the
-                        // main thread's wait returns and runs the next statement
-                        let sigint = ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
-
-                        if
-                            System.Threading.Volatile.Read &hookInstalled.contents = 0
-                            && not (replSurvivesSigint.Value && sigint)
-                        then
-                            // a second signal mid-teardown hard-exits
-                            // [D:signal-teardown], as the full hook's does
-                            if System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
-                                hardExit (signalExitCode ctx.Signal)
-                            elif sigint && Libc.terminalForeground () then
-                                if mainThreadId <> 0 then
-                                    terminalInterrupt ctx
-                            else
-                                if mainThreadId <> 0 then
-                                    requestTeardown (signalExitCode ctx.Signal)
-
-                                killLiveChildren true
-                                settleKills ()
-                )
-
-            hookRoots <- (reg :> obj) :: hookRoots
-
-    if inCleanup () then
-        cleanupProcs[p] <- ()
-
-    liveProcs[p.Id] <- p
-
-/// remove `p` under `pid` — only that very process, so a late exit
-/// event never drops a newer child that reused the pid
-let deregisterProcAt (pid: int) (p: System.Diagnostics.Process) : unit =
-    liveProcs.TryRemove(System.Collections.Generic.KeyValuePair(pid, p)) |> ignore
-    cleanupProcs.TryRemove p |> ignore
+/// remove `p` — only that very process, so a late exit event never drops
+/// a newer child that reused the pid
+let deregisterProcAt (_: int) (p: System.Diagnostics.Process) : unit = forgetChild p
 
 let deregisterProc (p: System.Diagnostics.Process) : unit = deregisterProcAt p.Id p
 
-let registerAlways (cleanup: unit -> unit) : int =
-    if System.Threading.Interlocked.Exchange(hookInstalled, 1) = 0 then
-        installExitHook ()
-
+/// an `always` scope is pending (the live-scope rule's count)
+let registerAlways () : int =
+    ensureHook ()
     let id = System.Threading.Interlocked.Increment alwaysCounter
-
-    match armMark.Value with
-    | null -> ()
-    | m -> armAlways[id] <- (m, System.Threading.ExecutionContext.Capture())
-
-    liveAlways[id] <- cleanup
+    liveAlways[id] <- ()
     id
 
-// claim-by-removal: true when the caller took the cleanup back from the
-// exit hook — the hook claims the same way, so a signal racing a raise
-// cannot run one cleanup twice [D:within-always-any]
-let deregisterAlways (id: int) : bool =
-    armAlways.TryRemove id |> ignore
-    fst (liveAlways.TryRemove id)
+// claim-by-removal: true for the one caller that took the cleanup
+// [D:within-always-any]
+let deregisterAlways (id: int) : bool = fst (liveAlways.TryRemove id)

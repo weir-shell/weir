@@ -81,6 +81,81 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **`serve` answers 415 to a request body in a charset weir cannot
+  decode.** It was decoded as UTF-8, a wrong byte becoming U+FFFD, and
+  handed to the handler; now no handler runs, as the HTTP client
+  refuses such a response.
+- **A `plan` refuses an op that would fail at apply, where it is
+  captured.** A copy onto an existing (or planned) file, a delete of a
+  missing (or already deleted) file, a copy or move from a missing
+  source, `Dir.delete` of a directory the plan filled and a write
+  under a missing directory were captured, previewed as ordinary steps
+  and failed midway through `Plan.apply`. Each now raises at capture
+  with the same error the direct call gives.
+- **`from xml` reads a document in its declared encoding.** Pipe the
+  bytes: `File.readBytes "legacy.xml" |> from xml Proj` decodes by
+  BOM, else the XML declaration (UTF-16/32, US-ASCII, ISO-8859-1), else
+  UTF-8. A text document declaring a non-UTF-8 encoding read `café` as
+  `caf�`; it now refuses unless it is ASCII, and any other encoding
+  (windows-1252, Shift_JIS, …) refuses naming it.
+- **`File.*` and `Dir.*` resolve `..` after a symlink as the kernel
+  does.** With `L -> real/sub`, `File.read "L/../x"` read `./x` while
+  `cat L/../x` read `real/x`. `cd` keeps the shell's logical `..`.
+- **`to yaml` quotes every string a YAML reader would type.** `+.5`
+  and `+.5e3` read back as floats (weir's own reader too), `y`/`n`
+  as booleans in sigs.k8s.io/yaml, and `<<`/`=` broke PyYAML. Keys
+  follow the same rule.
+- **`to yaml` writes a `None` value in a seq of pairs as `null`.** The
+  key was dropped, so it did not read back.
+- **An integer beyond int64 in a `Yaml` node keeps its digits** when
+  written back to JSON or YAML (it became `1.8446744073709552e+19`).
+- **`from toml` and `Instant.parse` accept lowercase `t`/`z` and a
+  time without seconds** (`1979-05-27t07:32z`, TOML 1.1's
+  `07:32Z`).
+- **A YAML `"\ud800"` escape is refused,** as JSON refuses it; it was
+  read as U+FFFD.
+- **`weir gen types` and `weir add schema`: `anyOf`/`oneOf` of a
+  schema and `null`, in either order, drafts `Option<…>`** of that
+  schema (a `$ref`, array or object included); an enum containing
+  `null` drafts `Option<…>` too, and its note says `null`.
+- **A `$ref` with sibling `properties`/`required` (JSON Schema
+  2020-12) is merged** into one record; the siblings were dropped.
+- **Deep in-document `$ref` pointers and `#` resolve** (tsconfig,
+  package.json, the GitHub workflow schema).
+- **A `oneOf` whose `$ref` side is a string drafts like the inline
+  form** (GitHub Actions' `cancel-in-progress`), and a `oneOf` with one
+  alternative per JSON kind drafts `Yaml`.
+- **The piped REPL no longer runs a `Self.prompt` answer as a
+  command** after an indented `|>` line, a `match` arm or a second
+  `if` body line.
+- **A second Ctrl+C or signal exits at once.** It ran the remaining
+  `always` cleanups on top of the one already running (out of order,
+  sometimes waiting out a `sleep 30` and needing a third signal); now
+  no cleanup runs after it, every child is killed, and weir dies by
+  the first signal.
+- **A script stopped by a signal dies by it.** After its cleanups a
+  scoped script exited 130/143/129; it now dies by the SIGINT,
+  SIGTERM or SIGHUP itself, as an unscoped one did, so a bash loop
+  around it stops at one Ctrl+C. `$?` is unchanged.
+- **Ctrl+C no longer kills the commands an `always` cleanup runs.** At
+  a terminal they run in a process group of their own, so the cleanup
+  finishes; they can still print, but not read the terminal.
+- **`exit n` in a `serve` handler exits n.** It was reported as a 500
+  (`failed: ExitRequest`) and the script went on; now the scope stops,
+  its handlers finish their cleanups, and the script exits n.
+- **Ctrl+C or a failure ends a whole multi-statement REPL entry.** The
+  entry's later statements, commands included, still ran.
+- **Commands run inside a `pmap`/`piter`/`pfirst` arm no longer grow
+  memory.** Each one stayed registered until the arm ended (about
+  2.5KB a command).
+- **A `pfirst` arm reading a pipe no longer slows the read.** 10
+  million lines through `cat` in a race arm took 4s instead of under
+  one; every read is cut by its flow without a per-line cost.
+- **A detached weir that never runs a command dies by `kill -INT`.** An
+  inherited ignored SIGINT was reset only at the first command.
+- **A `Self.stdin` race loser that read nothing no longer uses up
+  stdin**, and a `Self.prompt` cut mid-line no longer glues its half
+  line onto the next one a child or a later prompt read.
 - **`weir gen types` drafts number-or-string fields and `format:
   int-or-string` as `Yaml`.** Kubernetes `resources.limits`, an HPA
   `target.value` and swagger's IntOrString drafted `string`, which

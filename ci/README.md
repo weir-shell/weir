@@ -21,6 +21,22 @@ a three-platform matrix [D:github-ci]:
 three 10k seeds — one pinned, two run-number-derived); the driver
 holds the deep-lock exactly as locally.
 
+`.github/workflows/storm.yml` is the nightly signal storm
+[D:storm-nightly] (linux, also workflow_dispatch with `runs`, `count`,
+`tty`, `trees`). `ci/storm/storm.py` sends INT/TERM/HUP at random
+points into the fixtures in `ci/storm/fx/` and judges each run against
+docs/reference/concurrency.md (exit by the first signal, cleanups whole
+and once, nothing after a cut, no orphan, no tmp left); three storms —
+one signal, `--count 2-3`, `--tty` — then `ci/storm/fuzz.py`, random
+fan-out/race trees against a discrete-event oracle. Unlike
+harnesses.yml they gate: any failing run exits 1. Each writes
+`runs.jsonl`/`trees.jsonl` and `summary.json` into its work dir and
+keeps the failing run dirs; the job uploads them as `storm-results`.
+Locally (Linux, never /tmp):
+
+    STORM_PORT0=20000 python3 -I ci/storm/storm.py --bin BIN --out DIR --runs 6 --count 1
+    python3 -I ci/storm/fuzz.py --bin BIN --out DIR --trees 60
+
 The old `.gitlab-ci.yml` (kaniko image + single test job) retired
 with the GitHub migration; the toolchain image's job is done by
 setup-dotnet + apt on the runner.

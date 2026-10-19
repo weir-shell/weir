@@ -33,10 +33,12 @@
          (weir prints located diagnostics, never a .NET stack trace; implies
          identical-body folding), no FSharp.Core satellites (invariant
          culture never loads them), no traceparent injection, no XML
-         network resolver (weir's reader sets XmlResolver = null) -->
+         network resolver (weir's reader sets XmlResolver = null), no
+         System.Diagnostics.Metrics instruments (weir attaches no listener) -->
     <StackTraceSupport>false</StackTraceSupport>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <HttpActivityPropagationSupport>false</HttpActivityPropagationSupport>
+    <MetricsSupport>false</MetricsSupport>
     <XmlResolverIsNetworkingEnabledByDefault>false</XmlResolverIsNetworkingEnabledByDefault>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>

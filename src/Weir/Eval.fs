@@ -523,8 +523,52 @@ type private GuardNode(comparer: System.Collections.Generic.IEqualityComparer<st
     member val Below: string = null with get, set
     member val Resolved: string = null with get, set
 
+// one node of a plan's simulated filesystem [D:plan-preconditions]: what
+// the captured ops have made of a path — State 0 unknown (the layer
+// below decides), 1 file, 2 directory, 3 absent; Cleared: nothing below
+// it in the layer beneath counts any more (deleted, overwritten, a fresh
+// copy); Mirror: the path whose layer-beneath contents back this
+// subtree (a copied or moved directory)
+[<AllowNullLiteral>]
+type private SimNode(comparer: System.Collections.Generic.IEqualityComparer<string>) =
+    let mutable kids: System.Collections.Generic.Dictionary<string, SimNode> = null
+
+    member _.Find(k: string) : SimNode =
+        if isNull kids then
+            null
+        else
+            match kids.TryGetValue k with
+            | true, n -> n
+            | _ -> null
+
+    member _.Add(k: string, n: SimNode) =
+        if isNull kids then
+            kids <- System.Collections.Generic.Dictionary(comparer)
+
+        kids[k] <- n
+
+    member _.Clear() = kids <- null
+
+    member _.Names: string list =
+        if isNull kids then [] else List.ofSeq kids.Keys
+
+    member val State = 0 with get, set
+    member val Cleared = false with get, set
+    member val Mirror: string = null with get, set
+
+    member this.Clone() : SimNode =
+        let n = SimNode(comparer, State = this.State, Cleared = this.Cleared, Mirror = this.Mirror)
+
+        for k in this.Names do
+            n.Add(k, this.Find(k).Clone())
+
+        n
+
 type private PlanFrame =
     { Ops: ResizeArray<Value>
+      // the filesystem as the captured ops leave it, over the real one
+      // (or an enclosing plan's) [D:plan-preconditions]
+      Sim: SimNode
       // the target paths captured mutations change [D:plan-apply]: a
       // later read at, under, or — for a listing — above one is
       // known-after-apply and refused [D:plan-stale-reads]. Indexed
@@ -806,6 +850,7 @@ module PlanMode =
     let capturing (f: unit -> unit) : Value list =
         let frame =
             { Ops = ResizeArray()
+              Sim = SimNode(comparer)
               Index = GuardNode(comparer)
               Links = GuardNode(System.StringComparer.Ordinal)
               Files = System.Collections.Generic.Dictionary()
@@ -837,6 +882,227 @@ module PlanMode =
         for frame in stack.Value do
             frame.TmpRoots.Add(norm dir)
 
+    // ---- the simulated filesystem [D:plan-preconditions] ----------------
+    // a captured op checks its preconditions against the state the
+    // plan's earlier ops leave, exactly as the direct call checks the
+    // real filesystem — preview == apply. Kinds: 0 absent, 1 file,
+    // 2 directory, 4 another entry (a dangling link)
+
+    /// the real filesystem's kind of a path
+    let realKind (p: string) : int =
+        if System.IO.File.Exists p then 1
+        elif System.IO.Directory.Exists p then 2
+        elif not (isNull (System.IO.FileInfo(p).LinkTarget)) then 4
+        else 0
+
+    let private compsOf (p: string) = parts (keyOf (norm p))
+
+    let private joinComps (comps: string[]) =
+        if comps = [| "" |] then string sep else System.String.Join(string sep, comps)
+
+    // one layer's view of a path: the state its ops gave it (0 = the
+    // layer below decides), the overlay node there (or null), and the
+    // path to ask the layer below (null when nothing below counts)
+    let private viewIn (root: SimNode) (p: string) : struct (int * SimNode * string) =
+        let comps = compsOf p
+        let mutable node = root
+        let mutable basePath: string = null
+        let mutable baseFrom = 0
+        let mutable cleared = false
+        let mutable result = ValueNone
+        let mutable i = 0
+
+        let below () =
+            if cleared then
+                null
+            elif isNull basePath then
+                joinComps comps
+            elif baseFrom >= comps.Length then
+                basePath
+            else
+                System.IO.Path.Combine(Array.append [| basePath |] comps[baseFrom..])
+
+        while result.IsNone && i < comps.Length do
+            let child = node.Find comps[i]
+            let last = i = comps.Length - 1
+
+            if isNull child then
+                result <- ValueSome(struct ((if cleared then 3 else 0), null, below ()))
+            else
+                node <- child
+
+                if child.State = 3 || (child.State = 1 && not last) then
+                    result <- ValueSome(struct (3, null, null))
+                elif child.State = 1 then
+                    result <- ValueSome(struct (1, child, null))
+                else
+                    if not (isNull child.Mirror) then
+                        basePath <- child.Mirror
+                        baseFrom <- i + 1
+                        cleared <- false
+                    elif child.Cleared then
+                        cleared <- true
+
+                    if last then
+                        let st = if child.State = 2 then 2 elif cleared then 3 else 0
+                        result <- ValueSome(struct (st, child, below ()))
+
+            i <- i + 1
+
+        match result with
+        | ValueSome r -> r
+        | ValueNone -> struct (0, null, p)
+
+    // `real` answers for a path no layer decided — the full kind, or
+    // only as much of it as the caller asks (one stat for "a directory?")
+    let rec private kindWith (real: string -> int) (frames: PlanFrame list) (p: string) : int =
+        match frames with
+        | [] -> real p
+        | f :: outer ->
+            match viewIn f.Sim p with
+            | struct (3, _, _) -> 0
+            | struct (0, _, below) when not (isNull below) -> kindWith real outer below
+            | struct (0, _, _) -> 0
+            | struct (k, _, _) -> k
+
+    let private kindIn frames p = kindWith realKind frames p
+
+    // the real path a view ends at, for the checks only the real
+    // filesystem answers (a dangling link); None when an op made it
+    let rec private realPathIn (frames: PlanFrame list) (p: string) : string option =
+        match frames with
+        | [] -> Some p
+        | f :: outer ->
+            match viewIn f.Sim p with
+            | struct (0, _, below) when not (isNull below) -> realPathIn outer below
+            | _ -> None
+
+    // the entry names a directory holds, before asking each one's kind
+    let rec private namesIn (frames: PlanFrame list) (p: string) : string list =
+        match frames with
+        | [] ->
+            try
+                System.IO.Directory.EnumerateFileSystemEntries p
+                |> Seq.map System.IO.Path.GetFileName
+                |> List.ofSeq
+            with _ ->
+                []
+        | f :: outer ->
+            let struct (_, node, below) = viewIn f.Sim p
+            let mine = if isNull node then [] else node.Names
+            let theirs = if isNull below then [] else namesIn outer below
+            List.distinct (mine @ theirs)
+
+    /// the plan-time kind of a path (0 absent, 1 file, 2 dir, 4 other)
+    let simKind (p: string) : int = kindIn stack.Value p
+
+    /// is the path a directory at plan time?
+    let simIsDir (p: string) : bool =
+        kindWith (fun p -> if System.IO.Directory.Exists p then 2 else 0) stack.Value p = 2
+
+    /// does the plan-time directory hold an entry?
+    let simEmptyDir (p: string) : bool =
+        namesIn stack.Value p
+        |> List.forall (fun n -> kindIn stack.Value (System.IO.Path.Combine(p, n)) = 0)
+
+    /// a dangling link at plan time: only a path no op has touched can be
+    let simDangling (isDangling: string -> bool) (p: string) : bool =
+        match realPathIn stack.Value p with
+        | Some r -> isDangling r
+        | None -> false
+
+    // the top layer's node for a path, created along the way
+    let private ensure (root: SimNode) (p: string) : SimNode =
+        let mutable node = root
+
+        for c in compsOf p do
+            node <-
+                match node.Find c with
+                | null ->
+                    let n = SimNode(comparer)
+                    node.Add(c, n)
+                    n
+                | n -> n
+
+        node
+
+    // every proper ancestor exists as a directory once an entry is made
+    let private markParents (root: SimNode) (p: string) =
+        let comps = compsOf p
+        let mutable node = root
+
+        for i in 0 .. comps.Length - 2 do
+            node <- node.Find comps[i]
+
+            if node.State = 0 || node.State = 3 then
+                if node.State = 3 then
+                    node.Cleared <- true
+
+                node.State <- 2
+
+    let private setLeaf (root: SimNode) (p: string) (state: int) =
+        let n = ensure root p
+        n.Clear()
+        n.State <- state
+        n.Cleared <- true
+        n.Mirror <- null
+
+        if state <> 3 then
+            markParents root p
+
+    // a directory copy: the destination is the source's view, overlay
+    // cloned, the layer beneath mirrored
+    let private copyTree (frames: PlanFrame list) (src: string) (dst: string) =
+        let top = (List.head frames).Sim
+        let struct (_, node, below) = viewIn top src
+
+        let mirror =
+            match below with
+            | null -> null
+            | b -> b
+
+        let d = ensure top dst
+        d.Clear()
+
+        if not (isNull node) then
+            for k in node.Names do
+                d.Add(k, node.Find(k).Clone())
+
+        d.State <- 2
+        d.Cleared <- true
+        d.Mirror <- mirror
+        markParents top dst
+
+    // a captured op's effect on the top layer
+    let private simApply (op: Value) =
+        let frames = stack.Value
+        let top = (List.head frames).Sim
+
+        match op with
+        | VUnion(("WriteFile" | "WriteFileAtomic"), Some(VTuple [ VStr p; _ ])) -> setLeaf top p 1
+        | VUnion("DeleteFile", Some(VStr p))
+        | VUnion("DeleteDir", Some(VStr p))
+        | VUnion("DeleteTree", Some(VStr p)) -> setLeaf top p 3
+        | VUnion("MakeDir", Some(VStr p)) ->
+            let n = ensure top p
+
+            if n.State = 0 || n.State = 3 then
+                if n.State = 3 then
+                    n.Cleared <- true
+
+                n.State <- 2
+
+            markParents top p
+        | VUnion("Copy", Some(VTuple [ VStr _; VStr d ])) -> setLeaf top d 1
+        | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) ->
+            setLeaf top s 3
+            setLeaf top d 1
+        | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> copyTree frames s d
+        | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) ->
+            copyTree frames s d
+            setLeaf top s 3
+        | _ -> ()
+
     // the filesystem paths an Op names (HttpSend names none)
     let private opPaths (op: Value) : string list =
         match op with
@@ -863,10 +1129,11 @@ module PlanMode =
                 match frame.TmpRoots |> Seq.tryFind (fun root -> within root (norm p)) with
                 | Some root ->
                     failwith
-                        $"plan: this captures a {case} of '{p}', under the 'within tmp' directory '{root}' opened inside the plan — that directory is deleted when its scope closes, before Plan.apply runs, so apply would fail midway. Build the content in memory and capture the write to its real destination, or do the tmp work outside the plan"
+                        $"plan: this captures a {case} of '{quoteData p}', under the 'within tmp' directory '{quoteData root}' opened inside the plan — that directory is deleted when its scope closes, before Plan.apply runs, so apply would fail midway. Build the content in memory and capture the write to its real destination, or do the tmp work outside the plan"
                 | None -> ()
 
             frame.Ops.Add op
+            simApply op
 
             // a write lands where a final symlink points; a delete or
             // move changes the link itself [D:plan-guard-links]
@@ -1073,105 +1340,11 @@ let private cappedPull (cap: int option) (items: seq<Value>) : Value list * bool
         shown |> List.truncate c, shown.Length > c
     | None -> items |> List.ofSeq, false
 
-// hostile bytes from data must not reach a terminal [D:binary-echo]:
-// the length of an SGR sequence (`ESC [ [0-9;:]* m`) starting at i, or
-// 0 [D:tty-color]. SGR sets display attributes only — colour, bold,
-// underline, reset — so it cannot move the cursor, clear the screen,
-// set the title, or write the clipboard; keeping it is safe where the
-// other escape families are not.
-let private sgrLenAt (s: string) (i: int) : int =
-    if i + 1 < s.Length && s.[i + 1] = '[' then
-        let mutable j = i + 2
+// the data sanitizers live in Types [D:tty-echo-strict] — runtime
+// messages quote data through them too [D:error-data-escape]
+let sanitizeTtyData (s: string) : string = Weir.Types.sanitizeTtyData s
 
-        while j < s.Length && (System.Char.IsDigit s.[j] || s.[j] = ';' || s.[j] = ':') do
-            j <- j + 1
-
-        if j < s.Length && s.[j] = 'm' then j - i + 1 else 0
-    else
-        0
-
-// [D:binary-echo] already ruled that a NUL-bearing echo refuses a tty;
-// this is the same rule one class wider, covering the data a renderer
-// prints. A filename or field carrying OSC/DCS escapes, a bare ESC, a
-// cursor/screen CSI, or C0/C1 controls can clear the screen, set the
-// window title, or write the clipboard. So tty-bound data renderers
-// neutralize those bytes: the ESC introducer, C0 controls except \t,
-// \n and a bare CR, DEL, and the C1 range render as a visible \xNN
-// escape so the text stays honest. CR passes [D:tty-cr-pass]: it only
-// returns the cursor, and progress lines rewrite themselves with it.
-// SGR sequences are the other exception [D:tty-color]: display-only,
-// so intentional colour (the Color module, a coloured prompt) survives
-// while every terminal-driving family stays neutralized. Applied only at a tty and only to data — redirected
-// output is byte-faithful.
-// Bidi controls render as a visible \uXXXX too [D:tty-bidi-sanitize]:
-// the text the user reads must match the bytes (Trojan Source).
-let private sanitizeWith (strict: bool) (s: string) : string =
-    // bidi = the embeddings/overrides U+202A..202E, the isolates
-    // U+2066..2069, LRM/RLM (U+200E/200F) and ALM (U+061C)
-    let bidi (c: char) =
-        let n = int c
-        (n >= 0x202A && n <= 0x202E) || (n >= 0x2066 && n <= 0x2069) || n = 0x200E || n = 0x200F || n = 0x061C
-
-    // hostile = ESC (0x1B) the introducer, DEL (0x7F), any C0 control
-    // (< 0x20) except TAB, LF and CR [D:tty-cr-pass], and the C1 range
-    // (0x80..0x9F)
-    let hostile (c: char) =
-        let n = int c
-
-        n = 0x1B
-        || n = 0x7F
-        || (n < 0x20 && c <> '\t' && c <> '\n' && (strict || c <> '\r'))
-        || (n >= 0x80 && n <= 0x9F)
-
-    if not (s |> Seq.exists (fun c -> hostile c || bidi c)) then
-        s
-    else
-        let sb = System.Text.StringBuilder(s.Length)
-        let hex = "0123456789abcdef"
-        let hexU = "0123456789ABCDEF"
-        let mutable i = 0
-
-        while i < s.Length do
-            let c = s.[i]
-
-            if int c = 0x1B then
-                match (if strict then 0 else sgrLenAt s i) with
-                | 0 ->
-                    // a non-SGR escape (OSC/DCS/cursor CSI/lone ESC): the
-                    // introducer renders visible; the rest is now inert text
-                    sb.Append "\\x1b" |> ignore
-                    i <- i + 1
-                | n ->
-                    sb.Append(s.Substring(i, n)) |> ignore // SGR kept verbatim
-                    i <- i + n
-            elif hostile c then
-                let n = int c
-                sb.Append("\\x").Append(hex[(n >>> 4) &&& 0xF]).Append(hex[n &&& 0xF]) |> ignore
-                i <- i + 1
-            elif bidi c then
-                let n = int c
-
-                sb
-                    .Append("\\u")
-                    .Append(hexU[(n >>> 12) &&& 0xF])
-                    .Append(hexU[(n >>> 8) &&& 0xF])
-                    .Append(hexU[(n >>> 4) &&& 0xF])
-                    .Append(hexU[n &&& 0xF])
-                |> ignore
-
-                i <- i + 1
-            else
-                sb.Append c |> ignore
-                i <- i + 1
-
-        sb.ToString()
-
-let sanitizeTtyData (s: string) : string = sanitizeWith false s
-
-/// weir's DATA renderers (the REPL and -e echo, table cells) show a
-/// bare CR and SGR visibly too [D:tty-echo-strict]: what they render is
-/// a value, never the user's intended terminal output
-let sanitizeTtyEcho (s: string) : string = sanitizeWith true s
+let sanitizeTtyEcho (s: string) : string = Weir.Types.sanitizeTtyEcho s
 
 /// sanitize data only when the sink is a tty [D:binary-echo] —
 /// redirected output (a pipe, a file) stays byte-faithful; a terminal
@@ -1717,6 +1890,30 @@ let private decodeCoded (where: string) (c: Codec) (text: string option) (num: i
 // last-wins at its first position, as records and Map read it
 // [D:json-yaml-dupkeys] — a YMap holding both would write YAML weir
 // itself refuses.
+// an integer past int64 in an opaque Yaml node [D:yaml-node-bigint]
+// reads as YFloat (its nearest value, for code that matches it) and
+// remembers its digits by node identity, so a write of that same node
+// emits the digits, not the float; a node built in weir has none
+let private yamlBigDigits =
+    System.Runtime.CompilerServices.ConditionalWeakTable<Value, string>()
+
+let private integerShaped (raw: string) =
+    let r = if raw.StartsWith "-" || raw.StartsWith "+" then raw.Substring 1 else raw
+    r.Length > 0 && r |> Seq.forall System.Char.IsAsciiDigit
+
+let yamlFloatNode (raw: string) (f: float) : Value =
+    let node = VUnion("YFloat", Some(VFloat f))
+
+    if integerShaped raw then
+        yamlBigDigits.AddOrUpdate(node, raw.TrimStart '+')
+
+    node
+
+let yamlBigIntText (node: Value) : string option =
+    match yamlBigDigits.TryGetValue node with
+    | true, t -> Some t
+    | _ -> None
+
 let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) : Value =
     match e.ValueKind with
     | System.Text.Json.JsonValueKind.Object ->
@@ -1746,8 +1943,8 @@ let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) :
         | true, n -> VUnion("YInt", Some(VInt n))
         | _ ->
             match parseFloat raw with
-            | Ok f -> VUnion("YFloat", Some(VFloat f))
-            | Error _ -> failwith $"{where}: number {raw} is out of float range"
+            | Ok f -> yamlFloatNode raw f
+            | Error _ -> failwith $"{where}: number {quoteData raw} is out of float range"
     | _ -> VUnion("YNull", None)
 
 // a mapping's keys are unique on the wire [D:mapping-dupkeys]: a pair
@@ -1759,7 +1956,7 @@ let private refuseDupKeys (who: string) (keys: string seq) =
     for k in keys do
         if not (seen.Add k) then
             failwith
-                $"{who}: the mapping holds the key '{k}' twice — a document's keys are unique; keep one pair per key before writing"
+                $"{who}: the mapping holds the key '{quoteData k}' twice — a document's keys are unique; keep one pair per key before writing"
 
 let private jsonLine
     (renames: Map<string, Map<string, string>>)
@@ -1876,6 +2073,7 @@ let private jsonLine
             writer.WriteStartArray()
             items |> Seq.iter write
             writer.WriteEndArray()
+        | VUnion("YFloat", _) when (yamlBigIntText v).IsSome -> writer.WriteRawValue((yamlBigIntText v).Value)
         | VUnion(("YStr" | "YInt" | "YFloat" | "YBool"), Some scalar) -> write scalar
         | VUnion("YNull", None) -> writer.WriteNullValue()
         | v -> unreachable $"the checker rejects 'to json' on {formatValue v}"
@@ -2112,7 +2310,7 @@ let private jsonDocRead
                         |> String.concat ", "
 
                     failwith
-                        $"{who}: tag '{prefix}{tagField}' is '{tagValue}', which matches no case of {udef.Name} (cases: {cases}) in: {shown}"
+                        $"{who}: tag '{prefix}{tagField}' is '{quoteData tagValue}', which matches no case of {udef.Name} (cases: {cases}) in: {shown}"
 
     // one object element -> one row (the param shadows the document
     // root on purpose: the field readers below say `root` either way);
@@ -2141,7 +2339,7 @@ let private jsonDocRead
                         | System.Text.Json.JsonValueKind.Number ->
                             match e.TryGetInt64() with
                             | true, n -> decodeCoded where c None (Some n)
-                            | _ -> failwith $"{where}: [<{codecName c}>] reads an integer, got {e.GetRawText()}"
+                            | _ -> failwith $"{where}: [<{codecName c}>] reads an integer, got {quoteData (e.GetRawText())}"
                         | k -> failwith $"{where}: [<{codecName c}>] expects a string or a number, got {jsonKindName k}"
 
                     match ty, p.ValueKind with
@@ -2356,12 +2554,32 @@ let private jsonTopHoldsSecret (top: JsonTop) (defs: Map<string, RecordDef>) (ud
 /// [<Elem "X">] a repeated child, a record a nested element. Every leaf is
 /// text (an element's inner text or an attribute value) — no numbers reach
 /// here, the checker admits string / Option<string> / record / seq only.
+// the XML declaration's encoding name [D:xml-encoding]
+let private xmlDeclEncoding =
+    System.Text.RegularExpressions.Regex
+        @"^\uFEFF?\s*<\?xml\s[^>]*?\bencoding\s*=\s*[""']([A-Za-z][A-Za-z0-9._:-]*)[""']"
+
+// the encodings a declaration may name: CoreLib's alone (UTF-8/16/32,
+// US-ASCII, ISO-8859-1) — no code-page provider [D:xml-encoding-builtin]
+let private xmlEncoding (who: string) (name: string) : System.Text.Encoding =
+    try
+        System.Text.Encoding.GetEncoding name
+    with _ ->
+        failwith
+            $"{who}: the document declares encoding '{excerpt name}', which weir cannot decode — UTF-8, UTF-16, UTF-32, US-ASCII and ISO-8859-1 read; convert others to UTF-8 first (iconv -f {excerpt name} -t UTF-8)"
+
+/// the input of `from xml`: text (already decoded as UTF-8) or the
+/// document's bytes, which decode per their BOM or declaration
+type XmlInput =
+    | XmlText of string
+    | XmlBytes of byte[]
+
 let private xmlDoc
     (who: string)
     (top: JsonTop)
     (defs: Map<string, RecordDef>)
-    (shown: string)
-    (text: string)
+    (cite: string -> string)
+    (input: XmlInput)
     : Value =
     // DTDs are prohibited [D:xml-no-dtd]: no declared entity expands and
     // no external one resolves; XDocument.Parse's defaults would process
@@ -2373,6 +2591,80 @@ let private xmlDoc
             // XDocument.Parse's LoadOptions.None reading
             IgnoreWhitespace = true
         )
+
+    // the declared encoding decides [D:xml-encoding]: text arrived
+    // decoded as UTF-8, so a declaration of another encoding reads only
+    // when the text is ASCII (the same characters in either); bytes
+    // decode per their BOM, else the declaration, else UTF-8
+    let text =
+        match input with
+        | XmlText text ->
+            let m = xmlDeclEncoding.Match text
+
+            if m.Success then
+                let enc = xmlEncoding who m.Groups[1].Value
+
+                if
+                    enc.CodePage <> 65001
+                    && text |> Seq.exists (fun c -> int c > 0x7F && c <> '\uFEFF')
+                then
+                    let tyName =
+                        match top with
+                        | TopRec d -> d.Name
+                        | _ -> "T"
+
+                    failwith
+                        $"{who}: the document declares encoding '{excerpt m.Groups[1].Value}', but it arrived as text, which weir decodes as UTF-8 — read its bytes so the declaration decodes them: File.readBytes path |> from xml {tyName}"
+
+            text
+        | XmlBytes bytes ->
+            let bomLen, bomEnc =
+                if bytes.Length >= 3 && bytes[0] = 0xEFuy && bytes[1] = 0xBBuy && bytes[2] = 0xBFuy then
+                    3, Some(System.Text.UTF8Encoding(false) :> System.Text.Encoding)
+                elif bytes.Length >= 4 && bytes[0] = 0xFFuy && bytes[1] = 0xFEuy && bytes[2] = 0uy && bytes[3] = 0uy then
+                    4, Some(System.Text.UTF32Encoding(false, false) :> System.Text.Encoding)
+                elif bytes.Length >= 4 && bytes[0] = 0uy && bytes[1] = 0uy && bytes[2] = 0xFEuy && bytes[3] = 0xFFuy then
+                    4, Some(System.Text.UTF32Encoding(true, false) :> System.Text.Encoding)
+                elif bytes.Length >= 2 && bytes[0] = 0xFFuy && bytes[1] = 0xFEuy then
+                    2, Some(System.Text.UnicodeEncoding(false, false) :> System.Text.Encoding)
+                elif bytes.Length >= 2 && bytes[0] = 0xFEuy && bytes[1] = 0xFFuy then
+                    2, Some(System.Text.UnicodeEncoding(true, false) :> System.Text.Encoding)
+                elif bytes.Length >= 4 && bytes[0] = 0x3Cuy && bytes[1] = 0uy && bytes[2] = 0x3Fuy && bytes[3] = 0uy then
+                    0, Some(System.Text.UnicodeEncoding(false, false) :> System.Text.Encoding)
+                elif bytes.Length >= 4 && bytes[0] = 0uy && bytes[1] = 0x3Cuy && bytes[2] = 0uy && bytes[3] = 0x3Fuy then
+                    0, Some(System.Text.UnicodeEncoding(true, false) :> System.Text.Encoding)
+                else
+                    0, None
+
+            let enc =
+                match bomEnc with
+                | Some e -> e
+                | None ->
+                    // the declaration is ASCII in every ASCII-compatible
+                    // encoding; read it from the head as Latin-1
+                    let head = System.Text.Encoding.Latin1.GetString(bytes, 0, min bytes.Length 512)
+                    let m = xmlDeclEncoding.Match head
+
+                    if m.Success then
+                        xmlEncoding who m.Groups[1].Value
+                    else
+                        System.Text.UTF8Encoding(false) :> System.Text.Encoding
+
+            // strict: an undecodable byte is an error, never U+FFFD
+            // [D:encoding-law]
+            let strict =
+                System.Text.Encoding.GetEncoding(
+                    enc.CodePage,
+                    System.Text.EncoderFallback.ExceptionFallback,
+                    System.Text.DecoderFallback.ExceptionFallback
+                )
+
+            try
+                strict.GetString(bytes, bomLen, bytes.Length - bomLen)
+            with :? System.Text.DecoderFallbackException ->
+                failwith $"{who}: the document is not valid {enc.WebName} (its declared or default encoding)"
+
+    let shown = cite (jsonSnippet text)
 
     let root =
         try
@@ -2521,7 +2813,7 @@ let private tableRows (who: string) (def: RecordDef) (lines: string list) : Valu
                 | Some i -> fname, fty, i
                 | None ->
                     let want = if wire <> fname then $"'{wire}'" else $"'{fname}'"
-                    failwith $"{who}: missing column {want} for field '{fname}' — headers seen: {headers}")
+                    failwith $"{who}: missing column {want} for field '{fname}' — headers seen: {quoteData headers}")
 
         let cellValue (line: int) (col: Table.Column) (ty: Ty) (raw: string) : Value =
             let at = $"{who}: line {line}, col {col.Start + 1}: column '{col.Header}'"
@@ -2532,15 +2824,15 @@ let private tableRows (who: string) (def: RecordDef) (lines: string list) : Valu
                 | TInt ->
                     match System.Int64.TryParse s with
                     | true, n -> VInt n
-                    | _ -> failwith $"{at}: expected int, got '{s}'"
+                    | _ -> failwith $"{at}: expected int, got '{quoteData s}'"
                 | TFloat ->
                     match parseFloat s with
                     | Ok f -> VFloat f
-                    | Error _ -> failwith $"{at}: expected float, got '{s}'"
+                    | Error _ -> failwith $"{at}: expected float, got '{quoteData s}'"
                 | TBool ->
                     if s = "true" then VBool true
                     elif s = "false" then VBool false
-                    else failwith $"{at}: expected bool (exactly true/false), got '{s}'"
+                    else failwith $"{at}: expected bool (exactly true/false), got '{quoteData s}'"
                 | t -> unreachable $"the checker restricts table cells to scalars: {formatTy t}"
 
             match ty with
@@ -2580,7 +2872,8 @@ let private fromAdapter
     (udefs: Map<string, UnionDef>)
     : Value =
     let holdsSecret = jsonTopHoldsSecret top defs udefs
-    let cite (excerpt: string) = if holdsSecret then secretExcerpt else excerpt
+    let cite (excerpt: string) =
+        if holdsSecret then secretExcerpt else quoteData excerpt
 
     match fmt with
     // one document -> T: join the elements back into the text they
@@ -2635,7 +2928,14 @@ let private fromAdapter
                 if text.Trim() = "" then
                     failwith "from xml: empty input — expected one XML document"
 
-                xmlDoc "from xml" top defs (cite (jsonSnippet text)) text
+                xmlDoc "from xml" top defs cite (XmlText text)
+            // the document's bytes decode per its BOM or declaration
+            // [D:xml-encoding]
+            | VBytes bytes ->
+                if bytes.Length = 0 then
+                    failwith "from xml: empty input — expected one XML document"
+
+                xmlDoc "from xml" top defs cite (XmlBytes bytes)
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     // header-aligned rows -> seq<T> [D:from-table]: the header must be
     // read before any row slices, so the input materializes here
@@ -2681,7 +2981,7 @@ let yamlScalarValue (raw: string) (quoted: bool) : Value =
             // — `cpu: 1.5` must not render as "1.5" (same as int;
             // parseFloat refuses non-finite so nan/inf text stays string)
             match (if quoted then Error "" else parseFloat raw) with
-            | Ok f -> VUnion("YFloat", Some(VFloat f))
+            | Ok f -> yamlFloatNode raw f
             | Error _ -> VUnion("YStr", Some(VStr raw))
 
 let rec yamlNodeValue (node: Yaml.Node) : Value =
@@ -2713,7 +3013,7 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
         else
             match System.Int64.TryParse raw with
             | true, n -> VInt n
-            | _ -> failwith $"from yaml: line {line}: expected int, got '{raw}'"
+            | _ -> failwith $"from yaml: line {line}: expected int, got '{quoteData raw}'"
     | Yaml.SBool, Yaml.NScalar(raw, quoted, line) ->
         // exactly true/false (Env.load's rule: `yes`/`on`/`1` are
         // data, not booleans — the Norway problem cannot fire)
@@ -2724,7 +3024,7 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
         elif raw = "false" then
             VBool false
         else
-            failwith $"from yaml: line {line}: expected bool (exactly true/false), got '{raw}'"
+            failwith $"from yaml: line {line}: expected bool (exactly true/false), got '{quoteData raw}'"
     | Yaml.SFloat, Yaml.NScalar(raw, quoted, line) ->
         if quoted then
             failwith $"from yaml: line {line}: a quoted scalar is a string; this field expects float"
@@ -2742,11 +3042,11 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
             | "nan"
             | "-nan" ->
                 failwith
-                    $"from yaml: line {line}: '{raw}' is not representable — weir floats are finite (non-finite results raise; there is no value to read into)"
+                    $"from yaml: line {line}: '{quoteData raw}' is not representable — weir floats are finite (non-finite results raise; there is no value to read into)"
             | _ ->
                 match parseFloat raw with
                 | Ok f -> VFloat f
-                | Error _ -> failwith $"from yaml: line {line}: expected float, got '{raw}'"
+                | Error _ -> failwith $"from yaml: line {line}: expected float, got '{quoteData raw}'"
     | Yaml.SStr, Yaml.NScalar(raw, _, _) -> VStr raw
     | Yaml.SSecret, Yaml.NScalar(raw, _, _) -> VSecret raw
     | Yaml.SCodec Iso8601, Yaml.NScalar(raw, _, line) when localDate line raw ->
@@ -2756,7 +3056,7 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
             else "a local date-time"
 
         failwith
-            $"from yaml: line {line}: {raw} is {what} — it has no offset, so it names no instant; write an offset date-time (2024-03-01T10:00:00Z, or +02:00 for the zone), or read it into a string field"
+            $"from yaml: line {line}: {quoteData raw} is {what} — it has no offset, so it names no instant; write an offset date-time (2024-03-01T10:00:00Z, or +02:00 for the zone), or read it into a string field"
     | Yaml.SCodec c, Yaml.NScalar(raw, quoted, line) ->
         let num =
             match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
@@ -2822,7 +3122,7 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
                     let cases = ucases |> List.map (fun (_, w, _) -> w) |> String.concat ", "
 
                     failwith
-                        $"from yaml: line {line}: tag '{tag}' is '{tagValue}', which matches no case of {uname} (cases: {cases})"
+                        $"from yaml: line {line}: tag '{tag}' is '{quoteData tagValue}', which matches no case of {uname} (cases: {cases})"
         | Some(_, n) ->
             failwith $"from yaml: line {Yaml.nodeLine n}: tag field '{tag}' ({uname}) expects a string scalar"
     | Yaml.SSeq inner, Yaml.NSeq(items, _) -> VSeq(items |> List.map (yamlConvert inner) |> List.toSeq)
@@ -3018,11 +3318,14 @@ let rec private yamlRender
     let indent2 (lines: string list) =
         lines |> List.map (fun l -> if l = "" then "" else "  " + l)
 
-    let renderMap (entries: (string * Value * Yaml.Shape option) list) : string list =
+    // a None record field omits its key [D:json-option]'s yaml face; a
+    // None pair value is the entry's data and writes null, as to json
+    // does [D:yaml-pair-none]
+    let renderMapWith (omitNone: bool) (entries: (string * Value * Yaml.Shape option) list) : string list =
         entries
         |> List.collect (fun (k, v, g) ->
             match v with
-            | VUnion("None", None) -> [] // omit the key [D:json-option]'s yaml face
+            | VUnion("None", None) when omitNone -> []
             | _ ->
                 let key = Yaml.renderScalar k
 
@@ -3031,6 +3334,8 @@ let rec private yamlRender
                 | Inline s -> [ $"{key}: {s}" ]
                 | Block lines -> $"{key}:" :: indent2 lines
                 | BlockScalar(h, content) -> $"{key}: {h}" :: indent2 content)
+
+    let renderMap = renderMapWith true
 
     let renderSeq (g: Yaml.Shape option) (items: Value list) : string list =
         items
@@ -3077,7 +3382,7 @@ let rec private yamlRender
     | VUuid g -> renderString (formatUuid g)
     | VUnion("YStr", Some(VStr s)) -> renderString s
     | VUnion("YInt", Some(VInt n)) -> Inline(string n)
-    | VUnion("YFloat", Some(VFloat f)) -> Inline(formatFloat f)
+    | VUnion("YFloat", Some(VFloat f)) -> Inline(yamlBigIntText v |> Option.defaultWith (fun () -> formatFloat f))
     | VUnion("YBool", Some(VBool b)) -> Inline(if b then "true" else "false")
     | VUnion("YNull", None) -> Inline ""
     // empty Yaml collections render as the empty flow forms so they
@@ -3159,7 +3464,7 @@ let rec private yamlRender
         if not items.IsEmpty && asPairs |> List.forall Option.isSome then
             let entries = asPairs |> List.map (fun p -> let k, v = Option.get p in k, v, valueGuide)
             refuseDupKeys "to yaml" (entries |> List.map (fun (k, _, _) -> k))
-            mapping (renderMap entries)
+            mapping (renderMapWith false entries)
         elif items.IsEmpty then
             // an empty seq is a flow empty at any depth, so `Some []`
             // reads back `Some []`; the type picks the form
@@ -3642,11 +3947,11 @@ let private unknownFlagMessage (t: string) (known: string list) (tyOf: string ->
         | Some TBool -> $"unknown flag '{t}' — '{name}' is a presence flag and takes no value"
         | Some TSecret
         | Some(TNamed("Option", [ TSecret ])) ->
-            $"unknown flag '{name}=***' — a flag's value is the next argument: write '{name} <value>'"
+            $"unknown flag '{quoteData name}=***' — a flag's value is the next argument: write '{quoteData name} <value>'"
         | _ -> $"unknown flag '{t}' — a flag's value is the next argument: write '{name} {value}'"
     | i when i > 2 ->
         let name = t.Substring(0, i)
-        $"unknown flag '{name}=…'{didYouMean name known}"
+        $"unknown flag '{quoteData name}=…'{didYouMean name known}"
     | _ -> $"unknown flag '{t}'{didYouMean t known}"
 
 let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
@@ -3895,7 +4200,7 @@ let private argvLoad (target: ArgsTarget) : Value =
                 | [] -> VUnion(c, None)
                 | extra ->
                     failwith (
-                        $"Args.load {udef.Name} {tok}: "
+                        $"Args.load {udef.Name} {quoteData tok}: "
                         + String.concat "; " (extra |> List.map (fun t -> $"unexpected argument '{t}'"))
                     )
             | Some(_, (c, Some _)) ->
@@ -3904,7 +4209,7 @@ let private argvLoad (target: ArgsTarget) : Value =
 
                 VUnion(c, Some payload)
             | None ->
-                failwith $"Args.load {udef.Name}: unknown subcommand '{tok}'{didYouMean tok (table |> List.map fst)}"
+                failwith $"Args.load {udef.Name}: unknown subcommand '{quoteData tok}'{didYouMean tok (table |> List.map fst)}"
 
 // the sigil env slot evaluated to overlay pairs — inside the stream's
 // delay, so Env.fromFile boundary errors keep raise-at-force semantics
@@ -3987,13 +4292,13 @@ and private progOf (env: Env) (h: Check.TCmdHead) : string =
         let s = noNul "a dynamic command head" s
 
         if s = "" then
-            failwith $"the dynamic head ^{display} is empty — nothing to run"
+            failwith $"the dynamic head ^{quoteData display} is empty — nothing to run"
         elif not (Extern.exists s) then
             // a typed home path names its own spelling [D:tilde]
             if display.StartsWith "~/" then
-                failwith $"command not found: {s} (from {display})"
+                failwith $"command not found: {quoteData s} (from {quoteData display})"
             else
-                failwith $"command not found: {s} — the dynamic head ^{display} resolves at run time"
+                failwith $"command not found: {quoteData s} — the dynamic head ^{quoteData display} resolves at run time"
         else
             s
 
@@ -4001,8 +4306,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
     RunPos.Current <- box te
     RunPos.Exact <- false
     // a signal or closed stdout unwinds here, before the node runs
-    // [D:signal-main-unwind]
-    Session.checkTeardown ()
+    // [D:signal-main-unwind]; any flow's cut stops it here [D:scope-tree]
+    Session.evalBoundary ()
 
     match te.Kind with
     // a failure as a value [D:try-form]: the body runs inside the capture
@@ -4623,13 +4928,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
         //     diagnosis outranks its consequence)
         //  3. teardown continues outward regardless — one failed
         //     cleanup must not strand the enclosing scopes' LIFO.
-        // exit n is a raise (ExitRequest) and unwinds the same way;
-        // signals run the pending cleanups via the exit hook, LIFO.
+        // exit n is a raise (ExitRequest) and unwinds the same way; a
+        // signal unwinds the flow, which runs them LIFO [D:scope-tree].
         // a cleanup's commands start even mid-teardown [D:teardown-always-spawns]
-        let runCleanup () =
-            Session.runningCleanup (fun () -> eval env cleanup |> ignore)
-
-        let hooked = Session.registerAlways runCleanup
+        let hooked = Session.registerAlways ()
 
         // the claim is made inside the cleanup's mark, so a teardown
         // requested from here on waits for it [D:teardown-never-preempts]
@@ -4637,6 +4939,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
             Session.runningCleanup (fun () ->
                 if Session.deregisterAlways hooked then
                     eval env cleanup |> ignore)
+
+        // the main flow's pending cleanup, which the signal backstop runs
+        // if it adopts a stuck main flow [D:scope-tree]
+        let frame = Session.pushFrame claimAndRun
 
         match
             (try
@@ -4647,7 +4953,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         | Ok v ->
             // case 1: a cleanup raise propagates as the scope's raise —
             // unless a signal's hook already claimed the cleanup
-            claimAndRun ()
+            Session.releaseFrame frame claimAndRun
             v
         | Error original ->
             // the cleanup runs weir code while the body's raise unwinds: pin
@@ -4662,7 +4968,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                      b.Exact <- RunPos.Exact)
 
             (try
-                claimAndRun ()
+                Session.releaseFrame frame claimAndRun
              with
              | :? ExitRequest ->
                  // the checker refuses exit inside always; a raise here
@@ -4728,10 +5034,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
             if path = "" then
                 failwith "within lock: the lock path is empty — name a lock file"
 
-            let resolved = Session.resolve path
+            let resolved = Session.resolveFs path
 
             if System.IO.Directory.Exists resolved then
-                failwith $"within lock: {resolved} is a directory — the lock is a file (e.g. {resolved}/.lock)"
+                failwith $"within lock: {quoteData resolved} is a directory — the lock is a file (e.g. {quoteData resolved}/.lock)"
 
             let timeoutMs =
                 topts
@@ -4760,9 +5066,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
                      // parent must fail immediately, not spin as "held
                      // elsewhere"
                      | :? System.IO.DirectoryNotFoundException ->
-                         failwith $"within lock: no such directory for {resolved} — the lock file's parent must exist"
+                         failwith $"within lock: no such directory for {quoteData resolved} — the lock file's parent must exist"
                      | :? System.UnauthorizedAccessException ->
-                         failwith $"within lock: cannot open {resolved}: permission denied"
+                         failwith $"within lock: cannot open {quoteData resolved}: permission denied"
                      | :? System.IO.IOException -> None)
                     // POSIX: the lock is an explicit flock — .NET's own is
                     // disabled for weir [D:lock-advisory]
@@ -4777,17 +5083,18 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     match timeoutMs with
                     | Some ms when sw.ElapsedMilliseconds >= ms ->
                         failwith
-                            $"within lock: timed out after {formatDuration ms} waiting for {resolved} (held elsewhere)"
+                            $"within lock: timed out after {formatDuration ms} waiting for {quoteData resolved} (held elsewhere)"
                     | _ ->
                         Session.sleepInterruptible (System.TimeSpan.FromMilliseconds 25.0)
                         acquire ()
 
             let fs = acquire ()
+            let frame = Session.pushFrame fs.Dispose
 
             try
                 eval env body
             finally
-                fs.Dispose()
+                Session.releaseFrame frame fs.Dispose
         | WithinCd ->
             // cd consumes a path [D:within-scopes]: resolved against
             // the current cwd (so nested relative scopes compose),
@@ -4801,26 +5108,32 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let resolved = Session.resolve path
 
             if not (System.IO.Directory.Exists resolved) then
-                failwith $"within cd: no such directory: {resolved}"
+                failwith $"within cd: no such directory: {quoteData resolved}"
 
             let saved = Session.Cwd()
             Session.setCwd resolved
             Session.enterWithinCd ()
 
-            try
-                eval env body
-            finally
+            let restore () =
                 Session.exitWithinCd ()
                 Session.setCwd saved
-        | WithinEnv ->
-            // env pushes an ambient overlay that child spawns see;
-            // weir's own Env.load is untouched [D:within-scopes]
-            Session.pushEnvOverlay (envPairsOf "within env" (eval env (argOf "env")))
+
+            let frame = Session.pushFrame restore
 
             try
                 eval env body
             finally
-                Session.popEnvOverlay ()
+                Session.releaseFrame frame restore
+        | WithinEnv ->
+            // env pushes an ambient overlay that child spawns see;
+            // weir's own Env.load is untouched [D:within-scopes]
+            Session.pushEnvOverlay (envPairsOf "within env" (eval env (argOf "env")))
+            let frame = Session.pushFrame Session.popEnvOverlay
+
+            try
+                eval env body
+            finally
+                Session.releaseFrame frame Session.popEnvOverlay
         | WithinProc ->
             // the scoped process [D:scoped-procs]: spawn with both
             // streams spilling, bind the handle, and at every exit —
@@ -4870,9 +5183,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                   SpillDir = spill
                   Drain = drain }
 
-            try
-                eval (Map.add binderName (VProc handle) env) body
-            finally
+            let release () =
                 Proc.stopTree p
                 Session.deregisterProc p
                 // pumps settle before the spill dir goes (Windows would
@@ -4885,6 +5196,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
                      ())
 
                 Session.deregisterTmpDir spill
+
+            let frame = Session.pushFrame release
+
+            try
+                eval (Map.add binderName (VProc handle) env) body
+            finally
+                Session.releaseFrame frame release
         | WithinServe ->
             // the scoped listener [D:http-serve]: open the socket,
             // serve on a pool of handler threads (the maxConcurrent
@@ -5047,11 +5365,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // this long, together, to finish their responses
             let drainMs = 2000
 
-            // the signal/hard-exit backstop [D:http-serve]: SIGINT/SIGTERM/
-            // ProcessExit sweep this, closing the socket exactly as the
-            // finally does on a managed exit — one close, idempotent, and
-            // no drain on the way out of the process
-            let hooked = Session.registerAlways (fun () -> Serve.stop handle 0)
+            // a live scope for the terminal-^C rule [D:sigint-live-scopes];
+            // a signal unwinds the flow through the close below, and the
+            // kernel closes the socket at any death [D:http-serve]
+            let hooked = Session.registerAlways ()
 
             // the handler concurrency ceiling [D:http-serve]: N in
             // flight, excess queues — pmapWith's bound, via a
@@ -5060,11 +5377,14 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let gate = new System.Threading.SemaphoreSlim(maxConcurrent, maxConcurrent)
             let closing = new System.Threading.CancellationTokenSource()
             let parentCwd = Session.Cwd()
-            // each running handler with its race group [D:serve-cut]
+            // each running handler with its node [D:serve-cut]
             let inflight =
-                System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, Session.RaceGroup>()
+                System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, Session.Node>()
 
-            let cut = new System.Threading.CancellationTokenSource()
+            // the scope's node [D:scope-tree]: the body runs in it, each
+            // handler in a node under it
+            let home = Session.currentNode ()
+            let serveNode = Session.openNode home Session.NodeKind.Serve
 
             // a handler failure the client sees as a 500 is recorded for
             // the script too [D:serve-handler-errors], on the stream-error
@@ -5091,16 +5411,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // one request on its own thread. Past the drain a handler still
             // running is cut at its next effect boundary [D:serve-cut]: the
             // scope's flow token (the pfirst loser's mechanism) and the
-            // request's race group, whose children die with the cut
-            let runHandler (ctx: Serve.SCtx) (group: Session.RaceGroup) =
+            // request's node, whose children die with the cut
+            let runHandler (ctx: Serve.SCtx) (node: Session.Node) =
                 let mutable seen = None
 
                 try
+                    Session.setCurrentNode node
                     // fork the session like a pmap arm — the
                     // handler sees the scope's cwd, worker-local
                     Session.enterWorker parentCwd
-                    Session.enterFlow cut.Token
-                    Session.enterRace group
 
                     try
                         // the body was read before the slot
@@ -5155,6 +5474,21 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                 ignore
                          with _ ->
                              ())
+                    | Serve.BodyCharsetUnknown cs ->
+                        // a body in a charset weir cannot decode
+                        // [D:serve-charset]: refused before the
+                        // handler, never decoded as UTF-8
+                        (try
+                            Serve.writeResponse
+                                ctx
+                                { Status = 415
+                                  Headers = []
+                                  Body =
+                                    Serve.RText
+                                        $"request body charset '{cs}' is not one weir decodes — utf-8, utf-16, utf-32, us-ascii or iso-8859-1" }
+                                ignore
+                         with _ ->
+                             ())
                     | Serve.ResponseHeaderRefused msg ->
                         // a handler returned a header carrying
                         // CR/LF/NUL [D:http-header-bytes] or one
@@ -5173,6 +5507,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         internalError ctx
                     // cut past the scope: detached, nothing to answer
                     | :? Session.Cancelled -> ()
+                    // `exit n` in a handler stops the scope [D:serve-handler-exit]:
+                    // no new request, the other handlers and the body cut
+                    // (their children killed, their cleanups whole), the
+                    // scope closes, then the exit; this connection closes
+                    // unanswered
+                    | :? ExitRequest as e ->
+                        System.Threading.Interlocked.CompareExchange(&serveNode.Exit, (e :> exn), null) |> ignore
+                        Session.cutNode serveNode 1 Session.CutReason.HandlerExit true
+                        Serve.abandon ctx
                     // a REPL ^C passes through as `exit` does [D:repl-interrupt]:
                     // the evaluation ends, the connection closes unanswered
                     | :? Session.Interrupted -> Serve.abandon ctx
@@ -5184,11 +5527,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         internalError ctx
                 finally
                     Serve.finish ctx
-                    Session.exitRace ()
-                    Session.exitFlow ()
                     Session.exitWorker ()
                     gate.Release() |> ignore
                     inflight.TryRemove(System.Threading.Thread.CurrentThread) |> ignore
+                    Session.setCurrentNode null
+                    Session.closeNode node
 
             // the accept loop on its own thread: it takes a slot, then
             // blocks in accept until a request is parked or stop() closes
@@ -5208,17 +5551,21 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     if slot then
                         match Serve.accept handle with
                         | None -> gate.Release() |> ignore // the server closed — shut down
+                        // a handler's `exit n` stopped the scope: no new
+                        // request runs [D:serve-handler-exit]
+                        | Some ctx when Session.isCut serveNode ->
+                            Serve.abandon ctx
+                            Serve.finish ctx
+                            gate.Release() |> ignore
+                            go ()
                         | Some ctx ->
-                            let group = Session.RaceGroup()
+                            let node = Session.openNode serveNode Session.NodeKind.Handler
 
                             let worker =
-                                System.Threading.Thread(fun () ->
-                                    // the counter keeps the per-builtin check
-                                    // live while a handler runs [D:serve-cut]
-                                    Session.racing (fun () -> runHandler ctx group))
+                                System.Threading.Thread(fun () -> runHandler ctx node)
 
                             worker.IsBackground <- true
-                            inflight[worker] <- group
+                            inflight[worker] <- node
                             worker.Start()
                             go ()
 
@@ -5230,13 +5577,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
             loopThread.IsBackground <- true
             loopThread.Start()
 
-            try
-                eval (Map.add binderName (VServer handle) env) body
-            finally
-                // close the server — frees the port, drops queued requests,
-                // gives in-flight handlers the drain together; idempotent
-                // with the signal sweep [D:serve-drain]. A signal landing
-                // meanwhile holds the watchdog [D:serve-drain-signal]
+            // close the server — frees the port, drops queued requests,
+            // gives in-flight handlers the drain together; idempotent
+            // [D:serve-drain]. A signal landing meanwhile holds the
+            // backstop [D:serve-drain-signal]
+            let release () =
                 Session.closingScope (fun () ->
                     Serve.stop handle drainMs
                     closing.Cancel()
@@ -5250,13 +5595,35 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     // dropped and its result discarded, never raised
                     // [D:serve-drain]. Pure compute holds the join, as a pfirst
                     // loser's does
-                    cut.Cancel()
+                    for kv in inflight do
+                        Session.cutNode kv.Value 1 Session.CutReason.ServeCut true
 
                     for kv in inflight do
-                        kv.Value.Condemn()
+                        Session.joinThread kv.Key
 
-                    for kv in inflight do
-                        Session.joinThread kv.Key)
+                    Session.closeNode serveNode)
+
+            let frame = Session.pushFrame release
+
+            let v =
+                try
+                    try
+                        Session.setCurrentNode serveNode
+
+                        try
+                            eval (Map.add binderName (VServer handle) env) body
+                        finally
+                            Session.setCurrentNode home
+                    with
+                    | :? ExitRequest -> reraise ()
+                    // the body cut by a handler's `exit n`: raised below
+                    | _ when not (isNull serveNode.Exit) -> VUnit
+                finally
+                    Session.releaseFrame frame release
+
+            match serveNode.Exit with
+            | null -> v
+            | e -> raise e
         | WithinTmp ->
             // kind tmp [D:within-scopes]: a fresh unique directory,
             // bound as the binder for the block; removed on every
@@ -5277,15 +5644,20 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // [D:plan-within-tmp]
             PlanMode.noteTmp dir
 
-            try
-                eval (Map.add binderName (VStr dir) env) body
-            finally
+            let release () =
                 (try
                     System.IO.Directory.Delete(dir, true)
                  with _ ->
                      ())
 
                 Session.deregisterTmpDir dir
+
+            let frame = Session.pushFrame release
+
+            try
+                eval (Map.add binderName (VStr dir) env) body
+            finally
+                Session.releaseFrame frame release
     | TEIf(cond, thn, els) ->
         match eval env cond, els with
         | VBool true, _ -> eval env thn
@@ -5348,7 +5720,7 @@ and private evalYamlTpl (env: Env) (tpl: Check.TypedYamlTpl) : Value =
 
         for (k, _) in pairs do
             if not (seen.Add k) then
-                failwith $"yaml: duplicate key '{k}' (generated at runtime)"
+                failwith $"yaml: duplicate key '{quoteData k}' (generated at runtime)"
 
         VUnion("YMap", Some(VSeq(pairs |> List.map (fun (k, v) -> VTuple [ VStr k; v ]) |> List.toSeq)))
 

@@ -4,9 +4,8 @@
 however the block exits: normal completion, an error, `exit n`,
 SIGINT or SIGTERM. This works both in a terminal and detached: a
 `kill -INT`/`kill -TERM` sent to a `setsid` or backgrounded weir
-cleans up the same way, exiting with 130/143. In a script on Linux or
-macOS the cleanup runs on the script's own thread (the REPL and Windows
-run it on the signal thread, still whole, once and in reverse order),
+cleans up the same way, then dies by the signal (`$?` 130/143). The
+cleanup runs on the flow's own thread (a script's, a REPL entry's),
 and no statement after the signal runs: a sleep
 or a wait on a scoped process is cut short, and the block unwinds from
 there. Running `pmap`, `piter` and `pfirst` arms stop at their next
@@ -14,13 +13,20 @@ builtin call, command or sleep, and the script waits for them before
 any scope releases its resource. A reader closing weir's stdout
 (`weir s.weir | head -1`) ends the script the same way, exiting with 141 (bash's SIGPIPE status) and
 no message. A second signal during cleanup exits immediately, so
-pressing Ctrl+C twice gets you out. There are two exceptions, both by design. `kill -9` of weir
+pressing Ctrl+C twice gets you out: no cleanup runs after it, every
+child is killed, and weir dies by the first signal. At a terminal, the
+commands an `always` cleanup runs are in a process group of their own,
+so a Ctrl+C reaches the script but not them; they still print, but
+cannot read the terminal. There are two exceptions, both by design. `kill -9` of weir
 itself skips cleanup (only a lock is still released, by the kernel).
-And a weir started in the background from an interactive shell
-(`weir … &`/`nohup`, which keeps a controlling terminal) starts with
-SIGINT ignored, following the usual job-control convention, so Ctrl+C
-in the terminal does not reach it, and neither does a `kill -INT` of
-its pid. Send it SIGTERM, or SIGHUP unless `nohup` ignored that too. The block is an ordinary block: its statements run
+And a weir started in the background where job control is off (`weir … &`
+in a script, `sh -c 'weir … &'`, after `set +m`) inherits SIGINT ignored,
+the shell's rule for a background command; while it keeps a controlling
+terminal, Ctrl+C in the terminal does not reach it, and neither does a
+`kill -INT` of its pid. Send it SIGTERM, or SIGHUP unless `nohup` ignored
+that too. With job control on (`weir … &` or `nohup weir … &` typed at an
+interactive shell) the job runs in its own process group with SIGINT
+live: a terminal Ctrl+C is not sent to it, and `kill -INT` works as usual. The block is an ordinary block: its statements run
 and the last expression is its value. It also works as a plain
 statement.
 
@@ -183,7 +189,10 @@ valid header token, or a value with a control or non-ASCII character
 — is never dropped quietly: the client gets a 500 and
 `Server.streamErrors` names the header and why. A handler that raises,
 or returns a status outside 100–999, also gets the client a 500 and
-leaves a line there (`serve handler on GET /x failed: …`). A REPL ^C
+leaves a line there (`serve handler on GET /x failed: …`). `exit n`
+in a handler stops the scope: no new request, the body and the other
+handlers are stopped with their cleanups whole, the scope closes, and
+the script exits n. A REPL ^C
 that interrupts a handler is not a failure: the connection closes
 without an answer and nothing is recorded.
 `maxConcurrent` limits how many handlers run at once, as with
@@ -196,7 +205,10 @@ reading the request body may take, and `maxBody` (a `Size`, default
 16MiB) that limits its size. The body is read before a handler slot
 is taken, so a slow upload never ties one up: a client that sends its
 body too slowly gets a 408, and a body larger than `maxBody` gets a
-413 and is never buffered whole.
+413 and is never buffered whole. The handler's `req.body` is decoded
+per the request's `Content-Type` charset (UTF-8 when none is given); a
+body in a charset weir cannot decode — anything but utf-8, utf-16,
+utf-32, us-ascii and iso-8859-1 — gets a 415 and no handler runs.
 
 When the block exits, the port is freed at once and requests still
 waiting in the queue are dropped. Handlers already running get two

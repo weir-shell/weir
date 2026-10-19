@@ -29,8 +29,10 @@
 // retry loop): a signal or a ^C lands at a point the fixture marks (a log
 // line, a fixed delay well inside a multi-second window), and timing
 // judgements leave a 2x margin. Pure computation is a `Seq.fold` over a
-// range (no boundary inside); H3R4-04 calibrates its length against an
-// unsignalled run of the same fixture.
+// range; where it must have no boundary at all (every evaluated node is
+// one [D:scope-tree]) it is a builtin's own loop, `Seq.length` over a
+// range, and H3R4-04 calibrates its length against an unsignalled run of
+// the same fixture.
 //
 // Signals go to weir's pid ALONE (the signal driver spawns the child in its
 // own session with default dispositions). A terminal ^C is a 0x03 byte
@@ -109,6 +111,10 @@ let linesOf p = if File.exists p then File.read p |> Seq.freeze else []
 let oneLine s = s |> Str.trim |> Str.replace "\n" " | "
 
 let joined ls = ls |> Str.join " | "
+
+// a signal's exit as the driver reports it: weir dies BY the signal after
+// the unwind [D:die-by-signal] (-n), which a shell reads as 128 + n
+let sigRc n rc = rc == $"-{n}" || rc == $"{128 + n}"
 
 // position of the first line equal to `s`
 let posOf ls s = ls |> Seq.indexed |> Seq.tryFind (fun (_, l) -> l == s) |> Option.map fst
@@ -351,6 +357,9 @@ let sigRun d sig whenKind whenArg tmo mark args =
 // idle core
 let computeLine n = $"[1..{n}] |> Seq.fold (fun a x -> a + 1) 0"
 
+// computation with no boundary inside: a builtin's own loop
+let builtinComputeLine n = $"[1..{n}] |> Seq.length"
+
 // ---- H3R4-01: a teardown returns from pfirst without joining a loser ----------
 
 // the cleanup arm fails at once and its always marks BODY DONE; the signal
@@ -388,7 +397,7 @@ let h3r4p01 d =
     let run = sigRun d "TERM" "log" "50" "20" "0" [p01Script d 5; $"{d}/log"]
     let ls = linesOf $"{d}/log"
     failing [
-        ($"""SIGTERM in a loser's cleanup, then an arm wins: the loser's cleanup must finish before the enclosing lock releases and the outer always runs ({run.summary}, log '{joined ls}')""", run.rc == "143" && before ls "loser cleanup end" "outer always")
+        ($"""SIGTERM in a loser's cleanup, then an arm wins: the loser's cleanup must finish before the enclosing lock releases and the outer always runs ({run.summary}, log '{joined ls}')""", sigRc 15 run.rc && before ls "loser cleanup end" "outer always")
     ]
 
 // ---- H3R4-02: pfirst and within serve inside an always cleanup cut nothing -----
@@ -535,12 +544,12 @@ let p03Run d off tail =
 
 let ctlSignalInServeBody d =
     let (run, ls) = p03Run d 2 "Duration.sleep 3s"
-    run.rc == "143" && Seq.equal ls ["BODY DONE"; "cleanup start"; "cleanup end"; "outer always"]
+    sigRc 15 run.rc && Seq.equal ls ["BODY DONE"; "cleanup start"; "cleanup end"; "outer always"]
 
 let h3r4p03 d =
     let (run, ls) = p03Run d 3 "()"
     failing [
-        ($"""SIGTERM while within serve drains: the cut handler's cleanup must run whole before the outer always ({run.summary}, log '{joined ls}')""", run.rc == "143" && Seq.equal ls ["BODY DONE"; "cleanup start"; "cleanup end"; "outer always"])
+        ($"""SIGTERM while within serve drains: the cut handler's cleanup must run whole before the outer always ({run.summary}, log '{joined ls}')""", sigRc 15 run.rc && Seq.equal ls ["BODY DONE"; "cleanup start"; "cleanup end"; "outer always"])
     ]
 
 // ---- H3R4-04: the terminal-^C path: no second-^C escape, the grace exits ------
@@ -556,7 +565,7 @@ let p04Compute n = [
     "let log = Self.args |> Seq.head"
     "sh -c \"true\""
     "[1; 2] |> Seq.piter (fun i ->"
-    $"    let n = {computeLine n}"
+    $"    let n = {builtinComputeLine n}"
     "    File.append log [$\"arm {i} {n}\"])"
     "print \"after\""
 ]
@@ -584,9 +593,19 @@ let h3r4p04 d =
     let second = a.sent |> Seq.tryItem 1 |> Option.defaultValue 0
     let aMs = if a.exitMs < 0 then 99999 else a.exitMs - second
     // (b) piter arms in pure computation: the join must hold the exit until
-    // they reach a boundary (calibrated by the same fixture unsignalled)
-    let p = put cdir "compute.weir" (p04Compute 5000000)
-    let calib = ptyRun cdir "30" [cli.bin; p; $"{cdir}/calib.log"] []
+    // they reach a boundary (calibrated by the same fixture unsignalled; the
+    // workload doubles until the unsignalled run takes 2s, so a fast runner
+    // still has the ^C land mid-compute)
+    let calibrate n =
+        let p = put cdir $"compute-{n}.weir" (p04Compute n)
+        (p, ptyRun cdir "30" [cli.bin; p; $"{cdir}/calib.log"] [])
+    let (p1, c1) = calibrate 250000000
+    let (p, calib) =
+        if c1.code <> "0" || c1.exitMs >= 2000 then
+            (p1, c1)
+        else
+            let (p2, c2) = calibrate 500000000
+            if c2.code <> "0" || c2.exitMs >= 2000 then (p2, c2) else calibrate 1000000000
     let b = ptyRun cdir "30" [cli.bin; p; $"{cdir}/log"] ["SLEEP 600"; ctrlC; "SLEEP 500"]
     let landed = linesOf $"{cdir}/log"
     let calibLog = linesOf $"{cdir}/calib.log" |> joined
@@ -718,7 +737,7 @@ let p09Cut = <<<
 let ctlCutArmsJoined d =
     let run = sigRun d "TERM" "ms" "1000" "10" "0" [put d "c.weir" p09Cut; $"{d}/log"]
     let ls = linesOf $"{d}/log"
-    run.rc == "143" && (ls |> Seq.length) == 3 && before ls "arm cleanup 1" "after lock released" && before ls "arm cleanup 2" "after lock released"
+    sigRc 15 run.rc && (ls |> Seq.length) == 3 && before ls "arm cleanup 1" "after lock released" && before ls "arm cleanup 2" "after lock released"
 
 let h3r4p09 d =
     let mark = markOf 20 5
@@ -727,7 +746,7 @@ let h3r4p09 d =
     let ls = linesOf $"{d}/log"
     let late = ls |> Seq.exists (Str.startsWith "LATE")
     failing [
-        ($"""SIGTERM over arms parked in an uncut read: an abandoned arm's always lands after the lock released ({run.summary}, log '{joined ls}')""", run.rc == "143" && not late && noneAfter ls "arm cleanup" "after lock released")
+        ($"""SIGTERM over arms parked in an uncut read: an abandoned arm's always lands after the lock released ({run.summary}, log '{joined ls}')""", sigRc 15 run.rc && not late && noneAfter ls "arm cleanup" "after lock released")
     ]
 
 // ---- H3R4-10: exit n in a pmap/piter arm stops the fan-out (ruling) -----------

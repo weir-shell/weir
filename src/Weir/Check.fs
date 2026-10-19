@@ -4062,6 +4062,35 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         err
             opSpan
             $"'{op}' binds tighter than '|>', so this parses as xs |> (a {op} b); parenthesize the pipeline: (xs |> f) {op} value"
+    // `from xml` also reads the document's bytes, which decode per its
+    // BOM or declaration [D:xml-encoding]; text takes the general arm
+    | EPipe(arg, ({ Kind = EFrom("xml", _, _, _) } as fromExpr)) ->
+        result {
+            let! targ = infer ctx env arg
+
+            match resolve ctx targ.Ty with
+            | TBytes ->
+                let! tfrom = infer ctx env fromExpr
+
+                match tfrom.Ty with
+                | TFun(_, resultTy) ->
+                    return
+                        { Kind = TEPipe(targ, { tfrom with Ty = TFun(TBytes, resultTy) })
+                          Ty = resultTy
+                          Span = expr.Span }
+                | _ -> return! err fromExpr.Span "the right side of a pipe must be a function"
+            | _ ->
+                let head, args = spine fromExpr
+                let! tfn = checkSpine ctx env head args (Some(targ.Ty, arg.Span))
+
+                match resolve ctx tfn.Ty with
+                | TFun(_, resultTy) ->
+                    return
+                        { Kind = TEPipe(targ, tfn)
+                          Ty = resultTy
+                          Span = expr.Span }
+                | _ -> return! err fromExpr.Span "the right side of a pipe must be a function"
+        }
     | EPipe(arg, fnExpr) ->
         result {
             let! targ = infer ctx env arg

@@ -161,13 +161,119 @@ module CodePoints =
         let n = length s
         if n >= w then s else s + System.String(' ', w - n)
 
+// hostile bytes from data must not reach a terminal [D:binary-echo]:
+// the length of an SGR sequence (`ESC [ [0-9;:]* m`) starting at i, or
+// 0 [D:tty-color]. SGR sets display attributes only — colour, bold,
+// underline, reset — so it cannot move the cursor, clear the screen,
+// set the title, or write the clipboard; keeping it is safe where the
+// other escape families are not.
+let private sgrLenAt (s: string) (i: int) : int =
+    if i + 1 < s.Length && s.[i + 1] = '[' then
+        let mutable j = i + 2
+
+        while j < s.Length && (System.Char.IsDigit s.[j] || s.[j] = ';' || s.[j] = ':') do
+            j <- j + 1
+
+        if j < s.Length && s.[j] = 'm' then j - i + 1 else 0
+    else
+        0
+
+// [D:binary-echo] already ruled that a NUL-bearing echo refuses a tty;
+// this is the same rule one class wider, covering the data a renderer
+// prints. A filename or field carrying OSC/DCS escapes, a bare ESC, a
+// cursor/screen CSI, or C0/C1 controls can clear the screen, set the
+// window title, or write the clipboard. So tty-bound data renderers
+// neutralize those bytes: the ESC introducer, C0 controls except \t,
+// \n and a bare CR, DEL, and the C1 range render as a visible \xNN
+// escape so the text stays honest. CR passes [D:tty-cr-pass]: it only
+// returns the cursor, and progress lines rewrite themselves with it.
+// SGR sequences are the other exception [D:tty-color]: display-only,
+// so intentional colour (the Color module, a coloured prompt) survives
+// while every terminal-driving family stays neutralized. Applied only at a tty and only to data — redirected
+// output is byte-faithful.
+// Bidi controls render as a visible \uXXXX too [D:tty-bidi-sanitize]:
+// the text the user reads must match the bytes (Trojan Source).
+let private sanitizeWith (strict: bool) (s: string) : string =
+    // bidi = the embeddings/overrides U+202A..202E, the isolates
+    // U+2066..2069, LRM/RLM (U+200E/200F) and ALM (U+061C)
+    let bidi (c: char) =
+        let n = int c
+        (n >= 0x202A && n <= 0x202E) || (n >= 0x2066 && n <= 0x2069) || n = 0x200E || n = 0x200F || n = 0x061C
+
+    // hostile = ESC (0x1B) the introducer, DEL (0x7F), any C0 control
+    // (< 0x20) except TAB, LF and CR [D:tty-cr-pass], and the C1 range
+    // (0x80..0x9F)
+    let hostile (c: char) =
+        let n = int c
+
+        n = 0x1B
+        || n = 0x7F
+        || (n < 0x20 && c <> '\t' && c <> '\n' && (strict || c <> '\r'))
+        || (n >= 0x80 && n <= 0x9F)
+
+    if not (s |> Seq.exists (fun c -> hostile c || bidi c)) then
+        s
+    else
+        let sb = System.Text.StringBuilder(s.Length)
+        let hex = "0123456789abcdef"
+        let hexU = "0123456789ABCDEF"
+        let mutable i = 0
+
+        while i < s.Length do
+            let c = s.[i]
+
+            if int c = 0x1B then
+                match (if strict then 0 else sgrLenAt s i) with
+                | 0 ->
+                    // a non-SGR escape (OSC/DCS/cursor CSI/lone ESC): the
+                    // introducer renders visible; the rest is now inert text
+                    sb.Append "\\x1b" |> ignore
+                    i <- i + 1
+                | n ->
+                    sb.Append(s.Substring(i, n)) |> ignore // SGR kept verbatim
+                    i <- i + n
+            elif hostile c then
+                let n = int c
+                sb.Append("\\x").Append(hex[(n >>> 4) &&& 0xF]).Append(hex[n &&& 0xF]) |> ignore
+                i <- i + 1
+            elif bidi c then
+                let n = int c
+
+                sb
+                    .Append("\\u")
+                    .Append(hexU[(n >>> 12) &&& 0xF])
+                    .Append(hexU[(n >>> 8) &&& 0xF])
+                    .Append(hexU[(n >>> 4) &&& 0xF])
+                    .Append(hexU[n &&& 0xF])
+                |> ignore
+
+                i <- i + 1
+            else
+                sb.Append c |> ignore
+                i <- i + 1
+
+        sb.ToString()
+
+let sanitizeTtyData (s: string) : string = sanitizeWith false s
+
+/// weir's DATA renderers (the REPL and -e echo, table cells) show a
+/// bare CR and SGR visibly too [D:tty-echo-strict]: what they render is
+/// a value, never the user's intended terminal output
+let sanitizeTtyEcho (s: string) : string = sanitizeWith true s
+
+/// a data value quoted in a runtime message [D:error-data-escape]: CR,
+/// LF, ESC and every control render visibly, as the echo renders them —
+/// the value can neither rewrite, forge nor restyle the message line
+let quoteData (s: string) : string =
+    (sanitizeTtyEcho s).Replace("\n", "\\x0a")
+
 let excerpt (s: string) : string =
     let n = CodePoints.length s
 
     if n <= excerptHead then
-        s
+        quoteData s
     else
-        $"{CodePoints.head s excerptHead}… ({n} chars)"
+        $"{quoteData (CodePoints.head s excerptHead)}… ({n} chars)"
 
 type Ty =
     | TInt
@@ -770,6 +876,42 @@ let sigTintStyle: SigStyle =
 // output is the corruption shells avoid). Stderr, tty-only, a 500ms
 // grace so fast calls stay silent, erased before anything else prints —
 // stdout is never touched, so the piped byte surface cannot move.
+/// a terminal that hung up [D:console-hangup]: a write to a tty whose
+/// line is gone fails (EIO), and an unhandled IOException on a cleanup or
+/// the spinner thread aborted weir mid-unwind. Console writes ride this:
+/// the first failure marks the writer gone and every later write is
+/// dropped — there is no one left to read it; the SIGHUP that comes with
+/// the hangup ends the run through its own teardown
+type HangupWriter(inner: System.IO.TextWriter) =
+    inherit System.IO.TextWriter()
+    let mutable gone = false
+
+    /// has a write failed (the terminal hung up)?
+    member _.Gone = gone
+
+    member private _.Guard(write: unit -> unit) =
+        if not gone then
+            try
+                write ()
+            with :? System.IO.IOException ->
+                gone <- true
+
+    override _.Encoding = inner.Encoding
+
+    override _.NewLine
+        with get () = inner.NewLine
+        and set (v: string) = inner.NewLine <- v
+
+    override this.Write(c: char) = this.Guard(fun () -> inner.Write c)
+    override this.Write(s: string) = this.Guard(fun () -> inner.Write s)
+
+    override this.Write(buffer: char[], index: int, count: int) =
+        this.Guard(fun () -> inner.Write(buffer, index, count))
+
+    override this.WriteLine() = this.Guard(fun () -> inner.WriteLine())
+    override this.WriteLine(s: string) = this.Guard(fun () -> inner.WriteLine s)
+    override this.Flush() = this.Guard(fun () -> inner.Flush())
+
 module Waiting =
     open System
 
@@ -804,11 +946,17 @@ module Waiting =
                         let mutable i = 0
                         let mutable go = not (gone.Wait 500)
 
-                        while go do
-                            drew.Value <- true
-                            Console.Error.Write $"\r{frames[i % frames.Length]} {label}"
-                            i <- i + 1
-                            go <- not (gone.Wait 80)),
+                        // a background thread's exception aborts the
+                        // process: the indicator never takes weir down
+                        // [D:console-hangup]
+                        try
+                            while go do
+                                drew.Value <- true
+                                Console.Error.Write $"\r{frames[i % frames.Length]} {label}"
+                                i <- i + 1
+                                go <- not (gone.Wait 80)
+                        with _ ->
+                            ()),
                     IsBackground = true
                 )
 
@@ -821,7 +969,10 @@ module Waiting =
                 spinner.Join()
 
                 if drew.Value then
-                    (if isNull control then Console.Error else control).Write "\r\u001b[2K"
+                    try
+                        (if isNull control then Console.Error else control).Write "\r\u001b[2K"
+                    with :? IO.IOException ->
+                        ()
 
                 Threading.Interlocked.Decrement(&depth) |> ignore
 
@@ -988,7 +1139,15 @@ let private instantFormats =
 // fraction past .NET's 7 digits (nanoseconds); both normalize into the
 // list's spelling — the fraction truncates to ticks, then to ms anyway
 let private instantSpaceSep =
-    System.Text.RegularExpressions.Regex @"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})"
+    System.Text.RegularExpressions.Regex @"^(\d{4}-\d{2}-\d{2})[ t](\d{2}:\d{2})"
+
+// RFC 3339 takes a lowercase `z` too, and TOML 1.1 (as ISO 8601) a time
+// without seconds, which reads as :00 [D:instant-rfc3339-forms]
+let private instantLowerZ =
+    System.Text.RegularExpressions.Regex @"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?)z$"
+
+let private instantNoSeconds =
+    System.Text.RegularExpressions.Regex @"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?=$|[Z+-])"
 
 let private instantLongFrac =
     System.Text.RegularExpressions.Regex @"(T\d{2}:\d{2}:\d{2}\.\d{7})\d+"
@@ -1000,7 +1159,11 @@ let private instantEmptyFrac =
 
 let parseInstantMs (text: string) : Result<int64, string> =
     let t = text.Trim()
-    let norm = instantLongFrac.Replace(instantSpaceSep.Replace(t, "$1T$2"), "$1")
+    let norm =
+        instantSpaceSep.Replace(t, "$1T$2")
+        |> fun n -> instantLowerZ.Replace(n, "$1Z")
+        |> fun n -> instantNoSeconds.Replace(n, "$1:00")
+        |> fun n -> instantLongFrac.Replace(n, "$1")
 
     let refused () =
         Error

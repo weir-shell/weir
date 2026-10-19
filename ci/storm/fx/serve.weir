@@ -1,0 +1,41 @@
+// within serve: handlers with cleanups, a client firing requests, outer always
+let a = Self.args |> Seq.freeze
+let log = a[0]
+let tag = a[1]
+let dir = a[2]
+let port = a[3] |> Str.toInt
+let cli = a[4]
+let ev s = File.append log [s]
+let handler = fun req ->
+    let id = req.path |> Str.replace "/" ""
+    within
+        ev $"O outer/sv/serve/h{id}"
+        sleep $"0.1{tag}"
+        ev $"B outer/sv/serve/h{id} a"
+        Duration.sleep 100ms
+        ev $"B outer/sv/serve/h{id} b"
+    always
+        ev $"S outer/sv/serve/h{id}"
+        sh -c $"sleep 0.1{tag}"
+        ev $"E outer/sv/serve/h{id}"
+    HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+within
+    ev "O outer"
+    within
+        ev "O outer/sv"
+        within serve srv = { port = port; maxConcurrent = 4 } handler
+            within proc client = python3 -I $cli $port $dir
+                poll timeout=10s interval=20ms watch=client
+                    File.exists $"{dir}/started"
+                Duration.sleep 600ms
+            ev "B outer/sv body end"
+        ev "J outer/sv/serve"
+    always
+        ev "S outer/sv"
+        Duration.sleep 30ms
+        ev "E outer/sv"
+always
+    ev "S outer"
+    sleep $"0.05{tag}"
+    ev "E outer"
+ev "DONE"

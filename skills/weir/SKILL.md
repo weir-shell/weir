@@ -80,7 +80,10 @@ print (show 1)
   a `pfirst` loser, a REPL `^C` — takes no line, the next read gets it
   [D:stdin-reader], and never splits one: a line it had begun is
   finished from the bytes already waiting and stays for the next weir
-  read [D:prompt-cut-whole-line]; at a terminal the line is cooked and
+  read [D:prompt-cut-whole-line] — before a child that reads stdin
+  starts, weir finishes a line it began, so no reader ever sees half a
+  line; a `Self.stdin` cut before its first read leaves the stream
+  unread; at a terminal the line is cooked and
   arrow/Home/Delete keys are dropped from the answer
   [D:prompt-tty-keys]), `Self.pid : int` (the process id),
   `Self.scriptPath : string` (the FILE'S OWN absolute path, resolved
@@ -546,8 +549,8 @@ print $"{key} -> {value}"
   exact physical time — `t + 24h` means exactly 24 hours). `Instant.now ()`;
   `Instant.parse` reads ISO 8601 (`Z` or numeric offsets, normalized
   to UTC; a bare date is midnight UTC, and a time with no offset is
-  read as UTC — the json/yaml `[<Iso8601>]` codec too; RFC 3339's space separator and
-  fractions past 7 digits read, truncated); `Instant.parseWith`/`tryParseWith`
+  read as UTC — the json/yaml `[<Iso8601>]` codec too; RFC 3339's space separator, lowercase
+  `t`/`z`, a seconds-less `HH:MM` (as :00) and fractions past 7 digits read, truncated); `Instant.parseWith`/`tryParseWith`
   read NAMED formats for log lines and cert dates — `%Y %m %d %e %b
   %H %M %S %f %z`, prefix semantics (the line's tail rides free), no
   `%z` means UTC. `instant - instant` IS a `Duration`
@@ -652,9 +655,13 @@ print $"{key} -> {value}"
   400 then fail …`, a 404 binds); only TRANSPORT failure raises, naming
   the host that failed — a redirect's target, not the origin (and a
   redirect loop — past 50 hops it raises, naming it). The proxy comes
-  from `HTTP_PROXY`/`HTTPS_PROXY`; a `NO_PROXY` entry bypasses it, `*`
-  for every host, a CIDR (`10.0.0.0/8`) for every address it covers; a
-  dead proxy's error names the proxy. `auth` plus an
+  from `HTTP_PROXY`/`HTTPS_PROXY`; a `NO_PROXY` entry bypasses it as
+  curl reads it — `example.com` (or `.example.com`) for the host and
+  every subdomain, trailing dots ignored, `*` for every host, an
+  address or a CIDR (`10.0.0.0/8`, `::1`, bracket-less) for an IP host,
+  no ports. A dead proxy, a proxy refusing the tunnel (407, 403, 502)
+  or closing the connection is named in the error — host:port, never
+  its credentials. `auth` plus an
   explicit `Authorization` header is refused (two credentials). A
   header the wire cannot carry raises before anything is sent, naming
   the header — a CR/LF/NUL byte, a non-token name (`"Bad Name"`), a
@@ -699,9 +706,9 @@ print $"{key} -> {value}"
   Every arm runs even if one fails; the first error BY INPUT ORDER
   rethrows after the join. The exception is `exit n` in an arm: it
   stops the fan-out (no new arm; the arms in flight are cut and joined,
-  their `always` cleanups whole; an arm stuck in a read no kill ends
-  is abandoned, its cleanups run first) and the script exits n, never
-  masked by another arm's error [D:fanout-exit] [D:fanout-exit-reads]. Workers fork the session:
+  their `always` cleanups whole — a read is cut too, even of a pipe
+  an orphan holds) and the script exits n, never masked by another
+  arm's error [D:fanout-exit] [D:scope-tree]. Workers fork the session:
   `cd` inside a worker is worker-local and gone at the join — force
   worker output inside the worker (`Seq.head`/`Seq.freeze`) if its cd
   matters. The RACE is `xs |> Seq.pfirst (fun x -> ...)`: the first
@@ -711,8 +718,9 @@ print $"{key} -> {value}"
   Losers are cancelled at their next builtin call, command, sleep or
   Http send (an in-flight request is cut), and `pfirst` waits for
   every loser before returning — AFTER `pfirst` RETURNS, NO LOSER
-  EFFECT RUNS [D:pfirst-join]; a loser busy in pure computation holds
-  the return until it reaches one, and a loser's `always` cleanup
+  EFFECT RUNS [D:pfirst-join]; every evaluated step is a boundary, so
+  only a builtin's own loop (`Seq.length` of a huge range) holds the
+  return until it ends, and a loser's `always` cleanup
   still runs whole, its commands included (before the return). A
   loser blocked reading stdin or a FIFO is cut too (POSIX; on Linux the
   cut closes the FIFO, so a later read gets the writer's data
@@ -801,6 +809,9 @@ print $"{key} -> {value}"
   (a `Duration`, OPTIONAL — default 30s) bounds that read (408);
   `maxBody` (a `Size`, OPTIONAL — default 16MiB) bounds its size, a
   larger body answered 413 without being buffered [D:serve-max-body].
+  `req.body` is decoded per the request's declared charset (UTF-8 when
+  none); a charset weir cannot decode is answered 415 before any
+  handler, never guessed at [D:serve-charset].
   The config is `{ port; maxConcurrent }` plus either optional field
   (`{ port = 8080; maxConcurrent = 4; maxBody = 1MiB }`). The handle surface is `Server.port`/`Server.running`/
   `Server.streamErrors` — no `stop` (the scope IS the teardown). ONE type
@@ -863,15 +874,22 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   backgrounding; compose inside `sh -c`); the block starts on the
   NEXT line (the command owns the rest of its own). THE NON-CLAIM,
   stated: normal exit, raise, SIGINT, SIGTERM and SIGHUP (the
-  terminal closed, `kill -HUP`) all close every scope (a script's on
-  its own thread on POSIX — no statement runs after the signal; the
-  REPL and Windows run the cleanups on the signal thread, still whole,
-  once, LIFO [D:signal-thread-cleanups]; a reader
-  closing weir's stdout ends the script the same way, exit 141, no
-  message) — at a tty AND detached (a `kill -INT`/`-TERM`/`-HUP` on a
-  `setsid`/backgrounded weir unwinds the same way, exit 130/143/129; a
-  second signal mid-teardown hard-exits, the double-Ctrl+C escape)
-  [D:sighup-teardown]. `nohup weir …` keeps SIGHUP ignored.
+  terminal closed, `kill -HUP`) all close every scope (on the flow's
+  own thread — the script's, a REPL entry's, on Windows too — so no
+  statement runs after the signal; a flow stuck where no step comes
+  has its cleanups run by a 1s backstop, still whole, once, LIFO
+  [D:scope-tree]; a reader closing weir's stdout ends the script the
+  same way, exit 141, no message) — at a tty AND detached (a
+  `kill -INT`/`-TERM`/`-HUP` on a `setsid`/backgrounded weir unwinds
+  the same way) [D:sighup-teardown]. After the unwind weir dies BY the
+  signal, scoped or not (`$?` 130/143/129; a calling bash loop stops at
+  one ^C) [D:die-by-signal]. A second signal hard-exits at once, the
+  double-Ctrl+C escape: no cleanup runs or runs on, every child dies,
+  and weir dies by the FIRST signal [D:hard-exit]. `nohup weir …`
+  keeps SIGHUP ignored. A hung-up terminal never aborts weir: console
+  writes after the hangup are dropped, so the cleanups still run whole
+  and weir dies by the SIGHUP [D:console-hangup] (a command's own write
+  to the dead terminal is that command's failure).
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel, a `kill -INT`) tree-kills the running foreground command and
   every fan-out arm's command too, scoped or not [D:sigint-reaps]. A
@@ -889,23 +907,28 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   child included); one that daemonized away (`(cmd &)`) is out of
   reach [D:tree-kill-walk]. An `always` cleanup running or about to
   start when the signal lands runs whole, its commands too, then the
-  signal's exit [D:teardown-never-preempts].
+  signal's exit [D:teardown-never-preempts]; at a terminal its commands
+  run in a process group of their own, so a terminal ^C cannot reach
+  them (their output shows; they cannot read the terminal)
+  [D:cleanup-pgrp].
   A `pmap`/`piter`/`pfirst` takes no new arm after the signal (or the
   closed stdout), and arms already running are cut at their next
   builtin call, command, sleep or wait and JOINED before any
   enclosing scope closes [D:teardown-joins-arms] — no arm effect lands
-  after a lock is released or an `always` begins; an arm busy in pure
-  computation holds the teardown (a second signal hard-exits); an arm
-  blocked in a read no cut reaches (a FIFO, a pipe an orphaned
-  grandchild holds) is abandoned and never runs on, its pending
-  `always` run first [D:teardown-abandons-reads].
+  after a lock is released or an `always` begins; a read is cut too
+  (a FIFO, a pipe an orphaned grandchild holds), so only an arm busy
+  in a builtin's own loop holds the teardown (a second signal
+  hard-exits) [D:scope-tree].
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
   definition — no userspace design closes that hole; and a weir
-  BACKGROUNDED IN AN INTERACTIVE SHELL (`weir … &`/`nohup`, which
-  keeps a controlling terminal) inherits SIGINT ignored — the
-  job-control nohup convention — so a terminal Ctrl+C does not reach
-  it, and neither does a `kill -INT` of its pid (send SIGTERM, or
-  SIGHUP unless `nohup` ignored that too) [D:sigint-ignored-tty]. AND THE MIRROR non-claim: the
+  BACKGROUNDED WHERE JOB CONTROL IS OFF (`weir … &` in a script,
+  `sh -c 'weir … &'`, after `set +m`) with a controlling terminal
+  inherits SIGINT ignored — the shell's rule for a background command
+  — so a terminal Ctrl+C does not reach it, and neither does a `kill
+  -INT` of its pid (send SIGTERM, or SIGHUP unless `nohup` ignored that
+  too) [D:sigint-ignored-tty]. With job control on (`weir … &` or
+  `nohup weir … &` typed at an interactive shell) SIGINT stays live:
+  `kill -INT` works as usual [D:sigint-ignored-jobcontrol]. AND THE MIRROR non-claim: the
   tree-kill weir performs lands as SIGKILL on the CHILDREN too
   (measured: wait = 137), so `within proc` does not run your child's
   cleanup — a child that traps SIGTERM to flush state, remove a
@@ -999,7 +1022,13 @@ let x =
   string * string`, `MakeDir`, `DeleteDir` (empty only), `DeleteTree`
   (`Dir.deleteAll`), `HttpSend of HttpRequest` (a
   mutating method only — an `Other` verb included unless it is a safe one; `show` masks the auth Secret). Content is
-  snapshotted at plan time, so `preview == apply`. The refusals:
+  snapshotted at plan time, so `preview == apply`. Each captured op
+  checks its preconditions at capture against the filesystem as the
+  plan's earlier ops leave it, and raises there with the direct call's
+  error (copy onto an existing or planned file, delete of a missing or
+  already-deleted file, copy/move from a missing source, `Dir.delete`
+  of a dir the plan filled, a write under a missing or deleted dir) —
+  a plan never holds an op certain to fail at apply. The refusals:
   `proc` inside a plan (a spawned binary is uncapturable — plan covers
   weir-native mutation only), `apply` inside a plan (a capture cannot
   be captured — apply OUTSIDE), a known-after-apply read (any file
@@ -1020,17 +1049,19 @@ let x =
 
 ```weir
 // dry-run a config write: the plan captures it, the file is untouched
+// (a captured write checks its directory exists, as the direct call does)
+let demo = Path.combine (Path.tempRoot ()) "weir-plan-demo.json"
 let changes =
     plan
-        File.write "/tmp/weir-plan-demo.json" ["{}"]
+        File.write demo ["{}"]
 if changes |> Plan.isEmpty then print "nothing to do"
 changes |> Plan.preview |> Seq.iter print   // render; wrote nothing
 // the mock-free test: two plans compare, neither performs
 let expected =
     plan
-        File.write "/tmp/weir-plan-demo.json" ["{}"]
+        File.write demo ["{}"]
 print $"matches expected: {changes == expected}"
-print $"one op: {(changes |> Plan.ops |> Seq.exactlyOne) == WriteFile("/tmp/weir-plan-demo.json", ["{}"])}"
+print $"one op: {(changes |> Plan.ops |> Seq.exactlyOne) == WriteFile(demo, ["{}"])}"
 ```
 
 ```weir-error
@@ -1425,7 +1456,9 @@ print x
   Http request, a `Self.prompt` (which takes no line) — is cut where
   it stands (in a `pmap`/`piter` arm too); a fan-out takes no new arm,
   and an arm whose command died of the `^C` is the interrupt, not a
-  failure [D:repl-interrupt-fanout]. `within`'s scopes close as on any raise; an `always` block
+  failure [D:repl-interrupt-fanout]. An entry of several statements
+  is one evaluation: a `^C` or a failure ends all of it [D:scope-tree].
+  `within`'s scopes close as on any raise; an `always` block
   runs as written unless `^C` is pressed again. At an idle prompt
   `^C` clears the line. Pure computation is not interrupted: it runs
   to its next wait, which then stops.
@@ -1546,7 +1579,10 @@ ls |> Seq.where (fun f -> f.name |> Str.startsWith "lssort-") |> Seq.iter (fun f
   glob on any row field. It describes a symlink ITSELF (`kind ==
   Symlink`, `target Some` — a dangling link is a row, not an absence),
   matching `ls` — a stated third position beside `**`'s
-  skip-symlinked-dirs law and `File.*`'s follow-as-a-shell-does.
+  skip-symlinked-dirs law and `File.*`'s follow-as-a-shell-does
+  (`..` included: `File.read "L/../x"` steps up from where the link
+  `L` really points, as `cat L/../x` does [D:fs-dotdot-physical];
+  `cd`/`within cd` keep the shell's logical `..`).
   Raises when absent, naming the resolved path — and a glob hit can
   vanish before `stat` reaches it, the same TIMING seam `Seq.freeze`
   documents for glob.
@@ -1843,7 +1879,11 @@ type Bad = C of int
   writes `[]` and an empty `seq<string * _>` `{}` at any depth, so
   `Some []` reads back `Some []` (a Deployment's `args: []`/`labels:
   {}` round-trip) and no document is ever empty text; a seq inside a
-  seq nests block-wise under a bare `-`; ambiguous strings like `"no"`/`"007"` auto-quote. `Yaml`
+  seq nests block-wise under a bare `-`; a `None` PAIR value writes
+  `null` (the key kept); a string any YAML 1.1/1.2 reader would type
+  auto-quotes, keys too (`"no"`/`"007"`/`"+.5"`/`"y"`/`"<<"`/`"="`); an
+  int64-overflowing integer read into a `Yaml` node is a `YFloat` that
+  writes back its digits. `Yaml`
   nodes (`YStr`/`YInt`/`YFloat`/`YBool`/`YNull`/`YSeq`/`YMap`;
   `YMap [("k", YStr "v")]`) render directly —
   `YMap` keeps YOUR key order; record fields render in DECLARATION
@@ -1903,12 +1943,17 @@ type Bad = C of int
   `additionalProperties` becomes the `seq<string * V>` mapping, and
   `$ref` definition names become type names; an int-or-string field
   (a k8s port; `format: int-or-string` too), a number-or-string
-  field (a quantity), a boolean-or-string/number field (`oneOf` too)
-  and a type array mixing a scalar with `array`/`object` (a compose
+  field (a quantity), a boolean-or-string/number field (`oneOf` too, a `$ref`
+  side counting by its target's type), a `oneOf` with one alternative
+  per JSON kind and a type array mixing a scalar with `array`/`object` (a compose
   `command`) draft `Yaml` with a note (8080 stays `YInt`, `"25%"`
   `YStr`, `true` `YBool`) — never a silent pick of one kind;
   an `enum` drafts its declared type, else its values' one kind
-  (`int`, `float`, `bool`, `string`), and a mixed enum drafts `Yaml`;
+  (`int`, `float`, `bool`, `string`), and a mixed enum drafts `Yaml`
+  (a `null` value makes it `Option<…>`); `anyOf`/`oneOf` of X and
+  `{type: null}` (either order) drafts `Option<X>`; a `$ref`'s
+  sibling `properties`/`required` merge into one record; deep
+  in-document pointers and `#` resolve;
   validation keywords (`minLength`, `pattern`, `minimum`, `maxItems`,
   `uniqueItems`, `readOnly`, `const`, `format`, `contentEncoding`, …)
   are accepted but NOT enforced — each gets a `// note: not enforced:`
@@ -2011,7 +2056,11 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   converted (`Str.toInt`), the checker teaches it. `[<Attr>]` fits only
   `string`/`Option<string>`, `[<Elem>]` only a `seq`, the top level is
   one root (`from xml seq<T>` refuses — a repeat is a `seq< >` field),
-  and there is NO `to xml`. A DTD (`<!DOCTYPE …>`) refuses
+  and there is NO `to xml`. `Bytes` read too (`File.readBytes p |>
+  from xml T`): decoded by BOM, else the declaration's encoding (UTF-8/
+  16/32, ASCII, ISO-8859-1 only — convert others with iconv), else
+  UTF-8, strictly [D:xml-encoding] [D:xml-encoding-builtin]; text under a non-UTF-8 declaration
+  reads only if ASCII, an unknown encoding refuses. A DTD (`<!DOCTYPE …>`) refuses
   [D:xml-no-dtd] — no declared entity expands or resolves.
   An element that repeats under a `string`/`Option<string>`/record
   field refuses (never silently the first) — declare a `seq< >`. A
@@ -2710,8 +2759,12 @@ print (show port)
   a progress line can rewrite itself. Redirected, the bytes pass
   unchanged. Renderers that draw a VALUE go further: `show` writes a
   CR as `\r`, and the REPL and `-e` echo (table cells included),
-  `Plan.preview` paths and `weir verify`/`restore` lines show CR and
-  colour escapes visibly.
+  `Plan.preview` lines (paths and an `http send`'s request), `weir
+  verify`/`restore` lines and `weir add sig`'s output (the line and the
+  generated file) show CR and colour escapes visibly. So does a
+  runtime error for the data it quotes — a parse input, a document
+  excerpt, a path, a file name, an env var name — always, piped too:
+  CR, LF and escapes render as `\x0d`, `\x0a`, `\x1b` [D:error-data-escape].
 - `Log.trace/debug/info/warn "msg"` — levelled diagnostics, ALWAYS to
   stderr (stdout is data; there is no stream knob). `WEIR_LOG=level`
   selects (`trace|debug|info|warn|off`; default `info`; invalid

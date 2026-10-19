@@ -120,7 +120,14 @@ A record whose fields are all `None` is written as `{}` and an empty
 seq as `[]`, so no document is empty. A seq of pairs, or a `YMap`,
 that holds a key twice is refused by `to yaml` and `to json`, naming
 the key; reading JSON into a seq of pairs keeps the last value of a
-repeated key, at the first key's position. Each form reads back with the matching reader
+repeated key, at the first key's position. A `None` record field is
+left out, while a `None` value in a seq of pairs is written as `null`,
+so the key reads back. A string that any YAML 1.1 or 1.2 reader would
+take as another type is quoted, keys included: number forms such as
+`007`, `1e5` and `+.5`, the boolean words (`yes`, `on`, `y`, `N`, …),
+the null forms, `.inf`/`.nan`, and the merge and value keys `<<` and
+`=`. An integer beyond int64 read into a `Yaml` node is a `YFloat`
+there, but writing that node back gives its original digits. Each form reads back with the matching reader
 (`to yaml |> from yaml seq<T>`,
 `to yaml stream |> from yaml stream T`). A multiline string is
 written as a block scalar. The `yaml` template literal (with checked
@@ -144,7 +151,8 @@ names a key that isn't a weir name, such as `requires-python`.
   is an error, since weir floats are finite.
 - A date or time is read as its text. An offset date-time such as
   `2024-03-01T10:00:00Z` reads into an `Instant` field marked
-  `[<Iso8601>]`; a local date-time, date or time (no offset) is an
+  `[<Iso8601>]`, lowercase `t`/`z` and TOML 1.1's seconds-less
+  `10:00Z` included; a local date-time, date or time (no offset) is an
   error there, since it names no instant.
 - Duplicate keys and tables defined twice are errors, reported with
   the line, as the TOML spec requires.
@@ -200,6 +208,18 @@ this rather than guessing at a convention XML does not define.
 `seq`, and the top level is a single root element, so there is no
 `from xml seq<T>` (repeated children are read with a `seq< >` field).
 There is no `to xml`.
+
+`from xml` also takes the document's `Bytes`
+(`File.readBytes "legacy.xml" |> from xml Proj`), which are decoded
+by their byte-order mark, else by the encoding the XML declaration
+names, else as UTF-8. UTF-8, UTF-16, UTF-32, US-ASCII and ISO-8859-1
+are supported; any other declared encoding (windows-1252, Shift_JIS, …)
+is an error naming it — convert the file to UTF-8 first (`iconv`). An
+undecodable byte is an error.
+Text is already decoded as UTF-8, so a text document whose declaration
+names another encoding reads only if it is plain ASCII; otherwise the
+error asks for the bytes. A declared encoding weir does not know is an
+error either way.
 
 ## Aligned tables
 

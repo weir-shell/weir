@@ -1876,6 +1876,8 @@ let private setupLineEditor () =
     if not (OperatingSystem.IsWindows()) then
         ttyEval <- true
         Session.replSurvivesSigint.Value <- true
+        // a death by a signal leaves the shell's terminal as it found it
+        Session.beforeDie <- Term.restoreCooked
 
         sigintSurvival <-
             Some(
@@ -1952,6 +1954,15 @@ let private readRedirected () : string =
                 Console.Write prompt
                 null
             | _ -> ret (List.rev acc)
+        | line -> step line acc
+
+    // one physical line joins the entry — a line read or a peeked line
+    // that attaches: an attached peek is judged like any other line (is
+    // the entry complete now? then peek again), never followed by an
+    // unconditional read that would swallow the next statement's line
+    // [D:repl-lookahead-unread]
+    and step (line: string) (acc: string list) =
+        match line with
         // a column-0 directive never continues an open statement: it
         // ends the entry and is read next as its own line
         | line when not (List.isEmpty acc) && line.StartsWith "#" ->
@@ -1982,7 +1993,7 @@ let private readRedirected () : string =
                 // complete as-is; peek whether the next line continues it
                 match readLine () with
                 | null -> ret buf
-                | next when Script.pipedAttaches buf next -> go (next :: acc')
+                | next when Script.pipedAttaches buf next -> step next acc'
                 | next ->
                     pushBack next
                     ret buf
@@ -3613,14 +3624,14 @@ let private saveDirective (state: State) (path: string) : unit =
                         note ()
                         Console.WriteLine $"#save: wrote {distilled.Length} line(s) to {path} (unformatted)"
                     with ex ->
-                        Console.WriteLine $"#save: could not write {path}: {ex.Message}"
+                        Console.WriteLine $"#save: could not write {quoteData path}: {quoteData ex.Message}"
                 | Ok formatted ->
                     try
                         File.WriteAllLines(path, formatted)
                         note ()
                         Console.WriteLine $"#save: wrote {List.length formatted} line(s) to {path}"
                     with ex ->
-                        Console.WriteLine $"#save: could not write {path}: {ex.Message}"
+                        Console.WriteLine $"#save: could not write {quoteData path}: {quoteData ex.Message}"
 
 let rec private loop (state: State) =
     // an anonymous record bound last line completes its fields now
@@ -3778,74 +3789,90 @@ let rec private loop (state: State) =
                 diagLine msg
                 state
             | Ok lls ->
-                lls
-                |> List.fold
-                    (fun st ll ->
-                        match
-                            Script.checkStatement
-                                false
-                                None
-                                (fun _ -> resolver st)
-                                Script.scriptOnlyImport
-                                st.TypeEnv
-                                ll
-                        with
-                        | Error d ->
-                            lastErrored <- true
-                            lastExit <- None
-                            // script-style rendering: the offending source
-                            // line + caret + message (the buffer's echo is
-                            // rows above; reprinting is deterministic)
-                            let src =
-                                if d.PhysLine >= 1 && d.PhysLine <= srcLines.Length then
-                                    srcLines[d.PhysLine - 1]
-                                else
-                                    ""
+                let entryStatement (st: State) (ll: Script.LogicalLine) =
+                    match
+                        Script.checkStatement
+                            false
+                            None
+                            (fun _ -> resolver st)
+                            Script.scriptOnlyImport
+                            st.TypeEnv
+                            ll
+                    with
+                    | Error d ->
+                        lastErrored <- true
+                        lastExit <- None
+                        // script-style rendering: the offending source
+                        // line + caret + message (the buffer's echo is
+                        // rows above; reprinting is deterministic)
+                        let src =
+                            if d.PhysLine >= 1 && d.PhysLine <= srcLines.Length then
+                                srcLines[d.PhysLine - 1]
+                            else
+                                ""
 
-                            diagLine src
+                        diagLine src
 
-                            Console.WriteLine(
-                                Types.Color.red Types.Color.onStdout.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
-                            )
+                        Console.WriteLine(
+                            Types.Color.red Types.Color.onStdout.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
+                        )
 
-                            // label both kinds [D:not-weir-shape]: an
-                            // unlabelled parse message would be the one
-                            // place in weir that shows an error without
-                            // saying it is one (check says
-                            // `error [parse]`, the runner says
-                            // `parse error:`)
-                            diagLine (
-                                if d.Parse then
-                                    $"parse error: {d.Message}"
-                                else
-                                    $"type error: {d.Message}"
-                            )
+                        // label both kinds [D:not-weir-shape]: an
+                        // unlabelled parse message would be the one
+                        // place in weir that shows an error without
+                        // saying it is one (check says
+                        // `error [parse]`, the runner says
+                        // `parse error:`)
+                        diagLine (
+                            if d.Parse then
+                                $"parse error: {d.Message}"
+                            else
+                                $"type error: {d.Message}"
+                        )
 
-                            // the streamed-`it` misuse teach, the
-                            // multiline arm's copy of the single-line
-                            // append [D:repl-it]
-                            (if not d.Parse && lastStreamed.IsSome && referencesIt ll.Text then
-                                 diagLine (streamedItRepair lastStreamed))
+                        // the streamed-`it` misuse teach, the
+                        // multiline arm's copy of the single-line
+                        // append [D:repl-it]
+                        (if not d.Parse && lastStreamed.IsSome && referencesIt ll.Text then
+                             diagLine (streamedItRepair lastStreamed))
 
-                            st
-                        | Ok chk ->
-                            let st' = evalChecked ll.Text st chk
+                        st
+                    | Ok chk ->
+                        let st' = evalChecked ll.Text st chk
 
-                            (if not lastErrored then
-                                 // carry the real physical source (newlines +
-                                 // indentation), not the sentinel-joined
-                                 // `ll.Text` — a kept heredoc/type must
-                                 // round-trip through `weir check` [D:repl-save]
-                                 let phys = physicalSource srcLines ll
+                        (if not lastErrored then
+                             // carry the real physical source (newlines +
+                             // indentation), not the sentinel-joined
+                             // `ll.Text` — a kept heredoc/type must
+                             // round-trip through `weir check` [D:repl-save]
+                             let phys = physicalSource srcLines ll
 
-                                 match recordKind chk with
-                                 | Some(TDef name) -> recordDef name phys ll.Text
-                                 | Some TDiscard -> recordDiscard phys ll.Text
-                                 | Some TOther -> recordOther phys ll.Text
-                                 | None -> ())
+                             match recordKind chk with
+                             | Some(TDef name) -> recordDef name phys ll.Text
+                             | Some TDiscard -> recordDiscard phys ll.Text
+                             | Some TOther -> recordOther phys ll.Text
+                             | None -> ())
 
-                            st')
-                    state
+                        st'
+
+                // one evaluation for the whole entry, which its first failure
+                // or ^C ends, as a script's would [D:repl-interrupt]
+                let stopped = ref false
+                Session.beginReplEval ()
+
+                try
+                    lls
+                    |> List.fold
+                        (fun st ll ->
+                            if stopped.Value then
+                                st
+                            else
+                                let st' = entryStatement st ll
+                                stopped.Value <- lastErrored
+                                st')
+                        state
+                finally
+                    Session.endReplEval ()
 
         loop next
     | line ->
@@ -3940,7 +3967,7 @@ let private initFilePath () =
 
 /// print one init diagnostic, with its source line and a caret
 let private initDiag (path: string) (line: int) (col: int) (srcLine: string) (msg: string) =
-    Console.Error.WriteLine $"{path}:{line}:{col}: {msg}"
+    Console.Error.WriteLine $"{quoteData path}:{line}:{col}: {msg}"
 
     if srcLine <> "" then
         Console.Error.WriteLine srcLine
@@ -4041,7 +4068,7 @@ let private loadInit (baseState: State) : State =
                 if d.File = path then
                     initDiag path d.Line d.Col (srcLine d.Line) d.Message
                 else
-                    Console.Error.WriteLine $"{d.File}:{d.Line}:{d.Col}: {d.Message}"
+                    Console.Error.WriteLine $"{quoteData d.File}:{d.Line}:{d.Col}: {d.Message}"
 
             notLoaded ()
         | [] ->

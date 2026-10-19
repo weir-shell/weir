@@ -51,6 +51,12 @@ type TransportError =
     | UnknownCharset of charset: string * status: int
     // the redirect bound ran out — a loop, never a 3xx handed back as data
     | RedirectLoop of hops: int * last: string
+    // the environment's proxy refused the CONNECT tunnel with this status
+    // (407/403/502) [D:proxy-refusal-words]
+    | ProxyRefused of status: int
+    // the peer closed the connection before a response (through a proxy,
+    // the proxy did — weir's socket only reaches it)
+    | ConnectionEnded
 
 // raised inside send when the body's declared charset is unknown — the
 // catch turns it into UnknownCharset, never the cannot-reach umbrella
@@ -74,6 +80,11 @@ let classifyTransport (timeoutMs: int64) (port: int) (ex: exn) : TransportError 
     let rec walk (e: exn) =
         match e with
         | null -> OtherTransport(rootMessage ex)
+        | :? HttpRequestException as h when
+            h.HttpRequestError = HttpRequestError.ProxyTunnelError && h.StatusCode.HasValue
+            ->
+            ProxyRefused(int h.StatusCode.Value)
+        | :? HttpRequestException as h when h.HttpRequestError = HttpRequestError.ResponseEnded -> ConnectionEnded
         | :? OperationCanceledException -> Timeout timeoutMs
         | :? Security.Authentication.AuthenticationException -> TlsUntrusted
         | :? Net.Sockets.SocketException as se ->
@@ -119,17 +130,24 @@ let redactUrl (url: string) : string =
         | -1 -> url
         | at -> url.Substring(0, authStart) + "***@" + url.Substring(authStart + at + 1)
 
+/// every URL's userinfo in a runtime's text redacted [D:url-redact] — a
+/// .NET message can quote a proxy URI whole, credentials included
+let redactUrlsIn (text: string) : string =
+    Text.RegularExpressions.Regex.Replace(text, @"([A-Za-z][A-Za-z0-9+.\-]*://)[^/?#@\s'""]*@", "$1***@")
+
 let transportMessage (host: string) (err: TransportError) : string =
     match err with
     | Timeout ms -> $"timed out after {fmtMs ms} reaching {host}"
     | NoSuchHost -> $"cannot resolve {host} — no such host"
     | Refused port -> $"{host}:{port} refused the connection — nothing is listening there"
     | TlsUntrusted -> $"cannot establish TLS with {host} — the certificate is not trusted"
-    | OtherTransport root -> $"cannot reach {host} — {root}"
+    | OtherTransport root -> $"cannot reach {host} — {Weir.Types.quoteData (redactUrlsIn root)}"
+    | ConnectionEnded -> $"{host} closed the connection before answering"
+    | ProxyRefused status -> $"the proxy refused to tunnel to {host}: {status}"
     | UnknownCharset(cs, status) ->
         $"{host} answered {status} with a body in charset '{cs}', which weir cannot decode — weir decodes utf-8, utf-16, utf-32, us-ascii and iso-8859-1; a mislabelled body is never guessed at"
     | RedirectLoop(hops, last) ->
-        $"{host}: still redirecting after {hops} hops (the last at {redactUrl last}) — a redirect loop"
+        $"{host}: still redirecting after {hops} hops (the last at {Weir.Types.quoteData (redactUrl last)}) — a redirect loop"
 
 /// two URLs share an origin [D:secret-redirect] iff scheme, host and port
 /// all match (a port change is a different origin — the same rule the BCL
@@ -172,81 +190,154 @@ let cancelAfterSliced (sliceMs: int64) (cts: Threading.CancellationTokenSource) 
 
 let private maxTimerMs = int64 Int32.MaxValue - 1L
 
-// NO_PROXY against an IPv6 literal [D:noproxy-v6]: .NET matches entries
-// against the bracketed host, so `::1` never bypassed `http://[::1]` and
-// `[::1]` did. An entry names the address as curl reads it — bracket-less,
-// compared as an address; every other host keeps the runtime's rule.
-// A `*` entry bypasses every host [D:noproxy-star] — the runtime's rule
-// knows no wildcard.
-type private V6NoProxy(inner: Net.IWebProxy) =
-    let entries =
+/// does a NO_PROXY value bypass `host` (a Uri's Host, IPv6 bracketed)?
+/// curl's matcher [D:noproxy-curl]: entries split on commas and blanks
+/// (a blank not followed by a comma ends the list); a name entry matches
+/// the host or any subdomain, one leading and one trailing dot ignored
+/// on either side; an IP-literal host matches only address entries,
+/// optionally `/bits` (none, or the full width, is an exact address;
+/// past the width never), bracket-less [D:noproxy-v6] [D:noproxy-cidr];
+/// a name is never resolved to match. A `*` entry bypasses every host
+/// [D:noproxy-star].
+let noProxyMatch (noProxy: string) (host: string) : bool =
+    let isBlank c = c = ' ' || c = '\t'
+
+    let tokens =
+        let out = ResizeArray<string>()
+        let mutable i = 0
+        let mutable go = true
+
+        while go && i < noProxy.Length do
+            while i < noProxy.Length && isBlank noProxy[i] do
+                i <- i + 1
+
+            let start = i
+
+            while i < noProxy.Length && not (isBlank noProxy[i]) && noProxy[i] <> ',' do
+                i <- i + 1
+
+            if i > start then
+                out.Add(noProxy.Substring(start, i - start))
+
+            while i < noProxy.Length && isBlank noProxy[i] do
+                i <- i + 1
+
+            if i < noProxy.Length && noProxy[i] = ',' then
+                while i < noProxy.Length && noProxy[i] = ',' do
+                    i <- i + 1
+            else
+                go <- false
+
+        List.ofSeq out
+
+    // inet_pton's strict forms: a dotted quad, or an IPv6 text without
+    // brackets, zone or port
+    let strictV4 (t: string) =
+        if Text.RegularExpressions.Regex.IsMatch(t, @"^[0-9]{1,3}(\.[0-9]{1,3}){3}$") then
+            match Net.IPAddress.TryParse t with
+            | true, a when a.AddressFamily = Net.Sockets.AddressFamily.InterNetwork -> Some(a.GetAddressBytes())
+            | _ -> None
+        else
+            None
+
+    let strictV6 (t: string) =
+        if t.Contains ':' && not (t.IndexOfAny [| '['; ']'; '%' |] >= 0) then
+            match Net.IPAddress.TryParse t with
+            | true, a when a.AddressFamily = Net.Sockets.AddressFamily.InterNetworkV6 -> Some(a.GetAddressBytes())
+            | _ -> None
+        else
+            None
+
+    // atoi: the leading digits, 0 when none
+    let atoi (t: string) =
+        let digits = t |> Seq.takeWhile Char.IsAsciiDigit |> Seq.truncate 9 |> Array.ofSeq
+
+        if digits.Length = 0 then 0 else int (String digits)
+
+    let prefixMatch (hb: byte[]) (nb: byte[]) (bits: int) =
+        Seq.forall
+            (fun i ->
+                let keep = min 8 (max 0 (bits - 8 * i))
+                let mask = byte ((0xFF00 >>> keep) &&& 0xFF)
+                (nb[i] &&& mask) = (hb[i] &&& mask))
+            [ 0 .. hb.Length - 1 ]
+
+    let ipMatch (hb: byte[]) (parse: string -> byte[] option) (token: string) =
+        let addr, bits =
+            match token.IndexOf '/' with
+            | -1 -> token, 0
+            | k -> token.Substring(0, k), atoi (token.Substring(k + 1))
+
+        let width = 8 * hb.Length
+
+        if bits > width then
+            false
+        else
+            match parse addr with
+            | Some nb when nb.Length = hb.Length -> prefixMatch hb nb (if bits = 0 then width else bits)
+            | _ -> false
+
+    let toks = tokens
+
+    if host = "" then
+        false
+    elif List.contains "*" toks then
+        true
+    else
+        let bare =
+            if host.StartsWith "[" && host.EndsWith "]" then
+                host.Substring(1, host.Length - 2)
+            else
+                host
+
+        match strictV6 bare, strictV4 bare with
+        | Some hb, _ -> toks |> List.exists (ipMatch hb strictV6)
+        | None, Some hb -> toks |> List.exists (ipMatch hb strictV4)
+        | None, None ->
+            let name = if bare.EndsWith "." then bare.Substring(0, bare.Length - 1) else bare
+
+            toks
+            |> List.exists (fun t ->
+                let t = if t.EndsWith "." then t.Substring(0, t.Length - 1) else t
+                let t = if t.StartsWith "." then t.Substring 1 else t
+
+                if t.Length = name.Length then
+                    String.Equals(t, name, StringComparison.OrdinalIgnoreCase)
+                elif t.Length < name.Length then
+                    name[name.Length - t.Length - 1] = '.'
+                    && name.EndsWith(t, StringComparison.OrdinalIgnoreCase)
+                else
+                    false)
+
+// the runtime's proxy with weir's NO_PROXY rule [D:noproxy-curl]: the
+// runtime matches a plain entry exactly and a dot entry as a text
+// suffix (an IP too), so with NO_PROXY set weir decides the bypass and
+// only asks the runtime which proxy the scheme takes; without it the
+// runtime (a system proxy's own bypass list) decides
+type private EnvNoProxy(inner: Net.IWebProxy) =
+    let raw =
         lazy
-            (let raw =
-                match Environment.GetEnvironmentVariable "no_proxy" with
-                | null
-                | "" -> Environment.GetEnvironmentVariable "NO_PROXY"
-                | v -> v
-
-             match raw with
-             | null -> []
-             | r -> r.Split(',') |> Array.map (fun e -> e.Trim()) |> Array.filter ((<>) "") |> List.ofArray)
-
-    let listed (u: Uri) =
-        match Net.IPAddress.TryParse u.DnsSafeHost with
-        | true, host ->
-            entries.Value
-            |> List.exists (fun e ->
-                match Net.IPAddress.TryParse e with
-                | true, a -> a.Equals host
-                | _ -> false)
-        | _ -> false
-
-    let isV6 (u: Uri) = u.HostNameType = UriHostNameType.IPv6
-
-    let star = lazy (entries.Value |> List.contains "*")
-
-    // a CIDR entry (`10.0.0.0/8`, `fd00::/8`) bypasses every address it
-    // covers, as curl reads it [D:noproxy-cidr]; host bits are ignored
-    let cidrs =
-        lazy
-            (entries.Value
-             |> List.choose (fun e ->
-                 match e.Split '/' with
-                 | [| addr; bits |] ->
-                     match Net.IPAddress.TryParse addr, Int32.TryParse bits with
-                     | (true, a), (true, n) when n >= 0 && n <= 8 * a.GetAddressBytes().Length ->
-                         Some(a.GetAddressBytes(), n)
-                     | _ -> None
-                 | _ -> None))
-
-    let inCidr (u: Uri) =
-        not cidrs.Value.IsEmpty
-        && match Net.IPAddress.TryParse u.DnsSafeHost with
-           | true, host ->
-               let hb = host.GetAddressBytes()
-
-               cidrs.Value
-               |> List.exists (fun (nb, bits) ->
-                   nb.Length = hb.Length
-                   && Seq.forall
-                       (fun i ->
-                           let keep = min 8 (max 0 (bits - 8 * i))
-                           let mask = byte ((0xFF00 >>> keep) &&& 0xFF)
-                           (nb[i] &&& mask) = (hb[i] &&& mask))
-                       [ 0 .. nb.Length - 1 ])
-           | _ -> false
+            (match Environment.GetEnvironmentVariable "no_proxy" with
+             | null
+             | "" ->
+                 match Environment.GetEnvironmentVariable "NO_PROXY" with
+                 | null -> ""
+                 | v -> v
+             | v -> v)
 
     let proxyFor (u: Uri) : Uri =
-        if star.Value || inCidr u then
-            null
-        elif not (isV6 u) then
+        if raw.Value.Trim() = "" then
             inner.GetProxy u
-        elif listed u then
+        elif noProxyMatch raw.Value u.Host then
             null
         else
-            // the runtime's proxy for the scheme, asked of a host no
-            // bracketed entry can match (TEST-NET-1)
-            inner.GetProxy(UriBuilder(u, Host = "192.0.2.1").Uri)
+            // the runtime may bypass a host weir's rule does not: ask it
+            // of hosts no entry is likely to name (TEST-NET-1, .invalid)
+            [ u.Host; "192.0.2.1"; "weir-proxy-probe.invalid" ]
+            |> List.tryPick (fun h ->
+                let q = if h = u.Host then u else UriBuilder(u, Host = h).Uri
+                Option.ofObj (inner.GetProxy q))
+            |> Option.toObj
 
     interface Net.IWebProxy with
         member _.Credentials
@@ -256,10 +347,10 @@ type private V6NoProxy(inner: Net.IWebProxy) =
         member _.GetProxy(u: Uri) = proxyFor u
 
         member _.IsBypassed(u: Uri) =
-            if star.Value || isV6 u || inCidr u then
-                isNull (proxyFor u)
-            else
+            if raw.Value.Trim() = "" then
                 inner.IsBypassed u
+            else
+                isNull (proxyFor u)
 
 /// the host a transport error names: the URL's host, or the whole URL
 /// when it would not parse — redacted [D:url-redact], since a
@@ -268,7 +359,7 @@ let failingHost (url: string) : string =
     try
         Uri(url).Host
     with _ ->
-        redactUrl url
+        Weir.Types.quoteData (redactUrl url)
 
 /// the port the transport classifier reports (0 when unparseable)
 let failingPort (url: string) : int =
@@ -279,7 +370,7 @@ let failingPort (url: string) : int =
 
 /// the environment's proxy for a client handler, NO_PROXY matched as above
 let useEnvProxy (handler: HttpClientHandler) : unit =
-    handler.Proxy <- V6NoProxy(HttpClient.DefaultProxy)
+    handler.Proxy <- EnvNoProxy(HttpClient.DefaultProxy)
 
 /// a transport failure's words and case [D:transport-words]. Through a
 /// proxy, weir's socket only ever reaches the proxy, so a refused or
@@ -287,7 +378,7 @@ let useEnvProxy (handler: HttpClientHandler) : unit =
 let transportFailure (timeoutMs: int64) (url: string) (ex: exn) : string * TransportError =
     let proxy =
         try
-            let p = V6NoProxy(HttpClient.DefaultProxy) :> Net.IWebProxy
+            let p = EnvNoProxy(HttpClient.DefaultProxy) :> Net.IWebProxy
             let u = Uri url
             if p.IsBypassed u then None else Option.ofObj (p.GetProxy u)
         with _ ->
@@ -302,9 +393,25 @@ let transportFailure (timeoutMs: int64) (url: string) (ex: exn) : string * Trans
     | Some p ->
         let via = $"(the environment's proxy for {failingHost url}; NO_PROXY lists the hosts that bypass it)"
 
+        // the proxy named by host:port only — a Uri's userinfo never prints
+        let named = $"{p.Host}:{p.Port}"
+
         match classifyTransport timeoutMs p.Port ex with
         | Refused port as err -> $"the proxy {p.Host}:{port} refused the connection — nothing is listening there {via}", err
         | NoSuchHost as err -> $"cannot resolve the proxy {p.Host} — no such host {via}", err
+        // a CONNECT refusal is the proxy's answer, never the target's
+        // [D:proxy-refusal-words]
+        | ProxyRefused status as err ->
+            let why =
+                match status with
+                | 407 -> " Proxy Authentication Required — the proxy URL's credentials are missing or wrong"
+                | 403 -> " Forbidden"
+                | 502 -> " Bad Gateway"
+                | 504 -> " Gateway Timeout"
+                | _ -> ""
+
+            $"the proxy {named} refused to tunnel to {failingHost url}: {status}{why} {via}", err
+        | ConnectionEnded as err -> $"the proxy {named} closed the connection before answering {via}", err
         | _ -> direct ()
 
 /// send the request. Status is data — a 4xx/5xx is Ok with that status,

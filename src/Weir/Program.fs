@@ -222,12 +222,27 @@ let private lockText (redirected: bool) (s: string) : string =
 // a script (or -e) tears down on its main thread: signals and a closed
 // stdout end it with their own code [D:signal-main-unwind] [D:stdout-epipe]
 let private runOnMain (run: unit -> int) : int =
+    // an inherited SIG_IGN on SIGINT without a tty is reset at start, so a
+    // detached poller that never spawns dies by a `kill -INT` too
+    // [D:signal-teardown]
+    Session.resetDetachedSigint.Force()
     Session.registerMainThread ()
     Session.armStdout ()
     run () |> Session.exitCodeOr
 
 [<EntryPoint>]
 let main argv =
+
+    // weir as the shim that starts a cleanup's command in a group of its
+    // own [D:cleanup-pgrp]: nothing else runs first
+    if argv.Length >= 2 && argv[0] = Session.Pgrp.marker then
+        Session.Pgrp.execInNewGroup argv[1] argv[2..]
+
+    // weir's own executable for the shim — not a `dotnet Weir.dll` host
+    match Environment.ProcessPath with
+    | null -> ()
+    | p when IO.Path.GetFileNameWithoutExtension p = "dotnet" -> ()
+    | p -> Session.Pgrp.selfPath <- p
 
     // captured output is data: LF on every platform [D:lf-output] —
     // the dual of the content-bytes input ruling (a line ending is
@@ -240,9 +255,14 @@ let main argv =
     if Console.IsErrorRedirected then
         Console.Error.NewLine <- "\n"
     else
-        // one choke point for every stderr diagnostic [D:tty-diag-sanitize]
-        Types.Waiting.control <- Console.Error
-        Console.SetError(new Eval.TtyErrWriter(Console.Error))
+        // one choke point for every stderr diagnostic [D:tty-diag-sanitize];
+        // a hung-up terminal's EIO never aborts weir [D:console-hangup]
+        let err = new Types.HangupWriter(Console.Error)
+        Types.Waiting.control <- err
+        Console.SetError(new Eval.TtyErrWriter(err))
+
+    if not Console.IsOutputRedirected then
+        Console.SetOut(new Types.HangupWriter(Console.Out))
 
     // WEIR_LOG validates once, before anything runs — an invalid level
     // is a loud startup error, never a silent fallback [D:log-module]
@@ -263,7 +283,9 @@ let main argv =
     let dispatch () =
         match Array.toList argv with
         | [ "-e"; input ] -> runOnMain (fun () -> evalOnce input)
-        | [] -> Weir.Repl.run ()
+        // a signal's teardown of an evaluation ends the REPL by the signal
+        // [D:die-by-signal]
+        | [] -> Weir.Repl.run () |> Session.exitCodeOr
         // the reference dump [D:reference] — machine surface for the site's
         // generated pages; the e2e currency gate diffs it against the
         // committed site/src/data/reference.json
@@ -378,7 +400,8 @@ let main argv =
 
             (match Script.SigGen.generate weirDir tool with
              | Ok line ->
-                 Console.WriteLine line
+                 // the line quotes the tool's --version [D:sig-text-sanitize]
+                 Console.WriteLine(lockText Console.IsOutputRedirected line)
                  0
              | Error e ->
                  Console.Error.WriteLine $"weir add sig: {e}"
@@ -445,7 +468,7 @@ let main argv =
                          | Error e ->
                              // the error names the source, not the temp
                              // file validation ran against
-                             let e = e.Replace(tmp, src.Url)
+                             let e = e.Replace(tmp, Http.redactUrl src.Url)
                              Console.Error.WriteLine $"weir add module: {e}; nothing was written"
                              1
                          | Ok memberCount ->
@@ -465,7 +488,7 @@ let main argv =
                                   | Some _ -> Console.WriteLine $"module {name}: unchanged ({hash.Substring(0, 12)}…)"
                                   | None ->
                                       Console.WriteLine
-                                          $"added module {name} ({hash.Substring(0, 12)}…, {memberCount} member(s)) from {src.Url}")
+                                          $"added module {name} ({hash.Substring(0, 12)}…, {memberCount} member(s)) from {Http.redactUrl src.Url}")
 
                                  Console.WriteLine $"import it:  import \"weir:{name}\" as {derivedAlias}"
                                  0)

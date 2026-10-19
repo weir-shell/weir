@@ -1566,6 +1566,78 @@ let boundaryTests =
                   [ VStr "a: \".inf\""; VStr "b: \".nan\""; VStr "c: \"-.INF\"" ]
                   "the .inf/.nan family joins the reverse-Norway set"
           }
+          test "to yaml: every 1.1/1.2 resolver form quotes — +.5, y/n, <<, = [D:yaml-plain-resolvers]" {
+              Expect.equal
+                  (run
+                      "[(\"a\", \"+.5\"); (\"b\", \"+.5e3\"); (\"c\", \"-.5\"); (\"d\", \"._5\"); (\"e\", \"y\"); (\"f\", \"N\"); (\"g\", \"<<\"); (\"h\", \"=\"); (\"i\", \".\")] |> to yaml"
+                   |> forceSeq)
+                  [ VStr "a: \"+.5\""
+                    VStr "b: \"+.5e3\""
+                    VStr "c: \"-.5\""
+                    VStr "d: \"._5\""
+                    VStr "e: \"y\""
+                    VStr "f: \"N\""
+                    VStr "g: \"<<\""
+                    VStr "h: \"=\""
+                    VStr "i: ." ]
+                  "no reader types these as a float, bool, merge or value key"
+
+              Expect.equal
+                  (run "[(\"y\", 1); (\"<<\", 2)] |> to yaml" |> forceSeq)
+                  [ VStr "\"y\": 1"; VStr "\"<<\": 2" ]
+                  "keys follow the same law"
+
+              Expect.equal
+                  (run "show (YMap [(\"v\", YStr \"+.5\")] |> to yaml |> from yaml {| v: Yaml |})")
+                  (VStr "{ v = YStr \"+.5\" }")
+                  "weir's own reader reads the string back"
+          }
+          test "to yaml: a None pair value writes null, the key kept [D:yaml-pair-none]" {
+              Expect.equal
+                  (run "[(\"a\", None); (\"b\", Some 1)] |> to yaml" |> forceSeq)
+                  [ VStr "a: null"; VStr "b: 1" ]
+                  "a pair's None is its data, as to json writes it"
+
+              Expect.equal
+                  (run "show ({| m = [(\"a\", None); (\"b\", Some 1)] |} |> to yaml |> from yaml {| m: seq<string * Option<int>> |})")
+                  (VStr "{ m = [(\"a\", None); (\"b\", Some 1)] }")
+                  "the key reads back"
+          }
+          test "an integer past int64 in a Yaml node keeps its digits on write [D:yaml-node-bigint]" {
+              Expect.equal
+                  (run "[\"{\\\"id\\\": 18446744073709551615, \\\"n\\\": -12345678901234567890123}\"] |> from json {| id: Yaml; n: Yaml |} |> to json |> Str.join \"\"")
+                  (VStr "{\"id\":18446744073709551615,\"n\":-12345678901234567890123}")
+                  "json -> json keeps the digits"
+
+              Expect.equal
+                  (run "[\"id: 18446744073709551615\"] |> from yaml {| id: Yaml |} |> to yaml |> Str.join \"\"")
+                  (VStr "id: 18446744073709551615")
+                  "yaml -> yaml keeps the digits"
+
+              Expect.equal
+                  (run "show ([\"id: 18446744073709551615\"] |> from yaml {| id: Yaml |})")
+                  (VStr "{ id = YFloat (1.8446744073709552e+19) }")
+                  "the node still matches as its nearest float"
+
+              Expect.equal
+                  (run "YMap [(\"f\", YFloat 1e19)] |> to yaml |> Str.join \"\"")
+                  (VStr "f: 1e+19")
+                  "a node built in weir writes its float"
+          }
+          test "from yaml: a lone-surrogate escape refuses, as from json does [D:encoding-law]" {
+              Expect.stringContains
+                  (Expect.wantError (Weir.Yaml.scalarCore "\"\\ud800\"") "a lone high surrogate")
+                  "lone surrogate"
+                  "names the cause"
+
+              Expect.isError (Weir.Yaml.scalarCore "\"\\udc00x\"") "a lone low surrogate"
+              Expect.isError (Weir.Yaml.scalarCore "\"\\ud800\\u0041\"") "a high surrogate before a non-low"
+
+              Expect.equal
+                  (Weir.Yaml.scalarCore "\"\\ud83d\\ude00\"")
+                  (Ok(Some("\U0001F600", true)))
+                  "a pair is text"
+          }
           test "to yaml: CR/NEL/LS/PS and controls ESCAPE in quoted scalars — raw they are line breaks [D:yaml-v1]" {
               Expect.equal
                   (run "[(\"a\", Str.fromBase64 \"eA15\"); (\"b\", Str.fromBase64 \"YcKFYg==\")] |> to yaml"
@@ -1753,6 +1825,69 @@ let boundaryTests =
 
               let empty = Expect.throwsC (fun () -> runWith [ "src", VSeq [ VStr "" ] ] "src |> from xml XProj" |> ignore) id
               Expect.stringContains empty.Message "empty input — expected one XML document" ""
+          }
+          test "from xml: bytes decode per the BOM or declaration; text refuses a non-UTF-8 one; unknown refuses [D:xml-encoding]" {
+              let xenv = env |> declare "type XT = { Title: string }"
+
+              let b64 (enc: System.Text.Encoding) (decl: string) (title: string) =
+                  System.Convert.ToBase64String(
+                      Array.append (enc.GetPreamble()) (enc.GetBytes($"<?xml version=\"1.0\"{decl}?>\n<Root><Title>{title}</Title></Root>"))
+                  )
+
+              let readBytes (b: string) =
+                  runUnder xenv $"show (Bytes.fromBase64 \"{b}\" |> from xml XT)"
+
+              Expect.equal
+                  (readBytes (b64 System.Text.Encoding.Latin1 " encoding=\"ISO-8859-1\"" "café"))
+                  (VStr "{ Title = \"café\" }")
+                  "ISO-8859-1"
+
+
+              Expect.equal
+                  (readBytes (b64 (System.Text.UnicodeEncoding(false, true)) " encoding=\"UTF-16\"" "café"))
+                  (VStr "{ Title = \"café\" }")
+                  "UTF-16 with its BOM"
+
+              Expect.equal
+                  (readBytes (b64 (System.Text.UTF8Encoding(true)) "" "café"))
+                  (VStr "{ Title = \"café\" }")
+                  "a UTF-8 BOM, no declaration"
+
+              let msg (src: string) =
+                  (Expect.throwsC (fun () -> runUnder xenv src |> ignore) id).Message
+
+              let klingon = b64 System.Text.Encoding.ASCII " encoding=\"x-klingon\"" "ab"
+              let cp1252 = b64 System.Text.Encoding.ASCII " encoding=\"windows-1252\"" "euro"
+
+              Expect.stringContains
+                  (msg $"Bytes.fromBase64 \"{cp1252}\" |> from xml XT")
+                  "declares encoding 'windows-1252', which weir cannot decode"
+                  "a code page outside CoreLib refuses [D:xml-encoding-builtin]"
+
+              Expect.stringContains
+                  (msg $"Bytes.fromBase64 \"{klingon}\" |> from xml XT")
+                  "declares encoding 'x-klingon', which weir cannot decode"
+                  "an unknown encoding refuses (bytes)"
+
+              Expect.stringContains
+                  (msg "[\"<?xml version='1.0' encoding='x-klingon'?><Root><Title>ab</Title></Root>\"] |> from xml XT")
+                  "which weir cannot decode"
+                  "an unknown encoding refuses (text)"
+
+              Expect.stringContains
+                  (msg "[\"<?xml version='1.0' encoding='ISO-8859-1'?><Root><Title>café</Title></Root>\"] |> from xml XT")
+                  "File.readBytes path |> from xml XT"
+                  "non-ASCII text under a non-UTF-8 declaration teaches the bytes read"
+
+              Expect.equal
+                  (runUnder xenv "show ([\"<?xml version='1.0' encoding='ISO-8859-1'?><Root><Title>ab</Title></Root>\"] |> from xml XT)")
+                  (VStr "{ Title = \"ab\" }")
+                  "ASCII text reads under any ASCII-compatible declaration"
+
+              Expect.stringContains
+                  (msg "Bytes.fromBase64 \"PFJvb3Q+PFRpdGxlPmNhZulgPC9UaXRsZT48L1Jvb3Q+\" |> from xml XT")
+                  "not valid utf-8"
+                  "no declaration: strict UTF-8, never U+FFFD"
           }
           test "from xml: a DTD refuses — no entity expands or resolves [D:xml-no-dtd]" {
               let refuse (doc: string list) =
@@ -8864,18 +8999,21 @@ let planApplyTests =
               | Error terr -> failtest (formatError terr)
           }
           test "capture: a write becomes a WriteFile Op, no file written; equality holds" {
+              // under the OS temp dir: capture checks the parent exists [D:plan-preconditions]
+              let path = (System.IO.Path.GetTempPath() + "weir-plan-never").Replace('\\', '/')
+
               let p =
-                  run ("plan" + Weir.Parser.sibSepStr + "File.write \"/tmp/weir-plan-never\" [\"a\"; \"b\"]")
+                  run ("plan" + Weir.Parser.sibSepStr + $"File.write \"{path}\" [\"a\"; \"b\"]")
 
               Expect.equal
                   p
                   (VRecord(
                       "Plan",
-                      [ "ops", VSeq [ VUnion("WriteFile", Some(VTuple [ VStr(System.IO.Path.GetFullPath "/tmp/weir-plan-never"); VSeq [ VStr "a"; VStr "b" ] ])) ] ]
+                      [ "ops", VSeq [ VUnion("WriteFile", Some(VTuple [ VStr(System.IO.Path.GetFullPath path); VSeq [ VStr "a"; VStr "b" ] ])) ] ]
                   ))
                   "one WriteFile Op captured"
 
-              Expect.isFalse (System.IO.File.Exists "/tmp/weir-plan-never") "the plan wrote nothing"
+              Expect.isFalse (System.IO.File.Exists path) "the plan wrote nothing"
           }
           test "Plan equality is content-sensitive; isEmpty reads the ops" {
               // multi-line plan bodies go through the real assembler (a
@@ -8924,13 +9062,29 @@ let planApplyTests =
                     "let esc = Str.fromBase64 \"Gw==\""
                     "let p ="
                     "    plan"
-                    "        File.delete $\"/nowhere/a{cr}x{lf}delete file /b{esc}[8m\""
+                    // a Dir.create: a delete of a missing path refuses at capture [D:plan-preconditions]
+                    "        Dir.create $\"/nowhere/a{cr}x{lf}delete file /b{esc}[8m\""
                     "let line = p |> Plan.preview |> Seq.exactlyOne"
                     "if Str.contains cr line || Str.contains lf line || Str.contains esc line then fail $\"raw control: {show line}\""
                     "if not (Str.contains \"a\\\\x0dx\\\\x0adelete file\" line) then fail $\"not visible: {show line}\""
                     "print \"ok\"" ]
 
               Expect.equal (runFile prog) 0 "a preview path renders CR, LF and ESC visibly"
+          }
+          test "an http send preview line renders escapes visibly [D:tty-echo-strict]" {
+              let prog =
+                  [ "let esc = Str.fromBase64 \"Gw==\""
+                    "let cr = Str.fromBase64 \"DQ==\""
+                    "let p ="
+                    "    plan"
+                    "        let _r = Http.send { Http.defaults with method = Post; url = $\"http://x/h{esc}[8m\"; body = Text $\"a{cr}b\" }"
+                    "        ()"
+                    "let line = p |> Plan.preview |> Seq.exactlyOne"
+                    "if Str.contains esc line || Str.contains cr line then fail $\"raw control: {show line}\""
+                    "if not (Str.contains \"/h\\\\x1b[8m\" line) then fail $\"not visible: {show line}\""
+                    "print \"ok\"" ]
+
+              Expect.equal (runFile prog) 0 "an http send preview renders ESC visibly"
           }
           test "Http.send{post} captures as an HttpSend Op — the per-method split" {
               let prog =
@@ -22260,7 +22414,8 @@ let uuidTests =
                   "readonly admits the ambient generators"
           }
           test "plan mode: a generator runs inside a plan and is not captured as an op" {
-              let path = "/tmp/weir-uuid-plan-never"
+              // under the OS temp dir: capture checks the parent exists [D:plan-preconditions]
+              let path = (System.IO.Path.GetTempPath() + "weir-uuid-plan-never").Replace('\\', '/')
 
               match run ("plan" + Weir.Parser.sibSepStr + $"File.write \"{path}\" [Uuid.toString (Uuid.v7 ())]") with
               | VRecord("Plan", [ "ops", VSeq ops ]) ->
@@ -24030,8 +24185,11 @@ let serveTests =
                   send fast (get "GET" "/fast")
                   let r = readQuiet fast
                   Expect.isTrue (r.EndsWith "<fast>") $"the fast request is served: {r}"
-                  // readQuiet's own quiet gap is 700ms
-                  Expect.isLessThan clock.ElapsedMilliseconds 3000L "served without waiting out the slow body")
+                  // readQuiet's own quiet gap is 700ms; waiting out the slow
+                  // body (bodyTimeout 5000ms, sent 300ms before the clock)
+                  // measures ~5400ms, so the bound sits between the two and
+                  // leaves a loaded runner its margin
+                  Expect.isLessThan clock.ElapsedMilliseconds 4500L "served without waiting out the slow body")
           }
           test "no body on 204, 304 or HEAD — a kept-alive connection stays in frame (H16)" {
               let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp =
@@ -27559,29 +27717,78 @@ let hunt3BehaviourTests =
 
 // hunt 3 round 2's cancellation seams; the signal, stdin and pty halves are
 // e2e cells
+// run `body` as an arm in a node of its own, cut (a lost race) after `ms`
+// [D:scope-tree]
+let private asArmCutAfter (ms: int) (body: unit -> unit) =
+    let n = Weir.Session.openNode (Weir.Session.currentNode ()) Weir.Session.NodeKind.Arm
+    Weir.Session.setCurrentNode n
+
+    try
+        System.Threading.Tasks.Task.Run(fun () ->
+            System.Threading.Thread.Sleep ms
+            Weir.Session.cutNode n 1 Weir.Session.CutReason.RaceLost true)
+        |> ignore
+
+        body ()
+    finally
+        Weir.Session.setCurrentNode null
+        Weir.Session.closeNode n
+
 let hunt3r2CancelTests =
     testSequenced
     <| testList
         "hunt-3r2 cancellation"
-        [ test "a condemned race group spares a child its cleanup starts [D:teardown-always-spawns]" {
+        [ test "a cut node spares a child its cleanup starts [D:teardown-always-spawns] [D:scope-tree]" {
               skipOnWindows ()
-              let g = Weir.Session.RaceGroup()
-              g.Condemn()
+              let n = Weir.Session.openNode (Weir.Session.currentNode ()) Weir.Session.NodeKind.Arm
+              Weir.Session.cutNode n 1 Weir.Session.CutReason.RaceLost true
               let sleeper () = System.Diagnostics.Process.Start("sleep", "10")
               let spared = sleeper ()
               let killed = sleeper ()
+              Weir.Session.setCurrentNode n
 
               try
-                  Weir.Session.runningCleanup (fun () -> g.Register spared)
-                  g.Register killed
+                  Weir.Session.registerChild killed
                   Expect.isTrue (killed.WaitForExit 5000) "a body's late child dies at registration"
-                  Expect.isFalse spared.HasExited "a cleanup's child runs on"
+
+                  Weir.Session.runningCleanup (fun () ->
+                      Weir.Session.registerChild spared
+                      Expect.isFalse (spared.WaitForExit 300) "a cleanup's child runs on")
               finally
+                  Weir.Session.setCurrentNode null
+                  Weir.Session.closeNode n
+
                   for p in [ spared; killed ] do
+                      Weir.Session.deregisterProc p
+
                       try
                           p.Kill true
                       with _ ->
                           ()
+          }
+          test "a node's children leave it as they exit; a closing node hands the live ones up [D:scope-tree]" {
+              skipOnWindows ()
+              let n = Weir.Session.openNode (Weir.Session.currentNode ()) Weir.Session.NodeKind.Arm
+              Weir.Session.setCurrentNode n
+
+              try
+                  for _ in 1..20 do
+                      let p = System.Diagnostics.Process.Start("true")
+                      Weir.Session.registerChild p
+                      p.WaitForExit()
+                      Weir.Session.deregisterProc p
+
+                  Expect.equal (Weir.Session.ownedCount n) 0 "exited children are gone"
+                  let live = System.Diagnostics.Process.Start("sleep", "10")
+                  Weir.Session.registerChild live
+                  Expect.equal (Weir.Session.ownedCount n) 1 "the live one is owned"
+                  Weir.Session.setCurrentNode null
+                  Weir.Session.closeNode n
+                  Expect.equal (Weir.Session.ownedCount n) 0 "handed up"
+                  Weir.Session.deregisterProc live
+                  live.Kill true
+              finally
+                  Weir.Session.setCurrentNode null
           }
           test "after a REPL ^C a fan-out takes no arm and ends as the interrupt [D:repl-interrupt-fanout]" {
               withTempDir "weir-c4" (fun d ->
@@ -27607,42 +27814,25 @@ let hunt3r2CancelTests =
                   expectValue "[1..4] |> Seq.pmap (fun i -> i) |> Seq.length" (VInt 4L))
           }
           test "a lost race abandons a blocking call; an unraced one keeps its raise [D:stdin-reader]" {
-              use cts = new System.Threading.CancellationTokenSource()
+              asArmCutAfter 200 (fun () ->
+                  let sw = System.Diagnostics.Stopwatch.StartNew()
 
-              Weir.Session.racing (fun () ->
-                  Weir.Session.enterFlow cts.Token
+                  Expect.throwsT<Weir.Session.Cancelled>
+                      (fun () ->
+                          Weir.Session.cutBlocking (fun () ->
+                              System.Threading.Thread.Sleep 10000
+                              1)
+                          |> ignore)
+                      "the cut raises"
 
-                  try
-                      System.Threading.Tasks.Task.Run(fun () ->
-                          System.Threading.Thread.Sleep 200
-                          cts.Cancel())
-                      |> ignore
+                  Expect.isLessThan sw.ElapsedMilliseconds 5000L "abandoned, not waited out")
 
-                      let sw = System.Diagnostics.Stopwatch.StartNew()
-
-                      Expect.throwsT<Weir.Session.Cancelled>
-                          (fun () ->
-                              Weir.Session.cutBlocking (fun () ->
-                                  System.Threading.Thread.Sleep 10000
-                                  1)
-                              |> ignore)
-                          "the cut raises"
-
-                      Expect.isLessThan sw.ElapsedMilliseconds 5000L "abandoned, not waited out"
-                  finally
-                      Weir.Session.exitFlow ())
-
-              use live = new System.Threading.CancellationTokenSource()
-              Weir.Session.enterFlow live.Token
-
-              try
+              asArmCutAfter 60000 (fun () ->
                   Expect.throwsT<IOException>
                       (fun () -> Weir.Session.cutBlocking (fun () -> raise (IOException "fifo")) |> ignore)
                       "the call's own raise, unwrapped"
 
-                  Expect.equal (Weir.Session.cutBlocking (fun () -> 5)) 5 "a value passes"
-              finally
-                  Weir.Session.exitFlow ()
+                  Expect.equal (Weir.Session.cutBlocking (fun () -> 5)) 5 "a value passes")
           } ]
 
 // hunt 3 round 3's cancellation seams; the signal, teardown and serve
@@ -27716,17 +27906,7 @@ let hunt3r3FifoTests =
 
                   use mk = System.Diagnostics.Process.Start("mkfifo", [| fifo |])
                   mk.WaitForExit()
-                  use cts = new System.Threading.CancellationTokenSource()
-
-                  Weir.Session.racing (fun () ->
-                      Weir.Session.enterFlow cts.Token
-
-                      try
-                          System.Threading.Tasks.Task.Run(fun () ->
-                              System.Threading.Thread.Sleep 200
-                              cts.Cancel())
-                          |> ignore
-
+                  asArmCutAfter 200 (fun () ->
                           let sw = System.Diagnostics.Stopwatch.StartNew()
 
                           Expect.throwsT<Weir.Session.Cancelled>
@@ -27739,9 +27919,7 @@ let hunt3r3FifoTests =
                                   | None -> failtest "a FIFO is polled")
                               "the cut raises"
 
-                          Expect.isLessThan sw.ElapsedMilliseconds 3000L "no writer is waited for"
-                      finally
-                          Weir.Session.exitFlow ())
+                          Expect.isLessThan sw.ElapsedMilliseconds 3000L "no writer is waited for")
 
                   let writer =
                       System.Threading.Tasks.Task.Run(fun () -> File.WriteAllText(fifo, "D1\nD2\n"))
@@ -27780,6 +27958,118 @@ let hunt3r3UnreadTests =
 
 // hunt 3 round 4's race seams; the signal, serve and REPL halves are e2e
 // cells
+let hunt3r4SafetyTests =
+    testList
+        "hunt-3r4 safety"
+        [ test "NO_PROXY matches as curl does [D:noproxy-curl]" {
+              let cases =
+                  [ "example.com", "sub.example.com", true
+                    "example.com", "example.com", true
+                    "example.com.", "sub.example.com", true
+                    ".example.com", "example.com", true
+                    "example.com", "sub.example.com.", true
+                    "EXAMPLE.com", "a.b.Example.COM", true
+                    "example.com", "notexample.com", false
+                    "*.example.com", "sub.example.com", false
+                    "example.com:443", "example.com", false
+                    "x.org, example.com", "sub.example.com", true
+                    "x.org example.com", "sub.example.com", false
+                    "a.com,*", "anything.net", true
+                    "localhost", "127.0.0.1", false
+                    "127.0.0.1", "127.0.0.1", true
+                    ".0.0.1", "127.0.0.1", false
+                    ".1", "127.0.0.1", false
+                    "127.0.0.0/8", "127.0.0.1", true
+                    "127.9.9.9/8", "127.0.0.1", true
+                    "127.0.0.0/0", "127.0.0.1", false
+                    "0.0.0.0/0", "127.0.0.1", false
+                    "127.0.0.0/ 8", "127.0.0.1", false
+                    "127.0.0.1/33", "127.0.0.1", false
+                    "127.0.0.2/31", "127.0.0.3", true
+                    "127.0.0.1:8080", "127.0.0.1", false
+                    "::1", "[::1]", true
+                    "::1/128", "[::1]", true
+                    "[::1]", "[::1]", false
+                    "[::1]:8080", "[::1]", false
+                    "[::1]/128", "[::1]", false
+                    "fd00::/8", "[fd00::1]", true
+                    "fd00::/8", "[fe80::1]", false ]
+
+              for np, host, want in cases do
+                  Expect.equal (Weir.Http.noProxyMatch np host) want $"NO_PROXY={np} vs {host}"
+          }
+          test "a proxy's refusal and close classify by kind, never by text [D:proxy-refusal-words]" {
+              let tunnel =
+                  System.Net.Http.HttpRequestException(
+                      System.Net.Http.HttpRequestError.ProxyTunnelError,
+                      "The proxy tunnel request to proxy 'http://u:S3cr3t@h:1/' failed with status code '407'.",
+                      null,
+                      System.Nullable System.Net.HttpStatusCode.ProxyAuthenticationRequired
+                  )
+
+              Expect.equal
+                  (Weir.Http.classifyTransport 1000L 1 (System.AggregateException(tunnel :> exn)))
+                  (Weir.Http.ProxyRefused 407)
+                  "a CONNECT refusal carries its status"
+
+              let ended =
+                  System.Net.Http.HttpRequestException(System.Net.Http.HttpRequestError.ResponseEnded, "x")
+
+              Expect.equal
+                  (Weir.Http.classifyTransport 1000L 1 (System.AggregateException(ended :> exn)))
+                  Weir.Http.ConnectionEnded
+                  "an early close is its own case"
+
+              let other =
+                  Weir.Http.transportMessage "h" (Weir.Http.OtherTransport "proxy 'http://u:S3cr3t@h:1/' \u001b[8m")
+
+              Expect.isFalse (other.Contains "S3cr3t") $"userinfo redacted: {other}"
+              Expect.isFalse (other.Contains "\u001b") $"escape visible: {other}"
+              Expect.equal (Weir.Http.redactUrlsIn "at 'http://a:b@h/x' and https://t@k/") "at 'http://***@h/x' and https://***@k/" "every URL"
+          }
+          test "a runtime error escapes the data it quotes [D:error-data-escape]" {
+              // X = "a<CR>b<ESC>[8mc"
+              let x = "(Str.fromBase64 \"YQ1iG1s4bWM=\")"
+
+              for src in
+                  [ $"Float.parse {x}"
+                    $"Duration.parse {x}"
+                    $"Size.parse {x}"
+                    $"Instant.parse {x}"
+                    $"Uuid.parse {x}"
+                    $"File.read {x} |> Seq.length"
+                    $"Env.need {x}"
+                    $"[{x}] |> from json {{| a: int |}}"
+                    $"[\"a: \" + {x}] |> from yaml {{| a: int |}}"
+                    "[\"a = \" + Str.fromBase64 \"MRtbOG0Neg==\"] |> from toml {| a: int |}" ] do
+                  let msg =
+                      try
+                          run src |> ignore
+                          failtest $"expected a raise: {src}"
+                      with e ->
+                          e.Message
+
+                  Expect.isFalse (msg.Contains "\u001b" || msg.Contains "\r") $"raw CR/ESC in: {msg}"
+                  Expect.stringContains msg "\\x1b" $"the ESC renders visibly: {src}"
+              Expect.equal (excerpt "a\nb") "a\\x0ab" "an excerpt shows LF visibly"
+              Expect.equal (quoteData "ok") "ok" "plain data is unchanged"
+          }
+          test "a failed console write marks the writer gone, never raises [D:console-hangup]" {
+              let dead =
+                  { new System.IO.TextWriter() with
+                      member _.Encoding = System.Text.Encoding.UTF8
+                      member _.Write(c: char) : unit = raise (System.IO.IOException "EIO")
+                      member _.Write(s: string) : unit = raise (System.IO.IOException "EIO")
+                      member _.WriteLine(s: string) : unit = raise (System.IO.IOException "EIO")
+                      member _.Flush() : unit = raise (System.IO.IOException "EIO") }
+
+              let w = new HangupWriter(dead)
+              w.Write "x"
+              w.WriteLine "y"
+              w.Flush()
+              Expect.isTrue w.Gone "the writer is gone after the first failure"
+          } ]
+
 let hunt3r4RaceTests =
     testSequenced
     <| testList
@@ -28172,13 +28462,37 @@ let hunt3BehaviorTests =
                   (VStr "2024-03-01T10:00:00")
                   "a string field keeps the text"
           }
+          test "from toml and Instant.parse take lowercase t/z and a seconds-less time [D:instant-rfc3339-forms]" {
+              let read v =
+                  $"[\"start = {v}\"] |> from toml HT |> fun r -> show r.start"
+
+              for v, want in
+                  [ "1979-05-27t07:32:00z", "1979-05-27T07:32:00Z"
+                    "1979-05-27T07:32Z", "1979-05-27T07:32:00Z"
+                    "1979-05-27 07:32+02:00", "1979-05-27T05:32:00Z"
+                    "1979-05-27t07:32:00.5z", "1979-05-27T07:32:00.500Z" ] do
+                  Expect.equal (runUnder henv (read v)) (VStr want) v
+
+              Expect.equal
+                  (run "show (Instant.parse \"1979-05-27t07:32:00z\")")
+                  (VStr "1979-05-27T07:32:00Z")
+                  "Instant.parse: lowercase"
+
+              Expect.equal
+                  (runUnder henv "[\"start = 1979-05-27T07:32\"] |> from toml HS |> fun r -> r.start")
+                  (VStr "1979-05-27T07:32")
+                  "a seconds-less local date-time keeps its text"
+
+              Expect.throwsC (fun () -> runUnder henv (read "1979-05-27T07:32") |> ignore) (fun e ->
+                  Expect.stringContains e.Message "a local date-time" "still offset-less")
+          }
           test "duplicate JSON keys into a Yaml field last-win at the first position [D:json-yaml-dupkeys]" {
               let src = doc """{"a": {"x": 1, "y": 2, "x": 3}}"""
               Expect.equal (runUnder henv $"{src} |> from json HN |> to json" |> text) """{"a":{"x":3,"y":2}}""" "json"
 
               Expect.equal
                   (runUnder henv $"{src} |> from json HN |> to yaml |> from yaml HN |> to yaml" |> text)
-                  "a:\n  x: 3\n  y: 2"
+                  "a:\n  x: 3\n  \"y\": 2"
                   "the yaml round trip holds"
           }
           test "a mapping last-wins on read; to json and to yaml refuse a key twice [D:mapping-dupkeys]" {
@@ -28249,7 +28563,7 @@ let hunt3BehaviorTests =
                   "the stream form too"
 
               let n = "{ n = YSeq [YSeq [YInt 1; YSeq [YStr \"x\"]]; YMap [(\"a\", YSeq [YInt 2])]; YSeq []] }"
-              Expect.equal (runUnder kenv $"{n} |> to yaml" |> text) "n:\n  -\n    - 1\n    -\n      - x\n  - a:\n      - 2\n  - []" "a nested YSeq"
+              Expect.equal (runUnder kenv $"{n} |> to yaml" |> text) "\"n\":\n  -\n    - 1\n    -\n      - x\n  - a:\n      - 2\n  - []" "a nested YSeq"
 
               Expect.equal
                   (runUnder kenv $"{n} |> to yaml |> from yaml KN |> to json" |> text)
@@ -28363,6 +28677,99 @@ let hunt3BehaviorTests =
               Expect.stringContains g "an enum mixing kinds (a, 1, true) — drafted Yaml" "its note"
               Expect.stringContains g "s: Option<string>" "a string enum stays string"
               Expect.stringContains g "an enum of 0.5, 1.5 — drafted float" "the values in the note"
+          }
+          test "schema drafting: [X, {type: null}] in either order is Option<X> for a $ref, array or object [D:schema-null-alt]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["a", "b", "c", "d", "e"],
+                           "$defs": { "Base": { "type": "object", "properties": { "x": { "type": "string" } }, "required": ["x"] } },
+                           "properties": {
+                             "a": { "anyOf": [{ "$ref": "#/$defs/Base" }, { "type": "null" }] },
+                             "b": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/Base" }] },
+                             "c": { "oneOf": [{ "type": "array", "items": { "type": "string" } }, { "type": "null" }] },
+                             "d": { "anyOf": [{ "type": ["null"] }, { "type": "object", "properties": { "y": { "type": "integer" } } }] },
+                             "e": { "anyOf": [{ "type": "integer" }, { "type": "null" }] } } }"""
+
+              Expect.stringContains g "\n    a: Option<Base>\n" "ref, null"
+              Expect.stringContains g "\n    b: Option<Base>\n" "null, ref"
+              Expect.stringContains g "\n    c: Option<seq<string>>\n" "array, null (oneOf)"
+              Expect.stringContains g "\n    d: Option<D>\n" "null, object"
+              Expect.stringContains g "\n    e: Option<int>\n" "a scalar as before"
+              Expect.isFalse (g.Contains "FIRST variant") "no first-variant guess"
+              Expect.isFalse (g.Contains "only null") "never 'allows only null'"
+          }
+          test "schema drafting: a $ref's sibling properties/required merge [D:schema-ref-siblings]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["item"],
+                           "$defs": { "Base": { "type": "object", "properties": { "x": { "type": "string" } }, "required": ["x"] } },
+                           "properties": {
+                             "item": { "$ref": "#/$defs/Base", "properties": { "y": { "type": "integer" } }, "required": ["y"] },
+                             "plain": { "$ref": "#/$defs/Base", "description": "annotations stay annotations" },
+                             "odd": { "$ref": "#/$defs/Base", "items": { "type": "string" } } } }"""
+
+              Expect.stringContains g "type Item = {\n    x: string\n    y: int\n}" "merged, required kept"
+              Expect.stringContains g "a $ref with sibling properties — drafted the merged record" "noted"
+              Expect.stringContains g "plain: Option<Base>" "an annotation sibling is the plain ref"
+              Expect.stringContains g "odd: a $ref with sibling keywords that are not both objects" "never a silent drop"
+          }
+          test "schema: deep in-document pointers and the root # resolve [D:schema-deep-refs]" {
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "definitions": { "opts": { "type": "object", "properties": { "inner": { "type": "object", "properties": { "a": { "type": "string" } } } } } },
+                           "properties": {
+                             "o": { "$ref": "#/definitions/opts" },
+                             "copy": { "$ref": "#/definitions/opts/properties/inner" },
+                             "self": { "$ref": "#" } } }"""
+
+              Expect.stringContains g "copy: Option<Inner>" "a deep pointer drafts its target"
+              Expect.stringContains g "inner: Option<Inner>" "one type for both routes"
+              Expect.stringContains g "self: Option<Yaml>" "# is the root: a cycle drafts the node"
+
+              match Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "x": { "$ref": "#/nope/a" } } }""" with
+              | Error e -> Expect.stringContains e "\"#/nope/a\" does not resolve" "a pointer to nothing refuses"
+              | Ok _ -> failtest "a dangling pointer must refuse"
+
+              match Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "x": { "$ref": "other.json#/a" } } }""" with
+              | Error e -> Expect.stringContains e "does not point into this document" "cross-file stays refused"
+              | Ok _ -> failtest "a cross-file ref must refuse"
+          }
+          test "schema drafting: bool/int-or-string oneOf with a $ref side drafts as inline [D:schema-bool-or-string]" {
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "definitions": { "expr": { "type": "string", "pattern": "^\\$" }, "s": { "type": "string" },
+                                            "level": { "type": "object", "properties": { "a": { "type": "string" } } } },
+                           "properties": {
+                             "cancel": { "oneOf": [{ "type": "boolean" }, { "$ref": "#/definitions/expr" }] },
+                             "port": { "oneOf": [{ "type": "integer" }, { "$ref": "#/definitions/s" }] },
+                             "perm": { "oneOf": [{ "type": "string", "enum": ["read-all"] }, { "$ref": "#/definitions/level" }] },
+                             "any": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "object" }, { "type": "array" }] } } }"""
+
+              Expect.stringContains g "cancel: Option<Yaml>" "bool | $ref string"
+              Expect.stringContains g "cancel: the schema allows boolean/string — drafted Yaml" "the inline note"
+              Expect.stringContains g "port: Option<Yaml>" "int | $ref string"
+              Expect.stringContains g "perm: Option<Yaml>" "one alternative per kind is the mixed draft [D:schema-mixed-kinds]"
+              Expect.stringContains g "any: Option<Yaml>" "any JSON value"
+          }
+          test "schema drafting: an enum containing null drafts Option<T>; the note says null [D:schema-enum-null]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["d", "g", "h", "n"],
+                           "properties": {
+                             "d": { "enum": ["x", null] },
+                             "g": { "enum": [null] },
+                             "h": { "type": ["string", "null"], "enum": ["a", null] },
+                             "n": { "enum": [1, 2, null] } } }"""
+
+              Expect.stringContains g "\n    d: Option<string>\n" "d"
+              Expect.stringContains g "\n    g: Option<string>\n" "g"
+              Expect.stringContains g "\n    h: Option<string>\n" "h"
+              Expect.stringContains g "\n    n: Option<int>\n" "n"
+              Expect.stringContains g "d: an enum of 'x', null — drafted Option<string>" "null unquoted"
+              Expect.stringContains g "n: an enum of 1, 2, null — drafted Option<int>" "a numeric one too"
+              Expect.isFalse (g.Contains "'null'") "never 'null'"
           }
           test "schema: a root $id, const and the content keywords are admitted and noted [D:schema-const-format]" {
               let g =
@@ -28747,6 +29154,7 @@ let allTests =
           hunt3r3PromptKeyTests
           hunt3r3UnreadTests
           hunt3r4RaceTests
+          hunt3r4SafetyTests
           argsSecretEchoTests
           hunt3BehaviorTests
           docsBinaryTests
