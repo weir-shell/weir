@@ -13634,7 +13634,8 @@ while True:
     c = s.recv(4096)
     if not c: break
     d += c
-print('%s status=%s body=%s' % (cs, d.split(b'\r\n', 1)[0].decode(), d.split(b'\r\n\r\n', 1)[-1].decode()))
+# UTF-8 bytes, not print: Windows' Python writes a pipe in the ANSI code page
+sys.stdout.buffer.write(('%s status=%s body=%s\n' % (cs, d.split(b'\r\n', 1)[0].decode(), d.split(b'\r\n\r\n', 1)[-1].decode())).encode('utf-8'))
 PYEOF
 cat > "$svdir/charset.weir" <<WEOF
 within serve srv = { port = $svport20; maxConcurrent = 2 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text \$"handled={req.body}" })
