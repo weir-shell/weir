@@ -24185,8 +24185,11 @@ let serveTests =
                   send fast (get "GET" "/fast")
                   let r = readQuiet fast
                   Expect.isTrue (r.EndsWith "<fast>") $"the fast request is served: {r}"
-                  // readQuiet's own quiet gap is 700ms
-                  Expect.isLessThan clock.ElapsedMilliseconds 3000L "served without waiting out the slow body")
+                  // readQuiet's own quiet gap is 700ms; waiting out the slow
+                  // body (bodyTimeout 5000ms, sent 300ms before the clock)
+                  // measures ~5400ms, so the bound sits between the two and
+                  // leaves a loaded runner its margin
+                  Expect.isLessThan clock.ElapsedMilliseconds 4500L "served without waiting out the slow body")
           }
           test "no body on 204, 304 or HEAD — a kept-alive connection stays in frame (H16)" {
               let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp =
