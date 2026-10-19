@@ -11585,6 +11585,38 @@ echo "$out" | grep -qF "source: help-scan" || fail "the refused help still harve
 printf '#sig bsdtool\nbsdtool -q --color=auto x\nprint "d"\n' > bsd.weir
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check bsd.weir 2>&1)
 echo "$out" | grep -q "unknown flag '-q'" && fail "a shortless surface must not warn on shorts: $out" || true
+# the bounded probe [D:sig-version-probe]: a daemon the help leaves
+# holding stdout cannot hang generation, and the probe's process group
+# dies with it; a flood is cut at the byte bound, with a note; every probe
+# runs in a fresh empty temp dir
+if [ "$IS_WINDOWS" != "1" ]; then
+cat > bin/daemontool <<WEOF
+#!/bin/sh
+case "\$1" in
+  --version) echo "daemontool 1.0";;
+  --help) printf 'Options:\n  --aa   aa\n'; sleep 30 & echo \$! > "$sgdir/daemon.pid"; pwd > "$sgdir/probe.cwd"; ls -A | wc -l > "$sgdir/probe.n";;
+  *) exit 1;;
+esac
+WEOF
+chmod +x bin/daemontool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" timeout 20 $BIN add sig daemontool 2>&1) || fail "a daemon holding the help's stdout hung add sig: $out"
+echo "$out" | grep -qF "added sig daemontool (1 flag(s)" || fail "the daemon's help still records: $out"
+kill -0 "$(cat "$sgdir/daemon.pid")" 2>/dev/null && fail "the probe's process group outlived the probe" || true
+case "$(cat "$sgdir/probe.cwd")" in */weir-sigprobe-*) ;; *) fail "a probe ran outside a fresh temp dir: $(cat "$sgdir/probe.cwd")";; esac
+[ "$(tr -d ' ' < "$sgdir/probe.n")" = "0" ] || fail "the probe's temp dir was not empty"
+cat > bin/floodtool <<'WEOF'
+#!/bin/sh
+case "$1" in
+  --version) echo "floodtool 1.0";;
+  --help) echo "Options:"; i=0; while :; do echo "  --f$i   xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; i=$((i+1)); done;;
+  *) exit 1;;
+esac
+WEOF
+chmod +x bin/floodtool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" timeout 60 $BIN add sig floodtool 2>&1) || fail "an endless help was not cut: $out"
+echo "$out" | grep -qF "output cut at 4 MiB per stream: 'floodtool --help'" || fail "the cut is stated: $(echo "$out" | cut -c1-300)"
+grep -qF "/// output cut at 4 MiB per stream: 'floodtool --help' — the rest was not read" .weir/sigs/floodtool.weir || fail "the sig notes the cut"
+fi
 # gh's dialect [D:scoped-sigs]: colon-suffixed command tokens walk, and
 # the walk reaches depth 4 (kustomize edit add resource's shape)
 cat > bin/ghtool <<'WEOF'

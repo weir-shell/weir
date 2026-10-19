@@ -1860,57 +1860,429 @@ let versionIdentity (line: string) : string =
     | Some i -> String.Join(" ", words[.. i - 1])
     | None -> String.Join(" ", words)
 
+/// one bounded probe's outcome [D:sig-version-probe]: the exit code (None
+/// when the time bound killed it), the two streams as read, and whether a
+/// stream passed the byte bound (the rest was never read)
+type ProbeOutput =
+    { Exit: int option
+      Out: string
+      Err: string
+      Cut: bool }
+
+/// a probe that needs this long is a hang, not a slow tool
+let probeTimeoutMs = 15000
+
+/// per stream: a help page larger than this is cut, the head kept
+let probeMaxBytes = 4 * 1024 * 1024
+
+/// after the tool exits, its pipes get this long to drain — a daemon it
+/// left holding stdout never closes them
+let probeGraceMs = 1000
+
+// the probe's own process group [D:sig-version-probe]: .NET cannot start a
+// child in a new group, so on Linux the probe is a posix_spawn with
+// POSIX_SPAWN_SETPGROUP, read through poll — every bound (time, the
+// drain after exit, bytes) ends in one kill of the group. A daemon that
+// left the group (setsid) is out of reach; the bounded read still ends.
+module private ProbeSpawn =
+    [<DllImport("libc", SetLastError = true)>]
+    extern int pipe2(int[] fds, int flags)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int close(int fd)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern nativeint read(int fd, byte[] buf, unativeint count)
+
+    [<DllImport("libc", SetLastError = true)>]
+    // struct pollfd as bytes ({ int fd; short events; short revents }): a
+    // byte array is pinned, so the kernel's revents are seen
+    extern int poll(byte[] fds, unativeint nfds, int timeout)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int kill(int pid, int signal)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int waitpid(int pid, int& status, int options)
+
+    [<DllImport("libc")>]
+    extern int posix_spawn_file_actions_init(nativeint fa)
+
+    [<DllImport("libc")>]
+    extern int posix_spawn_file_actions_destroy(nativeint fa)
+
+    [<DllImport("libc")>]
+    extern int posix_spawn_file_actions_adddup2(nativeint fa, int fd, int newfd)
+
+    [<DllImport("libc")>]
+    extern int posix_spawn_file_actions_addopen(nativeint fa, int fd, string path, int oflag, int mode)
+
+    [<DllImport("libc")>]
+    extern int posix_spawn_file_actions_addchdir_np(nativeint fa, string path)
+
+    [<DllImport("libc")>]
+    extern int posix_spawnattr_init(nativeint attr)
+
+    [<DllImport("libc")>]
+    extern int posix_spawnattr_destroy(nativeint attr)
+
+    [<DllImport("libc")>]
+    extern int posix_spawnattr_setflags(nativeint attr, int16 flags)
+
+    [<DllImport("libc")>]
+    extern int posix_spawnattr_setpgroup(nativeint attr, int pgroup)
+
+    [<DllImport("libc")>]
+    extern int posix_spawnattr_setsigdefault(nativeint attr, byte[] set)
+
+    [<DllImport("libc")>]
+    extern int posix_spawnattr_setsigmask(nativeint attr, byte[] set)
+
+    [<DllImport("libc")>]
+    extern int sigemptyset(byte[] set)
+
+    [<DllImport("libc")>]
+    extern int sigaddset(byte[] set, int signo)
+
+    [<DllImport("libc")>]
+    extern int posix_spawn(int& pid, string path, nativeint fa, nativeint attr, string[] argv, string[] envp)
+
+    let private O_CLOEXEC = 0x80000
+    let private POSIX_SPAWN_SETPGROUP = 0x02s
+    let private POSIX_SPAWN_SETSIGDEF = 0x04s
+    let private POSIX_SPAWN_SETSIGMASK = 0x08s
+    let private SIGKILL = 9
+    let private SIGSTOP = 19
+    let private WNOHANG = 1
+    let private POLLIN = 0x001s
+
+    let private decode (status: int) =
+        if status &&& 0x7f = 0 then (status >>> 8) &&& 0xff else 128 + (status &&& 0x7f)
+
+    // a bare name searches PATH as the environment states it (the C
+    // environ can lag .NET's)
+    let private locate (prog: string) : string option =
+        if prog.Contains '/' then
+            Some prog
+        else
+            (match Environment.GetEnvironmentVariable "PATH" with
+             | null -> ""
+             | v -> v).Split(':', StringSplitOptions.RemoveEmptyEntries)
+            |> Array.map (fun d -> Path.Combine(d, prog))
+            |> Array.tryFind (fun p ->
+                File.Exists p
+                && (File.GetUnixFileMode p
+                    &&& (UnixFileMode.UserExecute ||| UnixFileMode.GroupExecute ||| UnixFileMode.OtherExecute))
+                   <> enum 0)
+
+    /// None: the spawn failed (absent tool); raises EntryPointNotFound on
+    /// a libc without addchdir_np, for the caller's managed fallback
+    let run (prog: string) (args: string list) (cwd: string) : ProbeOutput option =
+        match locate prog with
+        | None -> None
+        | Some path ->
+            let outP = Array.zeroCreate<int> 2
+            let errP = Array.zeroCreate<int> 2
+
+            if pipe2 (outP, O_CLOEXEC) <> 0 then
+                None
+            elif pipe2 (errP, O_CLOEXEC) <> 0 then
+                close outP[0] |> ignore
+                close outP[1] |> ignore
+                None
+            else
+                let fa = Marshal.AllocHGlobal 1024
+                let attr = Marshal.AllocHGlobal 1024
+                let mutable pid = 0
+
+                // the read ends close here on a failed spawn, the
+                // write ends always (the child holds its own)
+                let spawned =
+                    try
+                        try
+                            posix_spawn_file_actions_init fa |> ignore
+                            posix_spawnattr_init attr |> ignore
+
+                            try
+                                posix_spawn_file_actions_addopen (fa, 0, "/dev/null", 0, 0) |> ignore
+                                posix_spawn_file_actions_adddup2 (fa, outP[1], 1) |> ignore
+                                posix_spawn_file_actions_adddup2 (fa, errP[1], 2) |> ignore
+
+                                if posix_spawn_file_actions_addchdir_np (fa, cwd) <> 0 then
+                                    failwith "addchdir"
+
+                                // the dispositions a command expects: .NET
+                                // ignores SIGPIPE, and an ignored signal
+                                // survives exec — a flood must die on its pipe
+                                let all = Array.zeroCreate<byte> 128
+                                sigemptyset all |> ignore
+
+                                for s in 1..31 do
+                                    if s <> SIGKILL && s <> SIGSTOP then
+                                        sigaddset (all, s) |> ignore
+
+                                let none = Array.zeroCreate<byte> 128
+                                sigemptyset none |> ignore
+                                posix_spawnattr_setsigdefault (attr, all) |> ignore
+                                posix_spawnattr_setsigmask (attr, none) |> ignore
+                                posix_spawnattr_setpgroup (attr, 0) |> ignore
+
+                                posix_spawnattr_setflags (attr, POSIX_SPAWN_SETPGROUP ||| POSIX_SPAWN_SETSIGDEF ||| POSIX_SPAWN_SETSIGMASK)
+                                |> ignore
+
+                                let argv = Array.append (Array.ofList (path :: args)) [| null |]
+
+                                let envp =
+                                    [| for e in Environment.GetEnvironmentVariables() |> Seq.cast<Collections.DictionaryEntry> do
+                                           yield $"{e.Key}={e.Value}"
+                                       yield null |]
+
+                                posix_spawn (&pid, path, fa, attr, argv, envp) = 0
+                            finally
+                                posix_spawn_file_actions_destroy fa |> ignore
+                                posix_spawnattr_destroy attr |> ignore
+                        finally
+                            Marshal.FreeHGlobal fa
+                            Marshal.FreeHGlobal attr
+                            close outP[1] |> ignore
+                            close errP[1] |> ignore
+                    with _ ->
+                        close outP[0] |> ignore
+                        close errP[0] |> ignore
+                        reraise ()
+
+                if not spawned then
+                    close outP[0] |> ignore
+                    close errP[0] |> ignore
+                    None
+                else
+                    let bufs = [| new MemoryStream(); new MemoryStream() |]
+                    let fds = [| outP[0]; errP[0] |]
+                    let isOpen = [| true; true |]
+                    let chunk = Array.zeroCreate<byte> 65536
+                    let clock = Diagnostics.Stopwatch.StartNew()
+                    let mutable exitCode: int option = None
+                    let mutable exitedAt = 0L
+                    let mutable killed = false
+                    let mutable cut = false
+                    let mutable timedOut = false
+
+                    let killGroup () =
+                        if not killed then
+                            killed <- true
+                            kill (-pid, SIGKILL) |> ignore
+
+                    let reap (options: int) =
+                        if exitCode.IsNone then
+                            let mutable status = 0
+
+                            if waitpid (pid, &status, options) = pid then
+                                exitCode <- Some(decode status)
+                                exitedAt <- clock.ElapsedMilliseconds
+
+                    try
+                        let mutable go = true
+
+                        while go do
+                            let live = [ for i in 0..1 do if isOpen[i] then yield i ]
+
+                            if not live.IsEmpty then
+                                let pfds = Array.zeroCreate<byte> (8 * live.Length)
+
+                                live
+                                |> List.iteri (fun k i ->
+                                    Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(Span(pfds, 8 * k, 4), fds[i])
+                                    Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(Span(pfds, 8 * k + 4, 2), POLLIN))
+
+                                if poll (pfds, unativeint live.Length, 10) > 0 then
+                                    for k in 0 .. live.Length - 1 do
+                                        if Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(ReadOnlySpan(pfds, 8 * k + 6, 2)) <> 0s then
+                                            let i = live[k]
+                                            let n = int (read (fds[i], chunk, unativeint chunk.Length))
+
+                                            if n <= 0 then
+                                                isOpen[i] <- false
+                                            elif bufs[i].Length + int64 n > int64 probeMaxBytes then
+                                                bufs[i].Write(chunk, 0, probeMaxBytes - int bufs[i].Length)
+                                                cut <- true
+                                                isOpen[i] <- false
+                                            else
+                                                bufs[i].Write(chunk, 0, n)
+                            else
+                                Threading.Thread.Sleep 5
+
+                            reap WNOHANG
+
+                            if cut then
+                                killGroup ()
+                                go <- false
+                            elif exitCode.IsSome && not isOpen[0] && not isOpen[1] then
+                                go <- false
+                            elif exitCode.IsSome && clock.ElapsedMilliseconds - exitedAt > int64 probeGraceMs then
+                                // a daemon holds the pipes: its output so far
+                                // is the answer
+                                killGroup ()
+                                go <- false
+                            elif clock.ElapsedMilliseconds > int64 probeTimeoutMs then
+                                timedOut <- true
+                                killGroup ()
+                                go <- false
+
+                        // the tool's own group goes with it (a backgrounded
+                        // child still writing, a sleep it started)
+                        killGroup ()
+
+                        while exitCode.IsNone && clock.ElapsedMilliseconds < int64 (probeTimeoutMs + 2000) do
+                            reap WNOHANG
+
+                            if exitCode.IsNone then
+                                Threading.Thread.Sleep 5
+
+                        let text (b: MemoryStream) =
+                            Text.Encoding.UTF8.GetString(b.GetBuffer(), 0, int b.Length)
+
+                        Some
+                            { Exit = (if timedOut then None else exitCode |> Option.orElse (Some 137))
+                              Out = text bufs[0]
+                              Err = text bufs[1]
+                              Cut = cut }
+                    finally
+                        close fds[0] |> ignore
+                        close fds[1] |> ignore
+
+// elsewhere (macOS, Windows, a libc without addchdir_np): .NET's Process,
+// the same bounds, the tree kill in place of the group's
+let private runProbeManaged (prog: string) (args: string list) (cwd: string) : ProbeOutput option =
+    try
+        let psi = Diagnostics.ProcessStartInfo(prog)
+
+        for a in args do
+            psi.ArgumentList.Add a
+
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError <- true
+        psi.RedirectStandardInput <- true
+        psi.UseShellExecute <- false
+        psi.WorkingDirectory <- cwd
+        use p = Diagnostics.Process.Start psi
+        p.StandardInput.Close()
+        let mutable cut = false
+
+        let kill () =
+            try
+                p.Kill true
+            with _ ->
+                ()
+
+        let pump (s: Stream) =
+            Threading.Tasks.Task.Run(fun () ->
+                let b = new MemoryStream()
+                let chunk = Array.zeroCreate<byte> 65536
+                let mutable go = true
+
+                while go do
+                    let n =
+                        try
+                            s.Read(chunk, 0, chunk.Length)
+                        with _ ->
+                            0
+
+                    if n <= 0 then
+                        go <- false
+                    elif b.Length + int64 n > int64 probeMaxBytes then
+                        b.Write(chunk, 0, probeMaxBytes - int b.Length)
+                        cut <- true
+                        kill ()
+                        go <- false
+                    else
+                        b.Write(chunk, 0, n)
+
+                Text.Encoding.UTF8.GetString(b.GetBuffer(), 0, int b.Length))
+
+        let outT = pump p.StandardOutput.BaseStream
+        let errT = pump p.StandardError.BaseStream
+        let exited = p.WaitForExit probeTimeoutMs
+
+        if not exited then
+            kill ()
+
+        // a daemon holding the pipes: what was read in the drain is the
+        // answer
+        Threading.Tasks.Task.WaitAll([| outT :> Threading.Tasks.Task; errT |], probeGraceMs) |> ignore
+        let get (t: Threading.Tasks.Task<string>) = if t.IsCompleted then t.Result else ""
+
+        Some
+            { Exit = (if exited then Some p.ExitCode else None)
+              Out = get outT
+              Err = get errT
+              Cut = cut }
+    with _ ->
+        None
+
+let mutable private nativeProbe = OperatingSystem.IsLinux()
+
+/// run `<prog> <args>` as a probe [D:sig-version-probe]: stdin empty, the
+/// cwd `cwd` or a fresh temp dir (removed after), bounded in time
+/// (probeTimeoutMs, then probeGraceMs to drain after the exit) and bytes
+/// (probeMaxBytes per stream), the probe's process group killed at any
+/// bound. None: it did not start
+let runProbe (prog: string) (args: string list) (cwd: string option) : ProbeOutput option =
+    let dir =
+        match cwd with
+        | Some d -> d
+        | None ->
+            let d = Path.Combine(Path.GetTempPath(), $"weir-sigprobe-{Guid.NewGuid():N}")
+            Directory.CreateDirectory d |> ignore
+            d
+
+    try
+        let viaManaged () = runProbeManaged prog args dir
+
+        if nativeProbe then
+            try
+                ProbeSpawn.run prog args dir
+            with
+            | :? EntryPointNotFoundException
+            | :? DllNotFoundException ->
+                nativeProbe <- false
+                viaManaged ()
+            | Failure "addchdir" -> viaManaged ()
+        else
+            viaManaged ()
+    finally
+        if cwd.IsNone then
+            try
+                Directory.Delete(dir, true)
+            with _ ->
+                ()
+
 /// one probe rung: spawn `<tool> <arg>` and read the exit code.
 /// stdin is null and the cwd a fresh temp dir — probing the bare
 /// `version` word must not hang a stdin-reader (`grep version`) or
 /// serve a local VERSION file as the identity (`cat version`)
 /// [D:sig-version-probe]
 let private probeRung (resolve: string -> string) (tool: string) (arg: string) : VersionProbe =
-    try
-        let psi = Diagnostics.ProcessStartInfo(resolve tool, arg)
-        psi.RedirectStandardOutput <- true
-        psi.RedirectStandardError <- true
-        psi.RedirectStandardInput <- true
-        psi.UseShellExecute <- false
-        psi.WorkingDirectory <- IO.Path.GetTempPath()
-        use p = Diagnostics.Process.Start psi
-        p.StandardInput.Close()
-        // async reads, then the bounded wait — a synchronous ReadToEnd
-        // blocks before any timeout can fire if the child holds stdout
-        let outTask = p.StandardOutput.ReadToEndAsync()
-        let errTask = p.StandardError.ReadToEndAsync()
+    match (try runProbe (resolve tool) [ arg ] None with _ -> None) with
+    | None -> ToolAbsent
+    // a version probe that needs a minute is a hang, not a slow tool —
+    // killed, no identity
+    | Some { Exit = None } -> RefusesVersionFlag
+    | Some r when r.Exit <> Some 0 && not r.Cut -> RefusesVersionFlag
+    | Some r ->
+        match stripAnsi (if r.Out.Trim() <> "" then r.Out else r.Err) with
+        | blank when blank.Trim() = "" -> RefusesVersionFlag
+        | text ->
+            // the identity is the first line, whitespace-collapsed
+            // [D:sig-version-probe]: az's --version is a whole
+            // environment report — machine paths, dependency lists,
+            // even a volatile update marker; the headline is the
+            // version, the rest is environment
+            let firstLine =
+                text.Split '\n'
+                |> Array.tryFind (fun l -> l.Trim() <> "")
+                |> Option.defaultValue text
 
-        // a version probe that needs a minute is a hang, not a slow
-        // tool — kill and record no identity
-        if not (p.WaitForExit 15000) then
-            (try
-                p.Kill true
-             with _ ->
-                 ())
-
-            RefusesVersionFlag
-        elif p.ExitCode <> 0 then
-            RefusesVersionFlag
-        else
-            let out = outTask.Result
-            let err = errTask.Result
-
-            match stripAnsi (if out.Trim() <> "" then out else err) with
-            | blank when blank.Trim() = "" -> RefusesVersionFlag
-            | text ->
-                // the identity is the first line, whitespace-collapsed
-                // [D:sig-version-probe]: az's --version is a whole
-                // environment report — machine paths, dependency lists,
-                // even a volatile update marker; the headline is the
-                // version, the rest is environment
-                let firstLine =
-                    text.Split '\n'
-                    |> Array.tryFind (fun l -> l.Trim() <> "")
-                    |> Option.defaultValue text
-
-                ToolVersion(versionIdentity firstLine)
-    with _ ->
-        ToolAbsent
+            ToolVersion(versionIdentity firstLine)
 
 /// the ladder — `--version`, then the `version` subcommand (jira,
 /// kubectl, terraform, go, gh). Two rungs only, both stated: the

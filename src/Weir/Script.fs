@@ -6332,43 +6332,23 @@ let sigCmdDiagnostics
 // The generated file is validated (loads as a signature) before anything
 // persists.
 module SigGen =
+    // the probes whose output passed the byte bound, for the generated
+    // file's note [D:sig-version-probe]
+    let private cutProbes = System.Collections.Concurrent.ConcurrentQueue<string>()
+
     let private runIn (cwd: string option) (anyExit: bool) (tool: string) (args: string list) : string option =
-        // probeRung's guards [D:sig-version-probe]: null stdin (a
-        // stdin-reader must not hang generation), temp cwd, async reads
-        // ahead of a bounded wait, kill on expiry
-        try
-            let psi = System.Diagnostics.ProcessStartInfo(Proc.resolveProg tool)
+        // the bounded probe [D:sig-version-probe]: empty stdin (a
+        // stdin-reader must not hang generation), a fresh temp cwd, a
+        // time and a byte bound, the probe's process group killed
+        match (try Contracts.runProbe (Proc.resolveProg tool) args cwd with _ -> None) with
+        | Some r when r.Exit = Some 0 || r.Cut || (anyExit && r.Exit.IsSome) ->
+            if r.Cut then
+                cutProbes.Enqueue(String.concat " " args)
 
-            for a in args do
-                psi.ArgumentList.Add a
-
-            psi.RedirectStandardOutput <- true
-            psi.RedirectStandardError <- true
-            psi.RedirectStandardInput <- true
-            psi.UseShellExecute <- false
-            psi.WorkingDirectory <- cwd |> Option.defaultValue (IO.Path.GetTempPath())
-            use p = System.Diagnostics.Process.Start psi
-            p.StandardInput.Close()
-            let outTask = p.StandardOutput.ReadToEndAsync()
-            let errTask = p.StandardError.ReadToEndAsync()
-
-            if not (p.WaitForExit 15000) then
-                (try
-                    p.Kill true
-                 with _ ->
-                     ())
-
-                None
-            elif p.ExitCode = 0 || anyExit then
-                let out = outTask.Result
-
-                match Contracts.stripAnsi (if out.Trim() <> "" then out else errTask.Result) with
-                | blank when blank.Trim() = "" -> None
-                | text -> Some(text.Replace("\r", ""))
-            else
-                None
-        with _ ->
-            None
+            match Contracts.stripAnsi (if r.Out.Trim() <> "" then r.Out else r.Err) with
+            | blank when blank.Trim() = "" -> None
+            | text -> Some(text.Replace("\r", ""))
+        | _ -> None
 
     let private runTool = runIn None false
 
@@ -7058,6 +7038,7 @@ module SigGen =
             |> List.tryFind IO.File.Exists
 
     let generate (weirDir: string) (tool: string) : Result<string, string> =
+        cutProbes.Clear()
         // Flag probes are safe on any tool; a bare word is not — `code
         // completion fish` opens VS Code on two files
         // [D:sig-version-probe]. Bare-word probes (completion fish, the
@@ -7540,6 +7521,19 @@ module SigGen =
                 line $"/// source: {fullSource} — a scraped surface may be incomplete (partial"
                 line "/// by default; add `let exhaustive = true` once verified by hand)"
 
+                // a probe whose output passed the byte bound was read in
+                // part [D:sig-version-probe]
+                let cutNote =
+                    match cutProbes |> Seq.distinct |> List.ofSeq with
+                    | [] -> ""
+                    | cuts ->
+                        let mib = Contracts.probeMaxBytes / (1024 * 1024)
+                        let named = cuts |> List.map (fun a -> $"'{tool} {a}'") |> String.concat ", "
+                        $"output cut at {mib} MiB per stream: {named}"
+
+                if cutNote <> "" then
+                    line $"/// {escape cutNote} — the rest was not read"
+
                 if nodes.IsEmpty then
                     line "/// flat surface: flags checked across the whole line — split into"
                     line "/// subcommand records by hand if the tool warrants it"
@@ -7726,8 +7720,10 @@ module SigGen =
 
                                     $"{total} flag(s) across {nodes.Length} subcommand case(s)"
 
+                            let cutTail = if cutNote = "" then "" else $"; {cutNote}"
+
                             Ok
-                                $"added sig {tool} ({surfaceNote}, source: {fullSource}, version: {versionNote}) — partial by default; verify and mark exhaustive by hand"
+                                $"added sig {tool} ({surfaceNote}, source: {fullSource}, version: {versionNote}{cutTail}) — partial by default; verify and mark exhaustive by hand"
                 finally
                     try
                         IO.File.Delete tmp
