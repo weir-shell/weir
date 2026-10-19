@@ -36,8 +36,12 @@
   letter, stops at a subcommand the signature does not know, and an
   older signature checks exactly as before. On the survey's twenty
   common tools the scored lines went from 76 false warnings to none. npm
-  takes any config key as a flag, so its signature is generated with no
-  flag checked.
+  (and npx) take any config key as a flag, so their signatures are
+  generated with no flag checked. Wrappers (`timeout`, `flock`, `stdbuf`,
+  `watch`, `bash script.sh`) stop checking at the command they run;
+  kill's `-TERM`, perl's `-MJSON::PP`, unzip's two-column help, shfmt's
+  aligned rows, Go flags shown only in examples, node's `--deprecation`
+  and git's `remote add`/`stash push`-style subcommands are read.
 
 - **`serve` runs on Kestrel** (ASP.NET Core's server, part of the .NET
   SDK) instead of `HttpListener` — one server on Linux, macOS and
@@ -94,6 +98,19 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **`weir add sig` cannot hang or run out of memory on a tool's help.**
+  A help that leaves a daemon holding its output, or prints without
+  end, hung generation or grew it to gigabytes. Each probe now gets 15s,
+  then 1s to drain after the tool exits, and reads at most 4 MiB per
+  stream (the signature notes a cut); the probe's process group is
+  killed. Probes run in a fresh empty temp dir, not in the shared temp
+  dir itself.
+- **Signature file names no longer collide.** `#sig /a/b/cob` and
+  `#sig _a_b_cob` (or `.weir` and `weir`, `a b` and `a_b`) wrote the
+  same `.weir/sigs/` file. Characters outside letters, digits, `-`,
+  `_` and a non-leading `.` are now written as `%XX`; a plain name's
+  file is unchanged, and a signature written under the old name is
+  still found through the lock.
 - **`serve` answers 415 to a request body in a charset weir cannot
   decode.** It was decoded as UTF-8, a wrong byte becoming U+FFFD, and
   handed to the handler; now no handler runs, as the HTTP client
