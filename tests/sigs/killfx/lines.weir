@@ -1,0 +1,7 @@
+#sig killfx
+killfx -TERM 1234 // clean
+killfx -s HUP 1234 // clean
+killfx --signal KILL 1234 // clean
+killfx -9 1234 // clean
+killfx -l // clean
+killfx --sigal KILL 1 // typo: --sigal

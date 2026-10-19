@@ -1,0 +1,5 @@
+#sig mkcertfx
+mkcertfx -install // clean
+mkcertfx -uninstall // clean
+mkcertfx -cert-file c.pem -key-file k.pem example.org // clean
+mkcertfx -instal // typo: -instal

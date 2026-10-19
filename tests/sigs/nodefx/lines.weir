@@ -7,3 +7,4 @@ nodefx --max-old-space-size=4096 --stack-size=2000 app.js // clean
 nodefx -e "1" --input-type=module // clean
 nodefx app.js --port 3000 // clean
 nodefx --test --test-reporter=spec --no-experimental-require-module // clean
+nodefx --warnings app.js // clean (the positive of --no-warnings)

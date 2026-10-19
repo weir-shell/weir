@@ -1,0 +1,51 @@
+=== --version
+12.2.0
+=== --help
+Run a command from a local or remote npm package
+
+Usage:
+npm exec -- <pkg>[@<version>] [args...]
+npm exec --package=<pkg>[@<version>] -- <cmd> [args...]
+npm exec -c '<cmd> [args...]'
+npm exec --package=foo -c '<cmd> [args...]'
+
+Options:
+[--package <package-spec> [--package <package-spec> ...]] [-c|--call <call>]
+[-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
+[--workspaces] [--include-workspace-root]
+[--allow-scripts <package-list> [--allow-scripts <package-list> ...]]
+[--strict-allow-scripts] [--dangerously-allow-all-scripts]
+
+  --package
+    The package or packages to install for [`npm exec`](/commands/npm-exec)
+
+  -c|--call
+    Optional companion option for `npm exec`, `npx` that allows for
+
+  -w|--workspace
+    Enable running a command in the context of the configured workspaces of the
+
+  --workspaces
+    Set to true to run the command in the context of **all** configured
+
+  --include-workspace-root
+    Include the workspace root when workspaces are enabled for a command.
+
+  --allow-scripts
+    Comma-separated list of packages whose install-time lifecycle scripts
+
+  --strict-allow-scripts
+    If `true`, turn the install-script policy from a warning into a hard
+
+  --dangerously-allow-all-scripts
+    If `true`, bypass the `allowScripts` policy entirely and run every
+
+
+alias: x
+
+Run "npm help exec" for more info
+=== --versio
+@exit 1
+npm error code EUNKNOWNCONFIG
+npm error Unknown cli flag:
+npm error   - --versio

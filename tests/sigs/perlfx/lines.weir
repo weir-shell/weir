@@ -1,0 +1,6 @@
+#sig perlfx
+perlfx -MJSON::PP -e "1" // clean
+perlfx -I lib t.pl // clean
+perlfx -F: -lane "print" f // clean
+perlfx -Mstrict -wle 1 // clean
+perlfx -Z -e 1 // typo: -Z

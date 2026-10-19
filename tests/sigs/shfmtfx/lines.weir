@@ -1,0 +1,5 @@
+#sig shfmtfx
+shfmtfx --write --indent 2 x.sh // clean
+shfmtfx --diff --simplify x.sh // clean
+shfmtfx -w -i 2 -ln bash x.sh // clean
+shfmtfx --writ x.sh // typo: --writ

@@ -14,6 +14,7 @@ start a working area (see also: git help tutorial)
 === --list-cmds=builtins
 commit
 log
+remote
 status
 === commit --weir-probe-unknown --git-completion-helper-all
 @exit 129
@@ -58,3 +59,47 @@ usage: git status [<options>] [--] [<pathspec>...]
                           machine-readable output
     -u, --[no-]untracked-files[=<mode>]
                           show untracked files
+=== remote --weir-probe-unknown --git-completion-helper-all
+@exit 129
+error: unknown option `weir-probe-unknown'
+=== remote --git-completion-helper-all
+--verbose -- --no-verbose
+=== remote -h
+@exit 129
+usage: git remote [-v | --verbose]
+   or: git remote add [-t <branch>] [-m <master>] [-f] [--tags | --no-tags] [--mirror=<fetch|push>] <name> <url>
+   or: git remote set-head <name> (-a | --auto | -d | --delete | <branch>)
+   or: git remote [-v | --verbose] show [-n] <name>
+
+    -v, --[no-]verbose    be verbose; must be placed before a subcommand
+=== remote add --weir-probe-unknown --git-completion-helper-all
+@exit 129
+error: unknown option `weir-probe-unknown'
+=== remote add --git-completion-helper-all
+--fetch --tags --track= --master= --mirror= -- --no-fetch --no-tags --no-track --no-master --no-mirror
+=== remote add -h
+@exit 129
+usage: git remote add [<options>] <name> <url>
+
+    -f, --[no-]fetch      fetch the remote branches
+    --[no-]tags           import all tags and associated objects when fetching
+    -t, --[no-]track <branch>
+                          branch(es) to track
+    -m, --[no-]master <branch>
+                          master branch
+=== remote set-head --weir-probe-unknown --git-completion-helper-all
+@exit 129
+error: unknown option `weir-probe-unknown'
+=== remote set-head --git-completion-helper-all
+--auto --delete --no-auto -- --no-delete
+=== remote set-head -h
+@exit 129
+usage: git remote set-head <name> (-a | --auto | -d | --delete | <branch>)
+
+    -a, --[no-]auto       set refs/remotes/<name>/HEAD according to remote
+    -d, --[no-]delete     delete refs/remotes/<name>/HEAD
+=== remote show --weir-probe-unknown --git-completion-helper-all
+@exit 129
+error: unknown option `weir-probe-unknown'
+=== remote show --git-completion-helper-all
+--verbose -- --no-verbose

@@ -1,0 +1,3 @@
+#sig stdbuffx
+stdbuffx -oL grep --line-buffered x f // clean
+stdbuffx --outptu L grep x // typo: --outptu

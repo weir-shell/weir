@@ -1,0 +1,4 @@
+#sig timeoutfx
+timeoutfx 30 curl --fail https://x // clean
+timeoutfx -k 5 30 make --keep-going // clean
+timeoutfx --foregrund 3 x // typo: --foregrund

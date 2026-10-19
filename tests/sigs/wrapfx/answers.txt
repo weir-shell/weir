@@ -1,0 +1,16 @@
+=== --version
+wrapfx from util-linux 2.41.3
+=== --help
+
+Usage:
+ wrapfx [options] <file> <command> [<argument>...]
+ wrapfx [options] <file> -c <command>
+
+Run a command under a lock, or for each result.
+
+Options:
+ -s, --shared             get a shared lock
+ -w, --timeout <secs>     wait for a limited amount of time
+ -x, --exec <cmd>...      run a command for each result
+ -h, --help               display this help
+ -V, --version            display version
