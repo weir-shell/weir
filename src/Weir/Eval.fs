@@ -586,6 +586,10 @@ type private PlanFrame =
       // the simulation's link cache [D:plan-preconditions]: a real path
       // to its symlink's target, null for no link — read once per plan
       SimLinks: System.Collections.Generic.Dictionary<string, string>
+      // a directory copy or move was captured: some simulated path is
+      // backed by another real one, so the real filesystem alone may not
+      // say a path holds no link
+      mutable Mirrored: bool
       // the file identities in-place writes target [D:plan-guard-inode]:
       // (device, inode) — the Windows file index — to the path a
       // refusal names
@@ -857,6 +861,7 @@ module PlanMode =
               Index = GuardNode(comparer)
               Links = GuardNode(System.StringComparer.Ordinal)
               SimLinks = System.Collections.Generic.Dictionary(System.StringComparer.Ordinal)
+              Mirrored = false
               Files = System.Collections.Generic.Dictionary()
               TmpRoots = ResizeArray() }
 
@@ -1066,8 +1071,42 @@ module PlanMode =
 
         struct (cur, lastLink)
 
+    // does a path pass through a copied or moved directory in any layer?
+    let private throughMirror (frames: PlanFrame list) (p: string) : bool =
+        let comps = compsOf p
+
+        frames
+        |> List.exists (fun f ->
+            f.Mirrored
+            && (let mutable node = f.Sim
+                let mutable hit = false
+                let mutable i = 0
+
+                while not hit && not (isNull node) && i < comps.Length do
+                    node <- node.Find comps[i]
+                    hit <- not (isNull node) && not (isNull node.Mirror)
+                    i <- i + 1
+
+                hit))
+
+    // the plan-time resolution, with the common case cheap: a path
+    // through no copied or moved directory and with no link on its real
+    // path (the guard's per-plan link cache [D:plan-guard-linear] — one
+    // lookup per component) has nothing to follow
+    let private canonPlan (followLast: bool) (p: string) : struct (string * bool) =
+        let frames = stack.Value
+
+        let plain =
+            not (throughMirror frames p)
+            && (try
+                    keyOf (resolveLinks (linkCache ()) followLast p) = keyOf (norm p)
+                with _ ->
+                    false)
+
+        if plain then struct (p, false) else canonIn frames followLast p
+
     let private canon (followLast: bool) (p: string) =
-        let struct (c, _) = canonIn stack.Value followLast p
+        let struct (c, _) = canonPlan followLast p
         c
 
     /// a path with its symlinks followed, on the real filesystem
@@ -1081,7 +1120,7 @@ module PlanMode =
     /// the plan-time kind of a path (0 absent, 1 file, 2 dir, 4 other —
     /// a link whose target the plan removed dangles)
     let simKind (p: string) : int =
-        let struct (c, viaLink) = canonIn stack.Value true p
+        let struct (c, viaLink) = canonPlan true p
 
         match kindIn stack.Value c with
         | 0 when viaLink -> 4
@@ -1149,6 +1188,7 @@ module PlanMode =
     // cloned, the layer beneath mirrored
     let private copyTree (frames: PlanFrame list) (src: string) (dst: string) =
         let top = (List.head frames).Sim
+        (List.head frames).Mirrored <- true
         let struct (_, node, below) = viewIn top src
 
         let mirror =
