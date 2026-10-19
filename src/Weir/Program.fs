@@ -219,6 +219,13 @@ let private evalOnce (input: string) : int =
 let private lockText (redirected: bool) (s: string) : string =
     if redirected then s else Eval.sanitizeTtyEcho s
 
+// the lock is committed: an add drops the URL's userinfo from it and
+// says so [D:lock-no-userinfo]
+let private userinfoNote (url: string) : unit =
+    if Http.stripUserinfo url <> url then
+        Console.Error.WriteLine
+            "weir add: note: the URL's credentials are not written to .weir/lock.json (it is committed) — `weir restore` fetches without them"
+
 // a script (or -e) tears down on its main thread: signals and a closed
 // stdout end it with their own code [D:signal-main-unwind] [D:stdout-epipe]
 let private runOnMain (run: unit -> int) : int =
@@ -384,6 +391,7 @@ let main argv =
                 (match Contracts.addFetched weirDir "schema" name url with
                  | Ok line ->
                      Console.WriteLine line
+                     userinfoNote url
                      0
                  | Error e ->
                      Console.Error.WriteLine $"weir add: {e}"
@@ -487,6 +495,7 @@ let main argv =
                                           $"added module {name} ({hash.Substring(0, 12)}…, {memberCount} member(s)) from {Http.redactUrl src.Url}")
 
                                  Console.WriteLine $"import it:  import \"weir:{name}\" as {derivedAlias}"
+                                 userinfoNote src.Url
                                  0)
         | "add" :: "module" :: _ ->
             Console.Error.WriteLine

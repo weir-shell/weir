@@ -779,7 +779,7 @@ let vendorFile
         let entry =
             { Kind = kind
               Name = name
-              Url = url
+              Url = Http.stripUserinfo url
               Sha256 = hash
               Path = rel
               Version = None }
@@ -1706,7 +1706,7 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                         let entry =
                             { Kind = kind
                               Name = name
-                              Url = url
+                              Url = Http.stripUserinfo url
                               Sha256 = hash
                               Path = rel
                               Version = None }

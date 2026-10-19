@@ -662,10 +662,11 @@ print $"{key} -> {value}"
   redirect loop — past 50 hops it raises, naming it). The proxy comes
   from `HTTP_PROXY`/`HTTPS_PROXY`; a `NO_PROXY` entry bypasses it as
   curl reads it — `example.com` (or `.example.com`) for the host and
-  every subdomain, trailing dots ignored, `*` for every host, an
-  address or a CIDR (`10.0.0.0/8`, `::1`, bracket-less) for an IP host,
-  no ports. A dead proxy, a proxy refusing the tunnel (407, 403, 502)
-  or closing the connection is named in the error — host:port, never
+  every subdomain, trailing dots ignored, a non-ASCII name matched by
+  its punycode, `*` for every host, an address or a CIDR (`10.0.0.0/8`,
+  `::1`, bracket-less) for an IP host, no ports. A dead proxy, a proxy
+  refusing the tunnel (407, 403, 502) or closing the connection is
+  named in the error — host:port, never
   its credentials. `auth` plus an
   explicit `Authorization` header is refused (two credentials). A
   header the wire cannot carry raises before anything is sent, naming

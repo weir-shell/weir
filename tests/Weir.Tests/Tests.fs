@@ -28339,6 +28339,63 @@ let hunt3r4SafetyTests =
               Expect.isTrue w.Gone "the writer is gone after the first failure"
           } ]
 
+// hunt 3 round 5's safety items; the Http.expect body, add schema and
+// Args.load halves are e2e cells
+let hunt3r5SafetyTests =
+    testList
+        "hunt-3r5 safety"
+        [ test "NO_PROXY matches a non-ASCII name by its punycode, both sides [D:noproxy-idn]" {
+              let cases =
+                  [ "xn--bcher-kva.example", "bücher.example", true
+                    "bücher.example", "xn--bcher-kva.example", true
+                    "bücher.example", "bücher.example", true
+                    ".xn--bcher-kva.example", "a.bücher.example", true
+                    "example", "bücher.example", true
+                    "xn--bcher-kva.example", "bucher.example", false
+                    "bücher.example", "xn--bcher-kva.example.org", false ]
+
+              for np, host, want in cases do
+                  Expect.equal (Weir.Http.noProxyMatch np host) want $"NO_PROXY={np} vs {host}"
+          }
+          test "a request's show masks the URL's userinfo, the value unchanged [D:url-redact-show]" {
+              let req =
+                  VRecord(
+                      "HttpRequest",
+                      [ "method", VUnion("Post", None)
+                        "url", VStr "http://bob:S3cr3tPass@127.0.0.1:9/echo"
+                        "auth", VUnion("Bearer", Some(VSecret "tok")) ]
+                  )
+
+              let shown = formatValue req
+              Expect.stringContains shown "url = \"http://***@127.0.0.1:9/echo\"" "the userinfo is masked, host kept"
+              Expect.isFalse (shown.Contains "S3cr3t" || shown.Contains "bob") $"no credential in {shown}"
+
+              Expect.stringContains
+                  (formatValue (VRecord("Other", [ "url", VStr "http://bob:pw@h/" ])))
+                  "bob:pw@h"
+                  "only a request's url is a display of a credential"
+          }
+          test "stripUserinfo drops the credential for what weir commits [D:lock-no-userinfo]" {
+              Expect.equal
+                  (Weir.Http.stripUserinfo "http://bob:S3cr3t@127.0.0.1:1/s.json")
+                  "http://127.0.0.1:1/s.json"
+                  "userinfo dropped"
+
+              Expect.equal
+                  (Weir.Http.stripUserinfo "https://host/p@v2?to=a@b")
+                  "https://host/p@v2?to=a@b"
+                  "an @ after the authority is data"
+          }
+          test "a header refusal escapes the name it quotes [D:error-data-escape]" {
+              let name = "a\u001b]52;c;ZXZp\u0007\rb"
+              let shown = Weir.Http.headerInjectionMessage "request header" name "CR" "name"
+              Expect.stringContains shown "'a\\x1b]52;c;ZXZp\\x07\\x0db'" "rendered visibly"
+              Expect.isFalse (shown.IndexOfAny [| '\u001b'; '\u0007'; '\r' |] >= 0) $"raw control in {shown}"
+
+              let shown = Weir.Http.headerUnsendableMessage "response header" "a\u001bb" "its name carries U+001B"
+              Expect.isFalse (shown.Contains '\u001b') $"raw ESC in {shown}"
+          } ]
+
 let hunt3r4RaceTests =
     testSequenced
     <| testList
@@ -29792,6 +29849,7 @@ let allTests =
           hunt3r4RaceTests
           hunt3r4SafetyTests
           hunt3r5Tests
+          hunt3r5SafetyTests
           argsSecretEchoTests
           hunt3BehaviorTests
           hunt3r5FormatTests

@@ -9697,6 +9697,14 @@ out=$( cd "$ctdir/f14" && $BIN add schema http://127.0.0.1:$ctport/configmap-v1.
 echo "$out" | grep -qF "must be a plain file name" || fail "F14 traversal --as teaches the plain-name rule: $out"
 test ! -e "$ctdir/f14/../escape.json" || fail "F14: a traversal --as must write nothing outside .weir/"
 echo "e2e ok: add schema refuses an absolute/traversal --as, writing nothing (F14)"
+# the lock is committed: add writes the URL without its userinfo and says
+# so [D:lock-no-userinfo]
+mkdir -p "$ctdir/ui" && ( cd "$ctdir/ui" && git init -q . )
+out=$( cd "$ctdir/ui" && $BIN add schema "http://bob:S3cr3t@127.0.0.1:$ctport/configmap-v1.json" --as ui 2>&1 ) || fail "lock-no-userinfo: add schema with userinfo must succeed: $out"
+echo "$out" | grep -qF "credentials are not written" || fail "lock-no-userinfo: add must say the credentials were dropped: $out"
+grep -qF "\"http://127.0.0.1:$ctport/configmap-v1.json\"" "$ctdir/ui/.weir/lock.json" || fail "lock-no-userinfo: the lock must name the URL sans userinfo: $(cat "$ctdir/ui/.weir/lock.json")"
+grep -qE "bob|S3cr3t" "$ctdir/ui/.weir/lock.json" && fail "lock-no-userinfo: the credentials LEAKED into the lock: $(cat "$ctdir/ui/.weir/lock.json")" || true
+echo "e2e ok: add schema keeps a URL's userinfo out of .weir/lock.json"
 
 # F1: a hostile lock (an entry pointing outside .weir/) refuses per entry
 # with a located diagnostic, restores the benign sibling, and writes
@@ -9846,7 +9854,7 @@ if command -v python3 >/dev/null 2>&1; then
     cat > "$ctdir/url500.py" <<URLEOF
 import http.server
 class H(http.server.BaseHTTPRequestHandler):
-    def do_GET(self): self.send_response(500); self.end_headers(); self.wfile.write(b'nope')
+    def do_GET(self): self.send_response(500); self.end_headers(); self.wfile.write(b'nope\\x1b]52;c;ZXZp\\x07\\rX')
     def log_message(self, *a): pass
 http.server.HTTPServer(('127.0.0.1', $urport), H).serve_forever()
 URLEOF
@@ -9858,6 +9866,10 @@ URLEOF
     out=$($BIN -e "print (Http.expect (Http.get \"http://user:s3cr3t@127.0.0.1:$urport/\"))" 2>&1) && fail "a 500 must raise" || true
     echo "$out" | grep -qF "***@127.0.0.1:$urport/ answered 500" || fail "the userinfo is redacted in the 500 error: $out"
     echo "$out" | grep -qiF "s3cr3t" && fail "the credential LEAKED verbatim in the 500 error: $out" || true
+    # the body snippet is data: its ESC/BEL/CR render visibly, piped too [D:error-data-escape]
+    echo "$out" | grep -qF 'nope\x1b]52;c;ZXZp\x07 X' || fail "error-data-escape: the 500 body snippet must render ESC/BEL/CR visibly: $out"
+    printf '%s' "$out" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d or b'\x07' in d) else 0)" \
+        || fail "error-data-escape: the 500 body snippet put a raw ESC/BEL/CR in the error: $out"
     # a userinfo-free URL is still named in full
     out=$($BIN -e "print (Http.expect (Http.get \"http://127.0.0.1:$urport/\"))" 2>&1) && fail "a 500 must raise" || true
     echo "$out" | grep -qF "http://127.0.0.1:$urport/ answered 500" || fail "a credential-free URL is named in full: $out"
@@ -14617,11 +14629,27 @@ printf 'let n = Float.parse (Env.need "X")\nprint $"{n}"\n' > "$ed/float.weir"
 printf 'type T = { a: int }\nlet t = [Env.need "X"] |> from json T\nprint $"{t.a}"\n' > "$ed/json.weir"
 printf 'print (File.read (Env.need "X") |> Seq.length)\n' > "$ed/path.weir"
 printf 'print (Env.need (Env.need "X"))\n' > "$ed/env.weir"
-for f in float json path env; do
+printf 'let r = Http.send { (Http.get "http://127.0.0.1:9/") with headers = [(Env.need "X", "v")] }\nprint $"{r.status}"\n' > "$ed/hdr.weir"
+printf 'type E = { x: int }\nlet e = Env.load E\nprint $"{e.x}"\n' > "$ed/envload.weir"
+for f in float json path env hdr; do
     eout=$(X="$(printf '/no\r\033[8mpe')" "$BIN" "$ed/$f.weir" 2>&1) && fail "error-data-escape: $f must fail: $eout"
     echo "$eout" | grep -qF '\x0d\x1b[8mpe' || fail "error-data-escape: $f must render the quoted CR/ESC visibly: $eout"
     printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d) else 0)" \
         || fail "error-data-escape: $f put a raw CR/ESC in the error: $eout"
+done
+# Env.load and Args.load quote a bad value, an unknown flag and a stray argument
+xv="$(printf '/no\r\033[8mpe')"
+eout=$(env x="$xv" "$BIN" "$ed/envload.weir" 2>&1) && fail "error-data-escape: Env.load must fail: $eout"
+echo "$eout" | grep -qF '\x0d\x1b[8mpe' || fail "error-data-escape: Env.load must render the quoted CR/ESC visibly: $eout"
+printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d) else 0)" \
+    || fail "error-data-escape: Env.load put a raw CR/ESC in the error: $eout"
+printf 'type A = { port: int }\nlet a = Args.load A\nprint $"{a.port}"\n' > "$ed/args.weir"
+for args in "--port|$xv" "--port|1|--$xv" "--port=$xv" "--port|1|$xv"; do
+    IFS='|' read -r -a av <<<"$args"
+    eout=$("$BIN" "$ed/args.weir" "${av[@]}" 2>&1) && fail "error-data-escape: Args.load ${av[*]} must fail: $eout"
+    echo "$eout" | grep -qF '\x0d\x1b[8mpe' || fail "error-data-escape: Args.load must render the quoted CR/ESC visibly: $eout"
+    printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d) else 0)" \
+        || fail "error-data-escape: Args.load put a raw CR/ESC in the error: $eout"
 done
 # from xml over bytes quotes its excerpt as the text path does
 # [D:xml-encoding]
@@ -14637,7 +14665,7 @@ echo "$eout" | grep -qF 'no such script' || fail "error-data-escape: a missing s
 echo "$eout" | grep -qF 'a\x1b[8m\x0db.weir:1:' || fail "error-data-escape: a diagnostic must name the file visibly: $eout"
 printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b[8m' in d or b'\r' in d) else 0)" \
     || fail "error-data-escape: a file name put a raw CR/ESC in a diagnostic: $eout"
-echo "e2e ok: error-data-escape runtime errors render the quoted CR/ESC visibly (parse input, json excerpt, path, env name, file name)"
+echo "e2e ok: error-data-escape runtime errors render the quoted CR/ESC visibly (parse input, json excerpt, path, env name, header name, Env.load/Args.load value, file name)"
 # Plan.preview renders an http send line's escapes visibly [D:tty-echo-strict]
 cat > "$ed/pv.weir" <<'WEOF'
 let p =

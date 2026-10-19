@@ -5167,7 +5167,10 @@ let private httpExpectImpl: Value =
 
                     let snippet =
                         let flat = resp.Body.Replace("\r", " ").Replace("\n", " ").Trim()
-                        if CodePoints.length flat > 200 then CodePoints.head flat 200 + "…" else flat
+                        if CodePoints.length flat > 200 then
+                            quoteData (CodePoints.head flat 200) + "…"
+                        else
+                            quoteData flat
 
                     let detail = if snippet = "" then "" else $": {snippet}"
                     let methodName = httpMethodName (recGet "method" f)

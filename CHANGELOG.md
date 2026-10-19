@@ -569,6 +569,21 @@
 - **`gen types` notes a required and nullable field** — its `Option`
   writes `None` as an omitted key, not `null` — and an enum's note lists
   `null` only when the enum holds it and the type allows it.
+- **Errors escape the data they quote, piped too.** `Http.expect`'s
+  body snippet, a header name with a CR, and a bad `Env.load` /
+  `Args.load` value (or unknown flag, or stray argument) passed ESC,
+  BEL and CR raw when stderr was not a tty; they now render as `\x1b`,
+  `\x07`, `\x0d`.
+- **`weir add schema` keeps a URL's credentials out of
+  `.weir/lock.json`.** `http://user:pass@host/s.json` was written to
+  the committed lock as given; the lock now records
+  `http://host/s.json` and add says so. `add module` does the same.
+- **`show` of a request and a plan's `http send` preview mask the URL's
+  credentials** as `http://***@host/…`. The request still sends them.
+- **`NO_PROXY` matches a non-ASCII host by its punycode**, as curl
+  does: `NO_PROXY=xn--bcher-kva.example` bypasses the proxy for
+  `http://bücher.example`, and `NO_PROXY=bücher.example` for either
+  spelling.
 
 ## v0.0.74
 

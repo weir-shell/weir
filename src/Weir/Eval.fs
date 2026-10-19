@@ -422,8 +422,16 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
             $"\"{escaped}{tail}\""
         | VBool true -> "true"
         | VBool false -> "false"
-        | VRecord(_, fields) ->
-            let body = fields |> Seq.map (fun (k, v) -> $"{k} = {sub v}") |> String.concat "; "
+        | VRecord(name, fields) ->
+            // a request's URL shows its userinfo masked [D:url-redact-show];
+            // the value itself is unchanged and still sent
+            let shownField k v =
+                match name, k, v with
+                | "HttpRequest", "url", VStr s -> sub (VStr(Http.redactUrl s))
+                | _ -> sub v
+
+            let body =
+                fields |> Seq.map (fun (k, v) -> $"{k} = {shownField k v}") |> String.concat "; "
 
             "{ " + body + " }"
         | VUnion(case, None) -> case
@@ -4183,7 +4191,7 @@ let private argvDup
         if prior <> neg then
             problems.Add $"'--{Argv.kebabFlag f}' and '--no-{Argv.kebabFlag f}' are both given"
         else
-            problems.Add $"'{flagTok}' is given twice"
+            problems.Add $"'{quoteData flagTok}' is given twice"
 
     polarity[f] <- neg
 
@@ -4200,7 +4208,7 @@ let private argvParseValue
     | TNamed("Option", [ TInt ]) ->
         match System.Int64.TryParse raw with
         | true, n -> values[f] <- wrapOpt ty (VInt n)
-        | _ -> problems.Add $"{flagTok} is not an int ('{raw}')"
+        | _ -> problems.Add $"{flagTok} is not an int ('{quoteData raw}')"
     | TDur
     | TNamed("Option", [ TDur ]) ->
         match parseDurationMs raw with
@@ -4239,15 +4247,15 @@ let private unknownFlagMessage (t: string) (known: string list) (tyOf: string ->
         let name, value = t.Substring(0, i), t.Substring(i + 1)
 
         match tyOf name with
-        | Some TBool -> $"unknown flag '{t}' — '{name}' is a presence flag and takes no value"
+        | Some TBool -> $"unknown flag '{quoteData t}' — '{name}' is a presence flag and takes no value"
         | Some TSecret
         | Some(TNamed("Option", [ TSecret ])) ->
             $"unknown flag '{quoteData name}=***' — a flag's value is the next argument: write '{quoteData name} <value>'"
-        | _ -> $"unknown flag '{t}' — a flag's value is the next argument: write '{name} {value}'"
+        | _ -> $"unknown flag '{quoteData t}' — a flag's value is the next argument: write '{name} {quoteData value}'"
     | i when i > 2 ->
         let name = t.Substring(0, i)
         $"unknown flag '{quoteData name}=…'{didYouMean name known}"
-    | _ -> $"unknown flag '{t}'{didYouMean t known}"
+    | _ -> $"unknown flag '{quoteData t}'{didYouMean t known}"
 
 let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
     // minted --no-X twins ride the index as negative entries
@@ -4287,13 +4295,13 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
                 let f, ty, neg = Map.find flag longIndex
                 consume f ty neg t rest
             | Some(AmbiguousShort candidates) ->
-                problems.Add $"""'{t}' is ambiguous: {String.concat ", " candidates}"""
+                problems.Add $"""'{quoteData t}' is ambiguous: {String.concat ", " candidates}"""
                 go rest
             | None ->
-                problems.Add $"unknown flag '{t}'"
+                problems.Add $"unknown flag '{quoteData t}'"
                 go rest
         | t :: rest ->
-            problems.Add $"unexpected argument '{t}'"
+            problems.Add $"unexpected argument '{quoteData t}'"
             go rest
 
     and consume f ty neg flagTok rest =
@@ -4406,11 +4414,11 @@ let private argvLoadShared
                              | Some(f, ty, neg) when i > caseIdx -> Choice1Of3(payloadValues, f, ty, neg)
                              | _ -> Choice2Of3())
                     | Some(AmbiguousShort candidates) ->
-                        problems.Add $"""'{t}' is ambiguous: {String.concat ", " candidates}"""
+                        problems.Add $"""'{quoteData t}' is ambiguous: {String.concat ", " candidates}"""
                         Choice3Of3()
                     | None -> Choice2Of3()
                 else
-                    problems.Add $"unexpected argument '{t}'"
+                    problems.Add $"unexpected argument '{quoteData t}'"
                     Choice3Of3()
 
             match resolved with
@@ -4443,7 +4451,7 @@ let private argvLoadShared
 
     (match caseAt, selected with
      | None, _ -> problems.Add("missing subcommand; one of: " + String.concat ", " (caseTable |> List.map fst))
-     | Some(_, tok), None -> problems.Add $"unknown subcommand '{tok}'{didYouMean tok (caseTable |> List.map fst)}"
+     | Some(_, tok), None -> problems.Add $"unknown subcommand '{quoteData tok}'{didYouMean tok (caseTable |> List.map fst)}"
      | Some _, Some _ -> ())
 
     let collectFields def values = argvFill problems def values
@@ -4496,7 +4504,7 @@ let private argvLoad (target: ArgsTarget) : Value =
                 | extra ->
                     failwith (
                         $"Args.load {udef.Name} {quoteData tok}: "
-                        + String.concat "; " (extra |> List.map (fun t -> $"unexpected argument '{t}'"))
+                        + String.concat "; " (extra |> List.map (fun t -> $"unexpected argument '{quoteData t}'"))
                     )
             | Some(_, (c, Some _)) ->
                 let payload =
@@ -5142,14 +5150,14 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         match System.Int64.TryParse v with
                         | true, n -> wrapOpt ty (VInt n)
                         | _ ->
-                            problems.Add $"{name} is not an int ('{v}')"
+                            problems.Add $"{name} is not an int ('{quoteData v}')"
                             VUnit
                     | (TBool | TNamed("Option", [ TBool ])), v ->
                         match v with
                         | "true" -> wrapOpt ty (VBool true)
                         | "false" -> wrapOpt ty (VBool false)
                         | _ ->
-                            problems.Add $"{name} is not a bool ('{v}'; exactly true or false)"
+                            problems.Add $"{name} is not a bool ('{quoteData v}'; exactly true or false)"
                             VUnit
                     | (TDur | TNamed("Option", [ TDur ])), v ->
                         match parseDurationMs v with
@@ -5205,7 +5213,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                 |> Option.defaultValue ""
 
                             let listed = String.concat ", " cases
-                            problems.Add $"{name} is not a {un} ('{v}'; expected one of: {listed}){hint}"
+                            problems.Add $"{name} is not a {un} ('{quoteData v}'; expected one of: {listed}){hint}"
                             VUnit
                     | _ -> unreachable "the checker rejects non-scalar Env.load fields"
 
