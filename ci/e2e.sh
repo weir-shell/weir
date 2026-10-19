@@ -3750,6 +3750,20 @@ WEOF
     done
     echo "e2e ok: a weir binary deleted mid-run still runs its cleanup's commands at a terminal"
 
+    # R7: a ^C that kills the sh shim before its trap never started the
+    # command — on Linux it is started again, so the cleanup runs whole
+    # [D:cleanup-sigign]
+    if [ "$(uname -s)" = Linux ]; then
+        printf '%s\n' 'within' '    print "body"' 'always' '    [1..300] |> Seq.iter (fun _ -> /bin/true)' '    print "loop done"' > "$stdir/win.weir"
+        wl=0
+        for k in $(seq 12); do
+            tout=$(printf 'SLEEP %s\nSEND \\x03\nSLEEP 2500\n' $((150 + k * 37)) | python3 "$ptyrun" 10 "$BIN" "$stdir/win.weir")
+            echo "$tout" | grep -qF "loop done" || wl=$((wl + 1))
+        done
+        [ "$wl" = 0 ] || fail "a ^C during a cleanup's command starts never loses one ($wl/12 cleanups stopped)"
+        echo "e2e ok: a ^C landing as a cleanup's command starts never loses it (12/12)"
+    fi
+
     # R2 (C1-3): a terminal ^\ during an always: the command ignores it, the
     # cleanups run whole, the tmp dir goes, weir dies by SIGQUIT
     # [D:sigquit-teardown]

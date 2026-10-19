@@ -1282,6 +1282,61 @@ module CleanupShim =
     /// `sh -c <script> sh <program> <args...>`
     let script = "trap \"\" INT QUIT; exec \"$@\""
 
+    /// Linux: has the started shim run its `trap` (INT and QUIT in its
+    /// SigIgn) or exec'd past it? False when it died first: a ^C or ^\
+    /// landed before the trap and the command never started, so the
+    /// caller starts it again. Elsewhere that first moment stays open
+    let passedTrap (p: System.Diagnostics.Process) : bool =
+        if not (System.OperatingSystem.IsLinux()) then
+            true
+        else
+            let status = $"/proc/{p.Id}/status"
+            let clock = System.Diagnostics.Stopwatch.StartNew()
+
+            let field (text: string) (name: string) =
+                text.Split('\n')
+                |> Array.tryPick (fun l ->
+                    if l.StartsWith(name + ":") then
+                        Some(l.Substring(name.Length + 1).Trim())
+                    else
+                        None)
+
+            let rec go () =
+                if p.HasExited then
+                    p.ExitCode <> 130 && p.ExitCode <> 131
+                elif clock.ElapsedMilliseconds > 2000L then
+                    true
+                else
+                    let text =
+                        try
+                            System.IO.File.ReadAllText status
+                        with _ ->
+                            ""
+
+                    let ignored =
+                        match field text "SigIgn" with
+                        | Some hex ->
+                            (try
+                                System.Convert.ToUInt64(hex, 16) &&& 6UL = 6UL
+                             with _ ->
+                                 false)
+                        | None -> false
+
+                    // a zombie is decided by its exit code, not its name
+                    let alive =
+                        match field text "State" with
+                        | Some st -> not (st.StartsWith "Z" || st.StartsWith "X")
+                        | None -> false
+
+                    match field text "Name" with
+                    | _ when ignored -> true
+                    | Some name when alive && name <> "sh" -> true
+                    | _ ->
+                        System.Threading.Thread.Sleep(if clock.ElapsedMilliseconds < 2L then 0 else 1)
+                        go ()
+
+            go ()
+
 /// a spawn here goes through `CleanupShim`: it runs inside a cleanup at a
 /// terminal whose foreground group is weir's (POSIX)
 let cleanupIgnoresTerminal () : bool =

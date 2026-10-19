@@ -146,8 +146,10 @@ let private spawn
     // a cleanup's command at a foreground terminal starts with ^C and ^\
     // ignored, through the sh shim [D:cleanup-sigign]: the program is
     // resolved here, as the start would, so a missing one fails the same way
+    let viaShim = Session.cleanupIgnoresTerminal ()
+
     let psi =
-        if Session.cleanupIgnoresTerminal () then
+        if viaShim then
             let runnable (path: string) =
                 System.IO.File.Exists path
                 && (System.IO.File.GetUnixFileMode path
@@ -207,11 +209,22 @@ let private spawn
     // sees every started child, and none starts after it
     // [D:signal-main-unwind]
     Session.gatedSpawn (fun () ->
-        let p =
-            try
-                Process.Start psi
-            with :? System.ComponentModel.Win32Exception ->
-                failwith $"command not found or not executable: {Weir.Types.quoteData prog}"
+        // a shim a ^C killed before its trap never started the command:
+        // start it again [D:cleanup-sigign]
+        let rec startOnce (tries: int) =
+            let p =
+                try
+                    Process.Start psi
+                with :? System.ComponentModel.Win32Exception ->
+                    failwith $"command not found or not executable: {Weir.Types.quoteData prog}"
+
+            if viaShim && tries < 5 && not (Session.CleanupShim.passedTrap p) then
+                p.Dispose()
+                startOnce (tries + 1)
+            else
+                p
+
+        let p = startOnce 0
 
         // a racing arm's children join its group [D:seq-pfirst] — a no-op
         // outside pfirst, and the scoped child owes it too: the spill path

@@ -28487,6 +28487,69 @@ let docsBinaryTests =
               Expect.isTrue (Weir.Session.armsStdoutFor pipe) "a pipe can EPIPE"
           } ]
 
+// hunt 3 round 5 stage A: the cleanup shim's start, the console-write
+// policy, the FIFO probe; the signal and terminal halves are e2e cells
+let hunt3r5Tests =
+    let shim (script: string) (args: string list) =
+        let psi = System.Diagnostics.ProcessStartInfo(Weir.Session.CleanupShim.shell)
+        psi.ArgumentList.Add "-c"
+        psi.ArgumentList.Add script
+        psi.ArgumentList.Add "sh"
+
+        for a in args do
+            psi.ArgumentList.Add a
+
+        System.Diagnostics.Process.Start psi
+
+    let sigint (pid: int) =
+        use k = System.Diagnostics.Process.Start("kill", $"-INT {pid}")
+        k.WaitForExit()
+
+    testSequenced
+    <| testList
+        "hunt-3r5 stage A"
+        [ test "a shim that died before its trap is reported, one past it is not [D:cleanup-sigign]" {
+              skipUnlessLinux ()
+              use early = shim "kill -INT $$; sleep 5" []
+              Expect.isFalse (Weir.Session.CleanupShim.passedTrap early) "killed by INT before any trap"
+
+              use slow = shim "sleep 0.3; trap \"\" INT QUIT; exec sleep 0.2" []
+              System.Threading.Thread.Sleep 50
+              sigint slow.Id
+              Expect.isFalse (Weir.Session.CleanupShim.passedTrap slow) "a ^C before the trap"
+
+              use ok = shim Weir.Session.CleanupShim.script [ "/bin/sleep"; "0.3" ]
+              Expect.isTrue (Weir.Session.CleanupShim.passedTrap ok) "the trap ran"
+              sigint ok.Id
+              ok.WaitForExit()
+              Expect.equal ok.ExitCode 0 "the command ignores the ^C"
+          }
+          test "a stderr write refused as EBADF marks the writer gone, never raises [D:console-write]" {
+              let closed =
+                  { new System.IO.TextWriter() with
+                      member _.Encoding = System.Text.Encoding.UTF8
+                      member _.Write(s: string) : unit = raise (System.UnauthorizedAccessException())
+                      member _.WriteLine(s: string) : unit = raise (System.UnauthorizedAccessException()) }
+
+              let w = new HangupWriter(closed)
+              w.WriteLine "error: x"
+              w.Write "more"
+              Expect.isTrue w.Gone "the writer is gone after the first failure"
+          }
+          test "isFifo tells a FIFO from a file and an absent path [D:fifo-ops-polled]" {
+              skipUnlessLinux ()
+
+              withTempDir "weir-fifo" (fun d ->
+                  let f = Path.Combine(d, "p")
+                  let r = Path.Combine(d, "r")
+                  File.WriteAllText(r, "x")
+                  let mk = System.Diagnostics.Process.Start("mkfifo", f)
+                  mk.WaitForExit()
+                  Expect.isTrue (Weir.Session.isFifo f) "a FIFO"
+                  Expect.isFalse (Weir.Session.isFifo r) "a regular file"
+                  Expect.isFalse (Weir.Session.isFifo (Path.Combine(d, "none"))) "an absent path")
+          } ]
+
 let hunt2CheckerTests =
     // the second hunt's checker/adapter backlog: `+` decided by a later
     // anchor [D:plus-defer], generic records at the wire
@@ -29728,6 +29791,7 @@ let allTests =
           hunt3r3UnreadTests
           hunt3r4RaceTests
           hunt3r4SafetyTests
+          hunt3r5Tests
           argsSecretEchoTests
           hunt3BehaviorTests
           hunt3r5FormatTests

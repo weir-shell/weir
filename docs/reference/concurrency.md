@@ -277,8 +277,10 @@ it keeps weir's group, the terminal and its real stdin (a pager works),
 starts with SIGINT and SIGQUIT ignored, and the pid weir holds is the
 command's. A terminal ^C or ^\ cannot kill the command, unless it sets
 its own handler (a pager quits on ^C); a second signal kills it (I12).
-Without a tty the spawn is direct. On Windows the command starts in a
-new process group, which Ctrl+C does not reach. Rests on
+A shim a ^C killed before its `trap` never started the command, so on
+Linux it is started again (`CleanupShim.passedTrap` reads its /proc
+status). Without a tty the spawn is direct. On Windows the command
+starts in a new process group, which Ctrl+C does not reach. Rests on
 [D:cleanup-sigign]. Enforced by `cleanupIgnoresTerminal`, `CleanupShim`,
 `Proc.spawn`.
 
@@ -329,10 +331,10 @@ REPL set is restored, at its prompt too. A closed stdout's 141 is an exit. Rests
   ([D:sigint-terminal-group]).
 - A terminal ^C at no live scope waits for a child that ignores it;
   only a second ^C ends that wait ([D:terminal-sigint-teardown]).
-- A ^C or ^\ in the first moment of a cleanup's command at a terminal,
-  before its shim's `trap` runs (about a millisecond), ends that command
-  (I16, [D:cleanup-sigign]). Its descendants inherit SIGINT/SIGQUIT
-  ignored.
+- Off Linux, a ^C or ^\ in the first moment of a cleanup's command at a
+  terminal, before its shim's `trap` runs (about a millisecond), ends
+  that command; on Linux the shim is started again (I16,
+  [D:cleanup-sigign]). Its descendants inherit SIGINT/SIGQUIT ignored.
 - A hard exit leaves a running cleanup where it stood (I12): a cleanup
   that must finish needs one signal, not two.
 

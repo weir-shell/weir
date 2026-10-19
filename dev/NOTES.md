@@ -24,9 +24,17 @@ alternatives were rejected:
 - setting SIG_IGN in weir around the start: process-wide, so concurrent
   spawns would inherit it and a ^C meant for weir would be lost.
 
-The cost is a window of about a millisecond, before `sh` runs its
-`trap`, in which a ^C still kills the command (recorded in the row).
-200 `/bin/true` cleanup commands: 2.0 s before, ~0.4 s now (dash).
+That leaves a window of about a millisecond, before `sh` runs its
+`trap`, in which a ^C kills the shim. The tty storm hit it (1 run in
+240: an arm's cleanup lost its `sh -c "sleep …"` to the ^C and stopped
+on "command failed … 130"), and a cleanup looping 400 `/bin/true` lost
+~20% of single ^Cs to it. On Linux the spawn now waits until the shim's
+/proc status shows INT and QUIT ignored (or a new name: it exec'd), and
+a shim that died first, by INT or QUIT, never started the command, so
+it is started again. A zombie is judged by its exit code, never its
+name: a vfork child killed before exec carries weir's thread name. With
+this, 0 losses in 600 runs. Off Linux the window stays (the row says
+so). 200 `/bin/true` cleanup commands: 2.0 s before, ~0.4 s now (dash).
 
 The console-write policy ([D:console-write]). stderr is the diagnostic
 channel at every destination. Round 4 wrapped it only at a tty
