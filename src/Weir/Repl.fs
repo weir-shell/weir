@@ -413,6 +413,25 @@ module private Term =
 
             t.Start()
 
+// a terminal that hung up [D:console-hangup]: its mode calls and reads
+// fail. The hangup's SIGHUP ends the session through its teardown, so the
+// REPL waits for it rather than failing; with no signal (an ignored
+// SIGHUP) the dead terminal is the end of input
+let private ttyGone () : 'a =
+    let clock = Diagnostics.Stopwatch.StartNew()
+
+    while Session.teardownRequested () = 0 && clock.ElapsedMilliseconds < 1000L do
+        Threading.Thread.Sleep 10
+
+    raise (Eval.ExitRequest(Session.teardownRequested ()))
+
+/// a terminal call that a hangup fails ends the session [D:console-hangup]
+let private ttyIo (f: unit -> 'a) : 'a =
+    try
+        f ()
+    with :? IOException ->
+        ttyGone ()
+
 // a command-head alias [D:command-head-alias] — the type and its parser
 // live with the init rules (Script.checkInit), one definition for the
 // loader, `weir check` and the live #alias directive
@@ -1212,7 +1231,7 @@ let private minimalSearch (query0: string) : string option =
     render ()
 
     while searching do
-        let k = Console.ReadKey true
+        let k = ttyIo (fun () -> Console.ReadKey true)
 
         match k.Key with
         | ConsoleKey.Enter ->
@@ -1331,7 +1350,7 @@ let private readKey () =
     if typeAhead.Count > 0 then
         typeAhead.Dequeue()
     else
-        Console.ReadKey(intercept = true)
+        ttyIo (fun () -> Console.ReadKey(intercept = true))
 
 let private deriveContPrompt (w: int) =
     let on = Types.Color.onStdout.Value
@@ -1876,8 +1895,10 @@ let private setupLineEditor () =
     if not (OperatingSystem.IsWindows()) then
         ttyEval <- true
         Session.replSurvivesSigint.Value <- true
-        // a death by a signal leaves the shell's terminal as it found it
+        // a death by a signal leaves the shell's terminal as it found it,
+        // at the prompt too
         Session.beforeDie <- Term.restoreCooked
+        Session.installSignalHook ()
 
         sigintSurvival <-
             Some(
@@ -2581,7 +2602,7 @@ let private evalChecked (source: string) (state: State) (chk: Script.CheckedStat
     // spawn-time config agree with the cooked termios the restore sets
     // now
     if ttyEval then
-        Console.TreatControlCAsInput <- false
+        ttyIo (fun () -> Console.TreatControlCAsInput <- false)
         Term.restoreCooked ()
 
     Session.beginReplEval ()
@@ -2600,7 +2621,7 @@ let private evalChecked (source: string) (state: State) (chk: Script.CheckedStat
         Session.endReplEval ()
 
         if ttyEval then
-            Console.TreatControlCAsInput <- true
+            ttyIo (fun () -> Console.TreatControlCAsInput <- true)
             Term.reassert ()
 
 // ---- the #help glance [D:help-glance]: one name per line, each with
@@ -3868,6 +3889,16 @@ let rec private loop (state: State) =
                                 st
                             else
                                 let st' = entryStatement st ll
+
+                                // the entry's node, checked between statements:
+                                // a ^C that cut no wait (a cleanup, pure
+                                // compute, a `| exitCode` child) ends the entry
+                                // too [D:repl-entry-check]
+                                if not lastErrored && Session.interruptRequested () then
+                                    lastErrored <- true
+                                    lastExit <- Some 130
+                                    echoMeta "↳ exit 130 (SIGINT — interrupted/cancelled)"
+
                                 stopped.Value <- lastErrored
                                 st')
                         state

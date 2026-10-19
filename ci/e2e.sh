@@ -3693,14 +3693,15 @@ always
     File.append log ["cleanup"]
 WEOF
     printf '%s\n' 'let log = Self.args |> Seq.head' 'sh -c "true"' 'File.append log ["body"]' 'Duration.sleep 30s' > "$stdir/r7u.weir"
-    for case in "r7:TERM:-15" "r7:INT:-2" "r7:HUP:-1" "r7u:TERM:-15" "r7u:INT:-2"; do
+    # R2 (C1-3): SIGQUIT is TERM's teardown and dies by SIGQUIT [D:sigquit-teardown]
+    for case in "r7:TERM:-15" "r7:INT:-2" "r7:HUP:-1" "r7:QUIT:-3" "r7u:TERM:-15" "r7u:INT:-2" "r7u:QUIT:-3"; do
         f=${case%%:*}; rest=${case#*:}; sig=${rest%%:*}; want=${rest#*:}
         rm -f "$stdir/r7.log"
         r=$(python3 "$stdir/sig.py" 10 "wait:$stdir/r7.log:body" "kill:$sig" -- "$BIN" "$stdir/$f.weir" "$stdir/r7.log")
         echo "$r" | grep -q "^status $want " || fail "a SIG$sig ($f) ends weir by the signal after the unwind [D:die-by-signal]: $r"
         [ "$f" = "r7u" ] || [ "$(stlog "$stdir/r7.log")" = "body,cleanup," ] || fail "a SIG$sig runs the cleanup first: $(stlog "$stdir/r7.log")"
     done
-    echo "e2e ok: after the unwind weir dies by its signal — INT, TERM, HUP, scoped or not"
+    echo "e2e ok: after the unwind weir dies by its signal — INT, TERM, HUP, QUIT, scoped or not"
 
     # C1-6: an inherited SIG_IGN SIGINT without a tty is reset at start, so a
     # poller that never spawns dies by a kill -INT
@@ -3710,9 +3711,9 @@ WEOF
     echo "$r" | grep -q "out after" && fail "nothing runs after the SIGINT: $r"
     echo "e2e ok: an inherited SIG_IGN SIGINT without a tty is reset at start — kill -INT ends a poller"
 
-    # R8 (C1-2): a terminal ^C during an always does not reach the cleanup's
-    # command (its own process group); the cleanup ends whole, then weir dies
-    # by the SIGINT [D:cleanup-pgrp]
+    # R1 (round 5): a terminal ^C during an always does not kill the
+    # cleanup's command (started with SIGINT ignored); the cleanup ends
+    # whole, then weir dies by the SIGINT [D:cleanup-sigign]
     cat > "$stdir/pg.weir" <<'WEOF'
 within
     print "body"
@@ -3728,7 +3729,131 @@ WEOF
         echo "$tout" | grep -qF "$want" || fail "a terminal ^C during an always: '$want' expected: $tout"
     done
     echo "$tout" | grep -qE "trapped|command failed|after" && fail "a terminal ^C never reaches a cleanup's command: $tout"
-    echo "e2e ok: a terminal ^C never reaches a cleanup's command — its own process group; the cleanup ends whole, then the SIGINT"
+    echo "e2e ok: a terminal ^C never kills a cleanup's command — started with SIGINT ignored; the cleanup ends whole, then the SIGINT"
+
+    # R1 (C1-2): a cleanup's command at a terminal keeps it — it reads what
+    # is typed (a pager works) [D:cleanup-sigign]
+    printf '%s\n' 'within' '    print "body"' 'always' '    sh -c "read l; echo got=$l"' '    print "cleanup end"' > "$stdir/r1.weir"
+    tout=$(printf 'SLEEP 800\nSEND hello\\r\nSLEEP 1500\n' | python3 "$ptyrun" 8 "$BIN" "$stdir/r1.weir")
+    for want in "got=hello" "cleanup end" "EXIT 0"; do
+        echo "$tout" | grep -qF "$want" || fail "a cleanup's command at a terminal reads the terminal: '$want' expected: $tout"
+    done
+    echo "e2e ok: a cleanup's command at a terminal reads the terminal"
+
+    # R7 (C1-6, E3): the shim is sh, not weir's own path — a weir binary
+    # deleted mid-run still runs its cleanup's commands [D:cleanup-sigign]
+    cp "$BIN" "$stdir/wgone"
+    printf '%s\n' 'within' '    File.delete (Self.args |> Seq.head)' 'always' '    echo "cleanup command ran"' > "$stdir/r1mv.weir"
+    tout=$(printf 'SLEEP 1500\n' | python3 "$ptyrun" 6 "$stdir/wgone" "$stdir/r1mv.weir" "$stdir/wgone")
+    for want in "cleanup command ran" "EXIT 0"; do
+        echo "$tout" | grep -qF "$want" || fail "a deleted weir binary still runs its cleanup's commands: '$want' expected: $tout"
+    done
+    echo "e2e ok: a weir binary deleted mid-run still runs its cleanup's commands at a terminal"
+
+    # R2 (C1-3): a terminal ^\ during an always: the command ignores it, the
+    # cleanups run whole, the tmp dir goes, weir dies by SIGQUIT
+    # [D:sigquit-teardown]
+    cat > "$stdir/r2.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within tmp d
+    within
+        File.append log [d]
+        Duration.sleep 300ms
+    always
+        File.append log ["inner start"]
+        sh -c "sleep 1.2; echo cmd-done"
+        File.append log ["inner end"]
+always
+    File.append log ["outer"]
+WEOF
+    rm -f "$stdir/r2.log"
+    tout=$(printf 'SLEEP 900\nSEND \\x1c\nSLEEP 2500\n' | python3 "$ptyrun" 8 "$BIN" "$stdir/r2.weir" "$stdir/r2.log")
+    for want in "cmd-done" "EXIT -3"; do
+        echo "$tout" | grep -qF "$want" || fail "a terminal ^\\ during an always: '$want' expected: $tout"
+    done
+    [ "$(tail -n +2 "$stdir/r2.log" | tr '\n' ,)" = "inner start,inner end,outer," ] || fail "a terminal ^\\ runs every cleanup whole: $(stlog "$stdir/r2.log")"
+    r2tmp=$(head -1 "$stdir/r2.log")
+    [ -n "$r2tmp" ] && [ ! -e "$r2tmp" ] || fail "a terminal ^\\ removes the tmp dir: $r2tmp"
+    echo "e2e ok: a terminal ^\\ runs the cleanups whole (their commands ignore it), removes the tmp dir, dies by SIGQUIT"
+
+    # C1-8: a cleanup that raises under the backstop (the main flow stuck in a
+    # builtin's own loop) says so, as on the main flow's unwind
+    cat > "$stdir/bs.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within
+    within
+        File.append log ["body"]
+        let n = [1..3000000000] |> Seq.length
+        print $"{n}"
+    always
+        File.append log ["inner"]
+always
+    fail "outer cleanup raises"
+WEOF
+    rm -f "$stdir/bs.log"
+    r=$(python3 "$stdir/sig.py" 10 "wait:$stdir/bs.log:body" sleep:200 kill:TERM -- "$BIN" "$stdir/bs.weir" "$stdir/bs.log")
+    echo "$r" | grep -q "^status -15 " || fail "the backstop dies by the signal: $r"
+    echo "$r" | grep -qF "the cleanup ALSO failed — outer cleanup raises" || fail "a cleanup raising under the backstop says so: $r"
+    echo "e2e ok: a cleanup raising under the signal backstop says 'the cleanup ALSO failed'"
+
+    # C1-5: a command killed by a group-directed HUP that also stops weir is
+    # the teardown, never "command failed" [D:teardown-kill-not-failure]
+    printf '%s\n' 'sh -c "kill -HUP 0; sleep 1"' > "$stdir/hupg.weir"
+    hf=0
+    for _ in $(seq 40); do
+        r=$(python3 "$stdir/sig.py" 10 -- "$BIN" "$stdir/hupg.weir")
+        case "$r" in *"command failed"*) hf=$((hf + 1)) ;; esac
+    done
+    [ "$hf" = 0 ] || fail "a group-directed SIGHUP's command death is the teardown ($hf/40 said command failed)"
+    echo "e2e ok: a group-directed SIGHUP's command death is the teardown, never 'command failed' (40/40)"
+    # ... and its deterministic shape at a terminal: the command takes the
+    # signal 20ms before weir does — TERM and HUP settle as INT does
+    cat > "$stdir/c15.py" <<'PYEOF'
+import os, pty, sys, time, select, signal
+sig = getattr(signal, "SIG" + sys.argv[1]); mark = sys.argv[2].encode(); argv = sys.argv[3:]
+def marked():
+    for e in os.listdir("/proc"):
+        if not e.isdigit(): continue
+        try: v = open("/proc/%s/cmdline" % e, "rb").read().split(b"\0")
+        except OSError: continue
+        if len(v) >= 2 and os.path.basename(v[0]) == b"sleep" and v[1] == mark: return int(e)
+pid, fd = pty.fork()
+if pid == 0:
+    for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM): signal.signal(s, signal.SIG_DFL)
+    os.execvp(argv[0], argv)
+out = b""; code = None
+def pump(until):
+    global out, code
+    while time.monotonic() < until and code is None:
+        done, st = os.waitpid(pid, os.WNOHANG)
+        if done: code = os.waitstatus_to_exitcode(st); break
+        if select.select([fd], [], [], 0.005)[0]:
+            try: out += os.read(fd, 65536)
+            except OSError: pass
+t0 = time.monotonic(); c = None
+while c is None and time.monotonic() - t0 < 5: c = marked(); pump(time.monotonic() + 0.01)
+if c: os.kill(c, sig)
+pump(time.monotonic() + 0.02)
+if code is None: os.kill(pid, sig)
+pump(time.monotonic() + 8)
+pump(time.monotonic() + 0.2)
+print("EXIT", code, "OUT", out.decode(errors="replace").replace("\r\n", "|"))
+PYEOF
+    printf '%s\n' 'sleep 31.71' > "$stdir/c15.weir"
+    for sg in TERM:-15 HUP:-1; do
+        r=$(python3 "$stdir/c15.py" "${sg%%:*}" 31.71 "$BIN" "$stdir/c15.weir")
+        case "$r" in "EXIT ${sg#*:} "*) ;; *) fail "a SIG${sg%%:*} the command took first is the teardown, weir dies by it: $r" ;; esac
+        echo "$r" | grep -q "command failed" && fail "a SIG${sg%%:*} the command took first is never 'command failed': $r"
+    done
+    echo "e2e ok: a TERM or HUP the command took first at a terminal is the teardown, never 'command failed'"
+
+    # R6 (C21): a REPL ^C that cut no wait still ends a multi-statement
+    # entry — a `| exitCode` child, pure compute [D:repl-entry-check]
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND let c = sh -c "sleep 5" | exitCode\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-c")\r' 'SLEEP 700' 'SEND \x03' 'SLEEP 1000' 'SEND let n = [1..6000000] |> Seq.map (fun i -> i % 7) |> Seq.length\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-n")\r' 'SLEEP 500' 'SEND \x03' 'SLEEP 6000' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 20 "$BIN")
+    echo "$tout" | grep -qF "STILL-HERE" || fail "the REPL survives the entries' ^C: $tout"
+    echo "$tout" | grep -qE "LATE-C|LATE-N" && fail "a REPL ^C that cut no wait ends the entry: $tout"
+    [ "$(echo "$tout" | grep -o "exit 130" | wc -l)" -ge 2 ] || fail "each ^C'd entry shows exit 130: $tout"
+    echo "e2e ok: a REPL ^C that cut no wait (a | exitCode child, pure compute) ends the entry with exit 130"
 
     # C23: a tty REPL entry of several statements is one evaluation — a ^C
     # or a failure ends the whole entry, the session goes on
@@ -14569,6 +14694,110 @@ HUPEOF
 case "$hout" in EXIT=129|EXIT=-1) ;; *) fail "console-hangup: a hung-up terminal must end weir by SIGHUP's teardown (129), not abort: $hout" ;; esac
 grep -qxF "cleanup end" "$hu/h.log" || fail "console-hangup: the cleanup must run whole after the hangup: $(cat "$hu/h.log" 2>/dev/null)"
 echo "e2e ok: console-hangup a hung-up terminal unwinds by SIGHUP, the printing cleanup runs whole"
+# console-write [D:console-write] (E1): a full or closed stderr never aborts
+# weir — the cleanup runs, the error's write is dropped, the exit is the run's
+cw="$svdir/cw"; mkdir -p "$cw"
+printf '%s\n' 'within' '    printerr "progress"' '    Log.warn "a log line"' '    print "body-done"' 'always' '    print "cleanup-ran"' 'fail "x"' > "$cw/f.weir"
+for redir in full closed; do
+    [ "$redir" = full ] && [ ! -e /dev/full ] && continue
+    if [ "$redir" = full ]; then
+        out=$("$BIN" "$cw/f.weir" 2>/dev/full); rc=$?
+    else
+        out=$("$BIN" "$cw/f.weir" 2>&-); rc=$?
+    fi
+    [ "$rc" = 1 ] || fail "console-write: a $redir stderr keeps the run's exit 1, never an abort: rc=$rc out=$out"
+    [ "$(echo "$out" | tr '\n' ,)" = "body-done,cleanup-ran," ] || fail "console-write: a $redir stderr runs the script and its cleanup: $out"
+done
+echo "e2e ok: console-write a full or closed stderr never aborts — writes dropped, cleanup runs, exit kept"
+
+# a tty REPL whose terminal hangs up mid-command dies by the SIGHUP, never
+# an internal error [D:console-write]; one killed by TERM/HUP at its
+# prompt restores the terminal [D:die-by-signal]
+rh="$svdir/rh"; mkdir -p "$rh/c" "$rh/d" "$rh/s" "$rh/k"
+rhout=$(env HOME="$rh" XDG_CONFIG_HOME="$rh/c" XDG_DATA_HOME="$rh/d" XDG_STATE_HOME="$rh/s" XDG_CACHE_HOME="$rh/k" python3 - "$BIN" <<'HUPEOF'
+import os, pty, sys, time, signal, termios, select
+def run(act):
+    pid, fd = pty.fork()
+    if pid == 0:
+        for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM): signal.signal(s, signal.SIG_DFL)
+        os.execv(sys.argv[1], sys.argv[1:])
+    def pump(d):
+        t = time.monotonic()
+        while time.monotonic() - t < d:
+            if select.select([fd], [], [], 0.02)[0]:
+                try: os.read(fd, 65536)
+                except OSError: return
+    pump(1.5)
+    if act == 'hangup':
+        os.write(fd, b'/bin/sleep 3\r'); pump(0.6); os.close(fd)
+    else:
+        os.kill(pid, getattr(signal, 'SIG' + act))
+    t = time.monotonic(); code = 'HANG'
+    while time.monotonic() - t < 8:
+        p, st = os.waitpid(pid, os.WNOHANG)
+        if p: code = os.waitstatus_to_exitcode(st); break
+        time.sleep(0.02)
+    if code == 'HANG': os.kill(pid, 9); os.waitpid(pid, 0)
+    mode = ''
+    if act != 'hangup':
+        lf = termios.tcgetattr(fd)[3]; mode = ' icanon=%d echo=%d' % (bool(lf & termios.ICANON), bool(lf & termios.ECHO)); os.close(fd)
+    print('%s=%s%s' % (act, code, mode))
+for a in ('hangup', 'TERM', 'HUP'): run(a)
+HUPEOF
+)
+echo "$rhout" | grep -qxE "hangup=(-1|129)" || fail "a tty REPL whose terminal hangs up mid-command dies by the SIGHUP: $rhout"
+echo "$rhout" | grep -qx "TERM=-15 icanon=1 echo=1" || fail "a tty REPL killed by TERM at its prompt restores the terminal: $rhout"
+echo "$rhout" | grep -qx "HUP=-1 icanon=1 echo=1" || fail "a tty REPL killed by HUP at its prompt restores the terminal: $rhout"
+echo "e2e ok: a tty REPL dies by a hangup's SIGHUP mid-command, and restores the terminal on TERM/HUP at its prompt"
+
+# every File op on a FIFO is cut by a race win [D:fifo-ops-polled] (Linux)
+if [ "$(uname -s)" = Linux ]; then
+    ff="$svdir/ff"; mkdir -p "$ff/d"
+    cat > "$ff/arm.weir" <<'WEOF'
+let op = Self.args |> Seq.head
+let f = Self.args |> Seq.item 1
+let d = Self.args |> Seq.item 2
+let r =
+    [0; 1] |> Seq.pfirst (fun i ->
+        if i == 0 then
+            if op == "sha256" then
+                print (File.sha256 f)
+            elif op == "copy" then
+                File.copy f $"{d}/copied"
+            elif op == "write" then
+                File.write f ["x"]
+            elif op == "append" then
+                File.append f ["x"]
+            elif op == "writeAtomic" then
+                File.writeAtomic f ["x"]
+            elif op == "writeBytes" then
+                File.writeBytes f (Str.toUtf8 "x")
+            "op"
+        else
+            Duration.sleep 200ms
+            "timer")
+print $"{op}: r={r}"
+WEOF
+    for op in sha256 copy write append writeAtomic writeBytes; do
+        rm -rf "$ff/d" "$ff/p"; mkdir -p "$ff/d"; mkfifo "$ff/p"
+        out=$(timeout -s KILL 10 "$BIN" "$ff/arm.weir" "$op" "$ff/p" "$ff/d" 2>&1) || true
+        [ "$out" = "$op: r=timer" ] || fail "File.$op on a peerless FIFO is cut by a race win: $out"
+    done
+    (sleep 0.3; cat "$ff/p" > "$ff/got") &
+    "$BIN" -e "File.write \"$ff/p\" [\"hello\"; \"fifo\"]" || fail "File.write to a FIFO with a reader writes"
+    wait
+    [ "$(tr '\n' , < "$ff/got")" = "hello,fifo," ] || fail "File.write to a FIFO delivers the lines: $(cat "$ff/got")"
+    echo "e2e ok: File.sha256/copy/write/append/writeAtomic/writeBytes on a FIFO are cut by a race win; a read FIFO gets the write"
+fi
+
+# Proc.wait returns at the exit, not at a 50ms poll (D1)
+printf '%s\n' 'for i in [1..60] do' '    within proc p = sh -c "exit 0"' '        let _c = Proc.wait p' '        ()' 'print "done"' > "$svdir/pw.weir"
+pws=$(date +%s%N)
+out=$("$BIN" "$svdir/pw.weir" 2>&1)
+pwms=$(( ($(date +%s%N) - pws) / 1000000 ))
+[ "$out" = "done" ] || fail "Proc.wait loop: $out"
+[ "$pwms" -lt 2500 ] || fail "60 Proc.wait calls take ${pwms}ms — Proc.wait must wake at the exit, not poll 50ms"
+echo "e2e ok: Proc.wait wakes at the exit (60 waits in ${pwms}ms)"
 else
     echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"
 fi

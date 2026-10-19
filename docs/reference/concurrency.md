@@ -134,8 +134,8 @@ Rests on [D:teardown-stops-arms], [D:repl-interrupt-fanout],
 **I6. An `always` cleanup runs whole.** It runs in a shield node, which
 no cut from outside reaches: not a race win, the serve cut, the teardown
 or the first REPL ^C. Its spawns start after the teardown's kill; its
-children are spared that kill; at a foreground terminal its commands run
-in their own process group (I16). The backstops stand by while the main
+children are spared that kill; at a foreground terminal its commands
+start with ^C and ^\ ignored (I16). The backstops stand by while the main
 thread runs a cleanup or closes a scope. It runs exactly once, on the
 flow that reached it — or, on a main flow the backstop adopted, on the
 backstop's thread (I12), never both: the claim is the frame's. A race,
@@ -151,8 +151,9 @@ from `closingScope`), and `Eval` `TEAlways` `claimAndRun`.
 **I7. A command killed by the teardown is the teardown, never a
 `command failed`.** Rests on [D:teardown-kill-not-failure],
 [D:sigint-terminal-group]. Enforced by `Proc.raiseNonzero`, which calls
-`settleInterrupt` (a 130 death while weir is the foreground group waits up
-to 250ms for the request; not in the REPL), then `checkTeardown`, then
+`settleInterrupt` (a 130 death while weir is the foreground group, or a
+129, 131 or 143 death, which a group-directed signal causes, waits up to
+250ms for the request; not in the REPL), then `checkTeardown`, then
 `checkCancelled`. The dispatch requests the teardown before it kills.
 
 **I8. Every exit settles the tree kills in flight.** It waits up to 2s
@@ -193,8 +194,8 @@ waits for the child, unwinds, and dies by the SIGINT. If no child is
 alive, the grace backstop ends it after 1s (I12). Every other SIGINT is
 a teardown that kills: one with no tty, a background group, a pid-only
 `kill -INT` while weir is not the foreground group, or any SIGINT while
-a scope is open. The same holds for every TERM and HUP. The tty REPL
-survives its SIGINT. Rests on [D:sigint-reaps],
+a scope is open. The same holds for every TERM, HUP and QUIT (a ^\ is
+TERM's teardown, [D:sigquit-teardown]). The tty REPL survives its SIGINT. Rests on [D:sigint-reaps],
 [D:sigint-terminal-group], [D:sigint-live-scopes], [D:sighup-teardown],
 [D:repl-isig]. Enforced by `onSignal` (`scoped`: a live tmp dir, which a
 `within proc`'s spill dir is, or a pending `always` or serve scope),
@@ -211,7 +212,8 @@ loop, a stalled write) is adopted by the backstop: 1s after the first
 signal (the terminal ^C's grace: once no child has lived for 1s), unless
 the main thread runs a cleanup, closes a scope, joins arms or is already
 unwinding, the backstop claims the main flow's pending frames, runs them
-innermost first in shields, and dies by the signal; the main thread, if
+innermost first in shields (a raising one says "the cleanup ALSO
+failed", as on the main flow), and dies by the signal; the main thread, if
 it returns, parks at its next claim. Rests on [D:hard-exit],
 [D:signal-teardown], [D:teardown-joins-arms], [D:teardown-never-preempts],
 [D:terminal-sigint-teardown], [D:scope-tree]. Enforced by `tearingDown`,
@@ -223,19 +225,26 @@ One entry, however many statements, is one evaluation: the ^C cuts its
 node, so its flows stop and its remaining statements never run; its
 first failure stops the rest as well. Waits inside a cleanup honour only
 a second ^C. A spawn is also a ^C boundary, but a builtin call and an
-evaluated node are not. A serve handler the ^C cuts closes its
+evaluated node are not. The node is checked between statements, so a ^C
+that cut no wait (in a cleanup, in pure computation, or killing a child
+whose exit is data) ends the entry after its statement, with `↳ exit 130`
+([D:repl-entry-check]). A serve handler the ^C cuts closes its
 connection unanswered (`Serve.abandon`) and records nothing on
 `Server.streamErrors`. Tty REPL only: a piped REPL has no
 `interruptRepl`. Rests on [D:repl-interrupt], [D:repl-interrupt-fanout],
-[D:repl-isig]. Enforced by `interruptRepl`, `checkInterrupted`,
-`beginReplEval`/`endReplEval` (nested: an entry's), and the REPL's
-multi-statement fold.
+[D:repl-isig], [D:repl-entry-check]. Enforced by `interruptRepl`,
+`checkInterrupted`, `beginReplEval`/`endReplEval` (nested: an entry's),
+and the REPL's multi-statement fold (`interruptRequested` after each
+statement).
 
 **I14. The platform split.** On Linux, FIFO and unseekable `File.read`
-opens non-blocking and polls beside the cut, so the cut closes the fd
-([D:fifo-read-polled], `openPolled`, `PolledFd`); on macOS a FIFO's
-open and read run off the flow (`cutBlocking`), and an abandoned read
-may take one later write. A child's pipe is polled before each fill on
+(and `File.sha256`, a `File.copy` source) opens non-blocking and polls
+beside the cut, so the cut closes the fd ([D:fifo-read-polled],
+`openPolled`, `PolledFd`); a FIFO that `File.write`/`append`/`writeAtomic`/
+`writeBytes` opens waits for its reader and for room the same way
+([D:fifo-ops-polled], `openPolledWrite`, `PolledWriteFd`). On macOS a
+FIFO's open and read run off the flow (`cutBlocking`), and an abandoned
+read may take one later write; a FIFO write there is not cut. A child's pipe is polled before each fill on
 POSIX; on Windows the fill waits beside the token. The tree walk is
 Linux-only (I9). On Windows, Ctrl+C (`Console.CancelKeyPress`) is the
 same teardown — the main flow unwinds, a second Ctrl+C hard-exits —
@@ -252,32 +261,34 @@ unbound when there is a controlling tty, so a pid-directed `kill -INT`
 is dropped too. A shell ignores SIGINT for a background command only
 where job control is off (a script, `sh -c '… &'`, `set +m`); an
 interactive shell's `&` and `nohup … &` start weir with SIGINT live
-([D:sigint-ignored-jobcontrol]); SIGTERM always works, and SIGHUP does unless it was
-ignored too ([D:signal-teardown], [D:sigint-reaps],
-[D:sigint-ignored-tty]). An inherited SIG_IGN SIGINT without a tty is
-reset at start. An ignored SIGHUP always stays unbound
-([D:sighup-teardown]).
+([D:sigint-ignored-jobcontrol]); SIGTERM works unless it was inherited
+ignored too, which stays, as in shells ([D:sigterm-inherited-ign]), and
+SIGHUP works unless it was ignored too ([D:signal-teardown],
+[D:sigint-reaps], [D:sigint-ignored-tty]). An inherited SIG_IGN SIGINT
+without a tty is reset at start. An ignored SIGHUP always stays unbound
+([D:sighup-teardown]). SIGUSR1, SIGUSR2 and SIGALRM keep their default
+action: weir dies at once and runs nothing, as with `kill -9`
+([D:sigquit-teardown]).
 
-**I16. A cleanup's commands at a terminal run in their own process
-group.** When weir's group is the terminal's foreground group, a command
-a cleanup starts goes through weir's exec shim: it moves into a new
-group, ignores SIGTTIN/SIGTTOU (a terminal read gets EIO, never a stop),
-takes /dev/null for a terminal stdin, and execs the command, so the pid
-weir holds is the command's. The terminal signals are blocked on the
-starting thread, so one landing before the shim left weir's group stays
-pending in it and is discarded. A terminal ^C, ^\ or ^Z cannot reach the
-command; its output still shows; a second signal kills it (I12). On
-Windows the command starts in a new process group, which Ctrl+C does
-not reach. Rests on [D:cleanup-pgrp]. Enforced by `cleanupGroupShim`,
-`Pgrp.blockedForStart`, `Pgrp.execInNewGroup` (the `--weir-exec-pgrp`
-entry in `Program.main`), `Proc.spawn`.
+**I16. A cleanup's commands at a terminal ignore the terminal's ^C and
+^\.** When weir's group is the terminal's foreground group, a command a
+cleanup starts goes through the `sh` shim (`trap "" INT QUIT; exec "$@"`):
+it keeps weir's group, the terminal and its real stdin (a pager works),
+starts with SIGINT and SIGQUIT ignored, and the pid weir holds is the
+command's. A terminal ^C or ^\ cannot kill the command, unless it sets
+its own handler (a pager quits on ^C); a second signal kills it (I12).
+Without a tty the spawn is direct. On Windows the command starts in a
+new process group, which Ctrl+C does not reach. Rests on
+[D:cleanup-sigign]. Enforced by `cleanupIgnoresTerminal`, `CleanupShim`,
+`Proc.spawn`.
 
 **I17. A signal's exit is a death by the signal.** After the unwind (the
 flow's, the backstop's or the hard exit's), INT/TERM/HUP end weir by the
-signal itself, scoped or not, so a calling shell sees the signal (`$?` is
+signal itself, scoped or not, and QUIT likewise with no core dump
+([D:sigquit-teardown]), so a calling shell sees the signal (`$?` is
 128+n, and bash's wait-and-cooperative-exit stops its loop). The handler
 .NET installed is replaced by the default first; the terminal mode the
-REPL set is restored. A closed stdout's 141 is an exit. Rests on
+REPL set is restored, at its prompt too. A closed stdout's 141 is an exit. Rests on
 [D:die-by-signal]. Enforced by `dieBy` (`exitCodeOr`, `startBackstop`,
 `hardExit`, `onSignal` with no flow to unwind).
 
@@ -297,7 +308,8 @@ REPL set is restored. A closed stdout's 141 is an exit. Rests on
 | `exit n` in a pmap/piter arm | stops the fan-out as a race win does: no new arm, the in-flight arms cut (their children killed) and joined, cleanups whole; then `exit n`, never masked by an arm error (I5) |
 | `pfirst` or `within serve` inside a cleanup | a node under the shield: the scope cuts its own losers and late handlers, children killed (I2, I3); a first signal or REPL ^C does not reach them and a second does (I6) |
 | terminal ^C while a `tmp`/`proc`/`serve`/`always` scope is open | a teardown that kills; the main flow unwinds, weir dies by the SIGINT (I11, I17) |
-| terminal ^C during an `always` running a command | I16: the command never sees it; the cleanup ends whole, then the unwind and the SIGINT's death |
+| terminal ^C during an `always` running a command | I16: the command ignores it (or handles it itself); the cleanup ends whole, then the unwind and the SIGINT's death |
+| terminal ^\ during an `always` running a command | I16, I11: the command ignores it; the cleanup and the outer ones run whole, the tmp dirs go, then the death by SIGQUIT |
 | terminal ^C after every scope has closed | the soft teardown: no kill, wait for the child, die by the SIGINT (I11) |
 | second signal while a cleanup runs and an outer one is pending | I12: weir dies at once by the first signal; neither cleanup runs on |
 | closed stdout while an arm waits on a command | the EPIPE's kill ends the command at once; the arm raises and is joined, then `ExitRequest 141` (I3, I4) |
@@ -317,8 +329,10 @@ REPL set is restored. A closed stdout's 141 is an exit. Rests on
   ([D:sigint-terminal-group]).
 - A terminal ^C at no live scope waits for a child that ignores it;
   only a second ^C ends that wait ([D:terminal-sigint-teardown]).
-- A cleanup's command at a terminal cannot read it (I16), and its
-  descendants inherit SIGTTIN/SIGTTOU ignored ([D:cleanup-pgrp]).
+- A ^C or ^\ in the first moment of a cleanup's command at a terminal,
+  before its shim's `trap` runs (about a millisecond), ends that command
+  (I16, [D:cleanup-sigign]). Its descendants inherit SIGINT/SIGQUIT
+  ignored.
 - A hard exit leaves a running cleanup where it stood (I12): a cleanup
   that must finish needs one signal, not two.
 

@@ -233,16 +233,9 @@ let private runOnMain (run: unit -> int) : int =
 [<EntryPoint>]
 let main argv =
 
-    // weir as the shim that starts a cleanup's command in a group of its
-    // own [D:cleanup-pgrp]: nothing else runs first
-    if argv.Length >= 2 && argv[0] = Session.Pgrp.marker then
-        Session.Pgrp.execInNewGroup argv[1] argv[2..]
-
-    // weir's own executable for the shim — not a `dotnet Weir.dll` host
-    match Environment.ProcessPath with
-    | null -> ()
-    | p when IO.Path.GetFileNameWithoutExtension p = "dotnet" -> ()
-    | p -> Session.Pgrp.selfPath <- p
+    // a closed stderr is /dev/null: nothing weir opens lands on fd 2 —
+    // first, before any console stream exists [D:console-write]
+    Session.nullClosedStderr ()
 
     // captured output is data: LF on every platform [D:lf-output] —
     // the dual of the content-bytes input ruling (a line ending is
@@ -254,6 +247,9 @@ let main argv =
 
     if Console.IsErrorRedirected then
         Console.Error.NewLine <- "\n"
+        // stderr is weir's diagnostic channel: a write it refuses (a full
+        // disk, a closed pipe) is dropped, never a raise [D:console-write]
+        Console.SetError(new Types.HangupWriter(Console.Error))
     else
         // one choke point for every stderr diagnostic [D:tty-diag-sanitize];
         // a hung-up terminal's EIO never aborts weir [D:console-hangup]

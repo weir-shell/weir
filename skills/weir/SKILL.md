@@ -878,8 +878,9 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   pipelines and reifiers refuse (`| complete` WAITS — the opposite of
   backgrounding; compose inside `sh -c`); the block starts on the
   NEXT line (the command owns the rest of its own). THE NON-CLAIM,
-  stated: normal exit, raise, SIGINT, SIGTERM and SIGHUP (the
-  terminal closed, `kill -HUP`) all close every scope (on the flow's
+  stated: normal exit, raise, SIGINT, SIGTERM, SIGHUP (the
+  terminal closed, `kill -HUP`) and SIGQUIT (^\, no core dump,
+  `$?` 131 [D:sigquit-teardown]) all close every scope (on the flow's
   own thread — the script's, a REPL entry's, on Windows too — so no
   statement runs after the signal; a flow stuck where no step comes
   has its cleanups run by a 1s backstop, still whole, once, LIFO
@@ -894,7 +895,10 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   keeps SIGHUP ignored. A hung-up terminal never aborts weir: console
   writes after the hangup are dropped, so the cleanups still run whole
   and weir dies by the SIGHUP [D:console-hangup] (a command's own write
-  to the dead terminal is that command's failure).
+  to the dead terminal is that command's failure). A full or closed
+  stderr (`2>/dev/full`, `2>&-`) never aborts or fails a run either:
+  `printerr`, `Log.*` and the final error write nothing and the exit
+  code is the run's own [D:console-write].
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel, a `kill -INT`) tree-kills the running foreground command and
   every fan-out arm's command too, scoped or not [D:sigint-reaps]. A
@@ -913,9 +917,10 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   reach [D:tree-kill-walk]. An `always` cleanup running or about to
   start when the signal lands runs whole, its commands too, then the
   signal's exit [D:teardown-never-preempts]; at a terminal its commands
-  run in a process group of their own, so a terminal ^C cannot reach
-  them (their output shows; they cannot read the terminal)
-  [D:cleanup-pgrp].
+  start with SIGINT and SIGQUIT ignored, so a terminal ^C or ^\ cannot
+  kill them, while they keep the terminal and its input (a pager
+  works; one that handles ^C itself still quits on it)
+  [D:cleanup-sigign].
   A `pmap`/`piter`/`pfirst` takes no new arm after the signal (or the
   closed stdout), and arms already running are cut at their next
   builtin call, command, sleep or wait and JOINED before any
@@ -925,7 +930,10 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   in a builtin's own loop holds the teardown (a second signal
   hard-exits) [D:scope-tree].
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
-  definition — no userspace design closes that hole; and a weir
+  definition — no userspace design closes that hole (nor can SIGUSR1,
+  SIGUSR2 or SIGALRM, whose default ends weir at once); an inherited
+  ignored SIGTERM stays ignored, as in shells
+  [D:sigterm-inherited-ign]; and a weir
   BACKGROUNDED WHERE JOB CONTROL IS OFF (`weir … &` in a script,
   `sh -c 'weir … &'`, after `set +m`) with a controlling terminal
   inherits SIGINT ignored — the shell's rule for a background command

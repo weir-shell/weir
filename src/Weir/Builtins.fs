@@ -3792,7 +3792,16 @@ let private preFileCopy (pr: FsProbe) (op: string) (src: string) (dst: string) :
 
 let private doFileCopy (op: string) (src: string) (dst: string) : unit =
     preFileCopy realProbe op src dst
-    ioGuarded op src (fun () -> System.IO.File.Copy(src, dst))
+
+    ioGuarded op src (fun () ->
+        if Session.isFifo src then
+            // a FIFO source is read as File.read's is, so a cut stops it
+            // [D:fifo-ops-polled]
+            withReadStream src (fun from ->
+                use into = new FileStream(dst, FileMode.CreateNew, FileAccess.Write)
+                from.CopyTo into)
+        else
+            System.IO.File.Copy(src, dst))
 
 let private preFileMove (pr: FsProbe) (op: string) (src: string) (dst: string) : unit =
     let k = pr.Kind src
@@ -3965,24 +3974,32 @@ let private fileMembers: (string * Ty * Value) list =
                   writeGuard "File.write" r
 
                   ioGuarded "File.write" r (fun () ->
-                      // one handle for peek + truncate + write — a separate
-                      // read-open racing the write-open trips a Windows sharing
-                      // violation [D:encoding-law]. Peek the existing first
-                      // bytes to decide the BOM, truncate, then write.
-                      use fs =
-                          new FileStream(r, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)
+                      match Session.openPolledWrite r with
+                      | Some s ->
+                          // a FIFO: no BOM to peek, nothing to truncate — cut as
+                          // a read is [D:fifo-ops-polled]
+                          use s = s
+                          let payload = writePayload false lines
+                          s.Write(payload, 0, payload.Length)
+                      | None ->
+                          // one handle for peek + truncate + write — a separate
+                          // read-open racing the write-open trips a Windows sharing
+                          // violation [D:encoding-law]. Peek the existing first
+                          // bytes to decide the BOM, truncate, then write.
+                          use fs =
+                              new FileStream(r, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)
 
-                      // preserve an existing UTF-8 BOM; a new or no-BOM file
-                      // stays bare, so this never adds a BOM
-                      let keepBom = bomAt fs
+                          // preserve an existing UTF-8 BOM; a new or no-BOM file
+                          // stays bare, so this never adds a BOM
+                          let keepBom = bomAt fs
 
-                      // LF bytes on every platform [D:lf-output] — a
-                      // written file is data (hashes, sigs, diffs).
-                      let payload = writePayload keepBom lines
+                          // LF bytes on every platform [D:lf-output] — a
+                          // written file is data (hashes, sigs, diffs).
+                          let payload = writePayload keepBom lines
 
-                      fs.SetLength 0L
-                      fs.Seek(0L, SeekOrigin.Begin) |> ignore
-                      fs.Write(payload, 0, payload.Length))
+                          fs.SetLength 0L
+                          fs.Seek(0L, SeekOrigin.Begin) |> ignore
+                          fs.Write(payload, 0, payload.Length))
 
                   VUnit
               | _ -> unreachable "the checker rejects 'File.write' on these arguments"))
@@ -3999,7 +4016,16 @@ let private fileMembers: (string * Ty * Value) list =
                   | None ->
                   writeGuard "File.writeAtomic" r
 
-                  ioGuarded "File.writeAtomic" r (fun () -> atomicReplace r lines)
+                  ioGuarded "File.writeAtomic" r (fun () ->
+                      match Session.openPolledWrite r with
+                      | Some s ->
+                          // a FIFO has nothing to replace: written as
+                          // File.write writes it, cut the same way
+                          // [D:fifo-ops-polled]
+                          use s = s
+                          let payload = writePayload false lines
+                          s.Write(payload, 0, payload.Length)
+                      | None -> atomicReplace r lines)
 
                   VUnit
               | _ -> unreachable "the checker rejects 'File.writeAtomic' on these arguments"))
@@ -4022,7 +4048,13 @@ let private fileMembers: (string * Ty * Value) list =
                       for l in lines do
                           sb.Append(asString l).Append '\n' |> ignore
 
-                      AppendNative.appendBytes r (utf8Strict.GetBytes(sb.ToString())))
+                      let bytes = utf8Strict.GetBytes(sb.ToString())
+
+                      match Session.openPolledWrite r with
+                      | Some s ->
+                          use s = s
+                          s.Write(bytes, 0, bytes.Length)
+                      | None -> AppendNative.appendBytes r bytes)
 
                   VUnit
               | _ -> unreachable "the checker rejects 'File.append' on these arguments"))
@@ -4219,7 +4251,13 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                   | Some _ -> VUnit
                   | None ->
                   writeGuard "File.writeBytes" r
-                  ioGuarded "File.writeBytes" r (fun () -> System.IO.File.WriteAllBytes(r, b))
+
+                  ioGuarded "File.writeBytes" r (fun () ->
+                      match Session.openPolledWrite r with
+                      | Some s ->
+                          use s = s
+                          s.Write(b, 0, b.Length)
+                      | None -> System.IO.File.WriteAllBytes(r, b))
                   VUnit
               | _ -> unreachable "the checker rejects 'File.writeBytes' on these arguments"))
       "sha256",
@@ -4236,11 +4274,11 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
 
               VStr(
                   ioGuarded "File.sha256" r (fun () ->
-                      use fs = openShared r
-
-                      System.Security.Cryptography.SHA256.HashData fs
-                      |> Array.map (fun x -> x.ToString "x2")
-                      |> String.concat "")
+                      // a FIFO is cut as File.read's is [D:fifo-ops-polled]
+                      withReadStream r (fun fs ->
+                          System.Security.Cryptography.SHA256.HashData fs
+                          |> Array.map (fun x -> x.ToString "x2")
+                          |> String.concat ""))
               )
           | v -> unreachable $"the checker rejects 'File.sha256' on {formatValue v}")
       "delete",

@@ -168,8 +168,34 @@
   SIGTERM or SIGHUP itself, as an unscoped one did, so a bash loop
   around it stops at one Ctrl+C. `$?` is unchanged.
 - **Ctrl+C no longer kills the commands an `always` cleanup runs.** At
-  a terminal they run in a process group of their own, so the cleanup
-  finishes; they can still print, but not read the terminal.
+  a terminal they start with Ctrl+C and Ctrl+\ ignored, so the cleanup
+  finishes; they keep the terminal, so a pager in a cleanup works, and a
+  program that handles Ctrl+C itself still can.
+- **Ctrl+\ (SIGQUIT) runs the cleanups.** It dumped core, skipped the
+  outer cleanups and left the `within tmp` directory; now it unwinds as
+  SIGTERM does and weir dies by SIGQUIT, with no core dump.
+- **A full or closed stderr no longer aborts weir.** With `2>/dev/full`
+  or `2>&-` the final error line (or a `Log.*` line) aborted with a core
+  dump, exit 134; stderr writes that fail are now dropped and the exit
+  code is the script's own.
+- **The REPL survives a terminal hangup and restores the terminal.** A
+  hangup while an entry ran a command reported `internal error:
+  IOException`; it now dies by the SIGHUP. SIGTERM or SIGHUP at the
+  prompt left the terminal raw (no echo); it is now restored.
+- **Ctrl+C at the REPL stops a multi-statement entry even when nothing
+  was waiting** — during a cleanup, pure computation, or a child whose
+  exit code is the value (`| exitCode`). The rest of the entry ran.
+- **`File.sha256`, `File.copy`, `File.write`, `File.append`,
+  `File.writeAtomic` and `File.writeBytes` on a FIFO are cut** by a race
+  win, a fan-out's exit and the first signal, as `File.read` is (Linux).
+  They waited for the other end forever. `File.writeAtomic` writes into
+  a FIFO as `File.write` does.
+- **`Proc.wait` returns when the process exits.** It woke every 50 ms,
+  so a loop of short processes ran ~70x slower.
+- **A command killed by a group-wide SIGHUP, SIGQUIT or SIGTERM is not
+  reported as `command failed`** when the same signal is stopping weir.
+- **A cleanup that fails during a signal's 1s backstop says so** ("the
+  cleanup ALSO failed"), as it does on the script's own unwind.
 - **`exit n` in a `serve` handler exits n.** It was reported as a 500
   (`failed: ExitRequest`) and the script went on; now the scope stops,
   its handlers finish their cleanups, and the script exits n.

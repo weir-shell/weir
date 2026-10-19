@@ -143,14 +143,11 @@ let private spawn
 
     Session.sigpipeForChildren.Force()
     Session.resetDetachedSigint.Force()
-    // a cleanup's command at a foreground terminal runs in a group of its
-    // own, through weir's shim [D:cleanup-pgrp]: the program is resolved
-    // here, as the start would, so a missing one fails the same way
-    let viaShim = (Session.cleanupGroupShim ()).IsSome
-
+    // a cleanup's command at a foreground terminal starts with ^C and ^\
+    // ignored, through the sh shim [D:cleanup-sigign]: the program is
+    // resolved here, as the start would, so a missing one fails the same way
     let psi =
-        match Session.cleanupGroupShim () with
-        | Some self ->
+        if Session.cleanupIgnoresTerminal () then
             let runnable (path: string) =
                 System.IO.File.Exists path
                 && (System.IO.File.GetUnixFileMode path
@@ -171,18 +168,21 @@ let private spawn
 
             match found with
             | Some path when runnable path ->
-                let psi = ProcessStartInfo(self)
-                psi.ArgumentList.Add Session.Pgrp.marker
+                let psi = ProcessStartInfo(Session.CleanupShim.shell)
+                psi.ArgumentList.Add "-c"
+                psi.ArgumentList.Add Session.CleanupShim.script
+                psi.ArgumentList.Add "sh"
                 psi.ArgumentList.Add path
                 psi
             | _ -> failwith $"command not found or not executable: {Weir.Types.quoteData prog}"
-        | None -> ProcessStartInfo(prog)
+        else
+            ProcessStartInfo(prog)
 
     for a in args do
         psi.ArgumentList.Add a
 
     // Windows: a cleanup's command in a new process group, which Ctrl+C
-    // does not reach [D:cleanup-pgrp]
+    // does not reach [D:cleanup-sigign]
     if System.OperatingSystem.IsWindows() && Session.inCleanup () then
         psi.CreateNewProcessGroup <- true
 
@@ -209,10 +209,7 @@ let private spawn
     Session.gatedSpawn (fun () ->
         let p =
             try
-                if viaShim then
-                    Session.Pgrp.blockedForStart (fun () -> Process.Start psi)
-                else
-                    Process.Start psi
+                Process.Start psi
             with :? System.ComponentModel.Win32Exception ->
                 failwith $"command not found or not executable: {Weir.Types.quoteData prog}"
 

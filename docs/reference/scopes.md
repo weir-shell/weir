@@ -15,9 +15,9 @@ any scope releases its resource. A reader closing weir's stdout
 no message. A second signal during cleanup exits immediately, so
 pressing Ctrl+C twice gets you out: no cleanup runs after it, every
 child is killed, and weir dies by the first signal. At a terminal, the
-commands an `always` cleanup runs are in a process group of their own,
-so a Ctrl+C reaches the script but not them; they still print, but
-cannot read the terminal. There are two exceptions, both by design. `kill -9` of weir
+commands an `always` cleanup runs start with Ctrl+C and Ctrl+\ ignored,
+so a Ctrl+C reaches the script but does not kill them; they keep the
+terminal, so a pager in a cleanup works. There are two exceptions, both by design. `kill -9` of weir
 itself skips cleanup (only a lock is still released, by the kernel).
 And a weir started in the background where job control is off (`weir … &`
 in a script, `sh -c 'weir … &'`, after `set +m`) inherits SIGINT ignored,
