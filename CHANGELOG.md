@@ -582,8 +582,7 @@
   credentials** as `http://***@host/…`. The request still sends them.
 - **`NO_PROXY` matches a non-ASCII host by its punycode**, as curl
   does: `NO_PROXY=xn--bcher-kva.example` bypasses the proxy for
-  `http://bücher.example`, and `NO_PROXY=bücher.example` for either
-  spelling.
+  `http://bücher.example`; an entry is matched as written.
 
 ## v0.0.74
 

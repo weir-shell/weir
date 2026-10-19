@@ -28344,11 +28344,11 @@ let hunt3r4SafetyTests =
 let hunt3r5SafetyTests =
     testList
         "hunt-3r5 safety"
-        [ test "NO_PROXY matches a non-ASCII name by its punycode, both sides [D:noproxy-idn]" {
+        [ test "NO_PROXY matches a non-ASCII host by its punycode, an entry as written [D:noproxy-idn]" {
               let cases =
                   [ "xn--bcher-kva.example", "bücher.example", true
-                    "bücher.example", "xn--bcher-kva.example", true
-                    "bücher.example", "bücher.example", true
+                    "bücher.example", "xn--bcher-kva.example", false
+                    "bücher.example", "bücher.example", false
                     ".xn--bcher-kva.example", "a.bücher.example", true
                     "example", "bücher.example", true
                     "xn--bcher-kva.example", "bucher.example", false

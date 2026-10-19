@@ -300,8 +300,8 @@ let noProxyMatch (noProxy: string) (host: string) : bool =
         | Some hb, _ -> toks |> List.exists (ipMatch hb strictV6)
         | None, Some hb -> toks |> List.exists (ipMatch hb strictV4)
         | None, None ->
-            // a non-ASCII name compares by its punycode, on both sides
-            // [D:noproxy-idn]
+            // a non-ASCII host compares by its punycode; an entry as
+            // written [D:noproxy-idn]
             let ascii (s: string) =
                 if s |> Seq.exists (fun c -> c > '\127') then
                     try
@@ -318,7 +318,6 @@ let noProxyMatch (noProxy: string) (host: string) : bool =
             |> List.exists (fun t ->
                 let t = if t.EndsWith "." then t.Substring(0, t.Length - 1) else t
                 let t = if t.StartsWith "." then t.Substring 1 else t
-                let t = ascii t
 
                 if t.Length = name.Length then
                     String.Equals(t, name, StringComparison.OrdinalIgnoreCase)
