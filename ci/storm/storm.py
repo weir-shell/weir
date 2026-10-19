@@ -2,18 +2,25 @@
 """storm.py - random-point signal storms against weir fixtures, with an oracle.
 
 usage: python3 -I storm.py --bin WEIR --out WORKDIR [--fixture NAME[,NAME..]|all] [--runs N] [--jobs J]
-                           [--kinds INT,TERM,HUP] [--count 1-3] [--gap 0-50] [--window MS]
-                           [--seed S] [--timeout S] [--verbose] [--tty] [--keep]
+                           [--kinds INT,TERM,HUP[,QUIT][,HANGUP]] [--count 1-3] [--gap 0-50] [--window MS]
+                           [--seed S] [--timeout S] [--verbose] [--tty] [--group] [--keep]
 
 Linux only (the orphan scan reads /proc). Each run: spawn `WEIR fx/NAME.weir LOG TAG RUNDIR PORT CLI`
 (CLI = cli.py next to this file; PORT from the block $STORM_PORT0 (20000) .. +499, BELOW the
 ephemeral range [D:harness-ports]: run % 480, a candidate something already listens on is skipped,
 and a lost bind reruns the same draw on the next candidate) in a new session (default dispositions,
-stdin /dev/null, TMPDIR=RUNDIR/tmp), send COUNT signals (kinds drawn from KINDS) to weir's pid
-alone, the first at U(0, WINDOW) ms after spawn (WINDOW defaults to the fixture's calibrated
-unsignalled duration + 150ms), the rest GAP ms apart. Then judge:
+stdin /dev/null, TMPDIR=RUNDIR/tmp, cwd RUNDIR, RLIMIT_CORE raised to its hard limit), send COUNT
+signals (kinds drawn from KINDS) to weir's pid alone (--group: to its process group, kill -- -pgid, so
+its foreground children get them too), the first at U(0, WINDOW) ms after spawn (WINDOW defaults to the fixture's calibrated
+unsignalled duration + 150ms), the rest GAP ms apart. --tty: weir leads a fresh 24x80 pty; INT is a
+typed ^C and QUIT a typed ^\\ (both reach the whole foreground group), HANGUP closes the master (the
+kernel's SIGHUP; nothing is sent after it, and half such runs give weir's stderr a file, not the pty, unless
+the fixture feeds keys).
+Then judge:
   rc      exit status vs the docs (R7: death by the first signal, -n, for one signal or several;
-          0 or -n if DONE logged)
+          0 or -n if DONE logged; HANGUP counts as HUP)
+  core    no core dump (R2: a QUIT's death dumps none), unless the first signal was a QUIT sent before weir
+          caught TERM (SigCgt: the process's first milliseconds, before .NET installs its handlers)
   once    each O/S/E line per scope path at most once; E after S after O
   nest    after `S p` (p's cleanup began) or `J p` (joined) no line of p's body or of a scope nested in p
   landed  no `L` line (an effect that must never run, e.g. a race loser past its cut)
@@ -23,11 +30,19 @@ unsignalled duration + 150ms), the rest GAP ms apart. Then judge:
   tmp     RUNDIR/tmp empty after exit
   stderr  no internal error / .NET text / "command failed" / "One or more errors" on stderr
   hang    exit within TIMEOUT s of the last signal
+  ttymode --tty, no hangup: the pty is cooked again after exit (icanon, echo, isig)
+  cuterr  `// storm-cut-err: PREFIX | TEXT`: one signal landed and no log line starts with PREFIX => TEXT on stderr
+          (unless a hangup took the pty weir's stderr wrote to)
+  cpu     `// storm-cpu-max: S`: weir and the children it reaped used at most S s of CPU
+A run whose only issues match an open finding (known_of) counts as `known`, not bad.
+A fixture line `// storm-feed: TEXT MS` (--tty only; TEXT with backslash escapes) types TEXT every MS ms from
+U(0, WINDOW + 1s) until weir exits (a reader at the terminal, e.g. a pager in a cleanup, gets its keys).
 Log grammar written by fixtures: `O path` scope body began, `B path ...` body effect,
 `S path` cleanup began, `E path` cleanup ended, `C path ...` cleanup effect, `J path` the fan-out/race at path joined (no line of
 path/... may follow), `L ...` a line that must never be written, `DONE` script reached its end; `path` is
 slash-separated scope nesting (outer/lock/arm1). Fixtures live in fx/ next to this file.
-Exit code: 0 if every run passed, 1 otherwise. Writes OUT/runs.jsonl (one record per run) and
+A fixture whose unsignalled calibration run fails (not DONE, or any issue) counts all its runs bad, unless --window
+is given, which storms it anyway. Exit code: 0 if every run passed, 1 otherwise. Writes OUT/runs.jsonl (one record per run) and
 OUT/summary.json (per fixture: bad/runs, failure categories, exit codes, latency); a failing run's
 dir OUT/run-FX-R (log, err, tmp) is kept, a passing one removed unless --keep.
 """
@@ -40,13 +55,68 @@ if not 1024 <= PORT0 <= 32768 - 500:
 if not sys.platform.startswith('linux'):
     sys.exit('storm.py is Linux only (the orphan scan reads /proc)')
 HERE = os.path.dirname(os.path.abspath(__file__))
-SIGS = {'INT': signal.SIGINT, 'TERM': signal.SIGTERM, 'HUP': signal.SIGHUP}
+SIGS = {'INT': signal.SIGINT, 'TERM': signal.SIGTERM, 'HUP': signal.SIGHUP, 'QUIT': signal.SIGQUIT, 'HANGUP': signal.SIGHUP}
+KEYS = {'INT': b'\x03', 'QUIT': b'\x1c'}
+# open findings (hunt 3 round 5 stage D): a run whose only issues are one of these counts as `known`, not bad;
+# delete the entry once its fix lands.
+#  group-cleanup-cmd (ruling owed): a group-directed TERM/HUP that lands while a cleanup's command runs kills
+#    that command too; its death fails the cleanup ("command failed with exit code 143/129"), which stops there.
+#  raw-after-quit-hard-exit: a ^\ as the second signal while a cleanup's command holds the terminal raw (a
+#    pager) hard-exits without restoring the terminal (a second ^C restores it).
+KNOWN_GROUP_CLEANUP = re.compile(r'command failed with exit code (129|143)')
+
+def known_of(a, sent, issues, err):
+    if not issues: return None
+    if a.group and any(i.startswith('whole:') for i in issues) and all(
+            i.startswith('whole:') or (i.startswith('stderr:') and KNOWN_GROUP_CLEANUP.search(err)) for i in issues):
+        return 'group-cleanup-cmd'
+    if a.tty and 'QUIT' in sent[1:] and all(i.startswith('ttymode:') for i in issues):
+        return 'raw-after-quit-hard-exit'
+    return None
 LOST_BIND = re.compile(r'cannot listen|Address already in use')
 BAD_ERR = re.compile(r'internal error|Unhandled|Exception|   at |System\.|One or more errors|command failed|TaskScheduler', re.I)
 
 def pre():
+    import resource
     for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE):
         signal.signal(s, signal.SIG_DFL)
+    # a core dump must be possible for `core` to see one (runners default to 0)
+    _, hard = resource.getrlimit(resource.RLIMIT_CORE)
+    resource.setrlimit(resource.RLIMIT_CORE, (hard, hard))
+
+def catches(pid, sig):
+    # does pid catch sig yet (SigCgt)? before .NET installs its handlers (TERM's is one) a QUIT takes the
+    # default action, a core: the process's first milliseconds, out of weir's reach
+    try:
+        for l in open('/proc/%d/status' % pid):
+            if l.startswith('SigCgt:'): return bool(int(l.split()[1], 16) >> (sig - 1) & 1)
+    except OSError: pass
+    return False
+
+def directives(fx):
+    out = {}
+    for l in open(os.path.join(HERE, 'fx', fx + '.weir')):
+        if l.startswith('// storm-'):
+            k, _, v = l[len('// storm-'):].partition(':')
+            out.setdefault(k.strip(), []).append(v.strip())
+    return out
+
+def alive(pid):
+    # peek, never reap: the final reap reads the core bit and the rusage
+    try: return os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None
+    except ChildProcessError: return False
+
+def reap(p, timeout):
+    """wait4 weir's pid: (rc, core, cpu seconds incl. reaped children); rc 'HANG' past timeout"""
+    end = time.monotonic() + timeout if timeout is not None else None
+    while True:
+        pid, st, ru = os.wait4(p.pid, os.WNOHANG)
+        if pid:
+            p.returncode = os.waitstatus_to_exitcode(st)
+            if hasattr(p, 'p'): p.p.returncode = p.returncode
+            return p.returncode, os.WCOREDUMP(st), ru.ru_utime + ru.ru_stime
+        if end is not None and time.monotonic() > end: return 'HANG', False, 0.0
+        time.sleep(0.005)
 
 def procs_of(sid, tag, me):
     out = []
@@ -134,49 +204,101 @@ def free_port(off):
         if not listening(p): return p
     sys.exit('no free port in %d..%d' % (PORT0, PORT0 + 499))
 
-def calibrate(binp, fx, base):
-    d = os.path.join(base, 'calib-' + fx)
-    shutil.rmtree(d, ignore_errors=True); os.makedirs(d + '/tmp')
+def env_for(d):
     env = dict((k, v) for k, v in os.environ.items() if 'proxy' not in k.lower())
     env['TMPDIR'] = d + '/tmp'
+    return env
+
+def feed_of(fx):
+    f = directives(fx).get('feed')
+    if not f: return None
+    text, _, ms = f[0].rpartition(' ')
+    return text.encode().decode('unicode_escape').encode('latin-1'), float(ms) / 1000
+
+def calibrate(a, binp, fx, base):
+    d = os.path.join(base, 'calib-' + fx)
+    shutil.rmtree(d, ignore_errors=True); os.makedirs(d + '/tmp')
     t0 = time.monotonic()
-    p = subprocess.run([binp, os.path.join(HERE, 'fx', fx + '.weir'), d + '/log', '9999999', d, str(free_port(498)), CLI],
-                       stdin=subprocess.DEVNULL, capture_output=True, env=env, preexec_fn=pre, timeout=60)
+    argv = [binp, os.path.join(HERE, 'fx', fx + '.weir'), d + '/log', '9999999', d, str(free_port(498)), CLI]
+    errf = open(d + '/err', 'wb')
+    if a.tty:
+        # at a terminal, as the runs are: a reader at the tty waits for its fed keys
+        p = TtyProc(argv, env_for(d), errf, d)
+        p.feed(feed_of(fx), 0)
+    else:
+        p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=open(d + '/out', 'wb'), stderr=errf,
+                             env=env_for(d), preexec_fn=pre, cwd=d)
+    rc, _, _ = reap(p, 60)
+    if rc == 'HANG':
+        try: os.killpg(p.pid, signal.SIGKILL)
+        except Exception: pass
+        reap(p, None)
     ms = int((time.monotonic() - t0) * 1000)
+    if a.tty: p.close()
     lines = open(d + '/log').read().splitlines() if os.path.exists(d + '/log') else []
-    iss = judge(lines, p.returncode, [], 0)
+    iss = judge(lines, rc, [], 0)
     if 'DONE' not in lines or iss:
-        sys.exit('calibration of %s failed: rc=%s issues=%s err=%s' % (fx, p.returncode, iss, p.stderr[:300]))
+        # a finding, not a driver error: the fixture counts all-bad unless --window lets it storm anyway
+        print('  CALIBRATION FAIL %s: rc=%s issues=%s err=%r' % (fx, rc, iss, open(d + '/err', 'rb').read()[-300:]), flush=True)
+        return None
     shutil.rmtree(d, ignore_errors=True)
     return ms
 
 class TtyProc:
-    """weir as the session leader of a fresh pty (its group is the terminal's foreground group);
-    ctrl_c() types 0x03; everything weir writes to the terminal lands in errf"""
-    def __init__(self, argv, env, errf):
-        import pty, fcntl, termios
+    """weir as the session leader of a fresh 24x80 pty (its group is the terminal's foreground group);
+    key() types bytes, hangup() closes the master; everything weir writes to the terminal lands in errf
+    (or, with stderr=FILE, its stderr goes to that file)"""
+    def __init__(self, argv, env, errf, cwd, stderr=None):
+        import fcntl, termios, struct
         m, sl = os.openpty()
+        fcntl.ioctl(sl, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
         def pre_tty():
             pre()
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-        self.m = m; self.errf = errf
-        self.p = subprocess.Popen(argv, stdin=sl, stdout=sl, stderr=sl, preexec_fn=pre_tty, start_new_session=True, env=env)
+        self.m = m; self.errf = errf; self.hung = False; self.stop = False
+        self.p = subprocess.Popen(argv, stdin=sl, stdout=sl, stderr=stderr or sl, preexec_fn=pre_tty,
+                                  start_new_session=True, env=env, cwd=cwd)
         os.close(sl)
         self.pid = self.p.pid
         self.t = threading.Thread(target=self.pump, daemon=True); self.t.start()
+        self.wlock = threading.Lock()
     def pump(self):
-        while True:
+        import select
+        while not self.stop:
+            r, _, _ = select.select([self.m], [], [], 0.02)
+            if not r: continue
             try: c = os.read(self.m, 65536)
             except OSError: return
             if not c: return
             self.errf.write(c); self.errf.flush()
-    def ctrl_c(self): os.write(self.m, b'\x03')
-    def poll(self): return self.p.poll()
-    def wait(self, timeout=None): return self.p.wait(timeout=timeout)
+    def key(self, b):
+        with self.wlock:
+            if not self.hung: os.write(self.m, b)
+    def feed(self, f, start):
+        # type f's text every f's period from start (s after now) until weir exits or the line hangs up
+        if not f: return
+        def go():
+            time.sleep(start)
+            while alive(self.pid) and not self.hung:
+                try: self.key(f[0])
+                except OSError: return
+                time.sleep(f[1])
+        threading.Thread(target=go, daemon=True).start()
+    def hangup(self):
+        with self.wlock:
+            self.hung = True; self.stop = True
+            self.t.join(1)
+            os.close(self.m)
+    def termios_ok(self):
+        import termios
+        lf = termios.tcgetattr(self.m)[3]
+        return [n for n, b in (('icanon', termios.ICANON), ('echo', termios.ECHO), ('isig', termios.ISIG)) if not lf & b]
     def close(self):
+        self.stop = True
         self.t.join(1)
-        try: os.close(self.m)
-        except OSError: pass
+        if not self.hung:
+            try: os.close(self.m)
+            except OSError: pass
 
 def one(a, binp, fx, window, r, base, rng):
     st = rng.getstate()
@@ -192,48 +314,63 @@ def one_try(a, binp, fx, window, r, base, rng, poff):
     d = os.path.join(base, 'run-%s-%d' % (fx, r))
     shutil.rmtree(d, ignore_errors=True); os.makedirs(d + '/tmp')
     log = d + '/log'
+    dirs = directives(fx)
     count = rng.randint(a.count[0], a.count[1])
     sent = [rng.choice(a.kinds) for _ in range(count)]
     t_first = rng.uniform(0, window)
     gaps = [rng.uniform(a.gap[0], a.gap[1]) for _ in range(count - 1)]
-    env = dict((k, v) for k, v in os.environ.items() if 'proxy' not in k.lower())
-    env['TMPDIR'] = d + '/tmp'
+    t_feed = rng.uniform(0, window + 1000) / 1000.0
+    # never for a tty reader: more reads its keys from fd 2, and a file there is an endless EOF
+    err_file = a.tty and 'HANGUP' in a.kinds and rng.random() < 0.5 and not feed_of(fx)
+    env = env_for(d)
     errf = open(d + '/err', 'wb')
     t0 = time.monotonic()
     argv = [binp, os.path.join(HERE, 'fx', fx + '.weir'), log, tag, d, str(free_port(poff)), CLI]
     if a.tty:
-        p = TtyProc(argv, env, errf)
+        p = TtyProc(argv, env, errf, d, stderr=open(d + '/err2', 'wb') if err_file else None)
+        p.feed(feed_of(fx), t_feed)
     else:
-        p = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+        p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, cwd=d,
                              stdout=open(d + '/out', 'wb'), stderr=errf, preexec_fn=pre, start_new_session=True, env=env)
     times = [t_first]
     for g in gaps: times.append(times[-1] + g)
-    n_before = 0; t_last = None
+    n_before = 0; t_last = None; early_quit = False
     for k, t in zip(sent, times):
         dt = t0 + t / 1000.0 - time.monotonic()
         if dt > 0: time.sleep(dt)
-        if p.poll() is not None: break
+        if not alive(p.pid): break
+        if k == 'QUIT' and n_before == 0: early_quit = not catches(p.pid, signal.SIGTERM)
         try:
-            if a.tty and k == 'INT': p.ctrl_c()
+            if a.tty and k == 'HANGUP': p.hangup()
+            elif a.tty and k in KEYS: p.key(KEYS[k])
+            elif a.group: os.killpg(p.pid, SIGS[k])
             else: os.kill(p.pid, SIGS[k])
             n_before += 1; t_last = time.monotonic()
         except ProcessLookupError:
             break
-    hang = False
-    try:
-        rc = p.wait(timeout=a.timeout)
-    except subprocess.TimeoutExpired:
-        hang = True; rc = 'HANG'
+        if k == 'HANGUP': break
+    rc, core, cpu = reap(p, a.timeout if t_last else a.timeout + window / 1000.0)
+    hang = rc == 'HANG'
     t_exit = time.monotonic()
     lat = int((t_exit - t_last) * 1000) if t_last else None
     if hang:
+        # the hung session's processes, for the artifact
+        with open(d + '/ps', 'w') as f:
+            subprocess.run(['ps', '-o', 'pid,ppid,pgid,sid,tpgid,stat,wchan:20,args', '-s', str(p.pid)], stdout=f, stderr=f)
+            for pid, _, _ in procs_of(p.pid, tag, os.getpid()):
+                try:
+                    fds = {n: os.readlink('/proc/%d/fd/%s' % (pid, n)) for n in sorted(os.listdir('/proc/%d/fd' % pid))[:8]}
+                    f.write('%d fds=%s syscall=%s\n' % (pid, fds, open('/proc/%d/syscall' % pid).read().strip()))
+                except OSError:
+                    pass
         try: os.killpg(p.pid, signal.SIGKILL)
         except Exception: pass
-        p.wait()
+        rc, core, cpu = reap(p, None); rc = 'HANG'
     time.sleep(0.3)
+    tty_bad = p.termios_ok() if a.tty and not p.hung and not hang else []
     if a.tty: p.close()
     left = procs_of(p.pid, tag, os.getpid())
-    allow = [l.split(':', 1)[1].strip() for l in open(os.path.join(HERE, 'fx', fx + '.weir')) if l.startswith('// storm-allow-orphan:')]
+    allow = dirs.get('allow-orphan', [])
     for pid, _, cl in left:
         if any(cl.startswith(x) for x in allow):
             try: os.kill(pid, signal.SIGKILL)
@@ -245,13 +382,27 @@ def one_try(a, binp, fx, window, r, base, rng, poff):
     lines = open(log).read().splitlines() if os.path.exists(log) else []
     issues = [] if hang else judge(lines, rc, sent, n_before, times)
     if hang: issues.append('HANG')
+    if core and not early_quit: issues.append('core:dumped')
+    for c in os.listdir(d):
+        if c.startswith('core'): os.remove(os.path.join(d, c))
     if left: issues.append('orphan:%d %s' % (len(left), [x[1:] for x in left][:3]))
     leak = os.listdir(d + '/tmp')
     if leak: issues.append('tmp:%s' % leak[:3])
+    if tty_bad: issues.append('ttymode:%s off' % ','.join(tty_bad))
     err = open(d + '/err', 'rb').read().decode(errors='replace')
+    if err_file: err += open(d + '/err2', 'rb').read().decode(errors='replace')
     if BAD_ERR.search(err): issues.append('stderr:%r' % err.strip()[:200])
-    rec = dict(fx=fx, run=r, sent=sent[:max(n_before, 1)], n=n_before, at=[int(x) for x in times[:max(n_before, 1)]],
-               rc=rc, lat=lat, issues=issues, tail=lines[-6:], err=err.strip()[:300])
+    err_seen = not a.tty or err_file or not p.hung  # a hung-up pty's later output is lost
+    for ce in dirs.get('cut-err', []):
+        prefix, _, text = (x.strip() for x in ce.partition('|'))
+        if n_before == 1 and not hang and err_seen and not any(l.startswith(prefix) for l in lines) and text not in err:
+            issues.append('cuterr:no %r' % text)
+    for cm in dirs.get('cpu-max', []):
+        if cpu > float(cm): issues.append('cpu:%.2fs' % cpu)
+    known = known_of(a, sent[:n_before], issues, err)
+    if known: issues = []
+    rec = dict(fx=fx, run=r, sent=sent[:max(n_before, 1)], n=n_before, known=known, at=[int(x) for x in times[:max(n_before, 1)]],
+               rc=rc, lat=lat, cpu=round(cpu, 2), early_quit=early_quit, issues=issues, tail=lines[-6:], err=err.strip()[:300])
     if not issues and not a.keep:
         shutil.rmtree(d, ignore_errors=True)
     return rec
@@ -271,9 +422,13 @@ def main():
     ap.add_argument('--out', required=True, help='work dir: runs.jsonl, summary.json, failing run dirs')
     ap.add_argument('--keep', action='store_true', help='keep passing run dirs')
     ap.add_argument('--verbose', action='store_true')
-    ap.add_argument('--tty', action='store_true', help='weir leads a pty session; INT is a typed ^C (reaches the whole foreground group), TERM/HUP go to the pid')
+    ap.add_argument('--tty', action='store_true', help='weir leads a pty session; INT/QUIT are a typed ^C/^\\ (they reach the whole foreground group), HANGUP closes the master, TERM/HUP go to the pid')
+    ap.add_argument('--group', action='store_true', help='send TERM/HUP (and INT/QUIT without --tty) to weir\'s process group, not its pid')
     a = ap.parse_args()
     a.kinds = a.kinds.split(',')
+    a.out = os.path.abspath(a.out)
+    bad = [k for k in a.kinds if k not in SIGS or (k == 'HANGUP' and not a.tty)]
+    if bad: sys.exit('--kinds: %s (HANGUP needs --tty)' % bad)
     a.count = [int(x) for x in a.count.split('-')] if '-' in a.count else [int(a.count)] * 2
     a.gap = [float(x) for x in a.gap.split('-')] if '-' in a.gap else [float(a.gap)] * 2
     fxs = sorted(f[:-5] for f in os.listdir(os.path.join(HERE, 'fx')) if f.endswith('.weir')) if a.fixture == 'all' else a.fixture.split(',')
@@ -284,14 +439,21 @@ def main():
     total_bad = 0; summary = []; t_all = time.monotonic()
     for fx in fxs:
         t_fx = time.monotonic()
-        cal = calibrate(a.bin, fx, a.out)
+        cal = calibrate(a, a.bin, fx, a.out)
+        if cal is None and not a.window:
+            print('%s: bad %d/%d calibration failed' % (fx, a.runs, a.runs), flush=True)
+            total_bad += a.runs
+            summary.append(dict(fx=fx, bad=a.runs, runs=a.runs, cats={'calib': 1}))
+            continue
         window = a.window or cal + 150
+        cal = cal or 0
         rngs = [random.Random('%d-%s-%d' % (seed, fx, r)) for r in range(a.runs)]
         with ThreadPoolExecutor(a.jobs) as ex:
             recs = list(ex.map(lambda r: one(a, a.bin, fx, window, r, a.out, rngs[r]), range(a.runs)))
         cats = {}; rcs = {}; lats = []
-        bad = 0
+        bad = 0; known = 0
         for rec in recs:
+            known += bool(rec['known'])
             jl.write(json.dumps(rec) + '\n')
             rcs[str(rec['rc'])] = rcs.get(str(rec['rc']), 0) + 1
             if rec['lat'] is not None: lats.append(rec['lat'])
@@ -305,17 +467,19 @@ def main():
                 print('  ok %s run %d sent=%s at=%s rc=%s lat=%s' % (fx, rec['run'], rec['sent'], rec['at'], rec['rc'], rec['lat']))
         lats.sort()
         pct = lambda q: lats[min(len(lats) - 1, int(q * len(lats)))] if lats else None
-        print('%s: bad %d/%d calib=%dms window=%dms cats=%s rcs=%s lat p50=%s p95=%s max=%s' % (
-            fx, bad, a.runs, cal, window, cats, rcs, pct(.5), pct(.95), lats[-1] if lats else None), flush=True)
+        print('%s: bad %d/%d calib=%dms window=%dms cats=%s rcs=%s lat p50=%s p95=%s max=%s%s' % (
+            fx, bad, a.runs, cal, window, cats, rcs, pct(.5), pct(.95), lats[-1] if lats else None,
+            ' known=%d' % known if known else ''), flush=True)
         total_bad += bad
-        summary.append(dict(fx=fx, bad=bad, runs=a.runs, calib_ms=cal, window_ms=window, cats=cats, rcs=rcs,
+        summary.append(dict(fx=fx, bad=bad, runs=a.runs, known=known, calib_ms=cal, window_ms=window, cats=cats, rcs=rcs,
                             lat_p50=pct(.5), lat_p95=pct(.95), lat_max=lats[-1] if lats else None,
                             secs=round(time.monotonic() - t_fx, 1)))
     secs = round(time.monotonic() - t_all, 1)
     with open(os.path.join(a.out, 'summary.json'), 'w') as f:
-        json.dump(dict(seed=seed, count=a.count, tty=a.tty, kinds=a.kinds, jobs=a.jobs, bad=total_bad,
+        json.dump(dict(seed=seed, count=a.count, tty=a.tty, group=a.group, kinds=a.kinds, jobs=a.jobs, bad=total_bad,
                        runs=a.runs * len(fxs), secs=secs, fixtures=summary), f, indent=1)
     print('total: bad %d/%d in %.1fs' % (total_bad, a.runs * len(fxs), secs), flush=True)
     sys.exit(1 if total_bad else 0)
 
-main()
+if __name__ == '__main__':
+    main()

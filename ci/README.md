@@ -23,18 +23,33 @@ holds the deep-lock exactly as locally.
 
 `.github/workflows/storm.yml` is the nightly signal storm
 [D:storm-nightly] (linux, also workflow_dispatch with `runs`, `count`,
-`tty`, `trees`). `ci/storm/storm.py` sends INT/TERM/HUP at random
-points into the fixtures in `ci/storm/fx/` and judges each run against
-docs/reference/concurrency.md (exit by the first signal, cleanups whole
-and once, nothing after a cut, no orphan, no tmp left); three storms —
-one signal, `--count 2-3`, `--tty` — then `ci/storm/fuzz.py`, random
+`tty`, `trees`, `repl_runs`). `ci/storm/storm.py` sends INT/TERM/HUP/QUIT
+at random points into the fixtures in `ci/storm/fx/` and judges each run
+against docs/reference/concurrency.md (exit by the first signal, cleanups
+whole and once, nothing after a cut, no orphan, no tmp left, no core, a
+cooked pty after a terminal run); six storms — one signal, `--count 2-3`,
+`--tty`, `--kinds QUIT`, `--group` (TERM/HUP to the process group) and
+`--tty --kinds INT,QUIT,HANGUP` (typed ^C/^\, the master closed). Fixture
+directives (`// storm-feed:`, `storm-cut-err:`, `storm-cpu-max:`,
+`storm-allow-orphan:`) are listed in its header. `ci/storm/repl.py`
+storms the tty REPL with the entries in `ci/storm/rx/`: `--mode int` (a
+^C into a many-statement entry: `↳ exit 130`, nothing after, the session
+lives on) and `--mode kill` (TERM/HUP/hangup at the prompt or mid-entry:
+death by the signal, terminal restored). Then `ci/storm/fuzz.py`, random
 fan-out/race trees against a discrete-event oracle. Unlike
-harnesses.yml they gate: any failing run exits 1. Each writes
+harnesses.yml they gate: any failing run exits 1; a run whose only
+issues are an open finding's (storm.py `known_of`, repl.py
+`KNOWN_SCOPED_130`) prints as `known`, not bad. Each writes
 `runs.jsonl`/`trees.jsonl` and `summary.json` into its work dir and
 keeps the failing run dirs; the job uploads them as `storm-results`.
 Locally (Linux, never /tmp):
 
     STORM_PORT0=20000 python3 -I ci/storm/storm.py --bin BIN --out DIR --runs 6 --count 1
+    STORM_PORT0=20000 python3 -I ci/storm/storm.py --bin BIN --out DIR --runs 6 --count 1 --kinds QUIT
+    STORM_PORT0=20000 python3 -I ci/storm/storm.py --bin BIN --out DIR --runs 6 --count 1 --group --kinds TERM,HUP
+    STORM_PORT0=20000 python3 -I ci/storm/storm.py --bin BIN --out DIR --runs 6 --count 1-2 --tty --kinds INT,QUIT,HANGUP
+    python3 -I ci/storm/repl.py --bin BIN --out DIR --runs 12 --mode int
+    python3 -I ci/storm/repl.py --bin BIN --out DIR --runs 12 --mode kill
     python3 -I ci/storm/fuzz.py --bin BIN --out DIR --trees 60
 
 The old `.gitlab-ci.yml` (kaniko image + single test job) retired

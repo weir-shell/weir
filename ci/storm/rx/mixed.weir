@@ -1,0 +1,51 @@
+// one REPL entry, many statements: waits, a `| exitCode` child, a builtin's own loop, evaluated compute, cleanups with commands, a fan-out, a tmp scope
+let ev s = File.append "@@LOG@@" [s]
+ev "B top 0"
+sleep 0.3@@TAG@@
+ev "B top 1a"
+ev "B top 1b"
+let c = sh -c "sleep 0.3@@TAG@@" | exitCode
+ev "B top 2a"
+ev $"B top 2b {c}"
+let n = [1..40000000] |> Seq.length
+ev "B top 3a"
+ev $"B top 3b {n}"
+let m = [1..200000] |> Seq.map (fun i -> i % 7) |> Seq.sum
+ev "B top 4a"
+ev $"B top 4b {m}"
+within
+    ev "O w"
+    sleep 0.2@@TAG@@
+    ev "B w slept"
+always
+    ev "S w"
+    sh -c "sleep 0.2@@TAG@@"
+    let k = [1..30000000] |> Seq.length
+    ev $"C w counted {k}"
+    ev "E w"
+ev "B top 5a"
+ev "B top 5b"
+let r = [0..2] |> Seq.pmap (fun i ->
+    within
+        ev $"O fan/a{i}"
+        sh -c "sleep 0.3@@TAG@@"
+        ev $"B fan/a{i} done"
+    always
+        ev $"S fan/a{i}"
+        sh -c "sleep 0.1@@TAG@@"
+        ev $"E fan/a{i}"
+    i)
+ev "B top 6a"
+ev $"B top 6b {r |> Seq.sum}"
+within tmp d
+    ev "O t"
+    ["x"] |> File.write $"{d}/f"
+    let q = sh -c "sleep 0.2@@TAG@@; echo q" | exitCode
+    ev $"B t {q}"
+always
+    ev "S t"
+    Duration.sleep 100ms
+    ev "E t"
+ev "B top 7a"
+ev "B top 7b"
+ev "DONE"

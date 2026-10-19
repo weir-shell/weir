@@ -1,17 +1,25 @@
 # The nightly signal storm [D:storm-nightly] — scheduled, linux-only.
 #
-# ci/storm/storm.py sends INT/TERM/HUP at random points into fixtures that
-# nest scopes, fan-outs, races, locks, procs and serve, and judges each run
-# against the documented signal semantics (docs/reference/concurrency.md):
-# the exit status, cleanups whole and once, nothing after a cut, no orphan,
-# no tmp left. Unlike the review harnesses these GATE: every run must pass,
-# so a red night is a finding — its failing run dirs are in the artifact.
+# ci/storm/storm.py sends INT/TERM/HUP/QUIT at random points into fixtures
+# that nest scopes, fan-outs, races, locks, procs, serve, a backstop-adopted
+# compute and a cleanup reading the terminal, and judges each run against
+# the documented signal semantics (docs/reference/concurrency.md): the exit
+# status, cleanups whole and once, nothing after a cut, no orphan, no tmp
+# left, no core, a cooked terminal after a pty run. Storms: one signal,
+# several, at a terminal, QUIT, group-directed (kill -- -pgid), and terminal
+# keys with hangup (^C, ^\, closing the master). ci/storm/repl.py storms the
+# tty REPL: a ^C into a many-statement entry (it ends with exit 130, nothing
+# after runs, the session lives on), and TERM/HUP/hangup at its prompt or
+# mid-entry. Unlike the review harnesses these GATE: every run must pass, so
+# a red night is a finding — its failing run dirs are in the artifact. A
+# run whose only issues are an open finding's prints as `known`, not bad.
 # ci/storm/fuzz.py rides the same job: random fan-out/race trees against a
 # discrete-event oracle.
 #
-# Sized for ~15 min on ubuntu-latest: --runs 30 per fixture per storm (8
-# fixtures, ~2 min a storm at 3 jobs) and 500 fuzz trees (~3 min), beside
-# the AOT publish. Raise them on a workflow_dispatch for resolution.
+# Sized for ~30 min on ubuntu-latest: --runs 30 per fixture per storm (10
+# fixtures, ~2.5 min a storm at 3 jobs, six storms), 100 runs per REPL mode
+# (~5 min both) and 500 fuzz trees (~3 min), beside the AOT publish. Raise
+# them on a workflow_dispatch for resolution.
 name: storm
 
 on:
@@ -32,6 +40,9 @@ on:
       trees:
         description: "race-tree fuzzer trees"
         default: "500"
+      repl_runs:
+        description: "runs per REPL storm mode"
+        default: "100"
 
 permissions:
   contents: read
@@ -42,11 +53,12 @@ env:
   RUNS: ${{ inputs.runs || '30' }}
   COUNT: ${{ inputs.count || '2-3' }}
   TREES: ${{ inputs.trees || '500' }}
+  REPL_RUNS: ${{ inputs.repl_runs || '100' }}
 
 jobs:
   storm:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v6
@@ -66,7 +78,7 @@ jobs:
           ./ci/check-fresh.sh
       # each storm draws its serve ports from its own 500-port block below
       # the ephemeral range [D:harness-ports]; every step runs even after a
-      # red one, so one night reports all four
+      # red one, so one night reports them all
       - name: storm, one signal
         env:
           STORM_PORT0: "20000"
@@ -81,6 +93,27 @@ jobs:
         env:
           STORM_PORT0: "21000"
         run: python3 -I ci/storm/storm.py --bin ~/.local/bin/weir --out "$RUNNER_TEMP/storm/tty" --runs "$RUNS" --jobs 3 --count 1-3 --tty
+      - name: storm, SIGQUIT
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
+        env:
+          STORM_PORT0: "21500"
+        run: python3 -I ci/storm/storm.py --bin ~/.local/bin/weir --out "$RUNNER_TEMP/storm/quit" --runs "$RUNS" --jobs 3 --count 1 --kinds QUIT
+      - name: storm, group-directed
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
+        env:
+          STORM_PORT0: "22000"
+        run: python3 -I ci/storm/storm.py --bin ~/.local/bin/weir --out "$RUNNER_TEMP/storm/group" --runs "$RUNS" --jobs 3 --count 1 --group --kinds TERM,HUP
+      - name: storm, terminal keys and hangup
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' && (github.event_name != 'workflow_dispatch' || inputs.tty) }}
+        env:
+          STORM_PORT0: "22500"
+        run: python3 -I ci/storm/storm.py --bin ~/.local/bin/weir --out "$RUNNER_TEMP/storm/ttykeys" --runs "$RUNS" --jobs 3 --count 1-2 --tty --kinds INT,QUIT,HANGUP
+      - name: REPL storm, ^C
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
+        run: python3 -I ci/storm/repl.py --bin ~/.local/bin/weir --out "$RUNNER_TEMP/storm/repl-int" --runs "$REPL_RUNS" --jobs 3 --mode int
+      - name: REPL storm, TERM/HUP/hangup
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
+        run: python3 -I ci/storm/repl.py --bin ~/.local/bin/weir --out "$RUNNER_TEMP/storm/repl-kill" --runs "$REPL_RUNS" --jobs 3 --mode kill
       - name: race-tree fuzzer
         if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
         run: python3 -I ci/storm/fuzz.py --bin ~/.local/bin/weir --out "$RUNNER_TEMP/storm/fuzz" --trees "$TREES" --jobs 3
