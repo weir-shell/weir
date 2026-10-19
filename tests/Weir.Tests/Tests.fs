@@ -20569,6 +20569,19 @@ let sigTests =
           // the check's model [D:sig-arity] [D:sig-conventions]
           // [D:sig-operand-stop] [D:sig-unwalked]: each case is (sig, line,
           // the flags it must warn on — nothing else)
+          test "sig file names are injective; a plain name is its own [D:sig-probe-bounds]" {
+              let names =
+                  [ "/a/b/cob"; "_a_b_cob"; ".weir"; "weir"; "..evil"; "evil"; ".evil"; "a b"; "a_b"; "a%20b"; "a/b"; "a\\b"; "ü"; "x.weir" ]
+
+              let files = names |> List.map Weir.Script.sigFileName
+              Expect.equal (List.distinct files).Length names.Length $"collision in {files}"
+
+              for plain in [ "curl"; "git-lfs"; "python3.12"; "add_sig"; "ü" ] do
+                  Expect.equal (Weir.Script.sigFileName plain) (plain + ".weir") plain
+
+              for f in files do
+                  Expect.isFalse (f.Contains '/' || f.Contains '\\' || f.StartsWith ".") f
+          }
           test "an older all-bool GNU signature checks as it always did" {
               let old =
                   [ "module Fixtool"
@@ -20584,8 +20597,13 @@ let sigTests =
                     "fixtool --output=x y", []
                     // a bool never takes the next word: -o does not eat --verbse
                     "fixtool -o --verbse", [ "--verbse" ]
-                    "fixtool -- --verbse", [] ] do
+                    "fixtool -- --verbse", []
+                    // a multi-letter single-dash word stays unread, as it
+                    // always was: no letter-by-letter bundle
+                    "fixtool -oz -fsSL -i.bak -TERM x", [] ] do
                   Expect.equal (sigWarns old line) want line
+
+              Expect.equal (sigWarns ("module Fixtool" :: "let exhaustive = true" :: List.tail old) "fixtool -Lv x") [] "exhaustive too"
           }
           test "values: a valued flag takes its word, globals check at every level, an unknown subcommand ends the check" {
               let dock =

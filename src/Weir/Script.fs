@@ -5671,11 +5671,30 @@ let private surfaceSets (s: SigSurface) : Set<string> * Set<string> =
     (s.Longs |> Map.keys |> Set.ofSeq), (s.Shorts |> Map.keys |> Set.ofSeq)
 
 /// a PATH-y tool name ("./rooz/v3/lib/jp", "~/.azure/bin/bicep") maps
-/// to one flat filename under .weir/sigs — separators become '_'
-/// [D:scoped-sigs]. Never a nested tree, and never Path.Combine on the
-/// raw name: given an absolute tool path Combine discards the sigs dir
-/// and aims outside .weir entirely.
+/// to one flat filename under .weir/sigs [D:scoped-sigs]. Never a nested
+/// tree, and never Path.Combine on the raw name: given an absolute tool
+/// path Combine discards the sigs dir and aims outside .weir entirely.
+/// Injective [D:sig-probe-bounds]: letters, digits, '-', '_' and a
+/// non-leading '.' stay; every other character (and '%') is its UTF-8
+/// bytes as %XX, so `/a/b/cob`, `_a_b_cob`, `.weir` and `weir` keep
+/// apart. A plain name is its own file name.
 let sigFileName (tool: string) : string =
+    let sb = System.Text.StringBuilder()
+
+    tool
+    |> String.iteri (fun i c ->
+        if System.Char.IsLetterOrDigit c || c = '-' || c = '_' || (c = '.' && i > 0) then
+            sb.Append c |> ignore
+        else
+            for b in System.Text.Encoding.UTF8.GetBytes(string c) do
+                sb.Append($"%%{b:X2}") |> ignore)
+
+    sb.ToString() + ".weir"
+
+// the name before it was injective: separators became '_', leading dots
+// dropped — a signature the lock records under it is still found
+// [D:sig-probe-bounds]
+let private legacySigFileName (tool: string) : string =
     (tool
      |> String.map (fun c ->
          if System.Char.IsLetterOrDigit c || c = '-' || c = '_' || c = '.' then
@@ -5728,7 +5747,27 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                 | None ->
                     match Contracts.findWeirDir scriptDir with
                     | Error e -> Error $"#sig {decl.Tool}: {e}"
-                    | Ok weirDir -> Ok(IO.Path.Combine(weirDir, "sigs", sigFileName decl.Tool))
+                    | Ok weirDir ->
+                        let at name = IO.Path.Combine(weirDir, "sigs", name)
+                        let current = at (sigFileName decl.Tool)
+                        let legacy = at (legacySigFileName decl.Tool)
+
+                        // the legacy name only where the lock records it
+                        // for this very tool — never another tool's file
+                        let lockedLegacy () =
+                            match Contracts.readLock weirDir with
+                            | Ok entries ->
+                                entries
+                                |> List.exists (fun e ->
+                                    e.Kind = "sig"
+                                    && e.Name = decl.Tool
+                                    && e.Path.Replace('\\', '/') = "sigs/" + legacySigFileName decl.Tool)
+                            | Error _ -> false
+
+                        if not (IO.File.Exists current) && IO.File.Exists legacy && lockedLegacy () then
+                            Ok legacy
+                        else
+                            Ok current
 
             match resolved with
             | Error e -> diags.Add(mk decl.Line e)
@@ -6028,6 +6067,21 @@ let sigCmdDiagnostics
 
                     let sev = if si.Exhaustive then "error" else "warning"
 
+                    // an older signature [D:sig-arity]: every field bool and
+                    // none of the convention lets — it checks as it always
+                    // did, a multi-letter single-dash word unread (`-fsSL`,
+                    // `-i.bak`, `-TERM`)
+                    let older =
+                        si.Convention = "gnu"
+                        && not si.Abbreviations
+                        && not si.Negatable
+                        && si.StopAtOperand.IsEmpty
+                        && si.Unchecked.IsEmpty
+                        && (Option.toList si.Globals @ (si.Surfaces |> Map.toList |> List.map snd))
+                           |> List.forall (fun sf ->
+                               [ sf.Longs; sf.Shorts; sf.Literals ]
+                               |> List.forall (Map.forall (fun _ a -> a = ANone)))
+
                     let note =
                         if si.Exhaustive then
                             $"(#sig {si.Tool}, line {si.DeclLine}; exhaustive signature)"
@@ -6181,6 +6235,7 @@ let sigCmdDiagnostics
                                 // usage-only — the harvest sees longs, never
                                 // the short bundle) [D:sig-version-probe]
                                 | None when sf.Shorts.IsEmpty -> [], 0
+                                | None when older && w.Length > 2 -> [], 0
                                 | None ->
                                     // a bundle, letter by letter: a value-taking
                                     // letter takes the rest of the word (`-n5`,
@@ -7702,6 +7757,19 @@ module SigGen =
                             let others = entries |> List.filter (fun e -> not (e.Kind = "sig" && e.Name = tool))
 
                             Contracts.writeLock weirDir (others @ [ entry ])
+
+                            // this tool's file under the legacy name is
+                            // superseded — unless another entry owns that
+                            // name [D:sig-probe-bounds]
+                            let legacy = "sigs/" + legacySigFileName tool
+
+                            if legacy <> "sigs/" + sigFileName tool
+                               && entries |> List.exists (fun e -> e.Kind = "sig" && e.Name = tool && e.Path.Replace('\\', '/') = legacy)
+                               && not (others |> List.exists (fun e -> e.Path.Replace('\\', '/') = legacy)) then
+                                try
+                                    IO.File.Delete(IO.Path.Combine(weirDir, legacy))
+                                with _ ->
+                                    ()
 
                             let versionNote =
                                 match version with
