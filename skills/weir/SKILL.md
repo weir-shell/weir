@@ -1049,17 +1049,19 @@ let x =
 
 ```weir
 // dry-run a config write: the plan captures it, the file is untouched
+// (a captured write checks its directory exists, as the direct call does)
+let demo = Path.combine (Path.tempRoot ()) "weir-plan-demo.json"
 let changes =
     plan
-        File.write "/tmp/weir-plan-demo.json" ["{}"]
+        File.write demo ["{}"]
 if changes |> Plan.isEmpty then print "nothing to do"
 changes |> Plan.preview |> Seq.iter print   // render; wrote nothing
 // the mock-free test: two plans compare, neither performs
 let expected =
     plan
-        File.write "/tmp/weir-plan-demo.json" ["{}"]
+        File.write demo ["{}"]
 print $"matches expected: {changes == expected}"
-print $"one op: {(changes |> Plan.ops |> Seq.exactlyOne) == WriteFile("/tmp/weir-plan-demo.json", ["{}"])}"
+print $"one op: {(changes |> Plan.ops |> Seq.exactlyOne) == WriteFile(demo, ["{}"])}"
 ```
 
 ```weir-error
