@@ -31,8 +31,8 @@ Then judge:
   stderr  no internal error / .NET text / "command failed" / "One or more errors" on stderr
   hang    exit within TIMEOUT s of the last signal
   ttymode --tty, no hangup: the pty is cooked again after exit (icanon, echo, isig)
-  cuterr  `// storm-cut-err: PREFIX | TEXT`: one signal landed and no log line starts with PREFIX => TEXT on stderr
-          (unless a hangup took the pty weir's stderr wrote to)
+  cuterr  `// storm-cut-err: AFTER | UNLESS | TEXT`: one signal landed, a log line starts with AFTER and none
+          with UNLESS => TEXT on stderr (unless a hangup took the pty weir's stderr wrote to)
   cpu     `// storm-cpu-max: S`: weir and the children it reaped used at most S s of CPU
 A run whose only issues match an open finding (known_of) counts as `known`, not bad.
 A fixture line `// storm-feed: TEXT MS` (--tty only; TEXT with backslash escapes) types TEXT every MS ms from
@@ -61,8 +61,8 @@ KEYS = {'INT': b'\x03', 'QUIT': b'\x1c'}
 # delete the entry once its fix lands.
 #  group-cleanup-cmd (ruling owed): a group-directed TERM/HUP that lands while a cleanup's command runs kills
 #    that command too; its death fails the cleanup ("command failed with exit code 143/129"), which stops there.
-#  raw-after-quit-hard-exit: a ^\ as the second signal while a cleanup's command holds the terminal raw (a
-#    pager) hard-exits without restoring the terminal (a second ^C restores it).
+#  raw-after-hard-exit: a hard exit (a second signal) while a cleanup's command holds the terminal raw (a
+#    pager) leaves it raw: every time for a second ^\, TERM or HUP, rarely for ^C^C (as the pager starts).
 KNOWN_GROUP_CLEANUP = re.compile(r'command failed with exit code (129|143)')
 
 def known_of(a, sent, issues, err):
@@ -70,8 +70,8 @@ def known_of(a, sent, issues, err):
     if a.group and any(i.startswith('whole:') for i in issues) and all(
             i.startswith('whole:') or (i.startswith('stderr:') and KNOWN_GROUP_CLEANUP.search(err)) for i in issues):
         return 'group-cleanup-cmd'
-    if a.tty and 'QUIT' in sent[1:] and all(i.startswith('ttymode:') for i in issues):
-        return 'raw-after-quit-hard-exit'
+    if a.tty and len(sent) > 1 and all(i.startswith('ttymode:') for i in issues):
+        return 'raw-after-hard-exit'
     return None
 LOST_BIND = re.compile(r'cannot listen|Address already in use')
 BAD_ERR = re.compile(r'internal error|Unhandled|Exception|   at |System\.|One or more errors|command failed|TaskScheduler', re.I)
@@ -394,8 +394,9 @@ def one_try(a, binp, fx, window, r, base, rng, poff):
     if BAD_ERR.search(err): issues.append('stderr:%r' % err.strip()[:200])
     err_seen = not a.tty or err_file or not p.hung  # a hung-up pty's later output is lost
     for ce in dirs.get('cut-err', []):
-        prefix, _, text = (x.strip() for x in ce.partition('|'))
-        if n_before == 1 and not hang and err_seen and not any(l.startswith(prefix) for l in lines) and text not in err:
+        after, unless, text = (x.strip() for x in ce.split('|', 2))
+        if (n_before == 1 and not hang and err_seen and any(l.startswith(after) for l in lines)
+                and not any(l.startswith(unless) for l in lines) and text not in err):
             issues.append('cuterr:no %r' % text)
     for cm in dirs.get('cpu-max', []):
         if cpu > float(cm): issues.append('cpu:%.2fs' % cpu)

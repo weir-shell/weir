@@ -1,5 +1,5 @@
 // a signal during a builtin's own loop (Seq.length over a range, no boundary): the backstop adopts the main flow and runs its frames; one that raises says "the cleanup ALSO failed" (C1-8)
-// storm-cut-err: B outer/tmp/w computed | the cleanup ALSO failed
+// storm-cut-err: O outer/tmp/w | B outer/tmp/w computed | the cleanup ALSO failed
 let a = Self.args |> Seq.freeze
 let log = a[0]
 let tag = a[1]
