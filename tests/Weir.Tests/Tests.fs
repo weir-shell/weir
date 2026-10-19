@@ -8999,18 +8999,21 @@ let planApplyTests =
               | Error terr -> failtest (formatError terr)
           }
           test "capture: a write becomes a WriteFile Op, no file written; equality holds" {
+              // under the OS temp dir: capture checks the parent exists [D:plan-preconditions]
+              let path = (System.IO.Path.GetTempPath() + "weir-plan-never").Replace('\\', '/')
+
               let p =
-                  run ("plan" + Weir.Parser.sibSepStr + "File.write \"/tmp/weir-plan-never\" [\"a\"; \"b\"]")
+                  run ("plan" + Weir.Parser.sibSepStr + $"File.write \"{path}\" [\"a\"; \"b\"]")
 
               Expect.equal
                   p
                   (VRecord(
                       "Plan",
-                      [ "ops", VSeq [ VUnion("WriteFile", Some(VTuple [ VStr(System.IO.Path.GetFullPath "/tmp/weir-plan-never"); VSeq [ VStr "a"; VStr "b" ] ])) ] ]
+                      [ "ops", VSeq [ VUnion("WriteFile", Some(VTuple [ VStr(System.IO.Path.GetFullPath path); VSeq [ VStr "a"; VStr "b" ] ])) ] ]
                   ))
                   "one WriteFile Op captured"
 
-              Expect.isFalse (System.IO.File.Exists "/tmp/weir-plan-never") "the plan wrote nothing"
+              Expect.isFalse (System.IO.File.Exists path) "the plan wrote nothing"
           }
           test "Plan equality is content-sensitive; isEmpty reads the ops" {
               // multi-line plan bodies go through the real assembler (a
@@ -22411,7 +22414,8 @@ let uuidTests =
                   "readonly admits the ambient generators"
           }
           test "plan mode: a generator runs inside a plan and is not captured as an op" {
-              let path = "/tmp/weir-uuid-plan-never"
+              // under the OS temp dir: capture checks the parent exists [D:plan-preconditions]
+              let path = (System.IO.Path.GetTempPath() + "weir-uuid-plan-never").Replace('\\', '/')
 
               match run ("plan" + Weir.Parser.sibSepStr + $"File.write \"{path}\" [Uuid.toString (Uuid.v7 ())]") with
               | VRecord("Plan", [ "ops", VSeq ops ]) ->
