@@ -422,8 +422,16 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
             $"\"{escaped}{tail}\""
         | VBool true -> "true"
         | VBool false -> "false"
-        | VRecord(_, fields) ->
-            let body = fields |> Seq.map (fun (k, v) -> $"{k} = {sub v}") |> String.concat "; "
+        | VRecord(name, fields) ->
+            // a request's URL shows its userinfo masked [D:url-redact-show];
+            // the value itself is unchanged and still sent
+            let shownField k v =
+                match name, k, v with
+                | "HttpRequest", "url", VStr s -> sub (VStr(Http.redactUrl s))
+                | _ -> sub v
+
+            let body =
+                fields |> Seq.map (fun (k, v) -> $"{k} = {shownField k v}") |> String.concat "; "
 
             "{ " + body + " }"
         | VUnion(case, None) -> case
@@ -583,6 +591,13 @@ type private PlanFrame =
       // the link cache [D:plan-guard-linear]: every prefix is resolved
       // once per plan
       Links: GuardNode
+      // the simulation's link cache [D:plan-preconditions]: a real path
+      // to its symlink's target, null for no link — read once per plan
+      SimLinks: System.Collections.Generic.Dictionary<string, string>
+      // a directory copy or move was captured: some simulated path is
+      // backed by another real one, so the real filesystem alone may not
+      // say a path holds no link
+      mutable Mirrored: bool
       // the file identities in-place writes target [D:plan-guard-inode]:
       // (device, inode) — the Windows file index — to the path a
       // refusal names
@@ -853,6 +868,8 @@ module PlanMode =
               Sim = SimNode(comparer)
               Index = GuardNode(comparer)
               Links = GuardNode(System.StringComparer.Ordinal)
+              SimLinks = System.Collections.Generic.Dictionary(System.StringComparer.Ordinal)
+              Mirrored = false
               Files = System.Collections.Generic.Dictionary()
               TmpRoots = ResizeArray() }
 
@@ -993,23 +1010,148 @@ module PlanMode =
             let theirs = if isNull below then [] else namesIn outer below
             List.distinct (mine @ theirs)
 
-    /// the plan-time kind of a path (0 absent, 1 file, 2 dir, 4 other)
-    let simKind (p: string) : int = kindIn stack.Value p
+    // `p` (absolute) with its symlinks followed as the layers see them,
+    // as the kernel resolves a path: an entry no op touched is a link
+    // when its real path is one; an entry an op made never is (a plan
+    // makes no links). `followLast = false` keeps the last component — a
+    // delete or move acts on a link itself. `..` steps up from the
+    // resolved prefix (physical). A loop stops after 40 links, the
+    // kernel's bound. Also says whether the last component was a link
+    let private canonIn (frames: PlanFrame list) (followLast: bool) (p: string) : struct (string * bool) =
+        let seps = [| '/'; sep |]
+        let split (s: string) = s.Split(seps, System.StringSplitOptions.RemoveEmptyEntries) |> List.ofArray
+
+        let cache =
+            match List.tryLast frames with
+            | Some f -> f.SimLinks
+            | None -> null
+
+        let linkAt (r: string) : string =
+            if isNull cache then
+                Option.toObj (linkOf r)
+            else
+                match cache.TryGetValue r with
+                | true, t -> t
+                | _ ->
+                    let t = Option.toObj (linkOf r)
+                    cache[r] <- t
+                    t
+
+        let full = System.IO.Path.GetFullPath p
+        let mutable cur = System.IO.Path.GetPathRoot full
+        let mutable pending = split (full.Substring cur.Length)
+        let mutable hops = 0
+        let mutable lastLink = false
+
+        while not pending.IsEmpty do
+            let part = pending.Head
+            pending <- pending.Tail
+
+            if part = "." then
+                ()
+            elif part = ".." then
+                match System.IO.Path.GetDirectoryName cur with
+                | null -> ()
+                | parent -> cur <- parent
+            else
+                let next = System.IO.Path.Combine(cur, part)
+
+                let target =
+                    if (pending.IsEmpty && not followLast) || hops >= 40 then
+                        null
+                    else
+                        match realPathIn frames next with
+                        | Some r -> linkAt r
+                        | None -> null
+
+                if isNull target then
+                    cur <- next
+                else
+                    hops <- hops + 1
+                    lastLink <- lastLink || pending.IsEmpty
+
+                    if System.IO.Path.IsPathRooted target then
+                        let t = System.IO.Path.GetFullPath target
+                        cur <- System.IO.Path.GetPathRoot t
+                        pending <- split (t.Substring cur.Length) @ pending
+                    else
+                        pending <- split target @ pending
+
+        struct (cur, lastLink)
+
+    // does a path pass through a copied or moved directory in any layer?
+    let private throughMirror (frames: PlanFrame list) (p: string) : bool =
+        let comps = compsOf p
+
+        frames
+        |> List.exists (fun f ->
+            f.Mirrored
+            && (let mutable node = f.Sim
+                let mutable hit = false
+                let mutable i = 0
+
+                while not hit && not (isNull node) && i < comps.Length do
+                    node <- node.Find comps[i]
+                    hit <- not (isNull node) && not (isNull node.Mirror)
+                    i <- i + 1
+
+                hit))
+
+    // the plan-time resolution, with the common case cheap: a path
+    // through no copied or moved directory and with no link on its real
+    // path (the guard's per-plan link cache [D:plan-guard-linear] — one
+    // lookup per component) has nothing to follow
+    let private canonPlan (followLast: bool) (p: string) : struct (string * bool) =
+        let frames = stack.Value
+
+        let plain =
+            not (throughMirror frames p)
+            && (try
+                    keyOf (resolveLinks (linkCache ()) followLast p) = keyOf (norm p)
+                with _ ->
+                    false)
+
+        if plain then struct (p, false) else canonIn frames followLast p
+
+    let private canon (followLast: bool) (p: string) =
+        let struct (c, _) = canonPlan followLast p
+        c
+
+    /// a path with its symlinks followed, on the real filesystem
+    let realCanon (p: string) : string =
+        let struct (c, _) = canonIn [] true p
+        c
+
+    /// a path with its symlinks followed, as the plan leaves them
+    let simCanon (p: string) : string = canon true p
+
+    /// the plan-time kind of a path (0 absent, 1 file, 2 dir, 4 other —
+    /// a link whose target the plan removed dangles)
+    let simKind (p: string) : int =
+        let struct (c, viaLink) = canonPlan true p
+
+        match kindIn stack.Value c with
+        | 0 when viaLink -> 4
+        | k -> k
 
     /// is the path a directory at plan time?
     let simIsDir (p: string) : bool =
-        kindWith (fun p -> if System.IO.Directory.Exists p then 2 else 0) stack.Value p = 2
+        kindWith (fun p -> if System.IO.Directory.Exists p then 2 else 0) stack.Value (canon true p) = 2
 
     /// does the plan-time directory hold an entry?
     let simEmptyDir (p: string) : bool =
-        namesIn stack.Value p
-        |> List.forall (fun n -> kindIn stack.Value (System.IO.Path.Combine(p, n)) = 0)
+        let c = canon true p
 
-    /// a dangling link at plan time: only a path no op has touched can be
+        namesIn stack.Value c
+        |> List.forall (fun n -> kindIn stack.Value (System.IO.Path.Combine(c, n)) = 0)
+
+    /// a dangling link at plan time: a link whose target the plan
+    /// removed, or a real one no op has touched
     let simDangling (isDangling: string -> bool) (p: string) : bool =
-        match realPathIn stack.Value p with
-        | Some r -> isDangling r
-        | None -> false
+        simKind p = 4
+        || (match realPathIn stack.Value (canon false p) with
+            | Some r -> isDangling r
+            | None -> false)
 
     // the top layer's node for a path, created along the way
     let private ensure (root: SimNode) (p: string) : SimNode =
@@ -1054,6 +1196,7 @@ module PlanMode =
     // cloned, the layer beneath mirrored
     let private copyTree (frames: PlanFrame list) (src: string) (dst: string) =
         let top = (List.head frames).Sim
+        (List.head frames).Mirrored <- true
         let struct (_, node, below) = viewIn top src
 
         let mirror =
@@ -1074,16 +1217,21 @@ module PlanMode =
         markParents top dst
 
     // a captured op's effect on the top layer
+    // — on the path its symlinks lead to: a write or mkdir lands where a
+    // final link points, a delete or move acts on the link itself
     let private simApply (op: Value) =
         let frames = stack.Value
         let top = (List.head frames).Sim
+        let entry = canon false
+        let through = canon true
 
         match op with
-        | VUnion(("WriteFile" | "WriteFileAtomic"), Some(VTuple [ VStr p; _ ])) -> setLeaf top p 1
+        | VUnion(("WriteFile" | "WriteFileAtomic"), Some(VTuple [ VStr p; _ ])) -> setLeaf top (through p) 1
         | VUnion("DeleteFile", Some(VStr p))
         | VUnion("DeleteDir", Some(VStr p))
-        | VUnion("DeleteTree", Some(VStr p)) -> setLeaf top p 3
+        | VUnion("DeleteTree", Some(VStr p)) -> setLeaf top (entry p) 3
         | VUnion("MakeDir", Some(VStr p)) ->
+            let p = through p
             let n = ensure top p
 
             if n.State = 0 || n.State = 3 then
@@ -1093,13 +1241,15 @@ module PlanMode =
                 n.State <- 2
 
             markParents top p
-        | VUnion("Copy", Some(VTuple [ VStr _; VStr d ])) -> setLeaf top d 1
+        | VUnion("Copy", Some(VTuple [ VStr _; VStr d ])) -> setLeaf top (entry d) 1
         | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) ->
+            let s, d = entry s, entry d
             setLeaf top s 3
             setLeaf top d 1
-        | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> copyTree frames s d
+        | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> copyTree frames (through s) (entry d)
         | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) ->
-            copyTree frames s d
+            let from, s, d = through s, entry s, entry d
+            copyTree frames from d
             setLeaf top s 3
         | _ -> ()
 
@@ -1893,26 +2043,93 @@ let private decodeCoded (where: string) (c: Codec) (text: string option) (num: i
 // an integer past int64 in an opaque Yaml node [D:yaml-node-bigint]
 // reads as YFloat (its nearest value, for code that matches it) and
 // remembers its digits by node identity, so a write of that same node
-// emits the digits, not the float; a node built in weir has none
-let private yamlBigDigits =
+// emits the digits, not the float; a node built in weir has none.
+// A plain number whose text weir would not write back the same way —
+// a leading-zero int, 0x/0o, .inf/.nan — remembers its text the same
+// way and `to yaml` writes it unchanged [D:yaml-number-text]
+let private yamlSourceText =
     System.Runtime.CompilerServices.ConditionalWeakTable<Value, string>()
 
 let private integerShaped (raw: string) =
     let r = if raw.StartsWith "-" || raw.StartsWith "+" then raw.Substring 1 else raw
     r.Length > 0 && r |> Seq.forall System.Char.IsAsciiDigit
 
+let private withSourceText (raw: string) (node: Value) : Value =
+    yamlSourceText.AddOrUpdate(node, raw)
+    node
+
 let yamlFloatNode (raw: string) (f: float) : Value =
     let node = VUnion("YFloat", Some(VFloat f))
 
     if integerShaped raw then
-        yamlBigDigits.AddOrUpdate(node, raw.TrimStart '+')
-
-    node
+        withSourceText (raw.TrimStart '+') node
+    else
+        node
 
 let yamlBigIntText (node: Value) : string option =
-    match yamlBigDigits.TryGetValue node with
+    match node with
+    | VUnion("YFloat", _) ->
+        match yamlSourceText.TryGetValue node with
+        | true, t -> Some t
+        | _ -> None
+    | _ -> None
+
+/// the plain text a read scalar node writes back as [D:yaml-number-text]
+let yamlPlainText (node: Value) : string option =
+    match yamlSourceText.TryGetValue node with
     | true, t -> Some t
     | _ -> None
+
+/// `0644`, `-007`: YAML 1.2 reads decimal, YAML 1.1 readers octal (or a
+/// string, with an 8 or 9) [D:yaml-number-text]
+let yamlLeadingZero (raw: string) =
+    let r = if raw.StartsWith "-" || raw.StartsWith "+" then raw.Substring 1 else raw
+    r.Length > 1 && r[0] = '0' && r |> Seq.forall System.Char.IsAsciiDigit
+
+/// the YAML 1.2 core schema's other ints: 0x1F, 0o17 (unsigned) —
+/// Some (Some n) in range, Some None past int64, None for any other text
+let yamlCoreRadixInt (raw: string) : int64 option option =
+    let digits (radix: int) (ok: char -> bool) =
+        let d = raw.Substring 2
+
+        if d.Length > 0 && d |> Seq.forall ok then
+            let mutable acc = 0L
+            let mutable over = false
+
+            for c in d do
+                if not over then
+                    let v = int64 (System.Uri.FromHex c)
+
+                    if acc > (System.Int64.MaxValue - v) / int64 radix then
+                        over <- true
+                    else
+                        acc <- acc * int64 radix + v
+
+            Some(if over then None else Some acc)
+        else
+            None
+
+    if raw.StartsWith "0x" then digits 16 System.Uri.IsHexDigit
+    elif raw.StartsWith "0o" then digits 8 (fun c -> c >= '0' && c <= '7')
+    else None
+
+/// the YAML 1.2 core schema's non-finite floats — numbers to every
+/// reader, no value a weir float holds [D:yaml-number-text]
+let yamlCoreNonFinite (raw: string) =
+    match raw with
+    | ".inf"
+    | ".Inf"
+    | ".INF"
+    | "+.inf"
+    | "+.Inf"
+    | "+.INF"
+    | "-.inf"
+    | "-.Inf"
+    | "-.INF"
+    | ".nan"
+    | ".NaN"
+    | ".NAN" -> true
+    | _ -> false
 
 let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) : Value =
     match e.ValueKind with
@@ -2169,7 +2386,9 @@ let private jsonDocRead
                 if raw.Contains '.' || raw.Contains 'e' || raw.Contains 'E' then
                     failwith $"{who}: field '{name}' expected int, got a decimal number — declare it float"
                 else
-                    failwith $"{who}: field '{name}': number out of int range — declare it float"
+                    // a float would round it [D:yaml-node-bigint]
+                    failwith
+                        $"{who}: field '{name}': {excerpt raw} is out of int range (int64) — declare it Yaml to keep its digits (a float would round them)"
         | TFloat, System.Text.Json.JsonValueKind.Number ->
             // integer-shaped numbers widen here [D:floats-boundaries]:
             // JSON has one number type, and this is a parse, not weir
@@ -2554,19 +2773,43 @@ let private jsonTopHoldsSecret (top: JsonTop) (defs: Map<string, RecordDef>) (ud
 /// [<Elem "X">] a repeated child, a record a nested element. Every leaf is
 /// text (an element's inner text or an attribute value) — no numbers reach
 /// here, the checker admits string / Option<string> / record / seq only.
-// the XML declaration's encoding name [D:xml-encoding]
+// the XML declaration's encoding value, whatever its quotes hold — a
+// malformed name refuses rather than reading as no declaration
+// [D:xml-encoding] [D:xml-labels]
 let private xmlDeclEncoding =
     System.Text.RegularExpressions.Regex
-        @"^\uFEFF?\s*<\?xml\s[^>]*?\bencoding\s*=\s*[""']([A-Za-z][A-Za-z0-9._:-]*)[""']"
+        @"^\uFEFF?\s*<\?xml\s[^>]*?\bencoding\s*=\s*(?:""([^""]*)""|'([^']*)')"
+
+// XML's EncName production
+let private xmlEncName =
+    System.Text.RegularExpressions.Regex @"^[A-Za-z][A-Za-z0-9._-]*$"
+
+let private xmlDeclName (who: string) (m: System.Text.RegularExpressions.Match) : string =
+    let name = if m.Groups[1].Success then m.Groups[1].Value else m.Groups[2].Value
+
+    if xmlEncName.IsMatch name then
+        name
+    else
+        failwith
+            $"{who}: the XML declaration's encoding name '{excerpt name}' is malformed — an encoding name is a letter followed by letters, digits, '.', '_' or '-' (encoding=\"UTF-8\")"
 
 // the encodings a declaration may name: CoreLib's alone (UTF-8/16/32,
-// US-ASCII, ISO-8859-1) — no code-page provider [D:xml-encoding-builtin]
-let private xmlEncoding (who: string) (name: string) : System.Text.Encoding =
-    try
-        System.Text.Encoding.GetEncoding name
-    with _ ->
-        failwith
-            $"{who}: the document declares encoding '{excerpt name}', which weir cannot decode — UTF-8, UTF-16, UTF-32, US-ASCII and ISO-8859-1 read; convert others to UTF-8 first (iconv -f {excerpt name} -t UTF-8)"
+// US-ASCII, ISO-8859-1) plus the utf8/Latin-1 spellings — no code-page
+// provider [D:xml-encoding-builtin]; None = a name weir cannot decode,
+// which still reads a pure-ASCII document [D:xml-labels]
+let private xmlEncoding (name: string) : System.Text.Encoding option =
+    match name.ToLowerInvariant().Replace("-", "").Replace("_", "") with
+    | "utf8" -> Some(System.Text.UTF8Encoding(false) :> System.Text.Encoding)
+    | "latin1" -> Some System.Text.Encoding.Latin1
+    | _ ->
+        try
+            Some(System.Text.Encoding.GetEncoding name)
+        with _ ->
+            None
+
+let private xmlUndecodable (who: string) (name: string) =
+    failwith
+        $"{who}: the document declares encoding '{excerpt name}', which weir cannot decode, and holds non-ASCII characters — UTF-8, UTF-16, UTF-32, US-ASCII and ISO-8859-1 read; convert it to UTF-8 (iconv -f {excerpt name} -t UTF-8) and change the declaration to encoding=\"UTF-8\""
 
 /// the input of `from xml`: text (already decoded as UTF-8) or the
 /// document's bytes, which decode per their BOM or declaration
@@ -2588,8 +2831,9 @@ let private xmlDoc
         System.Xml.XmlReaderSettings(
             DtdProcessing = System.Xml.DtdProcessing.Prohibit,
             XmlResolver = null,
-            // XDocument.Parse's LoadOptions.None reading
-            IgnoreWhitespace = true
+            // whitespace-only text is text, as xml.etree reads it
+            // [D:xml-whitespace]
+            IgnoreWhitespace = false
         )
 
     // the declared encoding decides [D:xml-encoding]: text arrived
@@ -2602,19 +2846,20 @@ let private xmlDoc
             let m = xmlDeclEncoding.Match text
 
             if m.Success then
-                let enc = xmlEncoding who m.Groups[1].Value
+                let name = xmlDeclName who m
+                let nonAscii = text |> Seq.exists (fun c -> int c > 0x7F && c <> '\uFEFF')
 
-                if
-                    enc.CodePage <> 65001
-                    && text |> Seq.exists (fun c -> int c > 0x7F && c <> '\uFEFF')
-                then
+                match xmlEncoding name with
+                | None when nonAscii -> xmlUndecodable who name
+                | Some enc when enc.CodePage <> 65001 && nonAscii ->
                     let tyName =
                         match top with
                         | TopRec d -> d.Name
                         | _ -> "T"
 
                     failwith
-                        $"{who}: the document declares encoding '{excerpt m.Groups[1].Value}', but it arrived as text, which weir decodes as UTF-8 — read its bytes so the declaration decodes them: File.readBytes path |> from xml {tyName}"
+                        $"{who}: the document declares encoding '{excerpt name}', but it arrived as text, which weir decodes as UTF-8 — read its bytes so the declaration decodes them: File.readBytes path |> from xml {tyName}"
+                | _ -> ()
 
             text
         | XmlBytes bytes ->
@@ -2646,7 +2891,15 @@ let private xmlDoc
                     let m = xmlDeclEncoding.Match head
 
                     if m.Success then
-                        xmlEncoding who m.Groups[1].Value
+                        let name = xmlDeclName who m
+
+                        match xmlEncoding name with
+                        | Some e -> e
+                        // pure ASCII reads the same under any
+                        // ASCII-compatible label [D:xml-labels]
+                        | None when bytes |> Array.forall (fun b -> b < 0x80uy) ->
+                            System.Text.Encoding.ASCII
+                        | None -> xmlUndecodable who name
                     else
                         System.Text.UTF8Encoding(false) :> System.Text.Encoding
 
@@ -2973,8 +3226,17 @@ let yamlScalarValue (raw: string) (quoted: bool) : Value =
         VUnion("YNull", None)
     elif not quoted && (raw = "true" || raw = "false") then
         VUnion("YBool", Some(VBool(raw = "true")))
+    elif not quoted && yamlCoreNonFinite raw then
+        // no float holds it: the text rides a YStr and writes back
+        // plain [D:yaml-number-text]
+        withSourceText raw (VUnion("YStr", Some(VStr raw)))
     else
+        match (if quoted then None else yamlCoreRadixInt raw) with
+        | Some(Some n) -> withSourceText raw (VUnion("YInt", Some(VInt n)))
+        | Some None -> withSourceText raw (VUnion("YStr", Some(VStr raw)))
+        | None ->
         match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
+        | true, n when yamlLeadingZero raw -> withSourceText raw (VUnion("YInt", Some(VInt n)))
         | true, n -> VUnion("YInt", Some(VInt n))
         | _ ->
             // unquoted float-shaped literals self-type [D:floats-boundaries]
@@ -3012,8 +3274,32 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
             failwith $"from yaml: line {line}: a quoted scalar is a string; this field expects int"
         else
             match System.Int64.TryParse raw with
+            | true, n when yamlLeadingZero raw ->
+                // ruling R3 [D:yaml-number-text]: 1.2 reads decimal, the
+                // 1.1 readers beside weir (PyYAML, kubectl) do not
+                let r = raw.TrimStart('-', '+')
+
+                let theirs, octal =
+                    if r |> Seq.forall (fun c -> c <= '7') then
+                        // the core schema's 0o form is unsigned
+                        $"octal ({System.Convert.ToInt64(r, 8)})",
+                        (if r = raw then $"0o{(r.TrimStart '0').PadLeft(1, '0')} for octal, " else "")
+                    else
+                        "a string", ""
+
+                failwith
+                    $"from yaml: line {line}: '{quoteData raw}' has a leading zero — YAML 1.2 (weir) reads decimal {n}, YAML 1.1 readers (PyYAML, kubectl) read it as {theirs}; write {octal}{n} for decimal, or quote it for a string"
             | true, n -> VInt n
-            | _ -> failwith $"from yaml: line {line}: expected int, got '{quoteData raw}'"
+            | _ ->
+                match yamlCoreRadixInt raw with
+                | Some(Some n) -> VInt n
+                | Some None ->
+                    failwith
+                        $"from yaml: line {line}: '{quoteData raw}' is out of int range (int64) — declare the field Yaml to keep its text"
+                | None when integerShaped raw ->
+                    failwith
+                        $"from yaml: line {line}: '{quoteData raw}' is out of int range (int64) — declare the field Yaml to keep its digits (a float would round them)"
+                | None -> failwith $"from yaml: line {line}: expected int, got '{quoteData raw}'"
     | Yaml.SBool, Yaml.NScalar(raw, quoted, line) ->
         // exactly true/false (Env.load's rule: `yes`/`on`/`1` are
         // data, not booleans — the Norway problem cannot fire)
@@ -3266,9 +3552,30 @@ type private Rendered =
 // with more have no form in the subset (`|+` is rejected) and fall
 // back below, since dropping bytes is the one thing a renderer must
 // never do
+// an exponent float carries a dot and a signed exponent (1.0e-05): a
+// YAML 1.1 reader (PyYAML) loads `1e-05` as a string [D:yaml-interop]
+let private yamlFloat (f: float) : string =
+    let s = formatFloat f
+    let e = s.IndexOf 'e'
+
+    if e < 0 then
+        s
+    else
+        let mant = s.Substring(0, e)
+        let exp = s.Substring(e + 1)
+        let mant = if mant.Contains '.' then mant else mant + ".0"
+        let exp = if exp.StartsWith "-" || exp.StartsWith "+" then exp else "+" + exp
+        mant + "e" + exp
+
 let private renderString (s: string) : Rendered =
+    // U+2028/U+2029 are line breaks to a YAML reader, so block content
+    // cannot carry them; the quoted form escapes them [D:block-scalars]
     let tame =
-        s |> Seq.forall (fun c -> not (System.Char.IsControl c) || c = '\n' || c = '\t')
+        s
+        |> Seq.forall (fun c ->
+            (not (System.Char.IsControl c) || c = '\n' || c = '\t')
+            && c <> '\u2028'
+            && c <> '\u2029')
 
     // multiple trailing newlines have no block form in the subset (`|+`
     // is rejected) — they fall back to the quoted-with-escapes spelling:
@@ -3373,16 +3680,19 @@ let rec private yamlRender
 
     match v with
     | VInt n -> Inline(string n)
-    | VFloat f -> Inline(formatFloat f)
+    | VFloat f -> Inline(yamlFloat f)
     | VDur n -> Inline(formatDuration n)
     | VSize b -> Inline(formatSize b)
     | VBool b -> Inline(if b then "true" else "false")
     | VStr s -> renderString s
     // the canonical text [D:wire-table], quoted when YAML would misread it
     | VUuid g -> renderString (formatUuid g)
-    | VUnion("YStr", Some(VStr s)) -> renderString s
-    | VUnion("YInt", Some(VInt n)) -> Inline(string n)
-    | VUnion("YFloat", Some(VFloat f)) -> Inline(yamlBigIntText v |> Option.defaultWith (fun () -> formatFloat f))
+    | VUnion("YStr", Some(VStr s)) ->
+        match yamlPlainText v with
+        | Some t -> Inline t
+        | None -> renderString s
+    | VUnion("YInt", Some(VInt n)) -> Inline(yamlPlainText v |> Option.defaultWith (fun () -> string n))
+    | VUnion("YFloat", Some(VFloat f)) -> Inline(yamlPlainText v |> Option.defaultWith (fun () -> yamlFloat f))
     | VUnion("YBool", Some(VBool b)) -> Inline(if b then "true" else "false")
     | VUnion("YNull", None) -> Inline ""
     // empty Yaml collections render as the empty flow forms so they
@@ -3888,7 +4198,7 @@ let private argvDup
         if prior <> neg then
             problems.Add $"'--{Argv.kebabFlag f}' and '--no-{Argv.kebabFlag f}' are both given"
         else
-            problems.Add $"'{flagTok}' is given twice"
+            problems.Add $"'{quoteData flagTok}' is given twice"
 
     polarity[f] <- neg
 
@@ -3905,7 +4215,7 @@ let private argvParseValue
     | TNamed("Option", [ TInt ]) ->
         match System.Int64.TryParse raw with
         | true, n -> values[f] <- wrapOpt ty (VInt n)
-        | _ -> problems.Add $"{flagTok} is not an int ('{raw}')"
+        | _ -> problems.Add $"{flagTok} is not an int ('{quoteData raw}')"
     | TDur
     | TNamed("Option", [ TDur ]) ->
         match parseDurationMs raw with
@@ -3944,15 +4254,15 @@ let private unknownFlagMessage (t: string) (known: string list) (tyOf: string ->
         let name, value = t.Substring(0, i), t.Substring(i + 1)
 
         match tyOf name with
-        | Some TBool -> $"unknown flag '{t}' — '{name}' is a presence flag and takes no value"
+        | Some TBool -> $"unknown flag '{quoteData t}' — '{name}' is a presence flag and takes no value"
         | Some TSecret
         | Some(TNamed("Option", [ TSecret ])) ->
             $"unknown flag '{quoteData name}=***' — a flag's value is the next argument: write '{quoteData name} <value>'"
-        | _ -> $"unknown flag '{t}' — a flag's value is the next argument: write '{name} {value}'"
+        | _ -> $"unknown flag '{quoteData t}' — a flag's value is the next argument: write '{name} {quoteData value}'"
     | i when i > 2 ->
         let name = t.Substring(0, i)
         $"unknown flag '{quoteData name}=…'{didYouMean name known}"
-    | _ -> $"unknown flag '{t}'{didYouMean t known}"
+    | _ -> $"unknown flag '{quoteData t}'{didYouMean t known}"
 
 let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
     // minted --no-X twins ride the index as negative entries
@@ -3992,13 +4302,13 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
                 let f, ty, neg = Map.find flag longIndex
                 consume f ty neg t rest
             | Some(AmbiguousShort candidates) ->
-                problems.Add $"""'{t}' is ambiguous: {String.concat ", " candidates}"""
+                problems.Add $"""'{quoteData t}' is ambiguous: {String.concat ", " candidates}"""
                 go rest
             | None ->
-                problems.Add $"unknown flag '{t}'"
+                problems.Add $"unknown flag '{quoteData t}'"
                 go rest
         | t :: rest ->
-            problems.Add $"unexpected argument '{t}'"
+            problems.Add $"unexpected argument '{quoteData t}'"
             go rest
 
     and consume f ty neg flagTok rest =
@@ -4111,11 +4421,11 @@ let private argvLoadShared
                              | Some(f, ty, neg) when i > caseIdx -> Choice1Of3(payloadValues, f, ty, neg)
                              | _ -> Choice2Of3())
                     | Some(AmbiguousShort candidates) ->
-                        problems.Add $"""'{t}' is ambiguous: {String.concat ", " candidates}"""
+                        problems.Add $"""'{quoteData t}' is ambiguous: {String.concat ", " candidates}"""
                         Choice3Of3()
                     | None -> Choice2Of3()
                 else
-                    problems.Add $"unexpected argument '{t}'"
+                    problems.Add $"unexpected argument '{quoteData t}'"
                     Choice3Of3()
 
             match resolved with
@@ -4148,7 +4458,7 @@ let private argvLoadShared
 
     (match caseAt, selected with
      | None, _ -> problems.Add("missing subcommand; one of: " + String.concat ", " (caseTable |> List.map fst))
-     | Some(_, tok), None -> problems.Add $"unknown subcommand '{tok}'{didYouMean tok (caseTable |> List.map fst)}"
+     | Some(_, tok), None -> problems.Add $"unknown subcommand '{quoteData tok}'{didYouMean tok (caseTable |> List.map fst)}"
      | Some _, Some _ -> ())
 
     let collectFields def values = argvFill problems def values
@@ -4201,7 +4511,7 @@ let private argvLoad (target: ArgsTarget) : Value =
                 | extra ->
                     failwith (
                         $"Args.load {udef.Name} {quoteData tok}: "
-                        + String.concat "; " (extra |> List.map (fun t -> $"unexpected argument '{t}'"))
+                        + String.concat "; " (extra |> List.map (fun t -> $"unexpected argument '{quoteData t}'"))
                     )
             | Some(_, (c, Some _)) ->
                 let payload =
@@ -4318,7 +4628,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
             match v with
             | VSeq items -> VSeq(items |> Seq.map force |> Seq.toArray :> seq<Value>)
             | VRecord(n, fields) -> VRecord(n, fields |> List.map (fun (k, x) -> k, force x))
-            | VUnion(c, Some p) -> VUnion(c, Some(force p))
+            // a scalar node keeps its identity — the digits/text a read
+            // node remembers ride it [D:yaml-node-bigint]
+            | VUnion(c, Some p) ->
+                let p' = force p
+                if obj.ReferenceEquals(p, p') then v else VUnion(c, Some p')
             | VTuple xs -> VTuple(List.map force xs)
             | VMap m -> VMap(Map.map (fun _ x -> force x) m)
             | v -> v
@@ -4843,14 +5157,14 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         match System.Int64.TryParse v with
                         | true, n -> wrapOpt ty (VInt n)
                         | _ ->
-                            problems.Add $"{name} is not an int ('{v}')"
+                            problems.Add $"{name} is not an int ('{quoteData v}')"
                             VUnit
                     | (TBool | TNamed("Option", [ TBool ])), v ->
                         match v with
                         | "true" -> wrapOpt ty (VBool true)
                         | "false" -> wrapOpt ty (VBool false)
                         | _ ->
-                            problems.Add $"{name} is not a bool ('{v}'; exactly true or false)"
+                            problems.Add $"{name} is not a bool ('{quoteData v}'; exactly true or false)"
                             VUnit
                     | (TDur | TNamed("Option", [ TDur ])), v ->
                         match parseDurationMs v with
@@ -4906,7 +5220,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                 |> Option.defaultValue ""
 
                             let listed = String.concat ", " cases
-                            problems.Add $"{name} is not a {un} ('{v}'; expected one of: {listed}){hint}"
+                            problems.Add $"{name} is not a {un} ('{quoteData v}'; expected one of: {listed}){hint}"
                             VUnit
                     | _ -> unreachable "the checker rejects non-scalar Env.load fields"
 

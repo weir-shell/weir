@@ -1,5 +1,58 @@
 # Spike Notes
 
+## The cleanup shim is sh; a dead stderr never aborts (2026-10-19)
+
+Round 5 (black box) found round 4's cleanup process group
+([D:cleanup-pgrp]) wrong in four ways. In its own group with /dev/null
+for stdin, a pager (`more`) got EIO on every terminal read and spun at
+100% CPU. A ^\ killed weir but left the command running as an orphan. The
+shim re-exec'd weir by its on-disk path, so an upgrade mid-run broke every
+cleanup command at a tty ("command not found … echo"). And each cleanup
+command cost a weir AOT start (~8 ms, 21x base).
+
+R1/R7 keep the command in weir's group with the terminal and its stdin,
+and start it with SIGINT/SIGQUIT ignored. The shim is now
+`/bin/sh -c 'trap "" INT QUIT; exec "$@"' sh <program> <args>`. An
+ignored disposition survives exec, and .NET's child resets only the
+handlers .NET installed. `exec` keeps the pid, so the Process weir holds
+is still the command. The program is resolved before the spawn, so a
+missing one fails with weir's message, as a direct spawn does. Two
+alternatives were rejected:
+- blocking the signals on the starting thread, as R8 did: the child
+  inherits the mask, `sh` cannot clear it, and the command would never
+  see a ^C even when it handles one itself;
+- setting SIG_IGN in weir around the start: process-wide, so concurrent
+  spawns would inherit it and a ^C meant for weir would be lost.
+
+That leaves a window of about a millisecond, before `sh` runs its
+`trap`, in which a ^C kills the shim. The tty storm hit it (1 run in
+240: an arm's cleanup lost its `sh -c "sleep …"` to the ^C and stopped
+on "command failed … 130"), and a cleanup looping 400 `/bin/true` lost
+~20% of single ^Cs to it. On Linux the spawn now waits until the shim's
+/proc status shows INT and QUIT ignored (or a new name: it exec'd), and
+a shim that died first, by INT or QUIT, never started the command, so
+it is started again. A zombie is judged by its exit code, never its
+name: a vfork child killed before exec carries weir's thread name. With
+this, 0 losses in 600 runs. Off Linux the window stays (the row says
+so). 200 `/bin/true` cleanup commands: 2.0 s before, ~0.4 s now (dash).
+
+The console-write policy ([D:console-write]). stderr is the diagnostic
+channel at every destination. Round 4 wrapped it only at a tty
+([D:console-hangup]), so `2>/dev/full` or `2>&-` turned the final error
+write into an unhandled exception: SIGABRT, a core dump, exit 134. A
+closed fd 2 is reported as UnauthorizedAccessException (EBADF), not
+IOException, and the AOT runtime opens /dev/urandom on a free fd 2 before
+`main` runs. So the writer catches both exceptions, and the fd-2 reopen
+on /dev/null only helps when the runtime has not already taken fd 2.
+Dropping beats failing: when stderr is gone, no one can read the report,
+and a cron job's progress line must not change its outcome. Stdout stays
+data.
+
+The tty REPL had the same class of bug. After a hangup, the REPL's
+`TreatControlCAsInput` setter threw IOException ("Success"), which the
+CLI guard reported as an internal error, exit 2. Terminal calls now end
+the session the way the hangup does.
+
 ## Command signatures that help — the scored survey (2026-10-18)
 
 The survey (21 tools, `weir add sig` then a typo/clean line set per tool)

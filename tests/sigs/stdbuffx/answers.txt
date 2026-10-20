@@ -1,0 +1,11 @@
+=== --version
+stdbuffx (uutils coreutils) 0.10.0
+=== --help
+Run COMMAND, with modified buffering operations for its standard streams.
+
+Usage: stdbuffx [OPTION]... COMMAND
+
+Options:
+  -i, --input <MODE>   adjust standard input stream buffering
+  -o, --output <MODE>  adjust standard output stream buffering
+  -h, --help           Print help

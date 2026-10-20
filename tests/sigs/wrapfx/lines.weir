@@ -1,0 +1,5 @@
+#sig wrapfx
+wrapfx /tmp/l make -j4 --keep-going // clean
+wrapfx -s -w 3 /tmp/l make --x // clean
+wrapfx -x rm -f // clean
+wrapfx --sharde /tmp/l make // typo: --sharde

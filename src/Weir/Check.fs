@@ -801,6 +801,23 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p0: Pending) (ty0: Ty) : Result<un
     else
         err p0.Span (p0.Describe(finalTy ctx ty0))
 
+/// the scalar-exact list a `$x` command argument admits — spliceAdmit's
+/// CmdArg site, and the REPL's `$` completion pool [D:argv-splice-complete]
+let argvSpliceable (ty: Ty) : bool =
+    match ty with
+    | TStr
+    | TInt
+    | TBool
+    // a Secret splices to argv [D:secret]: `curl -H $auth` must
+    // work — that is what the type exists for. The value reaches
+    // argv in the clear (visible in `ps` — the platform's property,
+    // a stated non-claim), which is why this is deliberate, not silent
+    | TSecret
+    // one spelling, so no program-dependent form [D:uuid]: the
+    // canonical lowercase text is the word
+    | TUuid -> true
+    | _ -> false
+
 // the splice law, shared by the eager check and the deferred
 // discharge [D:interp-show]: holes consult the Show class (one arm
 // asking beats a second list — the next Show type needs no edit
@@ -823,14 +840,7 @@ let private spliceAdmit (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (span: Span
                 ty
         | CmdArg ->
             match ty with
-            // a Secret splices to argv [D:secret]: `curl -H $auth` must
-            // work — that is what the type exists for. The value reaches
-            // argv in the clear (visible in `ps` — the platform's property,
-            // a stated non-claim), which is why this is deliberate, not silent
-            | TSecret -> Ok()
-            // one spelling, so no program-dependent form [D:uuid]: the
-            // canonical lowercase text is the word
-            | TUuid -> Ok()
+            | ty when argvSpliceable ty -> Ok()
             | TDur ->
                 err
                     span

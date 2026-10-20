@@ -111,7 +111,7 @@ let private fmtMs (ms: int64) : string =
 /// the transport fallback's case). The authority ends at the first `/`,
 /// `?` or `#`; an `@` only counts as a userinfo separator before that,
 /// so an `@` in a path or query is left alone.
-let redactUrl (url: string) : string =
+let private replaceUserinfo (by: string) (url: string) : string =
     match url.IndexOf "://" with
     | -1 -> url
     | schemeEnd ->
@@ -128,7 +128,13 @@ let redactUrl (url: string) : string =
 
         match authority.IndexOf '@' with
         | -1 -> url
-        | at -> url.Substring(0, authStart) + "***@" + url.Substring(authStart + at + 1)
+        | at -> url.Substring(0, authStart) + by + url.Substring(authStart + at + 1)
+
+let redactUrl (url: string) : string = replaceUserinfo "***@" url
+
+/// a URL with its userinfo dropped, for what weir writes to a committed
+/// file [D:lock-no-userinfo]; a credential-free URL is returned unchanged
+let stripUserinfo (url: string) : string = replaceUserinfo "" url
 
 /// every URL's userinfo in a runtime's text redacted [D:url-redact] — a
 /// .NET message can quote a proxy URI whole, credentials included
@@ -145,7 +151,7 @@ let transportMessage (host: string) (err: TransportError) : string =
     | ConnectionEnded -> $"{host} closed the connection before answering"
     | ProxyRefused status -> $"the proxy refused to tunnel to {host}: {status}"
     | UnknownCharset(cs, status) ->
-        $"{host} answered {status} with a body in charset '{cs}', which weir cannot decode — weir decodes utf-8, utf-16, utf-32, us-ascii and iso-8859-1; a mislabelled body is never guessed at"
+        $"{host} answered {status} with a body in charset '{Weir.Types.quoteData cs}', which weir cannot decode — weir decodes utf-8, utf-16, utf-32, us-ascii and iso-8859-1; a mislabelled body is never guessed at"
     | RedirectLoop(hops, last) ->
         $"{host}: still redirecting after {hops} hops (the last at {Weir.Types.quoteData (redactUrl last)}) — a redirect loop"
 
@@ -294,7 +300,19 @@ let noProxyMatch (noProxy: string) (host: string) : bool =
         | Some hb, _ -> toks |> List.exists (ipMatch hb strictV6)
         | None, Some hb -> toks |> List.exists (ipMatch hb strictV4)
         | None, None ->
+            // a non-ASCII host compares by its punycode; an entry as
+            // written [D:noproxy-idn]
+            let ascii (s: string) =
+                if s |> Seq.exists (fun c -> c > '\127') then
+                    try
+                        Globalization.IdnMapping().GetAscii s
+                    with _ ->
+                        s
+                else
+                    s
+
             let name = if bare.EndsWith "." then bare.Substring(0, bare.Length - 1) else bare
+            let name = ascii name
 
             toks
             |> List.exists (fun t ->
@@ -652,7 +670,7 @@ let headerInjection (name: string, value: string) : (string * string) option =
 /// is the crossing ("request header" / "response header") so the two
 /// directions read the same shape.
 let headerInjectionMessage (who: string) (name: string) (byteName: string) (where: string) : string =
-    $"{who} '{name}' carries a {byteName} byte in its {where} — that forges a second header (response splitting / header injection); a header name or value cannot contain CR, LF or NUL"
+    $"{who} '{Weir.Types.quoteData name}' carries a {byteName} byte in its {where} — that forges a second header (response splitting / header injection); a header name or value cannot contain CR, LF or NUL"
 
 /// refuse any injecting pair in a header list, or return the pairs
 /// untouched [D:http-header-bytes]. `fail` raises the located message the
@@ -675,7 +693,7 @@ let isTchar (c: char) : bool =
 let private describeChar (c: char) : string =
     if c = ' ' then "a space"
     elif c < ' ' || c = '\127' then $"U+{int c:X4}"
-    else $"'{c}'"
+    else $"'{Weir.Types.quoteData (string c)}'"
 
 /// why a header cannot cross the wire as given, or None
 /// [D:http-header-unsendable]: a name that is not a token, or a value
@@ -716,7 +734,7 @@ let headerUnsendable (pair: string * string) : string option = headerUnsendableW
 /// the located refusal for an unsendable header [D:http-header-unsendable],
 /// the injection message's shape: the crossing, the header, the reason
 let headerUnsendableMessage (who: string) (name: string) (reason: string) : string =
-    $"{who} '{name}' cannot be sent — {reason}"
+    $"{who} '{Weir.Types.quoteData name}' cannot be sent — {reason}"
 
 /// a request header with no place on the wire [D:http-header-unsendable]:
 /// a body header (Content-Type, Expires, …) on a request without a body

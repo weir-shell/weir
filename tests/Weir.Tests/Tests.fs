@@ -1621,8 +1621,8 @@ let boundaryTests =
 
               Expect.equal
                   (run "YMap [(\"f\", YFloat 1e19)] |> to yaml |> Str.join \"\"")
-                  (VStr "f: 1e+19")
-                  "a node built in weir writes its float"
+                  (VStr "f: 1.0e+19")
+                  "a node built in weir writes its float (a 1.1 float: dot, signed exponent)"
           }
           test "from yaml: a lone-surrogate escape refuses, as from json does [D:encoding-law]" {
               Expect.stringContains
@@ -1856,8 +1856,9 @@ let boundaryTests =
               let msg (src: string) =
                   (Expect.throwsC (fun () -> runUnder xenv src |> ignore) id).Message
 
-              let klingon = b64 System.Text.Encoding.ASCII " encoding=\"x-klingon\"" "ab"
-              let cp1252 = b64 System.Text.Encoding.ASCII " encoding=\"windows-1252\"" "euro"
+              // non-ASCII bytes: pure ASCII reads under any label [D:xml-labels]
+              let klingon = b64 System.Text.Encoding.Latin1 " encoding=\"x-klingon\"" "café"
+              let cp1252 = b64 System.Text.Encoding.Latin1 " encoding=\"windows-1252\"" "café"
 
               Expect.stringContains
                   (msg $"Bytes.fromBase64 \"{cp1252}\" |> from xml XT")
@@ -1870,7 +1871,7 @@ let boundaryTests =
                   "an unknown encoding refuses (bytes)"
 
               Expect.stringContains
-                  (msg "[\"<?xml version='1.0' encoding='x-klingon'?><Root><Title>ab</Title></Root>\"] |> from xml XT")
+                  (msg "[\"<?xml version='1.0' encoding='x-klingon'?><Root><Title>café</Title></Root>\"] |> from xml XT")
                   "which weir cannot decode"
                   "an unknown encoding refuses (text)"
 
@@ -3992,6 +3993,48 @@ let completionTests =
               // name must not leak in as an argv word
               let bare = ask "az vm list-usage --location loc"
               Expect.isFalse (List.contains "location" bare) "a non-splice argv word is not a binding pool"
+          }
+          test "a $ splice offers only the bindings the checker admits there, after any head [D:argv-splice-complete]" {
+              // the REPL's env carries the Prelude's bare functions
+              // (take, toInt, tryHead…); `git tag $t<TAB>` offered them all
+              let mono = Weir.Types.mono
+              let fnTy = Weir.Types.TFun(Weir.Types.TStr, Weir.Types.TStr)
+
+              let envT =
+                  { env with
+                      Values =
+                          env.Values
+                          |> Map.add "tag" (mono Weir.Types.TStr)
+                          |> Map.add "tcount" (mono Weir.Types.TInt)
+                          |> Map.add "tflag" (mono Weir.Types.TBool)
+                          |> Map.add "tid" (mono Weir.Types.TUuid)
+                          |> Map.add "tpoint" (mono (Weir.Types.TNamed("Point", [])))
+                          |> Map.add "tags" (mono (Weir.Types.TSeq Weir.Types.TStr))
+                          |> Map.add "tfn" (mono fnTy)
+                          |> Map.add "tdur" (mono Weir.Types.TDur) }
+
+              Expect.isTrue (Map.containsKey "take" envT.Values && Map.containsKey "tryHead" envT.Values) "fixture: the Prelude's functions are in scope"
+
+              let ask (text: string) =
+                  Weir.Complete.suggest envT text (Weir.Complete.wordStartAt text text.Length)
+
+              let scalar = [ "tag"; "tcount"; "tflag"; "tid"; "tpoint" ]
+
+              for line in
+                  [ "git tag $t"
+                    "ls -l $t"
+                    "cd $t"
+                    "^git tag $t"
+                    "let v = git tag $t"
+                    "let v = ^ls $t"
+                    "git log | grep $t" ] do
+                  Expect.equal (ask line) scalar $"{line}: the $x-spliceable bindings exactly (a record splices through a field)"
+
+              for line in [ "git tag $@t"; "let v = ls -l $@t" ] do
+                  Expect.equal (ask line) [ "tags"; "tpoint" ] $"{line}: $@ offers seq<string> bindings (and records, for a field)"
+
+              // a non-$ word keeps its own pool
+              Expect.isFalse (List.contains "tag" (ask "git tag t")) "a bare argv word is not a binding pool"
           }
           test "a line-head '#' completes the session directives, bare [D:repl-directives]" {
               // bare names: the editor's word starts after the '#', so
@@ -18450,7 +18493,7 @@ let formatSurfaceTests =
                   with e ->
                       e.Message
 
-              Expect.stringContains m "number out of int range — declare it float" ""
+              Expect.stringContains m "is out of int range (int64) — declare it Yaml" ""
               Expect.isFalse (m.Contains "decimal") "the overflow is named for what it is"
           }
           test "a decimal into int still teaches float" {
@@ -20568,6 +20611,19 @@ let sigTests =
           // the check's model [D:sig-arity] [D:sig-conventions]
           // [D:sig-operand-stop] [D:sig-unwalked]: each case is (sig, line,
           // the flags it must warn on — nothing else)
+          test "sig file names are injective; a plain name is its own [D:sig-probe-bounds]" {
+              let names =
+                  [ "/a/b/cob"; "_a_b_cob"; ".weir"; "weir"; "..evil"; "evil"; ".evil"; "a b"; "a_b"; "a%20b"; "a/b"; "a\\b"; "ü"; "x.weir" ]
+
+              let files = names |> List.map Weir.Script.sigFileName
+              Expect.equal (List.distinct files).Length names.Length $"collision in {files}"
+
+              for plain in [ "curl"; "git-lfs"; "python3.12"; "add_sig"; "ü" ] do
+                  Expect.equal (Weir.Script.sigFileName plain) (plain + ".weir") plain
+
+              for f in files do
+                  Expect.isFalse (f.Contains '/' || f.Contains '\\' || f.StartsWith ".") f
+          }
           test "an older all-bool GNU signature checks as it always did" {
               let old =
                   [ "module Fixtool"
@@ -20583,8 +20639,13 @@ let sigTests =
                     "fixtool --output=x y", []
                     // a bool never takes the next word: -o does not eat --verbse
                     "fixtool -o --verbse", [ "--verbse" ]
-                    "fixtool -- --verbse", [] ] do
+                    "fixtool -- --verbse", []
+                    // a multi-letter single-dash word stays unread, as it
+                    // always was: no letter-by-letter bundle
+                    "fixtool -oz -fsSL -i.bak -TERM x", [] ] do
                   Expect.equal (sigWarns old line) want line
+
+              Expect.equal (sigWarns ("module Fixtool" :: "let exhaustive = true" :: List.tail old) "fixtool -Lv x") [] "exhaustive too"
           }
           test "values: a valued flag takes its word, globals check at every level, an unknown subcommand ends the check" {
               let dock =
@@ -28320,6 +28381,63 @@ let hunt3r4SafetyTests =
               Expect.isTrue w.Gone "the writer is gone after the first failure"
           } ]
 
+// hunt 3 round 5's safety items; the Http.expect body, add schema and
+// Args.load halves are e2e cells
+let hunt3r5SafetyTests =
+    testList
+        "hunt-3r5 safety"
+        [ test "NO_PROXY matches a non-ASCII host by its punycode, an entry as written [D:noproxy-idn]" {
+              let cases =
+                  [ "xn--bcher-kva.example", "bücher.example", true
+                    "bücher.example", "xn--bcher-kva.example", false
+                    "bücher.example", "bücher.example", false
+                    ".xn--bcher-kva.example", "a.bücher.example", true
+                    "example", "bücher.example", true
+                    "xn--bcher-kva.example", "bucher.example", false
+                    "bücher.example", "xn--bcher-kva.example.org", false ]
+
+              for np, host, want in cases do
+                  Expect.equal (Weir.Http.noProxyMatch np host) want $"NO_PROXY={np} vs {host}"
+          }
+          test "a request's show masks the URL's userinfo, the value unchanged [D:url-redact-show]" {
+              let req =
+                  VRecord(
+                      "HttpRequest",
+                      [ "method", VUnion("Post", None)
+                        "url", VStr "http://bob:S3cr3tPass@127.0.0.1:9/echo"
+                        "auth", VUnion("Bearer", Some(VSecret "tok")) ]
+                  )
+
+              let shown = formatValue req
+              Expect.stringContains shown "url = \"http://***@127.0.0.1:9/echo\"" "the userinfo is masked, host kept"
+              Expect.isFalse (shown.Contains "S3cr3t" || shown.Contains "bob") $"no credential in {shown}"
+
+              Expect.stringContains
+                  (formatValue (VRecord("Other", [ "url", VStr "http://bob:pw@h/" ])))
+                  "bob:pw@h"
+                  "only a request's url is a display of a credential"
+          }
+          test "stripUserinfo drops the credential for what weir commits [D:lock-no-userinfo]" {
+              Expect.equal
+                  (Weir.Http.stripUserinfo "http://bob:S3cr3t@127.0.0.1:1/s.json")
+                  "http://127.0.0.1:1/s.json"
+                  "userinfo dropped"
+
+              Expect.equal
+                  (Weir.Http.stripUserinfo "https://host/p@v2?to=a@b")
+                  "https://host/p@v2?to=a@b"
+                  "an @ after the authority is data"
+          }
+          test "a header refusal escapes the name it quotes [D:error-data-escape]" {
+              let name = "a\u001b]52;c;ZXZp\u0007\rb"
+              let shown = Weir.Http.headerInjectionMessage "request header" name "CR" "name"
+              Expect.stringContains shown "'a\\x1b]52;c;ZXZp\\x07\\x0db'" "rendered visibly"
+              Expect.isFalse (shown.IndexOfAny [| '\u001b'; '\u0007'; '\r' |] >= 0) $"raw control in {shown}"
+
+              let shown = Weir.Http.headerUnsendableMessage "response header" "a\u001bb" "its name carries U+001B"
+              Expect.isFalse (shown.Contains '\u001b') $"raw ESC in {shown}"
+          } ]
+
 let hunt3r4RaceTests =
     testSequenced
     <| testList
@@ -28466,6 +28584,69 @@ let docsBinaryTests =
                   new System.IO.Pipes.AnonymousPipeServerStream(System.IO.Pipes.PipeDirection.Out)
 
               Expect.isTrue (Weir.Session.armsStdoutFor pipe) "a pipe can EPIPE"
+          } ]
+
+// hunt 3 round 5 stage A: the cleanup shim's start, the console-write
+// policy, the FIFO probe; the signal and terminal halves are e2e cells
+let hunt3r5Tests =
+    let shim (script: string) (args: string list) =
+        let psi = System.Diagnostics.ProcessStartInfo(Weir.Session.CleanupShim.shell)
+        psi.ArgumentList.Add "-c"
+        psi.ArgumentList.Add script
+        psi.ArgumentList.Add "sh"
+
+        for a in args do
+            psi.ArgumentList.Add a
+
+        System.Diagnostics.Process.Start psi
+
+    let sigint (pid: int) =
+        use k = System.Diagnostics.Process.Start("kill", $"-INT {pid}")
+        k.WaitForExit()
+
+    testSequenced
+    <| testList
+        "hunt-3r5 stage A"
+        [ test "a shim that died before its trap is reported, one past it is not [D:cleanup-sigign]" {
+              skipUnlessLinux ()
+              use early = shim "kill -INT $$; sleep 5" []
+              Expect.isFalse (Weir.Session.CleanupShim.passedTrap early) "killed by INT before any trap"
+
+              use slow = shim "sleep 0.3; trap \"\" INT QUIT; exec sleep 0.2" []
+              System.Threading.Thread.Sleep 50
+              sigint slow.Id
+              Expect.isFalse (Weir.Session.CleanupShim.passedTrap slow) "a ^C before the trap"
+
+              use ok = shim Weir.Session.CleanupShim.script [ "/bin/sleep"; "0.3" ]
+              Expect.isTrue (Weir.Session.CleanupShim.passedTrap ok) "the trap ran"
+              sigint ok.Id
+              ok.WaitForExit()
+              Expect.equal ok.ExitCode 0 "the command ignores the ^C"
+          }
+          test "a stderr write refused as EBADF marks the writer gone, never raises [D:console-write]" {
+              let closed =
+                  { new System.IO.TextWriter() with
+                      member _.Encoding = System.Text.Encoding.UTF8
+                      member _.Write(s: string) : unit = raise (System.UnauthorizedAccessException())
+                      member _.WriteLine(s: string) : unit = raise (System.UnauthorizedAccessException()) }
+
+              let w = new HangupWriter(closed)
+              w.WriteLine "error: x"
+              w.Write "more"
+              Expect.isTrue w.Gone "the writer is gone after the first failure"
+          }
+          test "isFifo tells a FIFO from a file and an absent path [D:fifo-ops-polled]" {
+              skipUnlessLinux ()
+
+              withTempDir "weir-fifo" (fun d ->
+                  let f = Path.Combine(d, "p")
+                  let r = Path.Combine(d, "r")
+                  File.WriteAllText(r, "x")
+                  let mk = System.Diagnostics.Process.Start("mkfifo", f)
+                  mk.WaitForExit()
+                  Expect.isTrue (Weir.Session.isFifo f) "a FIFO"
+                  Expect.isFalse (Weir.Session.isFifo r) "a regular file"
+                  Expect.isFalse (Weir.Session.isFifo (Path.Combine(d, "none"))) "an absent path")
           } ]
 
 let hunt2CheckerTests =
@@ -29159,6 +29340,322 @@ let hunt3BehaviorTests =
 // guards time one input and its 10x in process; linear work grows ~10x,
 // the quadratic forms these replaced grew ~100x. 25x is the acceptance
 // harness's rule (tools/hunt3-repro.weir), wide enough for a noisy runner.
+let hunt3r5FormatTests =
+    // hunt-3 round 5, formats: YAML number text (ruling R3)
+    // [D:yaml-number-text], exponent floats [D:yaml-interop], tabs and
+    // Unicode white space [D:yaml-ws], block-scalar `%` and U+2028
+    // [D:block-scalars], XML labels (ruling R4) [D:xml-labels] and
+    // whitespace text [D:xml-whitespace], try's bigint digits
+    // [D:yaml-node-bigint], schema drafting [D:schema-required-nullable]
+    // [D:schema-uint64] [D:schema-enum-null]
+    let text v =
+        forceSeq v
+        |> List.map (function
+            | VStr s -> s
+            | v -> failtest $"expected text, got {formatValue v}")
+        |> String.concat "\n"
+
+    let lit (lines: string list) =
+        "[" + (lines |> List.map (fun l -> "\"" + l.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"") |> String.concat "; ") + "]"
+
+    let gen src =
+        match Weir.Contracts.parseSchema "t" src with
+        | Error e -> failtest e
+        | Ok d ->
+            match Weir.SchemaTypes.moduleText Weir.Parser.keywords Set.empty "t" None "0123456789abcdef" "http://src" d with
+            | Ok g -> g.Text
+            | Error e -> failtest e
+
+    let xenv = env |> declare "type XW = { Sep: string; Tab: string; Two: string; Word: string; Empty: string }"
+
+    let xb (bytes: byte[]) =
+        $"Bytes.fromBase64 \"{System.Convert.ToBase64String bytes}\""
+
+    let xdoc (label: string) (title: byte[]) =
+        Array.concat
+            [ System.Text.Encoding.ASCII.GetBytes($"<?xml version=\"1.0\" encoding=\"{label}\"?><Root><Title>caf")
+              title
+              System.Text.Encoding.ASCII.GetBytes "</Title></Root>" ]
+
+    let tenv = xenv |> declare "type XT = { Title: string }"
+
+    testList
+        "hunt3r5 formats"
+        [ test "yaml: a leading-zero number keeps its text; a typed int read refuses, teaching 1.1's octal (R3) [D:yaml-number-text]" {
+              Expect.equal
+                  (run (lit [ "mode: 0644"; "neg: -007"; "d: 644" ] + " |> Yaml.parse |> to yaml") |> text)
+                  "mode: 0644\nneg: -007\nd: 644"
+                  "a read-modify-write leaves the text alone"
+
+              Expect.equal
+                  (run ("show (" + lit [ "mode: 0644" ] + " |> Yaml.parse)"))
+                  (VStr "YMap ([(\"mode\", YInt 644)])")
+                  "the node is still YAML 1.2's decimal int"
+
+              Expect.equal
+                  (run (lit [ "mode: 0644" ] + " |> Yaml.parse |> to json") |> text)
+                  "{\"mode\":644}"
+                  "json has no octal: the value writes"
+
+              Expect.equal
+                  (run (lit [ "mode: 0644" ] + " |> Yaml.parse |> try |> Option.map (fun n -> n |> to yaml |> Str.join \"\") |> Option.defaultValue \"\""))
+                  (VStr "mode: 0644")
+                  "the text rides try's force too"
+
+              let m = msgOf (lit [ "mode: 0644" ] + " |> from yaml {| mode: int |}")
+              Expect.stringContains m "'0644' has a leading zero" "names the literal"
+              Expect.stringContains m "octal (420)" "says what a 1.1 reader sees"
+              Expect.stringContains m "0o644 for octal" "teaches the 1.2 octal spelling"
+              Expect.stringContains m "quote it" "and the string spelling"
+
+              Expect.stringContains
+                  (msgOf (lit [ "n: 089" ] + " |> from yaml {| n: int |}"))
+                  "read it as a string"
+                  "an 8/9 digit is a string to 1.1 readers"
+
+              Expect.equal
+                  (run ("show (" + lit [ "z: 0"; "q: \"0644\"" ] + " |> from yaml {| z: int; q: string |})"))
+                  (VStr "{ q = \"0644\"; z = 0 }")
+                  "zero and the quoted spelling read as before"
+          }
+          test "yaml: a 0x/0o scalar's int64 check stops at the first digit past range — linear in the digit run [D:yaml-number-text]" {
+              let f = Weir.Eval.yamlCoreRadixInt
+              Expect.equal (f "0x7fffffffffffffff") (Some(Some System.Int64.MaxValue)) "int64 max fits"
+              Expect.equal (f "0x8000000000000000") (Some None) "one past is out of range"
+              Expect.equal (f "0o777777777777777777777") (Some(Some System.Int64.MaxValue)) "octal max fits"
+              Expect.equal (f "0o1000000000000000000000") (Some None) "octal one past"
+              Expect.equal (f ("0x" + String.replicate 5000 "0" + "1f")) (Some(Some 31L)) "leading zeros never overflow"
+              Expect.equal (f "0x") None "no digits is no number"
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+              Expect.equal (f ("0x" + String.replicate 400000 "f")) (Some None) "a 400k-digit run is out of range"
+              Expect.isLessThan sw.ElapsedMilliseconds 2000L "and costs linear time"
+          }
+          test "yaml: 1.2 core non-decimal numbers read as numbers and keep their text; 1.1-only forms stay strings [D:yaml-number-text]" {
+              Expect.equal
+                  (run (lit [ "mask: 0x1F"; "num: 0o17"; "max: .inf"; "low: -.Inf"; "nn: .nan" ] + " |> Yaml.parse |> to yaml")
+                   |> text)
+                  "mask: 0x1F\nnum: 0o17\nmax: .inf\nlow: -.Inf\nnn: .nan"
+                  "unchanged and unquoted"
+
+              Expect.equal
+                  (run ("show (" + lit [ "mask: 0x1F"; "num: 0o17"; "max: .inf" ] + " |> Yaml.parse)"))
+                  (VStr "YMap ([(\"mask\", YInt 31); (\"num\", YInt 15); (\"max\", YStr \".inf\")])")
+                  "ints are YInt; a non-finite float has no weir value, its text rides YStr"
+
+              Expect.equal
+                  (run ("show (" + lit [ "mask: 0x1F"; "num: 0o17" ] + " |> from yaml {| mask: int; num: int |})"))
+                  (VStr "{ mask = 31; num = 15 }")
+                  "a typed int reads the core forms"
+
+              Expect.equal
+                  (run (lit [ "big: 1_000"; "bits: 0b101"; "time: 1:20" ] + " |> Yaml.parse |> to yaml") |> text)
+                  "big: \"1_000\"\nbits: \"0b101\"\ntime: \"1:20\""
+                  "1.1-only forms are 1.2 strings, quoted for 1.1 readers"
+
+              Expect.equal
+                  (run "YMap [(\"s\", YStr \".inf\")] |> to yaml |> Str.join \"\"")
+                  (VStr "s: \".inf\"")
+                  "a YStr built in weir stays a quoted string"
+          }
+          test "to yaml: an exponent float carries a dot and a signed exponent [D:yaml-interop]" {
+              Expect.equal
+                  (run "{| a = 0.00001; b = 1e21; c = 1.5e300; d = 123.0 |} |> to yaml" |> text)
+                  "a: 1.0e-05\nb: 1.0e+21\nc: 1.5e+300\nd: 123.0"
+                  "YAML 1.1 floats"
+
+              Expect.equal
+                  (run "{| v = YFloat 1e-7 |} |> to yaml |> Str.join \"\"")
+                  (VStr "v: 1.0e-07")
+                  "a Yaml node too"
+
+              Expect.equal
+                  (run "show ({| a = 0.00001; b = 1e21 |} |> to yaml |> from yaml {| a: float; b: float |})")
+                  (VStr "{ a = 1e-05; b = 1e+21 }")
+                  "weir reads them back"
+          }
+          test "yaml: a tab where indentation is read refuses; a tab before # starts a comment [D:yaml-ws]" {
+              let tabbed = lit [ "name: web"; "spec:"; "\treplicas: 3" ]
+              Expect.stringContains (msgOf (tabbed + " |> Yaml.parse")) "line 3: a tab indents this line" "Yaml.parse"
+
+              Expect.stringContains
+                  (msgOf (tabbed + " |> from yaml {| name: string; spec: Option<{| replicas: int |}> |}"))
+                  "YAML indents with spaces only"
+                  "from yaml"
+
+              Expect.stringContains
+                  (msgOf (lit [ "a:"; "  \tb: 1" ] + " |> Yaml.parse"))
+                  "a tab indents"
+                  "spaces then a tab"
+
+              Expect.equal
+                  (run ("show (" + lit [ "name: web\t# the app"; "port: 8080\t# http"; "tag: x\ty" ] + " |> from yaml {| name: string; port: int; tag: string |})"))
+                  (VStr "{ name = \"web\"; port = 8080; tag = \"x\\ty\" }")
+                  "comments cut; a tab inside a value is content"
+
+              Expect.equal
+                  (run ("show (" + lit [ "a: |"; "  \tindented"; "  x" ] + " |> from yaml {| a: string |})"))
+                  (VStr "{ a = \"\\tindented\\nx\\n\" }")
+                  "a tab inside block content is content"
+          }
+          test "yaml: a plain scalar or key trims only space and tab [D:yaml-ws]" {
+              Expect.equal
+                  (run (lit [ "s: x\u00a0"; "t: \u3000y"; "\u3000k: v"; "u:   z  " ] + " |> Yaml.parse |> to json") |> text)
+                  "{\"s\":\"x\u00a0\",\"t\":\"\u3000y\",\"\u3000k\":\"v\",\"u\":\"z\"}"
+                  "NBSP and U+3000 are content"
+          }
+          test "yaml: a block-scalar line starting with % is content; a column-0 directive still refuses [D:block-scalars]" {
+              Expect.equal
+                  (run ("show (" + lit [ "data:"; "  fmt: |"; "    LogFormat"; "    %h %l %u %t" ] + " |> from yaml {| data: {| fmt: string |} |})"))
+                  (VStr "{ data = { fmt = \"LogFormat\\n%h %l %u %t\\n\" } }")
+                  "an Apache LogFormat ConfigMap"
+
+              Expect.equal
+                  (run "show ({| s = \"a\\n%b\" |} |> to yaml |> from yaml {| s: string |})")
+                  (VStr "{ s = \"a\\n%b\" }")
+                  "weir reads its own output"
+
+              Expect.stringContains
+                  (msgOf (lit [ "%YAML 1.2"; "---"; "a: 1" ] + " |> Yaml.parse"))
+                  "directives are outside the yaml subset"
+                  "a directive"
+          }
+          test "to yaml: U+2028/U+2029 never go out raw inside a block scalar [D:block-scalars]" {
+              let ls = "(Str.fromUtf8 (Bytes.fromHex \"e280a8\"))"
+              let ps = "(Str.fromUtf8 (Bytes.fromHex \"e280a9\"))"
+
+              for v in [ $"(\"x\\ny\" + {ls})"; $"({ls} + \"-\\tz\\n\")"; $"(\"\\n\" + {ps})" ] do
+                  let out = run $"{{| s = {v} |}} |> to yaml" |> text
+                  Expect.isFalse (out.Contains "\u2028" || out.Contains "\u2029") $"escaped: {out}"
+
+                  Expect.equal
+                      (run $"{{| s = {v} |}} |> to yaml |> from yaml {{| s: string |}} |> fun b -> b.s == {v}")
+                      (VBool true)
+                      $"reads back equal: {out}"
+
+              Expect.equal (run "{| s = \"x\\ny\" |} |> to yaml" |> text) "s: |-\n  x\n  y" "a plain multi-line string keeps the block form"
+          }
+          test "from xml keeps whitespace-only text, as xml.etree reads it [D:xml-whitespace]" {
+              let doc =
+                  lit
+                      [ "<Project><PropertyGroup>"
+                        "<Sep>&#32;</Sep><Tab>&#9;</Tab><Two>  </Two><Word> a </Word><Empty></Empty>"
+                        "</PropertyGroup></Project>" ]
+
+              let xenv2 = xenv |> declare "type XP = { PropertyGroup: XW }"
+
+              Expect.equal
+                  (runUnder xenv2 $"show ({doc} |> from xml XP).PropertyGroup")
+                  (VStr "{ Sep = \" \"; Tab = \"\\t\"; Two = \"  \"; Word = \" a \"; Empty = \"\" }")
+                  "text"
+
+              Expect.equal
+                  (runUnder xenv2 $"show ({doc} |> Str.join \"\" |> Str.toUtf8 |> from xml XP).PropertyGroup")
+                  (VStr "{ Sep = \" \"; Tab = \"\\t\"; Two = \"  \"; Word = \" a \"; Empty = \"\" }")
+                  "bytes"
+          }
+          test "from xml: pure ASCII reads under any declared label; utf8/Latin-1 aliases; non-ASCII under an unknown label refuses (R4) [D:xml-labels]" {
+              let read (label: string) (title: byte[]) =
+                  runUnder tenv $"show ({xb (xdoc label title)} |> from xml XT)"
+
+              Expect.equal (read "Windows-1252" "e"B) (VStr "{ Title = \"cafe\" }") "ASCII under windows-1252 (a VS2008 .vcproj)"
+              Expect.equal (read "x-klingon" "e"B) (VStr "{ Title = \"cafe\" }") "ASCII under any label"
+              Expect.equal (read "UTF8" [| 0xC3uy; 0xA9uy |]) (VStr "{ Title = \"café\" }") "UTF8"
+              Expect.equal (read "utf8" [| 0xC3uy; 0xA9uy |]) (VStr "{ Title = \"café\" }") "utf8"
+              Expect.equal (read "Latin-1" [| 0xE9uy |]) (VStr "{ Title = \"café\" }") "Latin-1"
+
+              Expect.equal
+                  (runUnder tenv "show ([\"<?xml version='1.0' encoding='Windows-1252'?><Root><Title>cafe</Title></Root>\"] |> from xml XT)")
+                  (VStr "{ Title = \"cafe\" }")
+                  "ASCII text under windows-1252"
+
+              let refuse (label: string) (title: byte[]) =
+                  (Expect.throwsC (fun () -> runUnder tenv $"{xb (xdoc label title)} |> from xml XT" |> ignore) id).Message
+
+              let m = refuse "windows-1252" [| 0xE9uy |]
+              Expect.stringContains m "declares encoding 'windows-1252', which weir cannot decode" "a real code-page byte refuses"
+              Expect.stringContains m "change the declaration to encoding=\"UTF-8\"" "the hint names the declaration too"
+
+              Expect.stringContains
+                  ((Expect.throwsC
+                      (fun () ->
+                          runUnder tenv "[\"<?xml version='1.0' encoding='windows-1252'?><Root><Title>café</Title></Root>\"] |> from xml XT"
+                          |> ignore)
+                      id)
+                      .Message)
+                  "which weir cannot decode"
+                  "non-ASCII text under an unknown label"
+
+              for label in [ " windows-1252"; "x id"; "ebcdic;" ] do
+                  Expect.stringContains
+                      (refuse label [| 0xC3uy; 0xA9uy |])
+                      "encoding name"
+                      $"a malformed label '{label}' refuses, never reads as UTF-8 [E13]"
+          }
+          test "try and try result keep a Yaml node's bigint digits [D:yaml-node-bigint]" {
+              let src = "[\"{\\\"id\\\": 18446744073709551616}\"] |> from json {| id: Yaml |}"
+
+              Expect.equal
+                  (run $"{src} |> try result |> Result.map (fun w -> w |> to json |> Str.join \"\") |> Result.defaultValue \"\"")
+                  (VStr "{\"id\":18446744073709551616}")
+                  "try result"
+
+              Expect.equal
+                  (run $"{src} |> try |> Option.map (fun w -> w |> to json |> Str.join \"\") |> Option.defaultValue \"\"")
+                  (VStr "{\"id\":18446744073709551616}")
+                  "try"
+          }
+          test "an int past int64 into an int field points at Yaml, never float [D:yaml-node-bigint]" {
+              let m = msgOf "([\"{\\\"id\\\": 18446744073709551615}\"] |> from json {| id: int |}).id"
+              Expect.stringContains m "declare it Yaml to keep its digits" "json"
+              Expect.isFalse (m.Contains "declare it float") "float would round it"
+
+              Expect.stringContains
+                  (msgOf (lit [ "id: 18446744073709551615" ] + " |> from yaml {| id: int |}"))
+                  "declare the field Yaml to keep its digits"
+                  "yaml"
+          }
+          test "gen types: format uint64 drafts the digit-keeping Yaml node [D:schema-uint64]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["n", "k"],
+                           "properties": { "n": { "type": "integer", "format": "uint64" }, "k": { "type": "integer" },
+                                           "m": { "type": ["integer", "null"], "format": "uint64" } } }"""
+
+              Expect.stringContains g "\n    n: Yaml\n" "uint64"
+              Expect.stringContains g "\n    k: int\n" "a plain integer stays int"
+              Expect.stringContains g "\n    m: Option<Yaml>\n" "nullable uint64"
+              Expect.stringContains g "n: format uint64 — drafted Yaml" "the note"
+          }
+          test "gen types: a required + nullable field is noted — None writes the key omitted [D:schema-required-nullable]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["name", "parent", "note", "legacy"],
+                           "properties": { "name": { "type": "string" }, "parent": { "type": ["string", "null"] },
+                                           "note": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                                           "legacy": { "type": "string", "nullable": true },
+                                           "opt": { "type": ["string", "null"] } } }"""
+
+              for f in [ "parent"; "note"; "legacy" ] do
+                  Expect.stringContains g $"// note: {f}: required and nullable — drafted Option<string>" f
+
+              Expect.isFalse (g.Contains "opt: required") "an optional nullable field is plain Option"
+              Expect.isFalse (g.Contains "name: required") "a required non-null field is plain"
+          }
+          test "gen types: the enum note lists null only when the enum holds it and the type allows it [D:schema-enum-null]" {
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "properties": { "kind": { "type": ["string", "null"], "enum": ["Pod"] },
+                                           "lvl": { "type": "string", "enum": ["a", "b"] },
+                                           "hn": { "type": "string", "enum": ["x", null] },
+                                           "both": { "type": ["string", "null"], "enum": ["y", null] } } }"""
+
+              Expect.stringContains g "kind: an enum of 'Pod' — drafted" "type-only null"
+              Expect.stringContains g "lvl: an enum of 'a', 'b' — drafted" "no null"
+              Expect.stringContains g "hn: an enum of 'x' — drafted" "the type forbids null"
+              Expect.stringContains g "both: an enum of 'y', null — drafted" "listed and allowed"
+          } ]
+
 let private growsWithin (factor: float) (label: string) (small: unit -> unit) (big: unit -> unit) =
     let time (f: unit -> unit) =
         let sw = Stopwatch.StartNew()
@@ -29405,8 +29902,11 @@ let allTests =
           hunt3r3UnreadTests
           hunt3r4RaceTests
           hunt3r4SafetyTests
+          hunt3r5Tests
+          hunt3r5SafetyTests
           argsSecretEchoTests
           hunt3BehaviorTests
+          hunt3r5FormatTests
           docsBinaryTests
           hunt2CheckerTests
           sweepFindingTests

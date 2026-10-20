@@ -67,6 +67,11 @@ let nodeLine (n: Node) =
 
 // ---- lexical helpers ------------------------------------------------------
 
+// YAML's white space is space and tab alone [D:yaml-ws]: a plain scalar
+// or key trims only these (NBSP, U+3000 are content); CR/LF never
+// survive line splitting but trim with them
+let yamlWs = [| ' '; '\t'; '\r'; '\n' |]
+
 let indentOf (s: string) =
     let mutable i = 0
 
@@ -127,7 +132,7 @@ let private commentCutAt (holes: bool) (s: string) : int =
             inD <- true
         elif c = '\'' then
             inS <- true
-        elif c = '#' && i > 0 && s[i - 1] = ' ' then
+        elif c = '#' && i > 0 && (s[i - 1] = ' ' || s[i - 1] = '\t') then
             cut <- i
 
         i <- i + 1
@@ -136,7 +141,7 @@ let private commentCutAt (holes: bool) (s: string) : int =
 
 let private stripTrailingComment (s: string) =
     let cut = commentCutAt false s
-    (if cut >= 0 then s.Substring(0, cut) else s).TrimEnd()
+    (if cut >= 0 then s.Substring(0, cut) else s).TrimEnd yamlWs
 
 /// The district face [D:district-hash]: a whitespace-preceded `#` on a
 /// district structure line is a comment (YAML's own rule, matching the
@@ -144,7 +149,7 @@ let private stripTrailingComment (s: string) =
 /// content never reaches this (consumed as bytes first).
 let stripDistrictComment (s: string) =
     let cut = commentCutAt true s
-    (if cut >= 0 then s.Substring(0, cut) else s).TrimEnd()
+    (if cut >= 0 then s.Substring(0, cut) else s).TrimEnd yamlWs
 
 // a scalar token: quoted (double: \" \\ \n \t \r \N \L \P \xNN \uNNNN
 // unescaped — the emitter's own escape set, so weir reads what weir
@@ -154,7 +159,7 @@ let stripDistrictComment (s: string) =
 // wraps it with the line prefix.
 // Ok None = null (empty or a core-schema null); Ok (Some (text, quoted)) = a scalar.
 let scalarCore (raw: string) : Result<(string * bool) option, string> =
-    let t = raw.Trim()
+    let t = raw.Trim yamlWs
 
     // the 1.2 core schema's plain nulls [D:yaml-core-null]; quoted
     // forms stay strings
@@ -339,7 +344,7 @@ let splitKeyR (s: string) : Result<(string * string) option, string> =
     if found < 0 then
         Ok None
     else
-        let rawKey = s.Substring(0, found).Trim()
+        let rawKey = s.Substring(0, found).Trim yamlWs
         let rest = s.Substring(found + 1)
 
         if rawKey = "" then
@@ -718,6 +723,14 @@ let rec private parseBlock
     let misIndented (no: int) (col: int) =
         $"line {no}: this line is indented less than the block it belongs to (its siblings start at column {col + 1}) — align it with them or with its parent"
 
+    // a tab where indentation is read [D:yaml-ws]: YAML indents with
+    // spaces only, and reading the tab as nothing would flatten the
+    // nesting silently
+    let tabAt (raw: string) (ind: int) = ind < raw.Length && raw[ind] = '\t'
+
+    let tabIndented (no: int) =
+        $"line {no}: a tab indents this line — YAML indents with spaces only; replace the tabs with spaces"
+
     if start >= fin then
         Ok(
             NNull(
@@ -731,7 +744,9 @@ let rec private parseBlock
         let firstNo, firstRaw = lines[start]
         let firstBody = firstRaw.Substring indent
 
-        if firstBody.StartsWith "- " || firstBody.TrimEnd() = "-" then
+        if tabAt firstRaw (indentOf firstRaw) then
+            Error(tabIndented firstNo)
+        elif firstBody.StartsWith "- " || firstBody.TrimEnd() = "-" then
             // a block sequence: items at exactly this indent
             let rec items i acc =
                 if i >= fin then
@@ -740,7 +755,9 @@ let rec private parseBlock
                     let no, raw = lines[i]
                     let ind = indentOf raw
 
-                    if ind < indent then
+                    if tabAt raw ind then
+                        Error(tabIndented no)
+                    elif ind < indent then
                         Error(misIndented no indent)
                     elif ind > indent then
                         Error $"line {no}: unexpected indentation (a sequence item line must start with '- ')"
@@ -822,7 +839,9 @@ let rec private parseBlock
                         let no, raw = lines[i]
                         let ind = indentOf raw
 
-                        if ind < indent then
+                        if tabAt raw ind then
+                            Error(tabIndented no)
+                        elif ind < indent then
                             Error(misIndented no indent)
                         elif ind > indent then
                             Error $"line {no}: unexpected indentation"
@@ -897,16 +916,18 @@ let private parseDocsRaw (numbered: (int * string) list) : Result<Node list, str
     let content =
         numbered
         |> List.filter (fun (no, raw) ->
-            let t = raw.TrimEnd()
+            let t = raw.TrimEnd yamlWs
 
-            if t.TrimStart().StartsWith "%" then
+            // a directive starts at column 0 [D:block-scalars]; an
+            // indented `%` line is block-scalar content (a LogFormat)
+            if t.StartsWith "%" then
                 true // kept so the rejection below fires with its line
             else
-                t <> "" && not (t.TrimStart().StartsWith "#"))
+                t <> "" && not (t.TrimStart(yamlWs).StartsWith "#"))
         |> List.map (fun (no, raw) -> no, stripTrailingComment raw)
-        |> List.filter (fun (_, raw) -> raw.Trim() <> "")
+        |> List.filter (fun (_, raw) -> raw.Trim yamlWs <> "")
 
-    match content |> List.tryFind (fun (_, raw) -> raw.TrimStart().StartsWith "%") with
+    match content |> List.tryFind (fun (_, raw) -> raw.StartsWith "%") with
     | Some(no, _) -> Error $"line {no}: directives are outside the yaml subset"
     | None ->
 

@@ -413,6 +413,25 @@ module private Term =
 
             t.Start()
 
+// a terminal that hung up [D:console-hangup]: its mode calls and reads
+// fail. The hangup's SIGHUP ends the session through its teardown, so the
+// REPL waits for it rather than failing; with no signal (an ignored
+// SIGHUP) the dead terminal is the end of input
+let private ttyGone () : 'a =
+    let clock = Diagnostics.Stopwatch.StartNew()
+
+    while Session.teardownRequested () = 0 && clock.ElapsedMilliseconds < 1000L do
+        Threading.Thread.Sleep 10
+
+    raise (Eval.ExitRequest(Session.teardownRequested ()))
+
+/// a terminal call that a hangup fails ends the session [D:console-hangup]
+let private ttyIo (f: unit -> 'a) : 'a =
+    try
+        f ()
+    with :? IOException ->
+        ttyGone ()
+
 // a command-head alias [D:command-head-alias] — the type and its parser
 // live with the init rules (Script.checkInit), one definition for the
 // loader, `weir check` and the live #alias directive
@@ -1212,7 +1231,7 @@ let private minimalSearch (query0: string) : string option =
     render ()
 
     while searching do
-        let k = Console.ReadKey true
+        let k = ttyIo (fun () -> Console.ReadKey true)
 
         match k.Key with
         | ConsoleKey.Enter ->
@@ -1331,7 +1350,31 @@ let private readKey () =
     if typeAhead.Count > 0 then
         typeAhead.Dequeue()
     else
-        Console.ReadKey(intercept = true)
+        ttyIo (fun () -> Console.ReadKey(intercept = true))
+
+/// after a bare Esc: is an Enter right behind it (within 100ms)? Alt+Enter
+/// is ESC CR, and .NET reads a lone ESC as Escape when the CR has not
+/// arrived yet. A key that is not Enter stays queued for the editor
+let private escThenEnter () : bool =
+    let clock = Diagnostics.Stopwatch.StartNew()
+
+    let rec next () =
+        if typeAhead.Count > 0 then Some(typeAhead.Peek())
+        elif ttyIo (fun () -> Console.KeyAvailable) then
+            let k = ttyIo (fun () -> Console.ReadKey(intercept = true))
+            typeAhead.Enqueue k
+            Some k
+        elif clock.ElapsedMilliseconds < 100L then
+            Threading.Thread.Sleep 2
+            next ()
+        else
+            None
+
+    match next () with
+    | Some k when k.Key = ConsoleKey.Enter || k.KeyChar = '\r' ->
+        typeAhead.Dequeue() |> ignore
+        true
+    | _ -> false
 
 let private deriveContPrompt (w: int) =
     let on = Types.Color.onStdout.Value
@@ -1606,6 +1649,11 @@ let private readLineTty () : string option =
             toEnd ()
             Console.WriteLine "^C"
             result <- Some(Some "")
+        | ConsoleKey.Escape when escThenEnter () ->
+            // Alt+Enter whose two bytes the terminal read apart (a fast
+            // paste, a loaded box): the newline, not an abandon
+            // [D:repl-esc-enter]
+            insertNewline ()
         | ConsoleKey.Escape ->
             // Esc mid-buffer: abandon the whole buffer [D:repl-multiline]
             toEnd ()
@@ -1876,8 +1924,10 @@ let private setupLineEditor () =
     if not (OperatingSystem.IsWindows()) then
         ttyEval <- true
         Session.replSurvivesSigint.Value <- true
-        // a death by a signal leaves the shell's terminal as it found it
+        // a death by a signal leaves the shell's terminal as it found it,
+        // at the prompt too
         Session.beforeDie <- Term.restoreCooked
+        Session.installSignalHook ()
 
         sigintSurvival <-
             Some(
@@ -2573,17 +2623,34 @@ let itSchemeForTest (statements: string list) : string option =
 // path's exact behaviour) — weir itself survives via the cancel
 // registration in setupLineEditor. The finally closes the eval->prompt
 // window; both no-op when there is no tty (piped REPL, Windows).
-let private evalChecked (source: string) (state: State) (chk: Script.CheckedStatement) : State =
+// the terminal's eval mode, held for a whole entry: a statement inside an
+// entry neither enters nor leaves it, so no raw (no-ISIG) gap opens
+// between an entry's statements for a ^C to land in as a typed byte
+// [D:repl-entry-isig]
+let mutable private ttyEvalDepth = 0
+
+let private enterTtyEval () =
+    ttyEvalDepth <- ttyEvalDepth + 1
+
     // the property is the load-bearing half [D:repl-isig]: .NET
     // re-applies its own terminal notion when a child spawns (a raw
     // tcsetattr sticks for ~10ms and the child still sees -isig), so the
     // notion must change — TreatControlCAsInput=false makes .NET's
     // spawn-time config agree with the cooked termios the restore sets
     // now
-    if ttyEval then
-        Console.TreatControlCAsInput <- false
+    if ttyEval && ttyEvalDepth = 1 then
+        ttyIo (fun () -> Console.TreatControlCAsInput <- false)
         Term.restoreCooked ()
 
+let private leaveTtyEval () =
+    ttyEvalDepth <- max 0 (ttyEvalDepth - 1)
+
+    if ttyEval && ttyEvalDepth = 0 then
+        ttyIo (fun () -> Console.TreatControlCAsInput <- true)
+        Term.reassert ()
+
+let private evalChecked (source: string) (state: State) (chk: Script.CheckedStatement) : State =
+    enterTtyEval ()
     Session.beginReplEval ()
 
     try
@@ -2598,10 +2665,7 @@ let private evalChecked (source: string) (state: State) (chk: Script.CheckedStat
             state
     finally
         Session.endReplEval ()
-
-        if ttyEval then
-            Console.TreatControlCAsInput <- true
-            Term.reassert ()
+        leaveTtyEval ()
 
 // ---- the #help glance [D:help-glance]: one name per line, each with
 // the first line of its one-source doc (builtinDocs / moduleBlurbs),
@@ -3858,6 +3922,7 @@ let rec private loop (state: State) =
                 // one evaluation for the whole entry, which its first failure
                 // or ^C ends, as a script's would [D:repl-interrupt]
                 let stopped = ref false
+                enterTtyEval ()
                 Session.beginReplEval ()
 
                 try
@@ -3868,11 +3933,22 @@ let rec private loop (state: State) =
                                 st
                             else
                                 let st' = entryStatement st ll
+
+                                // the entry's node, checked between statements:
+                                // a ^C that cut no wait (a cleanup, pure
+                                // compute, a `| exitCode` child) ends the entry
+                                // too [D:repl-entry-check]
+                                if not lastErrored && Session.interruptRequested () then
+                                    lastErrored <- true
+                                    lastExit <- Some 130
+                                    echoMeta "↳ exit 130 (SIGINT — interrupted/cancelled)"
+
                                 stopped.Value <- lastErrored
                                 st')
                         state
                 finally
                     Session.endReplEval ()
+                    leaveTtyEval ()
 
         loop next
     | line ->

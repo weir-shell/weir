@@ -1,0 +1,33 @@
+// a cleanup's commands read the terminal: a pager and a line reader (R1: at a tty they keep weir's group and the tty, ^C/^\ ignored)
+// storm-feed: q\r 250
+// storm-cpu-max: 3
+let a = Self.args |> Seq.freeze
+let log = a[0]
+let tag = a[1]
+let dir = a[2]
+let ev s = File.append log [s]
+[1..300] |> Seq.map (fun i -> $"line {i} {tag}") |> File.write $"{dir}/big.txt"
+within
+    ev "O outer"
+    within tmp d
+        ev "O outer/tmp"
+        within
+            ev "O outer/tmp/w"
+            sleep $"0.3{tag}"
+            ev "B outer/tmp/w slept"
+        always
+            ev "S outer/tmp/w"
+            more $"{dir}/big.txt"
+            ev "C outer/tmp/w paged"
+            let l = sh -c $"head -n1; : {tag}" |> Seq.length
+            ev $"C outer/tmp/w read {l}"
+            ev "E outer/tmp/w"
+        ev "B outer/tmp after"
+    always
+        ev "S outer/tmp"
+        sh -c $"sleep 0.05{tag}"
+        ev "E outer/tmp"
+always
+    ev "S outer"
+    ev "E outer"
+ev "DONE"

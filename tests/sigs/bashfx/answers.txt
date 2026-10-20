@@ -1,0 +1,32 @@
+=== --version
+GNU bashfx, version 5.3.9(1)-release (x86_64-pc-linux-gnu)
+=== --help
+GNU bashfx, version 5.3.9(1)-release-(x86_64-pc-linux-gnu)
+Usage:	bashfx [GNU long option] [option] ...
+	bashfx [GNU long option] [option] script-file ...
+GNU long options:
+	--debug
+	--debugger
+	--dump-po-strings
+	--dump-strings
+	--help
+	--init-file
+	--login
+	--noediting
+	--noprofile
+	--norc
+	--posix
+	--pretty-print
+	--rcfile
+	--restricted
+	--verbose
+	--version
+Shell options:
+	-ilrsD or -c command or -O shopt_option		(invocation only)
+	-abefhkmnptuvxBCEHPT or -o option
+Type `bashfx -c "help set"' for more information about shell options.
+Type `bashfx -c help' for more information about shell builtin commands.
+Use the `bashbug' command to report bugs.
+
+bashfx home page: <http://www.gnu.org/software/bashfx>
+General help using GNU software: <http://www.gnu.org/gethelp/>

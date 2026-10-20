@@ -843,10 +843,13 @@ let private adoptMain () =
                     f)
 
         if not (isNull f) then
+            // a raising cleanup says so, as on the main flow; the teardown
+            // stays the outcome
             (try
                 runningCleanup f.Release
-             with _ ->
-                 ())
+             with
+             | ExitRequest _ -> ()
+             | ce -> eprintfn "within/always: the cleanup ALSO failed — %s (the original error wins)" ce.Message)
 
             next ()
 
@@ -1163,9 +1166,38 @@ module private Libc =
     [<DllImport("libc", SetLastError = true)>]
     extern int64 lseek(int fd, int64 offset, int whence)
 
+    [<DllImport("libc", SetLastError = true)>]
+    extern nativeint write(int fd, nativeint buf, unativeint count)
+
+    // Linux statx: its struct is one layout on every architecture
+    // (stx_mode is the u16 at byte 28)
+    [<DllImport("libc", SetLastError = true)>]
+    extern int statx(int dirfd, string path, int flags, uint32 mask, byte[] buf)
+
     // the exit that runs no managed code (no ProcessExit sweep)
     [<DllImport("libc", EntryPoint = "_exit")>]
     extern void sysExit(int status)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int fcntl(int fd, int cmd)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int dup2(int oldfd, int newfd)
+
+    // RLIMIT_CORE is 4 on Linux and macOS; a struct rlimit is two rlim_t
+    [<DllImport("libc", SetLastError = true)>]
+    extern int setrlimit(int resource, uint64[] rlim)
+
+    // Linux: PR_SET_DUMPABLE 0 — a piped core_pattern ignores RLIMIT_CORE 0
+    [<DllImport("libc", SetLastError = true)>]
+    extern int prctl(int option, unativeint arg2, unativeint arg3, unativeint arg4, unativeint arg5)
+
+    // struct termios fits 128 bytes on Linux and macOS
+    [<DllImport("libc", SetLastError = true)>]
+    extern int tcgetattr(int fd, byte[] termios)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int tcsetattr(int fd, int optionalActions, byte[] termios)
 
     [<Struct; StructLayout(LayoutKind.Sequential)>]
     type PollFd =
@@ -1185,6 +1217,13 @@ module private Libc =
         let mutable p = PollFd()
         p.fd <- fd
         p.events <- 1s // POLLIN
+        poll (&p, 1un, ms) > 0
+
+    /// wait up to `ms` for room to write to fd (or an error)
+    let writable (fd: int) (ms: int) : bool =
+        let mutable p = PollFd()
+        p.fd <- fd
+        p.events <- 4s // POLLOUT
         poll (&p, 1un, ms) > 0
 
     let SIG_DFL: nativeint = nativeint 0
@@ -1232,129 +1271,85 @@ module private Libc =
             signal (SIGINT, prev) |> ignore
             false
 
-// ---- a cleanup's commands in their own process group [D:cleanup-pgrp] --
+// ---- a cleanup's commands ignore the terminal's ^C and ^\ [D:cleanup-sigign]
 // A terminal ^C reaches the terminal's foreground process group — weir's,
 // and every child that shares it. A cleanup runs whole, its commands too
 // [D:teardown-never-preempts], so a command an `always` cleanup starts at
-// a foreground terminal runs in a group of its own. .NET cannot start a
-// child in a new group on POSIX and a parent cannot move a child that has
-// exec'd, so weir starts itself as a shim that moves into a new group and
-// execs the command: the pid is the command's, so its pipes, its exit
-// and the tree kill are the Process weir holds. The shim ignores
-// SIGTTIN/SIGTTOU (a terminal read gets EIO, never a stop that would wedge
-// the cleanup; output still shows) and gives the command /dev/null for a
-// terminal stdin. Windows starts the child in a new process group, which
-// Ctrl+C does not reach.
-module Pgrp =
-    open System.Runtime.InteropServices
+// a foreground terminal starts with SIGINT and SIGQUIT ignored: an ignored
+// disposition survives exec, and .NET resets only the handlers it set. The
+// command stays in weir's group with the terminal and its real stdin (a
+// pager works); a program that sets its own handler can still take the ^C.
+// The shim is `sh`: its `exec` keeps the pid, so its pipes, its exit and
+// the tree kill are the Process weir holds. Windows starts the command in
+// a new process group, which Ctrl+C does not reach.
+module CleanupShim =
+    /// the shell that sets the dispositions and execs the command
+    let shell = "/bin/sh"
 
-    [<DllImport("libc", SetLastError = true)>]
-    extern int setpgid(int pid, int pgid)
+    /// `sh -c <script> sh <program> <args...>`
+    let script = "trap \"\" INT QUIT; exec \"$@\""
 
-    [<DllImport("libc", SetLastError = true)>]
-    extern nativeint signal(int signum, nativeint handler)
+    /// Linux: has the started shim run its `trap` (INT and QUIT in its
+    /// SigIgn) or exec'd past it? False when it died first: a ^C or ^\
+    /// landed before the trap and the command never started, so the
+    /// caller starts it again. Elsewhere that first moment stays open
+    let passedTrap (p: System.Diagnostics.Process) : bool =
+        if not (System.OperatingSystem.IsLinux()) then
+            true
+        else
+            let status = $"/proc/{p.Id}/status"
+            let clock = System.Diagnostics.Stopwatch.StartNew()
 
-    [<DllImport("libc", SetLastError = true)>]
-    extern int sigprocmask(int how, byte[] set, nativeint oldset)
+            let field (text: string) (name: string) =
+                text.Split('\n')
+                |> Array.tryPick (fun l ->
+                    if l.StartsWith(name + ":") then
+                        Some(l.Substring(name.Length + 1).Trim())
+                    else
+                        None)
 
-    [<DllImport("libc", SetLastError = true)>]
-    extern int pthread_sigmask(int how, byte[] set, byte[] oldset)
+            let rec go () =
+                if p.HasExited then
+                    p.ExitCode <> 130 && p.ExitCode <> 131
+                elif clock.ElapsedMilliseconds > 2000L then
+                    true
+                else
+                    let text =
+                        try
+                            System.IO.File.ReadAllText status
+                        with _ ->
+                            ""
 
-    [<DllImport("libc", SetLastError = true)>]
-    extern int sigemptyset(byte[] set)
+                    let ignored =
+                        match field text "SigIgn" with
+                        | Some hex ->
+                            (try
+                                System.Convert.ToUInt64(hex, 16) &&& 6UL = 6UL
+                             with _ ->
+                                 false)
+                        | None -> false
 
-    [<DllImport("libc", SetLastError = true)>]
-    extern int sigaddset(byte[] set, int signum)
+                    // a zombie is decided by its exit code, not its name
+                    let alive =
+                        match field text "State" with
+                        | Some st -> not (st.StartsWith "Z" || st.StartsWith "X")
+                        | None -> false
 
-    [<DllImport("libc", SetLastError = true)>]
-    extern int isatty(int fd)
+                    match field text "Name" with
+                    | _ when ignored -> true
+                    | Some name when alive && name <> "sh" -> true
+                    | _ ->
+                        System.Threading.Thread.Sleep(if clock.ElapsedMilliseconds < 2L then 0 else 1)
+                        go ()
 
-    [<DllImport("libc", SetLastError = true)>]
-    extern int ``open``(string path, int flags)
+            go ()
 
-    [<DllImport("libc", SetLastError = true)>]
-    extern int dup2(int oldfd, int newfd)
-
-    [<DllImport("libc", SetLastError = true)>]
-    extern int execv(string path, string[] argv)
-
-    [<DllImport("libc", EntryPoint = "_exit")>]
-    extern void sysExit(int status)
-
-    /// the shim's argv[0] marker (an internal seam, not a command)
-    let marker = "--weir-exec-pgrp"
-
-    /// weir's own executable, set by the CLI entry point: the shim needs
-    /// the real binary (a test host has none)
-    let mutable selfPath: string = null
-
-    // the terminal's job-control signals: INT, QUIT, TSTP
-    let private groupSignals = [ 2; 3; (if System.OperatingSystem.IsLinux() then 20 else 18) ]
-
-    /// start the shim with the terminal's signals blocked on the starting
-    /// thread (the child inherits the mask, weir's other threads still take
-    /// them): a ^C landing before the shim has left weir's group stays
-    /// pending in it, and the shim discards it
-    let blockedForStart (start: unit -> 'a) : 'a =
-        let set = Array.zeroCreate<byte> 128
-        let old = Array.zeroCreate<byte> 128
-        sigemptyset set |> ignore
-
-        for s in groupSignals do
-            sigaddset (set, s) |> ignore
-
-        let SIG_BLOCK, SIG_SETMASK = (if System.OperatingSystem.IsLinux() then 0, 2 else 1, 3)
-        pthread_sigmask (SIG_BLOCK, set, old) |> ignore
-
-        try
-            start ()
-        finally
-            pthread_sigmask (SIG_SETMASK, old, null) |> ignore
-
-    /// run as the shim: a new group, the dispositions a command expects,
-    /// then exec. Never returns
-    let execInNewGroup (prog: string) (args: string[]) : unit =
-        setpgid (0, 0) |> ignore
-        let SIG_DFL, SIG_IGN = nativeint 0, nativeint 1
-
-        // a terminal signal sent while the shim was in weir's group is
-        // pending: ignoring discards it, then the inherited disposition
-        // returns
-        for s in groupSignals do
-            let prev = signal (s, SIG_IGN)
-            signal (s, prev) |> ignore
-
-        let SIGPIPE = 13
-        let SIGTTIN, SIGTTOU = 21, 22
-        signal (SIGTTIN, SIG_IGN) |> ignore
-        signal (SIGTTOU, SIG_IGN) |> ignore
-        signal (SIGPIPE, SIG_DFL) |> ignore
-        // an empty mask: SIG_SETMASK is 2 on Linux, 3 on macOS
-        sigprocmask ((if System.OperatingSystem.IsLinux() then 2 else 3), Array.zeroCreate 128, nativeint 0)
-        |> ignore
-
-        if isatty 0 = 1 then
-            let fd = ``open`` ("/dev/null", 0)
-
-            if fd >= 0 then
-                dup2 (fd, 0) |> ignore
-
-        execv (prog, Array.append (Array.append [| prog |] args) [| null |]) |> ignore
-        eprintfn "command not found or not executable: %s" (Weir.Types.quoteData prog)
-        sysExit 127
-
-/// the shim this spawn goes through, when it runs inside a cleanup at a
-/// terminal whose foreground group is weir's (POSIX): Some weir's path
-let cleanupGroupShim () : string option =
-    if
-        not (isNull Pgrp.selfPath)
-        && not (System.OperatingSystem.IsWindows())
-        && inCleanup ()
-        && Libc.terminalForeground ()
-    then
-        Some Pgrp.selfPath
-    else
-        None
+/// a spawn here goes through `CleanupShim`: it runs inside a cleanup at a
+/// terminal whose foreground group is weir's (POSIX)
+let cleanupIgnoresTerminal () : bool =
+    not (System.OperatingSystem.IsWindows())
+    && inCleanup ()
+    && Libc.terminalForeground ()
 
 /// an exclusive flock on an open file, without blocking [D:lock-advisory]:
 /// true when taken, false while another open file description holds it.
@@ -1416,6 +1411,48 @@ let resetDetachedSigint: Lazy<unit> =
          then
              Libc.resetSigintIfIgnored () |> ignore)
 
+/// a closed fd 2 becomes /dev/null before anything opens a file, so no
+/// file weir opens takes fd 2 and gets its diagnostics [D:console-write]
+let nullClosedStderr () : unit =
+    let F_GETFD = 1
+
+    if not (System.OperatingSystem.IsWindows()) && Libc.fcntl (2, F_GETFD) = -1 then
+        let fd = Libc.``open`` ("/dev/null", 1)
+
+        if fd >= 0 && fd <> 2 then
+            Libc.dup2 (fd, 2) |> ignore
+            Libc.close fd |> ignore
+
+/// the terminal's mode when a script started at it as the foreground
+/// group: a hard exit kills a cleanup's command that set it raw (a pager)
+/// and puts it back [D:hard-exit]
+let mutable private savedTerminal: byte[] = null
+
+let saveTerminal () : unit =
+    if not (System.OperatingSystem.IsWindows()) && Libc.terminalForeground () then
+        let fd = Libc.``open`` ("/dev/tty", Libc.O_RDWR)
+
+        if fd >= 0 then
+            try
+                let buf = Array.zeroCreate<byte> 128
+
+                if Libc.tcgetattr (fd, buf) = 0 then
+                    savedTerminal <- buf
+            finally
+                Libc.close fd |> ignore
+
+/// put the saved mode back, only while weir is still the foreground group
+/// (a background group's tcsetattr would stop it)
+let private restoreTerminal () : unit =
+    if not (isNull savedTerminal) && Libc.terminalForeground () then
+        let fd = Libc.``open`` ("/dev/tty", Libc.O_RDWR)
+
+        if fd >= 0 then
+            try
+                Libc.tcsetattr (fd, 0, savedTerminal) |> ignore
+            finally
+                Libc.close fd |> ignore
+
 /// restores what weir changed about the terminal before it dies (the REPL's
 /// raw mode) — set by the REPL
 let mutable beforeDie: unit -> unit = ignore
@@ -1451,7 +1488,16 @@ let private dieByFlushing (flush: bool) (code: int) : unit =
             | 130 -> 2
             | 143 -> 15
             | 129 -> 1
+            | 131 -> 3
             | _ -> 0
+
+        // a SIGQUIT's death dumps no core: the teardown ran, the dump
+        // would hold nothing the user asked for [D:sigquit-teardown]
+        if signum = 3 then
+            if System.OperatingSystem.IsLinux() then
+                Libc.prctl (4, 0un, 0un, 0un, 0un) |> ignore
+            else
+                Libc.setrlimit (4, [| 0UL; 0UL |]) |> ignore
 
         if signum <> 0 then
             Libc.signal (signum, Libc.SIG_DFL) |> ignore
@@ -1493,24 +1539,64 @@ let stopTakingArms () : bool =
 /// the requested teardown's exit code, or 0 when none is requested
 let teardownRequested () : int = System.Threading.Volatile.Read &teardownCode
 
+/// a cleanup's command that died by the teardown's own signal (a
+/// group-directed TERM/HUP reaches it with weir) is the signal's, not a
+/// failure: the cleanup runs on whole [D:cleanup-group-signal], its
+/// fan-out arms too. A race's arm inside it still fails, so a loser never
+/// goes on as if its command had finished and wins
+let cleanupKilledByTeardown (code: int) : bool =
+    // up to the cleanup's shield: is this flow inside a race?
+    let rec inRace (n: Node) =
+        match n with
+        | null -> false
+        | n when n.Kind = NodeKind.Shield -> false
+        | n when n.Kind = NodeKind.Race -> true
+        | n -> inRace n.Parent
+
+    code > 128
+    && inCleanup ()
+    && code = System.Threading.Volatile.Read &teardownCode
+    && not (inRace (currentNode ()))
+
 /// a command that died of SIGINT while weir is the terminal's foreground
-/// group most likely took the terminal's ^C with weir [D:sigint-terminal-group]:
+/// group most likely took the terminal's ^C with weir [D:sigint-terminal-group];
+/// one that died of HUP, QUIT or TERM likely took a group-directed signal
+/// with weir (a hangup, ^\, `kill -- -pgid`) [D:teardown-kill-not-failure]:
 /// give the signal handler a moment to request the teardown, so the death
-/// is the ^C, not a command failure
+/// is the signal, not a command failure
 let settleInterrupt (code: int) : unit =
     if
-        code = 130
+        (code = 129 || code = 130 || code = 131 || code = 143)
         && not (System.OperatingSystem.IsWindows())
         && mainThreadId <> 0
         && not replFlow
         && System.Threading.Volatile.Read &teardownCode = 0
-        && Libc.terminalForeground ()
+        && (code <> 130 || Libc.terminalForeground ())
     then
         let clock = System.Diagnostics.Stopwatch.StartNew()
 
         while System.Threading.Volatile.Read &teardownCode = 0
               && clock.ElapsedMilliseconds < 250L do
             System.Threading.Thread.Sleep 5
+
+/// a REPL child whose code is data (`| exitCode`, `| complete`) died of
+/// SIGINT at the terminal: most likely the ^C, whose handler may not have
+/// cut the entry yet — give it a moment, so the entry ends after this
+/// statement [D:repl-entry-check]. Returns the code
+let settleReplInterrupt (code: int) : int =
+    if
+        code = 130
+        && replFlow
+        && not (System.OperatingSystem.IsWindows())
+        && not (interruptRequested ())
+        && Libc.terminalForeground ()
+    then
+        let clock = System.Diagnostics.Stopwatch.StartNew()
+
+        while not (interruptRequested ()) && clock.ElapsedMilliseconds < 250L do
+            System.Threading.Thread.Sleep 5
+
+    code
 
 /// raise the requested teardown on the main thread, once: the unwind
 /// then runs the cleanups as ordinary code (which must not be cut short
@@ -1601,11 +1687,17 @@ let waitProcess (p: System.Diagnostics.Process) : unit =
     match waitToken true with
     | t when not t.CanBeCanceled -> p.WaitForExit()
     | t ->
-        while not (p.WaitForExit 0) do
-            t.WaitHandle.WaitOne 50 |> ignore
+        // the exit and the cut, waited on together — no poll floor
+        let exited = p.WaitForExitAsync()
+        let handles = [| (exited :> System.IAsyncResult).AsyncWaitHandle; t.WaitHandle |]
 
+        while not exited.IsCompleted do
             if t.IsCancellationRequested then
+                // a cut this flow does not raise for waits on the exit alone
                 raiseWoken ()
+                exited.Wait()
+            else
+                System.Threading.WaitHandle.WaitAny handles |> ignore
 
         // the no-argument form also waits for redirected streams' EOF
         p.WaitForExit()
@@ -2258,6 +2350,107 @@ let openPolled (path: string) : System.IO.Stream option =
         else
             Some(new PolledFd(fd) :> System.IO.Stream)
 
+/// a FIFO, after symlinks (Linux; false elsewhere or when absent)
+let isFifo (path: string) : bool =
+    System.OperatingSystem.IsLinux()
+    && (let buf = Array.zeroCreate<byte> 256
+        let AT_FDCWD, STATX_TYPE = -100, 1u
+
+        Libc.statx (AT_FDCWD, path, 0, STATX_TYPE, buf) = 0
+        && (int (System.BitConverter.ToUInt16(buf, 28)) &&& 0o170000) = 0o010000)
+
+// a FIFO a File op writes [D:fifo-ops-polled]: opened non-blocking —
+// the open waits for a reader in short cut-checked steps (ENXIO until one
+// comes) and each write waits for room beside the cut, so a lost race, a
+// REPL ^C or a teardown raises at the wait and the dispose closes the fd;
+// no thread is left in open(2) or write(2) to deliver after the cut
+type private PolledWriteFd(fd: int) =
+    inherit System.IO.Stream()
+    let mutable closed = false
+
+    let await () =
+        match wakeHandles () with
+        | [] ->
+            while not (Libc.writable fd 1000) do
+                ()
+        | _ ->
+            raiseWoken ()
+
+            while not (Libc.writable fd 50) do
+                raiseWoken ()
+
+    override _.CanRead = false
+    override _.CanSeek = false
+    override _.CanWrite = true
+    override _.Length = raise (System.NotSupportedException())
+
+    override _.Position
+        with get () = raise (System.NotSupportedException())
+        and set (_: int64) = raise (System.NotSupportedException())
+
+    override _.Flush() = ()
+    override _.Seek(_: int64, _: System.IO.SeekOrigin) : int64 = raise (System.NotSupportedException())
+    override _.SetLength(_: int64) = raise (System.NotSupportedException())
+    override _.Read(_: byte[], _: int, _: int) : int = raise (System.NotSupportedException())
+
+    override _.Write(buffer: byte[], offset: int, count: int) =
+        let h =
+            System.Runtime.InteropServices.GCHandle.Alloc(buffer, System.Runtime.InteropServices.GCHandleType.Pinned)
+
+        try
+            let mutable off = offset
+            let mutable left = count
+
+            while left > 0 do
+                await ()
+
+                let r =
+                    int (Libc.write (fd, h.AddrOfPinnedObject() + nativeint off, unativeint left))
+
+                if r >= 0 then
+                    off <- off + r
+                    left <- left - r
+                else
+                    match System.Runtime.InteropServices.Marshal.GetLastPInvokeError() with
+                    | e when e = Libc.EINTR || e = Libc.EAGAIN -> ()
+                    | 32 -> raise (System.IO.IOException "the FIFO's reader closed it")
+                    | e -> raise (System.IO.IOException $"write failed (errno {e})")
+        finally
+            h.Free()
+
+    override _.Dispose(disposing: bool) =
+        if not closed then
+            closed <- true
+            Libc.close fd |> ignore
+
+        base.Dispose disposing
+
+/// a polled write stream for a FIFO [D:fifo-ops-polled]; None for any
+/// other path (or off Linux) — the caller writes it as a file
+let openPolledWrite (path: string) : System.IO.Stream option =
+    if not (isFifo path) then
+        None
+    else
+        let O_WRONLY, O_NONBLOCK, O_CLOEXEC = 1, 0x800, 0x80000
+        let ENXIO = 6
+
+        let rec go () =
+            let fd = Libc.``open`` (path, O_WRONLY ||| O_NONBLOCK ||| O_CLOEXEC)
+
+            if fd >= 0 then
+                fd
+            else
+                match System.Runtime.InteropServices.Marshal.GetLastPInvokeError() with
+                | e when e = ENXIO ->
+                    // no reader yet
+                    sleepInterruptible (System.TimeSpan.FromMilliseconds 50.0)
+                    go ()
+                | e when e = Libc.EINTR -> go ()
+                | 13 -> raise (System.UnauthorizedAccessException())
+                | e -> raise (System.IO.IOException $"open failed (errno {e})")
+
+        Some(new PolledWriteFd(go ()) :> System.IO.Stream)
+
 // weir's own stdout, when it is a pipe or file [D:stdout-epipe]: .NET's
 // Unix console stream drops EPIPE, so a closed reader went unnoticed and
 // `weir s.weir | head -1` ran to completion (or forever). Writes go to
@@ -2337,6 +2530,7 @@ let private signalExitCode (s: System.Runtime.InteropServices.PosixSignal) =
     match s with
     | System.Runtime.InteropServices.PosixSignal.SIGTERM -> 143
     | System.Runtime.InteropServices.PosixSignal.SIGHUP -> 129
+    | System.Runtime.InteropServices.PosixSignal.SIGQUIT -> 131
     | _ -> 130
 
 // a live tmp/proc/serve/always scope: SIGINT is a tree kill only while one
@@ -2360,6 +2554,7 @@ let private hardExit (code: int) =
         killEntry kv.Value
 
     settleKills ()
+    restoreTerminal ()
 
     for kv in liveTmpDirs do
         try
@@ -2456,11 +2651,13 @@ let private installExitHook () =
 
         // SIGHUP joins them [D:sighup-teardown]: a closed terminal or a
         // `kill -HUP` unwinds like INT/TERM, exit 129; an inherited
-        // SIG_IGN (nohup) stays — .NET does not install over it
+        // SIG_IGN (nohup) stays — .NET does not install over it. SIGQUIT
+        // (^\) is TERM's teardown and dies by SIGQUIT [D:sigquit-teardown]
         for posixSig in
             [ System.Runtime.InteropServices.PosixSignal.SIGINT
               System.Runtime.InteropServices.PosixSignal.SIGTERM
-              System.Runtime.InteropServices.PosixSignal.SIGHUP ] do
+              System.Runtime.InteropServices.PosixSignal.SIGHUP
+              System.Runtime.InteropServices.PosixSignal.SIGQUIT ] do
             let reg =
                 System.Runtime.InteropServices.PosixSignalRegistration.Create(posixSig, onSignal)
 
@@ -2484,6 +2681,10 @@ let private installExitHook () =
 let private ensureHook () =
     if System.Threading.Interlocked.Exchange(hookInstalled, 1) = 0 then
         installExitHook ()
+
+/// the signal hook now, not at the first spawn: the tty REPL's prompt
+/// restores the terminal on a TERM/HUP/QUIT death [D:die-by-signal]
+let installSignalHook () : unit = ensureHook ()
 
 let registerTmpDir (dir: string) : unit =
     ensureHook ()

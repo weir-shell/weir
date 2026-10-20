@@ -1,0 +1,5 @@
+#sig unzipfx
+unzipfx -q a.zip -d out // clean
+unzipfx -l a.zip // clean
+unzipfx -aa -o a.zip // clean
+unzipfx -y a.zip // typo: -y

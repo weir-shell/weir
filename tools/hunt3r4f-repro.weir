@@ -1459,7 +1459,8 @@ let ctlXmlUtf8 d =
 let h3r4b9 d =
     // <?xml version="1.0" encoding="ISO-8859-1"?><Root><Title>caf\xe9</Title></Root>
     File.writeBytes $"{d}/l1.xml" (Bytes.fromHex "3c3f786d6c2076657273696f6e3d22312e302220656e636f64696e673d2249534f2d383835392d31223f3e3c526f6f743e3c5469746c653e636166e93c2f5469746c653e3c2f526f6f743e")
-    File.writeBytes $"{d}/unk.xml" (Str.toUtf8 "<?xml version=\"1.0\" encoding=\"X-NOPE-9\"?><Root><Title>cafe</Title></Root>")
+    // non-ASCII content: pure ASCII reads under any label (ruling R4, H3R5-F3)
+    File.writeBytes $"{d}/unk.xml" (Str.toUtf8 "<?xml version=\"1.0\" encoding=\"X-NOPE-9\"?><Root><Title>café</Title></Root>")
     // the declared encoding applies to the document's bytes: File.read has
     // already decoded them as UTF-8, so that text path must refuse, not guess
     let p = put d "b9.weir" (xmlScriptWith "File.readBytes")

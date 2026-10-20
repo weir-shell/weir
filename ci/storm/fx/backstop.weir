@@ -1,0 +1,34 @@
+// a signal during a builtin's own loop (Seq.length over a range, no boundary): the backstop adopts the main flow and runs its frames; one that raises says "the cleanup ALSO failed" (C1-8)
+// storm-cut-err: O outer/tmp/w | B outer/tmp/w computed | the cleanup ALSO failed
+let a = Self.args |> Seq.freeze
+let log = a[0]
+let tag = a[1]
+let dir = a[2]
+let ev s = File.append log [s]
+within
+    ev "O outer"
+    within tmp d
+        ev "O outer/tmp"
+        within
+            within
+                ev "O outer/tmp/w"
+                let n = [1..400000000] |> Seq.length
+                ev $"B outer/tmp/w computed {n}"
+                ["y"] |> File.write $"{dir}/computed"
+            always
+                ev "S outer/tmp/w"
+                sh -c $"sleep 0.1{tag}"
+                ev "E outer/tmp/w"
+        always
+            if not (File.exists $"{dir}/computed") then
+                fail "storm: a cut cleanup raises"
+        ev "B outer/tmp after"
+    always
+        ev "S outer/tmp"
+        Duration.sleep 50ms
+        ev "E outer/tmp"
+always
+    ev "S outer"
+    sleep $"0.05{tag}"
+    ev "E outer"
+ev "DONE"

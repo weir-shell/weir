@@ -143,14 +143,13 @@ let private spawn
 
     Session.sigpipeForChildren.Force()
     Session.resetDetachedSigint.Force()
-    // a cleanup's command at a foreground terminal runs in a group of its
-    // own, through weir's shim [D:cleanup-pgrp]: the program is resolved
-    // here, as the start would, so a missing one fails the same way
-    let viaShim = (Session.cleanupGroupShim ()).IsSome
+    // a cleanup's command at a foreground terminal starts with ^C and ^\
+    // ignored, through the sh shim [D:cleanup-sigign]: the program is
+    // resolved here, as the start would, so a missing one fails the same way
+    let viaShim = Session.cleanupIgnoresTerminal ()
 
     let psi =
-        match Session.cleanupGroupShim () with
-        | Some self ->
+        if viaShim then
             let runnable (path: string) =
                 System.IO.File.Exists path
                 && (System.IO.File.GetUnixFileMode path
@@ -171,18 +170,21 @@ let private spawn
 
             match found with
             | Some path when runnable path ->
-                let psi = ProcessStartInfo(self)
-                psi.ArgumentList.Add Session.Pgrp.marker
+                let psi = ProcessStartInfo(Session.CleanupShim.shell)
+                psi.ArgumentList.Add "-c"
+                psi.ArgumentList.Add Session.CleanupShim.script
+                psi.ArgumentList.Add "sh"
                 psi.ArgumentList.Add path
                 psi
             | _ -> failwith $"command not found or not executable: {Weir.Types.quoteData prog}"
-        | None -> ProcessStartInfo(prog)
+        else
+            ProcessStartInfo(prog)
 
     for a in args do
         psi.ArgumentList.Add a
 
     // Windows: a cleanup's command in a new process group, which Ctrl+C
-    // does not reach [D:cleanup-pgrp]
+    // does not reach [D:cleanup-sigign]
     if System.OperatingSystem.IsWindows() && Session.inCleanup () then
         psi.CreateNewProcessGroup <- true
 
@@ -207,14 +209,22 @@ let private spawn
     // sees every started child, and none starts after it
     // [D:signal-main-unwind]
     Session.gatedSpawn (fun () ->
-        let p =
-            try
-                if viaShim then
-                    Session.Pgrp.blockedForStart (fun () -> Process.Start psi)
-                else
+        // a shim a ^C killed before its trap never started the command:
+        // start it again [D:cleanup-sigign]
+        let rec startOnce (tries: int) =
+            let p =
+                try
                     Process.Start psi
-            with :? System.ComponentModel.Win32Exception ->
-                failwith $"command not found or not executable: {Weir.Types.quoteData prog}"
+                with :? System.ComponentModel.Win32Exception ->
+                    failwith $"command not found or not executable: {Weir.Types.quoteData prog}"
+
+            if viaShim && tries < 5 && not (Session.CleanupShim.passedTrap p) then
+                p.Dispose()
+                startOnce (tries + 1)
+            else
+                p
+
+        let p = startOnce 0
 
         // a racing arm's children join its group [D:seq-pfirst] — a no-op
         // outside pfirst, and the scoped child owes it too: the spill path
@@ -303,7 +313,7 @@ let private readBytes (s: System.IO.Stream) (buf: byte[]) (off: int) (len: int) 
 
 // tree-kill then reap — the lifecycle tail shared by the streaming
 // consumers (complete disposes without killing: it has already read
-// both pipes to the end)
+// both pipes to the end, unless a cut stopped the reads)
 let private reap (p: Process) =
     // settled before any exit [D:kill-settle]
     Session.killTree p
@@ -326,14 +336,7 @@ type CommandFailure(code: int, signalNote: string, shown: string) =
     member _.SignalNote = signalNote
     member _.Shown = shown
 
-let private raiseNonzero (s: Spec) (code: int) =
-    // a child killed by a teardown is the teardown's, not a failure
-    // [D:signal-main-unwind] — on an arm too, which the teardown cuts
-    // [D:teardown-kill-not-failure]; a terminal ^C's death likewise
-    // [D:sigint-terminal-group]
-    Session.settleInterrupt code
-    Session.checkTeardown ()
-    Session.checkCancelled ()
+let private raiseFailure (s: Spec) (code: int) : unit =
     let shown = showArgv (s.Prog :: s.Args)
 
     let signalNote =
@@ -347,6 +350,27 @@ let private raiseNonzero (s: Spec) (code: int) =
         | _ -> ""
 
     raise (CommandFailure(code, signalNote, shown))
+
+let private raiseNonzero (s: Spec) (code: int) : unit =
+    // a child killed by a teardown is the teardown's, not a failure
+    // [D:signal-main-unwind] — on an arm too, which the teardown cuts
+    // [D:teardown-kill-not-failure]; a terminal ^C's death likewise
+    // [D:sigint-terminal-group]
+    Session.settleInterrupt code
+    Session.checkTeardown ()
+    Session.checkCancelled ()
+
+    // a REPL ^C's death is the interrupt, inside a scope's body too
+    // [D:repl-interrupt]
+    if code = 130 then
+        Session.settleReplInterrupt code |> ignore
+        Session.checkInterrupted ()
+
+    // a cleanup's command the teardown's own signal killed (a
+    // group-directed TERM/HUP) is the signal's: the cleanup runs on whole
+    // [D:cleanup-group-signal]
+    if not (Session.cleanupKilledByTeardown code) then
+        raiseFailure s code
 
 // ---- the consumers (the output axis) -------------------------------
 
@@ -543,7 +567,7 @@ let streamCodeOf (s: Spec) : int =
 
         p.WaitForExit()
         producerFault ()
-        p.ExitCode
+        Session.settleReplInterrupt p.ExitCode
     finally
         reap p
 
@@ -721,14 +745,24 @@ let completedOf (s: Spec) : int * seq<string> * seq<string> =
     let p, producerFault = start true true s
     use _ = p
 
-    let stderrTask =
-        System.Threading.Tasks.Task.Run(fun () -> readAllBytes (Session.cutStream p p.StandardError.BaseStream))
+    let outBytes, errBytes =
+        try
+            let stderrTask =
+                System.Threading.Tasks.Task.Run(fun () -> readAllBytes (Session.cutStream p p.StandardError.BaseStream))
 
-    let outBytes = readAllBytes (Session.cutStream p p.StandardOutput.BaseStream)
-    let errBytes = Session.cutJoin stderrTask
+            let outBytes = readAllBytes (Session.cutStream p p.StandardOutput.BaseStream)
+            outBytes, Session.cutJoin stderrTask
+        with _ ->
+            // a cut stopped the reads before EOF: the tree dies before the
+            // dispose, or the cut's own kill finds the Process disposed and
+            // misses it (a Windows read wakes on the token at once)
+            // [D:scope-tree]
+            Session.killTree p
+            reraise ()
+
     p.WaitForExit()
     producerFault ()
-    p.ExitCode, linesView outBytes true, linesView errBytes false
+    Session.settleReplInterrupt p.ExitCode, linesView outBytes true, linesView errBytes false
 
 // ---- the byte chain [D:byte-pipes]: raw command→command hops -------
 // A hop makes no value, so weir does not hold the bytes
@@ -883,7 +917,7 @@ let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
             let errLines =
                 errTasks |> List.map (fun t -> linesView (Session.cutJoin t) false |> List.ofSeq) |> List.concat
 
-            chainCode procs pumps, linesView outBytes true, (errLines :> seq<string>)
+            Session.settleReplInterrupt(chainCode procs pumps), linesView outBytes true, (errLines :> seq<string>)
         finally
             for _, p in procs do
                 reap p
@@ -911,7 +945,7 @@ let chainStreamCodeOf (specs: Spec list) : int =
 
             producerFault ()
 
-            chainCode procs pumps
+            Session.settleReplInterrupt(chainCode procs pumps)
         finally
             for _, p in procs do
                 reap p

@@ -1,0 +1,4 @@
+#sig bashfx
+bashfx deploy.sh --dry-run // clean
+bashfx --norc -c "echo $1" _ --name x // clean
+bashfx --nrc x.sh // typo: --nrc

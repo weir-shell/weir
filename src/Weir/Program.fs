@@ -219,6 +219,13 @@ let private evalOnce (input: string) : int =
 let private lockText (redirected: bool) (s: string) : string =
     if redirected then s else Eval.sanitizeTtyEcho s
 
+// the lock is committed: an add drops the URL's userinfo from it and
+// says so [D:lock-no-userinfo]
+let private userinfoNote (url: string) : unit =
+    if Http.stripUserinfo url <> url then
+        Console.Error.WriteLine
+            "weir add: note: the URL's credentials are not written to .weir/lock.json (it is committed) — `weir restore` fetches without them"
+
 // a script (or -e) tears down on its main thread: signals and a closed
 // stdout end it with their own code [D:signal-main-unwind] [D:stdout-epipe]
 let private runOnMain (run: unit -> int) : int =
@@ -228,21 +235,16 @@ let private runOnMain (run: unit -> int) : int =
     Session.resetDetachedSigint.Force()
     Session.registerMainThread ()
     Session.armStdout ()
+    // the mode a hard exit puts back [D:hard-exit]
+    Session.saveTerminal ()
     run () |> Session.exitCodeOr
 
 [<EntryPoint>]
 let main argv =
 
-    // weir as the shim that starts a cleanup's command in a group of its
-    // own [D:cleanup-pgrp]: nothing else runs first
-    if argv.Length >= 2 && argv[0] = Session.Pgrp.marker then
-        Session.Pgrp.execInNewGroup argv[1] argv[2..]
-
-    // weir's own executable for the shim — not a `dotnet Weir.dll` host
-    match Environment.ProcessPath with
-    | null -> ()
-    | p when IO.Path.GetFileNameWithoutExtension p = "dotnet" -> ()
-    | p -> Session.Pgrp.selfPath <- p
+    // a closed stderr is /dev/null: nothing weir opens lands on fd 2 —
+    // first, before any console stream exists [D:console-write]
+    Session.nullClosedStderr ()
 
     // captured output is data: LF on every platform [D:lf-output] —
     // the dual of the content-bytes input ruling (a line ending is
@@ -254,6 +256,9 @@ let main argv =
 
     if Console.IsErrorRedirected then
         Console.Error.NewLine <- "\n"
+        // stderr is weir's diagnostic channel: a write it refuses (a full
+        // disk, a closed pipe) is dropped, never a raise [D:console-write]
+        Console.SetError(new Types.HangupWriter(Console.Error))
     else
         // one choke point for every stderr diagnostic [D:tty-diag-sanitize];
         // a hung-up terminal's EIO never aborts weir [D:console-hangup]
@@ -388,6 +393,7 @@ let main argv =
                 (match Contracts.addFetched weirDir "schema" name url with
                  | Ok line ->
                      Console.WriteLine line
+                     userinfoNote url
                      0
                  | Error e ->
                      Console.Error.WriteLine $"weir add: {e}"
@@ -491,6 +497,7 @@ let main argv =
                                           $"added module {name} ({hash.Substring(0, 12)}…, {memberCount} member(s)) from {Http.redactUrl src.Url}")
 
                                  Console.WriteLine $"import it:  import \"weir:{name}\" as {derivedAlias}"
+                                 userinfoNote src.Url
                                  0)
         | "add" :: "module" :: _ ->
             Console.Error.WriteLine

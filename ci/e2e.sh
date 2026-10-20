@@ -174,6 +174,7 @@ replPtyProbes() {
         replProbe repl-b repl-pathquote.py "repl path-quote completion" "e2e ok: repl path completion quotes in expression position, bare in command-argv [D:repl-path-quote]"
         replProbe repl-b repl-mapkeys.py "repl map-key completion" "e2e ok: repl map-key completion — a bound value's keys inside a Map lookup literal; a pipeline receiver stays silent [D:value-key-complete]"
         replProbe repl-b repl-anon-complete.py "repl anonymous-record field completion" "e2e ok: repl an anonymous record's fields complete on the next line [D:anon-literals]"
+        replProbe repl-b repl-splice-complete.py "repl \$ splice completion" "e2e ok: repl a \$ splice completes only the bindings the checker admits there, after an external or builtin head [D:argv-splice-complete]"
         replProbe repl-a repl-multiline.py "repl multiline editor" "e2e ok: repl 2D buffer, Enter-completeness, whole-entry history, wrap at two widths"
     fi
 }
@@ -3693,14 +3694,15 @@ always
     File.append log ["cleanup"]
 WEOF
     printf '%s\n' 'let log = Self.args |> Seq.head' 'sh -c "true"' 'File.append log ["body"]' 'Duration.sleep 30s' > "$stdir/r7u.weir"
-    for case in "r7:TERM:-15" "r7:INT:-2" "r7:HUP:-1" "r7u:TERM:-15" "r7u:INT:-2"; do
+    # R2 (C1-3): SIGQUIT is TERM's teardown and dies by SIGQUIT [D:sigquit-teardown]
+    for case in "r7:TERM:-15" "r7:INT:-2" "r7:HUP:-1" "r7:QUIT:-3" "r7u:TERM:-15" "r7u:INT:-2" "r7u:QUIT:-3"; do
         f=${case%%:*}; rest=${case#*:}; sig=${rest%%:*}; want=${rest#*:}
         rm -f "$stdir/r7.log"
         r=$(python3 "$stdir/sig.py" 10 "wait:$stdir/r7.log:body" "kill:$sig" -- "$BIN" "$stdir/$f.weir" "$stdir/r7.log")
         echo "$r" | grep -q "^status $want " || fail "a SIG$sig ($f) ends weir by the signal after the unwind [D:die-by-signal]: $r"
         [ "$f" = "r7u" ] || [ "$(stlog "$stdir/r7.log")" = "body,cleanup," ] || fail "a SIG$sig runs the cleanup first: $(stlog "$stdir/r7.log")"
     done
-    echo "e2e ok: after the unwind weir dies by its signal — INT, TERM, HUP, scoped or not"
+    echo "e2e ok: after the unwind weir dies by its signal — INT, TERM, HUP, QUIT, scoped or not"
 
     # C1-6: an inherited SIG_IGN SIGINT without a tty is reset at start, so a
     # poller that never spawns dies by a kill -INT
@@ -3710,9 +3712,9 @@ WEOF
     echo "$r" | grep -q "out after" && fail "nothing runs after the SIGINT: $r"
     echo "e2e ok: an inherited SIG_IGN SIGINT without a tty is reset at start — kill -INT ends a poller"
 
-    # R8 (C1-2): a terminal ^C during an always does not reach the cleanup's
-    # command (its own process group); the cleanup ends whole, then weir dies
-    # by the SIGINT [D:cleanup-pgrp]
+    # R1 (round 5): a terminal ^C during an always does not kill the
+    # cleanup's command (started with SIGINT ignored); the cleanup ends
+    # whole, then weir dies by the SIGINT [D:cleanup-sigign]
     cat > "$stdir/pg.weir" <<'WEOF'
 within
     print "body"
@@ -3728,7 +3730,295 @@ WEOF
         echo "$tout" | grep -qF "$want" || fail "a terminal ^C during an always: '$want' expected: $tout"
     done
     echo "$tout" | grep -qE "trapped|command failed|after" && fail "a terminal ^C never reaches a cleanup's command: $tout"
-    echo "e2e ok: a terminal ^C never reaches a cleanup's command — its own process group; the cleanup ends whole, then the SIGINT"
+    echo "e2e ok: a terminal ^C never kills a cleanup's command — started with SIGINT ignored; the cleanup ends whole, then the SIGINT"
+
+    # R1 (C1-2): a cleanup's command at a terminal keeps it — it reads what
+    # is typed (a pager works) [D:cleanup-sigign]
+    printf '%s\n' 'within' '    print "body"' 'always' '    sh -c "read l; echo got=$l"' '    print "cleanup end"' > "$stdir/r1.weir"
+    tout=$(printf 'SLEEP 800\nSEND hello\\r\nSLEEP 1500\n' | python3 "$ptyrun" 8 "$BIN" "$stdir/r1.weir")
+    for want in "got=hello" "cleanup end" "EXIT 0"; do
+        echo "$tout" | grep -qF "$want" || fail "a cleanup's command at a terminal reads the terminal: '$want' expected: $tout"
+    done
+    echo "e2e ok: a cleanup's command at a terminal reads the terminal"
+
+    # R7 (C1-6, E3): the shim is sh, not weir's own path — a weir binary
+    # deleted mid-run still runs its cleanup's commands [D:cleanup-sigign]
+    cp "$BIN" "$stdir/wgone"
+    printf '%s\n' 'within' '    File.delete (Self.args |> Seq.head)' 'always' '    echo "cleanup command ran"' > "$stdir/r1mv.weir"
+    tout=$(printf 'SLEEP 1500\n' | python3 "$ptyrun" 6 "$stdir/wgone" "$stdir/r1mv.weir" "$stdir/wgone")
+    for want in "cleanup command ran" "EXIT 0"; do
+        echo "$tout" | grep -qF "$want" || fail "a deleted weir binary still runs its cleanup's commands: '$want' expected: $tout"
+    done
+    echo "e2e ok: a weir binary deleted mid-run still runs its cleanup's commands at a terminal"
+
+    # R7: a ^C that kills the sh shim before its trap never started the
+    # command — on Linux it is started again, so the cleanup runs whole
+    # [D:cleanup-sigign]
+    if [ "$(uname -s)" = Linux ]; then
+        printf '%s\n' 'within' '    print "body"' 'always' '    [1..300] |> Seq.iter (fun _ -> /bin/true)' '    print "loop done"' > "$stdir/win.weir"
+        wl=0
+        for k in $(seq 12); do
+            tout=$(printf 'SLEEP %s\nSEND \\x03\nSLEEP 2500\n' $((150 + k * 37)) | python3 "$ptyrun" 10 "$BIN" "$stdir/win.weir")
+            echo "$tout" | grep -qF "loop done" || wl=$((wl + 1))
+        done
+        [ "$wl" = 0 ] || fail "a ^C during a cleanup's command starts never loses one ($wl/12 cleanups stopped)"
+        echo "e2e ok: a ^C landing as a cleanup's command starts never loses it (12/12)"
+    fi
+
+    # R2 (C1-3): a terminal ^\ during an always: the command ignores it, the
+    # cleanups run whole, the tmp dir goes, weir dies by SIGQUIT
+    # [D:sigquit-teardown]
+    cat > "$stdir/r2.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within tmp d
+    within
+        File.append log [d]
+        Duration.sleep 300ms
+    always
+        File.append log ["inner start"]
+        sh -c "sleep 1.2; echo cmd-done"
+        File.append log ["inner end"]
+always
+    File.append log ["outer"]
+WEOF
+    rm -f "$stdir/r2.log"
+    tout=$(printf 'SLEEP 900\nSEND \\x1c\nSLEEP 2500\n' | python3 "$ptyrun" 8 "$BIN" "$stdir/r2.weir" "$stdir/r2.log")
+    for want in "cmd-done" "EXIT -3"; do
+        echo "$tout" | grep -qF "$want" || fail "a terminal ^\\ during an always: '$want' expected: $tout"
+    done
+    [ "$(tail -n +2 "$stdir/r2.log" | tr '\n' ,)" = "inner start,inner end,outer," ] || fail "a terminal ^\\ runs every cleanup whole: $(stlog "$stdir/r2.log")"
+    r2tmp=$(head -1 "$stdir/r2.log")
+    [ -n "$r2tmp" ] && [ ! -e "$r2tmp" ] || fail "a terminal ^\\ removes the tmp dir: $r2tmp"
+    echo "e2e ok: a terminal ^\\ runs the cleanups whole (their commands ignore it), removes the tmp dir, dies by SIGQUIT"
+
+    # C1-8: a cleanup that raises under the backstop (the main flow stuck in a
+    # builtin's own loop) says so, as on the main flow's unwind
+    cat > "$stdir/bs.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within
+    within
+        File.append log ["body"]
+        let n = [1..3000000000] |> Seq.length
+        print $"{n}"
+    always
+        File.append log ["inner"]
+always
+    fail "outer cleanup raises"
+WEOF
+    rm -f "$stdir/bs.log"
+    r=$(python3 "$stdir/sig.py" 10 "wait:$stdir/bs.log:body" sleep:200 kill:TERM -- "$BIN" "$stdir/bs.weir" "$stdir/bs.log")
+    echo "$r" | grep -q "^status -15 " || fail "the backstop dies by the signal: $r"
+    echo "$r" | grep -qF "the cleanup ALSO failed — outer cleanup raises" || fail "a cleanup raising under the backstop says so: $r"
+    echo "e2e ok: a cleanup raising under the signal backstop says 'the cleanup ALSO failed'"
+
+    # C1-5: a command killed by a group-directed HUP that also stops weir is
+    # the teardown, never "command failed" [D:teardown-kill-not-failure]
+    printf '%s\n' 'sh -c "kill -HUP 0; sleep 1"' > "$stdir/hupg.weir"
+    hf=0
+    for _ in $(seq 40); do
+        r=$(python3 "$stdir/sig.py" 10 -- "$BIN" "$stdir/hupg.weir")
+        case "$r" in *"command failed"*) hf=$((hf + 1)) ;; esac
+    done
+    [ "$hf" = 0 ] || fail "a group-directed SIGHUP's command death is the teardown ($hf/40 said command failed)"
+    echo "e2e ok: a group-directed SIGHUP's command death is the teardown, never 'command failed' (40/40)"
+    # ... and its deterministic shape at a terminal: the command takes the
+    # signal 20ms before weir does — TERM and HUP settle as INT does
+    cat > "$stdir/c15.py" <<'PYEOF'
+import os, pty, sys, time, select, signal, subprocess
+sig = getattr(signal, "SIG" + sys.argv[1]); mark = sys.argv[2]; argv = sys.argv[3:]
+def marked():
+    ps = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "args="], capture_output=True, text=True).stdout
+    for row in ps.splitlines():
+        v = row.split()
+        if len(v) >= 3 and os.path.basename(v[1]) == "sleep" and v[2] == mark: return int(v[0])
+pid, fd = pty.fork()
+if pid == 0:
+    for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM): signal.signal(s, signal.SIG_DFL)
+    os.execvp(argv[0], argv)
+out = b""; code = None
+def pump(until):
+    global out, code
+    while time.monotonic() < until and code is None:
+        done, st = os.waitpid(pid, os.WNOHANG)
+        if done: code = os.waitstatus_to_exitcode(st); break
+        if select.select([fd], [], [], 0.005)[0]:
+            try: out += os.read(fd, 65536)
+            except OSError: pass
+t0 = time.monotonic(); c = None
+while c is None and time.monotonic() - t0 < 5: c = marked(); pump(time.monotonic() + 0.01)
+if c: os.kill(c, sig)
+pump(time.monotonic() + 0.02)
+if code is None: os.kill(pid, sig)
+pump(time.monotonic() + 8)
+pump(time.monotonic() + 0.2)
+print("EXIT", code, "OUT", out.decode(errors="replace").replace("\r\n", "|"))
+PYEOF
+    printf '%s\n' 'sleep 31.71' > "$stdir/c15.weir"
+    for sg in TERM:-15 HUP:-1; do
+        r=$(python3 "$stdir/c15.py" "${sg%%:*}" 31.71 "$BIN" "$stdir/c15.weir")
+        case "$r" in "EXIT ${sg#*:} "*) ;; *) fail "a SIG${sg%%:*} the command took first is the teardown, weir dies by it: $r" ;; esac
+        echo "$r" | grep -q "command failed" && fail "a SIG${sg%%:*} the command took first is never 'command failed': $r"
+    done
+    echo "e2e ok: a TERM or HUP the command took first at a terminal is the teardown, never 'command failed'"
+
+    # R6 (C21): a REPL ^C that cut no wait still ends a multi-statement
+    # entry — a `| exitCode` child, pure compute [D:repl-entry-check]
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND let c = sh -c "sleep 5" | exitCode\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-c")\r' 'SLEEP 700' 'SEND \x03' 'SLEEP 1000' 'SEND let n = [1..6000000] |> Seq.map (fun i -> i % 7) |> Seq.length\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-n")\r' 'SLEEP 500' 'SEND \x03' 'SLEEP 6000' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 20 "$BIN")
+    echo "$tout" | grep -qF "STILL-HERE" || fail "the REPL survives the entries' ^C: $tout"
+    echo "$tout" | grep -qE "LATE-C|LATE-N" && fail "a REPL ^C that cut no wait ends the entry: $tout"
+    [ "$(echo "$tout" | grep -o "exit 130" | wc -l)" -ge 2 ] || fail "each ^C'd entry shows exit 130: $tout"
+    echo "e2e ok: a REPL ^C that cut no wait (a | exitCode child, pure compute) ends the entry with exit 130"
+
+    # D-1: a REPL ^C killing a command inside a `within` body ends the entry
+    # with exit 130, never "command failed … 130" [D:repl-interrupt]
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND within\x1b\r' 'SLEEP 100' 'SEND     sleep 3.41\x1b\r' 'SLEEP 100' 'SEND always\x1b\r' 'SLEEP 100' 'SEND     print (Str.toUpper "cl-ran")\r' 'SLEEP 800' 'SEND \x03' 'SLEEP 1500' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 15 "$BIN")
+    for want in "CL-RAN" "exit 130" "STILL-HERE"; do
+        echo "$tout" | grep -qF "$want" || fail "a REPL ^C in a within body: '$want' expected: $tout"
+    done
+    echo "$tout" | grep -qF "command failed" && fail "a REPL ^C in a within body is the interrupt, never 'command failed': $tout"
+    echo "e2e ok: a REPL ^C killing a command in a within body ends the entry with exit 130"
+
+    # R10 (D-2): a group-directed TERM/HUP (no tty) that kills a cleanup's
+    # command is the signal's — no message, the cleanup runs on whole, then
+    # weir dies by the signal [D:cleanup-group-signal]
+    cat > "$stdir/r10.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within
+    File.append log ["body"]
+always
+    File.append log ["cleanup start"]
+    sh -c "sleep 3.43"
+    File.append log ["cleanup end"]
+File.append log ["LATE"]
+WEOF
+    cat > "$stdir/grp.py" <<'PYEOF'
+import os, sys, time, signal, subprocess
+sig = getattr(signal, 'SIG' + sys.argv[1]); log = sys.argv[2]; argv = sys.argv[3:]
+def pre():
+    for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE): signal.signal(s, signal.SIG_DFL)
+p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, preexec_fn=pre, start_new_session=True)
+def has(l):
+    try: return l in open(log).read().splitlines()
+    except OSError: return False
+t0 = time.monotonic()
+while not has('cleanup start') and time.monotonic() - t0 < 8: time.sleep(0.02)
+time.sleep(0.3); os.killpg(p.pid, sig)
+try: _, e = p.communicate(timeout=10)
+except subprocess.TimeoutExpired: os.killpg(p.pid, signal.SIGKILL); _, e = p.communicate()
+print('status %s err %s' % (p.returncode, e.decode(errors='replace').replace('\n', ' | ')))
+PYEOF
+    for sg in TERM:-15 HUP:-1; do
+        rm -f "$stdir/r10.log"
+        r=$(python3 "$stdir/grp.py" "${sg%%:*}" "$stdir/r10.log" "$BIN" "$stdir/r10.weir" "$stdir/r10.log")
+        case "$r" in "status ${sg#*:} err "*) ;; *) fail "a group SIG${sg%%:*} during a cleanup's command: weir dies by it: $r" ;; esac
+        echo "$r" | grep -q "command failed" && fail "a group SIG${sg%%:*} killing a cleanup's command is never 'command failed': $r"
+        [ "$(stlog "$stdir/r10.log")" = "body,cleanup start,cleanup end," ] || fail "a group SIG${sg%%:*} during a cleanup's command: the cleanup runs on whole, nothing after: $(stlog "$stdir/r10.log")"
+    done
+    # ... its fan-out arms' commands too
+    printf '%s\n' 'let log = Self.args |> Seq.head' 'within' '    File.append log ["body"]' 'always' '    File.append log ["cleanup start"]' '    [1; 2] |> Seq.piter (fun _ -> sh -c "sleep 3.45")' '    File.append log ["cleanup end"]' > "$stdir/r10b.weir"
+    rm -f "$stdir/r10.log"
+    r=$(python3 "$stdir/grp.py" TERM "$stdir/r10.log" "$BIN" "$stdir/r10b.weir" "$stdir/r10.log")
+    case "$r" in "status -15 err "*) ;; *) fail "a group SIGTERM during a cleanup's fan-out: weir dies by it, no message: $r" ;; esac
+    [ "$(stlog "$stdir/r10.log")" = "body,cleanup start,cleanup end," ] || fail "a group SIGTERM during a cleanup's fan-out: the cleanup runs on whole: $(stlog "$stdir/r10.log")"
+    echo "e2e ok: a group-directed TERM/HUP killing a cleanup's command is the signal's — the cleanup runs on whole, then the death"
+
+    # D-3: a second signal while a cleanup's command holds the terminal raw
+    # puts the terminal back at the hard exit [D:hard-exit]
+    printf '%s\n' 'within' '    print "body"' 'always' '    sh -c "stty -icanon -echo; sleep 3.44"' > "$stdir/d3.weir"
+    cat > "$stdir/d3.py" <<'PYEOF'
+import os, pty, sys, time, select, signal, termios
+pid, fd = pty.fork()
+if pid == 0:
+    for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM): signal.signal(s, signal.SIG_DFL)
+    os.execv(sys.argv[2], sys.argv[2:])
+def pump(d):
+    t = time.monotonic()
+    while time.monotonic() - t < d:
+        if select.select([fd], [], [], 0.02)[0]:
+            try: os.read(fd, 65536)
+            except OSError: return
+pump(0.8)
+os.write(fd, b'\x03'); pump(0.3)
+if sys.argv[1] == 'QUIT': os.write(fd, b'\x1c')
+else: os.kill(pid, getattr(signal, 'SIG' + sys.argv[1]))
+t = time.monotonic(); code = 'HANG'
+while time.monotonic() - t < 5:
+    p, st = os.waitpid(pid, os.WNOHANG)
+    if p: code = os.waitstatus_to_exitcode(st); break
+    pump(0.02)
+if code == 'HANG': os.kill(pid, 9); os.waitpid(pid, 0)
+lf = termios.tcgetattr(fd)[3]
+print('%s icanon=%d echo=%d' % (code, bool(lf & termios.ICANON), bool(lf & termios.ECHO)))
+PYEOF
+    for second in QUIT TERM HUP; do
+        r=$(python3 "$stdir/d3.py" "$second" "$BIN" "$stdir/d3.weir")
+        echo "$r" | grep -q "^-2 icanon=1 echo=1$" || fail "a second signal ($second) while a cleanup's command holds the terminal raw restores it: $r"
+    done
+    left=$(ps -eo pid,args | awk '$2 == "sleep" && $3 == "3.44" {print $1}')
+    [ -z "$left" ] || { kill -9 $left 2>/dev/null; fail "the hard exit kills the raw-mode cleanup command"; }
+    echo "e2e ok: a second signal while a cleanup's command holds the terminal raw restores it at the hard exit"
+
+    # an Alt+Enter whose ESC and CR the terminal read apart (a fast paste,
+    # a loaded box) is still the newline, not Esc's abandon; a lone Esc
+    # still abandons the buffer [D:repl-esc-enter]
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND print (Str.toUpper "esc-a")' 'SEND \x1b' 'SLEEP 20' 'SEND \r' 'SLEEP 100' 'SEND print (Str.toUpper "esc-b")\r' 'SLEEP 600' 'SEND print (Str.toUpper "esc-c")' 'SEND \x1b' 'SLEEP 300' 'SEND print (Str.toUpper "esc-d")\r' 'SLEEP 600' 'SEND \x04' 'SLEEP 400' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 12 "$BIN")
+    for want in ESC-A ESC-B ESC-D; do
+        echo "$tout" | grep -qF "$want" || fail "a split Alt+Enter is a newline, a lone Esc abandons: '$want' expected: $tout"
+    done
+    echo "$tout" | grep -qF "ESC-C" && fail "a lone Esc abandons the buffer: $tout"
+    echo "e2e ok: an Alt+Enter read as Esc then Enter is still the newline; a lone Esc abandons"
+
+    # ISIG stays on for a whole multi-statement REPL entry: no raw gap
+    # between its statements for a ^C to land in as a typed byte (the entry
+    # then ran on to its end) [D:repl-entry-isig]
+    cat > "$stdir/isig.py" <<'PYEOF'
+# a REPL entry of many `| exitCode` statements, its ISIG polled from the master: it must stay on from the
+# entry's start to its last output (a raw gap is where a ^C lands as a typed byte)
+import os, pty, sys, time, select, termios
+b = sys.argv[1]; home = sys.argv[2]
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ.update(NO_COLOR='1', HOME=home, XDG_CONFIG_HOME=home, XDG_STATE_HOME=home, XDG_DATA_HOME=home, XDG_CACHE_HOME=home)
+    os.execv(b, [b])
+out = b''
+def drain():
+    global out
+    while select.select([fd], [], [], 0)[0]:
+        try: c = os.read(fd, 65536)
+        except OSError: return
+        if not c: return
+        out += c
+t = time.monotonic()
+while b'weir> ' not in out and time.monotonic() - t < 10: drain(); time.sleep(0.01)
+time.sleep(0.5); drain()
+lines = ['let c%d = sh -c "exit 0" | exitCode' % i for i in range(30)] + ['print (Str.toUpper "isig-done")']
+for j, l in enumerate(lines):
+    os.write(fd, l.encode() + (b'\r' if j == len(lines) - 1 else b'\x1b\r')); time.sleep(0.005); drain()
+m = len(out); off = 0; began = False; t = time.monotonic()
+k = 0
+while time.monotonic() - t < 15:
+    lf = termios.tcgetattr(fd)[3]
+    if lf & termios.ISIG: began = True
+    elif began:
+        drain()
+        if b'ISIG-DONE' in out[m:]: break
+        off += 1
+        while not termios.tcgetattr(fd)[3] & termios.ISIG and time.monotonic() - t < 15:
+            drain()
+            if b'ISIG-DONE' in out[m:]: break
+    k += 1
+    if k % 200 == 0:
+        drain()
+        if b'ISIG-DONE' in out[m:]: break
+print('done=%d raw-windows=%d' % (b'ISIG-DONE' in out[m:], off))
+os.write(fd, b'\x04'); time.sleep(0.3)
+PYEOF
+    mkdir -p "$stdir/isig"
+    for k in 1 2 3; do
+        r=$(python3 "$stdir/isig.py" "$BIN" "$stdir/isig")
+        [ "$r" = "done=1 raw-windows=0" ] || fail "a REPL entry keeps ISIG on between its statements: $r"
+    done
+    echo "e2e ok: a multi-statement REPL entry keeps ISIG on from start to end — a ^C is never a typed byte"
 
     # C23: a tty REPL entry of several statements is one evaluation — a ^C
     # or a failure ends the whole entry, the session goes on
@@ -4560,6 +4850,39 @@ WEOF
     expect "Dir.list L/.. lists real" "list: sub x.txt y.txt" "$out"
     expect "File.copy L/.. is physical" "copied: true" "$out"
     expect "the plan guard keys the physical path" "known-after-apply" "$out"
+    cat > "$dddir/g.weir" <<'WEOF'
+// Path.glob steps `..` up physically too; the plan simulation follows links [D:fs-dotdot-physical] [D:plan-preconditions]
+let base = Self.args |> Seq.head
+print $"glob: {Path.glob $"{base}/L/../*.txt" |> Seq.map Path.fileName |> Str.join " "}"
+within cd $"{base}/L"
+    print $"glob in L: {Path.glob "../*.txt" |> Str.join " "} {Path.glob "../*.txt" |> Seq.map File.read |> Seq.concat |> Str.join " "}"
+let alias () =
+    plan
+        File.write $"{base}/L/n.txt" ["n"]
+        File.copy $"{base}/x.txt" $"{base}/real/sub/n.txt"
+match alias () |> try result with
+| Ok _ -> print "alias: captured"
+| Error e -> print $"alias: {Str.replace base "$T" e}"
+let dangle () =
+    plan
+        Dir.deleteAll $"{base}/real/sub"
+        File.write $"{base}/L/x" ["x"]
+match dangle () |> try result with
+| Ok _ -> print "dangle: captured"
+| Error e -> print $"dangle: {Str.replace base "$T" e}"
+let through () =
+    plan
+        Dir.create $"{base}/L/k"
+        File.write $"{base}/real/sub/k/f" ["f"]
+        Dir.move $"{base}/L" $"{base}/real/sub/L2"
+print $"through: {through () |> Plan.preview |> Seq.length} ops"
+WEOF
+    out=$($BIN "$dddir/g.weir" "$dddir" 2>&1) || fail "the dotdot glob/simulation cell failed: $out"
+    expect "Path.glob L/.. is physical" "glob: x.txt y.txt z.txt" "$out"
+    expect "Path.glob ../ within cd L is physical and File.read reads its hits" "glob in L: ../x.txt ../y.txt ../z.txt inner w inner" "$out"
+    expect "a write through a link meets a copy onto its real path" "alias: File.copy: destination exists: \$T/real/sub/n.txt" "$out"
+    expect "a write through a link whose target the plan deleted refuses" "dangle: File.write: no such directory: \$T/L" "$out"
+    expect "a mkdir through a link backs a write at its real path; a link renames into its target" "through: 3 ops" "$out"
     rm -rf "$dddir"
 fi
 
@@ -9525,6 +9848,14 @@ out=$( cd "$ctdir/f14" && $BIN add schema http://127.0.0.1:$ctport/configmap-v1.
 echo "$out" | grep -qF "must be a plain file name" || fail "F14 traversal --as teaches the plain-name rule: $out"
 test ! -e "$ctdir/f14/../escape.json" || fail "F14: a traversal --as must write nothing outside .weir/"
 echo "e2e ok: add schema refuses an absolute/traversal --as, writing nothing (F14)"
+# the lock is committed: add writes the URL without its userinfo and says
+# so [D:lock-no-userinfo]
+mkdir -p "$ctdir/ui" && ( cd "$ctdir/ui" && git init -q . )
+out=$( cd "$ctdir/ui" && $BIN add schema "http://bob:S3cr3t@127.0.0.1:$ctport/configmap-v1.json" --as ui 2>&1 ) || fail "lock-no-userinfo: add schema with userinfo must succeed: $out"
+echo "$out" | grep -qF "credentials are not written" || fail "lock-no-userinfo: add must say the credentials were dropped: $out"
+grep -qF "\"http://127.0.0.1:$ctport/configmap-v1.json\"" "$ctdir/ui/.weir/lock.json" || fail "lock-no-userinfo: the lock must name the URL sans userinfo: $(cat "$ctdir/ui/.weir/lock.json")"
+grep -qE "bob|S3cr3t" "$ctdir/ui/.weir/lock.json" && fail "lock-no-userinfo: the credentials LEAKED into the lock: $(cat "$ctdir/ui/.weir/lock.json")" || true
+echo "e2e ok: add schema keeps a URL's userinfo out of .weir/lock.json"
 
 # F1: a hostile lock (an entry pointing outside .weir/) refuses per entry
 # with a located diagnostic, restores the benign sibling, and writes
@@ -9674,7 +10005,7 @@ if command -v python3 >/dev/null 2>&1; then
     cat > "$ctdir/url500.py" <<URLEOF
 import http.server
 class H(http.server.BaseHTTPRequestHandler):
-    def do_GET(self): self.send_response(500); self.end_headers(); self.wfile.write(b'nope')
+    def do_GET(self): self.send_response(500); self.end_headers(); self.wfile.write(b'nope\\x1b]52;c;ZXZp\\x07\\rX')
     def log_message(self, *a): pass
 http.server.HTTPServer(('127.0.0.1', $urport), H).serve_forever()
 URLEOF
@@ -9686,6 +10017,10 @@ URLEOF
     out=$($BIN -e "print (Http.expect (Http.get \"http://user:s3cr3t@127.0.0.1:$urport/\"))" 2>&1) && fail "a 500 must raise" || true
     echo "$out" | grep -qF "***@127.0.0.1:$urport/ answered 500" || fail "the userinfo is redacted in the 500 error: $out"
     echo "$out" | grep -qiF "s3cr3t" && fail "the credential LEAKED verbatim in the 500 error: $out" || true
+    # the body snippet is data: its ESC/BEL/CR render visibly, piped too [D:error-data-escape]
+    echo "$out" | grep -qF 'nope\x1b]52;c;ZXZp\x07 X' || fail "error-data-escape: the 500 body snippet must render ESC/BEL/CR visibly: $out"
+    printf '%s' "$out" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d or b'\x07' in d) else 0)" \
+        || fail "error-data-escape: the 500 body snippet put a raw ESC/BEL/CR in the error: $out"
     # a userinfo-free URL is still named in full
     out=$($BIN -e "print (Http.expect (Http.get \"http://127.0.0.1:$urport/\"))" 2>&1) && fail "a 500 must raise" || true
     echo "$out" | grep -qF "http://127.0.0.1:$urport/ answered 500" || fail "a credential-free URL is named in full: $out"
@@ -10770,6 +11105,41 @@ out=$(cat "$pfdir/pf.out")
 sleep 2.5
 [ ! -e "$pfdir/marker" ] || fail "the loser's child survived the kill"
 
+# a consumer stopped by the cut kills its tree before the dispose
+# [D:scope-tree]: a Windows read wakes on the token at once, so a loser
+# reading its command's pipes raised and disposed the Process before the
+# cut's kill reached it — sh and its sleep lived on. One loser per
+# consumer: complete, chain complete, lines, chain lines, exitCode
+cat > "$pfdir/pfcons.weir" <<'WEOF'
+let w =
+    [0; 1; 2; 3; 4; 5] |> Seq.pfirst (fun i ->
+        let body = $"sleep 2; echo x > cons{i}"
+        if i == 0 then
+            Duration.sleep 300ms
+            "win"
+        elif i == 1 then
+            let _r = sh -c $body | complete
+            "complete"
+        elif i == 2 then
+            let _r = sh -c $body | cat | complete
+            "chain complete"
+        elif i == 3 then
+            let _n = sh -c $body |> Seq.length
+            "lines"
+        elif i == 4 then
+            let _n = sh -c $body | cat |> Seq.length
+            "chain lines"
+        else
+            let _c = sh -c $body | exitCode
+            "exitCode")
+print $"winner={w}"
+WEOF
+(cd "$pfdir" && $BIN pfcons.weir > "$pfdir/pfcons.out" 2>&1)
+[ "$(cat "$pfdir/pfcons.out")" = "winner=win" ] || fail "pfirst consumer-loser winner: $(cat "$pfdir/pfcons.out")"
+sleep 3
+left=$(cd "$pfdir" && { ls cons* 2>/dev/null || true; } | tr '\n' ' ')
+[ -z "$left" ] || fail "a pfirst loser's consumer left its command tree alive past the cut (markers: $left)"
+
 # a pipe the kill cannot close [D:pfirst-join]: `(sleep 2 &)` reparents an
 # orphan that holds the loser's stdout — no tree kill reaches it — so a
 # loser reading to EOF would hold the race ~2s; the cut abandons the read
@@ -11552,6 +11922,42 @@ echo "$out" | grep -qF "source: help-scan" || fail "the refused help still harve
 printf '#sig bsdtool\nbsdtool -q --color=auto x\nprint "d"\n' > bsd.weir
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check bsd.weir 2>&1)
 echo "$out" | grep -q "unknown flag '-q'" && fail "a shortless surface must not warn on shorts: $out" || true
+# the bounded probe [D:sig-version-probe]: a daemon the help leaves
+# holding stdout cannot hang generation, and the probe's process group
+# dies with it; a flood is cut at the byte bound, with a note; every probe
+# runs in a fresh empty temp dir
+if [ "$IS_WINDOWS" != "1" ]; then
+cat > bin/daemontool <<WEOF
+#!/bin/sh
+case "\$1" in
+  --version) echo "daemontool 1.0";;
+  --help) printf 'Options:\n  --aa   aa\n'; sleep 30 & echo \$! > "$sgdir/daemon.pid"; pwd > "$sgdir/probe.cwd"; ls -A | wc -l > "$sgdir/probe.n";;
+  *) exit 1;;
+esac
+WEOF
+chmod +x bin/daemontool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" timeout 20 $BIN add sig daemontool 2>&1) || fail "a daemon holding the help's stdout hung add sig: $out"
+echo "$out" | grep -qF "added sig daemontool (1 flag(s)" || fail "the daemon's help still records: $out"
+if [ "$(uname -s)" = Linux ]; then
+    kill -0 "$(cat "$sgdir/daemon.pid")" 2>/dev/null && fail "the probe's process group outlived the probe" || true
+else
+    kill "$(cat "$sgdir/daemon.pid")" 2>/dev/null || true
+fi
+case "$(cat "$sgdir/probe.cwd")" in */weir-sigprobe-*) ;; *) fail "a probe ran outside a fresh temp dir: $(cat "$sgdir/probe.cwd")";; esac
+[ "$(tr -d ' ' < "$sgdir/probe.n")" = "0" ] || fail "the probe's temp dir was not empty"
+cat > bin/floodtool <<'WEOF'
+#!/bin/sh
+case "$1" in
+  --version) echo "floodtool 1.0";;
+  --help) echo "Options:"; i=0; while :; do echo "  --f$i   xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; i=$((i+1)); done;;
+  *) exit 1;;
+esac
+WEOF
+chmod +x bin/floodtool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" timeout 60 $BIN add sig floodtool 2>&1) || fail "an endless help was not cut: $out"
+echo "$out" | grep -qF "output cut at 4 MiB per stream: 'floodtool --help'" || fail "the cut is stated: $(echo "$out" | cut -c1-300)"
+grep -qF "/// output cut at 4 MiB per stream: 'floodtool --help' — the rest was not read" .weir/sigs/floodtool.weir || fail "the sig notes the cut"
+fi
 # gh's dialect [D:scoped-sigs]: colon-suffixed command tokens walk, and
 # the walk reaches depth 4 (kustomize edit add resource's shape)
 cat > bin/ghtool <<'WEOF'
@@ -11601,11 +12007,22 @@ WEOF
 chmod +x "$sgdir/proj/lib/jp"
 if [ "$IS_WINDOWS" != "1" ]; then
 out=$($BIN add sig ./lib/jp 2>&1) || fail "add sig on a path-y tool: $out"
-test -f .weir/sigs/_lib_jp.weir || fail "the sig file is FLAT under sigs/: $(find .weir/sigs -name '*jp*')"
-head -1 .weir/sigs/_lib_jp.weir | grep -qE '^module [A-Z]' || fail "a path-y tool mints a legal module name"
+# (injective [D:sig-probe-bounds]: `.` leading and `/` as %XX)
+test -f .weir/sigs/%2E%2Flib%2Fjp.weir || fail "the sig file is FLAT under sigs/: $(find .weir/sigs -name '*jp*')"
+head -1 .weir/sigs/%2E%2Flib%2Fjp.weir | grep -qE '^module [A-Z]' || fail "a path-y tool mints a legal module name"
 printf '#sig ./lib/jp\n./lib/jp --clena\nprint "d"\n' > jp.weir
 out=$($BIN check jp.weir 2>&1)
 echo "$out" | grep -qF "Did you mean '--clean'?" || fail "the path-y sig round-trips: $out"
+# a signature the lock records under the old name is still read, and
+# regeneration supersedes it
+mv .weir/sigs/%2E%2Flib%2Fjp.weir .weir/sigs/_lib_jp.weir
+sed 's#"sigs/%2E%2Flib%2Fjp.weir"#"sigs/_lib_jp.weir"#' .weir/lock.json > lock.tmp && mv lock.tmp .weir/lock.json
+grep -qF '"sigs/_lib_jp.weir"' .weir/lock.json || fail "the legacy lock path is in place"
+out=$($BIN check jp.weir 2>&1)
+echo "$out" | grep -qF "Did you mean '--clean'?" || fail "a legacy-named sig the lock records is still read: $out"
+$BIN add sig ./lib/jp >/dev/null 2>&1 || fail "regenerating over a legacy-named sig"
+test -f .weir/sigs/_lib_jp.weir && fail "the legacy-named sig survived its regeneration" || true
+test -f .weir/sigs/%2E%2Flib%2Fjp.weir || fail "regeneration writes the injective name"
 abs=$(cd "$sgdir/proj/lib" && pwd)/jp
 $BIN add sig "$abs" >/dev/null 2>&1 || fail "an absolute tool path must generate"
 find .weir/sigs -maxdepth 1 -name '*jp.weir' | grep -q . || fail "the absolute path stays INSIDE .weir/sigs"
@@ -12989,6 +13406,61 @@ within tmp root
     match c24 () |> try result with
     | Ok pl -> print $"writeAtomic under missing: ok ({pl |> Plan.preview |> Seq.length} ops)"
     | Error e -> print $"writeAtomic under missing: {Str.replace root "$T" e}"
+    let c26 () =
+        plan
+            Dir.create (p "made")
+            Dir.copy (p "made") (p "made2")
+    match c26 () |> try result with
+    | Ok pl -> print $"dir copy of a planned dir ok: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir copy of a planned dir ok: {Str.replace root "$T" e}"
+    let c27 () =
+        plan
+            Dir.move (p "d") (p "dm")
+            Dir.copy (p "dm") (p "dm2")
+    match c27 () |> try result with
+    | Ok pl -> print $"dir copy of a moved dir ok: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir copy of a moved dir ok: {Str.replace root "$T" e}"
+    let c28 () =
+        plan
+            Dir.create (p "np")
+            Dir.copy (p "d") (p "np/d")
+    match c28 () |> try result with
+    | Ok pl -> print $"dir copy into a planned parent ok: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir copy into a planned parent ok: {Str.replace root "$T" e}"
+    let c29 () =
+        plan
+            File.copy (p "a.txt") (p "nodir/a.txt")
+    match c29 () |> try result with
+    | Ok pl -> print $"copy into a missing dir: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"copy into a missing dir: {Str.replace root "$T" e}"
+    let c30 () =
+        plan
+            File.move (p "a.txt") (p "nodir/a.txt")
+    match c30 () |> try result with
+    | Ok pl -> print $"move into a missing dir: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"move into a missing dir: {Str.replace root "$T" e}"
+    let c31 () =
+        plan
+            Dir.move (p "d") (p "nodir/d")
+    match c31 () |> try result with
+    | Ok pl -> print $"dir move into a missing dir: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir move into a missing dir: {Str.replace root "$T" e}"
+    let c32 () =
+        plan
+            Dir.deleteAll (p "d")
+            File.copy (p "a.txt") (p "d/a.txt")
+    match c32 () |> try result with
+    | Ok pl -> print $"copy into a deleted dir: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"copy into a deleted dir: {Str.replace root "$T" e}"
+    let c33 () =
+        plan
+            Dir.move (p "d") (p "d/sub")
+    match c33 () |> try result with
+    | Ok pl -> print $"dir move into itself: ok ({pl |> Plan.preview |> Seq.length} ops)"
+    | Error e -> print $"dir move into itself: {Str.replace root "$T" e}"
+    match Dir.move (p "d") (p "d/sub") |> try result with
+    | Ok _ -> print "direct dir move into itself: ok"
+    | Error e -> print $"direct dir move into itself: {Str.replace root "$T" e}"
     let c25 () =
         plan
             File.write (p "m1.txt") ["1"]
@@ -13032,6 +13504,15 @@ deleteAll missing: Dir.deleteAll: no such directory: $T/nod
 dir copy into itself: Dir.copy: destination $T/d/sub is inside the source $T/d
 dir move missing: Dir.move: no such directory: $T/nod
 writeAtomic under missing: File.writeAtomic: no such directory: $T/zz
+dir copy of a planned dir ok: ok (2 ops)
+dir copy of a moved dir ok: ok (2 ops)
+dir copy into a planned parent ok: ok (2 ops)
+copy into a missing dir: File.copy: no such directory: $T/nodir
+move into a missing dir: File.move: no such directory: $T/nodir
+dir move into a missing dir: Dir.move: no such directory: $T/nodir
+copy into a deleted dir: File.copy: no such directory: $T/d
+dir move into itself: Dir.move: destination $T/d/sub is inside the source $T/d
+direct dir move into itself: Dir.move: destination $T/d/sub is inside the source $T/d
 all valid: ok (9 ops)
 apply: Ok (())
 after: a.txt d exists.txt
@@ -14338,11 +14819,27 @@ printf 'let n = Float.parse (Env.need "X")\nprint $"{n}"\n' > "$ed/float.weir"
 printf 'type T = { a: int }\nlet t = [Env.need "X"] |> from json T\nprint $"{t.a}"\n' > "$ed/json.weir"
 printf 'print (File.read (Env.need "X") |> Seq.length)\n' > "$ed/path.weir"
 printf 'print (Env.need (Env.need "X"))\n' > "$ed/env.weir"
-for f in float json path env; do
+printf 'let r = Http.send { (Http.get "http://127.0.0.1:9/") with headers = [(Env.need "X", "v")] }\nprint $"{r.status}"\n' > "$ed/hdr.weir"
+printf 'type E = { x: int }\nlet e = Env.load E\nprint $"{e.x}"\n' > "$ed/envload.weir"
+for f in float json path env hdr; do
     eout=$(X="$(printf '/no\r\033[8mpe')" "$BIN" "$ed/$f.weir" 2>&1) && fail "error-data-escape: $f must fail: $eout"
     echo "$eout" | grep -qF '\x0d\x1b[8mpe' || fail "error-data-escape: $f must render the quoted CR/ESC visibly: $eout"
     printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d) else 0)" \
         || fail "error-data-escape: $f put a raw CR/ESC in the error: $eout"
+done
+# Env.load and Args.load quote a bad value, an unknown flag and a stray argument
+xv="$(printf '/no\r\033[8mpe')"
+eout=$(env x="$xv" "$BIN" "$ed/envload.weir" 2>&1) && fail "error-data-escape: Env.load must fail: $eout"
+echo "$eout" | grep -qF '\x0d\x1b[8mpe' || fail "error-data-escape: Env.load must render the quoted CR/ESC visibly: $eout"
+printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d) else 0)" \
+    || fail "error-data-escape: Env.load put a raw CR/ESC in the error: $eout"
+printf 'type A = { port: int }\nlet a = Args.load A\nprint $"{a.port}"\n' > "$ed/args.weir"
+for args in "--port|$xv" "--port|1|--$xv" "--port=$xv" "--port|1|$xv"; do
+    IFS='|' read -r -a av <<<"$args"
+    eout=$("$BIN" "$ed/args.weir" "${av[@]}" 2>&1) && fail "error-data-escape: Args.load ${av[*]} must fail: $eout"
+    echo "$eout" | grep -qF '\x0d\x1b[8mpe' || fail "error-data-escape: Args.load must render the quoted CR/ESC visibly: $eout"
+    printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d) else 0)" \
+        || fail "error-data-escape: Args.load put a raw CR/ESC in the error: $eout"
 done
 # from xml over bytes quotes its excerpt as the text path does
 # [D:xml-encoding]
@@ -14358,7 +14855,7 @@ echo "$eout" | grep -qF 'no such script' || fail "error-data-escape: a missing s
 echo "$eout" | grep -qF 'a\x1b[8m\x0db.weir:1:' || fail "error-data-escape: a diagnostic must name the file visibly: $eout"
 printf '%s' "$eout" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b[8m' in d or b'\r' in d) else 0)" \
     || fail "error-data-escape: a file name put a raw CR/ESC in a diagnostic: $eout"
-echo "e2e ok: error-data-escape runtime errors render the quoted CR/ESC visibly (parse input, json excerpt, path, env name, file name)"
+echo "e2e ok: error-data-escape runtime errors render the quoted CR/ESC visibly (parse input, json excerpt, path, env name, header name, Env.load/Args.load value, file name)"
 # Plan.preview renders an http send line's escapes visibly [D:tty-echo-strict]
 cat > "$ed/pv.weir" <<'WEOF'
 let p =
@@ -14429,6 +14926,120 @@ HUPEOF
 case "$hout" in EXIT=129|EXIT=-1) ;; *) fail "console-hangup: a hung-up terminal must end weir by SIGHUP's teardown (129), not abort: $hout" ;; esac
 grep -qxF "cleanup end" "$hu/h.log" || fail "console-hangup: the cleanup must run whole after the hangup: $(cat "$hu/h.log" 2>/dev/null)"
 echo "e2e ok: console-hangup a hung-up terminal unwinds by SIGHUP, the printing cleanup runs whole"
+# console-write [D:console-write] (E1): a full or closed stderr never aborts
+# weir — the cleanup runs, the error's write is dropped, the exit is the run's
+cw="$svdir/cw"; mkdir -p "$cw"
+printf '%s\n' 'within' '    printerr "progress"' '    Log.warn "a log line"' '    print "body-done"' 'always' '    print "cleanup-ran"' 'fail "x"' > "$cw/f.weir"
+for redir in full closed; do
+    [ "$redir" = full ] && [ ! -e /dev/full ] && continue
+    rc=0
+    if [ "$redir" = full ]; then
+        out=$("$BIN" "$cw/f.weir" 2>/dev/full) || rc=$?
+    else
+        out=$("$BIN" "$cw/f.weir" 2>&-) || rc=$?
+    fi
+    [ "$rc" = 1 ] || fail "console-write: a $redir stderr keeps the run's exit 1, never an abort: rc=$rc out=$out"
+    [ "$(echo "$out" | tr '\n' ,)" = "body-done,cleanup-ran," ] || fail "console-write: a $redir stderr runs the script and its cleanup: $out"
+done
+echo "e2e ok: console-write a full or closed stderr never aborts — writes dropped, cleanup runs, exit kept"
+
+# a tty REPL whose terminal hangs up mid-command dies by the SIGHUP, never
+# an internal error [D:console-write]; one killed by TERM/HUP at its
+# prompt restores the terminal [D:die-by-signal]
+rh="$svdir/rh"; mkdir -p "$rh/c" "$rh/d" "$rh/s" "$rh/k"
+rhout=$(env HOME="$rh" XDG_CONFIG_HOME="$rh/c" XDG_DATA_HOME="$rh/d" XDG_STATE_HOME="$rh/s" XDG_CACHE_HOME="$rh/k" python3 - "$BIN" <<'HUPEOF'
+import os, pty, sys, time, signal, termios, select
+def run(act):
+    pid, fd = pty.fork()
+    if pid == 0:
+        for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM): signal.signal(s, signal.SIG_DFL)
+        os.execv(sys.argv[1], sys.argv[1:])
+    def pump(d):
+        t = time.monotonic()
+        while time.monotonic() - t < d:
+            if select.select([fd], [], [], 0.02)[0]:
+                try: os.read(fd, 65536)
+                except OSError: return
+    pump(1.5)
+    if act == 'hangup':
+        os.write(fd, b'/bin/sleep 3\r'); pump(0.6); os.close(fd)
+    else:
+        os.kill(pid, getattr(signal, 'SIG' + act))
+    t = time.monotonic(); code = 'HANG'
+    while time.monotonic() - t < 8:
+        p, st = os.waitpid(pid, os.WNOHANG)
+        if p: code = os.waitstatus_to_exitcode(st); break
+        time.sleep(0.02)
+    if code == 'HANG': os.kill(pid, 9); os.waitpid(pid, 0)
+    mode = ''
+    if act != 'hangup':
+        lf = termios.tcgetattr(fd)[3]; mode = ' icanon=%d echo=%d' % (bool(lf & termios.ICANON), bool(lf & termios.ECHO)); os.close(fd)
+    print('%s=%s%s' % (act, code, mode))
+for a in ('hangup', 'TERM', 'HUP'): run(a)
+HUPEOF
+)
+echo "$rhout" | grep -qxE "hangup=(-1|129)" || fail "a tty REPL whose terminal hangs up mid-command dies by the SIGHUP: $rhout"
+echo "$rhout" | grep -qx "TERM=-15 icanon=1 echo=1" || fail "a tty REPL killed by TERM at its prompt restores the terminal: $rhout"
+echo "$rhout" | grep -qx "HUP=-1 icanon=1 echo=1" || fail "a tty REPL killed by HUP at its prompt restores the terminal: $rhout"
+echo "e2e ok: a tty REPL dies by a hangup's SIGHUP mid-command, and restores the terminal on TERM/HUP at its prompt"
+
+# every File op on a FIFO is cut by a race win [D:fifo-ops-polled] (Linux)
+if [ "$(uname -s)" = Linux ]; then
+    ff="$svdir/ff"; mkdir -p "$ff/d"
+    cat > "$ff/arm.weir" <<'WEOF'
+let op = Self.args |> Seq.head
+let f = Self.args |> Seq.item 1
+let d = Self.args |> Seq.item 2
+let r =
+    [0; 1] |> Seq.pfirst (fun i ->
+        if i == 0 then
+            if op == "sha256" then
+                print (File.sha256 f)
+            elif op == "copy" then
+                File.copy f $"{d}/copied"
+            elif op == "write" then
+                File.write f ["x"]
+            elif op == "append" then
+                File.append f ["x"]
+            elif op == "writeBytes" then
+                File.writeBytes f (Str.toUtf8 "x")
+            "op"
+        else
+            Duration.sleep 200ms
+            "timer")
+print $"{op}: r={r}"
+WEOF
+    for op in sha256 copy write append writeBytes; do
+        rm -rf "$ff/d" "$ff/p"; mkdir -p "$ff/d"; mkfifo "$ff/p"
+        out=$(timeout -s KILL 10 "$BIN" "$ff/arm.weir" "$op" "$ff/p" "$ff/d" 2>&1) || true
+        [ "$out" = "$op: r=timer" ] || fail "File.$op on a peerless FIFO is cut by a race win: $out"
+    done
+    # writeAtomic refuses a FIFO at once, leaving it a FIFO, nothing written
+    rm -rf "$ff/p"; mkfifo "$ff/p"
+    out=$(timeout -s KILL 10 "$BIN" -e "File.writeAtomic \"$ff/p\" [\"x\"]" 2>&1) && fail "File.writeAtomic on a FIFO must refuse: $out"
+    echo "$out" | grep -qF "is a FIFO — an atomic replace has no meaning there; use File.write" || fail "File.writeAtomic on a FIFO names the refusal: $out"
+    [ -p "$ff/p" ] || fail "File.writeAtomic on a FIFO leaves it a FIFO"
+    [ -z "$(ls -A "$ff" | grep -v '^p$' | grep -v '^d$' | grep -v '^arm.weir$')" ] || fail "File.writeAtomic on a FIFO writes nothing: $(ls -A "$ff")"
+    printf '%s\n' 'let p = Self.args |> Seq.head' 'let pl =' '    plan' '        File.writeAtomic p ["x"]' 'print $"captured {Plan.isEmpty pl}"' > "$ff/plan.weir"
+    out=$(timeout -s KILL 10 "$BIN" "$ff/plan.weir" "$ff/p" 2>&1) && fail "a plan capturing File.writeAtomic onto a FIFO must refuse: $out"
+    echo "$out" | grep -qF "is a FIFO" || fail "a plan's File.writeAtomic onto a FIFO refuses at capture: $out"
+    [ -p "$ff/p" ] || fail "a plan's refused writeAtomic leaves the FIFO"
+    rm -f "$ff/plan.weir"
+    (sleep 0.3; cat "$ff/p" > "$ff/got") &
+    "$BIN" -e "File.write \"$ff/p\" [\"hello\"; \"fifo\"]" || fail "File.write to a FIFO with a reader writes"
+    wait
+    [ "$(tr '\n' , < "$ff/got")" = "hello,fifo," ] || fail "File.write to a FIFO delivers the lines: $(cat "$ff/got")"
+    echo "e2e ok: File.sha256/copy/write/append/writeBytes on a FIFO are cut by a race win; writeAtomic refuses one (direct and at plan capture); a read FIFO gets the write"
+fi
+
+# Proc.wait returns at the exit, not at a 50ms poll (D1)
+printf '%s\n' 'for i in [1..60] do' '    within proc p = sh -c "exit 0"' '        let _c = Proc.wait p' '        ()' 'print "done"' > "$svdir/pw.weir"
+pws=$(now_ms)
+out=$("$BIN" "$svdir/pw.weir" 2>&1)
+pwms=$(( $(now_ms) - pws ))
+[ "$out" = "done" ] || fail "Proc.wait loop: $out"
+[ "$pwms" -lt 2500 ] || fail "60 Proc.wait calls take ${pwms}ms — Proc.wait must wake at the exit, not poll 50ms"
+echo "e2e ok: Proc.wait wakes at the exit (60 waits in ${pwms}ms)"
 else
     echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"
 fi

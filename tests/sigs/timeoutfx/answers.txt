@@ -1,0 +1,11 @@
+=== --version
+timeoutfx (uutils coreutils) 0.10.0
+=== --help
+Start COMMAND, and kill it if still running after DURATION.
+
+Usage: timeoutfx [OPTION] DURATION COMMAND...
+
+Options:
+  -f, --foreground               allow COMMAND to read from the TTY
+  -k, --kill-after <DURATION>    also send a KILL signal
+  -h, --help                     Print help

@@ -876,12 +876,13 @@ let sigTintStyle: SigStyle =
 // output is the corruption shells avoid). Stderr, tty-only, a 500ms
 // grace so fast calls stay silent, erased before anything else prints —
 // stdout is never touched, so the piped byte surface cannot move.
-/// a terminal that hung up [D:console-hangup]: a write to a tty whose
-/// line is gone fails (EIO), and an unhandled IOException on a cleanup or
-/// the spinner thread aborted weir mid-unwind. Console writes ride this:
-/// the first failure marks the writer gone and every later write is
-/// dropped — there is no one left to read it; the SIGHUP that comes with
-/// the hangup ends the run through its own teardown
+/// a console that is gone [D:console-hangup] [D:console-write]: a write
+/// to a tty whose line hung up fails (EIO), one to a full or closed stderr
+/// fails too, and an unhandled IOException on a cleanup or the spinner
+/// thread aborted weir mid-unwind. Console writes ride this: the first
+/// failure marks the writer gone and every later write is dropped — there
+/// is no one left to read it; the SIGHUP that comes with a hangup ends
+/// the run through its own teardown
 type HangupWriter(inner: System.IO.TextWriter) =
     inherit System.IO.TextWriter()
     let mutable gone = false
@@ -893,8 +894,10 @@ type HangupWriter(inner: System.IO.TextWriter) =
         if not gone then
             try
                 write ()
-            with :? System.IO.IOException ->
-                gone <- true
+            with
+            | :? System.IO.IOException
+            // a closed or read-only fd 2: EBADF
+            | :? System.UnauthorizedAccessException -> gone <- true
 
     override _.Encoding = inner.Encoding
 

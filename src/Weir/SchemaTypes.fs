@@ -105,10 +105,11 @@ let generate
 
         match s with
         | SRef key -> resolveRef key
-        | SNullable(SEnum(values, kind)) ->
+        | SNullable(SEnum(values, kind, listed)) ->
             // the enum's null is absence — its note lists it as null
+            // only when the enum holds it and the type allows it
             // [D:schema-enum-null]
-            opt (enumShape where values kind true)
+            opt (enumShape where values kind true listed)
         | SNullable inner ->
             // nullable → Option, the same wrap optionality takes
             opt (shape desired srcKey parentStem path inner)
@@ -162,7 +163,7 @@ let generate
             // schema territory weir does not draft) [D:schema-types]
             reg.AddNote $"{where}: anyOf — drafted the FIRST variant only; verify the rest"
             shape desired srcKey parentStem path first
-        | SEnum(values, kind) -> enumShape where values kind false
+        | SEnum(values, kind, _) -> enumShape where values kind false false
         | SIntOrStringFormat inner ->
             // [D:schema-num-or-string]: the int-or-string fix's
             // class, spelled as a string format
@@ -173,6 +174,18 @@ let generate
 
             reg.AddNote
                 $"{where}: format int-or-string — drafted Yaml; an int reads as YInt n, a string as YStr s"
+
+            if nullable then opt "Yaml" else "Yaml"
+        | SUint64Format inner ->
+            // [D:schema-uint64]: int would refuse a value past int64 and
+            // float would round it; the node keeps its digits both ways
+            let nullable =
+                match inner with
+                | SScalar kinds -> kinds.Contains "null"
+                | _ -> false
+
+            reg.AddNote
+                $"{where}: format uint64 — drafted Yaml; a value reads as YInt n, one past int64 as YFloat f that writes back its digits"
 
             if nullable then opt "Yaml" else "Yaml"
         | SAny ->
@@ -273,14 +286,23 @@ let generate
 
                     // the headline rule: absent from `required` → Option —
                     // the fact no sample can carry [D:schema-types]
-                    let ty = if List.contains k required then core else opt core
+                    let isRequired = List.contains k required
+
+                    // required + nullable [D:schema-required-nullable]:
+                    // Option's None omits the key, so a null the
+                    // document held does not write back
+                    if isRequired && core.StartsWith "Option<" then
+                        reg.AddNote
+                            $"{childPath}: required and nullable — drafted {core}; None writes the key omitted, not null (a PATCH reads that as unchanged); declare it Yaml to keep a null (YNull writes null)"
+
+                    let ty = if isRequired then core else opt core
                     k, ty)
 
             reg.Claim desired srcKey parentStem rendered
 
-    and enumShape (where: string) (values: string list) (kind: string) (nullable: bool) : string =
+    and enumShape (where: string) (values: string list) (kind: string) (nullable: bool) (nullListed: bool) : string =
         let withNull (listed: string) =
-            if nullable then listed + ", null" else listed
+            if nullListed then listed + ", null" else listed
 
         let drafted (ty: string) = if nullable then opt ty else ty
         let asString = drafted "string"

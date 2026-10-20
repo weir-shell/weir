@@ -36,8 +36,12 @@
   letter, stops at a subcommand the signature does not know, and an
   older signature checks exactly as before. On the survey's twenty
   common tools the scored lines went from 76 false warnings to none. npm
-  takes any config key as a flag, so its signature is generated with no
-  flag checked.
+  (and npx) take any config key as a flag, so their signatures are
+  generated with no flag checked. Wrappers (`timeout`, `flock`, `stdbuf`,
+  `watch`, `bash script.sh`) stop checking at the command they run;
+  kill's `-TERM`, perl's `-MJSON::PP`, unzip's two-column help, shfmt's
+  aligned rows, Go flags shown only in examples, node's `--deprecation`
+  and git's `remote add`/`stash push`-style subcommands are read.
 
 - **`serve` runs on Kestrel** (ASP.NET Core's server, part of the .NET
   SDK) instead of `HttpListener` — one server on Linux, macOS and
@@ -94,6 +98,49 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **Windows: a `Seq.pfirst` loser's `| complete` command no longer
+  outlives the race.** A loser waiting in `sh -c "…" | complete` was
+  stopped without killing its command, so `sh` and what it started ran
+  on after the winner returned.
+- **Ctrl+C at the REPL between two statements of an entry stops it.**
+  Landing just after one statement ended (often right as a `| exitCode`
+  command exited), it was read as a typed key: the entry ran to its end
+  and `^C` appeared at the next prompt.
+- **A pasted multi-line REPL entry no longer loses its first lines.**
+  When Alt+Enter's two bytes arrived apart, the Esc was read alone and
+  threw the buffer away; an Esc with an Enter right behind it is now
+  the newline.
+- **Ctrl+C at the REPL on a command inside a `within` body shows
+  `↳ exit 130`.** It printed `error: command failed with exit code 130`.
+- **A group-directed SIGTERM or SIGHUP no longer cuts an `always`
+  cleanup short.** Without a terminal it killed the cleanup's running
+  command too, which failed the cleanup ("command failed with exit code
+  143") and skipped its remaining steps; that death is now the signal's,
+  the cleanup finishes, then weir dies by the signal.
+- **A second signal while a cleanup's pager has the terminal restores
+  the terminal.** The hard exit killed the pager and left the terminal
+  without echo.
+- **REPL: Tab after `$` offers only what can be spliced there.** `git
+  tag $t<Tab>` listed every Prelude function (`take`, `toInt`,
+  `tryHead`, …) beside your own bindings. After `$` in command argv
+  Tab now offers just the bindings a `$x` argument accepts (string,
+  int, bool, Secret, Uuid, or a record for `$r.field`); after `$@`,
+  `seq<string>` bindings. Functions are never offered. The same holds
+  after a builtin head (`ls`, `cd`), a `^`-forced head and a let's
+  command RHS.
+- **`weir add sig` cannot hang or run out of memory on a tool's help.**
+  A help that leaves a daemon holding its output, or prints without
+  end, hung generation or grew it to gigabytes. Each probe now gets 15s,
+  then 1s to drain after the tool exits, and reads at most 4 MiB per
+  stream (the signature notes a cut); the probe's process group is
+  killed. Probes run in a fresh empty temp dir, not in the shared temp
+  dir itself.
+- **Signature file names no longer collide.** `#sig /a/b/cob` and
+  `#sig _a_b_cob` (or `.weir` and `weir`, `a b` and `a_b`) wrote the
+  same `.weir/sigs/` file. Characters outside letters, digits, `-`,
+  `_` and a non-leading `.` are now written as `%XX`; a plain name's
+  file is unchanged, and a signature written under the old name is
+  still found through the lock.
 - **`serve` answers 415 to a request body in a charset weir cannot
   decode.** It was decoded as UTF-8, a wrong byte becoming U+FFFD, and
   handed to the handler; now no handler runs, as the HTTP client
@@ -151,8 +198,34 @@
   SIGTERM or SIGHUP itself, as an unscoped one did, so a bash loop
   around it stops at one Ctrl+C. `$?` is unchanged.
 - **Ctrl+C no longer kills the commands an `always` cleanup runs.** At
-  a terminal they run in a process group of their own, so the cleanup
-  finishes; they can still print, but not read the terminal.
+  a terminal they start with Ctrl+C and Ctrl+\ ignored, so the cleanup
+  finishes; they keep the terminal, so a pager in a cleanup works, and a
+  program that handles Ctrl+C itself still can.
+- **Ctrl+\ (SIGQUIT) runs the cleanups.** It dumped core, skipped the
+  outer cleanups and left the `within tmp` directory; now it unwinds as
+  SIGTERM does and weir dies by SIGQUIT, with no core dump.
+- **A full or closed stderr no longer aborts weir.** With `2>/dev/full`
+  or `2>&-` the final error line (or a `Log.*` line) aborted with a core
+  dump, exit 134; stderr writes that fail are now dropped and the exit
+  code is the script's own.
+- **The REPL survives a terminal hangup and restores the terminal.** A
+  hangup while an entry ran a command reported `internal error:
+  IOException`; it now dies by the SIGHUP. SIGTERM or SIGHUP at the
+  prompt left the terminal raw (no echo); it is now restored.
+- **Ctrl+C at the REPL stops a multi-statement entry even when nothing
+  was waiting** — during a cleanup, pure computation, or a child whose
+  exit code is the value (`| exitCode`). The rest of the entry ran.
+- **`File.sha256`, `File.copy`, `File.write`, `File.append` and
+  `File.writeBytes` on a FIFO are cut** by a race win, a fan-out's exit
+  and the first signal, as `File.read` is (Linux). They waited for the
+  other end forever. `File.writeAtomic` on a FIFO refuses (an atomic
+  replace has no meaning there; use `File.write`); it blocked.
+- **`Proc.wait` returns when the process exits.** It woke every 50 ms,
+  so a loop of short processes ran ~70x slower.
+- **A command killed by a group-wide SIGHUP, SIGQUIT or SIGTERM is not
+  reported as `command failed`** when the same signal is stopping weir.
+- **A cleanup that fails during a signal's 1s backstop says so** ("the
+  cleanup ALSO failed"), as it does on the script's own unwind.
 - **`exit n` in a `serve` handler exits n.** It was reported as a 500
   (`failed: ExitRequest`) and the script went on; now the scope stops,
   its handlers finish their cleanups, and the script exits n.
@@ -490,6 +563,56 @@
   now reused until the next edit.
 - **`from xml` refuses mixed content in a text field.** `<n>a<b/>c</n>`
   read as `"ac"`; it is now an error naming `<n>`, `<b>` and the field.
+- **A YAML round trip keeps `defaultMode: 0644`.** weir reads YAML 1.2,
+  where `0644` is decimal 644; YAML 1.1 readers such as kubectl read it
+  as octal 420. `Yaml.parse |> Yaml.merge p |> to yaml` rewrote it as
+  `644`, which kubectl then applied as a different mode. A `Yaml` node
+  now keeps the text of a leading-zero number, `0x1F`, `0o17` and
+  `.inf`, and writes it back unchanged. Reading `0644` into an `int`
+  field is now an error: write `0o644`, `644`, or quote it.
+- **`to yaml` writes exponent floats as `1.0e-05`.** `1e-05` and
+  `1e+21` read as strings to YAML 1.1 readers.
+- **Tabs in YAML.** A tab used as indentation flattened a nested
+  mapping without an error; it now refuses, naming the line. A tab
+  before `#` starts a comment (`port: 8080<TAB># http` read the comment
+  into the value).
+- **YAML keeps no-break spaces.** A plain value or key trimmed NBSP and
+  U+3000; only spaces and tabs trim now.
+- **A block-scalar line starting with `%` is content.** An Apache
+  `LogFormat` ConfigMap (`%h %l %u`) was refused as a directive, and so
+  was weir's own `to yaml` of such a string.
+- **`to yaml` never writes U+2028 raw in a block scalar.** Other YAML
+  readers take it as a line break; such a string is written quoted.
+- **`from xml` reads ASCII documents under any declared encoding.** A
+  Visual Studio 2008 `.vcproj` labelled `Windows-1252` was refused; so
+  were `UTF8` and `Latin-1`. Non-ASCII content under an encoding weir
+  cannot decode still refuses, and the hint now also says to change the
+  declaration. A malformed label such as `" windows-1252"` refuses
+  instead of being read as UTF-8.
+- **`from xml` keeps whitespace-only text** (`&#32;`, `&#9;`, two
+  spaces), as Python's `xml.etree` reads it; it read as `""`.
+- **`try` keeps a `Yaml` node's digits past int64**, as a plain `let`
+  does.
+- **An integer past int64 into an `int` field suggests `Yaml`**, not
+  `float`, which would round it. `gen types` drafts `format: uint64` as
+  `Yaml`.
+- **`gen types` notes a required and nullable field** — its `Option`
+  writes `None` as an omitted key, not `null` — and an enum's note lists
+  `null` only when the enum holds it and the type allows it.
+- **Errors escape the data they quote, piped too.** `Http.expect`'s
+  body snippet, a header name with a CR, and a bad `Env.load` /
+  `Args.load` value (or unknown flag, or stray argument) passed ESC,
+  BEL and CR raw when stderr was not a tty; they now render as `\x1b`,
+  `\x07`, `\x0d`.
+- **`weir add schema` keeps a URL's credentials out of
+  `.weir/lock.json`.** `http://user:pass@host/s.json` was written to
+  the committed lock as given; the lock now records
+  `http://host/s.json` and add says so. `add module` does the same.
+- **`show` of a request and a plan's `http send` preview mask the URL's
+  credentials** as `http://***@host/…`. The request still sends them.
+- **`NO_PROXY` matches a non-ASCII host by its punycode**, as curl
+  does: `NO_PROXY=xn--bcher-kva.example` bypasses the proxy for
+  `http://bücher.example`; an entry is matched as written.
 
 ## v0.0.74
 

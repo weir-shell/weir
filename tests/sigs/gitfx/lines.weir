@@ -9,3 +9,7 @@ gitfx status -sb --porcelain=v2 // clean
 gitfx log --oneline -n 5 --graphh // miss: --graphh — git log parses revision options outside parse-options; its completion helper cannot list them, so the case is unchecked
 gitfx log -1 --format=%H // clean
 gitfx rev-parse --abbrev-ref HEAD // clean
+gitfx remote set-head origin --auto // clean
+gitfx remote add --tags -f o https://x // clean
+gitfx remote set-head o --autoo // typo: --autoo
+gitfx remote -v show o // clean

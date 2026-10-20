@@ -22,7 +22,7 @@ stops being true fails the build.
   type is what the flag takes (`bool` nothing, `string` one value,
   `Option<string>` an attached one, `seq<string>` its value and then
   the tool's options end), and `let convention`/`abbreviations`/
-  `negatable`/`stopAtOperand`/`unchecked` describe the tool — see
+  `negatable`/`dashWords`/`stopAtOperand`/`unchecked` describe the tool — see
   docs/tooling.md. Vendoring: `weir add
   module <src>//<file>@<ref> --as <name>` (then `import "weir:<name>"
   as M`), `weir restore` re-materializes the lock's files, `weir
@@ -662,10 +662,12 @@ print $"{key} -> {value}"
   redirect loop — past 50 hops it raises, naming it). The proxy comes
   from `HTTP_PROXY`/`HTTPS_PROXY`; a `NO_PROXY` entry bypasses it as
   curl reads it — `example.com` (or `.example.com`) for the host and
-  every subdomain, trailing dots ignored, `*` for every host, an
-  address or a CIDR (`10.0.0.0/8`, `::1`, bracket-less) for an IP host,
-  no ports. A dead proxy, a proxy refusing the tunnel (407, 403, 502)
-  or closing the connection is named in the error — host:port, never
+  every subdomain, trailing dots ignored, a non-ASCII host matched by
+  its punycode (write the entry as `xn--…`), `*` for every host, an
+  address or a CIDR (`10.0.0.0/8`, `::1`, bracket-less) for an IP
+  host, no ports. A dead proxy, a proxy
+  refusing the tunnel (407, 403, 502) or closing the connection is
+  named in the error — host:port, never
   its credentials. `auth` plus an
   explicit `Authorization` header is refused (two credentials). A
   header the wire cannot carry raises before anything is sent, naming
@@ -729,7 +731,8 @@ print $"{key} -> {value}"
   still runs whole, its commands included (before the return). A
   loser blocked reading stdin or a FIFO is cut too (POSIX; on Linux the
   cut closes the FIFO, so a later read gets the writer's data
-  [D:fifo-read-polled]). `exit n` in an arm ends the race and the
+  [D:fifo-read-polled]), and so is one writing, hashing or copying a FIFO
+  (Linux; `File.writeAtomic` refuses a FIFO) [D:fifo-ops-polled]. `exit n` in an arm ends the race and the
   script, as in `pmap`.
 - A SCOPED background process is `within proc srv = <command>` +
   an indented block [D:scoped-procs]: the scope IS the lifetime —
@@ -878,8 +881,9 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   pipelines and reifiers refuse (`| complete` WAITS — the opposite of
   backgrounding; compose inside `sh -c`); the block starts on the
   NEXT line (the command owns the rest of its own). THE NON-CLAIM,
-  stated: normal exit, raise, SIGINT, SIGTERM and SIGHUP (the
-  terminal closed, `kill -HUP`) all close every scope (on the flow's
+  stated: normal exit, raise, SIGINT, SIGTERM, SIGHUP (the
+  terminal closed, `kill -HUP`) and SIGQUIT (^\, no core dump,
+  `$?` 131 [D:sigquit-teardown]) all close every scope (on the flow's
   own thread — the script's, a REPL entry's, on Windows too — so no
   statement runs after the signal; a flow stuck where no step comes
   has its cleanups run by a 1s backstop, still whole, once, LIFO
@@ -894,7 +898,10 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   keeps SIGHUP ignored. A hung-up terminal never aborts weir: console
   writes after the hangup are dropped, so the cleanups still run whole
   and weir dies by the SIGHUP [D:console-hangup] (a command's own write
-  to the dead terminal is that command's failure).
+  to the dead terminal is that command's failure). A full or closed
+  stderr (`2>/dev/full`, `2>&-`) never aborts or fails a run either:
+  `printerr`, `Log.*` and the final error write nothing and the exit
+  code is the run's own [D:console-write].
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel, a `kill -INT`) tree-kills the running foreground command and
   every fan-out arm's command too, scoped or not [D:sigint-reaps]. A
@@ -913,9 +920,10 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   reach [D:tree-kill-walk]. An `always` cleanup running or about to
   start when the signal lands runs whole, its commands too, then the
   signal's exit [D:teardown-never-preempts]; at a terminal its commands
-  run in a process group of their own, so a terminal ^C cannot reach
-  them (their output shows; they cannot read the terminal)
-  [D:cleanup-pgrp].
+  start with SIGINT and SIGQUIT ignored, so a terminal ^C or ^\ cannot
+  kill them, while they keep the terminal and its input (a pager
+  works; one that handles ^C itself still quits on it)
+  [D:cleanup-sigign].
   A `pmap`/`piter`/`pfirst` takes no new arm after the signal (or the
   closed stdout), and arms already running are cut at their next
   builtin call, command, sleep or wait and JOINED before any
@@ -925,7 +933,10 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   in a builtin's own loop holds the teardown (a second signal
   hard-exits) [D:scope-tree].
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
-  definition — no userspace design closes that hole; and a weir
+  definition — no userspace design closes that hole (nor can SIGUSR1,
+  SIGUSR2 or SIGALRM, whose default ends weir at once); an inherited
+  ignored SIGTERM stays ignored, as in shells
+  [D:sigterm-inherited-ign]; and a weir
   BACKGROUNDED WHERE JOB CONTROL IS OFF (`weir … &` in a script,
   `sh -c 'weir … &'`, after `set +m`) with a controlling terminal
   inherits SIGINT ignored — the shell's rule for a background command
@@ -1032,7 +1043,10 @@ let x =
   plan's earlier ops leave it, and raises there with the direct call's
   error (copy onto an existing or planned file, delete of a missing or
   already-deleted file, copy/move from a missing source, `Dir.delete`
-  of a dir the plan filled, a write under a missing or deleted dir) —
+  of a dir the plan filled, a write, copy or move into a missing or
+  deleted dir, a `Dir.copy`/`Dir.move` into its own subtree), following
+  symlinks as the kernel will (a write through `L` lands where `L`
+  points; a delete or move acts on the link itself) —
   a plan never holds an op certain to fail at apply. The refusals:
   `proc` inside a plan (a spawned binary is uncapturable — plan covers
   weir-native mutation only), `apply` inside a plan (a capture cannot
@@ -1586,7 +1600,8 @@ ls |> Seq.where (fun f -> f.name |> Str.startsWith "lssort-") |> Seq.iter (fun f
   matching `ls` — a stated third position beside `**`'s
   skip-symlinked-dirs law and `File.*`'s follow-as-a-shell-does
   (`..` included: `File.read "L/../x"` steps up from where the link
-  `L` really points, as `cat L/../x` does [D:fs-dotdot-physical];
+  `L` really points, as `cat L/../x` does [D:fs-dotdot-physical], and
+  `Path.glob "L/../*"` walks the same place;
   `cd`/`within cd` keep the shell's logical `..`).
   Raises when absent, naming the resolved path — and a glob hit can
   vanish before `stat` reaches it, the same TIMING seam `Seq.freeze`
@@ -1862,7 +1877,17 @@ type Bad = C of int
   top-level SEQUENCE document -> `seq<T>` (nested records, seqs,
   `seq<string * string>` for labels, `Option`; bool is EXACTLY
   true/false; plain `null`/`Null`/`NULL`/`~` and an empty value are
-  null -> `None`, quoted `"null"` is a string; anchors rejected). A plain value holding `: ` (`f: a: b`) refuses, as every YAML reader does — quote it. A block sequence reads in BOTH indent
+  null -> `None`, quoted `"null"` is a string; anchors rejected;
+  indentation is SPACES only — a tab there refuses, a tab before `#`
+  starts a comment; a plain value trims only space/tab). NUMBERS are
+  YAML 1.2 core [D:yaml-number-text]: `0x1F`/`0o17` are ints, `.inf`/
+  `.nan` numbers; a LEADING ZERO (`0644`) is decimal 644 to 1.2 but
+  OCTAL 420 to YAML 1.1 readers (PyYAML, kubectl) — a `Yaml` node
+  (`Yaml.parse`/`yaml patch`) keeps such a number's TEXT and `to yaml`
+  writes it back unchanged (a Pod's `defaultMode: 0644` survives a
+  patch), while reading `0644` into an `int` field REFUSES (write
+  `0o644`, `644`, or quote it); 1.1-only forms (`1_000`, `0b101`,
+  `1:20`) are strings, written quoted. A plain value holding `: ` (`f: a: b`) refuses, as every YAML reader does — quote it. A block sequence reads in BOTH indent
   styles — indented under its key OR at the SAME column as its key
   (kubectl's `items:` / `- apiVersion: v1` flush-left form). Only the
   EMPTY flow collections `{}` and `[]` are read (into an empty
@@ -1888,7 +1913,9 @@ type Bad = C of int
   `null` (the key kept); a string any YAML 1.1/1.2 reader would type
   auto-quotes, keys too (`"no"`/`"007"`/`"+.5"`/`"y"`/`"<<"`/`"="`); an
   int64-overflowing integer read into a `Yaml` node is a `YFloat` that
-  writes back its digits. `Yaml`
+  writes back its digits (into an `int` field it refuses, suggesting
+  `Yaml`); an exponent float writes with a dot and signed exponent
+  (`1.0e-05`, a 1.1 reader's float). `Yaml`
   nodes (`YStr`/`YInt`/`YFloat`/`YBool`/`YNull`/`YSeq`/`YMap`;
   `YMap [("k", YStr "v")]`) render directly —
   `YMap` keeps YOUR key order; record fields render in DECLARATION
@@ -2064,8 +2091,14 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   and there is NO `to xml`. `Bytes` read too (`File.readBytes p |>
   from xml T`): decoded by BOM, else the declaration's encoding (UTF-8/
   16/32, ASCII, ISO-8859-1 only — convert others with iconv), else
-  UTF-8, strictly [D:xml-encoding] [D:xml-encoding-builtin]; text under a non-UTF-8 declaration
-  reads only if ASCII, an unknown encoding refuses. A DTD (`<!DOCTYPE …>`) refuses
+  UTF-8, strictly [D:xml-encoding] [D:xml-encoding-builtin]; `utf8`/`Latin-1`
+  spellings accepted; a pure-ASCII document reads under ANY declared
+  label (a `Windows-1252` `.vcproj`), non-ASCII under an undecodable
+  one refuses (iconv to UTF-8 AND change the declaration), a malformed
+  label refuses [D:xml-labels]; text under a non-UTF-8 declaration
+  reads only if ASCII. Element text is read AS WRITTEN — whitespace-only
+  text (`&#32;`, `  `) is kept, as `xml.etree` reads it
+  [D:xml-whitespace]. A DTD (`<!DOCTYPE …>`) refuses
   [D:xml-no-dtd] — no declared entity expands or resolves.
   An element that repeats under a `string`/`Option<string>`/record
   field refuses (never silently the first) — declare a `seq< >`. A
@@ -2823,7 +2856,7 @@ not the teaching.
 - `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move` `stat`
 - `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
 - `Env`: `fromFile` `get` `getOr` `load` `need` `ofPairs` `pair` `vars`
-- `File`: `append` `copy` `delete` `exists` `isExecutable` `mode` `move` `read` `readBytes` `readSecret` `sha256` `size` `stat` `write` `writeAtomic` `writeBytes` — `mode` is the permissions as `Some "rwxr-xr-x"` (`None` on Windows); `stat` is one path's `FileRow` (a symlink describes the link itself); `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity] — the temp file is born with that mode, so a 0600 file's new content is never readable wider [D:private-temp]
+- `File`: `append` `copy` `delete` `exists` `isExecutable` `mode` `move` `read` `readBytes` `readSecret` `sha256` `size` `stat` `write` `writeAtomic` `writeBytes` — `mode` is the permissions as `Some "rwxr-xr-x"` (`None` on Windows); `stat` is one path's `FileRow` (a symlink describes the link itself); `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity], and refuses a FIFO (use `write`) [D:fifo-ops-polled] — the temp file is born with that mode, so a 0600 file's new content is never readable wider [D:private-temp]
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Uuid`: `fromBytes` `instant` `max` `nil` `ns` `parse` `toBytes` `toString` `tryParse` `v4` `v5` `v7` `v7At` `version`

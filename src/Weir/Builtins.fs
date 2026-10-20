@@ -1063,8 +1063,15 @@ let private globWalk (rootFs: string) (pattern: string) : seq<string> =
                             if realDir sub then
                                 yield! walk sub (prefix + name + "/") ("**" :: rest)
                 | seg :: rest when not (hasWild seg) ->
-                    // literal segments echo without enumeration
-                    let sub = System.IO.Path.Combine(dirFs, seg)
+                    // literal segments echo without enumeration; `..`
+                    // steps up physically, as File.*/Dir.* resolve it
+                    // [D:fs-dotdot-physical] — an enumeration would
+                    // collapse it lexically
+                    let sub =
+                        if seg = ".." then
+                            Session.resolveFs (System.IO.Path.Combine(dirFs, seg))
+                        else
+                            System.IO.Path.Combine(dirFs, seg)
 
                     match rest with
                     | [] ->
@@ -1123,7 +1130,7 @@ let private globImpl: Value =
                     |> List.toArray
                     |> Array.takeWhile (fun seg -> not (seg |> Seq.exists (fun c -> c = '*' || c = '?' || c = '[')))
 
-                PlanMode.checkTree "Path.glob" (System.IO.Path.GetFullPath(System.IO.Path.Combine(Array.append [| rootOf () |] literal)))
+                PlanMode.checkTree "Path.glob" (Session.resolveFs (System.IO.Path.Combine(Array.append [| rootOf () |] literal)))
 
             VSeq(Seq.delay (fun () -> globWalk (rootOf ()) pat |> Seq.map VStr))
         | _ -> unreachable "the checker rejects 'glob' on this argument")
@@ -2852,6 +2859,12 @@ let private readBytesShared (r: string) : byte[] =
 // new one, never a window. The rename replaces the symlink's TARGET,
 // not the link; the inode changes (hardlinks split, held handles and
 // tail -f keep the old file, a single-file bind mount into a container breaks).
+// a FIFO has no file to replace: an atomic replace refuses rather than
+// rename a regular file over the channel [D:fifo-ops-polled]
+let private refuseFifoAtomic (op: string) (r: string) : unit =
+    if Session.isFifo r then
+        failwith $"{op}: {quoteData r} is a FIFO — an atomic replace has no meaning there; use File.write"
+
 let private atomicReplace (r: string) (lines: Value seq) : unit =
     let target =
         let fi = FileInfo r
@@ -3630,28 +3643,35 @@ type private FsProbe =
     { Kind: string -> int // 0 absent, 1 file, 2 dir, 4 another entry
       IsDir: string -> bool // Kind = 2, in one stat
       EmptyDir: string -> bool
-      Dangling: string -> bool }
+      Dangling: string -> bool
+      Canon: string -> string } // every symlink followed
 
 let private realProbe =
     { Kind = PlanMode.realKind
       IsDir = System.IO.Directory.Exists
       EmptyDir = fun r -> System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty
-      Dangling = isDangling }
+      Dangling = isDangling
+      Canon = PlanMode.realCanon }
 
 let private planProbe =
     { Kind = PlanMode.simKind
       IsDir = PlanMode.simIsDir
       EmptyDir = PlanMode.simEmptyDir
-      Dangling = PlanMode.simDangling isDangling }
+      Dangling = PlanMode.simDangling isDangling
+      Canon = PlanMode.simCanon }
+
+// a new entry's parent must be a directory
+let private requireParent (pr: FsProbe) (op: string) (r: string) : unit =
+    let parent = System.IO.Path.GetDirectoryName r
+
+    if not (isNull parent) && parent <> "" && not (pr.IsDir parent) then
+        failwith $"{op}: no such directory: {quoteData parent}"
 
 let private preWrite (pr: FsProbe) (op: string) (r: string) : unit =
     if pr.IsDir r then
         failwith $"{op}: {quoteData r} is a directory"
     else
-        let parent = System.IO.Path.GetDirectoryName r
-
-        if not (isNull parent) && parent <> "" && not (pr.IsDir parent) then
-            failwith $"{op}: no such directory: {quoteData parent}"
+        requireParent pr op r
 
 let private writeGuard (op: string) (r: string) : unit = preWrite realProbe op r
 
@@ -3774,10 +3794,20 @@ let private preFileCopy (pr: FsProbe) (op: string) (src: string) (dst: string) :
         failwith $"{op}: dangling symlink: {quoteData src} — its target does not exist"
 
     refuseExistingDst pr op dst
+    requireParent pr op dst
 
 let private doFileCopy (op: string) (src: string) (dst: string) : unit =
     preFileCopy realProbe op src dst
-    ioGuarded op src (fun () -> System.IO.File.Copy(src, dst))
+
+    ioGuarded op src (fun () ->
+        if Session.isFifo src then
+            // a FIFO source is read as File.read's is, so a cut stops it
+            // [D:fifo-ops-polled]
+            withReadStream src (fun from ->
+                use into = new FileStream(dst, FileMode.CreateNew, FileAccess.Write)
+                from.CopyTo into)
+        else
+            System.IO.File.Copy(src, dst))
 
 let private preFileMove (pr: FsProbe) (op: string) (src: string) (dst: string) : unit =
     let k = pr.Kind src
@@ -3789,6 +3819,7 @@ let private preFileMove (pr: FsProbe) (op: string) (src: string) (dst: string) :
         failwith $"{op}: no such file: {quoteData src}"
 
     refuseExistingDst pr op dst
+    requireParent pr op dst
 
 let private doFileMove (op: string) (src: string) (dst: string) : unit =
     preFileMove realProbe op src dst
@@ -3837,9 +3868,39 @@ let private doDirDeleteAll (op: string) (r: string) : unit =
     requireDir op r
     ioGuarded op r (fun () -> System.IO.Directory.Delete(r, true))
 
+// a destination inside the source: a copy would copy into itself, a
+// move cannot happen (EINVAL). Symlinks are followed on the
+// destination's parent and — for a copy, which reads through a final
+// link — the source, so a link cannot hide the nesting; a move renames
+// a final link itself
+let private refuseIntoSelf (pr: FsProbe) (op: string) (followSrc: bool) (src: string) (dst: string) : unit =
+    let sep = string System.IO.Path.DirectorySeparatorChar
+    let trim (p: string) = System.IO.Path.TrimEndingDirectorySeparator p
+
+    let underParent (p: string) =
+        let full = trim (System.IO.Path.GetFullPath p)
+
+        match System.IO.Path.GetDirectoryName full with
+        | null -> full
+        | parent -> System.IO.Path.Combine(pr.Canon parent, System.IO.Path.GetFileName full)
+
+    let fs = trim (if followSrc then pr.Canon src else underParent src)
+    let fd = trim (underParent dst)
+
+    let cmp =
+        if System.OperatingSystem.IsLinux() then
+            System.StringComparison.Ordinal
+        else
+            System.StringComparison.OrdinalIgnoreCase
+
+    if fd.StartsWith(fs + sep, cmp) || System.String.Equals(fd, fs, cmp) then
+        failwith $"{op}: destination {quoteData dst} is inside the source {quoteData src}"
+
 let private preDirMove (pr: FsProbe) (op: string) (src: string) (dst: string) : unit =
     requireDirIn pr op src
     refuseExistingDst pr op dst
+    refuseIntoSelf pr op false src dst
+    requireParent pr op dst
 
 let private doDirMove (op: string) (src: string) (dst: string) : unit =
     preDirMove realProbe op src dst
@@ -3855,35 +3916,7 @@ let private doDirMove (op: string) (src: string) (dst: string) : unit =
 let private preDirCopy (pr: FsProbe) (op: string) (src: string) (dst: string) : unit =
     requireDirIn pr op src
     refuseExistingDst pr op dst
-
-    let sep = string System.IO.Path.DirectorySeparatorChar
-
-    // a final symlink is resolved on both sides (the source itself, the
-    // destination's parent), so a link cannot hide the nesting
-    let real (p: string) =
-        let full = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath p)
-
-        match DirectoryInfo(full).ResolveLinkTarget true with
-        | null -> full
-        | t -> System.IO.Path.TrimEndingDirectorySeparator t.FullName
-
-    let fs = real src
-
-    let fd =
-        let full = System.IO.Path.GetFullPath dst
-
-        match System.IO.Path.GetDirectoryName full with
-        | null -> full
-        | parent -> System.IO.Path.Combine(real parent, System.IO.Path.GetFileName full)
-
-    let cmp =
-        if System.OperatingSystem.IsLinux() then
-            System.StringComparison.Ordinal
-        else
-            System.StringComparison.OrdinalIgnoreCase
-
-    if fd.StartsWith(fs + sep, cmp) || System.String.Equals(fd, fs, cmp) then
-        failwith $"{op}: destination {quoteData dst} is inside the source {quoteData src}"
+    refuseIntoSelf pr op true src dst
 
 let private doDirCopy (op: string) (src: string) (dst: string) : unit =
     preDirCopy realProbe op src dst
@@ -3947,24 +3980,32 @@ let private fileMembers: (string * Ty * Value) list =
                   writeGuard "File.write" r
 
                   ioGuarded "File.write" r (fun () ->
-                      // one handle for peek + truncate + write — a separate
-                      // read-open racing the write-open trips a Windows sharing
-                      // violation [D:encoding-law]. Peek the existing first
-                      // bytes to decide the BOM, truncate, then write.
-                      use fs =
-                          new FileStream(r, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)
+                      match Session.openPolledWrite r with
+                      | Some s ->
+                          // a FIFO: no BOM to peek, nothing to truncate — cut as
+                          // a read is [D:fifo-ops-polled]
+                          use s = s
+                          let payload = writePayload false lines
+                          s.Write(payload, 0, payload.Length)
+                      | None ->
+                          // one handle for peek + truncate + write — a separate
+                          // read-open racing the write-open trips a Windows sharing
+                          // violation [D:encoding-law]. Peek the existing first
+                          // bytes to decide the BOM, truncate, then write.
+                          use fs =
+                              new FileStream(r, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)
 
-                      // preserve an existing UTF-8 BOM; a new or no-BOM file
-                      // stays bare, so this never adds a BOM
-                      let keepBom = bomAt fs
+                          // preserve an existing UTF-8 BOM; a new or no-BOM file
+                          // stays bare, so this never adds a BOM
+                          let keepBom = bomAt fs
 
-                      // LF bytes on every platform [D:lf-output] — a
-                      // written file is data (hashes, sigs, diffs).
-                      let payload = writePayload keepBom lines
+                          // LF bytes on every platform [D:lf-output] — a
+                          // written file is data (hashes, sigs, diffs).
+                          let payload = writePayload keepBom lines
 
-                      fs.SetLength 0L
-                      fs.Seek(0L, SeekOrigin.Begin) |> ignore
-                      fs.Write(payload, 0, payload.Length))
+                          fs.SetLength 0L
+                          fs.Seek(0L, SeekOrigin.Begin) |> ignore
+                          fs.Write(payload, 0, payload.Length))
 
                   VUnit
               | _ -> unreachable "the checker rejects 'File.write' on these arguments"))
@@ -3975,6 +4016,8 @@ let private fileMembers: (string * Ty * Value) list =
               match pathV, linesV with
               | VStr path, VSeq lines ->
                   let r = Session.resolveFs path
+
+                  refuseFifoAtomic "File.writeAtomic" r
 
                   match capWrite "File.writeAtomic" "WriteFileAtomic" r lines with
                   | Some captured -> captured
@@ -4004,7 +4047,13 @@ let private fileMembers: (string * Ty * Value) list =
                       for l in lines do
                           sb.Append(asString l).Append '\n' |> ignore
 
-                      AppendNative.appendBytes r (utf8Strict.GetBytes(sb.ToString())))
+                      let bytes = utf8Strict.GetBytes(sb.ToString())
+
+                      match Session.openPolledWrite r with
+                      | Some s ->
+                          use s = s
+                          s.Write(bytes, 0, bytes.Length)
+                      | None -> AppendNative.appendBytes r bytes)
 
                   VUnit
               | _ -> unreachable "the checker rejects 'File.append' on these arguments"))
@@ -4201,7 +4250,13 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                   | Some _ -> VUnit
                   | None ->
                   writeGuard "File.writeBytes" r
-                  ioGuarded "File.writeBytes" r (fun () -> System.IO.File.WriteAllBytes(r, b))
+
+                  ioGuarded "File.writeBytes" r (fun () ->
+                      match Session.openPolledWrite r with
+                      | Some s ->
+                          use s = s
+                          s.Write(b, 0, b.Length)
+                      | None -> System.IO.File.WriteAllBytes(r, b))
                   VUnit
               | _ -> unreachable "the checker rejects 'File.writeBytes' on these arguments"))
       "sha256",
@@ -4218,11 +4273,11 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
 
               VStr(
                   ioGuarded "File.sha256" r (fun () ->
-                      use fs = openShared r
-
-                      System.Security.Cryptography.SHA256.HashData fs
-                      |> Array.map (fun x -> x.ToString "x2")
-                      |> String.concat "")
+                      // a FIFO is cut as File.read's is [D:fifo-ops-polled]
+                      withReadStream r (fun fs ->
+                          System.Security.Cryptography.SHA256.HashData fs
+                          |> Array.map (fun x -> x.ToString "x2")
+                          |> String.concat ""))
               )
           | v -> unreachable $"the checker rejects 'File.sha256' on {formatValue v}")
       "delete",
@@ -5112,7 +5167,10 @@ let private httpExpectImpl: Value =
 
                     let snippet =
                         let flat = resp.Body.Replace("\r", " ").Replace("\n", " ").Trim()
-                        if CodePoints.length flat > 200 then CodePoints.head flat 200 + "…" else flat
+                        if CodePoints.length flat > 200 then
+                            quoteData (CodePoints.head flat 200) + "…"
+                        else
+                            quoteData flat
 
                     let detail = if snippet = "" then "" else $": {snippet}"
                     let methodName = httpMethodName (recGet "method" f)
@@ -5254,6 +5312,7 @@ let private applyOp (op: Value) : unit =
             fs.Write(payload, 0, payload.Length))
     | VUnion("WriteFileAtomic", Some(VTuple [ VStr r; VSeq lines ])) ->
         writeGuard "Plan.apply (WriteFileAtomic)" r
+        refuseFifoAtomic "Plan.apply (WriteFileAtomic)" r
         ioGuarded "Plan.apply (WriteFileAtomic)" r (fun () -> atomicReplace r lines)
     | VUnion("DeleteFile", Some(VStr r)) -> doFileDelete "Plan.apply (DeleteFile)" r
     | VUnion("MakeDir", Some(VStr r)) -> doDirCreate "Plan.apply (MakeDir)" r
@@ -7202,7 +7261,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path"; "lines" ])
           "File.writeAtomic",
           (bd
-              "Write a sequence of lines by replacing the whole file at once: the content goes to a temp file in the same directory, is flushed to disk, and is then renamed over the target. Readers see either the complete old file or the complete new one, and a failed write leaves the original intact. For a symlink, the file it points to is replaced, not the link; the file's permissions and any existing BOM are kept. Because the file is a new inode, hard links are separated, open handles and tail -f keep seeing the old file, and a single-file bind mount into a container stops updating; use File.write when you need an in-place write. Inside a plan it records a WriteFileAtomic op, and apply replaces the file the same way."
+              "Write a sequence of lines by replacing the whole file at once: the content goes to a temp file in the same directory, is flushed to disk, and is then renamed over the target. Readers see either the complete old file or the complete new one, and a failed write leaves the original intact. For a symlink, the file it points to is replaced, not the link; the file's permissions and any existing BOM are kept. Because the file is a new inode, hard links are separated, open handles and tail -f keep seeing the old file, and a single-file bind mount into a container stops updating; use File.write when you need an in-place write. Inside a plan it records a WriteFileAtomic op, and apply replaces the file the same way. A FIFO refuses: use File.write."
               None
               None
            |> named [ "path"; "lines" ])

@@ -1,0 +1,4 @@
+#sig npxfx
+npxfx --yes create-vite app // clean
+npxfx -y prettier --write . // clean
+npxfx --registry=https://r.example prettier x // clean
