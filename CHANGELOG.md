@@ -148,10 +148,13 @@
   tag $t<Tab>` listed every Prelude function (`take`, `toInt`,
   `tryHead`, …) beside your own bindings. After `$` in command argv
   Tab now offers just the bindings a `$x` argument accepts (string,
-  int, bool, Secret, Uuid, or a record for `$r.field`); after `$@`,
-  `seq<string>` bindings. Functions are never offered. The same holds
-  after a builtin head (`ls`, `cd`), a `^`-forced head and a let's
-  command RHS.
+  int, bool, Secret, Uuid; `$r.<Tab>` offers a record's fields that
+  qualify); after `$@`, `seq<string>` bindings. Functions and bare
+  records are never offered, nor anything inside `"…"` or glued after
+  `--x=`, where `$` does not splice. The same holds after a builtin head
+  (`ls`, `cd`), a `^`-forced head, a let's command RHS, and inside
+  `$(…)` and `if`/`for`/`match` bodies. In an editor, `$` inside a yaml
+  block offers what a yaml splice accepts.
 - **`weir add sig` cannot hang or run out of memory on a tool's help.**
   A help that leaves a daemon holding its output, or prints without
   end, hung generation or grew it to gigabytes. Each probe now gets 15s,

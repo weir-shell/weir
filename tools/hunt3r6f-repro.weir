@@ -1102,7 +1102,7 @@ let h3r6f3 d =
     let b = res |> Seq.item 1
     let has ls n = ls |> Seq.contains n
     failing [
-        ($"""LSP completion after `$` in a yaml block must offer the yaml splices xs fl y o, not argv furniture ('{a |> Str.join " "}')""", has a "xs" && has a "fl" && has a "y" && has a "o" && not (has a "pwd"))
+        ($"""LSP completion after `$` in a yaml block must offer the yaml splices xs fl y o, not the record m ('{a |> Str.join " "}')""", has a "xs" && has a "fl" && has a "y" && has a "o" && not (has a "m"))
         ($"""LSP completion of `$x` in a yaml block must offer xs ('{b |> Str.join " "}')""", has b "xs")
     ]
 
@@ -1129,7 +1129,7 @@ let ctlPSpliceTop d =
     Seq.equal (res |> Seq.head) ["qs"; "qt"]
 
 let h3r6c25 d =
-    let res = lspAt d "c25.weir" c25Src [(5, 8); (6, 11); (8, 7); (9, 16); (10, 20); (11, 25); (12, 9)]
+    let res = lspAt d "c25.weir" c25Src [(5, 9); (6, 11); (8, 7); (9, 17); (10, 20); (11, 25); (12, 9)]
     let at k = res |> Seq.item k
     let shown k = at k |> Str.join " "
     let only ls = Seq.equal ls ["qs"; "qt"]
@@ -1140,7 +1140,7 @@ let h3r6c25 d =
         ($"""`$(echo $q` must filter like the top level: qs qt ('{shown 3}')""", only (at 3))
         ($"""`if true then echo $q` must filter like the top level: qs qt ('{shown 4}')""", only (at 4))
         ($"""`for … do echo $q` must filter like the top level: qs qt ('{shown 5}')""", only (at 5))
-        ($"""`echo $vr.` must offer the record's splice-able fields name/n ('{shown 6}')""", (at 6 |> Seq.contains "name") && (at 6 |> Seq.contains "n"))
+        ($"""`echo $vr.` must offer the record's splice-able fields vr.name/vr.n ('{shown 6}')""", (at 6 |> Seq.contains "vr.name") && (at 6 |> Seq.contains "vr.n"))
     ]
 
 // ---- H3R6-C2-6: Esc then Enter within ~100ms runs the abandoned line (R3) --------

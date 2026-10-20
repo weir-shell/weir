@@ -4018,7 +4018,7 @@ let completionTests =
               let ask (text: string) =
                   Weir.Complete.suggest envT text (Weir.Complete.wordStartAt text text.Length)
 
-              let scalar = [ "tag"; "tcount"; "tflag"; "tid"; "tpoint" ]
+              let scalar = [ "tag"; "tcount"; "tflag"; "tid" ]
 
               for line in
                   [ "git tag $t"
@@ -4028,13 +4028,57 @@ let completionTests =
                     "let v = git tag $t"
                     "let v = ^ls $t"
                     "git log | grep $t" ] do
-                  Expect.equal (ask line) scalar $"{line}: the $x-spliceable bindings exactly (a record splices through a field)"
+                  Expect.equal (ask line) scalar $"{line}: the $x-spliceable bindings exactly (a record only through a field)"
 
               for line in [ "git tag $@t"; "let v = ls -l $@t" ] do
-                  Expect.equal (ask line) [ "tags"; "tpoint" ] $"{line}: $@ offers seq<string> bindings (and records, for a field)"
+                  Expect.equal (ask line) [ "tags" ] $"{line}: $@ offers seq<string> bindings"
 
               // a non-$ word keeps its own pool
               Expect.isFalse (List.contains "tag" (ask "git tag t")) "a bare argv word is not a binding pool"
+          }
+          test "a $ splice completes only where and what the checker splices [D:argv-splice-complete]" {
+              let mono = Weir.Types.mono
+
+              let envS =
+                  env
+                  |> declare "type Rq = { name: string; tags: seq<string>; n: int; f: float }"
+                  |> fun e ->
+                      { e with
+                          Values =
+                              e.Values
+                              |> Map.add "qs" (mono Weir.Types.TStr)
+                              |> Map.add "qt" (mono Weir.Types.TInt)
+                              |> Map.add "qfz" (mono (Weir.Types.TSeq Weir.Types.TStr))
+                              |> Map.add "vr" (mono (Weir.Types.TNamed("Rq", []))) }
+
+              let ask (text: string) =
+                  Weir.Complete.suggest envS text (Weir.Complete.wordStartAt text text.Length)
+
+              // a plain string never splices: the `$` is literal there
+              Expect.equal (ask "echo \"$q") [] "inside \"…\""
+              Expect.equal (ask "echo \"a b $q") [] "inside \"…\" after a space"
+              Expect.equal (ask "echo 'x $q") [] "inside '…'"
+              // a splice glued to a word is a word-join the parser refuses
+              Expect.equal (ask "echo --x=$q") [] "after --x="
+              Expect.equal (ask "echo a$q") [] "glued to a word"
+              // a record splices only through a field
+              Expect.isFalse (List.contains "vr" (ask "echo $v")) "a bare record"
+              Expect.equal (ask "echo $vr.") [ "vr.n"; "vr.name" ] "$r. offers the fields $ admits"
+              Expect.equal (ask "echo $vr.na") [ "vr.name" ] "the field prefix filters"
+              Expect.equal (ask "echo $@vr.") [ "vr.tags" ] "$@r. offers the seq<string> fields"
+              Expect.equal (ask "echo $qs.") [] "a non-record has no fields"
+              // the same filter in every command position
+              for line in
+                  [ "echo $q"
+                    "let z = $(echo $q"
+                    "if true then echo $q"
+                    "if true then ls else echo $q"
+                    "for f in [\"a\"] do echo $q"
+                    "match 1 with | _ -> echo $q"
+                    "echo $\"{1}\" $q" ] do
+                  Expect.equal (ask line) [ "qs"; "qt" ] line
+
+              Expect.equal (ask "let z = $(echo $@q") [ "qfz" ] "$@ inside $(…)"
           }
           test "a line-head '#' completes the session directives, bare [D:repl-directives]" {
               // bare names: the editor's word starts after the '#', so
