@@ -757,16 +757,16 @@ let c1Lock fanout = $$<<<
         File.append log ["always end"]
 
 let c1Fanouts = [
-    ("piter", "[1..4] |> Seq.piterWith 4 (fun i -> Duration.sleep 1s; File.append log [$\"arm {i}\"])")
-    ("pmap", "let rs = [1..3] |> Seq.pmap (fun i -> Duration.sleep 1s; File.append log [$\"arm {i}\"]; i) |> Seq.freeze\n        print $\"{rs |> Seq.sum}\"")
-    ("pfirst", "let w = [1..3] |> Seq.pfirst (fun i -> Duration.sleep 1s; File.append log [$\"arm {i}\"]; i)\n        print $\"{w}\"")
+    ("piter", "[1..4] |> Seq.piterWith 4 (fun i -> Duration.sleep 3s; File.append log [$\"arm {i}\"])")
+    ("pmap", "let rs = [1..3] |> Seq.pmap (fun i -> Duration.sleep 3s; File.append log [$\"arm {i}\"]; i) |> Seq.freeze\n        print $\"{rs |> Seq.sum}\"")
+    ("pfirst", "let w = [1..3] |> Seq.pfirst (fun i -> Duration.sleep 3s; File.append log [$\"arm {i}\"]; i)\n        print $\"{w}\"")
 ]
 
 let c1Tmp = <<<
     within
         within tmp d
             [1..4] |> Seq.piterWith 4 (fun i ->
-                Duration.sleep 1s
+                Duration.sleep 3s
                 Dir.create $"{d}/arm{i}"
                 [$"arm {i}"] |> File.write $"{d}/arm{i}/f")
     always
@@ -783,7 +783,7 @@ let h3r2c1 d =
         |> Seq.map (fun (k, fan) ->
             let log = $"{d}/{k}.log"
             let src = c1Lock fan |> Seq.collect (Str.split "\n") |> Seq.freeze
-            let r = runSig d "TERM" "0.5" [put d $"c1-{k}.weir" src; log]
+            let r = runSig d "TERM" "1.5" [put d $"c1-{k}.weir" src; log]
             Duration.sleep 500ms
             let ls = linesOf log
             let after = ls |> Seq.skipWhile (fun l -> l <> "always start") |> Seq.freeze
@@ -793,7 +793,7 @@ let h3r2c1 d =
     let tt = $"{d}/tt"
     Dir.create tt
     let p = put d "c1-tmp.weir" c1Tmp
-    let rT = runSig tt "TERM" "0.5" [p]
+    let rT = runSig tt "TERM" "1.5" [p]
     Duration.sleep 1500ms
     let leaked = Dir.list tt |> Seq.length
     failing (Seq.append lockCases [($"SIGTERM, piter under within tmp: {leaked} entr(ies) left in TMPDIR (exit {codeOf rT})", leaked == 0)])
