@@ -209,7 +209,8 @@
   file is unchanged, and a signature written under the old name is
   still found through the lock. A name too long for the file system is
   shortened with a hash, and a file the lock records as another tool's
-  old name is neither overwritten by `weir add sig` nor read by `#sig`.
+  old name is never read by `#sig` for this one; `weir add sig` moves
+  it to its own tool's name instead of overwriting it.
 - **`serve` answers 415 to a request body in a charset weir cannot
   decode.** It was decoded as UTF-8, a wrong byte becoming U+FFFD, and
   handed to the handler; now no handler runs, as the HTTP client

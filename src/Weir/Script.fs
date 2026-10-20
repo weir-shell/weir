@@ -7964,20 +7964,47 @@ module SigGen =
 
                         match Contracts.readLock weirDir with
                         | Error e -> Error e
+                        | Ok entries0 ->
                         // a file another lock entry records under this name
                         // (a legacy name: `a b` wrote sigs/a_b.weir) is that
-                        // tool's signature — never overwritten [D:sig-probe-bounds]
-                        | Ok entries when
-                            entries
-                            |> List.exists (fun e -> e.Kind = "sig" && e.Name <> tool && e.Path.Replace('\\', '/') = rel)
-                            ->
-                            let owner =
-                                entries
-                                |> List.find (fun e -> e.Kind = "sig" && e.Name <> tool && e.Path.Replace('\\', '/') = rel)
+                        // tool's signature — never overwritten: it moves to
+                        // its owner's own name first, its lock entry with it
+                        // [D:sig-probe-bounds]
+                        let moved =
+                            match
+                                entries0
+                                |> List.tryFind (fun e -> e.Kind = "sig" && e.Name <> tool && e.Path.Replace('\\', '/') = rel)
+                            with
+                            | None -> Ok(entries0, "")
+                            | Some owner ->
+                                let ownName = sigFileName owner.Name
+                                let src = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
+                                let dst = IO.Path.Combine(weirDir, "sigs", ownName)
+                                let shown = Eval.sanitizeTtyEcho owner.Name
 
-                            Error
-                                $"{rel} is the signature of '{Eval.sanitizeTtyEcho owner.Name}' (the lock records it under the name it had before file names were injective) — regenerate that one first, which moves it to its own name: weir add sig '{Eval.sanitizeTtyEcho owner.Name}'"
-                        | Ok entries ->
+                                if IO.File.Exists dst then
+                                    Error
+                                        $"{rel} is the signature of '{shown}' (the lock records it under the name it had before file names were injective), and sigs/{ownName} exists too — move or remove one by hand"
+                                else
+                                    try
+                                        if IO.File.Exists src then
+                                            IO.File.Move(src, dst)
+
+                                        Ok(
+                                            entries0
+                                            |> List.map (fun e ->
+                                                if e = owner then
+                                                    { e with Path = IO.Path.Combine("sigs", ownName) }
+                                                else
+                                                    e),
+                                            $"; moved the signature of '{shown}' from {rel} to sigs/{ownName}"
+                                        )
+                                    with ex ->
+                                        Error $"{rel} is the signature of '{shown}', and moving it to sigs/{ownName} failed: {ex.Message}"
+
+                        match moved with
+                        | Error e -> Error e
+                        | Ok(entries, movedNote) ->
                             let dest = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
                             IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore
                             IO.File.WriteAllText(dest, text)
@@ -8026,7 +8053,8 @@ module SigGen =
                                     $"{total} flag(s) across {nodes.Length} subcommand case(s)"
 
                             let cutTail =
-                                [ cutNote; slowNote ] |> List.filter ((<>) "") |> List.map (fun n -> "; " + n) |> String.concat ""
+                                ([ cutNote; slowNote ] |> List.filter ((<>) "") |> List.map (fun n -> "; " + n) |> String.concat "")
+                                + movedNote
 
                             Ok
                                 $"added sig {tool} ({surfaceNote}, source: {fullSource}, version: {versionNote}{cutTail}) — partial by default; verify and mark exhaustive by hand"

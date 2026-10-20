@@ -12075,23 +12075,27 @@ out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig gtool 2>&1) || fa
 dups=$(sort "$sgdir/gtool.log" | uniq -d)
 [ -z "$dups" ] || fail "a probe ran twice in one generation: $dups"
 # file names [D:sig-probe-bounds]: a plain name another lock entry
-# records (its legacy name) is that tool's file — never overwritten, never
-# read for this one; a no-flags teach names the file #sig reads
+# records (its legacy name) is that tool's file — never read for this one,
+# never overwritten: generation moves it to its owner's own name first; a
+# no-flags teach names the file #sig reads
 printf '#!/bin/sh\n[ "$1" = --help ] && printf "Options:\\n  --lg   lg\\n"\nexit 0\n' > "bin/lg tool"
-chmod +x "bin/lg tool"
-cp "bin/lg tool" bin/lg_tool
+printf '#!/bin/sh\n[ "$1" = --help ] && printf "Options:\\n  --lgu   lgu\\n"\nexit 0\n' > bin/lg_tool
+chmod +x "bin/lg tool" bin/lg_tool
 PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig "lg tool" >/dev/null 2>&1 || fail "add sig 'lg tool'"
 mv .weir/sigs/lg%20tool.weir .weir/sigs/lg_tool.weir
 sed 's#"sigs/lg%20tool.weir"#"sigs/lg_tool.weir"#' .weir/lock.json > lock.tmp && mv lock.tmp .weir/lock.json
 before=$(cksum < .weir/sigs/lg_tool.weir)
-out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig lg_tool 2>&1) && fail "add sig over another tool's legacy-named file must refuse: $out" || true
-echo "$out" | grep -qF "sigs/lg_tool.weir is the signature of 'lg tool'" || fail "the refusal names the owner: $out"
-[ "$(cksum < .weir/sigs/lg_tool.weir)" = "$before" ] || fail "another tool's legacy-named sig was overwritten"
 printf '#sig lg_tool\nprint "x"\n' > lg.weir
 out=$($BIN check lg.weir 2>&1) && fail "#sig must not read another tool's legacy-named file: $out" || true
 echo "$out" | grep -qF "is the signature of 'lg tool'" || fail "the #sig refusal names the owner: $out"
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig lg_tool 2>&1) || fail "add sig beside another tool's legacy-named file: $out"
+echo "$out" | grep -qF "moved the signature of 'lg tool' from sigs/lg_tool.weir to sigs/lg%20tool.weir" || fail "the move is stated: $out"
+[ "$(cksum < .weir/sigs/lg%20tool.weir)" = "$before" ] || fail "another tool's legacy-named sig was not kept whole"
+grep -qF '"sigs/lg%20tool.weir"' .weir/lock.json || fail "the owner's lock entry follows its file"
+grep -qF 'lgu' .weir/sigs/lg_tool.weir || fail "lg_tool gets its own sig"
 vout=$($BIN verify 2>&1) || true
-echo "$vout" | grep -qF "sig lg tool: ok" || fail "the legacy-named sig still verifies: $vout"
+echo "$vout" | grep -qF "sig lg tool: ok" || fail "the moved sig still verifies: $vout"
+echo "$vout" | grep -qF "sig lg_tool: ok" || fail "the new sig verifies: $vout"
 mkdir -p lib
 printf '#!/bin/sh\nexit 0\n' > lib/nf
 chmod +x lib/nf
@@ -12108,9 +12112,8 @@ case "$absbin" in /*) ;; *) absbin="$(pwd)/$absbin";; esac
 out=$(SG_REAL="$absbin" $BIN "$ROOT/tools/sig-score.weir" --bin "$sgdir/crashweir" --only gnufx 2>&1) && fail "the gate passed a crashed check: $out" || true
 echo "$out" | grep -qF "check crashed (exit 134)" || fail "the gate names the crash: $out"
 out=$(SG_REAL="$absbin" $BIN "$ROOT/tools/sig-score.weir" --bin "$sgdir/badsigweir" --only gnufx 2>&1) && fail "the gate passed a sig load error: $out" || true
-echo "$out" | grep -qF "sig diagnostic on an unmarked line L1:" || fail "the gate names the load error: $out"
-out=$(SG_REAL="$absbin" $BIN "$ROOT/tools/sig-score.weir" --bin "$sgdir/cleanupweir" --only gnufx 2>&1) && fail "the gate passed a warning on a // cleanup line: $out" || true
-echo "$out" | grep -qE "sig diagnostic on an unmarked line L[0-9]+: unknown flag '--zzq'" || fail "// cleanup is no clean marker: $out"
+echo "$out" | grep -qF "the signature did not load (L1):" || fail "the gate names the load error: $out"
+out=$(SG_REAL="$absbin" $BIN "$ROOT/tools/sig-score.weir" --bin "$sgdir/cleanupweir" --only gnufx 2>&1) || fail "// cleanup is no clean marker — its line is not scored: $out"
 fi
 # gh's dialect [D:scoped-sigs]: colon-suffixed command tokens walk, and
 # the walk reaches depth 4 (kustomize edit add resource's shape)
