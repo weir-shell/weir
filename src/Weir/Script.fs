@@ -9745,8 +9745,13 @@ let run (path: string) (scriptArgs: string list) : int =
                         match ex with
                         | Eval.ExitRequest code -> Error code
                         | ex ->
-                            Console.Error.WriteLine(runtimeErrorAt lineNo ex)
-                            Error 1
+                            // a command death the signal owns ends silently
+                            // [D:settle-pending]
+                            match Proc.fatalTeardown ex with
+                            | Some code -> Error code
+                            | None ->
+                                Console.Error.WriteLine(runtimeErrorAt lineNo ex)
+                                Error 1
 
                     let step (venv: Eval.Env) (lineNo: int) (stmt: CheckedStmt) : Result<Eval.Env, int> =
                         // each top-level statement starts at its own root; a

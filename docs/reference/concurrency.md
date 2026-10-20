@@ -165,7 +165,9 @@ the entry ends with `↳ exit 130`. Rests on [D:teardown-kill-not-failure],
 Enforced by `Proc.raiseNonzero`, which calls `settleInterrupt` (a 129,
 130, 131 or 143 death waits, up to 250ms, for the request while the
 signal handler is acting on a signal, and with none in flight only a
-5ms grace for one to appear; not in the REPL), then `checkTeardown`, then `checkCancelled`, then
+5ms grace for one to appear; not in the REPL; a script dying of such a
+failure uncaught, raised outside a cleanup, waits up to 250ms for the
+signal first, `Proc.fatalTeardown`), then `checkTeardown`, then `checkCancelled`, then
 `checkInterrupted` for a 130, then `cleanupKilledByTeardown` (a
 statement consumer, a child spawned before the teardown request). The
 dispatch requests the teardown before it kills.
@@ -366,8 +368,8 @@ REPL set is restored, at its prompt too. A closed stdout's 141 is an exit. Rests
   that must finish needs one signal, not two.
 - A settle wait sees a signal from the moment its handler runs, after a
   5ms grace at most ([D:settle-pending]); a handler later than that
-  (heavy load) leaves the child's death a command failure in a script,
-  and in the REPL ends the entry a statement late.
+  (heavy load) leaves the child's death a failure a `try` catches, and
+  in the REPL ends the entry a statement late.
 
 ## Discrepancies
 

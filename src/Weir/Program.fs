@@ -205,12 +205,17 @@ let private evalOnce (input: string) : int =
                             with
                             | Eval.ExitRequest code -> code
                             | ex ->
-                                Console.Error.WriteLine(
-                                    Types.Color.red Types.Color.onStderr.Value "error"
-                                    + $": {Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message}"
-                                )
+                                // a command death the signal owns ends
+                                // silently [D:settle-pending]
+                                match Proc.fatalTeardown ex with
+                                | Some code -> code
+                                | None ->
+                                    Console.Error.WriteLine(
+                                        Types.Color.red Types.Color.onStderr.Value "error"
+                                        + $": {Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message}"
+                                    )
 
-                                1
+                                    1
 
                     execAll valueEnv 0 checked'
 

@@ -1732,6 +1732,26 @@ let settleInterrupt (code: int) : unit =
     then
         settleWhile (fun () -> System.Threading.Volatile.Read &teardownCode = 0)
 
+/// a script about to die of a command's 129/130/131/143 failure: the
+/// command may have taken a signal before weir did (a supervisor's kill
+/// of each pid, a hangup reaching the child first) — the one wait on the
+/// code alone, paid once, at the death: up to 250ms for weir's own signal
+/// [D:settle-pending]. The teardown's code, or 0
+let settleFatal (code: int) : int =
+    if
+        (code = 129 || code = 130 || code = 131 || code = 143)
+        && not (System.OperatingSystem.IsWindows())
+        && mainThreadId <> 0
+        && not replFlow
+    then
+        let clock = System.Diagnostics.Stopwatch.StartNew()
+
+        while System.Threading.Volatile.Read &teardownCode = 0
+              && clock.ElapsedMilliseconds < 250L do
+            System.Threading.Thread.Sleep 5
+
+    System.Threading.Volatile.Read &teardownCode
+
 /// a REPL child whose code is data (`| exitCode`, `| complete`) died of
 /// SIGINT while the ^C's handler is still cutting the entry: let it, so
 /// the entry ends after this statement [D:repl-entry-check]

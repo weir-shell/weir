@@ -375,6 +375,21 @@ type CommandFailure(code: int, signalNote: string, shown: string) =
     member _.Code = code
     member _.SignalNote = signalNote
     member _.Shown = shown
+    /// raised outside a cleanup, where weir's signal arriving first would
+    /// have made the death the teardown's [D:settle-pending]
+    member val SignalMayOwn = false with get, set
+
+/// a script's fatal error that is a signal's after all: a command outside
+/// a cleanup that died 129-143 took a signal weir's own reached later —
+/// Some of the teardown's code, so the script dies by it with no message
+/// [D:settle-pending]
+let fatalTeardown (ex: exn) : int option =
+    match ex with
+    | :? CommandFailure as cf when cf.SignalMayOwn ->
+        match Session.settleFatal cf.Code with
+        | 0 -> None
+        | c -> Some c
+    | _ -> None
 
 let private raiseFailure (s: Spec) (code: int) : unit =
     let shown = showArgv (s.Prog :: s.Args)
@@ -389,7 +404,7 @@ let private raiseFailure (s: Spec) (code: int) : unit =
         | c when c > 128 && c < 165 -> $" (signal {c - 128})"
         | _ -> ""
 
-    raise (CommandFailure(code, signalNote, shown))
+    raise (CommandFailure(code, signalNote, shown, SignalMayOwn = not (Session.inCleanup ())))
 
 // `statement`: the command's output is unused (a statement relays or
 // inherits it), so a death the cleanup pass covers truncates no value
