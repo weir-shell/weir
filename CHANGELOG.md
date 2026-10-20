@@ -4,6 +4,9 @@
 
 ### Added
 
+- **`#types [on|off]` shows or hides types in the REPL echo.** Bare
+  `#types` reports the setting; `"types": "on"` in the REPL config turns
+  them on at startup, and the directive overrides it for the session.
 - **`Env.need` and `Env.getOr` read one variable as a string.**
   `Env.need "TOKEN"` fails at that line with `Env.need: TOKEN is not
   set` when it is unset; `Env.getOr "PORT" "8080"` gives the default
@@ -26,6 +29,12 @@
 
 ### Changed
 
+- **The REPL echo no longer shows types by default.** `2` echoes `2`
+  (was `2 : int`), `let x = 5` echoes `x = 5` (was `x : int = 5`), a
+  seq's lines end without the `: seq<string>` line (truncation notes
+  still show), and `print "a"` is no longer followed by `() : unit`.
+  `#types on` restores the old echo exactly. Piped REPL output is
+  unchanged.
 - **`weir add sig` signatures stop warning on valid flags.** Generation
   reads each tool's own self-description (Cobra's `__complete`, git's
   completion helper, fish completions, `--help all`, `--help-all`,

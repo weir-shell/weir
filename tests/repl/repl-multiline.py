@@ -67,7 +67,7 @@ def run(keys, cols=80, seed=None, path=None, until=None, deadline=20.0):
 
 # --- 1. Enter grows on incomplete, submits on complete (the parser's answer)
 t, _ = run([("match 1 with\r", 0.4), ("| _ -> 9\r", 0.6), ("#quit\r", 0.3)])
-if "9 : int" not in t:
+if "\n9\r\n" not in t:
     failures.append(f"Enter-incomplete must grow, then submit when complete: {t[-300:]!r}")
 
 # --- 2. Ctrl+J forces newlines even when complete; Up moves within the
@@ -81,7 +81,7 @@ keys = [("match 1 with", 0.3), ("\n", 0.2),
         ("\x7f", 0.2), ("2", 0.2),           # 1 -> 2
         ("\r", 0.6), ("#quit\r", 0.3)]
 t, _ = run(keys)
-if '"two" : string' not in t:
+if '\n"two"\r\n' not in t:
     failures.append(f"Up-within-buffer edit of the scrutinee must change the result: {t[-300:]!r}")
 
 # --- 3. both ways, identical meaning: the same lines as a script
@@ -96,7 +96,7 @@ if sc.stdout.strip() != "two":
 # --- 4. a multiline history entry recalls whole via Up at the first line
 t, _ = run([("\x1b[A", 0.4), ("\r", 0.6), ("mm + 1\r", 0.5), ("#quit\r", 0.3)],
            seed="let mm =\\n    41\n")
-if "mm : int = 41" not in t or "42 : int" not in t:
+if "mm = 41" not in t or "\n42\r\n" not in t:
     failures.append(f"multiline recall must return the whole block-let: {t[-300:]!r}")
 
 # --- 5. the fzf feed is the one-line display form, mapped back to the entry
@@ -111,12 +111,12 @@ t, _ = run([("\x12", 0.6), ("\r", 0.6), ("#quit\r", 0.3)],
 fed = open(d5 + "/bin/fed.txt").read() if os.path.exists(d5 + "/bin/fed.txt") else ""
 if "let zz = ⏎     7" not in fed:
     failures.append(f"fzf must be fed the one-line display form: {fed!r}")
-if "zz : int = 7" not in t:
+if "zz = 7" not in t:
     failures.append(f"the display selection must map back to the FULL entry: {t[-300:]!r}")
 
 # --- 6. Esc abandons the whole buffer
 t, _ = run([("let broken = (", 0.3), ("\x1b", 0.5), ("5 + 5\r", 0.5), ("#quit\r", 0.3)])
-if "10 : int" not in t or "error" in t:
+if "\n10\r\n" not in t or "error" in t:
     failures.append(f"Esc must abandon the buffer cleanly: {t[-300:]!r}")
 
 # --- 7. wrap math at two widths (the resize class made cheap): a line
@@ -126,7 +126,7 @@ for cols in (30, 80):
                 ("\x1b[D" * 4, 0.3),        # Left through the wrap boundary
                 ("\x1b[F", 0.2),            # End again
                 ("\r", 0.6), ("#quit\r", 0.3)], cols=cols)
-    if "55 : int" not in t:
+    if "\n55\r\n" not in t:
         failures.append(f"wrapped line at width {cols} must edit and evaluate: {t[-300:]!r}")
 
 # --- 7b. cursor column at a wrap boundary [D:windows-findings] — the
@@ -230,28 +230,28 @@ if "true" not in t:
 # --- 8. an unclosed string submits (weir strings are single-line — more
 # input can never fix it; growing would trap the user)
 t, _ = run([('let s = @"raw\r', 0.5), ("7 * 7\r", 0.5), ("#quit\r", 0.3)])
-if "49 : int" not in t:
+if "\n49\r\n" not in t:
     failures.append(f"an unclosed string must submit (error) and free the prompt: {t[-300:]!r}")
 
 # --- 9a. a leading-space first line has no statement above to continue —
 # it dedents and executes (a Linux regression from the multiline
 # session's adoption of the script assembler) [D:windows-s2]
 t, _ = run([("  1 + 1\r", 0.5), ("#quit\r", 0.3)])
-if "2 : int" not in t:
+if "\n2\r\n" not in t:
     failures.append(f"a leading-space first line must execute: {t[-300:]!r}")
 
 # --- 9b. the other half: an indented buffer dedents whole (relative
 # structure preserved), and an indented line inside the open buffer
 # still continues it
 t, _ = run([("  match 1 with\r", 0.4), ("  | _ -> 8\r", 0.6), ("#quit\r", 0.3)])
-if "8 : int" not in t:
+if "\n8\r\n" not in t:
     failures.append(f"an indented entry must dedent whole and still assemble: {t[-300:]!r}")
 
 # --- 9c. blank-line escape: Enter on an empty final line closes a
 # pending buffer (the error shows, the prompt frees) — the general
 # protection against every uncompletable state [D:windows-s2]
 t, _ = run([("match 1 with\r", 0.4), ("\r", 0.5), ("5 + 5\r", 0.5), ("#quit\r", 0.3)])
-if "10 : int" not in t:
+if "\n10\r\n" not in t:
     failures.append(f"a blank Enter must close a pending buffer: {t[-300:]!r}")
 # the keeps-the-input half [D:windows-s3]: the buffer was submitted (its
 # parse error shows), not discarded the way Ctrl+C discards.
@@ -264,7 +264,7 @@ if "match" not in t or "parse error" not in t:
 
 # --- 9d. ...but Ctrl+J's deliberate blank line stays composing
 t, _ = run([("match 1 with", 0.3), ("\n", 0.2), ("\n", 0.2), ("| _ -> 6\r", 0.6), ("#quit\r", 0.3)])
-if "6 : int" not in t:
+if "\n6\r\n" not in t:
     failures.append(f"a Ctrl+J blank inside composition must not submit: {t[-300:]!r}")
 
 # --- dup-type in the REPL: redeclaration replaces with the note; earlier
@@ -316,7 +316,8 @@ if "pipe to" in t2:
     failures.append(f"the retired pipe-to hint resurfaced: {t2[-300:]!r}")
 
 # --- the lines form [D:echo-lines]: seq<string> presents as its lines
-# at a tty (footer keeps the type + the unforced sentence); other seq
+# at a tty (footer keeps the unforced sentence; the type with #types on
+# [D:repl-types]); other seq
 # types keep the literal; the piped surface keeps the literal exactly
 t3, _ = run([("[\"lineA\"; \"lineB\"] |> Seq.freeze\r", 0.9)])
 if "\nlineA" not in t3 or "\nlineB" not in t3:
@@ -324,7 +325,7 @@ if "\nlineA" not in t3 or "\nlineB" not in t3:
 if '"lineB"] : seq' in t3:  # the RESULT literal (typed-line echoes contain the input text)
     failures.append(f"the tty echo must not show the literal for seq<string>: {t3[-300:]!r}")
 t4, _ = run([("[7; 8]\r", 0.9)])
-if "[7; 8] : seq<int>" not in t4:
+if "\n[7; 8]\r\n" not in t4:
     failures.append(f"other seq types keep the literal: {t4[-300:]!r}")
 p3 = subprocess.run([WEIR], input='["lineA"; "lineB"] |> Seq.freeze\n#quit\n', capture_output=True, text=True)
 if '["lineA"; "lineB"] : seq<string>' not in p3.stdout:

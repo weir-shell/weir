@@ -93,8 +93,9 @@ if re.search(r"\x1b\[36myaml\x1b\[0m", t4):
 t6 = run({}, ["  echo tri-out\r"])
 plain6 = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b=", "", t6)
 # the echoed value — only execution produces it (the lines form
-# [D:echo-lines]: a string seq presents as its lines + the type footer)
-if "\ntri-out" not in plain6 or ": seq<string>" not in plain6:
+# [D:echo-lines]: a string seq presents as its lines; the type footer is
+# off by default [D:repl-types])
+if "\ntri-out" not in plain6:
     failures.append(f"leading-space line must execute: {plain6[-200:]!r}")
 if "  ... " in plain6:
     failures.append("leading-space line must complete, not open a buffer")
@@ -204,7 +205,7 @@ if ANSI.search(tt2):
 rp = run({}, ["nope\r", "1 + 1\r"])
 if "\x1b[31mweir> " not in rp:
     failures.append(f"the prompt must redden after an error: {rp[-300:]!r}")
-_anchor = "2\x1b[2m : int" if "2\x1b[2m : int" in rp else "2 : int"
+_anchor = "\n2\r\n"
 _tail = rp[rp.rindex(_anchor):] if _anchor in rp else rp
 if "\x1b[31mweir> " in _tail:
     failures.append(f"the prompt must clear after a success: {_tail[-200:]!r}")

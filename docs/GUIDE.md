@@ -54,7 +54,8 @@ Five reasons, most important first:
 - `weir` starts the interactive REPL. See [The REPL](#the-repl) at
   the end of this guide.
 - `weir -e '1 + 2'` runs a small program and prints the value of its
-  last statement with its type, as the REPL echoes it (`3 : int`).
+  last statement with its type (`3 : int`), as the REPL echoes it
+  with `#types on`.
   That statement must be an expression. Newlines separate
   statements, as in a file. A declaration on its own is rejected,
   since there would be nothing to show. The same strict rules as
@@ -2736,8 +2737,8 @@ print "done"
 
 `weir` with no arguments starts the REPL. Here you can use short names
 like `map` and `where` (scripts need `Seq.map` and so on). Each value
-is echoed back with its type. A `let` bound to a command is the
-exception: the echo shows its type and doesn't run it (`let cleanup =
+is echoed back (`#types on` adds its type). A `let` bound to a command
+is the exception: the echo shows its name and doesn't run it (`let cleanup =
 rm -rf build` deletes nothing until you type `cleanup`). An entry can span several lines: weir
 checks whether what you've typed so far is a complete statement and
 keeps reading if it isn't. `Ctrl+C` throws away the current entry,

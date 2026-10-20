@@ -316,6 +316,7 @@ exactly one of these three contexts:
 | `#help` | the directives, the modules, one member's doc | REPL prompt, runs now |
 | `#find` | fuzzy help search (fzf + live preview; substring fallback) | REPL prompt, runs now |
 | `#echo` | how many elements of a lazy seq the REPL echoes | REPL prompt, runs now |
+| `#types` | show types in the REPL echo (`#types on`/`off`; default off) | REPL prompt, runs now |
 | `#infer` | draft named types from a JSON/YAML sample | REPL prompt, runs now |
 | `#save` | distill the session to a runnable script | REPL prompt, runs now |
 | `#history` | show history (`#history` all, `#history N` last N); prints the file path | REPL prompt, runs now |
