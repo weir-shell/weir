@@ -29418,6 +29418,18 @@ let hunt3r5FormatTests =
                   (VStr "{ q = \"0644\"; z = 0 }")
                   "zero and the quoted spelling read as before"
           }
+          test "yaml: a 0x/0o scalar's int64 check stops at the first digit past range — linear in the digit run [D:yaml-number-text]" {
+              let f = Weir.Eval.yamlCoreRadixInt
+              Expect.equal (f "0x7fffffffffffffff") (Some(Some System.Int64.MaxValue)) "int64 max fits"
+              Expect.equal (f "0x8000000000000000") (Some None) "one past is out of range"
+              Expect.equal (f "0o777777777777777777777") (Some(Some System.Int64.MaxValue)) "octal max fits"
+              Expect.equal (f "0o1000000000000000000000") (Some None) "octal one past"
+              Expect.equal (f ("0x" + String.replicate 5000 "0" + "1f")) (Some(Some 31L)) "leading zeros never overflow"
+              Expect.equal (f "0x") None "no digits is no number"
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+              Expect.equal (f ("0x" + String.replicate 400000 "f")) (Some None) "a 400k-digit run is out of range"
+              Expect.isLessThan sw.ElapsedMilliseconds 2000L "and costs linear time"
+          }
           test "yaml: 1.2 core non-decimal numbers read as numbers and keep their text; 1.1-only forms stay strings [D:yaml-number-text]" {
               Expect.equal
                   (run (lit [ "mask: 0x1F"; "num: 0o17"; "max: .inf"; "low: -.Inf"; "nn: .nan" ] + " |> Yaml.parse |> to yaml")

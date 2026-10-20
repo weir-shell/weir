@@ -2093,12 +2093,19 @@ let yamlCoreRadixInt (raw: string) : int64 option option =
         let d = raw.Substring 2
 
         if d.Length > 0 && d |> Seq.forall ok then
-            let mutable acc = 0I
+            let mutable acc = 0L
+            let mutable over = false
 
             for c in d do
-                acc <- acc * bigint radix + bigint (System.Convert.ToInt32(string c, 16))
+                if not over then
+                    let v = int64 (System.Uri.FromHex c)
 
-            Some(if acc <= bigint System.Int64.MaxValue then Some(int64 acc) else None)
+                    if acc > (System.Int64.MaxValue - v) / int64 radix then
+                        over <- true
+                    else
+                        acc <- acc * int64 radix + v
+
+            Some(if over then None else Some acc)
         else
             None
 
