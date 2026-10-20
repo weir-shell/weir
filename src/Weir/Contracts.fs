@@ -2174,9 +2174,8 @@ let private runProbeManaged (prog: string) (args: string list) (cwd: string) : P
             with _ ->
                 ()
 
-        let pump (s: Stream) =
+        let pump (b: MemoryStream) (s: Stream) =
             Threading.Tasks.Task.Run(fun () ->
-                let b = new MemoryStream()
                 let chunk = Array.zeroCreate<byte> 65536
                 let mutable go = true
 
@@ -2190,17 +2189,17 @@ let private runProbeManaged (prog: string) (args: string list) (cwd: string) : P
                     if n <= 0 then
                         go <- false
                     elif b.Length + int64 n > int64 probeMaxBytes then
-                        b.Write(chunk, 0, probeMaxBytes - int b.Length)
+                        lock b (fun () -> b.Write(chunk, 0, probeMaxBytes - int b.Length))
                         cut <- true
                         kill ()
                         go <- false
                     else
-                        b.Write(chunk, 0, n)
+                        lock b (fun () -> b.Write(chunk, 0, n)))
 
-                Text.Encoding.UTF8.GetString(b.GetBuffer(), 0, int b.Length))
-
-        let outT = pump p.StandardOutput.BaseStream
-        let errT = pump p.StandardError.BaseStream
+        let outB = new MemoryStream()
+        let errB = new MemoryStream()
+        let outT = pump outB p.StandardOutput.BaseStream
+        let errT = pump errB p.StandardError.BaseStream
         let exited = p.WaitForExit probeTimeoutMs
 
         if not exited then
@@ -2208,13 +2207,15 @@ let private runProbeManaged (prog: string) (args: string list) (cwd: string) : P
 
         // a daemon holding the pipes: what was read in the drain is the
         // answer
-        Threading.Tasks.Task.WaitAll([| outT :> Threading.Tasks.Task; errT |], probeGraceMs) |> ignore
-        let get (t: Threading.Tasks.Task<string>) = if t.IsCompleted then t.Result else ""
+        Threading.Tasks.Task.WaitAll([| outT; errT |], probeGraceMs) |> ignore
+
+        let get (b: MemoryStream) =
+            lock b (fun () -> Text.Encoding.UTF8.GetString(b.GetBuffer(), 0, int b.Length))
 
         Some
             { Exit = (if exited then Some p.ExitCode else None)
-              Out = get outT
-              Err = get errT
+              Out = get outB
+              Err = get errB
               Cut = cut }
     with _ ->
         None

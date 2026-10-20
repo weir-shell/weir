@@ -11938,7 +11938,11 @@ WEOF
 chmod +x bin/daemontool
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" timeout 20 $BIN add sig daemontool 2>&1) || fail "a daemon holding the help's stdout hung add sig: $out"
 echo "$out" | grep -qF "added sig daemontool (1 flag(s)" || fail "the daemon's help still records: $out"
-kill -0 "$(cat "$sgdir/daemon.pid")" 2>/dev/null && fail "the probe's process group outlived the probe" || true
+if [ "$(uname -s)" = Linux ]; then
+    kill -0 "$(cat "$sgdir/daemon.pid")" 2>/dev/null && fail "the probe's process group outlived the probe" || true
+else
+    kill "$(cat "$sgdir/daemon.pid")" 2>/dev/null || true
+fi
 case "$(cat "$sgdir/probe.cwd")" in */weir-sigprobe-*) ;; *) fail "a probe ran outside a fresh temp dir: $(cat "$sgdir/probe.cwd")";; esac
 [ "$(tr -d ' ' < "$sgdir/probe.n")" = "0" ] || fail "the probe's temp dir was not empty"
 cat > bin/floodtool <<'WEOF'
