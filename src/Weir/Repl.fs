@@ -1352,7 +1352,7 @@ let private readKey () =
     else
         ttyIo (fun () -> Console.ReadKey(intercept = true))
 
-/// after a bare Esc: is an Enter right behind it (within 50ms)? Alt+Enter
+/// after a bare Esc: is an Enter right behind it (within 100ms)? Alt+Enter
 /// is ESC CR, and .NET reads a lone ESC as Escape when the CR has not
 /// arrived yet. A key that is not Enter stays queued for the editor
 let private escThenEnter () : bool =
@@ -1364,7 +1364,7 @@ let private escThenEnter () : bool =
             let k = ttyIo (fun () -> Console.ReadKey(intercept = true))
             typeAhead.Enqueue k
             Some k
-        elif clock.ElapsedMilliseconds < 50L then
+        elif clock.ElapsedMilliseconds < 100L then
             Threading.Thread.Sleep 2
             next ()
         else
