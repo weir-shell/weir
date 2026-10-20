@@ -79,7 +79,7 @@ got1c = open(d1c + "/state/weir/history", "rb").read()
 want1c = b"good\n\xff bad\nx\n\xc3(\n2 + 2\n1 + 1\n#history\n#quit\n"
 if got1c != want1c:
     failures.append(f"invalid-UTF-8 lines not kept byte-for-byte across the dedup rewrite: {got1c!r}")
-if "bad" in out1c or "(5 entries)" not in out1c:
+if "bad" in out1c.replace(d1c, "") or "(5 entries)" not in out1c:
     failures.append(f"#history must list the 5 valid entries and never the invalid lines: {out1c!r}")
 if "invalid UTF-8 — 2 lines left out of recall" not in out1c:
     failures.append(f"the invalid-UTF-8 note is missing: {out1c!r}")

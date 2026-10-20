@@ -3824,14 +3824,13 @@ WEOF
     # ... and its deterministic shape at a terminal: the command takes the
     # signal 20ms before weir does — TERM and HUP settle as INT does
     cat > "$stdir/c15.py" <<'PYEOF'
-import os, pty, sys, time, select, signal
-sig = getattr(signal, "SIG" + sys.argv[1]); mark = sys.argv[2].encode(); argv = sys.argv[3:]
+import os, pty, sys, time, select, signal, subprocess
+sig = getattr(signal, "SIG" + sys.argv[1]); mark = sys.argv[2]; argv = sys.argv[3:]
 def marked():
-    for e in os.listdir("/proc"):
-        if not e.isdigit(): continue
-        try: v = open("/proc/%s/cmdline" % e, "rb").read().split(b"\0")
-        except OSError: continue
-        if len(v) >= 2 and os.path.basename(v[0]) == b"sleep" and v[1] == mark: return int(e)
+    ps = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "args="], capture_output=True, text=True).stdout
+    for row in ps.splitlines():
+        v = row.split()
+        if len(v) >= 3 and os.path.basename(v[1]) == "sleep" and v[2] == mark: return int(v[0])
 pid, fd = pty.fork()
 if pid == 0:
     for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM): signal.signal(s, signal.SIG_DFL)
