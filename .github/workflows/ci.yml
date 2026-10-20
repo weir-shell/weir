@@ -285,6 +285,8 @@ jobs:
         run: ~/.local/bin/weir tools/hunt3r4f-repro.weir --bin ~/.local/bin/weir
       - name: hunt3 round-5 fixes repro harness
         run: ~/.local/bin/weir tools/hunt3r5f-repro.weir --bin ~/.local/bin/weir
+      - name: hunt3 round-6 fixes repro harness
+        run: ~/.local/bin/weir tools/hunt3r6f-repro.weir --bin ~/.local/bin/weir
       - name: command-signature gate (sample tools)
         run: ~/.local/bin/weir tools/sig-score.weir --bin ~/.local/bin/weir
 
