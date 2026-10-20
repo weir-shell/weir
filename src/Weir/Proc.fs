@@ -313,7 +313,7 @@ let private readBytes (s: System.IO.Stream) (buf: byte[]) (off: int) (len: int) 
 
 // tree-kill then reap — the lifecycle tail shared by the streaming
 // consumers (complete disposes without killing: it has already read
-// both pipes to the end)
+// both pipes to the end, unless a cut stopped the reads)
 let private reap (p: Process) =
     // settled before any exit [D:kill-settle]
     Session.killTree p
@@ -745,11 +745,21 @@ let completedOf (s: Spec) : int * seq<string> * seq<string> =
     let p, producerFault = start true true s
     use _ = p
 
-    let stderrTask =
-        System.Threading.Tasks.Task.Run(fun () -> readAllBytes (Session.cutStream p p.StandardError.BaseStream))
+    let outBytes, errBytes =
+        try
+            let stderrTask =
+                System.Threading.Tasks.Task.Run(fun () -> readAllBytes (Session.cutStream p p.StandardError.BaseStream))
 
-    let outBytes = readAllBytes (Session.cutStream p p.StandardOutput.BaseStream)
-    let errBytes = Session.cutJoin stderrTask
+            let outBytes = readAllBytes (Session.cutStream p p.StandardOutput.BaseStream)
+            outBytes, Session.cutJoin stderrTask
+        with _ ->
+            // a cut stopped the reads before EOF: the tree dies before the
+            // dispose, or the cut's own kill finds the Process disposed and
+            // misses it (a Windows read wakes on the token at once)
+            // [D:scope-tree]
+            Session.killTree p
+            reraise ()
+
     p.WaitForExit()
     producerFault ()
     Session.settleReplInterrupt p.ExitCode, linesView outBytes true, linesView errBytes false

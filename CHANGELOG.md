@@ -98,6 +98,10 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **Windows: a `Seq.pfirst` loser's `| complete` command no longer
+  outlives the race.** A loser waiting in `sh -c "…" | complete` was
+  stopped without killing its command, so `sh` and what it started ran
+  on after the winner returned.
 - **Ctrl+C at the REPL between two statements of an entry stops it.**
   Landing just after one statement ended (often right as a `| exitCode`
   command exited), it was read as a typed key: the entry ran to its end

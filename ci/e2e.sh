@@ -11105,6 +11105,41 @@ out=$(cat "$pfdir/pf.out")
 sleep 2.5
 [ ! -e "$pfdir/marker" ] || fail "the loser's child survived the kill"
 
+# a consumer stopped by the cut kills its tree before the dispose
+# [D:scope-tree]: a Windows read wakes on the token at once, so a loser
+# reading its command's pipes raised and disposed the Process before the
+# cut's kill reached it — sh and its sleep lived on. One loser per
+# consumer: complete, chain complete, lines, chain lines, exitCode
+cat > "$pfdir/pfcons.weir" <<'WEOF'
+let w =
+    [0; 1; 2; 3; 4; 5] |> Seq.pfirst (fun i ->
+        let body = $"sleep 2; echo x > cons{i}"
+        if i == 0 then
+            Duration.sleep 300ms
+            "win"
+        elif i == 1 then
+            let _r = sh -c $body | complete
+            "complete"
+        elif i == 2 then
+            let _r = sh -c $body | cat | complete
+            "chain complete"
+        elif i == 3 then
+            let _n = sh -c $body |> Seq.length
+            "lines"
+        elif i == 4 then
+            let _n = sh -c $body | cat |> Seq.length
+            "chain lines"
+        else
+            let _c = sh -c $body | exitCode
+            "exitCode")
+print $"winner={w}"
+WEOF
+(cd "$pfdir" && $BIN pfcons.weir > "$pfdir/pfcons.out" 2>&1)
+[ "$(cat "$pfdir/pfcons.out")" = "winner=win" ] || fail "pfirst consumer-loser winner: $(cat "$pfdir/pfcons.out")"
+sleep 3
+left=$(cd "$pfdir" && { ls cons* 2>/dev/null || true; } | tr '\n' ' ')
+[ -z "$left" ] || fail "a pfirst loser's consumer left its command tree alive past the cut (markers: $left)"
+
 # a pipe the kill cannot close [D:pfirst-join]: `(sleep 2 &)` reparents an
 # orphan that holds the loser's stdout — no tree kill reaches it — so a
 # loser reading to EOF would hold the race ~2s; the cut abandons the read
