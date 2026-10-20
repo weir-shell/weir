@@ -1,10 +1,18 @@
 #!/usr/bin/env weir
 // LOC per tracked file, grouped by extension (group totals descending,
-// files descending within each group), with a repo total.
+// files descending within each group), with a repo total. Images and
+// fonts are not lines of code, and a symlink (mode 120000) would be
+// counted again through its target — both are skipped. The binary list
+// is by extension: git's own verdict and Str.tryFromUtf8 both call a
+// NUL-bearing source file (tests/Weir.Tests/Tests.fs) binary.
+
+let binaryExts = [ ".png"; ".jpg"; ".jpeg"; ".gif"; ".ico"; ".ttf"; ".otf"; ".woff"; ".woff2"; ".pdf"; ".zip"; ".gz" ]
 
 let counts =
-    git ls-files
-    |> Seq.map (fun f -> (f, File.read f |> Seq.length))
+    git ls-files -s
+    |> Seq.map (Str.splitOnce "\t")
+    |> Seq.where (fun (meta, f) -> not (Str.startsWith "120000 " meta) && not (binaryExts |> Seq.contains (Str.toLower (Path.extension f))))
+    |> Seq.map (fun (_, f) -> (f, File.read f |> Seq.length))
     |> Seq.freeze
 
 let group f =
