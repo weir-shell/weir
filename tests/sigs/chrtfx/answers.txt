@@ -1,0 +1,20 @@
+=== --version
+chrtfx from util-linux 2.41.3
+=== --help
+Show or change the real-time scheduling attributes of a process.
+
+Set policy:
+ chrtfx [options] <priority> <command> [<arg>...]
+ chrtfx [options] --pid <priority> <pid>
+
+Get policy:
+ chrtfx [options] -p <pid>
+
+Policy options:
+ -b, --batch          set policy to SCHED_BATCH
+ -f, --fifo           set policy to SCHED_FIFO
+ -r, --rr             set policy to SCHED_RR (default)
+
+Scheduling options:
+ -R, --reset-on-fork  set reset-on-fork flag
+ -v, --verbose        display status information

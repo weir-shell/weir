@@ -12027,6 +12027,90 @@ chmod +x bin/floodtool
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" timeout 60 $BIN add sig floodtool 2>&1) || fail "an endless help was not cut: $out"
 echo "$out" | grep -qF "output cut at 4 MiB per stream: 'floodtool --help'" || fail "the cut is stated: $(echo "$out" | cut -c1-300)"
 grep -qF "/// output cut at 4 MiB per stream: 'floodtool --help' — the rest was not read" .weir/sigs/floodtool.weir || fail "the sig notes the cut"
+# a probe stopped at the time bound keeps what it printed, and says so
+# [D:sig-probe-bounds] (the help printed, stdout closed, the tool lingers)
+cat > bin/slowtool <<WEOF
+#!/bin/sh
+case "\$1" in
+  --help) printf 'Options:\n  --aa   aa\n'; exec >&-; echo \$\$ > "$sgdir/slow.pid"; exec sleep 40;;
+  *) exit 1;;
+esac
+WEOF
+chmod +x bin/slowtool
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" timeout 40 $BIN add sig slowtool 2>&1) || fail "a probe at the time bound lost what it read: $out"
+echo "$out" | grep -qF "added sig slowtool (1 flag(s)" || fail "the slow help still records: $out"
+echo "$out" | grep -qF "stopped at 15 s: 'slowtool --help'" || fail "the time bound is stated: $out"
+grep -qF "/// stopped at 15 s: 'slowtool --help' — what it printed by then was read" .weir/sigs/slowtool.weir || fail "the sig notes the time bound"
+# a signal to add sig kills the probe's own group and removes its temp
+# dir — the terminal's ^C never reaches that group [D:sig-probe-bounds]
+mkdir -p "$sgdir/sigtmp"
+rm -f "$sgdir/slow.pid"
+PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" TMPDIR="$sgdir/sigtmp" $BIN add sig slowtool >/dev/null 2>&1 &
+sgpid=$!
+for _ in $(seq 1 50); do [ -s "$sgdir/slow.pid" ] && break; sleep 0.1; done
+[ -s "$sgdir/slow.pid" ] || fail "the slow probe never started"
+kill -TERM "$sgpid"
+sgrc=0; wait "$sgpid" || sgrc=$?
+[ "$sgrc" = 143 ] || fail "add sig must die by the TERM (143), got $sgrc"
+sleep 0.3
+kill -0 "$(cat "$sgdir/slow.pid")" 2>/dev/null && { kill "$(cat "$sgdir/slow.pid")"; fail "a signal to add sig orphaned its probe"; } || true
+[ -z "$(ls -A "$sgdir/sigtmp")" ] || fail "a signal to add sig left its temp dir: $(ls -A "$sgdir/sigtmp")"
+# each probe runs once per generation: git's builtins asked their helper
+# and -h from two places
+cat > bin/gtool <<WEOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$sgdir/gtool.log"
+case "\$*" in
+  "--version") echo "git version 2.53.0";;
+  "--help") printf 'usage: git [-v | --version] [-C <path>] <command> [<args>]\n';;
+  "--list-cmds=builtins") echo commit;;
+  "commit --git-completion-helper-all") echo "--amend --quiet -- --no-quiet";;
+  "commit -h") printf 'usage: git commit [-q] [--amend]\n\n    -q, --[no-]quiet      suppress summary\n    --[no-]amend          amend previous commit\n'; exit 129;;
+  *) exit 129;;
+esac
+WEOF
+chmod +x bin/gtool
+rm -f "$sgdir/gtool.log"
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig gtool 2>&1) || fail "add sig gtool: $out"
+dups=$(sort "$sgdir/gtool.log" | uniq -d)
+[ -z "$dups" ] || fail "a probe ran twice in one generation: $dups"
+# file names [D:sig-probe-bounds]: a plain name another lock entry
+# records (its legacy name) is that tool's file — never overwritten, never
+# read for this one; a no-flags teach names the file #sig reads
+printf '#!/bin/sh\n[ "$1" = --help ] && printf "Options:\\n  --lg   lg\\n"\nexit 0\n' > "bin/lg tool"
+chmod +x "bin/lg tool"
+cp "bin/lg tool" bin/lg_tool
+PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig "lg tool" >/dev/null 2>&1 || fail "add sig 'lg tool'"
+mv .weir/sigs/lg%20tool.weir .weir/sigs/lg_tool.weir
+sed 's#"sigs/lg%20tool.weir"#"sigs/lg_tool.weir"#' .weir/lock.json > lock.tmp && mv lock.tmp .weir/lock.json
+before=$(cksum < .weir/sigs/lg_tool.weir)
+out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig lg_tool 2>&1) && fail "add sig over another tool's legacy-named file must refuse: $out" || true
+echo "$out" | grep -qF "sigs/lg_tool.weir is the signature of 'lg tool'" || fail "the refusal names the owner: $out"
+[ "$(cksum < .weir/sigs/lg_tool.weir)" = "$before" ] || fail "another tool's legacy-named sig was overwritten"
+printf '#sig lg_tool\nprint "x"\n' > lg.weir
+out=$($BIN check lg.weir 2>&1) && fail "#sig must not read another tool's legacy-named file: $out" || true
+echo "$out" | grep -qF "is the signature of 'lg tool'" || fail "the #sig refusal names the owner: $out"
+vout=$($BIN verify 2>&1) || true
+echo "$vout" | grep -qF "sig lg tool: ok" || fail "the legacy-named sig still verifies: $vout"
+mkdir -p lib
+printf '#!/bin/sh\nexit 0\n' > lib/nf
+chmod +x lib/nf
+out=$($BIN add sig ./lib/nf 2>&1) && fail "a tool with no flags must refuse: $out" || true
+echo "$out" | grep -qF "write .weir/sigs/%2E%2Flib%2Fnf.weir by hand" || fail "the hand-write teach names the encoded file: $out"
+# the gate itself fails loud [D:sig-help-shapes]: a crashed check, a sig
+# that does not load, and `// cleanup` is no clean marker
+printf '#!/bin/sh\nif [ "$1" = check ]; then echo boom >&2; exit 134; fi\nexec "$SG_REAL" "$@"\n' > "$sgdir/crashweir"
+printf '#!/bin/sh\nif [ "$1" = check ]; then echo "let convention = \\"bogus\\"" >> .weir/sigs/gnufx.weir; fi\nexec "$SG_REAL" "$@"\n' > "$sgdir/badsigweir"
+printf '#!/bin/sh\nif [ "$1" = check ]; then echo "gnufx --zzq f // cleanup" >> lines.weir; fi\nexec "$SG_REAL" "$@"\n' > "$sgdir/cleanupweir"
+chmod +x "$sgdir/crashweir" "$sgdir/badsigweir" "$sgdir/cleanupweir"
+absbin=$(command -v "$BIN" || echo "$BIN")
+case "$absbin" in /*) ;; *) absbin="$(pwd)/$absbin";; esac
+out=$(SG_REAL="$absbin" $BIN "$ROOT/tools/sig-score.weir" --bin "$sgdir/crashweir" --only gnufx 2>&1) && fail "the gate passed a crashed check: $out" || true
+echo "$out" | grep -qF "check crashed (exit 134)" || fail "the gate names the crash: $out"
+out=$(SG_REAL="$absbin" $BIN "$ROOT/tools/sig-score.weir" --bin "$sgdir/badsigweir" --only gnufx 2>&1) && fail "the gate passed a sig load error: $out" || true
+echo "$out" | grep -qF "sig diagnostic on an unmarked line L1:" || fail "the gate names the load error: $out"
+out=$(SG_REAL="$absbin" $BIN "$ROOT/tools/sig-score.weir" --bin "$sgdir/cleanupweir" --only gnufx 2>&1) && fail "the gate passed a warning on a // cleanup line: $out" || true
+echo "$out" | grep -qE "sig diagnostic on an unmarked line L[0-9]+: unknown flag '--zzq'" || fail "// cleanup is no clean marker: $out"
 fi
 # gh's dialect [D:scoped-sigs]: colon-suffixed command tokens walk, and
 # the walk reaches depth 4 (kustomize edit add resource's shape)

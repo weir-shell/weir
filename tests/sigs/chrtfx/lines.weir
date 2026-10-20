@@ -1,0 +1,4 @@
+#sig chrtfx
+chrtfx -r 1 make -j8 // clean
+chrtfx -f 10 ls -la --color // clean
+chrtfx --fifoo 1 make // typo: --fifoo

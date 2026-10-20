@@ -5458,6 +5458,9 @@ type SigInfo =
       // a single-dash word no shorts spell is the tool's own value
       // (kill's `-<signal>`: `-TERM`) [D:sig-help-shapes]
       DashWords: bool
+      // a multi-letter single-dash word is a bundle of shorts, read letter
+      // by letter — what a generated signature states [D:sig-help-shapes]
+      Bundles: bool
       // case keys whose first operand ends the tool's own options
       // (`docker run IMAGE …`, an interpreter's script) [D:sig-operand-stop]
       StopAtOperand: Set<string>
@@ -5563,7 +5566,10 @@ let private surfaceSets (s: SigSurface) : Set<string> * Set<string> =
 /// Injective [D:sig-probe-bounds]: letters, digits, '-', '_' and a
 /// non-leading '.' stay; every other character (and '%') is its UTF-8
 /// bytes as %XX, so `/a/b/cob`, `_a_b_cob`, `.weir` and `weir` keep
-/// apart. A plain name is its own file name.
+/// apart. A plain name is its own file name. A name past NAME_MAX (255
+/// bytes) keeps a head of its encoding and adds `~` and the SHA-256 of
+/// the tool name: the encoding never keeps a `~`, so a hashed name meets
+/// no encoded one, and the hash keeps it stable and apart.
 let sigFileName (tool: string) : string =
     let sb = System.Text.StringBuilder()
 
@@ -5575,7 +5581,32 @@ let sigFileName (tool: string) : string =
             for b in System.Text.Encoding.UTF8.GetBytes(string c) do
                 sb.Append($"%%{b:X2}") |> ignore)
 
-    sb.ToString() + ".weir"
+    let encoded = sb.ToString()
+
+    if System.Text.Encoding.UTF8.GetByteCount encoded + ".weir".Length <= 255 then
+        encoded + ".weir"
+    else
+        // the head stops at a whole character, never inside a %XX or a
+        // multi-byte letter
+        let head = System.Text.StringBuilder()
+        let mutable i = 0
+
+        while i < encoded.Length && head.Length < 120 do
+            let step = if encoded[i] = '%' then 3 else 1
+            let piece = encoded.Substring(i, min step (encoded.Length - i))
+
+            if System.Text.Encoding.UTF8.GetByteCount(head.ToString() + piece) <= 120 then
+                head.Append piece |> ignore
+                i <- i + step
+            else
+                i <- encoded.Length
+
+        let hash =
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes tool)
+            |> Array.map (fun b -> b.ToString "x2")
+            |> String.concat ""
+
+        head.ToString() + "~" + hash + ".weir"
 
 // the name before it was injective: separators became '_', leading dots
 // dropped — a signature the lock records under it is still found
@@ -5650,10 +5681,29 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                     && e.Path.Replace('\\', '/') = "sigs/" + legacySigFileName decl.Tool)
                             | Error _ -> false
 
+                        // the plain name another tool's lock entry records
+                        // (its legacy name) is that tool's file, never this one's
+                        let ownedByOther () =
+                            match Contracts.readLock weirDir with
+                            | Ok entries ->
+                                let rel = "sigs/" + sigFileName decl.Tool
+
+                                if entries |> List.exists (fun e -> e.Kind = "sig" && e.Name = decl.Tool && e.Path.Replace('\\', '/') = rel) then
+                                    None
+                                else
+                                    entries
+                                    |> List.tryFind (fun e -> e.Kind = "sig" && e.Name <> decl.Tool && e.Path.Replace('\\', '/') = rel)
+                                    |> Option.map (fun e -> e.Name)
+                            | Error _ -> None
+
                         if not (IO.File.Exists current) && IO.File.Exists legacy && lockedLegacy () then
                             Ok legacy
                         else
-                            Ok current
+                            match (if IO.File.Exists current then ownedByOther () else None) with
+                            | Some other ->
+                                Error
+                                    $"#sig {decl.Tool}: sigs/{sigFileName decl.Tool} is the signature of '{Eval.sanitizeTtyEcho other}' (the lock records it under its legacy name) — regenerate that one, which moves it to its own name: weir add sig '{Eval.sanitizeTtyEcho other}'"
+                            | None -> Ok current
 
             match resolved with
             | Error e -> diags.Add(mk decl.Line e)
@@ -5758,6 +5808,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                           Abbreviations = letBool "abbreviations" |> Option.defaultValue false
                           Negatable = letBool "negatable" |> Option.defaultValue false
                           DashWords = letBool "dashWords" |> Option.defaultValue false
+                          Bundles = letBool "bundles" |> Option.defaultValue false
                           StopAtOperand = keysOf "stopAtOperand"
                           Unchecked = keysOf "unchecked"
                           SigPath = sigFile
@@ -5963,6 +6014,7 @@ let sigCmdDiagnostics
                         && not si.Abbreviations
                         && not si.Negatable
                         && not si.DashWords
+                        && not si.Bundles
                         && si.StopAtOperand.IsEmpty
                         && si.Unchecked.IsEmpty
                         && (Option.toList si.Globals @ (si.Surfaces |> Map.toList |> List.map snd))
@@ -6124,7 +6176,9 @@ let sigCmdDiagnostics
                                 // the short bundle) [D:sig-version-probe]
                                 | None when sf.Shorts.IsEmpty -> [], 0
                                 | None when older && w.Length > 2 -> [], 0
-                                | None when si.DashWords && not (sf.Shorts.ContainsKey(string w[1])) -> [], 0
+                                // a single letter is never the tool's value word
+                                // (no signal is one letter): `kill -x` is a typo
+                                | None when si.DashWords && w.Length > 2 && not (sf.Shorts.ContainsKey(string w[1])) -> [], 0
                                 | None ->
                                     // a bundle, letter by letter: a value-taking
                                     // letter takes the rest of the word (`-n5`,
@@ -6280,15 +6334,35 @@ module SigGen =
     // file's note [D:sig-probe-bounds]
     let private cutProbes = System.Collections.Concurrent.ConcurrentQueue<string>()
 
+    // the probes stopped at the time bound: what they printed is read, and
+    // the file and the added line say so [D:sig-probe-bounds]
+    let private slowProbes = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    // one run per argv and cwd in a generation: git's builtins ask the
+    // same helper and `-h` from two places, the refused-help harvest asks
+    // `--help` again
+    let private probed =
+        System.Collections.Concurrent.ConcurrentDictionary<string option * string * string list, Lazy<Contracts.ProbeOutput option>>()
+
     let private runIn (cwd: string option) (anyExit: bool) (tool: string) (args: string list) : string option =
         // the bounded probe [D:sig-probe-bounds]: empty stdin (a
         // stdin-reader must not hang generation), a fresh temp cwd, a
         // time and a byte bound, the probe's process group killed
-        match (try Contracts.runProbe (Proc.resolveProg tool) args cwd with _ -> None) with
-        | Some r when r.Exit = Some 0 || r.Cut || (anyExit && r.Exit.IsSome) ->
-            if r.Cut then
-                cutProbes.Enqueue(String.concat " " args)
+        let run () =
+            match (try Contracts.runProbe (Proc.resolveProg tool) args cwd with _ -> None) with
+            | Some r as res ->
+                if r.Cut then
+                    cutProbes.Enqueue(String.concat " " args)
+                elif r.Exit.IsNone then
+                    slowProbes.Enqueue(String.concat " " args)
 
+                res
+            | None -> None
+
+        let once = probed.GetOrAdd((cwd, tool, args), (fun _ -> lazy (run ())))
+
+        match once.Force() with
+        | Some r when r.Exit = Some 0 || r.Cut || r.Exit.IsNone || (anyExit && r.Exit.IsSome) ->
             match Contracts.stripAnsi (if r.Out.Trim() <> "" then r.Out else r.Err) with
             | blank when blank.Trim() = "" -> None
             | text -> Some(text.Replace("\r", ""))
@@ -6308,14 +6382,18 @@ module SigGen =
           Shorts: string list
           Literals: string list
           Arity: SigArity option
-          Doc: string option }
+          Doc: string option
+          // the value is a boolean (`--legend=BOOL`): `--no-x` is the
+          // tool's too [D:sig-help-shapes]
+          BoolValue: bool }
 
     let private noFlag =
         { Long = ""
           Shorts = []
           Literals = []
           Arity = None
-          Doc = None }
+          Doc = None
+          BoolValue = false }
 
     let private legalLong (l: string) =
         l.Length > 0
@@ -6360,7 +6438,8 @@ module SigGen =
                             Shorts = g.Shorts @ (f.Shorts |> List.filter (fun s -> not (List.contains s g.Shorts)))
                             Literals = g.Literals @ (f.Literals |> List.filter (fun s -> not (List.contains s g.Literals)))
                             Arity = g.Arity |> Option.orElse f.Arity
-                            Doc = g.Doc |> Option.orElse f.Doc }
+                            Doc = g.Doc |> Option.orElse f.Doc
+                            BoolValue = g.BoolValue || f.BoolValue }
                 | _ ->
                     byKey[k] <- f
                     order.Add k
@@ -6405,6 +6484,7 @@ module SigGen =
             let mutable shorts = []
             let mutable literals = []
             let mutable arity: SigArity option = None
+            let mutable boolValue = false
             let mutable go = true
             let n = s.Length
             let at i = if i < n then s[i] else '\000'
@@ -6463,6 +6543,11 @@ module SigGen =
                         let oneLetter = dashes = 1 && name.Length = 1 && spelled = e
                         pos <- spelled
                         // the value shape glued to the spelling
+                        let glued = s.Substring(pos, readWhile pos (fun c -> c <> ' ' && c <> ',') - pos)
+
+                        if System.Text.RegularExpressions.Regex.IsMatch(glued, "^\\[?=(BOOL|BOOLEAN|<bool>|<boolean>)\\]?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase) then
+                            boolValue <- true
+
                         if at pos = '[' then
                             arity <- Some AOpt
                             pos <- readWhile pos (fun c -> c <> ' ' && c <> ',')
@@ -6544,7 +6629,8 @@ module SigGen =
                       Shorts = shorts
                       Literals = literals
                       Arity = arity
-                      Doc = (if doc = "" then None else Some doc) }
+                      Doc = (if doc = "" then None else Some doc)
+                      BoolValue = boolValue }
 
     // every long a row names beyond its first is an alias of it (`-n,
     // --quiet, --silent`; az's `--name --alias -n`): they become their own
@@ -6870,36 +6956,60 @@ module SigGen =
     // hands on; a wrapper's `COMMAND...`, `<program> [<argument>...]`, a
     // usage ending at its command after its options (`stdbuf [OPTION]...
     // COMMAND` — bat's bare `bat <COMMAND>` is a subcommand slot), bash's
-    // `script-file ...`. Every usage line counts (flock, bash list several)
-    // [D:sig-help-shapes]
-    let private stopsAtOperand (helpText: string) =
+    // `script-file ...`; sudo's `[command [arg ...]]`, systemd-run's
+    // `COMMAND [ARGUMENTS...]`, chrt's `<priority> <command> [<arg>...]`,
+    // strace's `PROG [ARGS]`, a usage ending at an optional `[COMMAND]`
+    // after its options (uvx; a tool with a commands table never stops at
+    // the top), bunx's `[flags and arguments for the package]`. Every usage
+    // line counts (flock, bash, sudo list several); a help with none reads
+    // its synopsis lines, `<tool> [`/`<tool> <`/`<tool> COMMAND`
+    // (systemd-run, chrt) [D:sig-help-shapes]
+    let private stopsAtOperand (toolName: string) (helpText: string) =
         let lines = helpText.Split '\n'
 
+        let usageAt (i: int) =
+            let l = lines[i]
+            let after = l.Substring(l.ToLowerInvariant().IndexOf "usage" + 5).TrimStart(':', ' ', '\t')
+
+            let more =
+                lines
+                |> Array.skip (i + 1)
+                |> Array.takeWhile (fun l ->
+                    l.Trim() <> ""
+                    && not (l.TrimStart().ToLowerInvariant().StartsWith "usage")
+                    && (System.Char.IsWhiteSpace l[0] || l.TrimStart().StartsWith "or:"))
+                |> List.ofArray
+
+            (if after.Trim() = "" then [] else [ after ]) @ more
+
         let usage =
-            match lines |> Array.tryFindIndex (fun l -> l.TrimStart().ToLowerInvariant().StartsWith "usage") with
-            | None -> []
-            | Some i ->
-                let l = lines[i]
-                let after = l.Substring(l.ToLowerInvariant().IndexOf "usage" + 5).TrimStart(':', ' ', '\t')
+            match
+                lines
+                |> Array.indexed
+                |> Array.filter (fun (_, l) -> l.TrimStart().ToLowerInvariant().StartsWith "usage")
+                |> Array.map fst
+                |> List.ofArray
+            with
+            | [] ->
+                let synopsis = "^" + System.Text.RegularExpressions.Regex.Escape toolName + " +(\\[|<|[A-Z])"
 
-                let more =
-                    lines
-                    |> Array.skip (i + 1)
-                    |> Array.takeWhile (fun l -> l.Trim() <> "" && (System.Char.IsWhiteSpace l[0] || l.TrimStart().StartsWith "or:"))
-                    |> List.ofArray
-
-                (if after.Trim() = "" then [] else [ after ]) @ more
+                lines
+                |> Array.filter (fun l -> System.Text.RegularExpressions.Regex.IsMatch(l.Trim(), synopsis))
+                |> Array.map (fun l -> l.Trim())
+                |> List.ofArray
+            | starts -> starts |> List.collect usageAt
 
         usage
         |> List.exists (fun u ->
             System.Text.RegularExpressions.Regex.IsMatch(
                 u.TrimEnd(),
-                "(?i)(\\b(command|program|cmd)>?\\]?\\s+\\[?<?[\\w-]*arg(s|uments?)?\\b|\\[arg\\]\\s*\\.\\.\\.|\\[arguments\\]|\\[args\\.\\.\\.\\]|\\bcommand\\.\\.\\.|\\]\\S*\\s+<?\\b(command|program)>?\\]*$|\\bscript(-file)?\\s*(\\.\\.\\.|\\[))"
+                "(?i)(\\b(command|program|cmd|prog)>?\\]?\\s+\\[?<?[\\w-]*arg(s|uments?)?\\b|\\[arg\\]\\s*\\.\\.\\.|\\[arguments\\]|\\[args\\.\\.\\.\\]|\\bcommand\\.\\.\\.|\\]\\S*\\s+\\[?<?\\b(command|program)>?\\]*$|\\bscript(-file)?\\s*(\\.\\.\\.|\\[)|\\[(flags|options) and arg(s|uments)\\b)"
             ))
 
     // a listed switch `--no-x` has its `--x` (node's `--no-deprecation`:
-    // `--deprecation` is valid); a tool that lacks it costs a missed typo,
-    // never a false warning [D:sig-help-shapes]
+    // `--deprecation` is valid), a listed `--x=BOOL` its `--no-x`
+    // (systemctl's `--legend=BOOL`: `--no-legend`); a tool that lacks it
+    // costs a missed typo, never a false warning [D:sig-help-shapes]
     let private withPositives (fs: Flag list) : Flag list =
         let have = fs |> List.map (fun f -> f.Long) |> Set.ofList
 
@@ -6908,6 +7018,8 @@ module SigGen =
             |> List.choose (fun f ->
                 if f.Long.StartsWith "no-" && f.Long.Length > 3 && (f.Arity = None || f.Arity = Some ANone) && not (Set.contains (f.Long.Substring 3) have) then
                     Some { noFlag with Long = f.Long.Substring 3; Arity = Some ANone }
+                elif f.BoolValue && f.Long <> "" && not (f.Long.StartsWith "no-") && not (Set.contains ("no-" + f.Long) have) then
+                    Some { noFlag with Long = "no-" + f.Long; Arity = Some ANone }
                 else
                     None)
 
@@ -6978,7 +7090,7 @@ module SigGen =
                         nodes.Add
                             { Path = path
                               Flags = flagsAt path page
-                              Stop = kids.IsEmpty && stopsAtOperand page
+                              Stop = kids.IsEmpty && stopsAtOperand toolName page
                               Aliases = aliasesOf toolName path page }
 
                         for k in kids do
@@ -7054,6 +7166,8 @@ module SigGen =
 
     let generate (weirDir: string) (tool: string) : Result<string, string> =
         cutProbes.Clear()
+        slowProbes.Clear()
+        probed.Clear()
         // Flag probes are safe on any tool; a bare word is not — `code
         // completion fish` opens VS Code on two files
         // [D:sig-version-probe]. Bare-word probes (completion fish, the
@@ -7185,6 +7299,7 @@ module SigGen =
                 // git's helper needs a repository: an empty one in a temp
                 // dir, discarded after the probes
                 let d = IO.Path.Combine(IO.Path.GetTempPath(), $"weir-siggit-{System.Guid.NewGuid():N}")
+                Contracts.ProbeGuard.trackPath d
                 IO.Directory.CreateDirectory(IO.Path.Combine(d, ".git", "objects")) |> ignore
                 IO.Directory.CreateDirectory(IO.Path.Combine(d, ".git", "refs")) |> ignore
                 IO.File.WriteAllText(IO.Path.Combine(d, ".git", "HEAD"), "ref: refs/heads/main\n")
@@ -7226,8 +7341,24 @@ module SigGen =
                                 // parent ignoring the word (`rebase options`)
                                 match run (path @ [ "--git-completion-helper-all" ]) with
                                 | Some h when (parseGitHelper h).Length > 0 && Some h <> parentHelper ->
+                                    let dashText = runAny (path @ [ "-h" ])
+
+                                    // its usage hands diff or log options on
+                                    // (`git stash show [<diff-options>]`): no
+                                    // list holds them [D:sig-unwalked]
+                                    let passesOn =
+                                        let at = path |> List.map System.Text.RegularExpressions.Regex.Escape |> String.concat "\\s+"
+
+                                        (dashText |> Option.defaultValue "").Split '\n'
+                                        |> Array.exists (fun l ->
+                                            let m = System.Text.RegularExpressions.Regex.Match(l, "^\\s*(?:usage|or):\\s+git\\s+" + at + "(\\s.*)?$")
+
+                                            m.Success
+                                            && not (System.Text.RegularExpressions.Regex.IsMatch(m.Groups[1].Value, "^\\s+[a-z][a-z0-9-]*(\\s|$)"))
+                                            && System.Text.RegularExpressions.Regex.IsMatch(m.Groups[1].Value, "<[a-z-]*(diff|log)-options>"))
+
                                     let dashH =
-                                        runAny (path @ [ "-h" ])
+                                        dashText
                                         |> Option.map (fun t -> mergeFlags [ parseHelp t; parseUsage t ])
                                         |> Option.defaultValue []
                                     let byLong = dashH |> List.filter (fun f -> f.Long <> "") |> List.map (fun f -> f.Long, f) |> Map.ofList
@@ -7239,7 +7370,11 @@ module SigGen =
                                             | Some r -> { f with Shorts = r.Shorts; Doc = r.Doc; Arity = (if f.Arity = Some AOne then Some AOne else r.Arity |> Option.orElse f.Arity) }
                                             | None -> f)
 
-                                    Some { Path = path; Flags = mergeFlags [ helper; dashH ]; Stop = false; Aliases = [] }
+                                    if passesOn then
+                                        opened <- String.concat " " path :: opened
+                                        Some { Path = path; Flags = []; Stop = false; Aliases = [] }
+                                    else
+                                        Some { Path = path; Flags = mergeFlags [ helper; dashH ]; Stop = false; Aliases = [] }
                                 | _ -> None
 
                         // a builtin's own subcommands (remote add, notes add,
@@ -7277,7 +7412,33 @@ module SigGen =
                                         let parent = run [ c; "--git-completion-helper-all" ]
                                         subsOf c |> List.choose (fun sub -> probeCmd (Some(parent |> Option.defaultValue "")) [ c; sub ])
 
-                                Option.toList own @ subs)
+                                // a builtin whose helper lists only its
+                                // subcommands (config, stash, worktree) still
+                                // gets a case [D:sig-help-shapes]: its own flags
+                                // are its subcommands' and, for an older form
+                                // (`git config --global k v`), the table its
+                                // `-h` prints after one of them
+                                let parent =
+                                    match own with
+                                    | Some _ -> None
+                                    | None ->
+                                        let union = subs |> List.map (fun n -> n.Flags) |> mergeFlags
+
+                                        match union |> List.tryFind (fun f -> f.Long <> "" && (f.Arity = None || f.Arity = Some ANone)) with
+                                        | None -> None
+                                        | Some first ->
+                                            let rows (t: string option) =
+                                                t |> Option.map (fun t -> mergeFlags [ parseHelp t; parseUsage t ]) |> Option.defaultValue []
+
+                                            let older = rows (runAny [ c; "--" + first.Long; "-h" ])
+
+                                            Some
+                                                { Path = [ c ]
+                                                  Flags = mergeFlags [ union; older; rows (runAny [ c; "-h" ]) ]
+                                                  Stop = false
+                                                  Aliases = [] }
+
+                                Option.toList own @ Option.toList parent @ subs)
 
                         let globals = mergeFlags [ parseUsage help; helpRows ]
                         "git-helper", globals, nodes, List.rev opened, ""
@@ -7286,6 +7447,8 @@ module SigGen =
                             IO.Directory.Delete(d, true)
                         with _ ->
                             ()
+
+                        Contracts.ProbeGuard.untrackPath d
                 elif cobra then
                     // cobra [D:sig-sources]: per command, `__complete <path> -`
                     // lists its flags with shorts (plugins answer too), the
@@ -7437,12 +7600,23 @@ module SigGen =
             let dashWords =
                 convention = "gnu" && System.Text.RegularExpressions.Regex.IsMatch(help, "(?m)^\\s*-<[A-Za-z][\\w-]*>")
 
-            let topStop = advertised.IsEmpty && stopsAtOperand help
+            // a refused help still states its usage (bunx exits 1 on --help)
+            let topStop =
+                advertised.IsEmpty
+                && stopsAtOperand (IO.Path.GetFileName tool) (topHelp |> Option.orElse harvestOnly |> Option.defaultValue "")
 
             match flags, nodes with
             | [], [] ->
+                // the file #sig reads, as it names it [D:sig-probe-bounds]
+                let slow =
+                    match slowProbes |> Seq.distinct |> List.ofSeq with
+                    | [] -> ""
+                    | ps ->
+                        let named = ps |> List.map (fun a -> $"'{tool} {a}'") |> String.concat ", "
+                        $"; stopped at {Contracts.probeTimeoutMs / 1000} s: {named}"
+
                 Error
-                    $"'{tool}': found no flags to record (probed: completion fish, shipped fish files, --help) — write .weir/sigs/{tool}.weir by hand"
+                    $"'{tool}': found no flags to record (probed: completion fish, shipped fish files, --help{slow}) — write .weir/sigs/{sigFileName tool} by hand"
             | flags, nodes ->
                 // a path-y tool name must still mint a legal module
                 // name: letters and digits only, letter-first (an
@@ -7612,6 +7786,19 @@ module SigGen =
                 if cutNote <> "" then
                     line $"/// {escape cutNote} — the rest was not read"
 
+                // a probe stopped at the time bound was read up to the stop
+                // [D:sig-probe-bounds]
+                let slowNote =
+                    match slowProbes |> Seq.distinct |> List.ofSeq with
+                    | [] -> ""
+                    | slow ->
+                        let secs = Contracts.probeTimeoutMs / 1000
+                        let named = slow |> List.map (fun a -> $"'{tool} {a}'") |> String.concat ", "
+                        $"stopped at {secs} s: {named}"
+
+                if slowNote <> "" then
+                    line $"/// {escape slowNote} — what it printed by then was read"
+
                 if nodes.IsEmpty then
                     line "/// flat surface: flags checked across the whole line — split into"
                     line "/// subcommand records by hand if the tool warrants it"
@@ -7641,6 +7828,12 @@ module SigGen =
                 if dashWords then
                     line "/// a dash word no short spells is a value (the help's `-<signal>`)"
                     line "let dashWords = true"
+
+                // the marker that this is no older all-bool signature
+                // [D:sig-help-shapes]: its bool fields were read as switches
+                if convention = "gnu" then
+                    line "/// a multi-letter single-dash word is a bundle of shorts (`-xzf`)"
+                    line "let bundles = true"
 
                 let caseKey (path: string list) = String.concat " " path
 
@@ -7742,6 +7935,8 @@ module SigGen =
                 let tmp =
                     IO.Path.Combine(IO.Path.GetTempPath(), $"weir-siggen-{System.Guid.NewGuid():N}.weir")
 
+                Contracts.ProbeGuard.trackPath tmp
+
                 try
                     IO.File.WriteAllText(tmp, text)
 
@@ -7765,22 +7960,37 @@ module SigGen =
 
                         Error $"generated signature does not validate: {d.Message}{atLine} — this is a generator bug"
                     | [], _ ->
-                        let dest = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
-                        IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore
-                        IO.File.WriteAllText(dest, text)
-                        let bytes = IO.File.ReadAllBytes dest
-
-                        let entry: Contracts.LockEntry =
-                            { Kind = "sig"
-                              Name = tool
-                              Url = "generated:" + source + (if nodes.IsEmpty then "" else "+subs")
-                              Sha256 = Contracts.sha256Hex bytes
-                              Path = IO.Path.Combine("sigs", sigFileName tool)
-                              Version = version }
+                        let rel = "sigs/" + sigFileName tool
 
                         match Contracts.readLock weirDir with
                         | Error e -> Error e
+                        // a file another lock entry records under this name
+                        // (a legacy name: `a b` wrote sigs/a_b.weir) is that
+                        // tool's signature — never overwritten [D:sig-probe-bounds]
+                        | Ok entries when
+                            entries
+                            |> List.exists (fun e -> e.Kind = "sig" && e.Name <> tool && e.Path.Replace('\\', '/') = rel)
+                            ->
+                            let owner =
+                                entries
+                                |> List.find (fun e -> e.Kind = "sig" && e.Name <> tool && e.Path.Replace('\\', '/') = rel)
+
+                            Error
+                                $"{rel} is the signature of '{Eval.sanitizeTtyEcho owner.Name}' (the lock records it under the name it had before file names were injective) — regenerate that one first, which moves it to its own name: weir add sig '{Eval.sanitizeTtyEcho owner.Name}'"
                         | Ok entries ->
+                            let dest = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
+                            IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore
+                            IO.File.WriteAllText(dest, text)
+                            let bytes = IO.File.ReadAllBytes dest
+
+                            let entry: Contracts.LockEntry =
+                                { Kind = "sig"
+                                  Name = tool
+                                  Url = "generated:" + source + (if nodes.IsEmpty then "" else "+subs")
+                                  Sha256 = Contracts.sha256Hex bytes
+                                  Path = IO.Path.Combine("sigs", sigFileName tool)
+                                  Version = version }
+
                             let others = entries |> List.filter (fun e -> not (e.Kind = "sig" && e.Name = tool))
 
                             Contracts.writeLock weirDir (others @ [ entry ])
@@ -7815,7 +8025,8 @@ module SigGen =
 
                                     $"{total} flag(s) across {nodes.Length} subcommand case(s)"
 
-                            let cutTail = if cutNote = "" then "" else $"; {cutNote}"
+                            let cutTail =
+                                [ cutNote; slowNote ] |> List.filter ((<>) "") |> List.map (fun n -> "; " + n) |> String.concat ""
 
                             Ok
                                 $"added sig {tool} ({surfaceNote}, source: {fullSource}, version: {versionNote}{cutTail}) — partial by default; verify and mark exhaustive by hand"
@@ -7824,6 +8035,8 @@ module SigGen =
                         IO.File.Delete tmp
                     with _ ->
                         ()
+
+                    Contracts.ProbeGuard.untrackPath tmp
 
 // ---- the init file [D:repl-init] ------------------------------------------
 // ONE home for every static init rule [D:init-check-one-home] — `weir

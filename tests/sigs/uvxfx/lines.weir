@@ -1,0 +1,5 @@
+#sig uvxfx
+uvxfx ruff check --fix . // clean
+uvxfx --from httpie http -v x // clean
+uvxfx -p 3.12 black -l 100 . // clean
+uvxfx --form x ruff // typo: --form

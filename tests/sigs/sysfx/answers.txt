@@ -24,6 +24,7 @@ Options:
      --user              Connect to user service manager
      --no-block          Do not wait until operation finished
      --no-legend         Do not print a legend
+     --ask=BOOL          Ask for a password when needed
      --no-pager          Do not pipe output into a pager
   -q --quiet             Suppress output
 === list-units --help
@@ -46,6 +47,7 @@ Options:
      --user              Connect to user service manager
      --no-block          Do not wait until operation finished
      --no-legend         Do not print a legend
+     --ask=BOOL          Ask for a password when needed
      --no-pager          Do not pipe output into a pager
   -q --quiet             Suppress output
 === restart --help
@@ -68,6 +70,7 @@ Options:
      --user              Connect to user service manager
      --no-block          Do not wait until operation finished
      --no-legend         Do not print a legend
+     --ask=BOOL          Ask for a password when needed
      --no-pager          Do not pipe output into a pager
   -q --quiet             Suppress output
 === show --help
@@ -90,6 +93,7 @@ Options:
      --user              Connect to user service manager
      --no-block          Do not wait until operation finished
      --no-legend         Do not print a legend
+     --ask=BOOL          Ask for a password when needed
      --no-pager          Do not pipe output into a pager
   -q --quiet             Suppress output
 === daemon-reload --help
@@ -112,5 +116,6 @@ Options:
      --user              Connect to user service manager
      --no-block          Do not wait until operation finished
      --no-legend         Do not print a legend
+     --ask=BOOL          Ask for a password when needed
      --no-pager          Do not pipe output into a pager
   -q --quiet             Suppress output

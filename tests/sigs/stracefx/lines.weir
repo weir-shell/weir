@@ -1,0 +1,4 @@
+#sig stracefx
+stracefx -f -o out.txt make -j4 // clean
+stracefx -e trace=open ls -la // clean
+stracefx --follow-forkss make // typo: --follow-forkss

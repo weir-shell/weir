@@ -20880,6 +20880,21 @@ let sigTests =
 
               for f in files do
                   Expect.isFalse (f.Contains '/' || f.Contains '\\' || f.StartsWith ".") f
+
+              // past NAME_MAX the name hashes: under 255 bytes, stable, apart
+              let deep = "/" + String.concat "/" [ for i in 0..60 -> $"d{i:D2}" ] + "/ft"
+              let deep2 = deep.Replace("/ft", "/fu")
+              let wide = String.replicate 260 "a"
+              let long = [ deep; deep2; wide; String.replicate 130 "ü" ] |> List.map Weir.Script.sigFileName
+
+              for f in long do
+                  Expect.isLessThanOrEqual (System.Text.Encoding.UTF8.GetByteCount f) 255 f
+                  Expect.isFalse (f.Contains '/') f
+
+              Expect.equal (List.distinct long).Length long.Length $"collision in {long}"
+              Expect.equal (Weir.Script.sigFileName deep) (Weir.Script.sigFileName deep) "stable"
+              Expect.isFalse (List.exists (fun f -> List.contains f files) long) "a hashed name meets no encoded one"
+              Expect.equal (Weir.Script.sigFileName (String.replicate 250 "a")) (String.replicate 250 "a" + ".weir") "a plain name up to the limit is its own"
           }
           test "an older all-bool GNU signature checks as it always did" {
               let old =
@@ -20903,6 +20918,43 @@ let sigTests =
                   Expect.equal (sigWarns old line) want line
 
               Expect.equal (sigWarns ("module Fixtool" :: "let exhaustive = true" :: List.tail old) "fixtool -Lv x") [] "exhaustive too"
+          }
+          test "a generated all-bool signature states bundles: its multi-letter dash words are read [D:sig-help-shapes]" {
+              let gen =
+                  [ "module Fixtool"
+                    "let bundles = true"
+                    "type Cmd = {"
+                    "    [<Short \"d\">]"
+                    "    delete: bool"
+                    "    [<Short \"s\">]"
+                    "    squeeze: bool"
+                    "}" ]
+
+              for line, want in
+                  [ "fixtool -ds a b", []
+                    "fixtool -dQ x", [ "-Q" ]
+                    "fixtool -Q x", [ "-Q" ] ] do
+                  Expect.equal (sigWarns gen line) want line
+          }
+          test "dashWords never swallows a single letter: `kill -x` is a typo [D:sig-help-shapes]" {
+              let killSig =
+                  [ "module Fixtool"
+                    "let dashWords = true"
+                    "type Cmd = {"
+                    "    [<Short \"s\">]"
+                    "    signal: string"
+                    "    [<Short \"l\">]"
+                    "    list: bool"
+                    "}" ]
+
+              for line, want in
+                  [ "fixtool -TERM 1", []
+                    "fixtool -s HUP 1", []
+                    "fixtool -9 1", []
+                    "fixtool -l", []
+                    "fixtool -x 1", [ "-x" ]
+                    "fixtool -a 1", [ "-a" ] ] do
+                  Expect.equal (sigWarns killSig line) want line
           }
           test "values: a valued flag takes its word, globals check at every level, an unknown subcommand ends the check" {
               let dock =

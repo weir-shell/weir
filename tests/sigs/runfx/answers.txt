@@ -1,0 +1,15 @@
+=== --version
+systemd 259 (259.5-0ubuntu3.4)
+=== --versio
+systemd 259 (259.5-0ubuntu3.4)
+=== --help
+runfx [OPTIONS...] COMMAND [ARGUMENTS...]
+
+Run the specified command in a transient scope or service.
+
+  -h --help                       Show this help
+     --version                    Show package version
+     --user                       Run as user unit
+     --scope                      Run this as scope rather than service
+  -p --property=NAME=VALUE        Set service or scope unit property
+  -u --unit=UNIT                  Run under the specified unit name

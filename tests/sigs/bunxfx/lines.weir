@@ -1,0 +1,5 @@
+#sig bunxfx
+bunxfx prettier --write . // clean
+bunxfx --bun vite --port 3000 // clean
+bunxfx -p typescript tsc --init // clean
+bunxfx --bunn vite // typo: --bunn

@@ -184,9 +184,9 @@ subcommand:
   (`gh --repo o/r issue view 3`).
 
 A tool without subcommands gets one flat list of flags. If no flags
-are found at all, `weir add sig` says so. You can also write
-`.weir/sigs/<tool>.weir` by hand, in either form; it's an ordinary
-weir file.
+are found at all, `weir add sig` says so and names the file to
+write by hand (`.weir/sigs/<tool>.weir` for a plain name), in either
+form; it's an ordinary weir file.
 
 ### What a signature records
 
@@ -212,6 +212,10 @@ second short (`-r` beside `-E`), `-h`, a short-only flag (python's
 A few `let`s describe the tool's conventions; an older signature has
 none of them and checks exactly as before (GNU flags, none taking a
 value, a multi-letter single-dash word like `-fsSL` never read):
+
+- `let bundles = true` — a multi-letter single-dash word is a bundle of
+  short flags, checked letter by letter (`tr -dQ` warns on `-Q`).
+  `weir add sig` writes it into every GNU-style signature it generates.
 
 - `let convention = "go"` — Go's flag package: `-name`, `--name`
   and `-n` are one flag, never bundled. `"find"` — whole single-dash

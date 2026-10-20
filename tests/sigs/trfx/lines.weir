@@ -1,0 +1,5 @@
+#sig trfx
+trfx -ds a b // clean
+trfx -cd 0-9 // clean
+trfx -dQ x // typo: -Q
+trfx --delte x // typo: --delte

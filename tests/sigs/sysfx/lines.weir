@@ -5,3 +5,4 @@ sysfx list-units --type=service --no-legnd // typo: --no-legnd
 sysfx show -p ActiveState --value nginx // clean
 sysfx daemon-reload --quite // typo: --quite
 sysfx --no-leg list-units // clean (the unique prefix of --no-legend)
+sysfx --no-ask restart foo // clean (the negation of --ask=BOOL)

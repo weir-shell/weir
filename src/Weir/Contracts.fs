@@ -1900,6 +1900,80 @@ let probeMaxBytes = 4 * 1024 * 1024
 /// left holding stdout never closes them
 let probeGraceMs = 1000
 
+// what a probe holds while it runs [D:sig-probe-bounds]: its process group
+// (or, on the managed path, its Process) and the temp dirs generation
+// made. The probe's own group never sees the terminal's ^C, so a signal
+// to weir kills each group and removes the dirs, then dies by the signal
+// (the runtime's default action: the handler does not cancel). A probe
+// that starts once the signal arrived is killed at its start.
+module ProbeGuard =
+    [<DllImport("libc", SetLastError = true, EntryPoint = "kill")>]
+    extern int private sysKill(int pid, int signal)
+
+    let private groups = Collections.Concurrent.ConcurrentDictionary<int, unit>()
+    let private procs = Collections.Concurrent.ConcurrentDictionary<Diagnostics.Process, unit>()
+    let private paths = Collections.Concurrent.ConcurrentDictionary<string, unit>()
+    let mutable private stopping = 0
+    let mutable private installed = 0
+    let mutable private roots: obj list = []
+
+    let private killGroup (pgid: int) =
+        try
+            sysKill (-pgid, 9) |> ignore
+        with _ ->
+            ()
+
+    let private killProc (p: Diagnostics.Process) =
+        try
+            p.Kill true
+        with _ ->
+            ()
+
+    let private sweep () =
+        Threading.Volatile.Write(&stopping, 1)
+
+        for kv in groups do
+            killGroup kv.Key
+
+        for kv in procs do
+            killProc kv.Key
+
+        for kv in paths do
+            try
+                if Directory.Exists kv.Key then Directory.Delete(kv.Key, true)
+                elif File.Exists kv.Key then File.Delete kv.Key
+            with _ ->
+                ()
+
+    /// the signal hook, once per process (POSIX only: Windows delivers
+    /// Ctrl+C to the console's whole group, the probe included)
+    let install () =
+        if not (OperatingSystem.IsWindows()) && Threading.Interlocked.Exchange(&installed, 1) = 0 then
+            for s in [ PosixSignal.SIGINT; PosixSignal.SIGTERM; PosixSignal.SIGHUP; PosixSignal.SIGQUIT ] do
+                try
+                    roots <- (PosixSignalRegistration.Create(s, (fun _ -> sweep ())) :> obj) :: roots
+                with _ ->
+                    ()
+
+    let stoppingNow () = Threading.Volatile.Read &stopping = 1
+
+    let trackGroup (pgid: int) =
+        groups[pgid] <- ()
+        if stoppingNow () then killGroup pgid
+
+    let untrackGroup (pgid: int) = groups.TryRemove pgid |> ignore
+
+    let trackProc (p: Diagnostics.Process) =
+        procs[p] <- ()
+        if stoppingNow () then killProc p
+
+    let untrackProc (p: Diagnostics.Process) = procs.TryRemove p |> ignore
+
+    /// a temp dir or file generation made: removed if a signal ends weir
+    let trackPath (path: string) = paths[path] <- ()
+
+    let untrackPath (path: string) = paths.TryRemove path |> ignore
+
 // the probe's own process group [D:sig-probe-bounds]: .NET cannot start a
 // child in a new group, so on Linux the probe is a posix_spawn with
 // POSIX_SPAWN_SETPGROUP, read through poll — every bound (time, the
@@ -2077,6 +2151,7 @@ module private ProbeSpawn =
                     close errP[0] |> ignore
                     None
                 else
+                    ProbeGuard.trackGroup pid
                     let bufs = [| new MemoryStream(); new MemoryStream() |]
                     let fds = [| outP[0]; errP[0] |]
                     let isOpen = [| true; true |]
@@ -2168,6 +2243,7 @@ module private ProbeSpawn =
                               Err = text bufs[1]
                               Cut = cut }
                     finally
+                        ProbeGuard.untrackGroup pid
                         close fds[0] |> ignore
                         close fds[1] |> ignore
 
@@ -2186,6 +2262,7 @@ let private runProbeManaged (prog: string) (args: string list) (cwd: string) : P
         psi.UseShellExecute <- false
         psi.WorkingDirectory <- cwd
         use p = Diagnostics.Process.Start psi
+        ProbeGuard.trackProc p
         p.StandardInput.Close()
         let mutable cut = false
 
@@ -2233,6 +2310,8 @@ let private runProbeManaged (prog: string) (args: string list) (cwd: string) : P
         let get (b: MemoryStream) =
             lock b (fun () -> Text.Encoding.UTF8.GetString(b.GetBuffer(), 0, int b.Length))
 
+        ProbeGuard.untrackProc p
+
         Some
             { Exit = (if exited then Some p.ExitCode else None)
               Out = get outB
@@ -2249,18 +2328,24 @@ let mutable private nativeProbe = OperatingSystem.IsLinux()
 /// (probeMaxBytes per stream), the probe's process group killed at any
 /// bound. None: it did not start
 let runProbe (prog: string) (args: string list) (cwd: string option) : ProbeOutput option =
+    ProbeGuard.install ()
+
     let dir =
         match cwd with
         | Some d -> d
         | None ->
             let d = Path.Combine(Path.GetTempPath(), $"weir-sigprobe-{Guid.NewGuid():N}")
+            ProbeGuard.trackPath d
             Directory.CreateDirectory d |> ignore
             d
 
     try
         let viaManaged () = runProbeManaged prog args dir
 
-        if nativeProbe then
+        // a signal already arrived: weir is dying, nothing more starts
+        if ProbeGuard.stoppingNow () then
+            None
+        elif nativeProbe then
             try
                 ProbeSpawn.run prog args dir
             with
@@ -2277,6 +2362,8 @@ let runProbe (prog: string) (args: string list) (cwd: string option) : ProbeOutp
                 Directory.Delete(dir, true)
             with _ ->
                 ()
+
+            ProbeGuard.untrackPath dir
 
 /// one probe rung: spawn `<tool> <arg>` and read the exit code.
 /// stdin is null and the cwd a fresh temp dir — probing the bare

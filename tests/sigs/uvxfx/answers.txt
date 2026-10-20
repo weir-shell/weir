@@ -1,0 +1,12 @@
+=== --version
+uv 0.9.5
+=== --help
+Run a command provided by a Python package.
+
+Usage: uvxfx [OPTIONS] [COMMAND]
+
+Options:
+      --from <FROM>        Use the given package to provide the command
+      --with <WITH>        Run with the given packages installed
+  -p, --python <PYTHON>    The Python interpreter to use
+  -q, --quiet              Use quiet output

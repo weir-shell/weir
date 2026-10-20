@@ -1,0 +1,20 @@
+=== --version
+stracefx -- version 6.18
+=== --versio
+stracefx -- version 6.18
+=== --help
+Usage: stracefx [-ACdffhikqqrtttTvVwxxyyzZ] [-I N] [-b execve] [-e EXPR]...
+              [-a COLUMN] [-o FILE] [-s STRSIZE] [-X FORMAT] [-O OVERHEAD]
+              [-S SORTBY] [-U COLUMNS] [-P PATH]... [-p PID]... [-u USERNAME]
+              { -p PID | [-DDD] [-E VAR[=VAL]]... PROG [ARGS] }
+
+General:
+  -e EXPR        a qualifying expression: OPTION=[!]all or OPTION=[!]VAL1[,VAL2]...
+  -f, --follow-forks
+                 follow forks
+  -o FILE, --output=FILE
+                 send trace output to FILE instead of stderr
+  -p PID, --attach=PID
+                 trace process with process id PID, may be repeated
+  -s STRSIZE, --string-limit=STRSIZE
+                 limit length of print strings to STRSIZE chars (default 32)
