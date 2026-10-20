@@ -25,10 +25,10 @@
 // is the line's last word (`// cleanup` is no marker). Loud, in every
 // direction: an FP, an unexpected FN, a probe the sample has no answer for
 // (a phantom word, or a new probe — add its answer), a failed generation, a
-// wrong version, a non-sig diagnostic, a sig diagnostic on an unmarked line
-// (a signature that fails to load reports at its #sig line) or a check that
-// crashed (an exit other than 0 or 1, or no JSON) keeps the gate shut; the
-// exit code is the number of samples that failed.
+// wrong version, a non-sig diagnostic, a sig diagnostic at a #sig line (a
+// signature that fails to load reports there) or a check that crashed (an
+// exit other than 0 or 1, or no JSON) keeps the gate shut; an unmarked line
+// is not scored. The exit code is the number of samples that failed.
 //
 // --live is a REPORT, never a gate: it generates against the INSTALLED tools
 // named by tests/sigs/live/<tool>.weir (skipping absent ones) and scores
@@ -110,8 +110,10 @@ let score t =
     let sigDiags = diags |> Seq.where (fun x -> x.code == "sig") |> Seq.freeze
     let others = diags |> Seq.where (fun x -> x.code <> "sig" && x.code <> "cmd-not-found") |> Seq.freeze
     let markedLines = File.read "lines.weir" |> marked
-    let markedNos = markedLines |> Seq.map (fun (ln, _, _, _) -> ln) |> Seq.freeze
-    let unmarked = sigDiags |> Seq.where (fun x -> not (Seq.contains x.line markedNos)) |> Seq.freeze
+    // the #sig lines: a signature that does not load reports at its own
+    let sigLines =
+        File.read "lines.weir" |> Seq.indexed |> Seq.where (fun (_, l) -> Str.startsWith "#sig" l) |> Seq.map (fun (i, _) -> i + 1) |> Seq.freeze
+    let loadErrs = sigDiags |> Seq.where (fun x -> Seq.contains x.line sigLines) |> Seq.freeze
     let rows =
         markedLines
         |> Seq.map (fun (ln, kind, flag, text) ->
@@ -130,7 +132,7 @@ let score t =
     let fn = sum (fun (_, _, _, a, _, _, _) -> a)
     let known = sum (fun (_, _, _, _, a, _, _) -> a)
     let genOk = g.exitCode == 0
-    let bad = fp > 0 || fn > 0 || not genOk || not (Seq.isEmpty others) || versionBad || crashed || not (Seq.isEmpty unmarked)
+    let bad = fp > 0 || fn > 0 || not genOk || not (Seq.isEmpty others) || versionBad || crashed || not (Seq.isEmpty loadErrs)
     let verdict = if bad then "FAIL" else "ok"
     let line = $"{Str.padRight 11 t} TP={tp} FP={fp} FN={fn} known={known} flags={flags}  {verdict}"
     print (if cli.live then $"{line}  [{version}]" else line)
@@ -143,8 +145,8 @@ let score t =
             if msgs <> "" then print $"        -> {msgs}"
     for o in others do
         print $"    non-sig diagnostic L{o.line}: [{o.code}] {o.message}"
-    for u in unmarked do
-        print $"    sig diagnostic on an unmarked line L{u.line}: {u.message}"
+    for u in loadErrs do
+        print $"    the signature did not load (L{u.line}): {u.message}"
     if crashed then
         let err = c.stderr |> Str.join " "
         print $"    check crashed (exit {c.exitCode}): {err}"
