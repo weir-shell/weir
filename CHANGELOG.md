@@ -122,6 +122,32 @@
 - **A malformed `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` is an error.**
   `http://h:99999` was ignored and the request went out directly; it
   now raises, naming the variable, as curl refuses.
+- **A YAML round trip keeps a float as written.** `Yaml.parse |> to
+  yaml` rewrote `1e5` as `100000.0` and `+.5` as `0.5` (a YAML 1.1
+  reader such as PyYAML reads both as strings, and a short git SHA can
+  be `1e5`), `3.10` as `3.1`, and quoted `1e400`. They now come back
+  unchanged; `to json` still writes the numbers.
+- **`to json` of a YAML integer beyond int64 writes its digits.**
+  `012345678901234567890` failed with .NET text, and `0x8000000000000000`
+  / `0o1000000000000000000000` came out as strings; all write decimal
+  digits, as a decimal one does.
+- **`from yaml`: a value of only a no-break space (or U+3000) is that
+  string**, not null; a **`float` field refuses `0644`** as an `int`
+  field does, instead of reading 644.0.
+- **`Yaml.inferShape` and `#infer` draft a type that reads its own
+  sample.** `mode: 0644` drafted `int`, which then refused it; it now
+  drafts `Yaml` (which keeps the text), with a note. `0x1F`/`0o17`
+  draft `int`, `.inf` drafts `Yaml`, `+.5` drafts `float`.
+- **`from xml` of UTF-8 bytes labelled `utf-16` says the declaration
+  is wrong** instead of failing with garbled text, and a document nested
+  deeper than 500 elements is refused at once instead of taking seconds
+  to minutes.
+- **`weir gen types` handles any property name.** A name with `"` or `\`
+  failed as a "generator bug"; it now drafts an escaped `[<Wire>]`. A
+  name with a control character (CR, ESC, …), which no weir string can
+  spell, is left out with a note, and notes show such characters
+  visibly. `format: uint64` beside `null` in an `anyOf`/`oneOf` drafts
+  `Option<Yaml>`, which keeps a value past int64.
 - **Windows: a `Seq.pfirst` loser's `| complete` command no longer
   outlives the race.** A loser waiting in `sh -c "…" | complete` was
   stopped without killing its command, so `sh` and what it started ran

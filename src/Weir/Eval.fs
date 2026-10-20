@@ -2198,6 +2198,21 @@ let private withSourceText (raw: string) (node: Value) : Value =
     yamlSourceText.AddOrUpdate(node, raw)
     node
 
+// an exponent float carries a dot and a signed exponent (1.0e-05): a
+// YAML 1.1 reader (PyYAML) loads `1e-05` as a string [D:yaml-interop]
+let private yamlFloat (f: float) : string =
+    let s = formatFloat f
+    let e = s.IndexOf 'e'
+
+    if e < 0 then
+        s
+    else
+        let mant = s.Substring(0, e)
+        let exp = s.Substring(e + 1)
+        let mant = if mant.Contains '.' then mant else mant + ".0"
+        let exp = if exp.StartsWith "-" || exp.StartsWith "+" then exp else "+" + exp
+        mant + "e" + exp
+
 let yamlFloatNode (raw: string) (f: float) : Value =
     let node = VUnion("YFloat", Some(VFloat f))
 
@@ -2206,11 +2221,38 @@ let yamlFloatNode (raw: string) (f: float) : Value =
     else
         node
 
+/// a plain YAML float keeps its text whenever weir would write it back
+/// differently (`1e5`, `+.5`, `3.10`): a YAML 1.1 reader takes some of
+/// those as strings, and an untouched round trip rewrites none
+/// [D:yaml-float-text]
+let yamlPlainFloatNode (raw: string) (f: float) : Value =
+    let node = VUnion("YFloat", Some(VFloat f))
+
+    if integerShaped raw || yamlFloat f <> raw then
+        withSourceText raw node
+    else
+        node
+
+/// a YAML 1.2 core `0x…`/`0o…` int's value at any size
+let private yamlRadixBig (raw: string) : System.Numerics.BigInteger =
+    let radix = if raw.StartsWith "0x" then 16 else 8
+
+    raw.Substring 2
+    |> Seq.fold
+        (fun (acc: System.Numerics.BigInteger) c ->
+            acc * System.Numerics.BigInteger radix + System.Numerics.BigInteger(System.Uri.FromHex c))
+        System.Numerics.BigInteger.Zero
+
+/// the decimal digits of an integer past int64 a YFloat node was read
+/// from (decimal with any leading zeros, 0x, 0o) [D:yaml-node-bigint] —
+/// None for a float's own text, which writes its value
 let yamlBigIntText (node: Value) : string option =
     match node with
     | VUnion("YFloat", _) ->
         match yamlSourceText.TryGetValue node with
-        | true, t -> Some t
+        | true, t when integerShaped t ->
+            Some(System.Numerics.BigInteger.Parse(t, System.Globalization.CultureInfo.InvariantCulture).ToString())
+        | true, t when t.StartsWith "0x" || t.StartsWith "0o" -> Some((yamlRadixBig t).ToString())
         | _ -> None
     | _ -> None
 
@@ -2252,6 +2294,11 @@ let yamlCoreRadixInt (raw: string) : int64 option option =
     if raw.StartsWith "0x" then digits 16 System.Uri.IsHexDigit
     elif raw.StartsWith "0o" then digits 8 (fun c -> c >= '0' && c <= '7')
     else None
+
+/// the YAML 1.2 core schema's number shapes (int and float) — the text
+/// every 1.2 reader types as a number, finite or not
+let private yamlCoreNumberRx =
+    System.Text.RegularExpressions.Regex @"^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$"
 
 /// the YAML 1.2 core schema's non-finite floats — numbers to every
 /// reader, no value a weir float holds [D:yaml-number-text]
@@ -2951,6 +2998,25 @@ let private xmlUndecodable (who: string) (name: string) =
     failwith
         $"{who}: the document declares encoding '{excerpt name}', which weir cannot decode, and holds non-ASCII characters — UTF-8, UTF-16, UTF-32, US-ASCII and ISO-8859-1 read; convert it to UTF-8 (iconv -f {excerpt name} -t UTF-8) and change the declaration to encoding=\"UTF-8\""
 
+// UTF-16/UTF-32: code units wider than a byte, so a declaration read
+// as 8-bit text cannot be theirs [D:xml-label-contradiction]
+let private xmlWideUnits (enc: System.Text.Encoding) =
+    match enc.CodePage with
+    | 1200
+    | 1201
+    | 12000
+    | 12001 -> true
+    | _ -> false
+
+let private xmlWideContradiction (who: string) (name: string) (what: string) =
+    failwith
+        $"{who}: the document declares encoding '{excerpt name}', but its {what} with an 8-bit '<?xml' and no byte-order mark — the declaration contradicts it; if the file is UTF-8, change the declaration to encoding=\"UTF-8\""
+
+// element nesting ceiling [D:xml-depth]: the document readers' 500
+// (yaml, toml, the expression parser) — a typed read never reaches that
+// deep, and an adversarial ladder stops at the bound
+let private xmlMaxDepth = 500
+
 /// the input of `from xml`: text (already decoded as UTF-8) or the
 /// document's bytes, which decode per their BOM or declaration
 type XmlInput =
@@ -2991,6 +3057,9 @@ let private xmlDoc
 
                 match xmlEncoding name with
                 | None when nonAscii -> xmlUndecodable who name
+                // a declaration the text itself contradicts: its head
+                // read as 8-bit characters, never 16/32-bit units
+                | Some enc when xmlWideUnits enc && nonAscii -> xmlWideContradiction who name "text starts"
                 | Some enc when enc.CodePage <> 65001 && nonAscii ->
                     let tyName =
                         match top with
@@ -3034,6 +3103,10 @@ let private xmlDoc
                         let name = xmlDeclName who m
 
                         match xmlEncoding name with
+                        // no BOM and an 8-bit `<?xml` head: a UTF-16/32
+                        // label contradicts the bytes, whose decode
+                        // would be mojibake
+                        | Some e when xmlWideUnits e -> xmlWideContradiction who name "bytes start"
                         | Some e -> e
                         // pure ASCII reads the same under any
                         // ASCII-compatible label [D:xml-labels]
@@ -3061,9 +3134,25 @@ let private xmlDoc
 
     let root =
         try
-            use sr = new System.IO.StringReader(text)
-            use reader = System.Xml.XmlReader.Create(sr, settings)
-            (XDocument.Load reader).Root
+            // the nesting bound [D:xml-depth]: a streaming pre-scan stops
+            // at the bound, before XDocument's superlinear build
+            let deep =
+                use sr = new System.IO.StringReader(text)
+                use scan = System.Xml.XmlReader.Create(sr, settings)
+                let mutable deep = false
+
+                while not deep && scan.Read() do
+                    if scan.NodeType = System.Xml.XmlNodeType.Element && scan.Depth >= xmlMaxDepth then
+                        deep <- true
+
+                deep
+
+            if deep then
+                None
+            else
+                use sr = new System.IO.StringReader(text)
+                use reader = System.Xml.XmlReader.Create(sr, settings)
+                Some (XDocument.Load reader).Root
         with
         // Prohibit's own error carries no position; the declaration's
         // spelling is what names it
@@ -3073,6 +3162,13 @@ let private xmlDoc
         | _ ->
             // never System.Xml's words, mirroring the JSON boundary
             failwith $"{who}: not valid XML: {shown}"
+
+    let root =
+        match root with
+        | Some r -> r
+        | None ->
+            failwith
+                $"{who}: the document nests elements deeper than {xmlMaxDepth} levels, weir's bound for a document: {shown}"
 
     // children / attributes matched by local name — namespaces
     // (msbuild's default xmlns) are ignored so field names stay plain
@@ -3373,7 +3469,15 @@ let yamlScalarValue (raw: string) (quoted: bool) : Value =
     else
         match (if quoted then None else yamlCoreRadixInt raw) with
         | Some(Some n) -> withSourceText raw (VUnion("YInt", Some(VInt n)))
-        | Some None -> withSourceText raw (VUnion("YStr", Some(VStr raw)))
+        // past int64 a radix int is the decimal's sibling: its nearest
+        // float, the text kept [D:yaml-float-text]
+        | Some None ->
+            let f = float (yamlRadixBig raw)
+
+            if System.Double.IsFinite f then
+                withSourceText raw (VUnion("YFloat", Some(VFloat f)))
+            else
+                withSourceText raw (VUnion("YStr", Some(VStr raw)))
         | None ->
         match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
         | true, n when yamlLeadingZero raw -> withSourceText raw (VUnion("YInt", Some(VInt n)))
@@ -3383,7 +3487,11 @@ let yamlScalarValue (raw: string) (quoted: bool) : Value =
             // — `cpu: 1.5` must not render as "1.5" (same as int;
             // parseFloat refuses non-finite so nan/inf text stays string)
             match (if quoted then Error "" else parseFloat raw) with
-            | Ok f -> yamlFloatNode raw f
+            | Ok f -> yamlPlainFloatNode raw f
+            // a 1.2 number past float range (1e400): no float holds it,
+            // so the text rides a YStr and writes back plain, as .inf
+            // does [D:yaml-float-text]
+            | Error _ when not quoted && yamlCoreNumberRx.IsMatch raw -> withSourceText raw (VUnion("YStr", Some(VStr raw)))
             | Error _ -> VUnion("YStr", Some(VStr raw))
 
 let rec yamlNodeValue (node: Yaml.Node) : Value =
@@ -3401,6 +3509,28 @@ let rec yamlNodeValue (node: Yaml.Node) : Value =
             Some(VSeq(entries |> List.map (fun (k, v) -> VTuple [ VStr k; yamlNodeValue v ]) |> List.toSeq))
         )
 
+// ruling R3 [D:yaml-number-text]: a typed read of a leading-zero
+// literal refuses — 1.2 reads decimal, the 1.1 readers beside weir
+// (PyYAML, kubectl) do not; `asInt` offers the 0o spelling, which a
+// float field cannot read
+let private yamlLeadingZeroRefusal (line: int) (raw: string) (asInt: bool) : Value =
+    let r = raw.TrimStart('-', '+')
+    let n = System.Numerics.BigInteger.Parse(raw, System.Globalization.CultureInfo.InvariantCulture)
+
+    let sign = if raw.StartsWith "-" then "-" else ""
+
+    let theirs, octal =
+        if r |> Seq.forall (fun c -> c <= '7') then
+            let oct = yamlRadixBig ("0o" + r)
+            // the core schema's 0o form is unsigned
+            $"octal ({sign}{oct})",
+            (if asInt && r = raw then $"0o{(r.TrimStart '0').PadLeft(1, '0')} for octal, " else "")
+        else
+            "a string", ""
+
+    failwith
+        $"from yaml: line {line}: '{quoteData raw}' has a leading zero — YAML 1.2 (weir) reads decimal {n}, YAML 1.1 readers (PyYAML, kubectl) read it as {theirs}; write {octal}{n} for decimal, or quote it for a string"
+
 // `localDate line raw`: is this scalar an offset-less TOML datetime
 // [D:toml-local-instant] — false for every yaml read
 let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.Shape) (node: Yaml.Node) : Value =
@@ -3414,21 +3544,7 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
             failwith $"from yaml: line {line}: a quoted scalar is a string; this field expects int"
         else
             match System.Int64.TryParse raw with
-            | true, n when yamlLeadingZero raw ->
-                // ruling R3 [D:yaml-number-text]: 1.2 reads decimal, the
-                // 1.1 readers beside weir (PyYAML, kubectl) do not
-                let r = raw.TrimStart('-', '+')
-
-                let theirs, octal =
-                    if r |> Seq.forall (fun c -> c <= '7') then
-                        // the core schema's 0o form is unsigned
-                        $"octal ({System.Convert.ToInt64(r, 8)})",
-                        (if r = raw then $"0o{(r.TrimStart '0').PadLeft(1, '0')} for octal, " else "")
-                    else
-                        "a string", ""
-
-                failwith
-                    $"from yaml: line {line}: '{quoteData raw}' has a leading zero — YAML 1.2 (weir) reads decimal {n}, YAML 1.1 readers (PyYAML, kubectl) read it as {theirs}; write {octal}{n} for decimal, or quote it for a string"
+            | true, _ when yamlLeadingZero raw -> yamlLeadingZeroRefusal line raw true
             | true, n -> VInt n
             | _ ->
                 match yamlCoreRadixInt raw with
@@ -3471,6 +3587,9 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
                     $"from yaml: line {line}: '{quoteData raw}' is not representable — weir floats are finite (non-finite results raise; there is no value to read into)"
             | _ ->
                 match parseFloat raw with
+                // a float field is no way around the int refusal
+                // [D:yaml-float-text]
+                | Ok f when yamlLeadingZero raw -> yamlLeadingZeroRefusal line raw false
                 | Ok f -> VFloat f
                 | Error _ -> failwith $"from yaml: line {line}: expected float, got '{quoteData raw}'"
     | Yaml.SStr, Yaml.NScalar(raw, _, _) -> VStr raw
@@ -3692,21 +3811,6 @@ type private Rendered =
 // with more have no form in the subset (`|+` is rejected) and fall
 // back below, since dropping bytes is the one thing a renderer must
 // never do
-// an exponent float carries a dot and a signed exponent (1.0e-05): a
-// YAML 1.1 reader (PyYAML) loads `1e-05` as a string [D:yaml-interop]
-let private yamlFloat (f: float) : string =
-    let s = formatFloat f
-    let e = s.IndexOf 'e'
-
-    if e < 0 then
-        s
-    else
-        let mant = s.Substring(0, e)
-        let exp = s.Substring(e + 1)
-        let mant = if mant.Contains '.' then mant else mant + ".0"
-        let exp = if exp.StartsWith "-" || exp.StartsWith "+" then exp else "+" + exp
-        mant + "e" + exp
-
 let private renderString (s: string) : Rendered =
     // U+2028/U+2029 are line breaks to a YAML reader, so block content
     // cannot carry them; the quoted form escapes them [D:block-scalars]

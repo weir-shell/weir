@@ -29956,6 +29956,195 @@ let hunt3r5FormatTests =
               Expect.stringContains g "both: an enum of 'y', null — drafted" "listed and allowed"
           } ]
 
+let hunt3r6FormatTests =
+    // hunt-3 round 6, formats: number text for floats, radix bigints and
+    // overflow [D:yaml-number-text] [D:yaml-node-bigint], Unicode white
+    // space in a value slot [D:yaml-ws], XML label contradiction
+    // [D:xml-encoding] and depth [D:xml-depth], draft escaping
+    // [D:infer-wire-sanitize], nullable uint64 [D:schema-uint64]
+    let text v =
+        forceSeq v
+        |> List.map (function
+            | VStr s -> s
+            | v -> failtest $"expected text, got {formatValue v}")
+        |> String.concat "\n"
+
+    let lit (lines: string list) =
+        "[" + (lines |> List.map (fun l -> "\"" + l.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"") |> String.concat "; ") + "]"
+
+    let gen src =
+        match Weir.Contracts.parseSchema "t" src with
+        | Error e -> failtest e
+        | Ok d ->
+            match Weir.SchemaTypes.moduleText Weir.Parser.keywords Set.empty "t" None "0123456789abcdef" "http://src" d with
+            | Ok g -> g.Text
+            | Error e -> failtest e
+
+    let str (v: Value) =
+        match v with
+        | VStr s -> s
+        | v -> failtest $"expected a string, got {formatValue v}"
+
+    testList
+        "hunt3r6 formats"
+        [ test "yaml: a float weir would write differently keeps its text; to json writes the value [D:yaml-number-text]" {
+              let doc = [ "sha: 1e5"; "a: 1E5"; "b: 1e+5"; "c: +.5"; "v: 3.10"; "p: 1.5" ]
+              Expect.equal (run (lit doc + " |> Yaml.parse |> to yaml") |> text) (String.concat "\n" doc) "as written"
+
+              Expect.equal
+                  (run (lit doc + " |> Yaml.parse |> to json") |> text)
+                  "{\"sha\":100000.0,\"a\":100000.0,\"b\":100000.0,\"c\":0.5,\"v\":3.1,\"p\":1.5}"
+                  "json writes the values"
+
+              Expect.equal
+                  (run "YMap [(\"f\", YFloat 1e5)] |> to yaml |> Str.join \"\"")
+                  (VStr "f: 100000.0")
+                  "a YFloat built in weir writes its float"
+
+              Expect.equal
+                  (run "[\"{\\\"f\\\": 1e5}\"] |> from json {| f: Yaml |} |> to yaml |> Str.join \"\"")
+                  (VStr "f: 100000.0")
+                  "a JSON number keeps no float text — 1e5 is a string to a 1.1 reader"
+          }
+          test "yaml: a 1.2 number past float range keeps its text plain [D:yaml-number-text]" {
+              Expect.equal
+                  (run (lit [ "big: 1e400"; "huge: 1.5e309"; "s: \"1e400\"" ] + " |> Yaml.parse |> to yaml") |> text)
+                  "big: 1e400\nhuge: 1.5e309\ns: \"1e400\""
+                  "plain stays plain, quoted stays quoted"
+          }
+          test "yaml: a leading-zero or radix integer past int64 writes decimal digits to json [D:yaml-node-bigint]" {
+              let doc = [ "k: 012345678901234567890"; "h: 0x8000000000000000"; "o: 0o1000000000000000000000"; "d: 9223372036854775808" ]
+
+              Expect.equal
+                  (run (lit doc + " |> Yaml.parse |> to json") |> text)
+                  "{\"k\":12345678901234567890,\"h\":9223372036854775808,\"o\":9223372036854775808,\"d\":9223372036854775808}"
+                  "digits, never .NET text"
+
+              Expect.equal (run (lit doc + " |> Yaml.parse |> to yaml") |> text) (String.concat "\n" doc) "yaml keeps the text"
+
+              Expect.equal
+                  (run ("show (" + lit [ "h: 0x8000000000000000" ] + " |> Yaml.parse)"))
+                  (VStr "YMap ([(\"h\", YFloat (9.223372036854776e+18))])")
+                  "a radix int past int64 reads as the decimal does"
+          }
+          test "yaml: a value of only NBSP / U+3000 is that string, not null [D:yaml-ws]" {
+              Expect.equal
+                  (run ("show (" + lit [ "a: \u00a0"; "b: \u3000"; "c: \u00a0 # a comment" ] + " |> from yaml {| a: string; b: string; c: string |})"))
+                  (VStr "{ a = \"\u00a0\"; b = \"\u3000\"; c = \"\u00a0\" }")
+                  "mapping values"
+
+              Expect.equal
+                  (run ("show (" + lit [ "s:"; "- \u00a0" ] + " |> from yaml {| s: seq<string> |})"))
+                  (VStr "{ s = [\"\u00a0\"] }")
+                  "a sequence item"
+
+              Expect.equal
+                  (run ("show (" + lit [ "a:   " ] + " |> from yaml {| a: Option<string> |})"))
+                  (VStr "{ a = None }")
+                  "spaces alone are still null"
+          }
+          test "yaml: a float field refuses a leading-zero literal, as int does (R3) [D:yaml-number-text]" {
+              for ty in [ "float"; "Option<float>" ] do
+                  let m = msgOf (lit [ "mode: 0644" ] + $" |> from yaml {{| mode: {ty} |}}")
+                  Expect.stringContains m "'0644' has a leading zero" ty
+                  Expect.stringContains m "octal (420)" ty
+                  Expect.isFalse (m.Contains "0o644") $"{ty}: a float field cannot read 0o"
+
+              Expect.equal
+                  (run ("show (" + lit [ "a: 644"; "b: 0.5"; "c: 0"; "d: 0644.5" ] + " |> from yaml {| a: float; b: float; c: float; d: float |})"))
+                  (VStr "{ a = 644.0; b = 0.5; c = 0.0; d = 644.5 }")
+                  "decimal forms read"
+
+              Expect.stringContains (msgOf (lit [ "n: -0644" ] + " |> from yaml {| n: int |}")) "octal (-420)" "the sign rides the 1.1 reading"
+          }
+          test "from xml: a UTF-16/32 label on 8-bit bytes says the declaration contradicts them [D:xml-encoding]" {
+              let xenv = env |> declare "type XT = { a: string }"
+
+              let bytes =
+                  System.Text.Encoding.UTF8.GetBytes "<?xml version=\"1.0\" encoding=\"utf-16\"?><XT><a>café</a></XT>"
+
+              let m =
+                  (Expect.throwsC
+                      (fun () ->
+                          runUnder xenv $"Bytes.fromBase64 \"{System.Convert.ToBase64String bytes}\" |> from xml XT" |> ignore)
+                      id)
+                      .Message
+
+              Expect.stringContains m "declares encoding 'utf-16'" "names the label"
+              Expect.stringContains m "contradicts" "says the bytes disagree"
+              Expect.isFalse (m.Contains "not valid XML") "never the mojibake parse"
+
+              let le = System.Text.Encoding.Unicode
+
+              let u16 =
+                  Array.append [| 0xFFuy; 0xFEuy |] (le.GetBytes "<?xml version=\"1.0\" encoding=\"utf-16\"?><XT><a>café</a></XT>")
+
+              Expect.equal
+                  (runUnder xenv $"show (Bytes.fromBase64 \"{System.Convert.ToBase64String u16}\" |> from xml XT)")
+                  (VStr "{ a = \"café\" }")
+                  "real UTF-16 still reads"
+          }
+          test "from xml: element nesting past 500 refuses; 500 reads [D:xml-depth]" {
+              let xenv = env |> declare "type XR = { x: Option<string> }"
+              let doc n =
+                  let o, c = String.replicate (n - 1) "<a>", String.replicate (n - 1) "</a>"
+                  $"[\"<r>{o}{c}</r>\"]"
+              Expect.equal (runUnder xenv $"show ({doc 500} |> from xml XR)") (VStr "{ x = None }") "at the bound"
+
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+              let m = (Expect.throwsC (fun () -> runUnder xenv $"{doc 30000} |> from xml XR" |> ignore) id).Message
+              Expect.stringContains m "deeper than 500 levels" "past it"
+              Expect.isLessThan sw.ElapsedMilliseconds 5000L "and stops early"
+          }
+          test "inferShape drafts what the typed read takes back: 0644/.inf/radix past int64 Yaml, 0x1F/0o17 int, +.5 float [D:yaml-number-text]" {
+              let d = run "Yaml.inferShape [\"mode: 0644\"; \"mask: 0x1F\"; \"num: 0o17\"; \"max: .inf\"; \"h: 0x8000000000000000\"; \"f: +.5\"; \"big: 1e400\"; \"name: web\"]" |> str
+              for f, ty in [ "mode", "Yaml"; "mask", "int"; "num", "int"; "max", "Yaml"; "h", "Yaml"; "f", "float"; "big", "Yaml"; "name", "string" ] do
+                  Expect.stringContains d $"\n    {f}: {ty}\n" f
+
+              Expect.stringContains d "'mode': 0644 has a leading zero" "the note says why"
+
+              Expect.equal
+                  (run "[\"mode: 0644\"] |> from yaml {| mode: Yaml |} |> to yaml |> Str.join \"\"")
+                  (VStr "mode: 0644")
+                  "the drafted Yaml field reads its sample and keeps the text"
+          }
+          test "gen types escapes wire keys, drops a key a literal cannot spell, quotes notes [D:infer-wire-sanitize]" {
+              let g =
+                  gen
+                      "{ \"type\": \"object\", \"additionalProperties\": false, \"properties\": { \"p\\\"q\": { \"type\": \"string\" }, \"r\\\\s\": { \"type\": \"string\" }, \"a\\u001b]52;c;x\\u0007b\": { \"type\": \"string\" }, \"x\": { \"enum\": [\"a\", \"b\\r\"] } } }"
+
+              Expect.stringContains g "[<Wire \"p\\\"q\">]" "a quote escapes"
+              Expect.stringContains g "[<Wire \"r\\\\s\">]" "a backslash escapes"
+              Expect.isFalse (g |> Seq.exists (fun c -> c = '\u001b' || c = '\u0007' || c = '\r')) "no raw ESC/BEL/CR"
+              Expect.stringContains g "is DROPPED from the draft" "the ESC key is dropped, noted"
+              Expect.stringContains g "\\x0d" "the CR in the enum note shows visibly"
+
+              // the drafted decl on one line (the test parser's form)
+              let body =
+                  g.Substring(g.IndexOf "type T = {" + 10).Split('\n')
+                  |> Array.map (fun l -> l.Trim())
+                  |> Array.filter (fun l -> l <> "" && l <> "}")
+                  |> Array.map (fun l -> if l.StartsWith "[<" then l + " " else l + "; ")
+                  |> String.concat ""
+
+              let tenv = env |> declare ("type T = { " + body.TrimEnd(' ', ';') + " }")
+
+              Expect.equal
+                  (runUnder tenv "[\"{\\\"p\\\\\\\"q\\\": \\\"v\\\", \\\"r\\\\\\\\s\\\": \\\"w\\\"}\"] |> from json T |> to json |> Str.join \"\"")
+                  (VStr "{\"p\\\"q\":\"v\",\"r\\\\s\":\"w\"}")
+                  "the escaped keys read and write back"
+          }
+          test "gen types: format uint64 under a nullable anyOf/oneOf drafts Option<Yaml> [D:schema-uint64]" {
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "properties": { "a": { "anyOf": [{ "type": "integer", "format": "uint64" }, { "type": "null" }] },
+                                           "o": { "oneOf": [{ "type": "null" }, { "type": "integer", "format": "uint64" }] } } }"""
+
+              Expect.stringContains g "\n    a: Option<Yaml>\n" "anyOf"
+              Expect.stringContains g "\n    o: Option<Yaml>\n" "oneOf"
+          } ]
+
 let private growsWithin (factor: float) (label: string) (small: unit -> unit) (big: unit -> unit) =
     let time (f: unit -> unit) =
         let sw = Stopwatch.StartNew()
@@ -30207,6 +30396,7 @@ let allTests =
           argsSecretEchoTests
           hunt3BehaviorTests
           hunt3r5FormatTests
+          hunt3r6FormatTests
           docsBinaryTests
           hunt2CheckerTests
           sweepFindingTests

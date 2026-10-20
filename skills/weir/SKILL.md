@@ -1891,8 +1891,12 @@ type Bad = C of int
   (`Yaml.parse`/`yaml patch`) keeps such a number's TEXT and `to yaml`
   writes it back unchanged (a Pod's `defaultMode: 0644` survives a
   patch), while reading `0644` into an `int` field REFUSES (write
-  `0o644`, `644`, or quote it); 1.1-only forms (`1_000`, `0b101`,
-  `1:20`) are strings, written quoted. A plain value holding `: ` (`f: a: b`) refuses, as every YAML reader does — quote it. A block sequence reads in BOTH indent
+  `0o644`, `644`, or quote it — a `float` field refuses it too); a
+  FLOAT weir would write differently (`1e5`, `+.5`, `3.10`) keeps its
+  text the same way, `1e400` rides a YStr written plain, and `to json`
+  writes values (an int past int64 as decimal digits, `0x…` too);
+  KEYS are strings, so `200:` writes back as `"200":`; 1.1-only forms
+  (`1_000`, `0b101`, `1:20`) are strings, written quoted. A plain value holding `: ` (`f: a: b`) refuses, as every YAML reader does — quote it. A block sequence reads in BOTH indent
   styles — indented under its key OR at the SAME column as its key
   (kubectl's `items:` / `- apiVersion: v1` flush-left form). Only the
   EMPTY flow collections `{}` and `[]` are read (into an empty
@@ -2101,7 +2105,9 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   label (a `Windows-1252` `.vcproj`), non-ASCII under an undecodable
   one refuses (iconv to UTF-8 AND change the declaration), a malformed
   label refuses [D:xml-labels]; text under a non-UTF-8 declaration
-  reads only if ASCII. Element text is read AS WRITTEN — whitespace-only
+  reads only if ASCII; a UTF-16/32 label over 8-bit bytes (no BOM)
+  refuses as a contradiction [D:xml-label-contradiction]; nesting past
+  500 elements refuses [D:xml-depth]. Element text is read AS WRITTEN — whitespace-only
   text (`&#32;`, `  `) is kept, as `xml.etree` reads it
   [D:xml-whitespace]. A DTD (`<!DOCTYPE …>`) refuses
   [D:xml-no-dtd] — no declared entity expands or resolves.

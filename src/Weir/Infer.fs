@@ -28,6 +28,11 @@ type INode =
     | IArr of INode list
     | IOpt of INode
     | IMap of INode
+    // a number no int/float field reads back as written (a leading
+    // zero, a radix int past int64, .inf/.nan, 1e400): drafts the
+    // opaque `Yaml` node, which keeps the text [D:yaml-float-text];
+    // `why` rides the note
+    | IYaml of why: string
 
 // A printed note [D:repl-infer]: every place the sample cannot decide
 // (empty array, null field, heterogeneous array) surfaces here rather
@@ -102,20 +107,43 @@ let private jsonlNode (lines: string seq) : Result<INode, string> =
 
 // classify an unquoted yaml scalar (quoted is always a string) — the
 // yaml number/bool boundary, integer-or-float by the token's shape
+// — the YAML 1.2 core schema's shapes, as the typed readers take them
+// [D:yaml-float-text]: a draft must read its own sample
 let private classifyYamlScalar (text: string) : INode =
     let t = text.Trim()
+    let isMatch (rx: string) = System.Text.RegularExpressions.Regex.IsMatch(t, rx)
 
     if t = "true" || t = "false" then
         IBool
-    elif System.Text.RegularExpressions.Regex.IsMatch(t, "^-?[0-9]+$") then
+    elif isMatch "^[-+]?0[0-9]+$" then
+        IYaml $"{t} has a leading zero (YAML 1.2 reads decimal, 1.1 readers such as PyYAML and kubectl octal) — an int field refuses it"
+    elif isMatch "^[-+]?[0-9]+$" then
         // past int64 the yaml reader types it float; the draft agrees
         match Int64.TryParse t with
         | true, _ -> IInt
         | _ -> IFloat
-    elif System.Text.RegularExpressions.Regex.IsMatch(t, "^-?[0-9]+\.[0-9]+([eE][-+]?[0-9]+)?$") then
-        IFloat
-    elif System.Text.RegularExpressions.Regex.IsMatch(t, "^-?[0-9]+[eE][-+]?[0-9]+$") then
-        IFloat
+    elif isMatch "^0x[0-9a-fA-F]+$|^0o[0-7]+$" then
+        let radix = if t.StartsWith "0x" then 16 else 8
+
+        let fits =
+            t.Substring 2
+            |> Seq.fold
+                (fun (acc: Numerics.BigInteger) c -> acc * Numerics.BigInteger radix + Numerics.BigInteger(Uri.FromHex c))
+                Numerics.BigInteger.Zero
+            |> fun n -> n <= Numerics.BigInteger Int64.MaxValue
+
+        if fits then
+            IInt
+        else
+            IYaml $"{t} is past int64 — an int field refuses it"
+    elif isMatch "^[-+]?(\.inf|\.Inf|\.INF)$|^(\.nan|\.NaN|\.NAN)$" then
+        IYaml $"{t} is not finite — a float field refuses it"
+    elif isMatch "^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$" then
+        match
+            Double.TryParse(t, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture)
+        with
+        | true, f when Double.IsFinite f -> IFloat
+        | _ -> IYaml $"{t} is past float range — a float field refuses it"
     else
         IStr
 
@@ -218,7 +246,11 @@ type Registry(taken: Set<string>) =
     let notes = ResizeArray<Note>()
 
     member _.Notes = List.ofSeq notes
-    member _.AddNote(n: Note) = if not (notes.Contains n) then notes.Add n
+    // a note quotes wire keys and values, so it renders them visibly
+    // [D:error-data-escape] — a generated comment line stays one line
+    member _.AddNote(n: Note) =
+        let n = Weir.Types.quoteData n
+        if not (notes.Contains n) then notes.Add n
     member _.Decls = List.ofSeq order
 
     /// claim a record type for an object with `fields` (rendered field
@@ -402,6 +434,21 @@ let private mergeElems (note: Note -> unit) (path: string) (items: INode list) :
     | [] -> None
     | first :: rest -> Some(rest |> List.fold (mergeTwo note path) first |> openMaps note path)
 
+/// the keys a [<Wire "…">] literal can spell: weir strings escape only
+/// \" \\ \n \t, so a key holding another control character (CR, ESC,
+/// BEL, …) has no spelling — DROPPED from the draft with a note, as the
+/// empty key is (reading tolerates an undeclared key) [D:infer-wire-escape]
+let wireSpellable (reg: Registry) (where: string) (fields: (string * 'a) list) : (string * 'a) list =
+    fields
+    |> List.filter (fun (k, _) ->
+        let ok = k |> Seq.forall (fun c -> not (Char.IsControl c) || c = '\n' || c = '\t')
+
+        if not ok then
+            reg.AddNote
+                $"the key '{k}' under '{where}' holds a control character a [<Wire>] literal cannot spell — the key is DROPPED from the draft (reading tolerates the extra key)"
+
+        ok)
+
 // `srcKey` is the wire key (or top name) that produced `desired` — every
 // note names the user's own spelling (the drafted field), not the derived
 // type stem
@@ -411,6 +458,9 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
     | IInt -> "int"
     | IFloat -> "float"
     | IBool -> "bool"
+    | IYaml why ->
+        reg.AddNote $"'{srcKey}': {why}; drafted Yaml, which keeps the number's text"
+        "Yaml"
     | INull ->
         // a null field cannot be inferred — Option<string> + a note
         reg.AddNote $"a null value under '{srcKey}' — inferred Option<string> (edit if the real type is known)"
@@ -448,11 +498,13 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
             // dropped from the draft, with a note (the readers
             // tolerate an undeclared key, so the drafted type still
             // reads the sample)
-            let spellable = fields |> List.filter (fun (k, _) -> k <> "")
+            let nonEmpty = fields |> List.filter (fun (k, _) -> k <> "")
 
-            if List.length spellable < List.length fields then
+            if List.length nonEmpty < List.length fields then
                 reg.AddNote
                     $"an empty-string key under '{srcKey}' — no field name can spell it and [<Wire>] refuses an empty wire key, so the key is DROPPED from the draft (reading tolerates the extra key)"
+
+            let spellable = wireSpellable reg srcKey nonEmpty
 
             match spellable with
             | [] ->
@@ -584,6 +636,12 @@ let resolveFieldNames (reserved: Set<string>) (fields: (string * string) list) :
 
             name, Some key, ty)
 
+/// a wire key as the body of a weir string literal — the escapes weir
+/// strings take (\\ \" \n \t); wireSpellable dropped the other controls
+/// [D:infer-wire-escape]
+let private wireLiteral (k: string) : string =
+    k.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\t", "\\t")
+
 /// render claimed records as `type` decls, house style — the single
 /// emitter tail, shared by #infer and the schema→types generator
 /// [D:schema-types] (field names ride the Wire sanitizer either way)
@@ -597,7 +655,7 @@ let renderDecls (reserved: Set<string>) (decls: (string * (string * string) list
                 // wire attribute over a sanitized identifier
                 // [D:infer-wire-sanitize]
                 match wire with
-                | Some k -> $"    [<Wire \"{k}\">]\n    {fname}: {t}"
+                | Some k -> $"    [<Wire \"{wireLiteral k}\">]\n    {fname}: {t}"
                 | None -> $"    {fname}: {t}")
             |> String.concat "\n"
 
@@ -772,7 +830,7 @@ let private tableDecls (reserved: Set<string>) (topName: string) (lines: string 
             fields
             |> List.map (fun (fname, wire, t) ->
                 match wire with
-                | Some k -> $"    [<Wire \"{k}\">]\n    {fname}: {t}"
+                | Some k -> $"    [<Wire \"{wireLiteral k}\">]\n    {fname}: {t}"
                 | None -> $"    {fname}: {t}")
             |> String.concat "\n"
 
@@ -828,5 +886,5 @@ let inferShapeText (reserved: Set<string>) (taken: Set<string>) (fmt: Format) (t
     match infer reserved taken fmt topName lines with
     | Error msg -> failwith msg
     | Ok(decls, notes) ->
-        let noteLines = notes |> List.map (fun n -> $"// note: {n}")
+        let noteLines = notes |> List.map (fun n -> $"// note: {Weir.Types.quoteData n}")
         String.Join("\n", decls @ noteLines)

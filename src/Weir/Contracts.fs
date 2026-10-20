@@ -1162,6 +1162,13 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                 else
                     None
 
+            // a format the scalar fold would drop (uint64, int-or-string)
+            // beside null keeps its draft under the Option [D:schema-null-format]
+            let formattedNull (r: Result<Schema, string>) =
+                match r with
+                | Ok(SNullable(SUint64Format _ | SIntOrStringFormat _)) -> true
+                | _ -> false
+
             match getProp "$ref" with
             | Some r when r.ValueKind = Text.Json.JsonValueKind.String ->
                 // a $ref node is the reference; its shape siblings apply
@@ -1282,6 +1289,7 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                         | Some alts ->
                             // the IntOrString idiom: every alternative must be scalar-typed
                             (match scalarAlts alts, nullPair "oneOf" alts with
+                             | _, Some r when formattedNull r -> r
                              | Some s, _ -> Ok s
                              | None, Some r -> r
                              | None, None ->
@@ -1339,6 +1347,7 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                                 // generator, unvalidated for the district
                                 // [D:schema-types]
                                 (match scalarAlts alts, nullPair "anyOf" alts with
+                                 | _, Some r when formattedNull r -> r
                                  | Some s, _ -> Ok s
                                  | None, Some r -> r
                                  | None, None ->

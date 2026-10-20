@@ -304,11 +304,11 @@ let private parseScalar (lineNo: int) (raw: string) : Result<Node, string> =
 // justifies block-only cannot fire. Populated flow stays rejected by
 // scalarCore's teaching. `{}` → empty mapping, `[]` → empty sequence.
 let private emptyFlow (lineNo: int) (raw: string) : Node option =
-    match raw.Trim() with
+    match raw.Trim yamlWs with
     | "{}" -> Some(NMap([], lineNo))
     | "[]" -> Some(NSeq([], lineNo))
-    | t when t.StartsWith "{" && t.EndsWith "}" && t.Substring(1, t.Length - 2).Trim() = "" -> Some(NMap([], lineNo))
-    | t when t.StartsWith "[" && t.EndsWith "]" && t.Substring(1, t.Length - 2).Trim() = "" -> Some(NSeq([], lineNo))
+    | t when t.StartsWith "{" && t.EndsWith "}" && t.Substring(1, t.Length - 2).Trim yamlWs = "" -> Some(NMap([], lineNo))
+    | t when t.StartsWith "[" && t.EndsWith "]" && t.Substring(1, t.Length - 2).Trim yamlWs = "" -> Some(NSeq([], lineNo))
     | _ -> None
 
 // split `key: value` / `key:` at the first unquoted `: ` (or `:` at EOL);
@@ -430,7 +430,7 @@ let private multilineQuoted
             // content before the quote is verbatim (trailing space kept);
             // the closing quote ends the value — anything after it on
             // the line is an error, not a second value
-            if frag.Substring(idx + 1).Trim() <> "" then
+            if frag.Substring(idx + 1).Trim yamlWs <> "" then
                 result <-
                     Some(Error $"line {fragNo}: content after the closing {q} — the quoted value ends at its closing quote")
             else
@@ -780,7 +780,7 @@ let rec private parseBlock
                             | Some(Ok header) -> blockValue no indent header i j
                             | None ->
 
-                                if inline'.Trim() = "" then
+                                if inline'.Trim yamlWs = "" then
                                     // the item is the nested block below (or null)
                                     parseBlock rawSrc lines (i + 1) j (indent + 2) (depth + 1)
                                 else
@@ -862,7 +862,7 @@ let rec private parseBlock
                                     // the same indent (kubectl's zero-indent form): the
                                     // sequence is the value — consume its whole extent
                                     let seqValue =
-                                        rest.Trim() = "" && j = i + 1 && isSeqAt indent (i + 1)
+                                        rest.Trim yamlWs = "" && j = i + 1 && isSeqAt indent (i + 1)
 
                                     let jSeq = if seqValue then seqExtent indent (i + 1) else j
 
@@ -874,7 +874,7 @@ let rec private parseBlock
 
                                             if seqValue then
                                                 parseBlock rawSrc lines (i + 1) jSeq indent (depth + 1)
-                                            elif rest.Trim() = "" then
+                                            elif rest.Trim yamlWs = "" then
                                                 if j > i + 1 then
                                                     parseBlock rawSrc lines (i + 1) j (indentOf (snd lines[i + 1])) (depth + 1)
                                                 else
