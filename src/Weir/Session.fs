@@ -1702,14 +1702,20 @@ let cleanupKilledByTeardown (statement: bool) (runningAtSignal: bool) (code: int
     && not (inRace (currentNode ()))
 
 // a signal the handler is acting on: wait (bounded) until it is done
-// [D:settle-pending] — never on an exit code alone
+// [D:settle-pending]. A signal weir has received reaches its handler a
+// fraction of a millisecond after the kernel delivered it (.NET hands it
+// to a thread or a pool item first), sometimes after the dead child is
+// reaped: with none in flight the wait is a 5ms grace for one to appear,
+// never the 250ms
 let private settleWhile (waiting: unit -> bool) : unit =
     let clock = System.Diagnostics.Stopwatch.StartNew()
 
-    while System.Threading.Volatile.Read &signalsInFlight > 0
-          && waiting ()
-          && clock.ElapsedMilliseconds < 250L do
-        System.Threading.Thread.Sleep 1
+    let inFlight () =
+        System.Threading.Volatile.Read &signalsInFlight > 0
+
+    while waiting ()
+          && clock.ElapsedMilliseconds < (if inFlight () then 250L else 5L) do
+        System.Threading.Thread.Sleep(if inFlight () then 1 else 0)
 
 /// a command that died of INT, HUP, QUIT or TERM while weir's handler is
 /// acting on a signal most likely took it with weir (the terminal's ^C,

@@ -4117,16 +4117,17 @@ WEOF
     [ "$(stlog "$stdir/r10.log")" = "body," ] || fail "R4: the failing cleanup command stops its cleanup: $(stlog "$stdir/r10.log")"
     echo "e2e ok: R4 — a truncated capture or a command started after the signal fails in a cleanup; only a running statement takes the pass"
 
-    # C1-3, C2-3: a settle wait needs a signal in flight — an exit code
-    # alone (129/130/131/143, script or tty REPL) costs nothing [D:settle-pending]
+    # C1-3, C2-3: a settle wait waits for a signal in flight — an exit code
+    # alone (129/130/131/143, script or tty REPL) costs a 5ms grace at most,
+    # never the 250ms [D:settle-pending]
     printf '%s\n' 'let t0 = Instant.now ()' '[129; 130; 131; 143] |> Seq.iter (fun c ->' '    [1; 2; 3] |> Seq.iter (fun _ ->' '        let _r = $(sh -c $"exit {c}") |> try' '        ()))' 'if Instant.now () - t0 < 1500ms then print (Str.toUpper "fast") else print (Str.toUpper "slow")' > "$stdir/settle.weir"
     out=$("$BIN" "$stdir/settle.weir" </dev/null 2>&1)
-    [ "$out" = "FAST" ] || fail "a 129/130/131/143 exit with no signal waits for none (script): $out"
+    [ "$out" = "FAST" ] || fail "a 129/130/131/143 exit with no signal never waits the 250ms (script): $out"
     tout=$(printf 'SLEEP 1500\n' | python3 "$ptyrun" 10 "$BIN" "$stdir/settle.weir")
-    echo "$tout" | grep -qF "FAST" || fail "a 129/130/131/143 exit with no signal waits for none (script at a tty): $tout"
+    echo "$tout" | grep -qF "FAST" || fail "a 129/130/131/143 exit with no signal never waits the 250ms (script at a tty): $tout"
     tout=$(printf '%s\n' 'SLEEP 2500' 'SEND let t0 = Instant.now ()\x1b\r' 'SEND let ds = [1..12] |> Seq.map (fun _ -> sh -c "exit 130" | exitCode) |> Seq.freeze\x1b\r' 'SEND if Instant.now () - t0 < 1500ms then print (Str.toUpper "fast") else print (Str.toUpper "slow")\r' 'SLEEP 5000' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 15 "$BIN")
-    echo "$tout" | grep -qF "FAST" || fail "a REPL child exiting 130 with no ^C waits for none: $tout"
-    echo "e2e ok: a 129/130/131/143 exit with no signal in flight waits for none — script, tty script, tty REPL"
+    echo "$tout" | grep -qF "FAST" || fail "a REPL child exiting 130 with no ^C never waits the 250ms: $tout"
+    echo "e2e ok: a 129/130/131/143 exit with no signal in flight never waits the 250ms — script, tty script, tty REPL"
 
     # C1-4: a cleanup's command through the shim refuses what a direct spawn
     # refuses — a shebang-less executable never runs through sh [D:cleanup-sigign]
