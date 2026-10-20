@@ -1,9 +1,9 @@
 # The third bug hunt's brief A (dev/plans/PLAN-hunt3.md): the cross-platform
 # probe kit, tools/hunt3-xplat.weir, on the AOT build of all three OSes.
 # Findings-shaped, not a gate (not required for merge). Runs on dispatch
-# and on a pull request that touches the kit or this file: GitHub lists a
-# workflow_dispatch workflow only once it is on the default branch, so the
-# PR trigger is what runs it before then.
+# and on a pull request that touches the kit, this file, or the process,
+# session, REPL and builtin code whose Windows/macOS paths only this kit
+# exercises.
 #
 # ubuntu is the CONTROL: a FAIL on windows/macos that is OK on ubuntu is the
 # finding; a FAIL everywhere is a platform-independent one. fail-fast is off
@@ -21,6 +21,10 @@ on:
     paths:
       - tools/hunt3-xplat.weir
       - .github/workflows/hunt3-xplat.yml
+      - src/Weir/Session.fs
+      - src/Weir/Proc.fs
+      - src/Weir/Repl.fs
+      - src/Weir/Builtins.fs
 
 permissions:
   contents: read
