@@ -173,3 +173,18 @@ Harness first (`tools/hunt3r5f-repro.weir`, every probe REPRODUCES on
 e526e58). Wave 1: A, S, C in parallel (disjoint files; A runs pty work,
 keep the others' parallelism modest). Wave 2: P and B. D after A. Merge
 B → P → C → S → A → D. Lows to BACKLOG at the end with the ledger.
+
+## Status (2026-10-20)
+
+All six highs and every medium fixed on plan/hunt3r5f, except C1-9 (docs,
+R8) and R9 (BACKLOG). Beside the plan: the `$name` splice completion
+offers only what the checker splices ([D:argv-splice-complete]), a split
+Alt+Enter is the newline ([D:repl-esc-enter]), and a REPL entry holds ISIG
+from its first statement to its last ([D:repl-entry-isig]). Stage D widened
+the nightly (QUIT, group-directed TERM/HUP, terminal keys and hangup, the
+pager and backstop fixtures, the REPL ^C and kill storms; timeout 45 min);
+stage E fixed what it found (D-1..D-4), no exemption left. Final gates at
+9c314e6: tools/hunt3r5f-repro.weir 50/50 (twice) with its controls, every
+older harness green, every storm step 0 bad / 0 known (300 runs per
+storm.py mode, 240 per REPL mode), the race-tree fuzzer 0 bad in 500
+trees. Round-5 lows in dev/BACKLOG.md. Round 5 FIXED.
