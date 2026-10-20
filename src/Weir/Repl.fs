@@ -1388,25 +1388,23 @@ let private readKey () =
     else
         ttyIo (fun () -> Console.ReadKey(intercept = true))
 
-/// after a bare Esc: is an Enter right behind it (within 100ms)? Alt+Enter
-/// is ESC CR, and .NET reads a lone ESC as Escape when the CR has not
-/// arrived yet. A key that is not Enter stays queued for the editor
+/// after a bare Esc: is an Enter already queued behind it? Alt+Enter is
+/// ESC CR, and .NET reads a lone ESC as Escape when the CR is not in its
+/// buffer yet — a paste or a real Alt+Enter has it queued. No waiting: a
+/// human's Esc then Enter abandons [D:repl-esc-enter]. A key that is not
+/// Enter stays queued for the editor
 let private escThenEnter () : bool =
-    let clock = Diagnostics.Stopwatch.StartNew()
-
-    let rec next () =
-        if typeAhead.Count > 0 then Some(typeAhead.Peek())
+    let next =
+        if typeAhead.Count > 0 then
+            Some(typeAhead.Peek())
         elif ttyIo (fun () -> Console.KeyAvailable) then
             let k = ttyIo (fun () -> Console.ReadKey(intercept = true))
             typeAhead.Enqueue k
             Some k
-        elif clock.ElapsedMilliseconds < 100L then
-            Threading.Thread.Sleep 2
-            next ()
         else
             None
 
-    match next () with
+    match next with
     | Some k when k.Key = ConsoleKey.Enter || k.KeyChar = '\r' ->
         typeAhead.Dequeue() |> ignore
         true

@@ -132,8 +132,9 @@
   and `^C` appeared at the next prompt.
 - **A pasted multi-line REPL entry no longer loses its first lines.**
   When Alt+Enter's two bytes arrived apart, the Esc was read alone and
-  threw the buffer away; an Esc with an Enter right behind it is now
-  the newline.
+  threw the buffer away; an Esc whose Enter is already waiting (a
+  paste, a real Alt+Enter) is now the newline. Esc then Enter typed by
+  hand still abandons the buffer.
 - **Ctrl+C at the REPL on a command inside a `within` body shows
   `↳ exit 130`.** It printed `error: command failed with exit code 130`.
 - **A group-directed SIGTERM or SIGHUP no longer cuts an `always`
