@@ -3673,6 +3673,15 @@ let private preWrite (pr: FsProbe) (op: string) (r: string) : unit =
     else
         requireParent pr op r
 
+        // a write follows its links: where it lands needs a directory too
+        let c = pr.Canon r
+
+        if c <> r then
+            let parent = System.IO.Path.GetDirectoryName c
+
+            if not (isNull parent) && parent <> "" && not (pr.IsDir parent) then
+                failwith $"{op}: no such directory: {quoteData parent} — the symlink {quoteData r} points into it"
+
 let private writeGuard (op: string) (r: string) : unit = preWrite realProbe op r
 
 let private ioGuarded (op: string) (r: string) (f: unit -> 'a) : 'a =
@@ -3917,6 +3926,7 @@ let private preDirCopy (pr: FsProbe) (op: string) (src: string) (dst: string) : 
     requireDirIn pr op src
     refuseExistingDst pr op dst
     refuseIntoSelf pr op true src dst
+    requireParent pr op dst
 
 let private doDirCopy (op: string) (src: string) (dst: string) : unit =
     preDirCopy realProbe op src dst

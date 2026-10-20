@@ -994,6 +994,121 @@ module PlanMode =
             | struct (0, _, below) when not (isNull below) -> realPathIn outer below
             | _ -> None
 
+    // one layer's view of a path walked a component at a time
+    // [D:plan-preconditions] — viewIn's loop as a step, so canonIn
+    // extends the view of its prefix instead of re-walking it per
+    // component: Node, this layer's node (null off the trie); Below, the
+    // path to ask the layer below (null when nothing below counts);
+    // Dead, no extension is decided below any more (absent or a file)
+    [<Struct>]
+    type private LayerAt =
+        { Node: SimNode
+          Below: string
+          Cleared: bool
+          Dead: bool }
+
+    let private layerStart (root: SimNode) =
+        { Node = root
+          Below = null
+          Cleared = false
+          Dead = false }
+
+    let private layerDead =
+        { Node = null
+          Below = null
+          Cleared = true
+          Dead = true }
+
+    let private appendComp (b: string) (c: string) =
+        if isNull b then c
+        elif b.Length > 0 && b[b.Length - 1] = sep then b + c
+        else b + string sep + c
+
+    // one component further; also says whether Below jumped (a mirror)
+    let private layerStep (s: LayerAt) (c: string) : struct (LayerAt * bool) =
+        if s.Dead then
+            struct (s, false)
+        elif isNull s.Node then
+            if s.Cleared then
+                struct (layerDead, false)
+            else
+                struct ({ s with Below = appendComp s.Below c }, false)
+        else
+            match s.Node.Find c with
+            | null ->
+                if s.Cleared then
+                    struct (layerDead, false)
+                else
+                    struct ({ s with Node = null; Below = appendComp s.Below c }, false)
+            | child when child.State = 3 || child.State = 1 -> struct (layerDead, false)
+            | child when not (isNull child.Mirror) ->
+                struct ({ Node = child; Below = child.Mirror; Cleared = false; Dead = false }, true)
+            | child when child.Cleared || s.Cleared ->
+                struct ({ Node = child; Below = null; Cleared = true; Dead = false }, false)
+            | child -> struct ({ s with Node = child; Below = appendComp s.Below c }, false)
+
+    // the path to ask below, or null when this layer decided
+    let private layerBelow (s: LayerAt) : string =
+        if s.Dead || s.Cleared || isNull s.Below then null
+        elif not (isNull s.Node) && s.Node.State = 2 then null
+        elif s.Below = "" then string sep
+        else s.Below
+
+    let private layerWalk (root: SimNode) (p: string) : LayerAt =
+        let mutable s = layerStart root
+
+        for c in compsOf p do
+            let struct (n, _) = layerStep s c
+            s <- n
+
+        s
+
+    // every layer's view of one path, innermost (the top frame) first;
+    // a layer's input is the path the one above asks below
+    let private cursorWalk (frames: PlanFrame[]) (from: int) (into: LayerAt[]) (p: string) =
+        let mutable path = p
+
+        for i in from .. frames.Length - 1 do
+            if isNull path then
+                into[i] <- layerDead
+            else
+                into[i] <- layerWalk frames[i].Sim path
+                path <- if into[i].Dead || into[i].Cleared then null else into[i].Below
+
+    let private layerInput (s: LayerAt) =
+        if s.Dead || s.Cleared then null else s.Below
+
+    let private cursorStep (frames: PlanFrame[]) (cur: LayerAt[]) (c: string) : LayerAt[] =
+        let out = Array.zeroCreate cur.Length
+        let mutable i = 0
+
+        while i < cur.Length do
+            if i > 0 && isNull (layerInput out[i - 1]) then
+                out[i] <- layerDead
+                i <- i + 1
+            else
+                let struct (n, jumped) = layerStep cur[i] c
+                out[i] <- n
+                i <- i + 1
+
+                // a mirror: the layers beneath now see another path
+                if jumped && i < cur.Length then
+                    cursorWalk frames i out (layerInput n)
+                    i <- cur.Length
+
+        out
+
+    // the real path a cursor ends at (realPathIn's answer)
+    let private cursorReal (cur: LayerAt[]) (p: string) : string option =
+        let mutable path = p
+        let mutable i = 0
+
+        while not (isNull path) && i < cur.Length do
+            path <- layerBelow cur[i]
+            i <- i + 1
+
+        Option.ofObj path
+
     // the entry names a directory holds, before asking each one's kind
     let rec private namesIn (frames: PlanFrame list) (p: string) : string list =
         match frames with
@@ -1037,8 +1152,18 @@ module PlanMode =
                     cache[r] <- t
                     t
 
+        // the layers' view of each prefix of `cur`, extended a component
+        // at a time — linear in depth, not a walk per component
+        let layers = Array.ofList frames
+
+        let rootView (root: string) =
+            let v = Array.zeroCreate layers.Length
+            cursorWalk layers 0 v root
+            v
+
         let full = System.IO.Path.GetFullPath p
         let mutable cur = System.IO.Path.GetPathRoot full
+        let mutable views = [ rootView cur ]
         let mutable pending = split (full.Substring cur.Length)
         let mutable hops = 0
         let mutable lastLink = false
@@ -1052,20 +1177,28 @@ module PlanMode =
             elif part = ".." then
                 match System.IO.Path.GetDirectoryName cur with
                 | null -> ()
-                | parent -> cur <- parent
+                | parent ->
+                    cur <- parent
+
+                    views <-
+                        match views with
+                        | _ :: (_ :: _ as up) -> up
+                        | vs -> vs
             else
                 let next = System.IO.Path.Combine(cur, part)
+                let view = cursorStep layers views.Head part
 
                 let target =
                     if (pending.IsEmpty && not followLast) || hops >= 40 then
                         null
                     else
-                        match realPathIn frames next with
+                        match cursorReal view next with
                         | Some r -> linkAt r
                         | None -> null
 
                 if isNull target then
                     cur <- next
+                    views <- view :: views
                 else
                     hops <- hops + 1
                     lastLink <- lastLink || pending.IsEmpty
@@ -1073,6 +1206,7 @@ module PlanMode =
                     if System.IO.Path.IsPathRooted target then
                         let t = System.IO.Path.GetFullPath target
                         cur <- System.IO.Path.GetPathRoot t
+                        views <- [ rootView cur ]
                         pending <- split (t.Substring cur.Length) @ pending
                     else
                         pending <- split target @ pending
@@ -1125,14 +1259,20 @@ module PlanMode =
     /// a path with its symlinks followed, as the plan leaves them
     let simCanon (p: string) : string = canon true p
 
-    /// the plan-time kind of a path (0 absent, 1 file, 2 dir, 4 other —
-    /// a link whose target the plan removed dangles)
-    let simKind (p: string) : int =
+    // the plan-time kind, and whether a final link dangles
+    let private simKindLink (p: string) : struct (int * bool) =
         let struct (c, viaLink) = canonPlan true p
 
         match kindIn stack.Value c with
-        | 0 when viaLink -> 4
-        | k -> k
+        | 0 when viaLink -> struct (1, true)
+        | k -> struct (k, false)
+
+    /// the plan-time kind of a path (0 absent, 1 file, 2 dir, 4 other) —
+    /// a dangling link is a file row, as realKind reports it, so a delete
+    /// or move acts on the link itself
+    let simKind (p: string) : int =
+        let struct (k, _) = simKindLink p
+        k
 
     /// is the path a directory at plan time?
     let simIsDir (p: string) : bool =
@@ -1148,7 +1288,7 @@ module PlanMode =
     /// a dangling link at plan time: a link whose target the plan
     /// removed, or a real one no op has touched
     let simDangling (isDangling: string -> bool) (p: string) : bool =
-        simKind p = 4
+        (let struct (_, dangles) = simKindLink p in dangles)
         || (match realPathIn stack.Value (canon false p) with
             | Some r -> isDangling r
             | None -> false)

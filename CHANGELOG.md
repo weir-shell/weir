@@ -173,9 +173,15 @@
   captured.** A copy onto an existing (or planned) file, a delete of a
   missing (or already deleted) file, a copy or move from a missing
   source, `Dir.delete` of a directory the plan filled and a write
-  under a missing directory were captured, previewed as ordinary steps
-  and failed midway through `Plan.apply`. Each now raises at capture
-  with the same error the direct call gives.
+  under a missing directory (or through a symlink into one) were
+  captured, previewed as ordinary steps and failed midway through
+  `Plan.apply`. Each now raises at capture with the same error the
+  direct call gives. `Dir.copy` into a missing parent directory now
+  refuses like `File.copy` and `Dir.move`, in a plan and outside one.
+- **A `plan` deletes or moves a dangling symlink itself,** as the
+  direct call does; it refused with "no such file". A plan writing
+  deep under a copied directory, or through a symlink, no longer slows
+  with the path's depth squared.
 - **`from xml` reads a document in its declared encoding.** Pipe the
   bytes: `File.readBytes "legacy.xml" |> from xml Proj` decodes by
   BOM, else the XML declaration (UTF-16/32, US-ASCII, ISO-8859-1), else

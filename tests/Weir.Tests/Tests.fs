@@ -10074,6 +10074,165 @@ let planApplyTests =
                   Expect.equal code 0 "a tmp dir opened outside the plan is a fine target"
               finally
                   System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-preconditions]: Dir.copy's destination parent must be a
+          // directory, directly and at capture, as every other op's is
+          test "Dir.copy into a missing parent or under a planned file refuses, directly and at capture" {
+              let root = td ()
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "s")) |> ignore
+              System.IO.File.WriteAllText(System.IO.Path.Combine(root, "s", "f.txt"), "x\n")
+              let d = weirPath root
+
+              try
+                  Expect.equal
+                      (runFile
+                          [ $"let r = Dir.copy \"{d}/s\" \"{d}/no/such/s\" |> try result"
+                            "match r with"
+                            "| Error e -> if not (e |> Str.contains \"no such directory\") then fail e"
+                            "| Ok _ -> fail \"copied\"" ])
+                      0
+                      "the direct call refuses naming the parent"
+
+                  Expect.isFalse (System.IO.Directory.Exists(System.IO.Path.Combine(root, "no"))) "nothing created"
+
+                  for second in [ $"Dir.copy \"{d}/s\" \"{d}/h.txt/sub/s\""; $"Dir.copy \"{d}/s\" \"{d}/no/such/s\"" ] do
+                      let code =
+                          runFile
+                              [ "let p ="
+                                "    plan"
+                                $"        File.write \"{d}/h.txt\" [\"z\"]"
+                                $"        {second}"
+                                "p |> Plan.apply" ]
+
+                      Expect.notEqual code 0 $"refused: {second}"
+                      Expect.isFalse (System.IO.File.Exists(System.IO.Path.Combine(root, "h.txt"))) $"at capture: {second}"
+                      Expect.isFalse (System.IO.Directory.Exists(System.IO.Path.Combine(root, "no"))) $"nothing created: {second}"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-preconditions]: a dangling link is a file row to the
+          // simulation as to the real filesystem — a plan deletes or moves
+          // the link itself, and a copy from it names it dangling
+          test "a plan deletes and moves a pre-existing dangling symlink itself" {
+              skipOnWindows ()
+              let root = td ()
+              System.IO.Directory.CreateDirectory root |> ignore
+              let d = weirPath root
+              let at (n: string) = System.IO.Path.Combine(root, n)
+              System.IO.File.CreateSymbolicLink(at "ff", "nowhere") |> ignore
+              System.IO.File.CreateSymbolicLink(at "gg", "nowhere") |> ignore
+              System.IO.File.CreateSymbolicLink(at "cc", "nowhere") |> ignore
+              let isLink (p: string) = not (isNull (System.IO.FileInfo(p).LinkTarget))
+
+              try
+                  let code =
+                      runFile
+                          [ "let p ="
+                            "    plan"
+                            $"        File.delete \"{d}/ff\""
+                            $"        File.move \"{d}/gg\" \"{d}/hh\""
+                            "p |> Plan.apply" ]
+
+                  Expect.equal code 0 "captured and applied"
+                  Expect.isFalse (isLink (at "ff")) "the link is deleted"
+                  Expect.isTrue (isLink (at "hh") && not (isLink (at "gg"))) "the link is moved"
+
+                  Expect.equal
+                      (runFile
+                          [ "let mk () ="
+                            "    plan"
+                            $"        File.copy \"{d}/cc\" \"{d}/dd\""
+                            "let r = mk () |> try result"
+                            "match r with"
+                            "| Error e -> if not (e |> Str.contains \"dangling symlink\") then fail e"
+                            "| Ok _ -> fail \"captured\"" ])
+                      0
+                      "a copy from a dangling link names it, as the direct call does"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-preconditions]: a write follows its final link — the
+          // target's parent must be a directory, directly and at capture
+          test "a write through a link into a missing directory refuses, directly and at capture" {
+              skipOnWindows ()
+              let root = td ()
+              System.IO.Directory.CreateDirectory root |> ignore
+              let d = weirPath root
+              System.IO.File.CreateSymbolicLink(System.IO.Path.Combine(root, "DL"), "nowhere/x") |> ignore
+              System.IO.File.CreateSymbolicLink(System.IO.Path.Combine(root, "OK"), "made/x") |> ignore
+
+              try
+                  Expect.equal
+                      (runFile
+                          [ $"let r = File.write \"{d}/DL\" [\"a\"] |> try result"
+                            "match r with"
+                            "| Error e -> if not (e |> Str.contains \"no such directory\") || (e |> Str.contains \"Could not\") then fail e"
+                            "| Ok _ -> fail \"written\"" ])
+                      0
+                      "the direct call refuses naming the missing directory"
+
+                  let code =
+                      runFile
+                          [ "let p ="
+                            "    plan"
+                            $"        File.write \"{d}/first.txt\" [\"a\"]"
+                            $"        File.write \"{d}/DL\" [\"a\"]"
+                            "p |> Plan.apply" ]
+
+                  Expect.notEqual code 0 "refused"
+                  Expect.isFalse (System.IO.File.Exists(System.IO.Path.Combine(root, "first.txt"))) "at capture"
+
+                  // a directory the plan makes first is where the write lands
+                  let code =
+                      runFile
+                          [ "let p ="
+                            "    plan"
+                            $"        Dir.create \"{d}/made\""
+                            $"        File.write \"{d}/OK\" [\"a\"]"
+                            "p |> Plan.apply" ]
+
+                  Expect.equal code 0 "a planned directory satisfies it"
+                  Expect.isTrue (System.IO.File.Exists(System.IO.Path.Combine(root, "made", "x"))) "written through the link"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-preconditions]: the simulation extends its view of a
+          // prefix a component at a time — a deep path through a copied
+          // directory or a link costs what a plain one does, not depth²
+          test "plan writes deep under a copied dir or through a link cost about what plain ones do" {
+              skipOnWindows ()
+              let root = td ()
+              let depth = 150
+              let rel = String.replicate depth "d/" |> fun s -> s.TrimEnd '/'
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "src", rel)) |> ignore
+              System.IO.Directory.CreateSymbolicLink(System.IO.Path.Combine(root, "L"), "src") |> ignore
+              let d = weirPath root
+
+              try
+                  let block (name: string) (pre: string list) (dir: string) =
+                      [ $"let {name} ="; "    plan" ]
+                      @ (pre |> List.map (fun l -> "        " + l))
+                      @ [ "        for i in [1..600] do"
+                          $"            File.write $\"{dir}/{rel}/n{{i}}\" [\"y\"]" ]
+
+                  let prog =
+                      [ "let t0 = Instant.now ()" ]
+                      @ block "pf" [] $"{d}/src"
+                      @ [ "let t1 = Instant.now ()" ]
+                      @ block "pc" [ $"Dir.copy \"{d}/src\" \"{d}/dst\"" ] $"{d}/dst"
+                      @ [ "let t2 = Instant.now ()" ]
+                      @ block "pl" [] $"{d}/L"
+                      @ [ "let t3 = Instant.now ()"
+                          "if (pf |> Plan.ops |> Seq.length) + (pc |> Plan.ops |> Seq.length) + (pl |> Plan.ops |> Seq.length) <> 1801 then fail \"ops\""
+                          "let fast = Duration.toMillis (t1 - t0)"
+                          "let copy = Duration.toMillis (t2 - t1)"
+                          "let link = Duration.toMillis (t3 - t2)"
+                          "if copy > 5 * fast + 300 then fail $\"copied: {copy}ms vs plain {fast}ms\""
+                          "if link > 5 * fast + 300 then fail $\"linked: {link}ms vs plain {fast}ms\"" ]
+
+                  Expect.equal (runFile prog) 0 "within 5x the plain path"
+              finally
+                  System.IO.Directory.Delete(root, true)
           } ]
 
 let withinKindsTests =
