@@ -93,7 +93,9 @@ once; the unwind's waits then run as written, `unwinding`).
 node is cut.** A cut arm or handler raises `Cancelled`, a REPL ^C raises
 `Interrupted`. Both pass through `try` and retry like `exit` does. A
 helper task runs in its flow's node, so the flow's cut stops it, and the
-flow joining it raises its own stop (`cutJoin`). Rests on [D:pfirst-join],
+flow joining it raises its own stop (`cutJoin`); a `within proc`'s spill
+pumps are such helpers, so a cut scope's drain waits for no pipe a
+missed descendant holds ([D:wait-after-cut]). Rests on [D:pfirst-join],
 [D:teardown-joins-arms], [D:repl-interrupt], [D:serve-cut],
 [D:epipe-kills-at-teardown], [D:scope-tree]. Enforced by `cancelledBy`,
 `checkCancelled`, `checkCancels`, `evalBoundary`, `tokenOf`, `CutStream`,
@@ -149,19 +151,23 @@ rule), `releaseFrame`, `backstopVerdict` (`mainCleanups`, `mainClosing`
 from `closingScope`), and `Eval` `TEAlways` `claimAndRun`.
 
 **I7. A command killed by the teardown is the teardown, never a
-`command failed`.** A cleanup's command that the teardown's own signal
-killed (a group-directed TERM or HUP reaches it with weir) is the
-signal's too: no message, and the cleanup runs on whole (I6), its
-fan-out arms too; in a race's arm inside the cleanup it still fails
-that arm. In the
+`command failed`.** A cleanup's statement command (its output unused)
+that was running when weir acted on the signal and that the teardown's
+own signal killed (a group-directed TERM or HUP reaches it with weir) is
+the signal's too: no message, and the cleanup runs on whole (I6), its
+fan-out arms too. A value capture in a cleanup (`|> Seq.freeze`,
+`| line`, `$( )`) fails on that death, so a truncated output is never a
+value; so does a command started after the signal, and a race's arm
+inside the cleanup. In the
 REPL a command a ^C killed is the interrupt, inside a scope's body too:
 the entry ends with `↳ exit 130`. Rests on [D:teardown-kill-not-failure],
-[D:sigint-terminal-group], [D:cleanup-group-signal]. Enforced by
-`Proc.raiseNonzero`, which calls `settleInterrupt` (a 130 death while
-weir is the foreground group, or a 129, 131 or 143 death, which a
-group-directed signal causes, waits up to 250ms for the request; not in
-the REPL), then `checkTeardown`, then `checkCancelled`, then
-`checkInterrupted` for a 130, then `cleanupKilledByTeardown`. The
+[D:sigint-terminal-group], [D:cleanup-group-signal], [D:settle-pending].
+Enforced by `Proc.raiseNonzero`, which calls `settleInterrupt` (a 129,
+130, 131 or 143 death waits, up to 250ms, for the request only while the
+signal handler is acting on a signal — never on the exit code alone;
+not in the REPL), then `checkTeardown`, then `checkCancelled`, then
+`checkInterrupted` for a 130, then `cleanupKilledByTeardown` (a
+statement consumer, a child spawned before the teardown request). The
 dispatch requests the teardown before it kills.
 
 **I8. Every exit settles the tree kills in flight.** It waits up to 2s
@@ -247,7 +253,10 @@ connection unanswered (`Serve.abandon`) and records nothing on
 [D:repl-isig], [D:repl-entry-check]. Enforced by `interruptRepl`,
 `checkInterrupted`, `beginReplEval`/`endReplEval` (nested: an entry's),
 and the REPL's multi-statement fold (`interruptRequested` after each
-statement; `settleReplInterrupt` when a data-code child died of SIGINT).
+statement; `settleReplInterrupt` when a data-code child died 130 while
+the handler is acting on a signal, [D:settle-pending]). `#infer`'s
+source and the prompt function run as an entry does
+([D:repl-entry-isig]).
 
 **I14. The platform split.** On Linux, FIFO and unseekable `File.read`
 (and `File.sha256`, a `File.copy` source) opens non-blocking and polls
@@ -255,7 +264,8 @@ beside the cut, so the cut closes the fd ([D:fifo-read-polled],
 `openPolled`, `PolledFd`); a FIFO that `File.write`/`append`/`writeBytes`
 opens waits for its reader and for room the same way
 ([D:fifo-ops-polled], `openPolledWrite`, `PolledWriteFd`);
-`File.writeAtomic` refuses a FIFO. On macOS a
+`File.writeAtomic` refuses a FIFO; `Dir.copy` recreates one and never
+opens it ([D:dircopy-special]). On macOS a
 FIFO's open and read run off the flow (`cutBlocking`), and an abandoned
 read may take one later write; a FIFO write there is not cut. A child's pipe is polled before each fill on
 POSIX; on Windows the fill waits beside the token. The tree walk is
@@ -284,7 +294,8 @@ action: weir dies at once and runs nothing, as with `kill -9`
 ([D:sigquit-teardown]).
 
 **I16. A cleanup's commands at a terminal ignore the terminal's ^C and
-^\.** When weir's group is the terminal's foreground group, a command a
+^\.** When weir has a controlling terminal (foreground or not, so a
+background weir brought to the foreground keeps it), a command a
 cleanup starts goes through the `sh` shim (`trap "" INT QUIT; exec "$@"`):
 it keeps weir's group, the terminal and its real stdin (a pager works),
 starts with SIGINT and SIGQUIT ignored, and the pid weir holds is the
@@ -292,7 +303,10 @@ command's. A terminal ^C or ^\ cannot kill the command, unless it sets
 its own handler (a pager quits on ^C); a second signal kills it (I12).
 A shim a ^C killed before its `trap` never started the command, so on
 Linux it is started again (`CleanupShim.passedTrap` reads its /proc
-status). Without a tty the spawn is direct. On Windows the command
+status). The shim refuses what a direct spawn refuses: a file that is
+neither a native image nor a `#!` script with an executable interpreter
+never reaches sh's ENOEXEC fallback (`CleanupShim.execAccepts`). Without
+a tty the spawn is direct. On Windows the command
 starts in a new process group, which Ctrl+C does not reach. Rests on
 [D:cleanup-sigign]. Enforced by `cleanupIgnoresTerminal`, `CleanupShim`,
 `Proc.spawn`.
@@ -350,6 +364,10 @@ REPL set is restored, at its prompt too. A closed stdout's 141 is an exit. Rests
   [D:cleanup-sigign]). Its descendants inherit SIGINT/SIGQUIT ignored.
 - A hard exit leaves a running cleanup where it stood (I12): a cleanup
   that must finish needs one signal, not two.
+- A settle wait sees a signal from the moment its handler runs
+  ([D:settle-pending]); a child's death weir reads before that (heavy
+  load) is a command failure in a script, and in the REPL ends the
+  entry a statement late.
 
 ## Discrepancies
 

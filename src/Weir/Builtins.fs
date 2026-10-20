@@ -3920,7 +3920,8 @@ let private doDirMove (op: string) (src: string) (dst: string) : unit =
 // not repeat here (no Dir.copyAll) [D:sized-findings]. The family's
 // overwrite rule: refuse an existing destination; Dir.deleteAll is the
 // deliberate replace spelling. A symlink inside the tree is copied as a
-// link (dangling ones too), never followed — `cp -a`'s reading; a
+// link (dangling ones too), never followed — `cp -a`'s reading; a FIFO,
+// socket or device is recreated, never opened [D:dircopy-special]; a
 // destination inside the source would copy into itself, so it refuses.
 let private preDirCopy (pr: FsProbe) (op: string) (src: string) (dst: string) : unit =
     requireDirIn pr op src
@@ -3942,7 +3943,15 @@ let private doDirCopy (op: string) (src: string) (dst: string) : unit =
                 | null ->
                     match e with
                     | :? DirectoryInfo -> go e.FullName target
-                    | _ -> System.IO.File.Copy(e.FullName, target)
+                    | _ ->
+                        // a FIFO, socket or device is recreated, never
+                        // opened — `cp -R`'s reading [D:dircopy-special]
+                        match Session.specialFile e.FullName with
+                        | Some special ->
+                            match Session.makeSpecialFile target special with
+                            | None -> ()
+                            | Some why -> failwith $"{op}: cannot create the special file {quoteData target} — {why}"
+                        | None -> System.IO.File.Copy(e.FullName, target)
                 | link ->
                     match e with
                     | :? DirectoryInfo -> System.IO.Directory.CreateSymbolicLink(target, link) |> ignore
@@ -7251,7 +7260,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "src"; "dst" ])
           "Dir.copy",
           (bd
-              "Copy a directory and everything in it from src to dst. Raises if the destination exists (use Dir.deleteAll first to replace it) or lies inside the source. The copy is always recursive; symlinks are copied as links, never followed."
+              "Copy a directory and everything in it from src to dst. Raises if the destination exists (use Dir.deleteAll first to replace it) or lies inside the source. The copy is always recursive; symlinks are copied as links, never followed, and a FIFO, socket or device is recreated, never opened (as cp -R does)."
               (Some "let d = Path.newTempDir ()\nDir.copy d $\"{d}-c\"\nDir.deleteAll d\nDir.deleteAll $\"{d}-c\"")
               None
            |> named [ "src"; "dst" ])

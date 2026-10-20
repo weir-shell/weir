@@ -5181,6 +5181,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
         System.Console.Out.Flush()
         Proc.runChainInherited (chainSpecs env arg chead cargs cenvO)
         VUnit
+    // a statement command with its output redirected relays its lines,
+    // which are never a value [D:cleanup-group-signal]
+    | TEPipe({ Kind = TECmd(head, args, cenvO) } as c, ({ Kind = TEVar "|print" } as fn)) ->
+        let f = eval env fn
+        callAtWith fn f (commandLines true env c head args cenvO)
+    | TEPipe({ Kind = TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) }) }, ({ Kind = TEVar "|print" } as fn)) ->
+        let f = eval env fn
+        let specs = chainSpecs env arg chead cargs cenvO
+        callAtWith fn f (VSeq(Seq.delay (fun () -> Proc.chainStatementLinesOf specs) |> Seq.map VStr))
     | TEPipe(arg, fn) -> callAt env fn arg
     | TEField(target, field) ->
         match eval env target with
@@ -5313,21 +5322,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             source
     | TEList items -> VSeq(items |> List.map (eval env))
     | TETuple items -> VTuple(items |> List.map (eval env))
-    | TECmd(head, args, cenvO) ->
-        let argv = argvOf env args
-
-        // only the enclosing `within` scopes are captured
-        // [D:ambient-capture-within]
-        let spec: Proc.Spec =
-            { Prog = Proc.resolveProg (progOf env head)
-              Args = argv
-              Env = overlayOf env cenvO
-              Input = None
-              Cwd = Weir.Session.scopedCwd ()
-              Ambient = Weir.Session.scopedAmbient () }
-
-        // the command takes the blame wherever it is read [D:runtime-position]
-        VSeq(Seq.delay (fun () -> Proc.linesOf spec) |> Seq.map VStr |> blameOn (box te))
+    | TECmd(head, args, cenvO) -> commandLines false env te head args cenvO
     | TEInterp parts ->
         let sb = System.Text.StringBuilder()
 
@@ -5764,9 +5759,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // created and registered inside the spawn gate, so no spill dir
             // appears after the teardown kill; removed when the start
             // refuses [D:teardown-stops-arms]
-            Session.gatedSpawn (fun () ->
-                Session.createPrivateDir spill
-                Session.registerTmpDir spill)
+            Session.gatedSpawn (fun () -> Session.createRegisteredDir spill)
 
             let p, drain =
                 try
@@ -6246,11 +6239,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let dir =
                 System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
 
-            Session.createPrivateDir dir
             // the exit hook's backstop registration [D:exit-hook]: a hard
             // exit (pfirst exit-race, Ctrl-C) sweeps what this finally
             // could not; the clean path deregisters and the hook is idle
-            Session.registerTmpDir dir
+            Session.createRegisteredDir dir
             // opened inside a plan: a captured op under it is refused
             // [D:plan-within-tmp]
             PlanMode.noteTmp dir
@@ -6484,7 +6476,39 @@ and apply (fn: Value) (arg: Value) : Value =
 // [D:runtime-position-call]
 and private callAt (env: Env) (fn: TypedExpr) (arg: TypedExpr) : Value =
     let f = eval env fn
-    let a = eval env arg
+    callAtWith fn f (eval env arg)
+
+// a command's lazy lines; `statement`: armed as a statement, output unused
+and private commandLines
+    (statement: bool)
+    (env: Env)
+    (te: TypedExpr)
+    (head: Check.TCmdHead)
+    (args: TypedExpr list)
+    (cenvO: TypedExpr option)
+    : Value =
+    let argv = argvOf env args
+
+    // only the enclosing `within` scopes are captured
+    // [D:ambient-capture-within]
+    let spec: Proc.Spec =
+        { Prog = Proc.resolveProg (progOf env head)
+          Args = argv
+          Env = overlayOf env cenvO
+          Input = None
+          Cwd = Weir.Session.scopedCwd ()
+          Ambient = Weir.Session.scopedAmbient () }
+
+    let lines =
+        if statement then
+            Proc.statementLinesOf
+        else
+            Proc.linesOf
+
+    // the command takes the blame wherever it is read [D:runtime-position]
+    VSeq(Seq.delay (fun () -> lines spec) |> Seq.map VStr |> blameOn (box te))
+
+and private callAtWith (fn: TypedExpr) (f: Value) (a: Value) : Value =
 
     // a reifier's call is its command's: blamed at the command, whose
     // program is the reifier's first argument

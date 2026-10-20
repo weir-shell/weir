@@ -736,7 +736,8 @@ print $"{key} -> {value}"
   loser blocked reading stdin or a FIFO is cut too (POSIX; on Linux the
   cut closes the FIFO, so a later read gets the writer's data
   [D:fifo-read-polled]), and so is one writing, hashing or copying a FIFO
-  (Linux; `File.writeAtomic` refuses a FIFO) [D:fifo-ops-polled]. `exit n` in an arm ends the race and the
+  (Linux; `File.writeAtomic` refuses a FIFO) [D:fifo-ops-polled]; `Dir.copy`
+  recreates a FIFO and never opens it [D:dircopy-special]. `exit n` in an arm ends the race and the
   script, as in `pmap`.
 - A SCOPED background process is `within proc srv = <command>` +
   an indented block [D:scoped-procs]: the scope IS the lifetime —
@@ -905,7 +906,8 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   to the dead terminal is that command's failure). A full or closed
   stderr (`2>/dev/full`, `2>&-`) never aborts or fails a run either:
   `printerr`, `Log.*` and the final error write nothing and the exit
-  code is the run's own [D:console-write].
+  code is the run's own; a closed stdin reads nothing and a closed
+  stdout writes nowhere [D:console-write].
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel, a `kill -INT`) tree-kills the running foreground command and
   every fan-out arm's command too, scoped or not [D:sigint-reaps]. A
@@ -927,7 +929,11 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   start with SIGINT and SIGQUIT ignored, so a terminal ^C or ^\ cannot
   kill them, while they keep the terminal and its input (a pager
   works; one that handles ^C itself still quits on it)
-  [D:cleanup-sigign].
+  [D:cleanup-sigign]. Without a tty, a group-directed TERM/HUP (`kill --
+  -pgid`) that kills a cleanup's running statement command is the
+  signal's and the cleanup runs on; a value the cleanup captures from a
+  killed command fails instead — a truncated output is never a value
+  [D:cleanup-group-signal].
   A `pmap`/`piter`/`pfirst` takes no new arm after the signal (or the
   closed stdout), and arms already running are cut at their next
   builtin call, command, sleep or wait and JOINED before any

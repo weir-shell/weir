@@ -242,9 +242,10 @@ let private runOnMain (run: unit -> int) : int =
 [<EntryPoint>]
 let main argv =
 
-    // a closed stderr is /dev/null: nothing weir opens lands on fd 2 —
-    // first, before any console stream exists [D:console-write]
-    Session.nullClosedStderr ()
+    // a closed stdin, stdout or stderr is /dev/null: nothing weir opens
+    // lands on fd 0-2 — first, before any console stream exists
+    // [D:console-write]
+    Session.nullClosedStdio ()
 
     // captured output is data: LF on every platform [D:lf-output] —
     // the dual of the content-bytes input ruling (a line ending is
