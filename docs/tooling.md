@@ -37,7 +37,8 @@ usage: weir                                    the REPL
   shebang works too. The script gets its arguments as `Self.args`, or
   parsed into a type you declare with `Args.load`.
 - `weir -e '<program>'` — run a program and print the value of its
-  last statement with its type, as the REPL echoes it (`3 : int`).
+  last statement with its type (`3 : int`), as the REPL echoes it
+  with `#types on`.
   Newlines separate statements, just as in a file. The last statement
   must be an expression; if it is a declaration (a `let`, a `type`,
   …), the error says which kind.
@@ -539,6 +540,7 @@ file.
 | `historyPath` | `<state>/weir/history` | where history lives (`$XDG_STATE_HOME`, `~/.local/state`, or `%LOCALAPPDATA%`) |
 | `finderFlags` | `["--height", "40%", "--reverse"]` | extra arguments for the `Ctrl+R` fzf search |
 | `echoElems` | `100` | how many elements of a lazy seq the REPL prints ([the REPL](repl.md)) |
+| `types` | `"off"` | `"on"` shows types in the REPL echo (`2 : int`); `#types` overrides it for the session ([the REPL](repl.md#what-the-echo-shows)) |
 
 An unknown key gets a warning suggesting the closest valid key, so
 a typo doesn't silently do nothing. If the file is missing or can't be

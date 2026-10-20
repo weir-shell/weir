@@ -93,41 +93,51 @@ At a terminal, how a value is echoed depends on its type:
 - a named function — as a short help entry (below)
 - anything else — as a literal
 
-The type is always shown on a line below, with a note when a seq has
-not been fully evaluated. `NO_COLOR` turns off the styling. Type
-variables in that line are renamed to `'a`, `'b`, …; error messages
-use the checker's internal names for them instead.
+A note follows when a seq has not been fully evaluated. The echo
+doesn't show types by default: `2` echoes `2`, `let x = 5` echoes
+`x = 5`, and a statement that returns nothing (`print "a"`) echoes
+nothing after its output. `#types on` adds them back for the session
+(`2 : int`, `x : int = 5`, `() : unit`, a `: seq<string>` line under
+a seq's lines), `#types off` drops them again, and `#types` on its
+own shows the setting. `"types": "on"` in the
+[config](tooling.md#the-repl-config) turns them on at startup; the
+directive overrides it. Piped output always shows types.
+
+`NO_COLOR` turns off the styling. Type variables in the type line are
+renamed to `'a`, `'b`, …; error messages use the checker's internal
+names for them instead.
 
 An expression that evaluates to a **named function** echoes the same
 thing `#help` would show:
 
 - a builtin — its qualified signature plus the first line of its doc
   (`find` shows where it lives, `Seq.find`)
-- a function you defined in the session — `name : type` plus a dim
+- a function you defined in the session — `name : type` (with or
+  without `#types`) plus a dim
   line showing the first line of its definition (for a redefined
   function, the latest one)
 - an anonymous or composed function — `<fun> : ty`, since it has no
   name
 
 A `let` binding is echoed the same way: the value's lines (or table)
-first, then a `name : type` line with the same note about unevaluated
-seqs. That line always comes after the value, so a cut-off value
+first, then a line with the name (and the type, with `#types on`) and
+the same note about unevaluated seqs. That line always comes after the value, so a cut-off value
 never looks as if data silently went missing: you see where it was
 cut, then the note saying so and how to see the rest (`Seq.freeze`).
 
 A `let` bound to a command is not run by the echo: the binding is
-lazy, as in a script, so the echo shows only its type and how to run
+lazy, as in a script, so the echo shows only its name and how to run
 it. Typing the name runs the command and prints its output, every
 time:
 
 ```
 weir> let pods = kubectl get po -A
-pods : seq<string> (command-backed — runs on each use; type pods to run it)
+pods (command-backed — runs on each use; type pods to run it)
 weir> pods
 …the pods…
 weir> let snap = kubectl get po -A |> Seq.freeze
 …the pods…
-snap : seq<string> (frozen)
+snap (frozen)
 ```
 
 So `let cleanup = rm -rf build` deletes nothing until you type
@@ -261,7 +271,6 @@ the exact command you ran:
 ```
 weir> kubectl get po -A -o yaml
 …the pods, live…
-: seq<string>
 weir> #infer it from yaml as Pods
 #infer: the source has type unit; the adapter needs seq<string> (a captured JSON/YAML sample)
 to capture: let x = kubectl get po -A -o yaml

@@ -4204,12 +4204,13 @@ WEOF
     # unforced-hint teaching the bare-expression echo shows — and it must
     # be visible (printed after the lines, not scrolled off the top). The
     # old shape printed `xs : seq<string> ={hint}` first (a dangling ' ='
-    # too); the fix prints the lines, then `xs : seq<string> (hint)` last.
+    # too); the fix prints the lines, then `xs (hint)` last (the type
+    # rides only with #types on [D:repl-types]).
     # `Seq.initInfinite show` is a deterministic unforced seq<string> — no
     # PATH executable. tty-only path (redirected uses the batched form),
     # so this rides the pty instrument.
     tout=$(printf 'SLEEP 400\nSEND let xs = Seq.initInfinite show\\r\nSLEEP 1500\nSEND #quit\\r\n' | python3 "$ptyrun" 8 "$BIN")
-    echo "$tout" | grep -qF 'seq<string> (first 100 of an unforced' \
+    echo "$tout" | grep -qF 'xs (first 100 of an unforced' \
       || fail "the let-bound unforced seq echo lost its teaching (or it is not on the meta line): $tout"
     # the dangling ' =' is gone: the meta reads `: seq<string> (…)`, never `: seq<string> =`
     echo "$tout" | grep -qF 'seq<string> =' \
@@ -4224,13 +4225,13 @@ WEOF
     rsout=$(printf 'SLEEP 400\nSEND let pods = sh -c "echo ran-$((40+2))"\\r\nSLEEP 1200\nSEND let snap = ["a"; "b"]\\r\nSLEEP 800\nSEND #quit\\r\n' | python3 "$ptyrun" 10 "$BIN")
     # the harness echoes a bytes repr, so the em-dash rides as \xe2\x80\x94 —
     # pin the ASCII halves around it
-    echo "$rsout" | grep -qF 'pods : seq<string> (command-backed' \
+    echo "$rsout" | grep -qF 'pods (command-backed' \
       || fail "the command-backed unforced bind must say so: $rsout"
     echo "$rsout" | grep -qF 'runs on each use; type pods to run it)' \
       || fail "the command-backed echo names how to run it: $rsout"
     echo "$rsout" | grep -qF 'ran-42' \
       && fail "the echo of a command-backed let ran the command: $rsout"
-    echo "$rsout" | grep -qF 'snap : seq<string> (frozen)' \
+    echo "$rsout" | grep -qF 'snap (frozen)' \
       || fail "a materialized bind must state frozen: $rsout"
     echo "e2e ok: the binding echo states seq state (re-runs / frozen)"
 

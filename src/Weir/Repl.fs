@@ -610,7 +610,9 @@ type private ReplConfig =
       HistoryPath: string option
       FinderFlags: string list
       // feeds the session echo cap [D:echo-cap]
-      EchoElems: int }
+      EchoElems: int
+      // seeds the session's type echo [D:repl-types]
+      Types: bool }
 
 // config/state dirs come from Builtins [D:path-home] — the same impl
 // the Path.home/configHome/stateHome members also expose
@@ -623,10 +625,11 @@ let private defaultConfig =
       // state, not config — history is data the REPL produced, not settings
       HistoryPath = None
       FinderFlags = [ "--height"; "40%"; "--reverse" ]
-      EchoElems = 100 }
+      EchoElems = 100
+      Types = false }
 
 let private configKeys =
-    set [ "historySize"; "historyDedup"; "historyPath"; "finderFlags"; "echoElems" ]
+    set [ "historySize"; "historyDedup"; "historyPath"; "finderFlags"; "echoElems"; "types" ]
 
 // read $XDG_CONFIG_HOME/weir/config.json (fallback ~/.config/weir/config.json);
 // unknown keys are rejected with did-you-mean — a typo must not silently
@@ -682,7 +685,17 @@ let private loadConfig () : ReplConfig =
                 | "" -> defaultConfig.HistoryPath
                 | p -> Some p
               FinderFlags = getStrList "finderFlags" defaultConfig.FinderFlags
-              EchoElems = getInt "echoElems" defaultConfig.EchoElems }
+              EchoElems = getInt "echoElems" defaultConfig.EchoElems
+              Types =
+                match root.TryGetProperty "types" with
+                | false, _ -> defaultConfig.Types
+                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.String && v.GetString() = "on" -> true
+                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.String && v.GetString() = "off" -> false
+                | true, v ->
+                    Console.Error.WriteLine
+                        $"weir: config: types takes \"on\" or \"off\"; got {v.GetRawText()} (using \"off\")"
+
+                    defaultConfig.Types }
         with ex ->
             Console.Error.WriteLine $"weir: config: {ex.Message} (using defaults)"
             defaultConfig
@@ -698,6 +711,18 @@ let mutable private echoCap: int option =
     else
         Console.Error.WriteLine $"weir: config: echoElems must be positive; got {config.EchoElems} (using 100)"
         Some 100
+
+// the session's type echo [D:repl-types]: config seeds it, #types
+// moves it. The piped surface keeps its types whatever this says — its
+// bytes are pinned, and a session setting must not move them (the
+// echo cap's rule [D:echo-cap])
+let mutable private typesOn: bool = config.Types
+
+let private echoTypes () = typesOn || Console.IsOutputRedirected
+
+// a `let` echo's head: `name : ty`, or the name alone with types off
+let private letEchoHead (name: string) (ty: Ty) =
+    if echoTypes () then $"{name} : {formatEchoTy ty}" else name
 
 // the history path resolves lazily [D:repl-history]: an unusable home
 // (HOME= is empty [D:home-verbatim]) or an unwritable file turns history
@@ -756,14 +781,25 @@ let private echoMeta (s: string) =
 // one is frozen; a pure lazy seq stays unannotated — silence is the
 // default. Both ride the one parenthetical, the state joined before the
 // truncation teaching.
-let letEchoMeta (name: string) (ty: Ty) (state: string option) (hint: string option) : string =
+let letEchoMeta (types: bool) (name: string) (ty: Ty) (state: string option) (hint: string option) : string =
     let tail =
         match state, hint with
         | Some s, Some h -> Some $"{s}; {h}"
         | Some s, None -> Some s
         | None, h -> h
 
-    $"{name} : {formatEchoTy ty}{Eval.echoTail tail}"
+    if types then
+        $"{name} : {formatEchoTy ty}{Eval.echoTail tail}"
+    else
+        $"{name}{Eval.echoTail tail}"
+
+/// the bare-expression meta line: the type and its teaching tail; with
+/// types off [D:repl-types] the tail alone, or no line at all
+let exprEchoMeta (types: bool) (ty: Ty) (hint: string option) : string option =
+    match types, hint with
+    | true, _ -> Some $": {formatEchoTy ty}{Eval.echoTail hint}"
+    | false, Some h -> Some $"({h})"
+    | false, None -> None
 
 // the session's command-backed bindings [D:repl-let-echo-lazy]: a `let`
 // reading one (`let g = gl`, `gl |> Seq.filter f`) is command-backed too
@@ -800,8 +836,8 @@ let letSeqState (v: Eval.Value) : string option =
 
 /// the echo of a command-backed `let`: the type and how to run it, never
 /// the enumeration (a `let` binds, as in a script) [D:repl-let-echo-lazy]
-let commandBackedEcho (name: string) (ty: Ty) : string =
-    letEchoMeta name ty (Some "command-backed — runs on each use") (Some $"type {name} to run it")
+let commandBackedEcho (types: bool) (name: string) (ty: Ty) : string =
+    letEchoMeta types name ty (Some "command-backed — runs on each use") (Some $"type {name} to run it")
 
 // the misuse repair after a streamed statement [D:repl-it]: `it` is
 // unit-bound (the stream's `()`), so using it where unit fails the check
@@ -2333,13 +2369,13 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                     // so a pure seq beside one is conservatively not echoed
                     if letCommandBacked te bv then
                         noteCommandSeq n te bv
-                        echoMeta (commandBackedEcho n sch.Ty)
+                        echoMeta (commandBackedEcho (echoTypes ()) n sch.Ty)
                     else
                         let rendered, hint = Eval.echoValue cap (Eval.echoPrep bv)
 
                         Console.WriteLine
-                            $"{n} : {formatEchoTy sch.Ty} = {Eval.sanitizeTtyEcho rendered}{Eval.echoTail hint}"
-                | _ -> Console.WriteLine $"{n} : {formatEchoTy sch.Ty}"
+                            $"{letEchoHead n sch.Ty} = {Eval.sanitizeTtyEcho rendered}{Eval.echoTail hint}"
+                | _ -> Console.WriteLine(letEchoHead n sch.Ty)
 
             { state with
                 TypeEnv = chk.Env
@@ -2364,7 +2400,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
             noteCommandSeq name te v
 
             if commandBacked then
-                echoMeta (commandBackedEcho name te.Ty)
+                echoMeta (commandBackedEcho (echoTypes ()) name te.Ty)
             elif v <> Eval.VUnit then
                 // one enumeration for the whole echo [D:echo-once] — the
                 // table probe and the line rendering share a cached
@@ -2418,11 +2454,11 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                      else
                          printTable lines)
 
-                    echoMeta (letEchoMeta name te.Ty (letSeqState v) hint)
+                    echoMeta (letEchoMeta (echoTypes ()) name te.Ty (letSeqState v) hint)
                 | None ->
                     let rendered, hint = Eval.echoValue cap ev
                     let tail = Eval.echoTail hint
-                    Console.WriteLine $"{name} : {formatEchoTy te.Ty} = {Eval.sanitizeTtyEcho rendered}{tail}"
+                    Console.WriteLine $"{letEchoHead name te.Ty} = {Eval.sanitizeTtyEcho rendered}{tail}"
 
             // a `let` binds its name only — it does not rebind `it`
             // (FSI parity) [D:repl-it]
@@ -2461,7 +2497,8 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 // the plain meta — no standing per-command teach (that
                 // was noise); the teach fires only at misuse, via the
                 // latch below [D:repl-it]
-                echoMeta $": {formatEchoTy te.Ty}"
+                if echoTypes () then
+                    echoMeta $": {formatEchoTy te.Ty}"
                 // FSI parity: the streamed statement binds `it := ()` —
                 // weir never held the bytes, so unit is the truth; the
                 // latch remembers the command for the misuse repair
@@ -2538,16 +2575,18 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                              else
                                  printTable lines)
 
-                            echoMeta $": {formatEchoTy te.Ty}{Eval.echoTail hint}"
+                            exprEchoMeta (echoTypes ()) te.Ty hint |> Option.iter echoMeta
                         | None ->
                             let rendered, hint = Eval.echoValue cap ev
                             let tail = Eval.echoTail hint
 
                             // the value stays plain; the type tail recedes
                             // like every other metadata line [D:table-polish]
+                            let meta = if echoTypes () then $" : {formatEchoTy te.Ty}{tail}" else tail
+
                             Console.WriteLine(
                                 Eval.sanitizeTtyEcho rendered
-                                + Types.Color.dim Types.Color.onStdout.Value $" : {formatEchoTy te.Ty}{tail}"
+                                + (if meta = "" then "" else Types.Color.dim Types.Color.onStdout.Value meta)
                             )
                 elif not Console.IsOutputRedirected then
                     // FSI parity [D:repl-it]: a unit expression/command
@@ -2556,7 +2595,8 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                     // never an error. The piped surface stays silent
                     // (its bytes are pinned: unit is invisible there).
                     // The whole line is metadata — it recedes [D:table-polish]
-                    echoMeta "() : unit"
+                    if echoTypes () then
+                        echoMeta "() : unit"
 
                 bindIt te.Ty ev state
              with
@@ -3758,6 +3798,22 @@ let rec private loop (state: State) =
                      echoCap <- Some n
                      Console.WriteLine $"echo cap: {n}"
                  | _ -> Console.WriteLine $"#echo takes a positive count or 'all' — e.g. #echo 100")
+
+            loop state
+        elif t = "#types" || t.StartsWith "#types " then
+            // the type echo [D:repl-types]: bare reports, on/off sets
+            let report () =
+                Console.WriteLine(if typesOn then "types: on" else "types: off")
+
+            (match t.Substring(6).Trim() with
+             | "" -> report ()
+             | "on" ->
+                 typesOn <- true
+                 report ()
+             | "off" ->
+                 typesOn <- false
+                 report ()
+             | arg -> Console.WriteLine $"#types takes 'on' or 'off' — e.g. #types on (got '{arg}')")
 
             loop state
         elif t = "#infer" || t.StartsWith "#infer " then

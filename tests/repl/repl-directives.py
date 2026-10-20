@@ -211,10 +211,13 @@ if "first 10 of an unforced seq" not in t:
 
 # --- the cap at a tty: default 100 covers command-sized output; #echo
 # moves it live; all uncaps (the acceptance rides the lines form) ------
-def pty_session(lines, settle=0.6):
+def pty_session(lines, settle=0.6, env=None):
     pid, fd = pty.fork()
     if pid == 0:
-        os.execv(WEIR, ["weir"])
+        if env is None:
+            os.execv(WEIR, ["weir"])
+        else:
+            os.execve(WEIR, ["weir"], env)
     time.sleep(0.8)
     out = b""
 
@@ -274,6 +277,84 @@ if "l5" not in segs[2] or "l6" in segs[2] or "first 5 of an unforced seq" not in
     failures.append(f"#echo 5 must clip the tty echo at 5 with the live-cap sentence: {segs[2][-300:]!r}")
 if "l29" not in segs[4] or "first" in segs[4]:
     failures.append(f"#echo all must uncap the tty echo: {segs[4][-300:]!r}")
+
+# --- the type echo [D:repl-types]: off by default at a tty, #types on
+# restores the typed echo byte for byte, bare reports, a bad value
+# teaches; the config key seeds it and the directive overrides it -----
+def types_env(cfg):
+    d = tempfile.mkdtemp()
+    if cfg is not None:
+        os.makedirs(os.path.join(d, "weir"))
+        with open(os.path.join(d, "weir", "config.json"), "w") as f:
+            f.write(cfg)
+    return dict(os.environ, XDG_CONFIG_HOME=d, XDG_STATE_HOME=os.path.join(d, "state"))
+
+types_lines = [
+    "2",
+    "let x = 5",
+    'let ys = [1..3] |> Seq.map (fun i -> $"y{i}") |> Seq.freeze',
+    'Seq.initInfinite (fun i -> $"l{i}")',
+    'print "a"',
+]
+
+def last_lines(seg, n):
+    out = [l.strip() for l in seg.replace("\r", "").split("\n")]
+    return [l for l in out if l and "weir>" not in l][-n:]
+
+segs = pty_session(["#types"] + types_lines, env=types_env(None))
+if "types: off" not in segs[0]:
+    failures.append(f"bare #types must report the default off: {segs[0][-200:]!r}")
+if last_lines(segs[1], 1) != ["2"]:
+    failures.append(f"types off: a bare expression echoes the value alone: {segs[1][-200:]!r}")
+if last_lines(segs[2], 1) != ["x = 5"]:
+    failures.append(f"types off: a let echoes name = value: {segs[2][-200:]!r}")
+if last_lines(segs[3], 2) != ["y3", "ys (frozen)"]:
+    failures.append(f"types off: a let's seq meta keeps the name and state, no type: {segs[3][-200:]!r}")
+if last_lines(segs[4], 2) != ["l99", "(first 100 of an unforced seq — Seq.freeze to echo everything)"]:
+    failures.append(f"types off: a truncated seq keeps its tail alone: {segs[4][-300:]!r}")
+if last_lines(segs[5], 1) != ["a"] or "unit" in segs[5]:
+    failures.append(f"types off: a unit statement prints nothing after its output: {segs[5][-200:]!r}")
+
+segs = pty_session(["#types on"] + types_lines + ["#types off", "2", "#types maybe", "#types"], env=types_env(None))
+if "types: on" not in segs[0]:
+    failures.append(f"#types on must set and report: {segs[0][-200:]!r}")
+if last_lines(segs[1], 1) != ["2 : int"]:
+    failures.append(f"types on: today's bare echo: {segs[1][-200:]!r}")
+if last_lines(segs[2], 1) != ["x : int = 5"]:
+    failures.append(f"types on: today's let echo: {segs[2][-200:]!r}")
+if last_lines(segs[3], 2) != ["y3", "ys : seq<string> (frozen)"]:
+    failures.append(f"types on: today's let seq meta: {segs[3][-200:]!r}")
+if last_lines(segs[4], 2) != ["l99", ": seq<string> (first 100 of an unforced seq — Seq.freeze to echo everything)"]:
+    failures.append(f"types on: today's truncated meta: {segs[4][-300:]!r}")
+if last_lines(segs[5], 2) != ["a", "() : unit"]:
+    failures.append(f"types on: today's unit echo: {segs[5][-200:]!r}")
+if "types: off" not in segs[6] or last_lines(segs[7], 1) != ["2"]:
+    failures.append(f"#types off must set, report and drop the type: {segs[6][-200:]!r} {segs[7][-200:]!r}")
+if "#types takes 'on' or 'off'" not in segs[8]:
+    failures.append(f"#types with a bad value must teach: {segs[8][-200:]!r}")
+if "types: off" not in segs[9]:
+    failures.append(f"a bad value must leave the setting alone: {segs[9][-200:]!r}")
+
+segs = pty_session(["#types", "2", "#types off", "2"], env=types_env('{"types": "on"}'))
+if "types: on" not in segs[0] or last_lines(segs[1], 1) != ["2 : int"]:
+    failures.append(f"the config's types key must seed the session: {segs[0][-200:]!r} {segs[1][-200:]!r}")
+if last_lines(segs[3], 1) != ["2"]:
+    failures.append(f"#types off must override the config: {segs[3][-200:]!r}")
+
+# a config value that is not "on"/"off" teaches and keeps the default
+p = subprocess.run([WEIR], input="#types\n#quit\n", capture_output=True, text=True, timeout=30, env=types_env('{"types": true}'))
+if 'types takes "on" or "off"; got true (using "off")' not in p.stderr or "types: off" not in p.stdout:
+    failures.append(f"a bad config types value must teach and default: {p.stderr[-200:]!r} {p.stdout[-200:]!r}")
+
+# the piped surface keeps its types whatever the setting — its bytes are
+# pinned, as with the echo cap [D:echo-cap]
+t = piped("2\nlet x = 5\n#types off\n2\n#quit\n")
+if "2 : int" not in t or "x : int = 5" not in t or t.count("2 : int") != 2:
+    failures.append(f"the piped echo must keep its types under #types off: {t[-300:]!r}")
+
+t = piped("#help\n#quit\n")
+if "#types [on | off]" not in t:
+    failures.append(f"#help must list #types: {t[-300:]!r}")
 
 # --- the bare statement is the child's own write [D:colour-inherit] ---
 # stdout inherits at a tty (isatty true — colour works), so weir has no
@@ -464,4 +545,4 @@ if failures:
         print("repl-directives FAIL:", f)
     sys.exit(1)
 
-print("repl-directives: #help x3 (one source), glance rendering (member + module blurbs), #find fallback (substring/usage/no-match), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), #history (path header, count, bare-all, tail-n, help-listed, typo did-you-mean), unknown-directive message trimmed (#sig redirect, #schema unknown), #alias recognized (list/add/single-hop/help), empty-prompt Tab offers directives, constructor not a head")
+print("repl-directives: #help x3 (one source), glance rendering (member + module blurbs), #find fallback (substring/usage/no-match), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), #types (default off, on restores, report, teach, config seed + override, piped pinned), #history (path header, count, bare-all, tail-n, help-listed, typo did-you-mean), unknown-directive message trimmed (#sig redirect, #schema unknown), #alias recognized (list/add/single-hop/help), empty-prompt Tab offers directives, constructor not a head")

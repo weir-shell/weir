@@ -95,6 +95,7 @@ let sessionDirectiveHelp: (string * string list) list =
       "echo",
       [ "#echo [<n> | all]     // the unforced-echo cap (default 100); bare reports;"
         "                      //   all = no cap — an infinite seq will hang (Ctrl+C)" ]
+      "types", [ "#types [on | off]     // show the echo's types (default off; config \"types\"); bare reports" ]
       "infer",
       [ "#infer [<src>] from <json|jsonl|yaml|table> as <Name|_>"
         "                      //   draft named types from a sample (src defaults to 'it'; _ auto-names)"

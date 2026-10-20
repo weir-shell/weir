@@ -4041,7 +4041,7 @@ let completionTests =
               // replacement yields `#help` — never `##help` or `head`
               // the closed set is the one source Complete.sessionDirectives
               // — the '#'-slot and the empty-prompt head both read it
-              Expect.equal (suggest "#" 1) [ "alias"; "echo"; "find"; "help"; "history"; "infer"; "quit"; "save" ] "the closed set"
+              Expect.equal (suggest "#" 1) [ "alias"; "echo"; "find"; "help"; "history"; "infer"; "quit"; "save"; "types" ] "the closed set"
               Expect.equal (suggest "#he" 1) [ "help" ] "the prefix filters"
               Expect.equal (suggest "#q" 1) [ "quit" ] ""
               Expect.isFalse (List.contains "head" (suggest "#he" 1)) "the general pool stays out"
@@ -4706,7 +4706,7 @@ let completionTests =
               // guards `suggest "" 0` against the `StartsWith ""` flood
               // (1130 items: 954 PATH execs + the universe). A fresh Tab
               // teaches the REPL's affordances, `#help` first.
-              Expect.equal (suggest "" 0) [ "#help"; "#find"; "#echo"; "#infer"; "#save"; "#history"; "#alias"; "#quit" ] "the curated directive set"
+              Expect.equal (suggest "" 0) [ "#help"; "#find"; "#echo"; "#types"; "#infer"; "#save"; "#history"; "#alias"; "#quit" ] "the curated directive set"
 
               // filtered completion is unaffected (a real prefix at a head).
               // Assert only environment-stable facts: the `File` module is
@@ -7574,7 +7574,7 @@ let replEchoTests =
               // the let-echo meta line carries that same tail — the fix's
               // invariant: a clipped `let` bind never looks like it
               // silently dropped data
-              let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) None bareHint
+              let meta = Weir.Repl.letEchoMeta true "xs" (TSeq TStr) None bareHint
 
               Expect.equal
                   meta
@@ -7594,28 +7594,55 @@ let replEchoTests =
               // the let meta with no state then has an empty tail — no
               // dangling teaching (the state annotation is the caller's,
               // via letSeqState — the frozen pin below)
-              let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) None hint
+              let meta = Weir.Repl.letEchoMeta true "xs" (TSeq TStr) None hint
               Expect.equal meta "xs : seq<string>" "no teaching, no trailing parenthetical"
           }
           test "the let echo states the bound seq's state — the exact spellings [D:reenum-warning]" {
               // the meta seam: state alone, hint alone, both (one
               // parenthetical, state first), neither
               Expect.equal
-                  (Weir.Repl.commandBackedEcho "pods" (TSeq TStr))
+                  (Weir.Repl.commandBackedEcho true "pods" (TSeq TStr))
                   "pods : seq<string> (command-backed — runs on each use; type pods to run it)"
                   "the command-backed echo, exact bytes [D:repl-let-echo-lazy]"
 
               Expect.equal
-                  (Weir.Repl.letEchoMeta "pods" (TSeq TStr) (Some "frozen") None)
+                  (Weir.Repl.letEchoMeta true "pods" (TSeq TStr) (Some "frozen") None)
                   "pods : seq<string> (frozen)"
                   "the resolution annotation, exact bytes"
 
               Expect.equal
-                  (Weir.Repl.letEchoMeta "pods" (TSeq TStr) (Some "frozen") (Some "extra"))
+                  (Weir.Repl.letEchoMeta true "pods" (TSeq TStr) (Some "frozen") (Some "extra"))
                   "pods : seq<string> (frozen; extra)"
                   "state and teaching share one parenthetical, state first"
 
-              Expect.equal (Weir.Repl.letEchoMeta "pods" (TSeq TStr) None None) "pods : seq<string>" "silence is the default"
+              Expect.equal (Weir.Repl.letEchoMeta true "pods" (TSeq TStr) None None) "pods : seq<string>" "silence is the default"
+          }
+          test "types off drops the type from every meta, keeps the name and the teaching tail [D:repl-types]" {
+              let hint = Some(Weir.Eval.unforcedHint 10)
+
+              Expect.equal
+                  (Weir.Repl.commandBackedEcho false "pods" (TSeq TStr))
+                  "pods (command-backed — runs on each use; type pods to run it)"
+                  "command-backed keeps the name and its state"
+
+              Expect.equal
+                  (Weir.Repl.letEchoMeta false "pods" (TSeq TStr) (Some "frozen") None)
+                  "pods (frozen)"
+                  "the state stays"
+
+              Expect.equal (Weir.Repl.letEchoMeta false "pods" (TSeq TStr) None None) "pods" "the name alone"
+
+              Expect.equal
+                  (Weir.Repl.exprEchoMeta false (TSeq TStr) hint)
+                  (Some $"({Weir.Eval.unforcedHint 10})")
+                  "a type-only meta keeps just its tail"
+
+              Expect.equal (Weir.Repl.exprEchoMeta false (TSeq TStr) None) None "nothing left, no line"
+
+              Expect.equal
+                  (Weir.Repl.exprEchoMeta true (TSeq TStr) hint)
+                  (Some $": seq<string>{Weir.Eval.echoTail hint}")
+                  "types on: today's bytes"
           }
           test "letSeqState decides frozen; letCommandBacked flags an unforced command seq, never a forced or pure one [D:repl-let-echo-lazy]" {
               let sp: Weir.Ast.Span =

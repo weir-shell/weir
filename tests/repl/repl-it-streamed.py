@@ -24,6 +24,16 @@ assert_fresh(WEIR, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 failures = []
 
+# these pins are about the echoed types (`: seq<string>`, `() : unit`),
+# so the session runs with the type echo on, from an isolated config
+# [D:repl-types]
+import tempfile
+_cfg = tempfile.mkdtemp()
+os.makedirs(os.path.join(_cfg, "weir"))
+with open(os.path.join(_cfg, "weir", "config.json"), "w") as _f:
+    _f.write('{"types": "on"}')
+os.environ["XDG_CONFIG_HOME"] = _cfg
+
 
 def session(lines_with_settle):
     pid, fd = pty.fork()

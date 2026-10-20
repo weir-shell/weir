@@ -1207,8 +1207,9 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   calls of a function reading it, a read in a `for`/`Seq.*` lambda,
   a lazy binding derived from it [D:reenum-indirect] — advisory, exit
   stays 0; the
-  REPL echo of such a `let` shows `name : type (command-backed — runs
-  on each use; type name to run it)` and NEVER runs it
+  REPL echo of such a `let` shows `name (command-backed — runs
+  on each use; type name to run it)` (`name : type (…)` under
+  `#types on` [D:repl-types]) and NEVER runs it
   [D:repl-let-echo-lazy]); TIMING (a lazy `ls`/`Path.glob`/command
   re-runs on each read, so files created after the `let` show up;
   only an enclosing `within cd`/`within env` is captured where it
