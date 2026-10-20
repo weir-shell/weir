@@ -98,6 +98,10 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **Ctrl+C at the REPL between two statements of an entry stops it.**
+  Landing just after one statement ended (often right as a `| exitCode`
+  command exited), it was read as a typed key: the entry ran to its end
+  and `^C` appeared at the next prompt.
 - **A pasted multi-line REPL entry no longer loses its first lines.**
   When Alt+Enter's two bytes arrived apart, the Esc was read alone and
   threw the buffer away; an Esc with an Enter right behind it is now

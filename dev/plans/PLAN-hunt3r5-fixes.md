@@ -161,6 +161,11 @@ nightly gates in full.
 - **R10 (D-2)**.
 - **D-3** a second signal while a cleanup's pager holds the terminal raw
   leaves it restored (I12; the rest of C1-2).
+- **D-4 (user: fix in round 5, `fix/h3r5f-repl-isig`)** a REPL ^C landing
+  between two statements of an entry (just after a `| exitCode` child
+  exits) is read as a typed 0x03, not SIGINT, and the entry runs to its
+  end: the terminal's eval mode (ISIG on) is held for the whole entry,
+  not toggled per statement.
 
 ## Order
 

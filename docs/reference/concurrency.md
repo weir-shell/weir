@@ -238,7 +238,9 @@ a second ^C. A spawn is also a ^C boundary, but a builtin call and an
 evaluated node are not. The node is checked between statements, so a ^C
 that cut no wait (in a cleanup, in pure computation, or killing a child
 whose exit is data) ends the entry after its statement, with `↳ exit 130`
-([D:repl-entry-check]). A serve handler the ^C cuts closes its
+([D:repl-entry-check]). The terminal keeps ISIG on for the whole entry,
+so a ^C between two of its statements is a signal, never a typed byte
+([D:repl-entry-isig]). A serve handler the ^C cuts closes its
 connection unanswered (`Serve.abandon`) and records nothing on
 `Server.streamErrors`. Tty REPL only: a piped REPL has no
 `interruptRepl`. Rests on [D:repl-interrupt], [D:repl-interrupt-fanout],

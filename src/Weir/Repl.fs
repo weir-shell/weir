@@ -2623,17 +2623,34 @@ let itSchemeForTest (statements: string list) : string option =
 // path's exact behaviour) — weir itself survives via the cancel
 // registration in setupLineEditor. The finally closes the eval->prompt
 // window; both no-op when there is no tty (piped REPL, Windows).
-let private evalChecked (source: string) (state: State) (chk: Script.CheckedStatement) : State =
+// the terminal's eval mode, held for a whole entry: a statement inside an
+// entry neither enters nor leaves it, so no raw (no-ISIG) gap opens
+// between an entry's statements for a ^C to land in as a typed byte
+// [D:repl-entry-isig]
+let mutable private ttyEvalDepth = 0
+
+let private enterTtyEval () =
+    ttyEvalDepth <- ttyEvalDepth + 1
+
     // the property is the load-bearing half [D:repl-isig]: .NET
     // re-applies its own terminal notion when a child spawns (a raw
     // tcsetattr sticks for ~10ms and the child still sees -isig), so the
     // notion must change — TreatControlCAsInput=false makes .NET's
     // spawn-time config agree with the cooked termios the restore sets
     // now
-    if ttyEval then
+    if ttyEval && ttyEvalDepth = 1 then
         ttyIo (fun () -> Console.TreatControlCAsInput <- false)
         Term.restoreCooked ()
 
+let private leaveTtyEval () =
+    ttyEvalDepth <- max 0 (ttyEvalDepth - 1)
+
+    if ttyEval && ttyEvalDepth = 0 then
+        ttyIo (fun () -> Console.TreatControlCAsInput <- true)
+        Term.reassert ()
+
+let private evalChecked (source: string) (state: State) (chk: Script.CheckedStatement) : State =
+    enterTtyEval ()
     Session.beginReplEval ()
 
     try
@@ -2648,10 +2665,7 @@ let private evalChecked (source: string) (state: State) (chk: Script.CheckedStat
             state
     finally
         Session.endReplEval ()
-
-        if ttyEval then
-            ttyIo (fun () -> Console.TreatControlCAsInput <- true)
-            Term.reassert ()
+        leaveTtyEval ()
 
 // ---- the #help glance [D:help-glance]: one name per line, each with
 // the first line of its one-source doc (builtinDocs / moduleBlurbs),
@@ -3908,6 +3922,7 @@ let rec private loop (state: State) =
                 // one evaluation for the whole entry, which its first failure
                 // or ^C ends, as a script's would [D:repl-interrupt]
                 let stopped = ref false
+                enterTtyEval ()
                 Session.beginReplEval ()
 
                 try
@@ -3933,6 +3948,7 @@ let rec private loop (state: State) =
                         state
                 finally
                     Session.endReplEval ()
+                    leaveTtyEval ()
 
         loop next
     | line ->

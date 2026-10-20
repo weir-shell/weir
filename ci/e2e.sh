@@ -3969,6 +3969,58 @@ PYEOF
     echo "$tout" | grep -qF "ESC-C" && fail "a lone Esc abandons the buffer: $tout"
     echo "e2e ok: an Alt+Enter read as Esc then Enter is still the newline; a lone Esc abandons"
 
+    # ISIG stays on for a whole multi-statement REPL entry: no raw gap
+    # between its statements for a ^C to land in as a typed byte (the entry
+    # then ran on to its end) [D:repl-entry-isig]
+    cat > "$stdir/isig.py" <<'PYEOF'
+# a REPL entry of many `| exitCode` statements, its ISIG polled from the master: it must stay on from the
+# entry's start to its last output (a raw gap is where a ^C lands as a typed byte)
+import os, pty, sys, time, select, termios
+b = sys.argv[1]; home = sys.argv[2]
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ.update(NO_COLOR='1', HOME=home, XDG_CONFIG_HOME=home, XDG_STATE_HOME=home, XDG_DATA_HOME=home, XDG_CACHE_HOME=home)
+    os.execv(b, [b])
+out = b''
+def drain():
+    global out
+    while select.select([fd], [], [], 0)[0]:
+        try: c = os.read(fd, 65536)
+        except OSError: return
+        if not c: return
+        out += c
+t = time.monotonic()
+while b'weir> ' not in out and time.monotonic() - t < 10: drain(); time.sleep(0.01)
+time.sleep(0.5); drain()
+lines = ['let c%d = sh -c "exit 0" | exitCode' % i for i in range(30)] + ['print (Str.toUpper "isig-done")']
+for j, l in enumerate(lines):
+    os.write(fd, l.encode() + (b'\r' if j == len(lines) - 1 else b'\x1b\r')); time.sleep(0.005); drain()
+m = len(out); off = 0; began = False; t = time.monotonic()
+k = 0
+while time.monotonic() - t < 15:
+    lf = termios.tcgetattr(fd)[3]
+    if lf & termios.ISIG: began = True
+    elif began:
+        drain()
+        if b'ISIG-DONE' in out[m:]: break
+        off += 1
+        while not termios.tcgetattr(fd)[3] & termios.ISIG and time.monotonic() - t < 15:
+            drain()
+            if b'ISIG-DONE' in out[m:]: break
+    k += 1
+    if k % 200 == 0:
+        drain()
+        if b'ISIG-DONE' in out[m:]: break
+print('done=%d raw-windows=%d' % (b'ISIG-DONE' in out[m:], off))
+os.write(fd, b'\x04'); time.sleep(0.3)
+PYEOF
+    mkdir -p "$stdir/isig"
+    for k in 1 2 3; do
+        r=$(python3 "$stdir/isig.py" "$BIN" "$stdir/isig")
+        [ "$r" = "done=1 raw-windows=0" ] || fail "a REPL entry keeps ISIG on between its statements: $r"
+    done
+    echo "e2e ok: a multi-statement REPL entry keeps ISIG on from start to end — a ^C is never a typed byte"
+
     # C23: a tty REPL entry of several statements is one evaluation — a ^C
     # or a failure ends the whole entry, the session goes on
     tout=$(printf '%s\n' 'SLEEP 2500' 'SEND Duration.sleep 2s\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-two")\x1b\r' 'SLEEP 150' 'SEND sh -c "sleep 2; echo late-three | tr a-z A-Z"\r' 'SLEEP 700' 'SEND \x03' 'SLEEP 3500' 'SEND fail "boom"\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "after-fail")\r' 'SLEEP 1000' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" python3 "$ptyrun" 15 "$BIN")
