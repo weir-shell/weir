@@ -1,4 +1,4 @@
-// a cleanup's commands read the terminal: a pager and a line reader (R1: at a tty they keep weir's group and the tty, ^C/^\ ignored), both statements: a hangup killing a capture fails it [D:cleanup-group-signal]
+// a cleanup's commands read the terminal: a pager-shaped reader (prints, takes the tty raw, waits for a key) and a line reader (R1: at a tty they keep weir's group and the tty, ^C/^\ ignored), both statements: a hangup killing a capture fails it [D:cleanup-group-signal]. Not the system `more`: one that survives a hangup keeps weir waiting by design (util-linux 2.39's spins on the dead tty) [D:cleanup-sigign]
 // storm-feed: q\r 250
 // storm-cpu-max: 3
 let a = Self.args |> Seq.freeze
@@ -17,7 +17,7 @@ within
             ev "B outer/tmp/w slept"
         always
             ev "S outer/tmp/w"
-            more $"{dir}/big.txt"
+            sh -c $"cat {dir}/big.txt; stty -icanon -echo min 1 2>/dev/null; dd bs=1 count=1 of=/dev/null 2>/dev/null; stty icanon echo 2>/dev/null; :"
             ev "C outer/tmp/w paged"
             sh -c $"head -n1 > /dev/null; : {tag}"
             ev "C outer/tmp/w read"
