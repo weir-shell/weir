@@ -376,8 +376,10 @@ let ptyRun d secs args steps =
 
 let typedLine s = $"HEX {hx s}0d"
 
-// Alt-Enter: a REPL line that continues the entry
-let contLine s = $"HEX {hx s}1b0d"
+// a whole entry in one write, Alt-Enter between its lines: queued input
+// keeps its own indentation, a typed newline would carry the previous
+// line's [D:repl-autoindent]
+let pastedEntry ls = $"""HEX {ls |> Seq.map hx |> Str.join "1b0d"}0d"""
 
 let ctrlC = "HEX 03"
 
@@ -873,12 +875,12 @@ let h3r5c18 d =
 
 // ---- H3R5-C21: a REPL ^C with no wait ahead in the entry is dropped (R6) --------
 
-// one REPL entry typed line by line (Alt-Enter), a ^C `at` ms after it, then
+// one REPL entry in one write (pastedEntry), a ^C `at` ms after it, then
 // a probe line `after` ms later proving the session survived (long enough
 // for a pure-compute statement to finish). Late work prints in uppercase
 // (Str.toUpper) so the typed echo never matches
 let c21Session d entry at after =
-    let typed = entry |> Seq.indexed |> Seq.collect (fun (i, l) -> if i == (Seq.length entry) - 1 then [typedLine l] else [contLine l; "SLEEP 150"]) |> Seq.freeze
+    let typed = [pastedEntry entry]
     let steps = Seq.concat [["SLEEP 2500"]; typed; [$"SLEEP {at}"; ctrlC; $"SLEEP {after}"; typedLine "print (Str.toUpper \"still-here\")"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]] |> Seq.freeze
     ptyRun d "15" (replArgv d) steps
 

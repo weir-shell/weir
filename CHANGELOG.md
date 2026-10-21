@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`#keys` lists the REPL editor's key bindings** (Ctrl+Y, Ctrl+R,
+  Alt+Enter and the rest), so you don't have to look them up.
+- **The REPL editor indents for you.** A new line (Enter on an
+  unfinished statement, Alt+Enter, Ctrl+J) starts at the indentation of
+  the line above it, one level deeper after a line that opens a body
+  (`let x =`, `->`, `then`, `else`, `do`, `with`, `within …`, `always`),
+  and Backspace in leading spaces goes back one level (4 columns).
+  Pasted text keeps its own indentation.
+
 ## v0.0.75
 
 ### Added

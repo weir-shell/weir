@@ -4085,12 +4085,86 @@ let completionTests =
               // replacement yields `#help` — never `##help` or `head`
               // the closed set is the one source Complete.sessionDirectives
               // — the '#'-slot and the empty-prompt head both read it
-              Expect.equal (suggest "#" 1) [ "alias"; "echo"; "find"; "help"; "history"; "infer"; "quit"; "save"; "types" ] "the closed set"
+              Expect.equal (suggest "#" 1) [ "alias"; "echo"; "find"; "help"; "history"; "infer"; "keys"; "quit"; "save"; "types" ] "the closed set"
               Expect.equal (suggest "#he" 1) [ "help" ] "the prefix filters"
               Expect.equal (suggest "#q" 1) [ "quit" ] ""
               Expect.isFalse (List.contains "head" (suggest "#he" 1)) "the general pool stays out"
               // mid-line '#' is not a directive slot
               Expect.isFalse (List.contains "help" (suggest "ls # he" 5)) "line-head only"
+          }
+          test "smart indent opens a level after the assembler's body openers only [D:repl-autoindent]" {
+              for t in
+                  [ "let x ="
+                    "if a then"
+                    "else"
+                    "match x with"
+                    "for f in fs do"
+                    "| A ->"
+                    "let f = fun x ->"
+                    "within tmp d"
+                    "within"
+                    "    always"
+                    "type T ="
+                    "let z = // a comment"
+                    "retry 3 times" ] do
+                  Expect.isTrue (Weir.Script.opensIndentedBody t) t
+
+              for t in
+                  [ "let ok = 1 =="
+                    "let le = a <="
+                    "let ge = a >="
+                    "let ne = a !="
+                    "let r = { a ="
+                    "let r = {| a ="
+                    "let s = \"x ="
+                    "let y = 1 // then"
+                    "print athen"
+                    "sudo"
+                    "print 1"
+                    "" ] do
+                  Expect.isFalse (Weir.Script.opensIndentedBody t) t
+          }
+          test "#keys prints the key bindings, keys dim only at a tty [D:repl-keys]" {
+              let plain = Weir.Repl.keysText false
+              let lines = plain.Split '\n'
+
+              for key in [ "Ctrl+Y"; "Ctrl+R"; "Alt+Enter" ] do
+                  Expect.isTrue (lines |> Array.exists (fun l -> l.TrimStart().StartsWith key)) $"{key} has a line"
+
+              Expect.isFalse (plain.Contains "\u001b") "piped: no escapes"
+              Expect.stringContains (Weir.Repl.keysText true) "\u001b[2mCtrl+Y" "tty: the keys dim"
+              // aligned: every description starts in one column
+              let starts =
+                  Weir.Repl.keyBindings
+                  |> List.map (fun (_, what) -> lines |> Array.find (fun l -> l.EndsWith what) |> fun l -> l.Length - what.Length)
+                  |> List.distinct
+
+              Expect.equal starts.Length 1 $"one description column: {starts}"
+              Expect.contains Weir.Complete.sessionDirectives "keys" "#help, completion and did-you-mean see #keys"
+          }
+          test "docs/repl.md's key table lists exactly #keys' keys [D:repl-keys]" {
+              let doc =
+                  System.IO.File.ReadAllText(
+                      System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "docs", "repl.md")
+                  )
+
+              let table =
+                  doc.Substring(doc.IndexOf "| key | in the buffer |").Split('\n')
+                  |> Array.skip 2
+                  |> Array.takeWhile (fun l -> l.StartsWith "|")
+
+              let docKeys =
+                  table
+                  |> Array.collect (fun row ->
+                      let first = row.Split('|').[1]
+
+                      System.Text.RegularExpressions.Regex.Matches(first, "<kbd>([^<]+)</kbd>")
+                      |> Seq.map (fun m -> m.Groups[1].Value)
+                      |> Array.ofSeq)
+                  |> Set.ofArray
+
+              let codeKeys = Weir.Repl.keyBindings |> List.collect fst |> Set.ofList
+              Expect.equal docKeys codeKeys "the docs table and #keys carry the same keys"
           }
           test "the `#help <arg>` slot completes the documentable universe [D:help-arg-complete]" {
               // an #infer-injected type lives only in env.Types — the general
@@ -4750,7 +4824,7 @@ let completionTests =
               // guards `suggest "" 0` against the `StartsWith ""` flood
               // (1130 items: 954 PATH execs + the universe). A fresh Tab
               // teaches the REPL's affordances, `#help` first.
-              Expect.equal (suggest "" 0) [ "#help"; "#find"; "#echo"; "#types"; "#infer"; "#save"; "#history"; "#alias"; "#quit" ] "the curated directive set"
+              Expect.equal (suggest "" 0) [ "#help"; "#keys"; "#find"; "#echo"; "#types"; "#infer"; "#save"; "#history"; "#alias"; "#quit" ] "the curated directive set"
 
               // filtered completion is unaffected (a real prefix at a head).
               // Assert only environment-stable facts: the `File` module is

@@ -1167,6 +1167,42 @@ let private historyDirective (arg: string) : string =
         | true, n when n > 0 -> render (max 0 (history.Count - n))
         | _ -> "#history takes a positive count — e.g. #history 20 (bare = all)"
 
+/// the tty editor's key bindings, one source [D:repl-keys]: `#keys`
+/// prints this list and docs/repl.md's key table carries the same keys
+/// (a unit pin compares them). Each row: the keys, what they do
+let keyBindings: (string list * string) list =
+    [ [ "Enter" ], "submit if complete, else start a new line; on an empty last line, submit anyway"
+      [ "Alt+Enter"; "Ctrl+J" ], "insert a newline (the entry stays one statement)"
+      [ "Backspace" ], "delete back; in a line's leading spaces, back one indent level (4 columns)"
+      [ "Left"; "Right" ], "move a character (across lines)"
+      [ "Ctrl+Left"; "Ctrl+Right" ], "move a word"
+      [ "Home"; "Ctrl+A" ], "start of the line"
+      [ "End"; "Ctrl+E" ], "end of the line"
+      [ "Up"; "Down" ], "move between lines; Up on the first line recalls history"
+      [ "Tab" ], "complete the word under the cursor"
+      [ "Ctrl+R" ], "search history (fzf when installed)"
+      [ "Ctrl+W"; "Ctrl+U"; "Ctrl+K" ], "cut the previous word / to line start / to line end"
+      [ "Ctrl+Y" ], "paste the last cut text"
+      [ "Esc"; "Ctrl+C" ], "abandon the whole buffer"
+      [ "Ctrl+D" ], "exit on an empty buffer; delete or join otherwise" ]
+
+/// `#keys` [D:repl-keys]: the bindings in two aligned columns, the keys
+/// dim at a tty (meta output), plain when piped; then the typed-newline
+/// indentation note
+let keysText (color: bool) : string =
+    let keys = keyBindings |> List.map (fun (ks, _) -> String.concat " / " ks)
+    let w = keys |> List.map String.length |> List.max
+
+    let rows =
+        List.map2 (fun (k: string) (_, what) -> "  " + Types.Color.dim color (k.PadRight w) + "  " + what) keys keyBindings
+
+    String.concat
+        "\n"
+        (rows
+         @ [ "A new line starts at the indentation of the line above, one level (4 spaces) deeper after"
+             "a line that opens a body (`=`, `->`, `then`, `else`, `do`, `with`, `within …`, `always`);"
+             "a paste keeps its own indentation." ])
+
 // Ctrl+Left/Right navigation; '.' stays a separator here (unlike
 // completion's wordStartAt) so field chains hop segment by segment
 let private isWordChar (c: char) = Char.IsLetterOrDigit c || c = '_'
@@ -1588,13 +1624,32 @@ let private readLineTty () : string option =
         redraw ()
 
     // split the current line at the cursor — Enter-on-incomplete and the
-    // Alt+Enter / Ctrl+J force share it
+    // Alt+Enter / Ctrl+J force share it. A typed newline carries the split
+    // line's leading whitespace, one level more after a body opener; one
+    // with input already queued behind it
+    // (a paste) stays plain so the block keeps its own indent
+    // [D:repl-autoindent]
     let insertNewline () =
-        let tail = cur().ToString().Substring col
+        let line = cur().ToString()
+        let tail = line.Substring col
         cur().Remove(col, cur().Length - col) |> ignore
-        lines.Insert(row + 1, Text.StringBuilder(tail: string))
+
+        let queued =
+            typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable)
+
+        let indent, tail =
+            if queued then
+                "", tail
+            else
+                let before = line.Substring(0, col)
+                let carried = before.Substring(0, before.Length - before.TrimStart([| ' '; '\t' |]).Length)
+                // smart indent: one level more after a body opener
+                (if Script.opensIndentedBody before then carried + "    " else carried),
+                tail.TrimStart([| ' '; '\t' |])
+
+        lines.Insert(row + 1, Text.StringBuilder(indent + tail))
         row <- row + 1
-        col <- 0
+        col <- indent.Length
         redraw ()
 
     // park the cursor at the region end (echoes print below the buffer)
@@ -1701,7 +1756,14 @@ let private readLineTty () : string option =
              | Some entry -> setBuffer entry
              | None -> redraw ())
         | ConsoleKey.Backspace ->
-            if col > 0 then
+            if col > 0 && cur().ToString(0, col) |> Seq.forall ((=) ' ') then
+                // an all-space prefix dedents one level, to the previous
+                // multiple of 4 [D:repl-autoindent]
+                let n = col - (col - 1) / 4 * 4
+                cur().Remove(col - n, n) |> ignore
+                col <- col - n
+                redraw ()
+            elif col > 0 then
                 let n = stepBack ()
                 cur().Remove(col - n, n) |> ignore
                 col <- col - n
@@ -3838,6 +3900,9 @@ let rec private loop (state: State) =
         elif t = "#history" || t.StartsWith "#history " then
             Console.WriteLine(historyDirective (t.Substring(8).Trim()))
             loop state
+        elif t = "#keys" then
+            Console.WriteLine(keysText Types.Color.onStdout.Value)
+            loop state
         elif t = "#alias" || t.StartsWith "#alias " then
             // a live command-head alias [D:command-head-alias]. init.weir is
             // the canonical place; a bare `#alias` lists the table, a
@@ -3885,6 +3950,8 @@ let rec private loop (state: State) =
                     $"{word} is a file directive, read at check time — it has no effect in the REPL"
                 elif word = "#quit" then
                     "#quit takes no argument — type #quit on its own (or press Ctrl+D)"
+                elif word = "#keys" then
+                    "#keys takes no argument — type #keys on its own"
                 else
                     // the did-you-mean pool is the dispatch's one source
                     // (Complete.sessionDirectives) [D:repl-directives]

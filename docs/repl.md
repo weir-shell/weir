@@ -173,7 +173,8 @@ only applies to lazy ones. Piped output is not affected.
 ## Help
 
 `#help` lists the directives and the modules, one module per line
-with a short description. `#help Seq` lists one module's members the
+with a short description. `#keys` lists the editor's
+[key bindings](#multi-line-editing). `#help Seq` lists one module's members the
 same way: one per line, each with the first line of its doc, cut to
 fit the terminal. `#help Seq.collect` shows one member's full doc,
 and a short name such as `#help map` shows the same doc, saying which
@@ -675,13 +676,41 @@ whole: a three-line match comes back as three lines that you can
 edit. Lines you type before the first prompt appears are kept, and
 their Enter submits them as usual.
 
-The key bindings (they can't be customized):
+A new line starts at the indentation of the line above it, one level
+(4 spaces) deeper when that line opens a body: it ends in `=`, `->`,
+`then`, `else`, `do` or `with`, or is a block head such as `within …`,
+`always`, `for … do` or `retry …`. A comparison (`==`, `<=`, `>=`,
+`!=`), a record field's `=` inside an open `{`, and text inside a
+string or a comment don't count. <kbd>Backspace</kbd> in the leading
+spaces goes back one level (4 columns), which is how you end a block.
+Pasted text keeps exactly its own indentation (a newline with more
+input already behind it is not indented). An empty last line still
+submits when it holds only indentation.
+
+For example, type `let total =` and Enter, then `[1; 2; 3]` and
+Alt+Enter, then `|> Seq.sum` and Enter, without typing any spaces:
+
+```
+weir> let total =
+    …     [1; 2; 3]
+    …     |> Seq.sum
+total = 6
+```
+
+The key bindings (they can't be customized). `#keys` prints them at
+the prompt:
 
 | key | in the buffer |
 |---|---|
 | <kbd>Enter</kbd> | submit if complete, otherwise start a new line; on an empty last line, submit anyway (a way out of an unfinished statement: the error is shown and your input is kept) |
-| <kbd>Alt+Enter</kbd> / <kbd>Ctrl+J</kbd> | insert a newline (for formatting; the entry is still one statement). <kbd>Shift+Enter</kbd> can't be used, because terminals don't distinguish it from <kbd>Enter</kbd>. Windows Terminal uses left-<kbd>Alt+Enter</kbd> for fullscreen: use <kbd>Ctrl+J</kbd> or right-Alt there |
+| <kbd>Alt+Enter</kbd> / <kbd>Ctrl+J</kbd> | insert a newline (for formatting; the entry is still one statement). Like <kbd>Enter</kbd>'s new line, it starts at the line's indentation. <kbd>Shift+Enter</kbd> can't be used, because terminals don't distinguish it from <kbd>Enter</kbd>. Windows Terminal uses left-<kbd>Alt+Enter</kbd> for fullscreen: use <kbd>Ctrl+J</kbd> or right-Alt there |
+| <kbd>Backspace</kbd> | delete the character before the cursor; in a line's leading spaces, go back one indent level (to the previous multiple of 4) |
+| <kbd>Left</kbd> / <kbd>Right</kbd> | move a character; at the start or end of a line, onto the line above or below |
+| <kbd>Ctrl+Left</kbd> / <kbd>Ctrl+Right</kbd> | move a word |
+| <kbd>Home</kbd> / <kbd>Ctrl+A</kbd> | go to the start of the line |
+| <kbd>End</kbd> / <kbd>Ctrl+E</kbd> | go to the end of the line |
 | <kbd>Up</kbd> / <kbd>Down</kbd> | move between lines; <kbd>Up</kbd> on the first line recalls history |
+| <kbd>Tab</kbd> | complete the word under the cursor (see [Tab completion](#tab-completion)) |
 | <kbd>Ctrl+R</kbd> | history search (uses fzf when installed; each entry is shown on one line, joined with ⏎) |
 | <kbd>Ctrl+W</kbd> / <kbd>Ctrl+U</kbd> / <kbd>Ctrl+K</kbd> | cut the previous word / to the start of the line / to the end of the line, saving it for <kbd>Ctrl+Y</kbd> |
 | <kbd>Ctrl+Y</kbd> | paste the last cut text at the cursor. Cut text is kept for the whole session, so you can cut on one line and paste into a later one. (To copy from *elsewhere*, use your terminal's mouse selection; weir does not read the OS clipboard.) |
