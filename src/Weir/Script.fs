@@ -651,6 +651,32 @@ let dangleOpensBlock (piece: string) : bool =
     // the bare within's teardown segment dangles too [D:within-always]
     || t = "always"
 
+/// Smart indent's question [D:repl-autoindent]: does the text before the
+/// editor's cursor open an indented body? The assembler's own set
+/// (dangleOpensBlock) on the comment-stripped text, minus what only
+/// looks like an opener at EOL: a line ending inside a string, a
+/// comparison (`==` `<=` `>=` `!=`), an `=` inside an unclosed `{`
+/// (a record field), and a word ender glued to an identifier
+let opensIndentedBody (before: string) : bool =
+    if Scan.endsInsideString before then
+        false
+    else
+        let t = (stripComment before).TrimEnd()
+
+        let gluedWord =
+            [ "then"; "else"; "with"; "do" ]
+            |> List.exists (fun w ->
+                t.EndsWith w
+                && t.Length > w.Length
+                && (System.Char.IsLetterOrDigit t[t.Length - w.Length - 1] || t[t.Length - w.Length - 1] = '_'))
+
+        let comparison =
+            [ "=="; "<="; ">="; "!=" ] |> List.exists t.EndsWith
+
+        let fieldEq = t.EndsWith "=" && braceDelta t > 0
+
+        t <> "" && dangleOpensBlock (t.TrimStart()) && not gluedWord && not comparison && not fieldEq
+
 /// A line-end district marker of any kind — the mask below and the
 /// REPL share classifyPiece's marker rules through these predicates.
 let isMarkerPiece (piece: string) =

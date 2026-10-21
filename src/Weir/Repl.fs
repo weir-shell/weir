@@ -1199,7 +1199,9 @@ let keysText (color: bool) : string =
     String.concat
         "\n"
         (rows
-         @ [ "A new line starts at the indentation of the line above (a paste keeps its own)." ])
+         @ [ "A new line starts at the indentation of the line above, one level (4 spaces) deeper after"
+             "a line that opens a body (`=`, `->`, `then`, `else`, `do`, `with`, `within …`, `always`);"
+             "a paste keeps its own indentation." ])
 
 // Ctrl+Left/Right navigation; '.' stays a separator here (unlike
 // completion's wordStartAt) so field chains hop segment by segment
@@ -1623,7 +1625,8 @@ let private readLineTty () : string option =
 
     // split the current line at the cursor — Enter-on-incomplete and the
     // Alt+Enter / Ctrl+J force share it. A typed newline carries the split
-    // line's leading whitespace; one with input already queued behind it
+    // line's leading whitespace, one level more after a body opener; one
+    // with input already queued behind it
     // (a paste) stays plain so the block keeps its own indent
     // [D:repl-autoindent]
     let insertNewline () =
@@ -1639,7 +1642,9 @@ let private readLineTty () : string option =
                 "", tail
             else
                 let before = line.Substring(0, col)
-                before.Substring(0, before.Length - before.TrimStart([| ' '; '\t' |]).Length),
+                let carried = before.Substring(0, before.Length - before.TrimStart([| ' '; '\t' |]).Length)
+                // smart indent: one level more after a body opener
+                (if Script.opensIndentedBody before then carried + "    " else carried),
                 tail.TrimStart([| ' '; '\t' |])
 
         lines.Insert(row + 1, Text.StringBuilder(indent + tail))

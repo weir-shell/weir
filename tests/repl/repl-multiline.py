@@ -281,22 +281,23 @@ if "\n6\r\n" not in t:
 
 # --- 9e. auto-indent [D:repl-autoindent]: a typed newline (Enter on an
 # incomplete statement, Alt+Enter, Ctrl+J) starts at the previous line's
-# indent; Backspace in an all-space prefix dedents one level (to the
-# previous multiple of 4). Each key goes in its own write (typed, nothing
-# queued). No explicit indent after the first of each level: the order
-# IN-A IN-B CL-C OUT-D FIN-E only comes out of this exact nesting
+# indent, one level (4) deeper after a body opener (smart indent);
+# Backspace in an all-space prefix dedents one level (to the previous
+# multiple of 4). Each key goes in its own write (typed, nothing queued).
+# No manual spaces at all: the order IN-A IN-B CL-C OUT-D FIN-E only
+# comes out of this exact nesting
 def hist(d):
     p = d + "/state/weir/history"
     return open(p).read().splitlines() if os.path.exists(p) else []
-nested = [("within", 0.2), ("\r", 0.3),                       # Enter-incomplete
-          ("    within", 0.2), ("\r", 0.3),                   # carries 4
-          ("    print (Str.toUpper \"in-a\")", 0.2), ("\x1b\r", 0.3),  # Alt+Enter, carries 8
+nested = [("within", 0.2), ("\r", 0.3),                       # Enter-incomplete, opener: 4
+          ("within", 0.2), ("\r", 0.3),                       # opener: 8
+          ("print (Str.toUpper \"in-a\")", 0.2), ("\x1b\r", 0.3),  # Alt+Enter, carries 8
           ("print (Str.toUpper \"in-b\")", 0.2), ("\n", 0.3),   # Ctrl+J, carries 8
-          ("\x7f", 0.2), ("always", 0.2), ("\n", 0.3),         # 8 -> 4
-          ("    print (Str.toUpper \"cl-c\")", 0.2), ("\n", 0.3),
+          ("\x7f", 0.2), ("always", 0.2), ("\n", 0.3),         # 8 -> 4; opener: 8
+          ("print (Str.toUpper \"cl-c\")", 0.2), ("\n", 0.3),
           ("\x7f", 0.2), ("print (Str.toUpper \"out-d\")", 0.2), ("\n", 0.3),
-          ("\x7f", 0.2), ("always", 0.2), ("\n", 0.3),         # 4 -> 0
-          ("    print (Str.toUpper \"fin-e\")", 0.2),
+          ("\x7f", 0.2), ("always", 0.2), ("\n", 0.3),         # 4 -> 0; opener: 4
+          ("print (Str.toUpper \"fin-e\")", 0.2),
           ("\r", 0.8), ("#quit\r", 0.3)]
 want = ('within\\n    within\\n        print (Str.toUpper "in-a")\\n        print (Str.toUpper "in-b")'
         '\\n    always\\n        print (Str.toUpper "cl-c")\\n    print (Str.toUpper "out-d")'
@@ -306,15 +307,35 @@ if want not in hist(d):
     t, d = run(nested)
 order = [t.find(m) for m in ("\nIN-A", "\nIN-B", "\nCL-C", "\nOUT-D", "\nFIN-E")]
 if want not in hist(d):
-    failures.append(f"typed newlines must carry the indent, Backspace dedent one level: {hist(d)!r}")
+    failures.append(f"typed newlines must carry the indent (+1 level after an opener), Backspace dedent one level: {hist(d)!r}")
 if -1 in order or order != sorted(order):
     failures.append(f"the auto-indented nested within must run in order IN-A IN-B CL-C OUT-D FIN-E: {t[-400:]!r}")
 
+# a `let x =` continuation, no manual spaces: the `=` opens a level, the
+# pipeline line keeps it
+t, d = run([("let total =", 0.2), ("\r", 0.3), ("[1; 2; 3]", 0.2), ("\x1b\r", 0.3), ("|> Seq.sum", 0.2), ("\r", 0.6),
+            ("total * 7\r", 0.6), ("#quit\r", 0.3)])
+if "let total =\\n    [1; 2; 3]\\n    |> Seq.sum" not in hist(d) or "\n42\r\n" not in t:
+    failures.append(f"a typed let continuation must indent itself and run: {hist(d)!r} {t[-300:]!r}")
+
+# no extra level where `=` is not an opener: a comparison, a record
+# field, inside a string, behind a comment; a trailing comment does not
+# hide one. Alt+Enter, then Enter on the (indent-only) last line submits
+# the buffer as it stands
+t, d = run([("let c = 1 ==", 0.2), ("\x1b\r", 0.3), ("\r", 0.5),
+            ("let r = { a =", 0.2), ("\x1b\r", 0.3), ("\r", 0.5),
+            ("let s = \"x =", 0.2), ("\x1b\r", 0.3), ("\r", 0.5),
+            ("let y = 1 // then", 0.2), ("\x1b\r", 0.3), ("\r", 0.5),
+            ("let z = // a comment", 0.2), ("\x1b\r", 0.3), ("\r", 0.5), ("#quit\r", 0.3)])
+for e in ("let c = 1 ==\\n", "let r = { a =\\n", 'let s = "x =\\n', "let y = 1 // then\\n", "let z = // a comment\\n    "):
+    if e not in hist(d):
+        failures.append(f"smart indent must open a level only after a real opener ({e!r}): {hist(d)!r}")
+
 # a non-multiple prefix dedents to the previous multiple of 4; a prefix
 # with a non-space keeps the one-char Backspace
-t, d = run([("let a =", 0.2), ("\r", 0.3), ("      ", 0.2), ("\x7f", 0.2), ("1", 0.2), ("\r", 0.6),
-            ("let b =", 0.2), ("\r", 0.3), ("  x", 0.2), ("\x7f", 0.2), ("2", 0.2), ("\r", 0.6), ("#quit\r", 0.3)])
-if "let a =\\n    1" not in hist(d) or "let b =\\n  2" not in hist(d):
+t, d = run([("let a =", 0.2), ("\r", 0.3), ("  ", 0.2), ("\x7f", 0.2), ("1", 0.2), ("\r", 0.6),
+            ("let b =", 0.2), ("\r", 0.3), ("x", 0.2), ("\x7f", 0.2), ("2", 0.2), ("\r", 0.6), ("#quit\r", 0.3)])
+if "let a =\\n    1" not in hist(d) or "let b =\\n    2" not in hist(d):
     failures.append(f"Backspace must dedent an all-space prefix to the previous multiple of 4, only there: {hist(d)!r}")
 
 # a paste (one write) keeps its own indentation: the newline has input
