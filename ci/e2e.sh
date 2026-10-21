@@ -10275,7 +10275,8 @@ UAEOF
     # under CGI the runtime still honours HTTP_PROXY, so a malformed one refuses too
     : > "$ctdir/uiauth.log"
     out=$(env -u ALL_PROXY -u all_proxy -u http_proxy REQUEST_METHOD=GET HTTP_PROXY="http://127.0.0.1:99999" NO_PROXY=example.invalid no_proxy=example.invalid "$BIN" -e "print (Http.send (Http.get \"http://127.0.0.1:$uaport/echo\")).status" 2>&1) && fail "proxy-env-malformed: HTTP_PROXY under CGI must refuse: $out"
-    echo "$out" | grep -qF "HTTP_PROXY is set but is not a usable proxy URL" || fail "proxy-env-malformed: HTTP_PROXY under CGI must name the variable: $out"
+    # Windows env names are case-insensitive: the runtime finds HTTP_PROXY as http_proxy
+    echo "$out" | grep -qiF "http_proxy is set but is not a usable proxy URL" || fail "proxy-env-malformed: HTTP_PROXY under CGI must name the variable: $out"
     [ -s "$ctdir/uiauth.log" ] && fail "proxy-env-malformed: HTTP_PROXY under CGI went direct: $(cat "$ctdir/uiauth.log")" || true
     # a scheme-less user:pw@host value never shows its password
     out=$(env -u ALL_PROXY -u all_proxy -u HTTP_PROXY http_proxy="user:S3cr3t@127.0.0.1:99999" NO_PROXY=example.invalid no_proxy=example.invalid "$BIN" -e "print (Http.send (Http.get \"http://127.0.0.1:$uaport/echo\")).status" 2>&1) && fail "proxy-env-malformed: a scheme-less credential value must refuse: $out"
