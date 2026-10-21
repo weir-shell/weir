@@ -4092,6 +4092,38 @@ let completionTests =
               // mid-line '#' is not a directive slot
               Expect.isFalse (List.contains "help" (suggest "ls # he" 5)) "line-head only"
           }
+          test "smart indent opens a level after the assembler's body openers only [D:repl-autoindent]" {
+              for t in
+                  [ "let x ="
+                    "if a then"
+                    "else"
+                    "match x with"
+                    "for f in fs do"
+                    "| A ->"
+                    "let f = fun x ->"
+                    "within tmp d"
+                    "within"
+                    "    always"
+                    "type T ="
+                    "let z = // a comment"
+                    "retry 3 times" ] do
+                  Expect.isTrue (Weir.Script.opensIndentedBody t) t
+
+              for t in
+                  [ "let ok = 1 =="
+                    "let le = a <="
+                    "let ge = a >="
+                    "let ne = a !="
+                    "let r = { a ="
+                    "let r = {| a ="
+                    "let s = \"x ="
+                    "let y = 1 // then"
+                    "print athen"
+                    "sudo"
+                    "print 1"
+                    "" ] do
+                  Expect.isFalse (Weir.Script.opensIndentedBody t) t
+          }
           test "#keys prints the key bindings, keys dim only at a tty [D:repl-keys]" {
               let plain = Weir.Repl.keysText false
               let lines = plain.Split '\n'

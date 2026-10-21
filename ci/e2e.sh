@@ -4476,7 +4476,7 @@ WEOF
     [ "$("$BIN" "$cidir/armed.weir" | grep -c IS-PIPE)" -eq 5 ] || fail "redirected, every armed form keeps the pipe"
     # the REPL arms a block tail like the runner, and a top-level chain
     # takes the statement inherit path
-    arout=$(printf 'SLEEP 700\nSEND within env [Env.pair "X" "1"]\\r\nSLEEP 300\nSEND     sh %s/t.sh\\r\nSLEEP 300\nSEND \\r\nSLEEP 600\nSEND echo x | sh %s/t.sh\\r\nSLEEP 600\nSEND #quit\\r\n' "$cidir" "$cidir" | python3 "$ptyrun" 12 "$BIN")
+    arout=$(printf 'SLEEP 700\nSEND within env [Env.pair "X" "1"]\\r    sh %s/t.sh\\r\nSLEEP 300\nSEND \\r\nSLEEP 600\nSEND echo x | sh %s/t.sh\\r\nSLEEP 600\nSEND #quit\\r\n' "$cidir" "$cidir" | python3 "$ptyrun" 12 "$BIN")
     [ "$(echo "$arout" | grep -o IS-TTY | wc -l)" -eq 2 ] && ! echo "$arout" | grep -q IS-PIPE ||
         fail "the REPL's block tail and top-level chain inherit: $arout"
 
@@ -4672,15 +4672,11 @@ SEND Duration.sleep 30s\r
 SLEEP 800
 SEND \x03
 SLEEP 500
-SEND poll timeout=60s interval=30s\x1b\r
-SLEEP 150
-SEND     false\r
+SEND poll timeout=60s interval=30s\x1b\r    false\r
 SLEEP 800
 SEND \x03
 SLEEP 500
-SEND within lock "$wdir/held.lock"\x1b\r
-SLEEP 150
-SEND     print (Str.toUpper "acquired")\r
+SEND within lock "$wdir/held.lock"\x1b\r    print (Str.toUpper "acquired")\r
 SLEEP 800
 SEND \x03
 SLEEP 500

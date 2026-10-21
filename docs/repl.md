@@ -676,17 +676,26 @@ whole: a three-line match comes back as three lines that you can
 edit. Lines you type before the first prompt appears are kept, and
 their Enter submits them as usual.
 
-A new line starts at the indentation of the line above it, so a block
-body only needs its first line indented; <kbd>Backspace</kbd> in that
-leading space goes back one level (4 columns). There is no extra level
-after `=`, `do` or a block head: you add that yourself. Pasted text
-keeps exactly its own indentation (a newline with more input already
-behind it is not indented). An empty last line still submits when it
-holds only that indentation.
+A new line starts at the indentation of the line above it, one level
+(4 spaces) deeper when that line opens a body: it ends in `=`, `->`,
+`then`, `else`, `do` or `with`, or is a block head such as `within …`,
+`always`, `for … do` or `retry …`. A comparison (`==`, `<=`, `>=`,
+`!=`), a record field's `=` inside an open `{`, and text inside a
+string or a comment don't count. <kbd>Backspace</kbd> in the leading
+spaces goes back one level (4 columns), which is how you end a block.
+Pasted text keeps exactly its own indentation (a newline with more
+input already behind it is not indented). An empty last line still
+submits when it holds only indentation.
 
-For example, type `let total =` and Enter, then `    [1; 2; 3]` and
-Alt+Enter, then `|> Seq.sum` and Enter: the third line starts at
-column 4 without you typing the spaces, and `total` is 6.
+For example, type `let total =` and Enter, then `[1; 2; 3]` and
+Alt+Enter, then `|> Seq.sum` and Enter, without typing any spaces:
+
+```
+weir> let total =
+    …     [1; 2; 3]
+    …     |> Seq.sum
+total = 6
+```
 
 The key bindings (they can't be customized). `#keys` prints them at
 the prompt:
