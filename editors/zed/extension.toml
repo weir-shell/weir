@@ -19,4 +19,4 @@ languages = ["Weir"]
 # this rev — at release and on the weekly schedule.
 [grammars.weir]
 repository = "https://github.com/weir-shell/tree-sitter-weir"
-rev = "3d933640e8502e4db42b9088ede42d93b3c61a0a"
+rev = "475ee91ed4ad93092f4bfc4a242ab95143d45c83"
