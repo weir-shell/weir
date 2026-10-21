@@ -4,6 +4,8 @@
 
 ### Added
 
+- **`#keys` lists the REPL editor's key bindings** (Ctrl+Y, Ctrl+R,
+  Alt+Enter and the rest), so you don't have to look them up.
 - **The REPL editor keeps your indentation.** A new line (Enter on an
   unfinished statement, Alt+Enter, Ctrl+J) starts at the indentation of
   the line above it, and Backspace in leading spaces goes back one level

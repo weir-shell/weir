@@ -91,6 +91,7 @@ let sessionDirectiveHelp: (string * string list) list =
     [ "help",
       [ "#help                 // this list"
         "#help <name>          // documentation for a module or member" ]
+      "keys", [ "#keys                 // the editor's key bindings" ]
       "find", [ "#find [query]         // fuzzy-search modules and members (fzf + live preview)" ]
       "echo",
       [ "#echo [<n> | all]     // the unforced-echo cap (default 100); bare reports;"

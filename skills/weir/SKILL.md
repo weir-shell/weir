@@ -2053,7 +2053,8 @@ type Bad = C of int
   [D:help-find] (fzf with a live doc preview at a tty; a substring
   fallback piped/without fzf). `#history [N]` shows history (bare =
   all, `N` = last N) with the file path in its header — the quick way
-  to find where history lives. `#quit` (or `^D`) exits. The init
+  to find where history lives. `#keys` lists the editor's key
+  bindings. `#quit` (or `^D`) exits. The init
   file's FIRST line must be `#init`; it holds declarations, imports,
   `#alias` lines and one `#session { cwd; env; logLevel; echoCap;
   prompt }` block (`prompt` = a string or a `unit -> string` /
