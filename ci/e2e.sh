@@ -10260,6 +10260,15 @@ UAEOF
         echo "$out" | grep -qF "http_proxy is set but is not a usable proxy URL" || fail "proxy-env-malformed: $bad must name the variable: $out"
         [ -s "$ctdir/uiauth.log" ] && fail "proxy-env-malformed: $bad went direct: $(cat "$ctdir/uiauth.log")" || true
     done
+    # under CGI the runtime still honours HTTP_PROXY, so a malformed one refuses too
+    : > "$ctdir/uiauth.log"
+    out=$(env -u ALL_PROXY -u all_proxy -u http_proxy REQUEST_METHOD=GET HTTP_PROXY="http://127.0.0.1:99999" NO_PROXY=example.invalid no_proxy=example.invalid "$BIN" -e "print (Http.send (Http.get \"http://127.0.0.1:$uaport/echo\")).status" 2>&1) && fail "proxy-env-malformed: HTTP_PROXY under CGI must refuse: $out"
+    echo "$out" | grep -qF "HTTP_PROXY is set but is not a usable proxy URL" || fail "proxy-env-malformed: HTTP_PROXY under CGI must name the variable: $out"
+    [ -s "$ctdir/uiauth.log" ] && fail "proxy-env-malformed: HTTP_PROXY under CGI went direct: $(cat "$ctdir/uiauth.log")" || true
+    # a scheme-less user:pw@host value never shows its password
+    out=$(env -u ALL_PROXY -u all_proxy -u HTTP_PROXY http_proxy="user:S3cr3t@127.0.0.1:99999" NO_PROXY=example.invalid no_proxy=example.invalid "$BIN" -e "print (Http.send (Http.get \"http://127.0.0.1:$uaport/echo\")).status" 2>&1) && fail "proxy-env-malformed: a scheme-less credential value must refuse: $out"
+    echo "$out" | grep -qF "S3cr3t" && fail "proxy-env-malformed: a scheme-less proxy value printed its password: $out"
+    echo "$out" | grep -qF "***@127.0.0.1:99999" || fail "proxy-env-malformed: a scheme-less proxy value must show masked: $out"
     # a host NO_PROXY lists still goes direct as asked
     out=$(env HTTP_PROXY="http://127.0.0.1:99999" http_proxy="http://127.0.0.1:99999" NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 "$BIN" -e "print (Http.send (Http.get \"http://127.0.0.1:$uaport/echo\")).status" 2>&1) || fail "proxy-env-malformed: a NO_PROXY host must go direct: $out"
     [ "$out" = "200" ] || fail "proxy-env-malformed: a NO_PROXY host must go direct: $out"

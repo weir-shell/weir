@@ -154,7 +154,22 @@ let transportMessage (host: string) (err: TransportError) : string =
     | ConnectionEnded -> $"{host} closed the connection before answering"
     | ProxyRefused status -> $"the proxy refused to tunnel to {host}: {status}"
     | ProxyEnvUnusable(var, value) ->
-        $"{var} is set but is not a usable proxy URL ('{Weir.Types.quoteData (redactUrl value)}') — weir does not fall back to reaching {host} directly; fix it or unset it"
+        // a scheme-less `user:pass@host` is a proxy spelling the runtime
+        // accepts, beyond redactUrl's `://` rule [D:url-redact]
+        let shown =
+            if value.Contains "://" then
+                redactUrl value
+            else
+                let stop =
+                    match value.IndexOfAny [| '/'; '?'; '#' |] with
+                    | -1 -> value.Length
+                    | i -> i
+
+                match value.LastIndexOf('@', max 0 (stop - 1)) with
+                | at when at >= 0 && at < stop -> "***@" + value.Substring(at + 1)
+                | _ -> value
+
+        $"{var} is set but is not a usable proxy URL ('{Weir.Types.quoteData shown}') — weir does not fall back to reaching {host} directly; fix it or unset it"
     | UnknownCharset(cs, status) ->
         $"{host} answered {status} with a body in charset '{Weir.Types.quoteData cs}', which weir cannot decode — weir decodes utf-8, utf-16, utf-32, us-ascii and iso-8859-1; a mislabelled body is never guessed at"
     | RedirectLoop(hops, last) ->
@@ -380,8 +395,8 @@ exception private ProxyEnvBad of string * string
 /// refuse before connecting when the proxy variable for `url`'s scheme
 /// is set but the runtime could not use it [D:proxy-env-malformed]: the
 /// runtime drops a malformed value and connects directly; curl refuses.
-/// The variable is the runtime's lookup (lower case first; HTTP_PROXY
-/// not under CGI; ALL_PROXY when the scheme's is unset). A host
+/// The variable is the runtime's lookup (lower case first, then the
+/// upper case name; ALL_PROXY when the scheme's is unset). A host
 /// NO_PROXY bypasses goes direct as asked.
 let checkEnvProxy (url: string) : unit =
     let env (n: string) =
@@ -392,12 +407,9 @@ let checkEnvProxy (url: string) : unit =
 
     match Uri.TryCreate(url, UriKind.Absolute) with
     | true, u when u.Scheme = "http" || u.Scheme = "https" ->
-        let cgi = not (isNull (Environment.GetEnvironmentVariable "REQUEST_METHOD"))
-
         let named =
             if u.Scheme = "http" then
-                env "http_proxy"
-                |> Option.orElse (if cgi then None else env "HTTP_PROXY")
+                env "http_proxy" |> Option.orElse (env "HTTP_PROXY")
             else
                 env "https_proxy" |> Option.orElse (env "HTTPS_PROXY")
             |> Option.orElse (env "all_proxy")
