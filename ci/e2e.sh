@@ -4656,6 +4656,15 @@ SCN
     [ ! -d "$gdir" ] || fail "the scope exit must still remove its dir: $gdir"
     echo "e2e ok: the sweep gate — a survived ^C leaves the live tmp dir; the scope's own exit removes it"
 
+    # a line typed while an entry runs submits [D:repl-typeahead]: eval
+    # runs cooked, so its Enter arrived as '\n' (ICRNL) and read as the
+    # Ctrl+J newline — the line and every later one grew a continuation
+    taout=$(printf 'SLEEP 700\nSEND sh -c "sleep 1.5"\\r\nSLEEP 400\nSEND print (Str.toUpper "typed-ahead")\\r\nSLEEP 2000\nSEND #quit\\r\n' \
+        | python3 "$ptyrun" 10 "$BIN" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
+    echo "$taout" | grep -q "TYPED-AHEAD" || fail "a line typed during an entry's eval submits after it: $taout"
+    echo "$taout" | grep -q "^EXIT 0" || fail "a line typed during an entry's eval submits, never continues: $taout"
+    echo "e2e ok: a line typed while an entry runs submits once it ends"
+
     # ^C cuts a wait the runtime owns [D:repl-interrupt]: a sleep, a poll
     # interval, a contended lock — each returns to the prompt with the
     # ^C'd child's status; an `always` cleanup still runs

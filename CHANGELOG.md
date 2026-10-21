@@ -122,6 +122,9 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **A REPL line typed while an entry is still running submits.** Its
+  Enter arrived as a newline key, so the line, and every line after it,
+  grew a `…` continuation and the session could no longer submit.
 - **`Args.load` no longer repeats a Secret given as `-t=value` or
   `-tvalue`.** The error now reads `'-t***' — … write '-t <value>'`; an
   unknown letter shows as `'-x…'`.

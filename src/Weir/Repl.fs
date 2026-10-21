@@ -1359,31 +1359,28 @@ let private bufferComplete (bufLines: string list) : bool =
 // tty only.
 let mutable private contPrompt = "   … "
 
-// type-ahead [D:owned-line-editor]: keys typed before the first prompt
-// arrived while the terminal was still cooked, where ICRNL already turned
-// Enter into '\n' — the Ctrl+J force-newline key. Everything pending at
-// the editor's first entry is drained here once, a '\n' read back as
-// Enter, and replayed ahead of live keys (across entries: an early line's
-// Enter submits it, the rest feeds the next prompt).
+// type-ahead [D:repl-typeahead]: keys typed while the terminal was
+// cooked — before the first prompt, or during an entry's evaluation (eval
+// runs cooked [D:repl-isig]) — where ICRNL already turned Enter into
+// '\n', the Ctrl+J force-newline key. Everything pending at each editor
+// entry is drained here, a '\n' read back as Enter, and replayed ahead of
+// live keys (across entries: an early line's Enter submits it, the rest
+// feeds the next prompt).
 let private typeAhead = Collections.Generic.Queue<ConsoleKeyInfo>()
-let mutable private typeAheadDrained = false
 
 let private drainTypeAhead () =
-    if not typeAheadDrained then
-        typeAheadDrained <- true
+    try
+        while Console.KeyAvailable do
+            let k = Console.ReadKey(intercept = true)
 
-        try
-            while Console.KeyAvailable do
-                let k = Console.ReadKey(intercept = true)
-
-                typeAhead.Enqueue(
-                    if k.KeyChar = '\n' then
-                        ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false)
-                    else
-                        k
-                )
-        with _ ->
-            ()
+            typeAhead.Enqueue(
+                if k.KeyChar = '\n' then
+                    ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false)
+                else
+                    k
+            )
+    with _ ->
+        ()
 
 let private readKey () =
     if typeAhead.Count > 0 then
