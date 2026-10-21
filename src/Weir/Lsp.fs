@@ -1534,7 +1534,7 @@ let private schemaHover (path: string) (name: string) : string option =
                         entries
                         |> List.tryPick (fun e ->
                             if e.Kind = "schema" && e.Name = name then
-                                Some $"source: {Http.redactUrl e.Url}"
+                                Some $"source: {Weir.Types.quoteData (Http.redactUrl e.Url)}"
                             else
                                 None)
                     | Error _ -> None

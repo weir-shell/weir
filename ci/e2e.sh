@@ -10036,6 +10036,73 @@ echo "$out" | grep -qF "***@ nohost" || fail "the transport fallback redacts the
 echo "$out" | grep -qiF "user:pw" && fail "the credential LEAKED in the transport fallback: $out" || true
 echo "e2e ok: the transport fallback redacts an unparseable URL's userinfo (Fix 1b)"
 
+# ---- url-userinfo-basic / proxy-env-malformed / message-data-escape ----------
+# R1: a URL's userinfo is sent as Authorization: Basic base64(user:pass),
+# percent-decoded, as curl sends it — unless the request sets Authorization;
+# add schema sends it too [D:url-redact]. A malformed HTTP_PROXY refuses,
+# never goes direct [D:proxy-env-malformed]. R2: add/restore messages escape a
+# URL's control bytes, piped too [D:lock-print-sanitize]
+if command -v python3 >/dev/null 2>&1; then
+    uaport=$((24300 + RANDOM % 200))
+    cat > "$ctdir/uiauth.py" <<UAEOF
+import http.server, json
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        a = self.headers.get_all('Authorization') or []
+        open('$ctdir/uiauth.log', 'a').write(self.path.split('?')[0] + ' ' + ('|'.join(a) or '-') + '\n')
+        if self.path.startswith('/s.json'):
+            b = json.dumps({"type": "object", "additionalProperties": False, "properties": {"a": {"type": "string"}}}).encode()
+        else:
+            b = ('AUTH=' + ('|'.join(a) or '-') + ' N=' + str(len(a))).encode()
+        self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(b)
+    def log_message(self, *x): pass
+http.server.HTTPServer(('127.0.0.1', $uaport), H).serve_forever()
+UAEOF
+    python3 "$ctdir/uiauth.py" & uasrv=$!
+    awaitTcp "$uaport" || { kill $uasrv 2>/dev/null || true; fail "url-userinfo-basic: the echo server never came up"; }
+    out=$($BIN -e "print (Http.send (Http.get \"http://bob:S3cr3t@127.0.0.1:$uaport/echo\")).body" 2>&1) || fail "url-userinfo-basic: the send must succeed: $out"
+    [ "$out" = "AUTH=Basic Ym9iOlMzY3IzdA== N=1" ] || fail "url-userinfo-basic: the userinfo must arrive as one Basic header: $out"
+    # each part percent-decoded: b%40b:p%3Ass is b@b / p:ss
+    out=$($BIN -e "print (Http.send (Http.get \"http://b%40b:p%3Ass@127.0.0.1:$uaport/echo\")).body" 2>&1) || fail "url-userinfo-basic: the encoded send must succeed: $out"
+    [ "$out" = "AUTH=Basic $(printf 'b@b:p:ss' | base64) N=1" ] || fail "url-userinfo-basic: the parts must be percent-decoded: $out"
+    out=$($BIN -e "print (Http.send { Http.get \"http://bob:S3cr3t@127.0.0.1:$uaport/echo\" with headers = [(\"Authorization\", \"Bearer t1\")] }).body" 2>&1) || fail "url-userinfo-basic: the header send must succeed: $out"
+    [ "$out" = "AUTH=Bearer t1 N=1" ] || fail "url-userinfo-basic: the script's Authorization wins, exactly one: $out"
+    mkdir -p "$ctdir/uia" && ( cd "$ctdir/uia" && git init -q . )
+    : > "$ctdir/uiauth.log"
+    out=$( cd "$ctdir/uia" && $BIN add schema "http://bob:S3cr3t@127.0.0.1:$uaport/s.json" --as uia 2>&1 ) || fail "url-userinfo-basic: add schema must succeed: $out"
+    grep -qF "/s.json Basic Ym9iOlMzY3IzdA==" "$ctdir/uiauth.log" || fail "url-userinfo-basic: add schema must send the userinfo as Basic: $(cat "$ctdir/uiauth.log")"
+    echo "e2e ok: a URL's userinfo is sent as Basic auth (decoded), a script's Authorization wins, add schema sends it [D:url-redact]"
+
+    # a malformed proxy variable refuses; the target never sees a request
+    for bad in "http://127.0.0.1:99999" "http://[::1"; do
+        : > "$ctdir/uiauth.log"
+        out=$(env -u ALL_PROXY -u all_proxy HTTP_PROXY="$bad" http_proxy="$bad" NO_PROXY=example.invalid no_proxy=example.invalid "$BIN" -e "print (Http.send (Http.get \"http://127.0.0.1:$uaport/echo\")).status" 2>&1) && fail "proxy-env-malformed: $bad must refuse: $out"
+        echo "$out" | grep -qF "http_proxy is set but is not a usable proxy URL" || fail "proxy-env-malformed: $bad must name the variable: $out"
+        [ -s "$ctdir/uiauth.log" ] && fail "proxy-env-malformed: $bad went direct: $(cat "$ctdir/uiauth.log")" || true
+    done
+    # a host NO_PROXY lists still goes direct as asked
+    out=$(env HTTP_PROXY="http://127.0.0.1:99999" http_proxy="http://127.0.0.1:99999" NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 "$BIN" -e "print (Http.send (Http.get \"http://127.0.0.1:$uaport/echo\")).status" 2>&1) || fail "proxy-env-malformed: a NO_PROXY host must go direct: $out"
+    [ "$out" = "200" ] || fail "proxy-env-malformed: a NO_PROXY host must go direct: $out"
+    echo "e2e ok: a malformed proxy variable refuses, never goes direct; NO_PROXY still bypasses [D:proxy-env-malformed]"
+
+    # add's status line and restore's error escape a URL's ESC/BEL/CR, piped
+    mkdir -p "$ctdir/uie" && ( cd "$ctdir/uie" && git init -q . )
+    out=$( cd "$ctdir/uie" && $BIN add schema "$(printf "http://127.0.0.1:$uaport/s.json?q=\033]52;c;ZXZp\007\r")" --as uie 2>&1 ) || fail "message-data-escape: add schema must succeed: $out"
+    echo "$out" | grep -qF 's.json?q=\x1b]52;c;ZXZp\x07\x0d' || fail "message-data-escape: the added line must render ESC/BEL/CR visibly: $out"
+    printf '%s' "$out" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d or b'\x07' in d) else 0)" \
+        || fail "message-data-escape: add schema put a raw ESC/BEL/CR in its output: $out"
+    mkdir -p "$ctdir/uir/.weir" && ( cd "$ctdir/uir" && git init -q . )
+    printf '{ "schemaVersion": 1, "artifacts": [ { "kind": "schema", "name": "s2", "url": "http://127.0.0.1:%s/nope\\u001b]52;c;ZXZp\\u0007\\r", "sha256": "59c23259e0885dbc4c2f746d071abed3c976dd479e1051c6838d9dd25f26db51", "path": "schemas/s2.json" } ] }\n' "$uaport" > "$ctdir/uir/.weir/lock.json"
+    out=$( cd "$ctdir/uir" && $BIN restore 2>&1 ) && fail "message-data-escape: restore of a changed source must fail: $out"
+    echo "$out" | grep -qF '/nope\x1b]52;c;ZXZp\x07\x0d' || fail "message-data-escape: restore must name the URL with ESC/BEL/CR visible: $out"
+    printf '%s' "$out" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d or b'\x07' in d) else 0)" \
+        || fail "message-data-escape: restore put a raw ESC/BEL/CR in its output: $out"
+    kill $uasrv 2>/dev/null || true
+    echo "e2e ok: add and restore messages escape a URL's control bytes, piped too [D:lock-print-sanitize]"
+else
+    echo "e2e skip: url-userinfo-basic / proxy-env-malformed / message-data-escape (python3 absent)"
+fi
+
 # ---- Fix 2: parse/decode errors excerpt a huge invalid input [D:excerpt] ---
 # a multi-MB invalid input used to be echoed whole (a ~2MB stderr flood);
 # it is now bounded to a 64-char head + the true length. A short invalid
@@ -14783,12 +14850,12 @@ abssink=$(cd "$(dirname "$sinkrun")" && pwd)/$(basename "$sinkrun")
 sout=$(cd "$lk" && printf 'SLEEP 300\n' | python3 "$abssink" 6 "$absbin" verify 2>&1)
 echo "$sout" | grep -qF 'ls\\x1b]52;c;SINK\\x07: MODIFIED' || fail "lock-print: verify must render the lock name's OSC visible at a tty: $sout"
 (cd "$lk" && "$absbin" verify > "$lk/verify.out" 2>&1) && fail "lock-print: a modified sig must exit 1"
-python3 -c "import sys; sys.exit(0 if b'ls\x1b]52;c;SINK\x07: MODIFIED' in open('$lk/verify.out','rb').read() else 1)" \
-    || fail "lock-print: redirected verify must stay byte-faithful"
+python3 -c "import sys; d=open('$lk/verify.out','rb').read(); sys.exit(0 if b'ls\\\\x1b]52;c;SINK\\\\x07: MODIFIED' in d and b'\x1b' not in d and b'\x07' not in d else 1)" \
+    || fail "lock-print: redirected verify must render the lock name's OSC visibly too (R2): $(cat -v "$lk/verify.out")"
 lockof evil
 kout=$(cd "$lk" && "$absbin" verify 2>&1) && fail "lock-print: an unknown kind must refuse: $kout"
 echo "$kout" | grep -qF "unknown \"kind\" 'evil'" || fail "lock-print: the refusal must name the kind: $kout"
-echo "e2e ok: lock-print verify renders lock fields visibly at a tty (byte-faithful piped); an unknown kind refuses"
+echo "e2e ok: lock-print verify renders lock fields visibly, at a tty and piped; an unknown kind refuses"
 # every diagnostic sink rides the tty sanitizer [D:tty-diag-sanitize]:
 # check's import path, the run's parse/type source echo, the invalid-regex
 # message, the #sig name and `no such script` render an OSC visible at a

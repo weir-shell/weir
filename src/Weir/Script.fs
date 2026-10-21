@@ -5742,14 +5742,14 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
         // override path is quoted) [D:sig-version-probe]
         elif decl.Tool.StartsWith "\"" || decl.Tool.EndsWith "\"" then
             let bare = decl.Tool.Trim '"'
-            diags.Add(mk decl.Line $"#sig takes a bare tool name — drop the quotes: #sig {bare}")
+            diags.Add(mk decl.Line $"#sig takes a bare tool name — drop the quotes: #sig {quoteData bare}")
         else
             let resolved =
                 match decl.Override with
                 | Some p -> Ok(IO.Path.GetFullPath(IO.Path.Combine(scriptDir, p)))
                 | None ->
                     match Contracts.findWeirDir scriptDir with
-                    | Error e -> Error $"#sig {decl.Tool}: {e}"
+                    | Error e -> Error $"#sig {quoteData decl.Tool}: {e}"
                     | Ok weirDir ->
                         let at name = IO.Path.Combine(weirDir, "sigs", name)
                         let current = at (sigFileName decl.Tool)
@@ -5788,15 +5788,15 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                     if locked then
                         "the lock records it; the file should be checked in — restore cannot regenerate a signature"
                     else
-                        $"generate it: weir add sig {decl.Tool}"
+                        $"generate it: weir add sig {quoteData decl.Tool}"
 
-                diags.Add(mk decl.Line $"#sig {decl.Tool}: no {sigFile} (searched from {scriptDir}) — {hint}")
+                diags.Add(mk decl.Line $"#sig {quoteData decl.Tool}: no {quoteData sigFile} (searched from {quoteData scriptDir}) — {hint}")
             | Ok sigFile ->
                 let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
                 let absScript = IO.Path.GetFullPath path
 
                 match loadModuleCachedWith true cache [ absScript ] absScript sigFile None with
-                | Error ie -> diags.Add(mk decl.Line $"#sig {decl.Tool}: {ie.Message}")
+                | Error ie -> diags.Add(mk decl.Line $"#sig {quoteData decl.Tool}: {ie.Message}")
                 | Ok lm ->
                     let letStr name =
                         lm.Body
@@ -5857,7 +5857,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                         diags.Add(
                             mk
                                 decl.Line
-                                $"#sig {decl.Tool}: `let convention = \"{convention}\"` names no flag convention — use \"gnu\" (the default), \"go\" or \"find\""
+                                $"#sig {quoteData decl.Tool}: `let convention = \"{convention}\"` names no flag convention — use \"gnu\" (the default), \"go\" or \"find\""
                         )
 
                     let globals = recordOf "Globals" |> Option.map sigSurface
@@ -5886,7 +5886,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                         diags.Add(
                             mk
                                 decl.Line
-                                $"#sig {decl.Tool}: the signature declares no type `Cmd` — the command surface is the type named Cmd (a union of subcommands, or a record of flags)"
+                                $"#sig {quoteData decl.Tool}: the signature declares no type `Cmd` — the command surface is the type named Cmd (a union of subcommands, or a record of flags)"
                         )
                     | Some(_, Record rd) -> infos.Add(info (Map [ "", sigSurface rd ]) (Map [ "", "Cmd" ]))
                     | Some(_, Union ud) ->
@@ -6089,9 +6089,9 @@ let sigCmdDiagnostics
 
                     let note =
                         if si.Exhaustive then
-                            $"(#sig {si.Tool}, line {si.DeclLine}; exhaustive signature)"
+                            $"(#sig {quoteData si.Tool}, line {si.DeclLine}; exhaustive signature)"
                         else
-                            $"(#sig {si.Tool}, line {si.DeclLine}; partial signature — a scraped surface may be incomplete)"
+                            $"(#sig {quoteData si.Tool}, line {si.DeclLine}; partial signature — a scraped surface may be incomplete)"
 
                     let mk (sp: Span) (msg: string) =
                         let l1, c1 = translate ll sp.Start.Col

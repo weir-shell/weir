@@ -4264,6 +4264,44 @@ let private unknownFlagMessage (t: string) (known: string list) (tyOf: string ->
         $"unknown flag '{quoteData name}=…'{didYouMean name known}"
     | _ -> $"unknown flag '{quoteData t}'{didYouMean t known}"
 
+// a single-dash token with something attached (`-t=x`, `-tx`): the
+// short flag's value is the next argument. Echoed only when every
+// reading of the letter is a known non-Secret flag [D:args-secret-echo];
+// a number (`-42`) is a stray argument, shown as is.
+let private attachedShortMessage
+    (t: string)
+    (shorts: Map<string, ShortOwner>)
+    (tyOf: string -> Ty option)
+    : string =
+    let isSecret ty =
+        match ty with
+        | Some TSecret
+        | Some(TNamed("Option", [ TSecret ])) -> true
+        | _ -> false
+
+    let short = t.Substring(0, 2)
+    let value = t.Substring 2
+    let value = if value.StartsWith "=" then value.Substring 1 else value
+
+    match Map.tryFind (t.Substring(1, 1)) shorts with
+    | _ when
+        System.Double.TryParse(
+            t,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture
+        )
+        |> fst
+        ->
+        $"unexpected argument '{quoteData t}'"
+    | Some(ShortOf flag) when isSecret (tyOf flag) ->
+        $"unknown flag '{quoteData short}***' — a flag's value is the next argument: write '{quoteData short} <value>'"
+    | Some(ShortOf flag) when tyOf flag = Some TBool ->
+        $"unknown flag '{quoteData t}' — '{quoteData short}' ({flag}) is a presence flag and takes no value"
+    | Some(ShortOf _) ->
+        $"unknown flag '{quoteData t}' — a flag's value is the next argument: write '{quoteData short} {quoteData value}'"
+    | Some(AmbiguousShort _)
+    | None -> $"unexpected argument '{quoteData short}…'"
+
 let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
     // minted --no-X twins ride the index as negative entries
     // [D:default-attr]; they join did-you-mean via the same list
@@ -4307,6 +4345,12 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
             | None ->
                 problems.Add $"unknown flag '{quoteData t}'"
                 go rest
+        | t :: rest when t.StartsWith "-" && t.Length > 2 ->
+            let tyOf flag =
+                Map.tryFind flag longIndex |> Option.map (fun (_, ty, _) -> ty)
+
+            problems.Add(attachedShortMessage t shortIndex tyOf)
+            go rest
         | t :: rest ->
             problems.Add $"unexpected argument '{quoteData t}'"
             go rest
@@ -4424,6 +4468,15 @@ let private argvLoadShared
                         problems.Add $"""'{quoteData t}' is ambiguous: {String.concat ", " candidates}"""
                         Choice3Of3()
                     | None -> Choice2Of3()
+                elif t.StartsWith "-" && t.Length > 2 then
+                    let tyOf flag =
+                        match Map.tryFind flag sharedLong, Map.tryFind flag payloadLong with
+                        | Some(_, ty, _), _
+                        | None, Some(_, ty, _) -> Some ty
+                        | _ -> None
+
+                    problems.Add(attachedShortMessage t scopeShorts tyOf)
+                    Choice3Of3()
                 else
                     problems.Add $"unexpected argument '{quoteData t}'"
                     Choice3Of3()

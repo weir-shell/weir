@@ -29,6 +29,15 @@
 
 ### Changed
 
+- **A URL's `user:pass@` is sent as Basic auth.** `Http.send` and the
+  `weir add schema`/`add module` fetches send it as `Authorization:
+  Basic`, percent-decoded, as curl does; it was silently dropped. A
+  request that sets Authorization itself keeps its own. Displays still
+  mask it, and the lock still leaves it out, so `restore` sends none.
+- **`add`, `restore` and `verify` messages escape control bytes piped
+  too.** A URL, name or version carrying ESC, BEL or CR now shows them
+  as `\x1b`, `\x07`, `\x0d` in a pipe or log, as at a terminal; `print`,
+  `to json` and file writes stay byte-for-byte.
 - **The REPL echo no longer shows types by default.** `2` echoes `2`
   (was `2 : int`), `let x = 5` echoes `x = 5` (was `x : int = 5`), a
   seq's lines end without the `: seq<string>` line (truncation notes
@@ -107,6 +116,12 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **`Args.load` no longer repeats a Secret given as `-t=value` or
+  `-tvalue`.** The error now reads `'-t***' — … write '-t <value>'`; an
+  unknown letter shows as `'-x…'`.
+- **A malformed `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` is an error.**
+  `http://h:99999` was ignored and the request went out directly; it
+  now raises, naming the variable, as curl refuses.
 - **Windows: a `Seq.pfirst` loser's `| complete` command no longer
   outlives the race.** A loser waiting in `sh -c "…" | complete` was
   stopped without killing its command, so `sh` and what it started ran

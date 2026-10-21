@@ -665,7 +665,11 @@ print $"{key} -> {value}"
   every subdomain, trailing dots ignored, a non-ASCII host matched by
   its punycode (write the entry as `xn--…`), `*` for every host, an
   address or a CIDR (`10.0.0.0/8`, `::1`, bracket-less) for an IP
-  host, no ports. A dead proxy, a proxy
+  host, no ports. A malformed proxy variable (`http://h:99999`) raises,
+  naming it — never a silent direct connection. A URL's
+  `user:pass@` is sent as `Authorization: Basic` (percent-decoded),
+  as curl does, unless the request sets Authorization; displays mask
+  it. A dead proxy, a proxy
   refusing the tunnel (407, 403, 502) or closing the connection is
   named in the error — host:port, never
   its credentials. `auth` plus an

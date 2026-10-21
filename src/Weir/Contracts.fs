@@ -516,12 +516,20 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
         // filtered per hop), dropping the credential headers on a
         // cross-origin change. Covers both the API-resolution request and the
         // artifact download — every fetchBytesWith caller.
-        let mutable curHeaders = headers
+        // a userinfo URL from argv rides as Basic auth, as Http.send sends
+        // it, unless a token header already set Authorization [D:url-redact]
+        let mutable curHeaders =
+            if headers |> List.exists (fun (k, _) -> String.Equals(k, "Authorization", StringComparison.OrdinalIgnoreCase)) then
+                headers
+            else
+                (Http.userinfoAuth url |> Option.toList) @ headers
+
         let mutable hops = 0
         let mutable result: Net.Http.HttpResponseMessage = null
         let mutable go = true
 
         while go do
+            Http.checkEnvProxy curUrl
             use msg = new Net.Http.HttpRequestMessage(Net.Http.HttpMethod.Get, curUrl)
 
             for k, v in curHeaders do
@@ -555,7 +563,7 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
         use resp = result
 
         if not resp.IsSuccessStatusCode then
-            Error $"{Http.redactUrl url} answered {int resp.StatusCode} ({resp.StatusCode})"
+            Error $"{quoteData (Http.redactUrl url)} answered {int resp.StatusCode} ({resp.StatusCode})"
         else
             let ct =
                 match resp.Content.Headers.ContentType with
@@ -579,13 +587,17 @@ let rawUrlHint (url: string) : string =
         Text.RegularExpressions.Regex.Match(url, "^https://github\\.com/([^/]+)/([^/]+)/blob/(.+)$")
 
     if m.Success then
-        $" — this is a GitHub file page; use the raw URL: https://raw.githubusercontent.com/{m.Groups[1].Value}/{m.Groups[2].Value}/{m.Groups[3].Value}"
+        let raw =
+            $"https://raw.githubusercontent.com/{m.Groups[1].Value}/{m.Groups[2].Value}/{m.Groups[3].Value}"
+
+        $" — this is a GitHub file page; use the raw URL: {quoteData raw}"
     else
         let g =
             Text.RegularExpressions.Regex.Match(url, "^https://gitlab\\.com/(.+)/-/blob/(.+)$")
 
         if g.Success then
-            $" — this is a GitLab file page; use the raw URL: https://gitlab.com/{g.Groups[1].Value}/-/raw/{g.Groups[2].Value}"
+            let raw = $"https://gitlab.com/{g.Groups[1].Value}/-/raw/{g.Groups[2].Value}"
+            $" — this is a GitLab file page; use the raw URL: {quoteData raw}"
         else
             " — if this is a GitHub or GitLab file page, use the raw URL"
 
@@ -671,7 +683,7 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
                         "an explicit @ref is required — @main, @v1.2.0, or @<sha>; weir does not guess a default branch"
                 else
                     match left.IndexOf "/" with
-                    | -1 -> Error $"the shorthand is <host>/<org>/<repo>//<path>@<ref>; '{left}' has no repo part"
+                    | -1 -> Error $"the shorthand is <host>/<org>/<repo>//<path>@<ref>; '{quoteData left}' has no repo part"
                     | k ->
                         let host = left.Substring(0, k)
                         let repo = left.Substring(k + 1)
@@ -688,10 +700,10 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
                             (match
                                 fetchBytesWith (uaHeader @ [ "Accept", "application/vnd.github+json" ] @ apiAuth) api
                              with
-                             | Error e -> Error(hintPrivate host $"resolving @{refName}: {e}")
+                             | Error e -> Error(hintPrivate host $"resolving @{quoteData refName}: {e}")
                              | Ok(bytes, _) ->
                                  match shaFrom "sha" bytes with
-                                 | None -> Error $"unexpected answer resolving @{refName} at {api}"
+                                 | None -> Error $"unexpected answer resolving @{quoteData refName} at {quoteData api}"
                                  | Some sha ->
                                      let rawAuth =
                                          match hostToken host with
@@ -713,10 +725,10 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
                                 $"https://gitlab.com/api/v4/projects/{Uri.EscapeDataString repo}/repository/commits/{Uri.EscapeDataString refName}"
 
                             (match fetchBytesWith (uaHeader @ auth) api with
-                             | Error e -> Error(hintPrivate host $"resolving @{refName}: {e}")
+                             | Error e -> Error(hintPrivate host $"resolving @{quoteData refName}: {e}")
                              | Ok(bytes, _) ->
                                  match shaFrom "id" bytes with
-                                 | None -> Error $"unexpected answer resolving @{refName} at {api}"
+                                 | None -> Error $"unexpected answer resolving @{quoteData refName} at {quoteData api}"
                                  | Some sha ->
                                      Ok
                                          { Url = $"https://gitlab.com/{repo}/-/raw/{sha}/{path}"
@@ -725,7 +737,7 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
                                            Host = Some host })
                         | h ->
                             Error
-                                $"unknown host '{h}' — the shorthand knows github.com and gitlab.com; any other host takes the full raw URL: weir add module https://… --as <name>"
+                                $"unknown host '{quoteData h}' — the shorthand knows github.com and gitlab.com; any other host takes the full raw URL: weir add module https://… --as <name>"
 
 /// the credential a re-fetch of a locked module carries — the same
 /// WEIR_TOKEN_<host> header `add module` sent, derived from the locked
@@ -1650,7 +1662,7 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
             match parseJsonBytesBounded bytes with
             | Ok d -> Ok d
             | Error(Some why) -> Error $"the response is valid JSON, but {why}; nothing was written"
-            | Error None -> Error $"the response is not JSON (Content-Type: {ct}){rawUrlHint url}; nothing was written"
+            | Error None -> Error $"the response is not JSON (Content-Type: {quoteData ct}){rawUrlHint url}; nothing was written"
 
         match parsed with
         | Error e -> Error e
@@ -1695,7 +1707,7 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                         if kind = "schema" then
                             if not (anyClosedProps root) then
                                 Console.Error.WriteLine
-                                    $"weir add: warning: {name} has no `additionalProperties: false` anywhere — unknown-field checking will NOT fire for it (for k8s, use the -standalone-strict variant)"
+                                    $"weir add: warning: {quoteData name} has no `additionalProperties: false` anywhere — unknown-field checking will NOT fire for it (for k8s, use the -standalone-strict variant)"
 
                         // only now touch the disk — the file and the lock entry
                         // land together or not at all
@@ -1721,7 +1733,7 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                         | Ok() ->
                             try
                                 writeLock weirDir (others @ [ entry ])
-                                Ok $"added {kind} {name} ({hash.Substring(0, 12)}…) from {Http.redactUrl url}"
+                                Ok $"added {kind} {quoteData name} ({hash.Substring(0, 12)}…) from {quoteData (Http.redactUrl url)}"
                             with ex ->
                                 (try
                                     File.Delete dest
@@ -1789,7 +1801,7 @@ let restore (weirDir: string) : Result<string list, string> =
 
                         // the re-add names the entry's own kind — a module's
                         // locked url is the raw URL `add module` accepts
-                        let readd = $"`weir add {e.Kind} {Http.redactUrl e.Url} --as {e.Name}`"
+                        let readd = $"`weir add {e.Kind} {quoteData (Http.redactUrl e.Url)} --as {quoteData e.Name}`"
 
                         if hash <> e.Sha256 then
                             Error
@@ -1809,7 +1821,7 @@ let restore (weirDir: string) : Result<string list, string> =
                                 if repaired then
                                     $"{e.Kind} {e.Name}: repaired — refetched over a modified copy"
                                 else
-                                    $"{e.Kind} {e.Name}: restored from {Http.redactUrl e.Url}"
+                                    $"{e.Kind} {e.Name}: restored from {quoteData (Http.redactUrl e.Url)}"
                             ))
 
         match

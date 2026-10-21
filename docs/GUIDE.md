@@ -1905,7 +1905,9 @@ let up = (Http.send { Http.defaults with url = $"{api}/health" }).status == 200
 **Auth is a union that holds a `Secret`**: `Bearer token`, or
 `Basic ("user", pass)`, which does the base64 for you. Interpolating
 a token into a string is an error, and `show` on the request prints
-it as `***`. For settings shared by several requests, make a base
+it as `***`. A URL's `user:pass@` is sent as Basic auth too, as curl
+does, but the URL is a plain string, so prefer `auth` with a Secret.
+For settings shared by several requests, make a base
 record and copy it with `with`:
 
 ```weir-demo

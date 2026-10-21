@@ -5020,13 +5020,26 @@ let private runRequest (reqV: Value) : Http.Resp =
             |> Set.ofList
             |> Set.union (Set.ofList [ "authorization"; "proxy-authorization"; "cookie" ])
 
+        let url =
+            match get "url" with
+            | VStr s -> s
+            | v -> unreachable $"url {formatValue v}"
+
+        // the URL's userinfo rides as Basic auth, as curl sends it, unless
+        // the request already sets Authorization [D:url-redact]
+        let urlAuth =
+            if
+                (auth @ plain @ secret)
+                |> List.exists (fun (k, _) -> System.String.Equals(k, "Authorization", System.StringComparison.OrdinalIgnoreCase))
+            then
+                []
+            else
+                Http.userinfoAuth url |> Option.toList
+
         let req: Http.Req =
             { Method = httpMethodName (get "method")
-              Url =
-                (match get "url" with
-                 | VStr s -> s
-                 | v -> unreachable $"url {formatValue v}")
-              Headers = auth @ plain @ secret
+              Url = url
+              Headers = urlAuth @ auth @ plain @ secret
               SensitiveHeaders = sensitive
               Body = httpBodyOf (get "body")
               TimeoutMs =
@@ -5053,7 +5066,7 @@ let private runRequest (reqV: Value) : Http.Resp =
         Http.refuseUnsendableRequestHeader
             failwith
             req.Body.IsSome
-            ((auth @ secret) |> List.map (fun (k, _) -> k.ToLowerInvariant()) |> Set.ofList)
+            ((urlAuth @ auth @ secret) |> List.map (fun (k, _) -> k.ToLowerInvariant()) |> Set.ofList)
             req.Headers
 
         let host =

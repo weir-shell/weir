@@ -57,6 +57,9 @@ type TransportError =
     // the peer closed the connection before a response (through a proxy,
     // the proxy did — weir's socket only reaches it)
     | ConnectionEnded
+    // the environment names a proxy for the scheme the runtime cannot
+    // use (a malformed URL, a port past 65535) [D:proxy-env-malformed]
+    | ProxyEnvUnusable of var: string * value: string
 
 // raised inside send when the body's declared charset is unknown — the
 // catch turns it into UnknownCharset, never the cannot-reach umbrella
@@ -150,6 +153,8 @@ let transportMessage (host: string) (err: TransportError) : string =
     | OtherTransport root -> $"cannot reach {host} — {Weir.Types.quoteData (redactUrlsIn root)}"
     | ConnectionEnded -> $"{host} closed the connection before answering"
     | ProxyRefused status -> $"the proxy refused to tunnel to {host}: {status}"
+    | ProxyEnvUnusable(var, value) ->
+        $"{var} is set but is not a usable proxy URL ('{Weir.Types.quoteData (redactUrl value)}') — weir does not fall back to reaching {host} directly; fix it or unset it"
     | UnknownCharset(cs, status) ->
         $"{host} answered {status} with a body in charset '{Weir.Types.quoteData cs}', which weir cannot decode — weir decodes utf-8, utf-16, utf-32, us-ascii and iso-8859-1; a mislabelled body is never guessed at"
     | RedirectLoop(hops, last) ->
@@ -370,6 +375,51 @@ type private EnvNoProxy(inner: Net.IWebProxy) =
             else
                 isNull (proxyFor u)
 
+exception private ProxyEnvBad of string * string
+
+/// refuse before connecting when the proxy variable for `url`'s scheme
+/// is set but the runtime could not use it [D:proxy-env-malformed]: the
+/// runtime drops a malformed value and connects directly; curl refuses.
+/// The variable is the runtime's lookup (lower case first; HTTP_PROXY
+/// not under CGI; ALL_PROXY when the scheme's is unset). A host
+/// NO_PROXY bypasses goes direct as asked.
+let checkEnvProxy (url: string) : unit =
+    let env (n: string) =
+        match Environment.GetEnvironmentVariable n with
+        | null -> None
+        | v when v.Trim() = "" -> None
+        | v -> Some(n, v)
+
+    match Uri.TryCreate(url, UriKind.Absolute) with
+    | true, u when u.Scheme = "http" || u.Scheme = "https" ->
+        let cgi = not (isNull (Environment.GetEnvironmentVariable "REQUEST_METHOD"))
+
+        let named =
+            if u.Scheme = "http" then
+                env "http_proxy"
+                |> Option.orElse (if cgi then None else env "HTTP_PROXY")
+            else
+                env "https_proxy" |> Option.orElse (env "HTTPS_PROXY")
+            |> Option.orElse (env "all_proxy")
+            |> Option.orElse (env "ALL_PROXY")
+
+        match named with
+        | Some(var, value) ->
+            let p = EnvNoProxy(HttpClient.DefaultProxy) :> Net.IWebProxy
+
+            let bypassed =
+                let raw =
+                    match env "no_proxy" with
+                    | Some(_, v) -> v
+                    | None -> env "NO_PROXY" |> Option.map snd |> Option.defaultValue ""
+
+                raw <> "" && noProxyMatch raw u.Host
+
+            if not bypassed && isNull (p.GetProxy u) then
+                raise (ProxyEnvBad(var, value))
+        | None -> ()
+    | _ -> ()
+
 /// the host a transport error names: the URL's host, or the whole URL
 /// when it would not parse — redacted [D:url-redact], since a
 /// `user:pass@host` credential must not print verbatim
@@ -393,7 +443,7 @@ let useEnvProxy (handler: HttpClientHandler) : unit =
 /// a transport failure's words and case [D:transport-words]. Through a
 /// proxy, weir's socket only ever reaches the proxy, so a refused or
 /// unresolved connect names the proxy, not the target [D:proxy-err-names-proxy]
-let transportFailure (timeoutMs: int64) (url: string) (ex: exn) : string * TransportError =
+let private viaProxyFailure (timeoutMs: int64) (url: string) (ex: exn) : string * TransportError =
     let proxy =
         try
             let p = EnvNoProxy(HttpClient.DefaultProxy) :> Net.IWebProxy
@@ -431,6 +481,17 @@ let transportFailure (timeoutMs: int64) (url: string) (ex: exn) : string * Trans
             $"the proxy {named} refused to tunnel to {failingHost url}: {status}{why} {via}", err
         | ConnectionEnded as err -> $"the proxy {named} closed the connection before answering {via}", err
         | _ -> direct ()
+
+let transportFailure (timeoutMs: int64) (url: string) (ex: exn) : string * TransportError =
+    let rec unusable (e: exn) =
+        match e with
+        | null -> None
+        | ProxyEnvBad(var, value) -> Some(ProxyEnvUnusable(var, value))
+        | e -> unusable e.InnerException
+
+    match unusable ex with
+    | Some err -> transportMessage (failingHost url) err, err
+    | None -> viaProxyFailure timeoutMs url ex
 
 /// send the request. Status is data — a 4xx/5xx is Ok with that status,
 /// never an Error [D:http]. Error is transport failure only, classified
@@ -529,6 +590,7 @@ let send (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string 
         let mutable go = true
 
         while go do
+            checkEnvProxy curUrl
             let msg = buildMessage curMethod curUrl curHeaders curBody
             let resp = client.SendAsync(msg, deadline.Token).Result
             let code = int resp.StatusCode
@@ -632,6 +694,48 @@ let send (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string 
 let basicToken (user: string) (password: string) : string =
     let raw = Text.Encoding.UTF8.GetBytes($"{user}:{password}")
     Convert.ToBase64String raw
+
+/// percent-decode one userinfo part to its bytes (RFC 3986 2.1): an
+/// escape is the byte it names, anything else is its UTF-8
+let private pctDecodeBytes (s: string) : byte[] =
+    let out = ResizeArray<byte>()
+    let lit = Text.StringBuilder()
+
+    let flush () =
+        out.AddRange(Text.Encoding.UTF8.GetBytes(lit.ToString()))
+        lit.Clear() |> ignore
+
+    let mutable i = 0
+
+    while i < s.Length do
+        if s[i] = '%' && i + 2 < s.Length && Uri.IsHexDigit s[i + 1] && Uri.IsHexDigit s[i + 2] then
+            flush ()
+            out.Add(byte (Convert.ToInt32(s.Substring(i + 1, 2), 16)))
+            i <- i + 3
+        else
+            lit.Append s[i] |> ignore
+            i <- i + 1
+
+    flush ()
+    out.ToArray()
+
+/// the Authorization a URL's userinfo carries, as curl sends it
+/// [D:url-redact]: `user:pass@` is `Basic base64(user:pass)`, each part
+/// percent-decoded to its bytes, a missing password empty. None for a
+/// URL without userinfo or one that does not parse
+let userinfoAuth (url: string) : (string * string) option =
+    match Uri.TryCreate(url, UriKind.Absolute) with
+    | true, u when u.UserInfo <> "" ->
+        let ui = u.UserInfo
+
+        let user, pass =
+            match ui.IndexOf ':' with
+            | -1 -> ui, ""
+            | i -> ui.Substring(0, i), ui.Substring(i + 1)
+
+        let raw = Array.concat [ pctDecodeBytes user; [| byte ':' |]; pctDecodeBytes pass ]
+        Some("Authorization", "Basic " + Convert.ToBase64String raw)
+    | _ -> None
 
 /// the urlencoded body [D:http-dx]: pairs percent-encoded with the same
 /// escaper withQuery uses, so a space or `&` in a value cannot break the

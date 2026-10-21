@@ -17900,6 +17900,33 @@ let httpTests =
                   "cannot reach weir.sh — boom"
                   "the umbrella survives for the residual"
           }
+          test "a URL's userinfo is Basic auth, each part percent-decoded to its bytes [D:url-redact]" {
+              let b64 (s: byte[]) = "Basic " + System.Convert.ToBase64String s
+              let utf8 (s: string) = System.Text.Encoding.UTF8.GetBytes s
+
+              Expect.equal
+                  (Weir.Http.userinfoAuth "http://bob:S3cr3t@127.0.0.1:1/echo")
+                  (Some("Authorization", "Basic Ym9iOlMzY3IzdA=="))
+                  "curl's header for bob:S3cr3t"
+
+              Expect.equal
+                  (Weir.Http.userinfoAuth "http://b%40b:p%3Ass@h/")
+                  (Some("Authorization", b64 (utf8 "b@b:p:ss")))
+                  "an escaped @ or : stays in its part"
+
+              Expect.equal
+                  (Weir.Http.userinfoAuth "http://tok@h/")
+                  (Some("Authorization", b64 (utf8 "tok:")))
+                  "no password: empty, as curl sends it"
+
+              Expect.equal
+                  (Weir.Http.userinfoAuth "http://u:%FF@h/")
+                  (Some("Authorization", b64 (Array.append (utf8 "u:") [| 0xFFuy |])))
+                  "an escape is the byte it names, not UTF-8 text"
+
+              Expect.equal (Weir.Http.userinfoAuth "http://h/p@q") None "no userinfo, no header"
+              Expect.equal (Weir.Http.userinfoAuth "not a url") None "unparseable, no header"
+          }
           test "redactUrl masks userinfo, leaves a credential-free URL whole [D:url-redact]" {
               // the leak: a credential in user:pass@host would print verbatim
               Expect.equal
@@ -27954,6 +27981,49 @@ let argsSecretEchoTests =
                     "| Ok _ -> exit 4" ]
 
               Expect.equal (runArgs plain [ "--port=8" ]) 0 "a plain field still teaches with its value"
+          }
+          test "Args.load never echoes a Secret's attached short value (-t=x, -tx) [D:args-secret-echo]" {
+              let probe =
+                  [ "type Cli = { tok: Secret; n: Option<int> }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"hunter\" m -> exit 3"
+                    "| Error m when Str.contains \"-t***\" m && Str.contains \"write '-t <value>'\" m -> exit 0"
+                    "| Error m -> fail m"
+                    "| Ok _ -> exit 4" ]
+
+              Expect.equal (runArgs probe [ "-t=hunter2" ]) 0 "-t=value masked"
+              Expect.equal (runArgs probe [ "-thunter2" ]) 0 "-tvalue masked"
+
+              let unknown =
+                  [ "type Cli = { tok: Secret }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"hunter\" m -> exit 3"
+                    "| Error m when Str.contains \"'-x…'\" m -> exit 0"
+                    "| Error m -> fail m"
+                    "| Ok _ -> exit 4" ]
+
+              Expect.equal (runArgs unknown [ "-xhunter2" ]) 0 "an unknown letter may be a misspelled Secret"
+
+              let shared =
+                  [ "type GoArgs = { tok: Secret }"
+                    "type Sub = Go of GoArgs | Stop"
+                    "type Cli = { verbose: bool; cmd: Sub }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"hunter\" m -> exit 3"
+                    "| Error m when Str.contains \"-t***\" m -> exit 0"
+                    "| Error m -> fail m"
+                    "| Ok _ -> exit 4" ]
+
+              Expect.equal (runArgs shared [ "go"; "-thunter2" ]) 0 "the shared-flags load masks too"
+
+              let plain =
+                  [ "type Cli = { n: int }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"write '-n 8'\" m -> exit 0"
+                    "| Error m -> fail m"
+                    "| Ok _ -> exit 4" ]
+
+              Expect.equal (runArgs plain [ "-n=8" ]) 0 "a plain field still teaches with its value"
           } ]
 
 // the third hunt's behaviour fixes, pinned at their seams; the signal and
