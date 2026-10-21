@@ -515,6 +515,21 @@ t = piped("#hisory\n#quit\n")
 if "did you mean" not in t.lower() or "#history" not in t:
     failures.append(f"a #history typo must did-you-mean it (dispatch reads sessionDirectives): {t[-200:]!r}")
 
+# --- #keys [D:repl-keys]: the editor's bindings, listed by #help near
+# the top, plain when piped; a typo did-you-means it ------------------
+t = piped("#help\n#quit\n")
+if "#keys" not in "\n".join(t.splitlines()[:4]):
+    failures.append(f"#help must list #keys in its first lines: {t[:300]!r}")
+t = piped("#keys\n#quit\n")
+for key in ("Ctrl+Y", "Ctrl+R", "Alt+Enter"):
+    if not any(l.strip().startswith(key) for l in t.splitlines()):
+        failures.append(f"#keys must list {key} on its own line: {t[-600:]!r}")
+if "\x1b" in t:
+    failures.append(f"piped #keys must be plain: {t[-300:]!r}")
+t = piped("#kyes\n#quit\n")
+if "did you mean" not in t.lower() or "#keys" not in t:
+    failures.append(f"a #keys typo must did-you-mean it: {t[-200:]!r}")
+
 # --- Ctrl+D still leaves (the pty half) -------------------------------
 pid, fd = pty.fork()
 if pid == 0:
@@ -545,4 +560,4 @@ if failures:
         print("repl-directives FAIL:", f)
     sys.exit(1)
 
-print("repl-directives: #help x3 (one source), glance rendering (member + module blurbs), #find fallback (substring/usage/no-match), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), #types (default off, on restores, report, teach, config seed + override, piped pinned), #history (path header, count, bare-all, tail-n, help-listed, typo did-you-mean), unknown-directive message trimmed (#sig redirect, #schema unknown), #alias recognized (list/add/single-hop/help), empty-prompt Tab offers directives, constructor not a head")
+print("repl-directives: #help x3 (one source), glance rendering (member + module blurbs), #find fallback (substring/usage/no-match), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), #types (default off, on restores, report, teach, config seed + override, piped pinned), #history (path header, count, bare-all, tail-n, help-listed, typo did-you-mean), unknown-directive message trimmed (#sig redirect, #schema unknown), #alias recognized (list/add/single-hop/help), #keys (help-listed, Ctrl+Y/Ctrl+R/Alt+Enter, piped plain, typo did-you-mean), empty-prompt Tab offers directives, constructor not a head")

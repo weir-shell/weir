@@ -1167,6 +1167,40 @@ let private historyDirective (arg: string) : string =
         | true, n when n > 0 -> render (max 0 (history.Count - n))
         | _ -> "#history takes a positive count — e.g. #history 20 (bare = all)"
 
+/// the tty editor's key bindings, one source [D:repl-keys]: `#keys`
+/// prints this list and docs/repl.md's key table carries the same keys
+/// (a unit pin compares them). Each row: the keys, what they do
+let keyBindings: (string list * string) list =
+    [ [ "Enter" ], "submit if complete, else start a new line; on an empty last line, submit anyway"
+      [ "Alt+Enter"; "Ctrl+J" ], "insert a newline (the entry stays one statement)"
+      [ "Backspace" ], "delete back; in a line's leading spaces, back one indent level (4 columns)"
+      [ "Left"; "Right" ], "move a character (across lines)"
+      [ "Ctrl+Left"; "Ctrl+Right" ], "move a word"
+      [ "Home"; "Ctrl+A" ], "start of the line"
+      [ "End"; "Ctrl+E" ], "end of the line"
+      [ "Up"; "Down" ], "move between lines; Up on the first line recalls history"
+      [ "Tab" ], "complete the word under the cursor"
+      [ "Ctrl+R" ], "search history (fzf when installed)"
+      [ "Ctrl+W"; "Ctrl+U"; "Ctrl+K" ], "cut the previous word / to line start / to line end"
+      [ "Ctrl+Y" ], "paste the last cut text"
+      [ "Esc"; "Ctrl+C" ], "abandon the whole buffer"
+      [ "Ctrl+D" ], "exit on an empty buffer; delete or join otherwise" ]
+
+/// `#keys` [D:repl-keys]: the bindings in two aligned columns, the keys
+/// dim at a tty (meta output), plain when piped; then the typed-newline
+/// indentation note
+let keysText (color: bool) : string =
+    let keys = keyBindings |> List.map (fun (ks, _) -> String.concat " / " ks)
+    let w = keys |> List.map String.length |> List.max
+
+    let rows =
+        List.map2 (fun (k: string) (_, what) -> "  " + Types.Color.dim color (k.PadRight w) + "  " + what) keys keyBindings
+
+    String.concat
+        "\n"
+        (rows
+         @ [ "A new line starts at the indentation of the line above (a paste keeps its own)." ])
+
 // Ctrl+Left/Right navigation; '.' stays a separator here (unlike
 // completion's wordStartAt) so field chains hop segment by segment
 let private isWordChar (c: char) = Char.IsLetterOrDigit c || c = '_'
@@ -3861,6 +3895,9 @@ let rec private loop (state: State) =
         elif t = "#history" || t.StartsWith "#history " then
             Console.WriteLine(historyDirective (t.Substring(8).Trim()))
             loop state
+        elif t = "#keys" then
+            Console.WriteLine(keysText Types.Color.onStdout.Value)
+            loop state
         elif t = "#alias" || t.StartsWith "#alias " then
             // a live command-head alias [D:command-head-alias]. init.weir is
             // the canonical place; a bare `#alias` lists the table, a
@@ -3908,6 +3945,8 @@ let rec private loop (state: State) =
                     $"{word} is a file directive, read at check time — it has no effect in the REPL"
                 elif word = "#quit" then
                     "#quit takes no argument — type #quit on its own (or press Ctrl+D)"
+                elif word = "#keys" then
+                    "#keys takes no argument — type #keys on its own"
                 else
                     // the did-you-mean pool is the dispatch's one source
                     // (Complete.sessionDirectives) [D:repl-directives]
