@@ -363,6 +363,20 @@ let splitKey (s: string) : (string * string) option =
     | Ok r -> r
     | Error _ -> None
 
+// a document key written plain keeps that spelling [D:yaml-key-spelling]:
+// the parsed key string itself is remembered (by identity, weakly), so
+// an untouched `Yaml.parse |> to yaml` writes `200:` back plain while a
+// key built in weir — another string — still takes the quoting law
+let private plainKeys =
+    System.Runtime.CompilerServices.ConditionalWeakTable<string, obj>()
+
+let private markPlainKey (key: string) =
+    plainKeys.AddOrUpdate(key, null)
+
+let private isQuotedKey (line: string) =
+    let t = line.TrimStart yamlWs
+    t.StartsWith "\"" || t.StartsWith "'"
+
 // ---- multi-line quoted flow scalars [D:quoted-fold] ------------------------
 
 // find the closing quote in a fragment already inside a quoted scalar:
@@ -850,6 +864,9 @@ let rec private parseBlock
                             | Error msg -> Error $"line {no}: {msg}"
                             | Ok None -> Error $"line {no}: expected 'key: value' in this mapping"
                             | Ok(Some(key, rest)) ->
+                                if not (isQuotedKey (raw.Substring indent)) then
+                                    markPlainKey key
+
                                 if seen.Contains key then
                                     Error $"line {no}: duplicate key '{key}'"
                                 else
@@ -1044,11 +1061,11 @@ let private ambiguousPlain =
           ".NaN"
           ".NAN" ]
 
-let private needsQuote (s: string) =
+// the quotes a plain spelling needs to read back as the same text at
+// all — the part of the law that is not about a reader's type
+let private structuralQuote (s: string) =
     s = ""
     || s <> s.Trim()
-    || ambiguousPlain.Contains s
-    || looksNumeric s // "007", "1e5", "1.5" must not re-read as numbers
     || s.Contains '\n'
     || s.Contains ": "
     || s.EndsWith ":"
@@ -1059,6 +1076,11 @@ let private needsQuote (s: string) =
     // reader but not IsControl, so they must force quoting too
     || s
        |> Seq.exists (fun c -> System.Char.IsControl c || c = '\u2028' || c = '\u2029')
+
+let private needsQuote (s: string) =
+    structuralQuote s
+    || ambiguousPlain.Contains s
+    || looksNumeric s // "007", "1e5", "1.5" must not re-read as numbers
 
 /// Render a string scalar per the quoting law [D:yaml-v1]: plain when a
 /// reader cannot mis-type it, double-quoted otherwise — the
@@ -1096,3 +1118,13 @@ let renderScalar (s: string) : string =
 
         sb.Append '"' |> ignore
         sb.ToString()
+
+/// Render a mapping key: a key the document wrote plain writes plain
+/// again, even when a reader types it (`200:`, `true:`, `0644:`) — the
+/// source's own spelling [D:yaml-key-spelling]; any other key, or one
+/// whose plain text would not read back as the same key, takes
+/// renderScalar's law
+let renderKey (k: string) : string =
+    match plainKeys.TryGetValue k with
+    | true, _ when not (structuralQuote k) -> k
+    | _ -> renderScalar k

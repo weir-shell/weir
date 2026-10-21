@@ -155,9 +155,10 @@ so the key reads back. A string that any YAML 1.1 or 1.2 reader would
 take as another type is quoted, keys included: number forms such as
 `007`, `1e5` and `+.5`, the boolean words (`yes`, `on`, `y`, `N`, …),
 the null forms, `.inf`/`.nan`, and the merge and value keys `<<` and
-`=`. Keys are strings: `Yaml.parse` reads `200:` or `true:` as the
-key "200" or "true", so `to yaml` writes it back quoted, even on an
-untouched round trip, and every reader gets the same string back. A float written in exponent form carries a dot and a signed
+`=`. Keys are strings (`Yaml.parse` reads `200:` as the key "200"), but a
+key the document wrote plain is written back plain, so an untouched
+round trip keeps `200:`, `true:`, `null:` and `0644:` as they were. A
+key built in weir is quoted by the same rule as a value. A float written in exponent form carries a dot and a signed
 exponent (`1.0e-05`), which YAML 1.1 readers need to see a number. An
 integer beyond int64 read into a `Yaml` node is a `YFloat`
 there, but writing that node back gives its original digits (through

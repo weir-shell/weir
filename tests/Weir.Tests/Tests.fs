@@ -30134,6 +30134,20 @@ let hunt3r6FormatTests =
                   (VStr "{\"p\\\"q\":\"v\",\"r\\\\s\":\"w\"}")
                   "the escaped keys read and write back"
           }
+          test "yaml: a key the document wrote plain writes back plain; quoted or weir-built keys keep the law [D:yaml-key-spelling]" {
+              let doc = [ "responses:"; "  200: ok"; "  \"404\": missing"; "flags:"; "  true: x"; "  null: none"; "modes:"; "  0644: rw"; "list:"; "  - 8080: http" ]
+              Expect.equal (run (lit doc + " |> Yaml.parse |> to yaml") |> text) (String.concat "\n" doc) "untouched round trip"
+
+              Expect.equal
+                  (run "YMap [(\"200\", YStr \"a\"); (\"true\", YStr \"b\")] |> to yaml" |> text)
+                  "\"200\": a\n\"true\": b"
+                  "keys built in weir are quoted"
+
+              Expect.equal
+                  (run (lit [ "200: a" ] + " |> Yaml.parse |> to json") |> text)
+                  "{\"200\":\"a\"}"
+                  "the key is still the string 200"
+          }
           test "gen types: format uint64 under a nullable anyOf/oneOf drafts Option<Yaml> [D:schema-uint64]" {
               let g =
                   gen

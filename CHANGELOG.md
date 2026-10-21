@@ -131,6 +131,11 @@
   `012345678901234567890` failed with .NET text, and `0x8000000000000000`
   / `0o1000000000000000000000` came out as strings; all write decimal
   digits, as a decimal one does.
+- **A YAML round trip keeps plain keys plain.** `Yaml.parse |> to yaml`
+  wrote `200:`, `true:`, `null:` and `0644:` back as `"200":` and so on,
+  turning a 1.1/1.2 reader's int, bool or null key into a string. A key
+  the document wrote plain now comes back plain; a key built in weir is
+  still quoted when a reader would type it.
 - **`from yaml`: a value of only a no-break space (or U+3000) is that
   string**, not null; a **`float` field refuses `0644`** as an `int`
   field does, instead of reading 644.0.

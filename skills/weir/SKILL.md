@@ -1895,7 +1895,8 @@ type Bad = C of int
   FLOAT weir would write differently (`1e5`, `+.5`, `3.10`) keeps its
   text the same way, `1e400` rides a YStr written plain, and `to json`
   writes values (an int past int64 as decimal digits, `0x…` too);
-  KEYS are strings, so `200:` writes back as `"200":`; 1.1-only forms
+  KEYS are strings, but a key the document wrote plain (`200:`,
+  `true:`) writes back plain — a key built in weir is quoted; 1.1-only forms
   (`1_000`, `0b101`, `1:20`) are strings, written quoted. A plain value holding `: ` (`f: a: b`) refuses, as every YAML reader does — quote it. A block sequence reads in BOTH indent
   styles — indented under its key OR at the SAME column as its key
   (kubectl's `items:` / `- apiVersion: v1` flush-left form). Only the

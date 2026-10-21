@@ -3878,7 +3878,7 @@ let rec private yamlRender
             match v with
             | VUnion("None", None) when omitNone -> []
             | _ ->
-                let key = Yaml.renderScalar k
+                let key = Yaml.renderKey k
 
                 match yamlRender renames unions (depth + 1) g v with
                 | Inline "" -> [ $"{key}:" ]
