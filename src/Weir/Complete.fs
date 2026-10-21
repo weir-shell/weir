@@ -596,6 +596,100 @@ let private lexicallyBound (name: string) (text: string) : bool =
     @ re @"\bwithin\s+\w+\s+([A-Za-z_]\w*)"
     |> List.contains name
 
+// the `$` / `$@` sigil right before the completion word, if any
+let private spliceSigil (text: string) (wordStart: int) : string option =
+    if wordStart >= 2 && wordStart <= text.Length && text.Substring(wordStart - 2, 2) = "$@" then
+        Some "$@"
+    elif wordStart >= 1 && wordStart <= text.Length && text[wordStart - 1] = '$' then
+        Some "$"
+    else
+        None
+
+// the innermost command a `$` belongs to [D:argv-splice-complete]: the
+// text after the last `$(`, `then`, `else`, `do` or `->` outside strings
+let private spliceSegment (pre: string) : string =
+    let kwAt (i: int) (k: string) =
+        i + k.Length <= pre.Length
+        && System.String.CompareOrdinal(pre, i, k, 0, k.Length) = 0
+        && (i = 0 || System.Char.IsWhiteSpace pre[i - 1])
+        && (i + k.Length = pre.Length || System.Char.IsWhiteSpace pre[i + k.Length])
+
+    let cut =
+        Weir.Scan.foldOutsideStrings
+            (fun cut i c ->
+                if (c = '$' && i + 1 < pre.Length && pre[i + 1] = '(')
+                   || (c = '-' && i + 1 < pre.Length && pre[i + 1] = '>') then
+                    i + 2
+                elif kwAt i "then" || kwAt i "else" then
+                    i + 4
+                elif kwAt i "do" then
+                    i + 2
+                else
+                    cut)
+            0
+            pre
+
+    pre.Substring cut
+
+// a `$name` splice completes exactly what the checker admits there
+// [D:argv-splice-complete]: after `$`, the Check.argvSpliceable
+// bindings; after `$@`, seq<string>; a record only through its fields
+// ([D:field-splices] — `$r.<TAB>` offers r's fields the slot admits),
+// never bare. Candidates are bare: the sigil is already typed
+let private splicePool (env: TypeEnv) (sigil: string) (word: string) : string list =
+    let admits (ty: Ty) =
+        if sigil = "$@" then ty = TSeq TStr else Weir.Check.argvSpliceable ty
+
+    if word.Contains '.' then
+        let segs = word.Split '.'
+        let prefix = segs[segs.Length - 1]
+        let stem = word.Substring(0, word.Length - prefix.Length)
+
+        let finalTy =
+            segs[1 .. segs.Length - 2]
+            |> Array.fold
+                (fun acc seg ->
+                    acc
+                    |> Option.bind (recordFields env)
+                    |> Option.bind (List.tryFind (fst >> (=) seg))
+                    |> Option.map snd)
+                (Map.tryFind segs[0] env.Values |> Option.map _.Ty)
+
+        match finalTy |> Option.bind (recordFields env) with
+        | Some fields ->
+            fields
+            |> List.filter (fun (f, ty) -> f.StartsWith prefix && admits ty)
+            |> List.map (fun (f, _) -> stem + f)
+            |> List.sort
+        | None -> []
+    else
+        env.Values
+        |> Map.toList
+        |> List.choose (fun (n, sch) ->
+            if Types.isUserName n && n.StartsWith word && n <> word && admits sch.Ty then
+                Some n
+            else
+                None)
+        |> List.sort
+
+/// the `$` pool inside a yaml block [D:argv-splice-complete]: the
+/// bindings the yaml district's splice law admits (Check.yamlSpliceableWith)
+let yamlSplicePool (env: TypeEnv) (word: string) : string list =
+    env.Values
+    |> Map.toList
+    |> List.choose (fun (n, sch) ->
+        if
+            Types.isUserName n
+            && n.StartsWith word
+            && n <> word
+            && sch.Forall.IsEmpty
+            && Weir.Check.yamlSpliceableWith id sch.Ty
+        then
+            Some n
+        else
+            None)
+    |> List.sort
+
 // the binder scope can be wider than the completion text: the LSP
 // completes one line but its binders (a let's params two lines up)
 // live in the whole document [D:complete-argv]
@@ -907,7 +1001,30 @@ let rec suggestScopedWith
             else
                 candidates |> List.map argvWord
 
-        if word.StartsWith "~" || word.Contains '/' then
+        // a `$name` splice slot decides alone [D:argv-splice-complete]:
+        // inside a string the `$` is literal, glued to a word it is a
+        // word-join the parser refuses — nothing there; in a command's
+        // argv (any head, inside `$(…)` and if/for/match bodies) the
+        // checker's pool
+        let splice =
+            match spliceSigil text wordStart with
+            | Some sigil ->
+                let at = wordStart - sigil.Length
+                let pre = text.Substring(0, at)
+
+                if Weir.Scan.endsInsideString pre then
+                    Some []
+                elif at > 0 && not (pre[at - 1] = ' ' || pre[at - 1] = '\t') then
+                    Some []
+                elif commandArgvPosition env true (spliceSegment pre + sigil) then
+                    Some(splicePool env sigil word)
+                else
+                    None
+            | None -> None
+
+        if splice.IsSome then
+            splice.Value
+        elif word.StartsWith "~" || word.Contains '/' then
             // an explicit path word — filesystem entries [D:repl-quality],
             // quoted where the slot is an expression [D:repl-path-quote]
             filesystemComplete word |> quoteFor before
@@ -939,38 +1056,6 @@ let rec suggestScopedWith
             // PATH cache — bare (the word starts after the sigil), at
             // the statement head and the let-RHS alike
             Extern.names () |> Set.filter (fun n -> n.StartsWith word && n <> word) |> Set.toList
-        elif
-            (before.EndsWith "$" || before.EndsWith "$@")
-            && commandArgvPosition env true before
-        then
-            // a `$name` splice [D:argv-splice-complete]: `$` is not a word
-            // char, so the word starts after it and `before` ends with `$`
-            // (or `$@`); offer the bindings the checker admits there (bare —
-            // the sigil is already typed), so `--location $l<TAB>` completes
-            // to `$location`. A record also splices through a field
-            // ([D:field-splices]: `$r.n`, `$@r.fs`). After any head — an
-            // external, a builtin like ls/cd, a ^forced one, a let-RHS
-            let splat = before.EndsWith "$@"
-
-            let admits (ty: Ty) =
-                match ty with
-                | TNamed(n, _) when
-                    (match Map.tryFind n env.Types with
-                     | Some(Record _) -> true
-                     | _ -> false)
-                    ->
-                    true
-                | TSeq TStr -> splat
-                | ty -> not splat && Weir.Check.argvSpliceable ty
-
-            env.Values
-            |> Map.toList
-            |> List.choose (fun (n, sch) ->
-                if Types.isUserName n && n.StartsWith word && n <> word && admits sch.Ty then
-                    Some n
-                else
-                    None)
-            |> List.sort
         elif commandArgvPosition env false before then
             // argv position [D:complete-argv]: paths, nothing else — the
             // pool, fields, and members are expression furniture

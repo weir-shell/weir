@@ -205,19 +205,24 @@ let private evalOnce (input: string) : int =
                             with
                             | Eval.ExitRequest code -> code
                             | ex ->
-                                Console.Error.WriteLine(
-                                    Types.Color.red Types.Color.onStderr.Value "error"
-                                    + $": {Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message}"
-                                )
+                                // a command death the signal owns ends
+                                // silently [D:settle-pending]
+                                match Proc.fatalTeardown ex with
+                                | Some code -> code
+                                | None ->
+                                    Console.Error.WriteLine(
+                                        Types.Color.red Types.Color.onStderr.Value "error"
+                                        + $": {Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message}"
+                                    )
 
-                                1
+                                    1
 
                     execAll valueEnv 0 checked'
 
-// `weir verify`/`restore` lines carry lock.json fields — data, so a
-// tty sees CR and escapes visibly [D:lock-print-sanitize]
-let private lockText (redirected: bool) (s: string) : string =
-    if redirected then s else Eval.sanitizeTtyEcho s
+// `weir verify`/`restore`/`add sig` lines carry lock.json fields and
+// tool text — messages, so CR and escapes show visibly, piped too
+// [D:lock-print-sanitize]
+let private lockText (s: string) : string = Eval.sanitizeTtyEcho s
 
 // the lock is committed: an add drops the URL's userinfo from it and
 // says so [D:lock-no-userinfo]
@@ -242,9 +247,10 @@ let private runOnMain (run: unit -> int) : int =
 [<EntryPoint>]
 let main argv =
 
-    // a closed stderr is /dev/null: nothing weir opens lands on fd 2 —
-    // first, before any console stream exists [D:console-write]
-    Session.nullClosedStderr ()
+    // a closed stdin, stdout or stderr is /dev/null: nothing weir opens
+    // lands on fd 0-2 — first, before any console stream exists
+    // [D:console-write]
+    Session.nullClosedStdio ()
 
     // captured output is data: LF on every platform [D:lf-output] —
     // the dual of the content-bytes input ruling (a line ending is
@@ -386,7 +392,7 @@ let main argv =
             // are fine (k8s-configmap); only path-escaping shapes refuse.
             if not (Contracts.vendorNameSafe name) then
                 Console.Error.WriteLine
-                    $"weir add schema: '--as {name}' must be a plain file name — no path separators, '..', or leading dot; it becomes the vendored file .weir/schemas/{name}.json"
+                    $"weir add schema: '--as {quoteData name}' must be a plain file name — no path separators, '..', or leading dot; it becomes the vendored file .weir/schemas/{quoteData name}.json"
 
                 1
             else
@@ -407,10 +413,10 @@ let main argv =
             (match Script.SigGen.generate weirDir tool with
              | Ok line ->
                  // the line quotes the tool's --version [D:sig-text-sanitize]
-                 Console.WriteLine(lockText Console.IsOutputRedirected line)
+                 Console.WriteLine(lockText line)
                  0
              | Error e ->
-                 Console.Error.WriteLine $"weir add sig: {e}"
+                 Console.Error.WriteLine $"weir add sig: {lockText e}"
                  1)
         | "add" :: "sig" :: _ ->
             Console.Error.WriteLine "usage: weir add sig <tool>   generate a signature from the installed binary"
@@ -435,7 +441,7 @@ let main argv =
 
             if not nameOk then
                 Console.Error.WriteLine
-                    $"weir add module: '--as {name}' must be a plain name (a letter, then letters/digits/_) — it becomes the vendored file and the import alias"
+                    $"weir add module: '--as {quoteData name}' must be a plain name (a letter, then letters/digits/_) — it becomes the vendored file and the import alias"
 
                 1
             elif Map.containsKey derivedAlias Builtins.typeEnvStrict.Modules then
@@ -474,7 +480,7 @@ let main argv =
                          | Error e ->
                              // the error names the source, not the temp
                              // file validation ran against
-                             let e = e.Replace(tmp, Http.redactUrl src.Url)
+                             let e = e.Replace(tmp, quoteData (Http.redactUrl src.Url))
                              Console.Error.WriteLine $"weir add module: {e}; nothing was written"
                              1
                          | Ok memberCount ->
@@ -494,7 +500,7 @@ let main argv =
                                   | Some _ -> Console.WriteLine $"module {name}: unchanged ({hash.Substring(0, 12)}…)"
                                   | None ->
                                       Console.WriteLine
-                                          $"added module {name} ({hash.Substring(0, 12)}…, {memberCount} member(s)) from {Http.redactUrl src.Url}")
+                                          $"added module {name} ({hash.Substring(0, 12)}…, {memberCount} member(s)) from {quoteData (Http.redactUrl src.Url)}")
 
                                  Console.WriteLine $"import it:  import \"weir:{name}\" as {derivedAlias}"
                                  userinfoNote src.Url
@@ -517,11 +523,11 @@ let main argv =
              | Ok weirDir ->
                  match Contracts.restore weirDir with
                  | Ok lines ->
-                     lines |> List.iter (fun l -> Console.WriteLine(lockText Console.IsOutputRedirected l))
+                     lines |> List.iter (fun l -> Console.WriteLine(lockText l))
 
                      0
                  | Error e ->
-                     Console.Error.WriteLine $"weir restore: {lockText Console.IsErrorRedirected e}"
+                     Console.Error.WriteLine $"weir restore: {lockText e}"
                      1)
         | "restore" :: _ ->
             Console.Error.WriteLine "usage: weir restore — re-materialize everything the lock records (hash-verified)"
@@ -534,10 +540,10 @@ let main argv =
              | Ok weirDir ->
                  match Contracts.verify Proc.resolveProg weirDir with
                  | Error e ->
-                     Console.Error.WriteLine $"weir verify: {lockText Console.IsErrorRedirected e}"
+                     Console.Error.WriteLine $"weir verify: {lockText e}"
                      1
                  | Ok(lines, findings) ->
-                     lines |> List.iter (fun l -> Console.WriteLine(lockText Console.IsOutputRedirected l))
+                     lines |> List.iter (fun l -> Console.WriteLine(lockText l))
 
                      if List.isEmpty findings then 0 else 1)
         | "verify" :: _ ->

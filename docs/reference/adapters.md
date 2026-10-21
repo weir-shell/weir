@@ -110,6 +110,15 @@ readers many tools still use (PyYAML, kubectl's go-yaml v2):
   touches a Pod's `defaultMode: 0644` writes it back as it was. Reading
   a leading-zero literal into an `int` field is an error: write
   `0o644` for octal, `644` for decimal, or quote it for a string.
+- A float that weir would write differently (`1e5`, `+.5`, `3.10`)
+  keeps its text in a `Yaml` node too. A 1.1 reader takes `1e5` and
+  `+.5` as strings (a short git SHA can be `1e5`), so a round trip
+  writes them back as they were. A number too large for a float
+  (`1e400`) is held as a `YStr` that still writes plain. A `0x`/`0o`
+  integer beyond int64 is a `YFloat`, like a decimal one. `to json`
+  writes the value: a float as a number, an integer as its decimal
+  digits.
+- Reading a leading-zero literal into a `float` field is an error too.
 - 1.1-only forms (`1_000`, `0b101`, `1:20`) are strings, and `to yaml`
   quotes them so a 1.1 reader keeps them strings too.
 
@@ -146,7 +155,10 @@ so the key reads back. A string that any YAML 1.1 or 1.2 reader would
 take as another type is quoted, keys included: number forms such as
 `007`, `1e5` and `+.5`, the boolean words (`yes`, `on`, `y`, `N`, …),
 the null forms, `.inf`/`.nan`, and the merge and value keys `<<` and
-`=`. A float written in exponent form carries a dot and a signed
+`=`. Keys are strings (`Yaml.parse` reads `200:` as the key "200"), but a
+key the document wrote plain is written back plain, so an untouched
+round trip keeps `200:`, `true:`, `null:` and `0644:` as they were. A
+key built in weir is quoted by the same rule as a value. A float written in exponent form carries a dot and a signed
 exponent (`1.0e-05`), which YAML 1.1 readers need to see a number. An
 integer beyond int64 read into a `Yaml` node is a `YFloat`
 there, but writing that node back gives its original digits (through
@@ -251,7 +263,10 @@ declaration to `encoding="UTF-8"`. A malformed encoding name
 is an error.
 Text is already decoded as UTF-8, so a text document whose declaration
 names another encoding reads only if it is plain ASCII; otherwise the
-error asks for the bytes.
+error asks for the bytes. A UTF-16 or UTF-32 declaration on a document
+with no byte-order mark that starts with a single-byte `<?xml` is an
+error saying the declaration contradicts the bytes (usually the file
+is UTF-8). Elements nested more than 500 deep are an error, as in YAML.
 
 ## Aligned tables
 

@@ -304,11 +304,11 @@ let private parseScalar (lineNo: int) (raw: string) : Result<Node, string> =
 // justifies block-only cannot fire. Populated flow stays rejected by
 // scalarCore's teaching. `{}` → empty mapping, `[]` → empty sequence.
 let private emptyFlow (lineNo: int) (raw: string) : Node option =
-    match raw.Trim() with
+    match raw.Trim yamlWs with
     | "{}" -> Some(NMap([], lineNo))
     | "[]" -> Some(NSeq([], lineNo))
-    | t when t.StartsWith "{" && t.EndsWith "}" && t.Substring(1, t.Length - 2).Trim() = "" -> Some(NMap([], lineNo))
-    | t when t.StartsWith "[" && t.EndsWith "]" && t.Substring(1, t.Length - 2).Trim() = "" -> Some(NSeq([], lineNo))
+    | t when t.StartsWith "{" && t.EndsWith "}" && t.Substring(1, t.Length - 2).Trim yamlWs = "" -> Some(NMap([], lineNo))
+    | t when t.StartsWith "[" && t.EndsWith "]" && t.Substring(1, t.Length - 2).Trim yamlWs = "" -> Some(NSeq([], lineNo))
     | _ -> None
 
 // split `key: value` / `key:` at the first unquoted `: ` (or `:` at EOL);
@@ -362,6 +362,20 @@ let splitKey (s: string) : (string * string) option =
     match splitKeyR s with
     | Ok r -> r
     | Error _ -> None
+
+// a document key written plain keeps that spelling [D:yaml-key-spelling]:
+// the parsed key string itself is remembered (by identity, weakly), so
+// an untouched `Yaml.parse |> to yaml` writes `200:` back plain while a
+// key built in weir — another string — still takes the quoting law
+let private plainKeys =
+    System.Runtime.CompilerServices.ConditionalWeakTable<string, obj>()
+
+let private markPlainKey (key: string) =
+    plainKeys.AddOrUpdate(key, null)
+
+let private isQuotedKey (line: string) =
+    let t = line.TrimStart yamlWs
+    t.StartsWith "\"" || t.StartsWith "'"
 
 // ---- multi-line quoted flow scalars [D:quoted-fold] ------------------------
 
@@ -430,7 +444,7 @@ let private multilineQuoted
             // content before the quote is verbatim (trailing space kept);
             // the closing quote ends the value — anything after it on
             // the line is an error, not a second value
-            if frag.Substring(idx + 1).Trim() <> "" then
+            if frag.Substring(idx + 1).Trim yamlWs <> "" then
                 result <-
                     Some(Error $"line {fragNo}: content after the closing {q} — the quoted value ends at its closing quote")
             else
@@ -780,7 +794,7 @@ let rec private parseBlock
                             | Some(Ok header) -> blockValue no indent header i j
                             | None ->
 
-                                if inline'.Trim() = "" then
+                                if inline'.Trim yamlWs = "" then
                                     // the item is the nested block below (or null)
                                     parseBlock rawSrc lines (i + 1) j (indent + 2) (depth + 1)
                                 else
@@ -850,6 +864,9 @@ let rec private parseBlock
                             | Error msg -> Error $"line {no}: {msg}"
                             | Ok None -> Error $"line {no}: expected 'key: value' in this mapping"
                             | Ok(Some(key, rest)) ->
+                                if not (isQuotedKey (raw.Substring indent)) then
+                                    markPlainKey key
+
                                 if seen.Contains key then
                                     Error $"line {no}: duplicate key '{key}'"
                                 else
@@ -862,7 +879,7 @@ let rec private parseBlock
                                     // the same indent (kubectl's zero-indent form): the
                                     // sequence is the value — consume its whole extent
                                     let seqValue =
-                                        rest.Trim() = "" && j = i + 1 && isSeqAt indent (i + 1)
+                                        rest.Trim yamlWs = "" && j = i + 1 && isSeqAt indent (i + 1)
 
                                     let jSeq = if seqValue then seqExtent indent (i + 1) else j
 
@@ -874,7 +891,7 @@ let rec private parseBlock
 
                                             if seqValue then
                                                 parseBlock rawSrc lines (i + 1) jSeq indent (depth + 1)
-                                            elif rest.Trim() = "" then
+                                            elif rest.Trim yamlWs = "" then
                                                 if j > i + 1 then
                                                     parseBlock rawSrc lines (i + 1) j (indentOf (snd lines[i + 1])) (depth + 1)
                                                 else
@@ -1044,11 +1061,11 @@ let private ambiguousPlain =
           ".NaN"
           ".NAN" ]
 
-let private needsQuote (s: string) =
+// the quotes a plain spelling needs to read back as the same text at
+// all — the part of the law that is not about a reader's type
+let private structuralQuote (s: string) =
     s = ""
     || s <> s.Trim()
-    || ambiguousPlain.Contains s
-    || looksNumeric s // "007", "1e5", "1.5" must not re-read as numbers
     || s.Contains '\n'
     || s.Contains ": "
     || s.EndsWith ":"
@@ -1059,6 +1076,11 @@ let private needsQuote (s: string) =
     // reader but not IsControl, so they must force quoting too
     || s
        |> Seq.exists (fun c -> System.Char.IsControl c || c = '\u2028' || c = '\u2029')
+
+let private needsQuote (s: string) =
+    structuralQuote s
+    || ambiguousPlain.Contains s
+    || looksNumeric s // "007", "1e5", "1.5" must not re-read as numbers
 
 /// Render a string scalar per the quoting law [D:yaml-v1]: plain when a
 /// reader cannot mis-type it, double-quoted otherwise — the
@@ -1096,3 +1118,13 @@ let renderScalar (s: string) : string =
 
         sb.Append '"' |> ignore
         sb.ToString()
+
+/// Render a mapping key: a key the document wrote plain writes plain
+/// again, even when a reader types it (`200:`, `true:`, `0644:`) — the
+/// source's own spelling [D:yaml-key-spelling]; any other key, or one
+/// whose plain text would not read back as the same key, takes
+/// renderScalar's law
+let renderKey (k: string) : string =
+    match plainKeys.TryGetValue k with
+    | true, _ when not (structuralQuote k) -> k
+    | _ -> renderScalar k

@@ -80,6 +80,11 @@ let private importRefusal (prog: string) : unit =
             $"'{prog}' runs a command while module {m} is imported — a module's lets must not run commands at import; wrap the value in a function: let v () = …"
     | None -> ()
 
+// the children started after weir acted on a signal: none ran when it
+// came, so none took it with weir [D:cleanup-group-signal]
+let private startedAfterSignal =
+    System.Runtime.CompilerServices.ConditionalWeakTable<Process, obj>()
+
 // the single spawn point [D:spawn-spec]: psi construction, the env
 // law, cwd, the not-found mapping, and the race-group registration
 // every child owes [D:seq-pfirst]. Redirection is the caller's — the
@@ -168,8 +173,13 @@ let private spawn
                     |> Array.map (fun d -> System.IO.Path.Combine(d, prog))
                     |> Array.tryFind runnable
 
+            let cwd =
+                match cwdO with
+                | Some c -> c
+                | None -> Session.Cwd()
+
             match found with
-            | Some path when runnable path ->
+            | Some path when runnable path && Session.CleanupShim.execAccepts path cwd runnable ->
                 let psi = ProcessStartInfo(Session.CleanupShim.shell)
                 psi.ArgumentList.Add "-c"
                 psi.ArgumentList.Add Session.CleanupShim.script
@@ -209,6 +219,10 @@ let private spawn
     // sees every started child, and none starts after it
     // [D:signal-main-unwind]
     Session.gatedSpawn (fun () ->
+        // read before the start: a child forked before weir acted on a
+        // signal took a group-directed one with weir [D:cleanup-group-signal]
+        let afterSignal = Session.teardownRequested () <> 0
+
         // a shim a ^C killed before its trap never started the command:
         // start it again [D:cleanup-sigign]
         let rec startOnce (tries: int) =
@@ -225,6 +239,9 @@ let private spawn
                 p
 
         let p = startOnce 0
+
+        if afterSignal then
+            startedAfterSignal.Add(p, null)
 
         // a racing arm's children join its group [D:seq-pfirst] — a no-op
         // outside pfirst, and the scoped child owes it too: the spill path
@@ -246,6 +263,29 @@ let private spawn
 
         p)
 
+// a pipe's reader or writer on its own thread, never the pool's: blocked
+// on a child that never writes (a race's loser), it holds no pool thread
+// a winner's reader waits for [D:pipe-threads]. The thread joins the
+// flow's node, as Task.Run's work would
+let private offPool (f: unit -> 'a) : System.Threading.Tasks.Task<'a> =
+    let done' =
+        System.Threading.Tasks.TaskCompletionSource<'a>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
+    let t =
+        System.Threading.Thread(
+            (fun () ->
+                try
+                    done'.SetResult(f ())
+                with ex ->
+                    done'.SetException ex),
+            IsBackground = true
+        )
+
+    t.Start()
+    done'.Task
+
 // the one starter: the shared spawn plus the stdin writer, which pulls
 // the input seq lazily as the pipe accepts (laziness reaches inputs too).
 // The second result rethrows the PRODUCER's raise (or exit) on the
@@ -260,7 +300,7 @@ let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process * 
 
     match s.Input with
     | Some lines ->
-        System.Threading.Tasks.Task.Run(fun () ->
+        offPool (fun () ->
             try
                 try
                     // a child's stdin is data: LF on every platform
@@ -335,6 +375,21 @@ type CommandFailure(code: int, signalNote: string, shown: string) =
     member _.Code = code
     member _.SignalNote = signalNote
     member _.Shown = shown
+    /// raised outside a cleanup, where weir's signal arriving first would
+    /// have made the death the teardown's [D:settle-pending]
+    member val SignalMayOwn = false with get, set
+
+/// a script's fatal error that is a signal's after all: a command outside
+/// a cleanup that died 129-143 took a signal weir's own reached later —
+/// Some of the teardown's code, so the script dies by it with no message
+/// [D:settle-pending]
+let fatalTeardown (ex: exn) : int option =
+    match ex with
+    | :? CommandFailure as cf when cf.SignalMayOwn ->
+        match Session.settleFatal cf.Code with
+        | 0 -> None
+        | c -> Some c
+    | _ -> None
 
 let private raiseFailure (s: Spec) (code: int) : unit =
     let shown = showArgv (s.Prog :: s.Args)
@@ -349,9 +404,11 @@ let private raiseFailure (s: Spec) (code: int) : unit =
         | c when c > 128 && c < 165 -> $" (signal {c - 128})"
         | _ -> ""
 
-    raise (CommandFailure(code, signalNote, shown))
+    raise (CommandFailure(code, signalNote, shown, SignalMayOwn = not (Session.inCleanup ())))
 
-let private raiseNonzero (s: Spec) (code: int) : unit =
+// `statement`: the command's output is unused (a statement relays or
+// inherits it), so a death the cleanup pass covers truncates no value
+let private raiseNonzero (statement: bool) (p: Process) (s: Spec) (code: int) : unit =
     // a child killed by a teardown is the teardown's, not a failure
     // [D:signal-main-unwind] — on an arm too, which the teardown cuts
     // [D:teardown-kill-not-failure]; a terminal ^C's death likewise
@@ -366,16 +423,20 @@ let private raiseNonzero (s: Spec) (code: int) : unit =
         Session.settleReplInterrupt code |> ignore
         Session.checkInterrupted ()
 
-    // a cleanup's command the teardown's own signal killed (a
+    // a cleanup's statement command the teardown's own signal killed (a
     // group-directed TERM/HUP) is the signal's: the cleanup runs on whole
     // [D:cleanup-group-signal]
-    if not (Session.cleanupKilledByTeardown code) then
+    let running =
+        let mutable o = null
+        not (startedAfterSignal.TryGetValue(p, &o))
+
+    if not (Session.cleanupKilledByTeardown statement running code) then
         raiseFailure s code
 
 // ---- the consumers (the output axis) -------------------------------
 
 // stdout as a lazy line seq; raise-at-force on nonzero; stderr inherits
-let linesOf (s: Spec) : seq<string> =
+let private linesOfWith (statement: bool) (s: Spec) : seq<string> =
     seq {
         let p, producerFault = start true false s
         use _ = p
@@ -392,10 +453,16 @@ let linesOf (s: Spec) : seq<string> =
             producerFault ()
 
             if p.ExitCode <> 0 then
-                raiseNonzero s p.ExitCode
+                raiseNonzero statement p s p.ExitCode
         finally
             reap p
     }
+
+let linesOf (s: Spec) : seq<string> = linesOfWith false s
+
+/// a statement command's lines (`cmd` armed as `cmd |print`): its output
+/// is relayed, never a value [D:cleanup-group-signal]
+let statementLinesOf (s: Spec) : seq<string> = linesOfWith true s
 
 // the chunk-level relay [D:stream-echo]: onText receives content the
 // moment it arrives — partials included, so an interactive prompt shows
@@ -444,7 +511,7 @@ let streamSegmentsOf (s: Spec) (onText: string -> unit) (onBreak: unit -> unit) 
         producerFault ()
 
         if p.ExitCode <> 0 then
-            raiseNonzero s p.ExitCode
+            raiseNonzero true p s p.ExitCode
     finally
         reap p
 
@@ -463,7 +530,7 @@ let runInherited (s: Spec) : unit =
         producerFault ()
 
         if p.ExitCode <> 0 then
-            raiseNonzero s p.ExitCode
+            raiseNonzero true p s p.ExitCode
     finally
         reap p
 
@@ -748,7 +815,7 @@ let completedOf (s: Spec) : int * seq<string> * seq<string> =
     let outBytes, errBytes =
         try
             let stderrTask =
-                System.Threading.Tasks.Task.Run(fun () -> readAllBytes (Session.cutStream p p.StandardError.BaseStream))
+                offPool (fun () -> readAllBytes (Session.cutStream p p.StandardError.BaseStream))
 
             let outBytes = readAllBytes (Session.cutStream p p.StandardOutput.BaseStream)
             outBytes, Session.cutJoin stderrTask
@@ -780,7 +847,7 @@ let private pumpBytes
     (dst: System.IO.Stream)
     (closeDst: unit -> unit)
     : System.Threading.Tasks.Task<bool> =
-    System.Threading.Tasks.Task.Run(fun () ->
+    offPool (fun () ->
         let mutable broken = false
 
         try
@@ -849,14 +916,14 @@ let private startChain (tailOut: bool) (allErr: bool) (specs: Spec list) =
 // fault [D:pipe-early-exit]
 let private chainFailure (procs: (Spec * Process) list) (pumps: System.Threading.Tasks.Task<bool> list) =
     procs
-    |> List.mapi (fun i (sp, p) -> i, sp, p.ExitCode)
-    |> List.tryFind (fun (i, _, code) -> code <> 0 && not (i < pumps.Length && Session.cutJoin pumps[i]))
-    |> Option.map (fun (_, sp, code) -> sp, code)
+    |> List.mapi (fun i (sp, p: Process) -> i, sp, p, p.ExitCode)
+    |> List.tryFind (fun (i, _, _, code) -> code <> 0 && not (i < pumps.Length && Session.cutJoin pumps[i]))
+    |> Option.map (fun (_, sp, p, code) -> sp, p, code)
 
-let chainLinesOf (specs: Spec list) : seq<string> =
+let private chainLinesOfWith (statement: bool) (specs: Spec list) : seq<string> =
     match specs with
     | [] -> Seq.empty
-    | [ one ] -> linesOf one
+    | [ one ] -> linesOfWith statement one
     | _ ->
         seq {
             let procs, pumps, producerFault = startChain true false specs
@@ -878,18 +945,23 @@ let chainLinesOf (specs: Spec list) : seq<string> =
                 producerFault ()
 
                 match chainFailure procs pumps with
-                | Some(sp, code) -> raiseNonzero sp code
+                | Some(sp, p, code) -> raiseNonzero statement p sp code
                 | None -> ()
             finally
                 for _, p in procs do
                     reap p
         }
 
+let chainLinesOf (specs: Spec list) : seq<string> = chainLinesOfWith false specs
+
+/// a statement chain's lines (armed as `chain |print`) [D:cleanup-group-signal]
+let chainStatementLinesOf (specs: Spec list) : seq<string> = chainLinesOfWith true specs
+
 // a reified chain's code [D:chain-reifiers]: the leftmost failing
 // stage's, or 0
 let private chainCode procs pumps =
     match chainFailure procs pumps with
-    | Some(_, code) -> code
+    | Some(_, _, code) -> code
     | None -> 0
 
 // `chain | complete`: the tail's stdout, every stage's stderr in stage
@@ -904,7 +976,7 @@ let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
             let errTasks =
                 procs
                 |> List.map (fun (_, p) ->
-                    System.Threading.Tasks.Task.Run(fun () -> readAllBytes (Session.cutStream p p.StandardError.BaseStream)))
+                    offPool (fun () -> readAllBytes (Session.cutStream p p.StandardError.BaseStream)))
 
             let _, last = List.last procs
             let outBytes = readAllBytes (Session.cutStream last last.StandardOutput.BaseStream)
@@ -968,7 +1040,7 @@ let runChainInherited (specs: Spec list) : unit =
             producerFault ()
 
             match chainFailure procs pumps with
-            | Some(sp, code) -> raiseNonzero sp code
+            | Some(sp, p, code) -> raiseNonzero true p sp code
             | None -> ()
         finally
             for _, p in procs do
@@ -1075,8 +1147,11 @@ let startSpilled
         t.Start()
         t
 
-    let tOut = pump p.StandardOutput.BaseStream outPath
-    let tErr = pump p.StandardError.BaseStream errPath
+    // cut as the flow that opened the scope is: after a cut the drain never
+    // waits for the EOF of a pipe a descendant the kill missed still holds
+    // [D:wait-after-cut]
+    let tOut = pump (Session.cutStream p p.StandardOutput.BaseStream) outPath
+    let tErr = pump (Session.cutStream p p.StandardError.BaseStream) errPath
 
     let drain () =
         // bounded: a dead child's pipes hit EOF at once, so the join is

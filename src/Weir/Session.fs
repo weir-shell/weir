@@ -880,6 +880,10 @@ let private tearingDown = ref 0
 // in for the main thread meanwhile)
 let mutable private replFlow = false
 
+// signals the handler has received and not yet acted on — what a settle
+// wait waits for [D:settle-pending]
+let mutable private signalsInFlight = 0
+
 let registerMainThread () : unit =
     mainThreadId <- System.Threading.Thread.CurrentThread.ManagedThreadId
 
@@ -1174,6 +1178,24 @@ module private Libc =
     [<DllImport("libc", SetLastError = true)>]
     extern int statx(int dirfd, string path, int flags, uint32 mask, byte[] buf)
 
+    // the special files Dir.copy recreates [D:dircopy-special]
+    [<DllImport("libc", SetLastError = true)>]
+    extern int mkfifo(string path, uint32 mode)
+
+    [<DllImport("libc", EntryPoint = "mknod", SetLastError = true)>]
+    extern int mknodLinux(string path, uint32 mode, uint64 dev)
+
+    [<DllImport("libc", EntryPoint = "mknod", SetLastError = true)>]
+    extern int mknodMac(string path, uint32 mode, int dev)
+
+    // macOS's 64-bit-inode lstat: st_mode the u16 at byte 4, st_rdev the
+    // i32 at byte 24
+    [<DllImport("libc", EntryPoint = "lstat", SetLastError = true)>]
+    extern int lstatMacArm(string path, byte[] buf)
+
+    [<DllImport("libc", EntryPoint = "lstat$INODE64", SetLastError = true)>]
+    extern int lstatMacX64(string path, byte[] buf)
+
     // the exit that runs no managed code (no ProcessExit sweep)
     [<DllImport("libc", EntryPoint = "_exit")>]
     extern void sysExit(int status)
@@ -1183,6 +1205,9 @@ module private Libc =
 
     [<DllImport("libc", SetLastError = true)>]
     extern int dup2(int oldfd, int newfd)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int execv(string path, nativeint[] argv)
 
     // RLIMIT_CORE is 4 on Linux and macOS; a struct rlimit is two rlim_t
     [<DllImport("libc", SetLastError = true)>]
@@ -1344,12 +1369,56 @@ module CleanupShim =
 
             go ()
 
-/// a spawn here goes through `CleanupShim`: it runs inside a cleanup at a
-/// terminal whose foreground group is weir's (POSIX)
+    /// what execve itself runs [D:cleanup-sigign]: a `#!` line naming an
+    /// executable interpreter, or a native image. The shim's `exec` would
+    /// hand any other file to sh (its ENOEXEC fallback), which a direct
+    /// spawn refuses; read without blocking, so a FIFO is never waited on
+    let execAccepts (path: string) (cwd: string) (runnable: string -> bool) : bool =
+        let O_NONBLOCK = if System.OperatingSystem.IsLinux() then 0x800 else 0x4
+        let fd = Libc.``open`` (path, O_NONBLOCK)
+
+        if fd < 0 then
+            false
+        else
+            let head =
+                let buf = System.Runtime.InteropServices.Marshal.AllocHGlobal 256
+
+                try
+                    let n = int (Libc.read (fd, buf, unativeint 256))
+                    let bytes = Array.zeroCreate<byte> (max n 0)
+                    System.Runtime.InteropServices.Marshal.Copy(buf, bytes, 0, bytes.Length)
+                    bytes
+                finally
+                    System.Runtime.InteropServices.Marshal.FreeHGlobal buf
+                    Libc.close fd |> ignore
+
+            let starts (magic: byte list) =
+                head.Length >= magic.Length && List.forall2 (fun i b -> head[i] = b) [ 0 .. magic.Length - 1 ] magic
+
+            if starts [ 0x23uy; 0x21uy ] then
+                let line =
+                    System.Text.Encoding.UTF8.GetString(head, 2, head.Length - 2).Split('\n').[0]
+
+                match line.Trim([| ' '; '\t' |]).Split([| ' '; '\t' |], 2).[0] with
+                | "" -> false
+                | interp -> runnable (System.IO.Path.Combine(cwd, interp))
+            else
+                [ [ 0x7Fuy; 0x45uy; 0x4Cuy; 0x46uy ] // ELF
+                  [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCEuy ] // Mach-O
+                  [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCFuy ]
+                  [ 0xCEuy; 0xFAuy; 0xEDuy; 0xFEuy ]
+                  [ 0xCFuy; 0xFAuy; 0xEDuy; 0xFEuy ]
+                  [ 0xCAuy; 0xFEuy; 0xBAuy; 0xBEuy ] ]
+                |> List.exists starts
+
+/// a spawn here goes through `CleanupShim`: it runs inside a cleanup and
+/// weir has a controlling terminal (POSIX) — foreground or not, since a
+/// background weir can be brought to the foreground while the command
+/// runs [D:cleanup-sigign]
 let cleanupIgnoresTerminal () : bool =
     not (System.OperatingSystem.IsWindows())
     && inCleanup ()
-    && Libc.terminalForeground ()
+    && Libc.hasControllingTty ()
 
 /// an exclusive flock on an open file, without blocking [D:lock-advisory]:
 /// true when taken, false while another open file description holds it.
@@ -1411,17 +1480,88 @@ let resetDetachedSigint: Lazy<unit> =
          then
              Libc.resetSigintIfIgnored () |> ignore)
 
-/// a closed fd 2 becomes /dev/null before anything opens a file, so no
-/// file weir opens takes fd 2 and gets its diagnostics [D:console-write]
-let nullClosedStderr () : unit =
+// Linux: the runtime opens /dev/urandom before main and keeps reading it,
+// so a standard fd closed at exec is where it landed — the one urandom fd
+// open, sitting at 0, 1 or 2
+let private runtimeTookStdio () : int option =
+    let isUrandom (l: string) =
+        try
+            System.IO.File.ResolveLinkTarget(l, false).FullName = "/dev/urandom"
+        with _ ->
+            false
+
+    if
+        not (System.OperatingSystem.IsLinux())
+        || not (List.exists (fun n -> isUrandom $"/proc/self/fd/{n}") [ 0; 1; 2 ])
+    then
+        None
+    else
+        try
+            let urandom =
+                System.IO.Directory.GetFileSystemEntries "/proc/self/fd" |> Array.filter isUrandom
+
+            match urandom with
+            | [| l |] ->
+                match System.IO.Path.GetFileName l with
+                | "0" -> Some 0
+                | "1" -> Some 1
+                | "2" -> Some 2
+                | _ -> None
+            | _ -> None
+        with _ ->
+            None
+
+/// a closed fd 0, 1 or 2 is /dev/null before anything opens a file, so no
+/// file weir (or its runtime) opens takes a standard fd: stdin reads
+/// nothing, stdout and stderr write nowhere [D:console-write]. One the
+/// runtime took before main is put on /dev/null and weir starts over in
+/// place (the same pid and argv), where the runtime's fd lands elsewhere
+let nullClosedStdio () : unit =
     let F_GETFD = 1
 
-    if not (System.OperatingSystem.IsWindows()) && Libc.fcntl (2, F_GETFD) = -1 then
-        let fd = Libc.``open`` ("/dev/null", 1)
+    if not (System.OperatingSystem.IsWindows()) then
+        let taken = runtimeTookStdio ()
 
-        if fd >= 0 && fd <> 2 then
-            Libc.dup2 (fd, 2) |> ignore
-            Libc.close fd |> ignore
+        // lowest first: an open takes the lowest free fd
+        for target, flags in [ 0, 0; 1, 1; 2, 1 ] do
+            if taken = Some target || Libc.fcntl (target, F_GETFD) = -1 then
+                let fd = Libc.``open`` ("/dev/null", flags)
+
+                if fd >= 0 && fd <> target then
+                    Libc.dup2 (fd, target) |> ignore
+                    Libc.close fd |> ignore
+
+        match taken with
+        | Some target ->
+            // the argv bytes as exec'd, NUL-terminated each
+            let cmdline =
+                try
+                    System.IO.File.ReadAllBytes "/proc/self/cmdline"
+                with _ ->
+                    [||]
+
+            if cmdline.Length > 0 then
+                let block = System.Runtime.InteropServices.Marshal.AllocHGlobal(cmdline.Length + 1)
+                System.Runtime.InteropServices.Marshal.Copy(cmdline, 0, block, cmdline.Length)
+                System.Runtime.InteropServices.Marshal.WriteByte(block, cmdline.Length, 0uy)
+
+                let starts =
+                    [ yield 0
+                      for i in 0 .. cmdline.Length - 2 do
+                          if cmdline[i] = 0uy then
+                              yield i + 1 ]
+
+                let argv = Array.append (starts |> List.map (fun o -> block + nativeint o) |> Array.ofList) [| 0n |]
+                Libc.execv ("/proc/self/exe", argv) |> ignore
+
+            // no start-over: the runtime reads its random bytes from that fd,
+            // so it gets /dev/urandom back
+            let fd = Libc.``open`` ("/dev/urandom", 0)
+
+            if fd >= 0 && fd <> target then
+                Libc.dup2 (fd, target) |> ignore
+                Libc.close fd |> ignore
+        | None -> ()
 
 /// the terminal's mode when a script started at it as the foreground
 /// group: a hard exit kills a cleanup's command that set it raw (a pager)
@@ -1539,12 +1679,13 @@ let stopTakingArms () : bool =
 /// the requested teardown's exit code, or 0 when none is requested
 let teardownRequested () : int = System.Threading.Volatile.Read &teardownCode
 
-/// a cleanup's command that died by the teardown's own signal (a
-/// group-directed TERM/HUP reaches it with weir) is the signal's, not a
-/// failure: the cleanup runs on whole [D:cleanup-group-signal], its
-/// fan-out arms too. A race's arm inside it still fails, so a loser never
-/// goes on as if its command had finished and wins
-let cleanupKilledByTeardown (code: int) : bool =
+/// a cleanup's statement command that was running when the signal came
+/// and died by the teardown's own signal (a group-directed TERM/HUP
+/// reaches it with weir) is the signal's, not a failure: the cleanup runs
+/// on whole [D:cleanup-group-signal], its fan-out arms too. A value
+/// capture, a command started after the signal and a race's arm still
+/// fail, so no truncated output is ever a value
+let cleanupKilledByTeardown (statement: bool) (runningAtSignal: bool) (code: int) : bool =
     // up to the cleanup's shield: is this flow inside a race?
     let rec inRace (n: Node) =
         match n with
@@ -1553,25 +1694,55 @@ let cleanupKilledByTeardown (code: int) : bool =
         | n when n.Kind = NodeKind.Race -> true
         | n -> inRace n.Parent
 
-    code > 128
+    statement
+    && runningAtSignal
+    && code > 128
     && inCleanup ()
     && code = System.Threading.Volatile.Read &teardownCode
     && not (inRace (currentNode ()))
 
-/// a command that died of SIGINT while weir is the terminal's foreground
-/// group most likely took the terminal's ^C with weir [D:sigint-terminal-group];
-/// one that died of HUP, QUIT or TERM likely took a group-directed signal
-/// with weir (a hangup, ^\, `kill -- -pgid`) [D:teardown-kill-not-failure]:
-/// give the signal handler a moment to request the teardown, so the death
-/// is the signal, not a command failure
+// a signal the handler is acting on: wait (bounded) until it is done
+// [D:settle-pending]. A signal weir has received reaches its handler a
+// fraction of a millisecond after the kernel delivered it (.NET hands it
+// to a thread or a pool item first), sometimes after the dead child is
+// reaped: with none in flight the wait is a 5ms grace for one to appear,
+// never the 250ms
+let private settleWhile (waiting: unit -> bool) : unit =
+    let clock = System.Diagnostics.Stopwatch.StartNew()
+
+    let inFlight () =
+        System.Threading.Volatile.Read &signalsInFlight > 0
+
+    while waiting ()
+          && clock.ElapsedMilliseconds < (if inFlight () then 250L else 5L) do
+        System.Threading.Thread.Sleep(if inFlight () then 1 else 0)
+
+/// a command that died of INT, HUP, QUIT or TERM while weir's handler is
+/// acting on a signal most likely took it with weir (the terminal's ^C,
+/// a hangup, ^\, `kill -- -pgid`) [D:sigint-terminal-group]
+/// [D:teardown-kill-not-failure]: let the handler request the teardown
+/// first, so the death is the signal, not a command failure
+/// [D:settle-pending]
 let settleInterrupt (code: int) : unit =
     if
         (code = 129 || code = 130 || code = 131 || code = 143)
         && not (System.OperatingSystem.IsWindows())
         && mainThreadId <> 0
         && not replFlow
-        && System.Threading.Volatile.Read &teardownCode = 0
-        && (code <> 130 || Libc.terminalForeground ())
+    then
+        settleWhile (fun () -> System.Threading.Volatile.Read &teardownCode = 0)
+
+/// a script about to die of a command's 129/130/131/143 failure: the
+/// command may have taken a signal before weir did (a supervisor's kill
+/// of each pid, a hangup reaching the child first) — the one wait on the
+/// code alone, paid once, at the death: up to 250ms for weir's own signal
+/// [D:settle-pending]. The teardown's code, or 0
+let settleFatal (code: int) : int =
+    if
+        (code = 129 || code = 130 || code = 131 || code = 143)
+        && not (System.OperatingSystem.IsWindows())
+        && mainThreadId <> 0
+        && not replFlow
     then
         let clock = System.Diagnostics.Stopwatch.StartNew()
 
@@ -1579,22 +1750,15 @@ let settleInterrupt (code: int) : unit =
               && clock.ElapsedMilliseconds < 250L do
             System.Threading.Thread.Sleep 5
 
-/// a REPL child whose code is data (`| exitCode`, `| complete`) died of
-/// SIGINT at the terminal: most likely the ^C, whose handler may not have
-/// cut the entry yet — give it a moment, so the entry ends after this
-/// statement [D:repl-entry-check]. Returns the code
-let settleReplInterrupt (code: int) : int =
-    if
-        code = 130
-        && replFlow
-        && not (System.OperatingSystem.IsWindows())
-        && not (interruptRequested ())
-        && Libc.terminalForeground ()
-    then
-        let clock = System.Diagnostics.Stopwatch.StartNew()
+    System.Threading.Volatile.Read &teardownCode
 
-        while not (interruptRequested ()) && clock.ElapsedMilliseconds < 250L do
-            System.Threading.Thread.Sleep 5
+/// a REPL child whose code is data (`| exitCode`, `| complete`) died of
+/// SIGINT while the ^C's handler is still cutting the entry: let it, so
+/// the entry ends after this statement [D:repl-entry-check]
+/// [D:settle-pending]. Returns the code
+let settleReplInterrupt (code: int) : int =
+    if code = 130 && replFlow && not (System.OperatingSystem.IsWindows()) then
+        settleWhile (fun () -> not (interruptRequested ()))
 
     code
 
@@ -1699,8 +1863,11 @@ let waitProcess (p: System.Diagnostics.Process) : unit =
             else
                 System.Threading.WaitHandle.WaitAny handles |> ignore
 
-        // the no-argument form also waits for redirected streams' EOF
-        p.WaitForExit()
+        // the no-argument form also waits for redirected streams' EOF —
+        // never after a cut: a descendant the kill missed may hold a pipe
+        // past the exit [D:wait-after-cut]
+        if not t.IsCancellationRequested then
+            p.WaitForExit()
 
 // the main thread is joining arms for a teardown: it unwinds next, so the
 // signal watchdog stands down [D:teardown-joins-arms]
@@ -2359,6 +2526,83 @@ let isFifo (path: string) : bool =
         Libc.statx (AT_FDCWD, path, 0, STATX_TYPE, buf) = 0
         && (int (System.BitConverter.ToUInt16(buf, 28)) &&& 0o170000) = 0o010000)
 
+/// a FIFO, socket or device, not followed through a link: its mode (type
+/// and permission bits) and its device number; None for a regular file,
+/// a directory, a link, or off POSIX [D:dircopy-special]
+let specialFile (path: string) : (int * uint64) option =
+    let special (mode: int) =
+        match mode &&& 0o170000 with
+        | 0o010000
+        | 0o020000
+        | 0o060000
+        | 0o140000 -> true
+        | _ -> false
+
+    if System.OperatingSystem.IsLinux() then
+        let buf = Array.zeroCreate<byte> 256
+        let AT_FDCWD, AT_SYMLINK_NOFOLLOW, STATX_TYPE_MODE = -100, 0x100, 3u
+
+        if Libc.statx (AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, STATX_TYPE_MODE, buf) = 0 then
+            let mode = int (System.BitConverter.ToUInt16(buf, 28))
+            let major = uint64 (System.BitConverter.ToUInt32(buf, 128))
+            let minor = uint64 (System.BitConverter.ToUInt32(buf, 132))
+            // glibc's makedev
+            let dev =
+                ((major &&& 0xfffff000UL) <<< 32)
+                ||| ((major &&& 0xfffUL) <<< 8)
+                ||| ((minor &&& 0xffffff00UL) <<< 12)
+                ||| (minor &&& 0xffUL)
+
+            if special mode then Some(mode, dev) else None
+        else
+            None
+    elif System.OperatingSystem.IsMacOS() then
+        let buf = Array.zeroCreate<byte> 256
+
+        let rc =
+            if System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture = System.Runtime.InteropServices.Architecture.X64 then
+                Libc.lstatMacX64 (path, buf)
+            else
+                Libc.lstatMacArm (path, buf)
+
+        let mode = int (System.BitConverter.ToUInt16(buf, 4))
+
+        if rc = 0 && special mode then
+            Some(mode, uint64 (uint32 (System.BitConverter.ToInt32(buf, 24))))
+        else
+            None
+    else
+        None
+
+/// create the special file `specialFile` described, as `cp -R` does —
+/// never opened; None when made, else why not [D:dircopy-special]
+let makeSpecialFile (path: string) (mode: int, dev: uint64) : string option =
+    let rc =
+        try
+            if mode &&& 0o170000 = 0o010000 then
+                Libc.mkfifo (path, uint32 (mode &&& 0o7777))
+            elif System.OperatingSystem.IsMacOS() then
+                Libc.mknodMac (path, uint32 mode, int (uint32 dev))
+            else
+                Libc.mknodLinux (path, uint32 mode, dev)
+        with :? System.EntryPointNotFoundException ->
+            -2
+
+    if rc = 0 then
+        None
+    elif rc = -2 then
+        Some "this platform's libc has no mknod"
+    else
+        let errno = System.Runtime.InteropServices.Marshal.GetLastPInvokeError()
+
+        Some(
+            match errno with
+            | 1 -> "operation not permitted (a device needs privilege)"
+            | 13 -> "permission denied"
+            | 17 -> "it exists"
+            | e -> $"errno {e}"
+        )
+
 // a FIFO a File op writes [D:fifo-ops-polled]: opened non-blocking —
 // the open waits for a reader in short cut-checked steps (ENXIO until one
 // comes) and each write waits for room beside the cut, so a lost race, a
@@ -2610,13 +2854,15 @@ let private terminalInterrupt () =
 // terminal's unscoped ^C, the teardown — or, with no flow to unwind (the
 // REPL between entries, a subcommand), the exit's sweep and the signal's
 // death
-let private onSignal (ctx: System.Runtime.InteropServices.PosixSignalContext) =
+let private dispatchSignal (ctx: System.Runtime.InteropServices.PosixSignalContext) =
     let sigint = ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
     let code = signalExitCode ctx.Signal
 
-    // a SIGINT the REPL cancels is not a death [D:repl-isig]
+    // a SIGINT the REPL survives is not a death [D:repl-isig]: it cuts the
+    // evaluation's waits [D:repl-interrupt]
     if replSurvivesSigint.Value && sigint then
-        ()
+        ctx.Cancel <- true
+        interruptRepl ()
     elif System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
         ctx.Cancel <- true
         hardExit code
@@ -2636,6 +2882,16 @@ let private onSignal (ctx: System.Runtime.InteropServices.PosixSignalContext) =
         requestTeardown code
         killLiveChildren true
         startBackstop 1000 1000 (fun () -> true) code
+
+let private onSignal (ctx: System.Runtime.InteropServices.PosixSignalContext) =
+    // first: a settle wait sees the signal until it is acted on
+    // [D:settle-pending]
+    System.Threading.Interlocked.Increment &signalsInFlight |> ignore
+
+    try
+        dispatchSignal ctx
+    finally
+        System.Threading.Interlocked.Decrement &signalsInFlight |> ignore
 
 let private installExitHook () =
     // a normal process exit — the pfirst exit-race customer: a background
@@ -2691,6 +2947,20 @@ let registerTmpDir (dir: string) : unit =
     liveTmpDirs[dir] <- ()
 
 let deregisterTmpDir (dir: string) : unit = liveTmpDirs.TryRemove dir |> ignore
+
+/// create a private dir and register it, so no signal sees the dir
+/// unregistered [D:exit-hook]: the hook first (until it is installed a
+/// signal kills weir outright), then both under the spawn gate, which the
+/// hard exit's sweep takes first
+let createRegisteredDir (dir: string) : unit =
+    ensureHook ()
+    spawnGate.EnterReadLock()
+
+    try
+        createPrivateDir dir
+        registerTmpDir dir
+    finally
+        spawnGate.ExitReadLock()
 
 let registerProc (p: System.Diagnostics.Process) : unit =
     ensureHook ()

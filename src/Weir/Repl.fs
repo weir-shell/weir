@@ -159,7 +159,10 @@ let private computePrompt () =
     | Some f ->
         try
             f (not lastErrored, lastExit) |> sanitizePromptForTest
-        with ex ->
+        with
+        | Eval.ExitRequest _ -> reraise ()
+        | :? Session.Interrupted -> defaultPrompt
+        | ex ->
             if not promptWarned then
                 promptWarned <- true
 
@@ -1356,31 +1359,28 @@ let private bufferComplete (bufLines: string list) : bool =
 // tty only.
 let mutable private contPrompt = "   … "
 
-// type-ahead [D:owned-line-editor]: keys typed before the first prompt
-// arrived while the terminal was still cooked, where ICRNL already turned
-// Enter into '\n' — the Ctrl+J force-newline key. Everything pending at
-// the editor's first entry is drained here once, a '\n' read back as
-// Enter, and replayed ahead of live keys (across entries: an early line's
-// Enter submits it, the rest feeds the next prompt).
+// type-ahead [D:repl-typeahead]: keys typed while the terminal was
+// cooked — before the first prompt, or during an entry's evaluation (eval
+// runs cooked [D:repl-isig]) — where ICRNL already turned Enter into
+// '\n', the Ctrl+J force-newline key. Everything pending at each editor
+// entry is drained here, a '\n' read back as Enter, and replayed ahead of
+// live keys (across entries: an early line's Enter submits it, the rest
+// feeds the next prompt).
 let private typeAhead = Collections.Generic.Queue<ConsoleKeyInfo>()
-let mutable private typeAheadDrained = false
 
 let private drainTypeAhead () =
-    if not typeAheadDrained then
-        typeAheadDrained <- true
+    try
+        while Console.KeyAvailable do
+            let k = Console.ReadKey(intercept = true)
 
-        try
-            while Console.KeyAvailable do
-                let k = Console.ReadKey(intercept = true)
-
-                typeAhead.Enqueue(
-                    if k.KeyChar = '\n' then
-                        ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false)
-                    else
-                        k
-                )
-        with _ ->
-            ()
+            typeAhead.Enqueue(
+                if k.KeyChar = '\n' then
+                    ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false)
+                else
+                    k
+            )
+    with _ ->
+        ()
 
 let private readKey () =
     if typeAhead.Count > 0 then
@@ -1388,25 +1388,23 @@ let private readKey () =
     else
         ttyIo (fun () -> Console.ReadKey(intercept = true))
 
-/// after a bare Esc: is an Enter right behind it (within 100ms)? Alt+Enter
-/// is ESC CR, and .NET reads a lone ESC as Escape when the CR has not
-/// arrived yet. A key that is not Enter stays queued for the editor
+/// after a bare Esc: is an Enter already queued behind it? Alt+Enter is
+/// ESC CR, and .NET reads a lone ESC as Escape when the CR is not in its
+/// buffer yet — a paste or a real Alt+Enter has it queued. No waiting: a
+/// human's Esc then Enter abandons [D:repl-esc-enter]. A key that is not
+/// Enter stays queued for the editor
 let private escThenEnter () : bool =
-    let clock = Diagnostics.Stopwatch.StartNew()
-
-    let rec next () =
-        if typeAhead.Count > 0 then Some(typeAhead.Peek())
+    let next =
+        if typeAhead.Count > 0 then
+            Some(typeAhead.Peek())
         elif ttyIo (fun () -> Console.KeyAvailable) then
             let k = ttyIo (fun () -> Console.ReadKey(intercept = true))
             typeAhead.Enqueue k
             Some k
-        elif clock.ElapsedMilliseconds < 100L then
-            Threading.Thread.Sleep 2
-            next ()
         else
             None
 
-    match next () with
+    match next with
     | Some k when k.Key = ConsoleKey.Enter || k.KeyChar = '\r' ->
         typeAhead.Dequeue() |> ignore
         true
@@ -1945,6 +1943,51 @@ let mutable private sigintSurvival: obj option = None
 // piped REPL has no console). POSIX-scoped like the rest of the split.
 let mutable private ttyEval = false
 
+// eval runs under the shell's tty disposition [D:repl-isig]: ISIG on,
+// so ^C reaches the foreground child as a group SIGINT (the script
+// path's exact behaviour) — weir itself survives via the cancel
+// registration in setupLineEditor. The finally closes the eval->prompt
+// window; both no-op when there is no tty (piped REPL, Windows).
+// the terminal's eval mode, held for a whole entry: a statement inside an
+// entry neither enters nor leaves it, so no raw (no-ISIG) gap opens
+// between an entry's statements for a ^C to land in as a typed byte
+// [D:repl-entry-isig]
+let mutable private ttyEvalDepth = 0
+
+let private enterTtyEval () =
+    ttyEvalDepth <- ttyEvalDepth + 1
+
+    // the property is the load-bearing half [D:repl-isig]: .NET
+    // re-applies its own terminal notion when a child spawns (a raw
+    // tcsetattr sticks for ~10ms and the child still sees -isig), so the
+    // notion must change — TreatControlCAsInput=false makes .NET's
+    // spawn-time config agree with the cooked termios the restore sets
+    // now
+    if ttyEval && ttyEvalDepth = 1 then
+        ttyIo (fun () -> Console.TreatControlCAsInput <- false)
+        Term.restoreCooked ()
+
+let private leaveTtyEval () =
+    ttyEvalDepth <- max 0 (ttyEvalDepth - 1)
+
+    if ttyEval && ttyEvalDepth = 0 then
+        ttyIo (fun () -> Console.TreatControlCAsInput <- true)
+        Term.reassert ()
+
+// an evaluation outside an entry (#infer's source, the prompt function)
+// runs as an entry does: ISIG on, so a ^C stops it as a signal (never a
+// typed byte left for the next line), in its own interruptible node
+// [D:repl-isig] [D:repl-interrupt]
+let private asEntry (f: unit -> 'a) : 'a =
+    enterTtyEval ()
+    Session.beginReplEval ()
+
+    try
+        f ()
+    finally
+        Session.endReplEval ()
+        leaveTtyEval ()
+
 let private setupLineEditor () =
     // the shell's cooked termios first — the editor's raw config has
     // not been established yet, so this is the one moment the
@@ -1969,10 +2012,9 @@ let private setupLineEditor () =
             Some(
                 Runtime.InteropServices.PosixSignalRegistration.Create(
                     Runtime.InteropServices.PosixSignal.SIGINT,
-                    fun ctx ->
-                        ctx.Cancel <- true
-                        // and cut the evaluation's waits [D:repl-interrupt]
-                        Session.interruptRepl ()
+                    // the session's own handler cuts the evaluation's
+                    // waits [D:repl-interrupt] [D:settle-pending]
+                    fun ctx -> ctx.Cancel <- true
                 )
                 :> obj
             )
@@ -2089,7 +2131,7 @@ let private readRedirected () : string =
 let private readInput () =
     // the prompt for this entry [D:session-prompt]: computed once here
     // (a provider may run commands), then held stable across repaints
-    prompt <- computePrompt ()
+    prompt <- asEntry computePrompt
     promptWidth <- visibleWidth prompt
     contPrompt <- deriveContPrompt promptWidth
 
@@ -2658,37 +2700,6 @@ let itSchemeForTest (statements: string list) : string option =
 // (#help, #quit) executed now — one glyph, two lifetimes.
 
 // simple flow-wrap for name lists
-// eval runs under the shell's tty disposition [D:repl-isig]: ISIG on,
-// so ^C reaches the foreground child as a group SIGINT (the script
-// path's exact behaviour) — weir itself survives via the cancel
-// registration in setupLineEditor. The finally closes the eval->prompt
-// window; both no-op when there is no tty (piped REPL, Windows).
-// the terminal's eval mode, held for a whole entry: a statement inside an
-// entry neither enters nor leaves it, so no raw (no-ISIG) gap opens
-// between an entry's statements for a ^C to land in as a typed byte
-// [D:repl-entry-isig]
-let mutable private ttyEvalDepth = 0
-
-let private enterTtyEval () =
-    ttyEvalDepth <- ttyEvalDepth + 1
-
-    // the property is the load-bearing half [D:repl-isig]: .NET
-    // re-applies its own terminal notion when a child spawns (a raw
-    // tcsetattr sticks for ~10ms and the child still sees -isig), so the
-    // notion must change — TreatControlCAsInput=false makes .NET's
-    // spawn-time config agree with the cooked termios the restore sets
-    // now
-    if ttyEval && ttyEvalDepth = 1 then
-        ttyIo (fun () -> Console.TreatControlCAsInput <- false)
-        Term.restoreCooked ()
-
-let private leaveTtyEval () =
-    ttyEvalDepth <- max 0 (ttyEvalDepth - 1)
-
-    if ttyEval && ttyEvalDepth = 0 then
-        ttyIo (fun () -> Console.TreatControlCAsInput <- true)
-        Term.reassert ()
-
 let private evalChecked (source: string) (state: State) (chk: Script.CheckedStatement) : State =
     enterTtyEval ()
     Session.beginReplEval ()
@@ -3089,18 +3100,21 @@ let private evalSource (state: State) (source: string) : Result<string list, str
                     $"#infer: the source has type {formatTy te.Ty}; the adapter needs seq<string> (a captured JSON/YAML sample){repair}"
             else
                 try
-                    match Eval.eval state.Values te with
-                    | Eval.VSeq items ->
-                        Ok(
-                            items
-                            |> Seq.map (fun v ->
-                                match v with
-                                | Eval.VStr s -> s
-                                | _ -> "")
-                            |> List.ofSeq
-                        )
-                    | _ -> Error "#infer: the source did not produce a sequence"
-                with ex ->
+                    asEntry (fun () ->
+                        match Eval.eval state.Values te with
+                        | Eval.VSeq items ->
+                            Ok(
+                                items
+                                |> Seq.map (fun v ->
+                                    match v with
+                                    | Eval.VStr s -> s
+                                    | _ -> "")
+                                |> List.ofSeq
+                            )
+                        | _ -> Error "#infer: the source did not produce a sequence")
+                with
+                | Eval.ExitRequest _ -> reraise ()
+                | ex ->
                     Error $"#infer: evaluating the source raised: {ex.Message}"
 
 /// the drafted-type diagnostic [D:infer-diagnostic]: the drafted text

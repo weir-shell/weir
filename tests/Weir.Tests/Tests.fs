@@ -4018,7 +4018,7 @@ let completionTests =
               let ask (text: string) =
                   Weir.Complete.suggest envT text (Weir.Complete.wordStartAt text text.Length)
 
-              let scalar = [ "tag"; "tcount"; "tflag"; "tid"; "tpoint" ]
+              let scalar = [ "tag"; "tcount"; "tflag"; "tid" ]
 
               for line in
                   [ "git tag $t"
@@ -4028,13 +4028,57 @@ let completionTests =
                     "let v = git tag $t"
                     "let v = ^ls $t"
                     "git log | grep $t" ] do
-                  Expect.equal (ask line) scalar $"{line}: the $x-spliceable bindings exactly (a record splices through a field)"
+                  Expect.equal (ask line) scalar $"{line}: the $x-spliceable bindings exactly (a record only through a field)"
 
               for line in [ "git tag $@t"; "let v = ls -l $@t" ] do
-                  Expect.equal (ask line) [ "tags"; "tpoint" ] $"{line}: $@ offers seq<string> bindings (and records, for a field)"
+                  Expect.equal (ask line) [ "tags" ] $"{line}: $@ offers seq<string> bindings"
 
               // a non-$ word keeps its own pool
               Expect.isFalse (List.contains "tag" (ask "git tag t")) "a bare argv word is not a binding pool"
+          }
+          test "a $ splice completes only where and what the checker splices [D:argv-splice-complete]" {
+              let mono = Weir.Types.mono
+
+              let envS =
+                  env
+                  |> declare "type Rq = { name: string; tags: seq<string>; n: int; f: float }"
+                  |> fun e ->
+                      { e with
+                          Values =
+                              e.Values
+                              |> Map.add "qs" (mono Weir.Types.TStr)
+                              |> Map.add "qt" (mono Weir.Types.TInt)
+                              |> Map.add "qfz" (mono (Weir.Types.TSeq Weir.Types.TStr))
+                              |> Map.add "vr" (mono (Weir.Types.TNamed("Rq", []))) }
+
+              let ask (text: string) =
+                  Weir.Complete.suggest envS text (Weir.Complete.wordStartAt text text.Length)
+
+              // a plain string never splices: the `$` is literal there
+              Expect.equal (ask "echo \"$q") [] "inside \"…\""
+              Expect.equal (ask "echo \"a b $q") [] "inside \"…\" after a space"
+              Expect.equal (ask "echo 'x $q") [] "inside '…'"
+              // a splice glued to a word is a word-join the parser refuses
+              Expect.equal (ask "echo --x=$q") [] "after --x="
+              Expect.equal (ask "echo a$q") [] "glued to a word"
+              // a record splices only through a field
+              Expect.isFalse (List.contains "vr" (ask "echo $v")) "a bare record"
+              Expect.equal (ask "echo $vr.") [ "vr.n"; "vr.name" ] "$r. offers the fields $ admits"
+              Expect.equal (ask "echo $vr.na") [ "vr.name" ] "the field prefix filters"
+              Expect.equal (ask "echo $@vr.") [ "vr.tags" ] "$@r. offers the seq<string> fields"
+              Expect.equal (ask "echo $qs.") [] "a non-record has no fields"
+              // the same filter in every command position
+              for line in
+                  [ "echo $q"
+                    "let z = $(echo $q"
+                    "if true then echo $q"
+                    "if true then ls else echo $q"
+                    "for f in [\"a\"] do echo $q"
+                    "match 1 with | _ -> echo $q"
+                    "echo $\"{1}\" $q" ] do
+                  Expect.equal (ask line) [ "qs"; "qt" ] line
+
+              Expect.equal (ask "let z = $(echo $@q") [ "qfz" ] "$@ inside $(…)"
           }
           test "a line-head '#' completes the session directives, bare [D:repl-directives]" {
               // bare names: the editor's word starts after the '#', so
@@ -10072,6 +10116,165 @@ let planApplyTests =
                             "    if not (File.exists $\"{t}/x\") then fail \"not applied\"" ]
 
                   Expect.equal code 0 "a tmp dir opened outside the plan is a fine target"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-preconditions]: Dir.copy's destination parent must be a
+          // directory, directly and at capture, as every other op's is
+          test "Dir.copy into a missing parent or under a planned file refuses, directly and at capture" {
+              let root = td ()
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "s")) |> ignore
+              System.IO.File.WriteAllText(System.IO.Path.Combine(root, "s", "f.txt"), "x\n")
+              let d = weirPath root
+
+              try
+                  Expect.equal
+                      (runFile
+                          [ $"let r = Dir.copy \"{d}/s\" \"{d}/no/such/s\" |> try result"
+                            "match r with"
+                            "| Error e -> if not (e |> Str.contains \"no such directory\") then fail e"
+                            "| Ok _ -> fail \"copied\"" ])
+                      0
+                      "the direct call refuses naming the parent"
+
+                  Expect.isFalse (System.IO.Directory.Exists(System.IO.Path.Combine(root, "no"))) "nothing created"
+
+                  for second in [ $"Dir.copy \"{d}/s\" \"{d}/h.txt/sub/s\""; $"Dir.copy \"{d}/s\" \"{d}/no/such/s\"" ] do
+                      let code =
+                          runFile
+                              [ "let p ="
+                                "    plan"
+                                $"        File.write \"{d}/h.txt\" [\"z\"]"
+                                $"        {second}"
+                                "p |> Plan.apply" ]
+
+                      Expect.notEqual code 0 $"refused: {second}"
+                      Expect.isFalse (System.IO.File.Exists(System.IO.Path.Combine(root, "h.txt"))) $"at capture: {second}"
+                      Expect.isFalse (System.IO.Directory.Exists(System.IO.Path.Combine(root, "no"))) $"nothing created: {second}"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-preconditions]: a dangling link is a file row to the
+          // simulation as to the real filesystem — a plan deletes or moves
+          // the link itself, and a copy from it names it dangling
+          test "a plan deletes and moves a pre-existing dangling symlink itself" {
+              skipOnWindows ()
+              let root = td ()
+              System.IO.Directory.CreateDirectory root |> ignore
+              let d = weirPath root
+              let at (n: string) = System.IO.Path.Combine(root, n)
+              System.IO.File.CreateSymbolicLink(at "ff", "nowhere") |> ignore
+              System.IO.File.CreateSymbolicLink(at "gg", "nowhere") |> ignore
+              System.IO.File.CreateSymbolicLink(at "cc", "nowhere") |> ignore
+              let isLink (p: string) = not (isNull (System.IO.FileInfo(p).LinkTarget))
+
+              try
+                  let code =
+                      runFile
+                          [ "let p ="
+                            "    plan"
+                            $"        File.delete \"{d}/ff\""
+                            $"        File.move \"{d}/gg\" \"{d}/hh\""
+                            "p |> Plan.apply" ]
+
+                  Expect.equal code 0 "captured and applied"
+                  Expect.isFalse (isLink (at "ff")) "the link is deleted"
+                  Expect.isTrue (isLink (at "hh") && not (isLink (at "gg"))) "the link is moved"
+
+                  Expect.equal
+                      (runFile
+                          [ "let mk () ="
+                            "    plan"
+                            $"        File.copy \"{d}/cc\" \"{d}/dd\""
+                            "let r = mk () |> try result"
+                            "match r with"
+                            "| Error e -> if not (e |> Str.contains \"dangling symlink\") then fail e"
+                            "| Ok _ -> fail \"captured\"" ])
+                      0
+                      "a copy from a dangling link names it, as the direct call does"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-preconditions]: a write follows its final link — the
+          // target's parent must be a directory, directly and at capture
+          test "a write through a link into a missing directory refuses, directly and at capture" {
+              skipOnWindows ()
+              let root = td ()
+              System.IO.Directory.CreateDirectory root |> ignore
+              let d = weirPath root
+              System.IO.File.CreateSymbolicLink(System.IO.Path.Combine(root, "DL"), "nowhere/x") |> ignore
+              System.IO.File.CreateSymbolicLink(System.IO.Path.Combine(root, "OK"), "made/x") |> ignore
+
+              try
+                  Expect.equal
+                      (runFile
+                          [ $"let r = File.write \"{d}/DL\" [\"a\"] |> try result"
+                            "match r with"
+                            "| Error e -> if not (e |> Str.contains \"no such directory\") || (e |> Str.contains \"Could not\") then fail e"
+                            "| Ok _ -> fail \"written\"" ])
+                      0
+                      "the direct call refuses naming the missing directory"
+
+                  let code =
+                      runFile
+                          [ "let p ="
+                            "    plan"
+                            $"        File.write \"{d}/first.txt\" [\"a\"]"
+                            $"        File.write \"{d}/DL\" [\"a\"]"
+                            "p |> Plan.apply" ]
+
+                  Expect.notEqual code 0 "refused"
+                  Expect.isFalse (System.IO.File.Exists(System.IO.Path.Combine(root, "first.txt"))) "at capture"
+
+                  // a directory the plan makes first is where the write lands
+                  let code =
+                      runFile
+                          [ "let p ="
+                            "    plan"
+                            $"        Dir.create \"{d}/made\""
+                            $"        File.write \"{d}/OK\" [\"a\"]"
+                            "p |> Plan.apply" ]
+
+                  Expect.equal code 0 "a planned directory satisfies it"
+                  Expect.isTrue (System.IO.File.Exists(System.IO.Path.Combine(root, "made", "x"))) "written through the link"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-preconditions]: the simulation extends its view of a
+          // prefix a component at a time — a deep path through a copied
+          // directory or a link costs what a plain one does, not depth²
+          test "plan writes deep under a copied dir or through a link cost about what plain ones do" {
+              skipOnWindows ()
+              let root = td ()
+              let depth = 150
+              let rel = String.replicate depth "d/" |> fun s -> s.TrimEnd '/'
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "src", rel)) |> ignore
+              System.IO.Directory.CreateSymbolicLink(System.IO.Path.Combine(root, "L"), "src") |> ignore
+              let d = weirPath root
+
+              try
+                  let block (name: string) (pre: string list) (dir: string) =
+                      [ $"let {name} ="; "    plan" ]
+                      @ (pre |> List.map (fun l -> "        " + l))
+                      @ [ "        for i in [1..600] do"
+                          $"            File.write $\"{dir}/{rel}/n{{i}}\" [\"y\"]" ]
+
+                  let prog =
+                      [ "let t0 = Instant.now ()" ]
+                      @ block "pf" [] $"{d}/src"
+                      @ [ "let t1 = Instant.now ()" ]
+                      @ block "pc" [ $"Dir.copy \"{d}/src\" \"{d}/dst\"" ] $"{d}/dst"
+                      @ [ "let t2 = Instant.now ()" ]
+                      @ block "pl" [] $"{d}/L"
+                      @ [ "let t3 = Instant.now ()"
+                          "if (pf |> Plan.ops |> Seq.length) + (pc |> Plan.ops |> Seq.length) + (pl |> Plan.ops |> Seq.length) <> 1801 then fail \"ops\""
+                          "let fast = Duration.toMillis (t1 - t0)"
+                          "let copy = Duration.toMillis (t2 - t1)"
+                          "let link = Duration.toMillis (t3 - t2)"
+                          "if copy > 5 * fast + 300 then fail $\"copied: {copy}ms vs plain {fast}ms\""
+                          "if link > 5 * fast + 300 then fail $\"linked: {link}ms vs plain {fast}ms\"" ]
+
+                  Expect.equal (runFile prog) 0 "within 5x the plain path"
               finally
                   System.IO.Directory.Delete(root, true)
           } ]
@@ -17900,6 +18103,33 @@ let httpTests =
                   "cannot reach weir.sh — boom"
                   "the umbrella survives for the residual"
           }
+          test "a URL's userinfo is Basic auth, each part percent-decoded to its bytes [D:url-redact]" {
+              let b64 (s: byte[]) = "Basic " + System.Convert.ToBase64String s
+              let utf8 (s: string) = System.Text.Encoding.UTF8.GetBytes s
+
+              Expect.equal
+                  (Weir.Http.userinfoAuth "http://bob:S3cr3t@127.0.0.1:1/echo")
+                  (Some("Authorization", "Basic Ym9iOlMzY3IzdA=="))
+                  "curl's header for bob:S3cr3t"
+
+              Expect.equal
+                  (Weir.Http.userinfoAuth "http://b%40b:p%3Ass@h/")
+                  (Some("Authorization", b64 (utf8 "b@b:p:ss")))
+                  "an escaped @ or : stays in its part"
+
+              Expect.equal
+                  (Weir.Http.userinfoAuth "http://tok@h/")
+                  (Some("Authorization", b64 (utf8 "tok:")))
+                  "no password: empty, as curl sends it"
+
+              Expect.equal
+                  (Weir.Http.userinfoAuth "http://u:%FF@h/")
+                  (Some("Authorization", b64 (Array.append (utf8 "u:") [| 0xFFuy |])))
+                  "an escape is the byte it names, not UTF-8 text"
+
+              Expect.equal (Weir.Http.userinfoAuth "http://h/p@q") None "no userinfo, no header"
+              Expect.equal (Weir.Http.userinfoAuth "not a url") None "unparseable, no header"
+          }
           test "redactUrl masks userinfo, leaves a credential-free URL whole [D:url-redact]" {
               // the leak: a credential in user:pass@host would print verbatim
               Expect.equal
@@ -20650,6 +20880,21 @@ let sigTests =
 
               for f in files do
                   Expect.isFalse (f.Contains '/' || f.Contains '\\' || f.StartsWith ".") f
+
+              // past NAME_MAX the name hashes: under 255 bytes, stable, apart
+              let deep = "/" + String.concat "/" [ for i in 0..60 -> $"d{i:D2}" ] + "/ft"
+              let deep2 = deep.Replace("/ft", "/fu")
+              let wide = String.replicate 260 "a"
+              let long = [ deep; deep2; wide; String.replicate 130 "ü" ] |> List.map Weir.Script.sigFileName
+
+              for f in long do
+                  Expect.isLessThanOrEqual (System.Text.Encoding.UTF8.GetByteCount f) 255 f
+                  Expect.isFalse (f.Contains '/') f
+
+              Expect.equal (List.distinct long).Length long.Length $"collision in {long}"
+              Expect.equal (Weir.Script.sigFileName deep) (Weir.Script.sigFileName deep) "stable"
+              Expect.isFalse (List.exists (fun f -> List.contains f files) long) "a hashed name meets no encoded one"
+              Expect.equal (Weir.Script.sigFileName (String.replicate 250 "a")) (String.replicate 250 "a" + ".weir") "a plain name up to the limit is its own"
           }
           test "an older all-bool GNU signature checks as it always did" {
               let old =
@@ -20673,6 +20918,43 @@ let sigTests =
                   Expect.equal (sigWarns old line) want line
 
               Expect.equal (sigWarns ("module Fixtool" :: "let exhaustive = true" :: List.tail old) "fixtool -Lv x") [] "exhaustive too"
+          }
+          test "a generated all-bool signature states bundles: its multi-letter dash words are read [D:sig-help-shapes]" {
+              let gen =
+                  [ "module Fixtool"
+                    "let bundles = true"
+                    "type Cmd = {"
+                    "    [<Short \"d\">]"
+                    "    delete: bool"
+                    "    [<Short \"s\">]"
+                    "    squeeze: bool"
+                    "}" ]
+
+              for line, want in
+                  [ "fixtool -ds a b", []
+                    "fixtool -dQ x", [ "-Q" ]
+                    "fixtool -Q x", [ "-Q" ] ] do
+                  Expect.equal (sigWarns gen line) want line
+          }
+          test "dashWords never swallows a single letter: `kill -x` is a typo [D:sig-help-shapes]" {
+              let killSig =
+                  [ "module Fixtool"
+                    "let dashWords = true"
+                    "type Cmd = {"
+                    "    [<Short \"s\">]"
+                    "    signal: string"
+                    "    [<Short \"l\">]"
+                    "    list: bool"
+                    "}" ]
+
+              for line, want in
+                  [ "fixtool -TERM 1", []
+                    "fixtool -s HUP 1", []
+                    "fixtool -9 1", []
+                    "fixtool -l", []
+                    "fixtool -x 1", [ "-x" ]
+                    "fixtool -a 1", [ "-a" ] ] do
+                  Expect.equal (sigWarns killSig line) want line
           }
           test "values: a valued flag takes its word, globals check at every level, an unknown subcommand ends the check" {
               let dock =
@@ -27954,6 +28236,49 @@ let argsSecretEchoTests =
                     "| Ok _ -> exit 4" ]
 
               Expect.equal (runArgs plain [ "--port=8" ]) 0 "a plain field still teaches with its value"
+          }
+          test "Args.load never echoes a Secret's attached short value (-t=x, -tx) [D:args-secret-echo]" {
+              let probe =
+                  [ "type Cli = { tok: Secret; n: Option<int> }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"hunter\" m -> exit 3"
+                    "| Error m when Str.contains \"-t***\" m && Str.contains \"write '-t <value>'\" m -> exit 0"
+                    "| Error m -> fail m"
+                    "| Ok _ -> exit 4" ]
+
+              Expect.equal (runArgs probe [ "-t=hunter2" ]) 0 "-t=value masked"
+              Expect.equal (runArgs probe [ "-thunter2" ]) 0 "-tvalue masked"
+
+              let unknown =
+                  [ "type Cli = { tok: Secret }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"hunter\" m -> exit 3"
+                    "| Error m when Str.contains \"'-x…'\" m -> exit 0"
+                    "| Error m -> fail m"
+                    "| Ok _ -> exit 4" ]
+
+              Expect.equal (runArgs unknown [ "-xhunter2" ]) 0 "an unknown letter may be a misspelled Secret"
+
+              let shared =
+                  [ "type GoArgs = { tok: Secret }"
+                    "type Sub = Go of GoArgs | Stop"
+                    "type Cli = { verbose: bool; cmd: Sub }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"hunter\" m -> exit 3"
+                    "| Error m when Str.contains \"-t***\" m -> exit 0"
+                    "| Error m -> fail m"
+                    "| Ok _ -> exit 4" ]
+
+              Expect.equal (runArgs shared [ "go"; "-thunter2" ]) 0 "the shared-flags load masks too"
+
+              let plain =
+                  [ "type Cli = { n: int }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"write '-n 8'\" m -> exit 0"
+                    "| Error m -> fail m"
+                    "| Ok _ -> exit 4" ]
+
+              Expect.equal (runArgs plain [ "-n=8" ]) 0 "a plain field still teaches with its value"
           } ]
 
 // the third hunt's behaviour fixes, pinned at their seams; the signal and
@@ -29683,6 +30008,209 @@ let hunt3r5FormatTests =
               Expect.stringContains g "both: an enum of 'y', null — drafted" "listed and allowed"
           } ]
 
+let hunt3r6FormatTests =
+    // hunt-3 round 6, formats: number text for floats, radix bigints and
+    // overflow [D:yaml-number-text] [D:yaml-node-bigint], Unicode white
+    // space in a value slot [D:yaml-ws], XML label contradiction
+    // [D:xml-encoding] and depth [D:xml-depth], draft escaping
+    // [D:infer-wire-sanitize], nullable uint64 [D:schema-uint64]
+    let text v =
+        forceSeq v
+        |> List.map (function
+            | VStr s -> s
+            | v -> failtest $"expected text, got {formatValue v}")
+        |> String.concat "\n"
+
+    let lit (lines: string list) =
+        "[" + (lines |> List.map (fun l -> "\"" + l.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"") |> String.concat "; ") + "]"
+
+    let gen src =
+        match Weir.Contracts.parseSchema "t" src with
+        | Error e -> failtest e
+        | Ok d ->
+            match Weir.SchemaTypes.moduleText Weir.Parser.keywords Set.empty "t" None "0123456789abcdef" "http://src" d with
+            | Ok g -> g.Text
+            | Error e -> failtest e
+
+    let str (v: Value) =
+        match v with
+        | VStr s -> s
+        | v -> failtest $"expected a string, got {formatValue v}"
+
+    testList
+        "hunt3r6 formats"
+        [ test "yaml: a float weir would write differently keeps its text; to json writes the value [D:yaml-number-text]" {
+              let doc = [ "sha: 1e5"; "a: 1E5"; "b: 1e+5"; "c: +.5"; "v: 3.10"; "p: 1.5" ]
+              Expect.equal (run (lit doc + " |> Yaml.parse |> to yaml") |> text) (String.concat "\n" doc) "as written"
+
+              Expect.equal
+                  (run (lit doc + " |> Yaml.parse |> to json") |> text)
+                  "{\"sha\":100000.0,\"a\":100000.0,\"b\":100000.0,\"c\":0.5,\"v\":3.1,\"p\":1.5}"
+                  "json writes the values"
+
+              Expect.equal
+                  (run "YMap [(\"f\", YFloat 1e5)] |> to yaml |> Str.join \"\"")
+                  (VStr "f: 100000.0")
+                  "a YFloat built in weir writes its float"
+
+              Expect.equal
+                  (run "[\"{\\\"f\\\": 1e5}\"] |> from json {| f: Yaml |} |> to yaml |> Str.join \"\"")
+                  (VStr "f: 100000.0")
+                  "a JSON number keeps no float text — 1e5 is a string to a 1.1 reader"
+          }
+          test "yaml: a 1.2 number past float range keeps its text plain [D:yaml-number-text]" {
+              Expect.equal
+                  (run (lit [ "big: 1e400"; "huge: 1.5e309"; "s: \"1e400\"" ] + " |> Yaml.parse |> to yaml") |> text)
+                  "big: 1e400\nhuge: 1.5e309\ns: \"1e400\""
+                  "plain stays plain, quoted stays quoted"
+          }
+          test "yaml: a leading-zero or radix integer past int64 writes decimal digits to json [D:yaml-node-bigint]" {
+              let doc = [ "k: 012345678901234567890"; "h: 0x8000000000000000"; "o: 0o1000000000000000000000"; "d: 9223372036854775808" ]
+
+              Expect.equal
+                  (run (lit doc + " |> Yaml.parse |> to json") |> text)
+                  "{\"k\":12345678901234567890,\"h\":9223372036854775808,\"o\":9223372036854775808,\"d\":9223372036854775808}"
+                  "digits, never .NET text"
+
+              Expect.equal (run (lit doc + " |> Yaml.parse |> to yaml") |> text) (String.concat "\n" doc) "yaml keeps the text"
+
+              Expect.equal
+                  (run ("show (" + lit [ "h: 0x8000000000000000" ] + " |> Yaml.parse)"))
+                  (VStr "YMap ([(\"h\", YFloat (9.223372036854776e+18))])")
+                  "a radix int past int64 reads as the decimal does"
+          }
+          test "yaml: a value of only NBSP / U+3000 is that string, not null [D:yaml-ws]" {
+              Expect.equal
+                  (run ("show (" + lit [ "a: \u00a0"; "b: \u3000"; "c: \u00a0 # a comment" ] + " |> from yaml {| a: string; b: string; c: string |})"))
+                  (VStr "{ a = \"\u00a0\"; b = \"\u3000\"; c = \"\u00a0\" }")
+                  "mapping values"
+
+              Expect.equal
+                  (run ("show (" + lit [ "s:"; "- \u00a0" ] + " |> from yaml {| s: seq<string> |})"))
+                  (VStr "{ s = [\"\u00a0\"] }")
+                  "a sequence item"
+
+              Expect.equal
+                  (run ("show (" + lit [ "a:   " ] + " |> from yaml {| a: Option<string> |})"))
+                  (VStr "{ a = None }")
+                  "spaces alone are still null"
+          }
+          test "yaml: a float field refuses a leading-zero literal, as int does (R3) [D:yaml-number-text]" {
+              for ty in [ "float"; "Option<float>" ] do
+                  let m = msgOf (lit [ "mode: 0644" ] + $" |> from yaml {{| mode: {ty} |}}")
+                  Expect.stringContains m "'0644' has a leading zero" ty
+                  Expect.stringContains m "octal (420)" ty
+                  Expect.isFalse (m.Contains "0o644") $"{ty}: a float field cannot read 0o"
+
+              Expect.equal
+                  (run ("show (" + lit [ "a: 644"; "b: 0.5"; "c: 0"; "d: 0644.5" ] + " |> from yaml {| a: float; b: float; c: float; d: float |})"))
+                  (VStr "{ a = 644.0; b = 0.5; c = 0.0; d = 644.5 }")
+                  "decimal forms read"
+
+              Expect.stringContains (msgOf (lit [ "n: -0644" ] + " |> from yaml {| n: int |}")) "octal (-420)" "the sign rides the 1.1 reading"
+          }
+          test "from xml: a UTF-16/32 label on 8-bit bytes says the declaration contradicts them [D:xml-encoding]" {
+              let xenv = env |> declare "type XT = { a: string }"
+
+              let bytes =
+                  System.Text.Encoding.UTF8.GetBytes "<?xml version=\"1.0\" encoding=\"utf-16\"?><XT><a>café</a></XT>"
+
+              let m =
+                  (Expect.throwsC
+                      (fun () ->
+                          runUnder xenv $"Bytes.fromBase64 \"{System.Convert.ToBase64String bytes}\" |> from xml XT" |> ignore)
+                      id)
+                      .Message
+
+              Expect.stringContains m "declares encoding 'utf-16'" "names the label"
+              Expect.stringContains m "contradicts" "says the bytes disagree"
+              Expect.isFalse (m.Contains "not valid XML") "never the mojibake parse"
+
+              let le = System.Text.Encoding.Unicode
+
+              let u16 =
+                  Array.append [| 0xFFuy; 0xFEuy |] (le.GetBytes "<?xml version=\"1.0\" encoding=\"utf-16\"?><XT><a>café</a></XT>")
+
+              Expect.equal
+                  (runUnder xenv $"show (Bytes.fromBase64 \"{System.Convert.ToBase64String u16}\" |> from xml XT)")
+                  (VStr "{ a = \"café\" }")
+                  "real UTF-16 still reads"
+          }
+          test "from xml: element nesting past 500 refuses; 500 reads [D:xml-depth]" {
+              let xenv = env |> declare "type XR = { x: Option<string> }"
+              let doc n =
+                  let o, c = String.replicate (n - 1) "<a>", String.replicate (n - 1) "</a>"
+                  $"[\"<r>{o}{c}</r>\"]"
+              Expect.equal (runUnder xenv $"show ({doc 500} |> from xml XR)") (VStr "{ x = None }") "at the bound"
+
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+              let m = (Expect.throwsC (fun () -> runUnder xenv $"{doc 30000} |> from xml XR" |> ignore) id).Message
+              Expect.stringContains m "deeper than 500 levels" "past it"
+              Expect.isLessThan sw.ElapsedMilliseconds 5000L "and stops early"
+          }
+          test "inferShape drafts what the typed read takes back: 0644/.inf/radix past int64 Yaml, 0x1F/0o17 int, +.5 float [D:yaml-number-text]" {
+              let d = run "Yaml.inferShape [\"mode: 0644\"; \"mask: 0x1F\"; \"num: 0o17\"; \"max: .inf\"; \"h: 0x8000000000000000\"; \"f: +.5\"; \"big: 1e400\"; \"name: web\"]" |> str
+              for f, ty in [ "mode", "Yaml"; "mask", "int"; "num", "int"; "max", "Yaml"; "h", "Yaml"; "f", "float"; "big", "Yaml"; "name", "string" ] do
+                  Expect.stringContains d $"\n    {f}: {ty}\n" f
+
+              Expect.stringContains d "'mode': 0644 has a leading zero" "the note says why"
+
+              Expect.equal
+                  (run "[\"mode: 0644\"] |> from yaml {| mode: Yaml |} |> to yaml |> Str.join \"\"")
+                  (VStr "mode: 0644")
+                  "the drafted Yaml field reads its sample and keeps the text"
+          }
+          test "gen types escapes wire keys, drops a key a literal cannot spell, quotes notes [D:infer-wire-sanitize]" {
+              let g =
+                  gen
+                      "{ \"type\": \"object\", \"additionalProperties\": false, \"properties\": { \"p\\\"q\": { \"type\": \"string\" }, \"r\\\\s\": { \"type\": \"string\" }, \"a\\u001b]52;c;x\\u0007b\": { \"type\": \"string\" }, \"x\": { \"enum\": [\"a\", \"b\\r\"] } } }"
+
+              Expect.stringContains g "[<Wire \"p\\\"q\">]" "a quote escapes"
+              Expect.stringContains g "[<Wire \"r\\\\s\">]" "a backslash escapes"
+              Expect.isFalse (g |> Seq.exists (fun c -> c = '\u001b' || c = '\u0007' || c = '\r')) "no raw ESC/BEL/CR"
+              Expect.stringContains g "is DROPPED from the draft" "the ESC key is dropped, noted"
+              Expect.stringContains g "\\x0d" "the CR in the enum note shows visibly"
+
+              // the drafted decl on one line (the test parser's form)
+              let body =
+                  g.Substring(g.IndexOf "type T = {" + 10).Split('\n')
+                  |> Array.map (fun l -> l.Trim())
+                  |> Array.filter (fun l -> l <> "" && l <> "}")
+                  |> Array.map (fun l -> if l.StartsWith "[<" then l + " " else l + "; ")
+                  |> String.concat ""
+
+              let tenv = env |> declare ("type T = { " + body.TrimEnd(' ', ';') + " }")
+
+              Expect.equal
+                  (runUnder tenv "[\"{\\\"p\\\\\\\"q\\\": \\\"v\\\", \\\"r\\\\\\\\s\\\": \\\"w\\\"}\"] |> from json T |> to json |> Str.join \"\"")
+                  (VStr "{\"p\\\"q\":\"v\",\"r\\\\s\":\"w\"}")
+                  "the escaped keys read and write back"
+          }
+          test "yaml: a key the document wrote plain writes back plain; quoted or weir-built keys keep the law [D:yaml-key-spelling]" {
+              let doc = [ "responses:"; "  200: ok"; "  \"404\": missing"; "flags:"; "  true: x"; "  null: none"; "modes:"; "  0644: rw"; "list:"; "  - 8080: http" ]
+              Expect.equal (run (lit doc + " |> Yaml.parse |> to yaml") |> text) (String.concat "\n" doc) "untouched round trip"
+
+              Expect.equal
+                  (run "YMap [(\"200\", YStr \"a\"); (\"true\", YStr \"b\")] |> to yaml" |> text)
+                  "\"200\": a\n\"true\": b"
+                  "keys built in weir are quoted"
+
+              Expect.equal
+                  (run (lit [ "200: a" ] + " |> Yaml.parse |> to json") |> text)
+                  "{\"200\":\"a\"}"
+                  "the key is still the string 200"
+          }
+          test "gen types: format uint64 under a nullable anyOf/oneOf drafts Option<Yaml> [D:schema-uint64]" {
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "properties": { "a": { "anyOf": [{ "type": "integer", "format": "uint64" }, { "type": "null" }] },
+                                           "o": { "oneOf": [{ "type": "null" }, { "type": "integer", "format": "uint64" }] } } }"""
+
+              Expect.stringContains g "\n    a: Option<Yaml>\n" "anyOf"
+              Expect.stringContains g "\n    o: Option<Yaml>\n" "oneOf"
+          } ]
+
 let private growsWithin (factor: float) (label: string) (small: unit -> unit) (big: unit -> unit) =
     let time (f: unit -> unit) =
         let sw = Stopwatch.StartNew()
@@ -29934,6 +30462,7 @@ let allTests =
           argsSecretEchoTests
           hunt3BehaviorTests
           hunt3r5FormatTests
+          hunt3r6FormatTests
           docsBinaryTests
           hunt2CheckerTests
           sweepFindingTests

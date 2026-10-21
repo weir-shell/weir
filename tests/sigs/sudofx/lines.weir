@@ -1,0 +1,5 @@
+#sig sudofx
+sudofx -u postgres psql -c x // clean
+sudofx apt-get install -y curl // clean
+sudofx -E make install -j4 // clean
+sudofx --usr root ls // typo: --usr

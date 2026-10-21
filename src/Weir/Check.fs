@@ -818,6 +818,29 @@ let argvSpliceable (ty: Ty) : bool =
     | TUuid -> true
     | _ -> false
 
+/// the yaml district's splice law over a type, `res` resolving each
+/// level — the checker's yaml splice and the LSP's `$` pool inside a
+/// yaml block [D:argv-splice-complete]
+let yamlSpliceableWith (res: Ty -> Ty) (ty: Ty) : bool =
+    let rec go ty =
+        match res ty with
+        | TInt
+        | TFloat
+        | TStr
+        | TBool
+        | TNamed("Yaml", []) -> true
+        // an unresolved var (a template parameter) defers to the value-driven
+        // lift at eval — the sortBy posture: no type-class constraint exists,
+        // so concrete violations check-error and polymorphic ones become a
+        // located runtime failure naming the law
+        | TVar _ -> true
+        | TNamed("Option", [ TNamed("Option", _) ]) -> false
+        | TNamed("Option", [ inner ]) -> go inner
+        | TSeq elem -> go elem
+        | _ -> false
+
+    go ty
+
 // the splice law, shared by the eager check and the deferred
 // discharge [D:interp-show]: holes consult the Show class (one arm
 // asking beats a second list — the next Show type needs no edit
@@ -5886,22 +5909,7 @@ and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (arg:
 // those), key splices are strings, `for` binders bind like lambda
 // params over the source's element type, literal duplicate keys are
 // check errors.
-and private yamlSpliceable (ctx: Ctx) (ty: Ty) : bool =
-    match resolve ctx ty with
-    | TInt
-    | TFloat
-    | TStr
-    | TBool
-    | TNamed("Yaml", []) -> true
-    // an unresolved var (a template parameter) defers to the value-driven
-    // lift at eval — the sortBy posture: no type-class constraint exists,
-    // so concrete violations check-error and polymorphic ones become a
-    // located runtime failure naming the law
-    | TVar _ -> true
-    | TNamed("Option", [ TNamed("Option", _) ]) -> false
-    | TNamed("Option", [ inner ]) -> yamlSpliceable ctx inner
-    | TSeq elem -> yamlSpliceable ctx elem
-    | _ -> false
+and private yamlSpliceable (ctx: Ctx) (ty: Ty) : bool = yamlSpliceableWith (resolve ctx) ty
 
 and private checkYamlTpl (ctx: Ctx) (env: TypeEnv) (tpl: YamlTpl) : Result<TypedYamlTpl, TypeError> =
     match tpl with

@@ -29,6 +29,15 @@
 
 ### Changed
 
+- **A URL's `user:pass@` is sent as Basic auth.** `Http.send` and the
+  `weir add schema`/`add module` fetches send it as `Authorization:
+  Basic`, percent-decoded, as curl does; it was silently dropped. A
+  request that sets Authorization itself keeps its own. Displays still
+  mask it, and the lock still leaves it out, so `restore` sends none.
+- **`add`, `restore` and `verify` messages escape control bytes piped
+  too.** A URL, name or version carrying ESC, BEL or CR now shows them
+  as `\x1b`, `\x07`, `\x0d` in a pipe or log, as at a terminal; `print`,
+  `to json` and file writes stay byte-for-byte.
 - **The REPL echo no longer shows types by default.** `2` echoes `2`
   (was `2 : int`), `let x = 5` echoes `x = 5` (was `x : int = 5`), a
   seq's lines end without the `: seq<string>` line (truncation notes
@@ -47,10 +56,16 @@
   common tools the scored lines went from 76 false warnings to none. npm
   (and npx) take any config key as a flag, so their signatures are
   generated with no flag checked. Wrappers (`timeout`, `flock`, `stdbuf`,
-  `watch`, `bash script.sh`) stop checking at the command they run;
-  kill's `-TERM`, perl's `-MJSON::PP`, unzip's two-column help, shfmt's
-  aligned rows, Go flags shown only in examples, node's `--deprecation`
-  and git's `remote add`/`stash push`-style subcommands are read.
+  `watch`, `sudo`, `systemd-run`, `run0`, `chrt`, `strace`, `uvx`, `bunx`,
+  `bash script.sh`) stop checking at the command they run; kill's
+  `-TERM` (while `kill -x` still warns), perl's `-MJSON::PP`, unzip's
+  two-column help, shfmt's aligned rows, Go flags shown only in
+  examples, node's `--deprecation`, systemctl's `--no-legend` (from
+  `--legend=BOOL`) and git's `remote add`/`stash push`-style
+  subcommands are read; `git config`, `git stash` and `git worktree`
+  check their own flags, and `git stash show` passes diff options. A
+  generated signature says `let bundles = true`, so `tr -dQ` warns on
+  `-Q`.
 
 - **`serve` runs on Kestrel** (ASP.NET Core's server, part of the .NET
   SDK) instead of `HttpListener` — one server on Linux, macOS and
@@ -107,6 +122,46 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **A REPL line typed while an entry is still running submits.** Its
+  Enter arrived as a newline key, so the line, and every line after it,
+  grew a `…` continuation and the session could no longer submit.
+- **`Args.load` no longer repeats a Secret given as `-t=value` or
+  `-tvalue`.** The error now reads `'-t***' — … write '-t <value>'`; an
+  unknown letter shows as `'-x…'`.
+- **A malformed `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` is an error.**
+  `http://h:99999` was ignored and the request went out directly; it
+  now raises, naming the variable, as curl refuses.
+- **A YAML round trip keeps a float as written.** `Yaml.parse |> to
+  yaml` rewrote `1e5` as `100000.0` and `+.5` as `0.5` (a YAML 1.1
+  reader such as PyYAML reads both as strings, and a short git SHA can
+  be `1e5`), `3.10` as `3.1`, and quoted `1e400`. They now come back
+  unchanged; `to json` still writes the numbers.
+- **`to json` of a YAML integer beyond int64 writes its digits.**
+  `012345678901234567890` failed with .NET text, and `0x8000000000000000`
+  / `0o1000000000000000000000` came out as strings; all write decimal
+  digits, as a decimal one does.
+- **A YAML round trip keeps plain keys plain.** `Yaml.parse |> to yaml`
+  wrote `200:`, `true:`, `null:` and `0644:` back as `"200":` and so on,
+  turning a 1.1/1.2 reader's int, bool or null key into a string. A key
+  the document wrote plain now comes back plain; a key built in weir is
+  still quoted when a reader would type it.
+- **`from yaml`: a value of only a no-break space (or U+3000) is that
+  string**, not null; a **`float` field refuses `0644`** as an `int`
+  field does, instead of reading 644.0.
+- **`Yaml.inferShape` and `#infer` draft a type that reads its own
+  sample.** `mode: 0644` drafted `int`, which then refused it; it now
+  drafts `Yaml` (which keeps the text), with a note. `0x1F`/`0o17`
+  draft `int`, `.inf` drafts `Yaml`, `+.5` drafts `float`.
+- **`from xml` of UTF-8 bytes labelled `utf-16` says the declaration
+  is wrong** instead of failing with garbled text, and a document nested
+  deeper than 500 elements is refused at once instead of taking seconds
+  to minutes.
+- **`weir gen types` handles any property name.** A name with `"` or `\`
+  failed as a "generator bug"; it now drafts an escaped `[<Wire>]`. A
+  name with a control character (CR, ESC, …), which no weir string can
+  spell, is left out with a note, and notes show such characters
+  visibly. `format: uint64` beside `null` in an `anyOf`/`oneOf` drafts
+  `Option<Yaml>`, which keeps a value past int64.
 - **Windows: a `Seq.pfirst` loser's `| complete` command no longer
   outlives the race.** A loser waiting in `sh -c "…" | complete` was
   stopped without killing its command, so `sh` and what it started ran
@@ -117,8 +172,9 @@
   and `^C` appeared at the next prompt.
 - **A pasted multi-line REPL entry no longer loses its first lines.**
   When Alt+Enter's two bytes arrived apart, the Esc was read alone and
-  threw the buffer away; an Esc with an Enter right behind it is now
-  the newline.
+  threw the buffer away; an Esc whose Enter is already waiting (a
+  paste, a real Alt+Enter) is now the newline. Esc then Enter typed by
+  hand still abandons the buffer.
 - **Ctrl+C at the REPL on a command inside a `within` body shows
   `↳ exit 130`.** It printed `error: command failed with exit code 130`.
 - **A group-directed SIGTERM or SIGHUP no longer cuts an `always`
@@ -133,23 +189,31 @@
   tag $t<Tab>` listed every Prelude function (`take`, `toInt`,
   `tryHead`, …) beside your own bindings. After `$` in command argv
   Tab now offers just the bindings a `$x` argument accepts (string,
-  int, bool, Secret, Uuid, or a record for `$r.field`); after `$@`,
-  `seq<string>` bindings. Functions are never offered. The same holds
-  after a builtin head (`ls`, `cd`), a `^`-forced head and a let's
-  command RHS.
+  int, bool, Secret, Uuid; `$r.<Tab>` offers a record's fields that
+  qualify); after `$@`, `seq<string>` bindings. Functions and bare
+  records are never offered, nor anything inside `"…"` or glued after
+  `--x=`, where `$` does not splice. The same holds after a builtin head
+  (`ls`, `cd`), a `^`-forced head, a let's command RHS, and inside
+  `$(…)` and `if`/`for`/`match` bodies. In an editor, `$` inside a yaml
+  block offers what a yaml splice accepts.
 - **`weir add sig` cannot hang or run out of memory on a tool's help.**
   A help that leaves a daemon holding its output, or prints without
   end, hung generation or grew it to gigabytes. Each probe now gets 15s,
   then 1s to drain after the tool exits, and reads at most 4 MiB per
-  stream (the signature notes a cut); the probe's process group is
+  stream (the signature notes a cut, or a probe stopped at 15s — what
+  it printed by then is still read); the probe's process group is
   killed. Probes run in a fresh empty temp dir, not in the shared temp
-  dir itself.
+  dir itself. Ctrl+C or a signal to `weir add sig` kills the running
+  probe and removes its temp dir, and each probe runs once.
 - **Signature file names no longer collide.** `#sig /a/b/cob` and
   `#sig _a_b_cob` (or `.weir` and `weir`, `a b` and `a_b`) wrote the
   same `.weir/sigs/` file. Characters outside letters, digits, `-`,
   `_` and a non-leading `.` are now written as `%XX`; a plain name's
   file is unchanged, and a signature written under the old name is
-  still found through the lock.
+  still found through the lock. A name too long for the file system is
+  shortened with a hash, and a file the lock records as another tool's
+  old name is never read by `#sig` for this one; `weir add sig` moves
+  it to its own tool's name instead of overwriting it.
 - **`serve` answers 415 to a request body in a charset weir cannot
   decode.** It was decoded as UTF-8, a wrong byte becoming U+FFFD, and
   handed to the handler; now no handler runs, as the HTTP client
@@ -158,9 +222,15 @@
   captured.** A copy onto an existing (or planned) file, a delete of a
   missing (or already deleted) file, a copy or move from a missing
   source, `Dir.delete` of a directory the plan filled and a write
-  under a missing directory were captured, previewed as ordinary steps
-  and failed midway through `Plan.apply`. Each now raises at capture
-  with the same error the direct call gives.
+  under a missing directory (or through a symlink into one) were
+  captured, previewed as ordinary steps and failed midway through
+  `Plan.apply`. Each now raises at capture with the same error the
+  direct call gives. `Dir.copy` into a missing parent directory now
+  refuses like `File.copy` and `Dir.move`, in a plan and outside one.
+- **A `plan` deletes or moves a dangling symlink itself,** as the
+  direct call does; it refused with "no such file". A plan writing
+  deep under a copied directory, or through a symlink, no longer slows
+  with the path's depth squared.
 - **`from xml` reads a document in its declared encoding.** Pipe the
   bytes: `File.readBytes "legacy.xml" |> from xml Proj` decodes by
   BOM, else the XML declaration (UTF-16/32, US-ASCII, ISO-8859-1), else

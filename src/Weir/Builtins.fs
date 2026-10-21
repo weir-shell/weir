@@ -3673,6 +3673,15 @@ let private preWrite (pr: FsProbe) (op: string) (r: string) : unit =
     else
         requireParent pr op r
 
+        // a write follows its links: where it lands needs a directory too
+        let c = pr.Canon r
+
+        if c <> r then
+            let parent = System.IO.Path.GetDirectoryName c
+
+            if not (isNull parent) && parent <> "" && not (pr.IsDir parent) then
+                failwith $"{op}: no such directory: {quoteData parent} — the symlink {quoteData r} points into it"
+
 let private writeGuard (op: string) (r: string) : unit = preWrite realProbe op r
 
 let private ioGuarded (op: string) (r: string) (f: unit -> 'a) : 'a =
@@ -3911,12 +3920,14 @@ let private doDirMove (op: string) (src: string) (dst: string) : unit =
 // not repeat here (no Dir.copyAll) [D:sized-findings]. The family's
 // overwrite rule: refuse an existing destination; Dir.deleteAll is the
 // deliberate replace spelling. A symlink inside the tree is copied as a
-// link (dangling ones too), never followed — `cp -a`'s reading; a
+// link (dangling ones too), never followed — `cp -a`'s reading; a FIFO,
+// socket or device is recreated, never opened [D:dircopy-special]; a
 // destination inside the source would copy into itself, so it refuses.
 let private preDirCopy (pr: FsProbe) (op: string) (src: string) (dst: string) : unit =
     requireDirIn pr op src
     refuseExistingDst pr op dst
     refuseIntoSelf pr op true src dst
+    requireParent pr op dst
 
 let private doDirCopy (op: string) (src: string) (dst: string) : unit =
     preDirCopy realProbe op src dst
@@ -3932,7 +3943,15 @@ let private doDirCopy (op: string) (src: string) (dst: string) : unit =
                 | null ->
                     match e with
                     | :? DirectoryInfo -> go e.FullName target
-                    | _ -> System.IO.File.Copy(e.FullName, target)
+                    | _ ->
+                        // a FIFO, socket or device is recreated, never
+                        // opened — `cp -R`'s reading [D:dircopy-special]
+                        match Session.specialFile e.FullName with
+                        | Some special ->
+                            match Session.makeSpecialFile target special with
+                            | None -> ()
+                            | Some why -> failwith $"{op}: cannot create the special file {quoteData target} — {why}"
+                        | None -> System.IO.File.Copy(e.FullName, target)
                 | link ->
                     match e with
                     | :? DirectoryInfo -> System.IO.Directory.CreateSymbolicLink(target, link) |> ignore
@@ -5020,13 +5039,26 @@ let private runRequest (reqV: Value) : Http.Resp =
             |> Set.ofList
             |> Set.union (Set.ofList [ "authorization"; "proxy-authorization"; "cookie" ])
 
+        let url =
+            match get "url" with
+            | VStr s -> s
+            | v -> unreachable $"url {formatValue v}"
+
+        // the URL's userinfo rides as Basic auth, as curl sends it, unless
+        // the request already sets Authorization [D:url-redact]
+        let urlAuth =
+            if
+                (auth @ plain @ secret)
+                |> List.exists (fun (k, _) -> System.String.Equals(k, "Authorization", System.StringComparison.OrdinalIgnoreCase))
+            then
+                []
+            else
+                Http.userinfoAuth url |> Option.toList
+
         let req: Http.Req =
             { Method = httpMethodName (get "method")
-              Url =
-                (match get "url" with
-                 | VStr s -> s
-                 | v -> unreachable $"url {formatValue v}")
-              Headers = auth @ plain @ secret
+              Url = url
+              Headers = urlAuth @ auth @ plain @ secret
               SensitiveHeaders = sensitive
               Body = httpBodyOf (get "body")
               TimeoutMs =
@@ -5053,7 +5085,7 @@ let private runRequest (reqV: Value) : Http.Resp =
         Http.refuseUnsendableRequestHeader
             failwith
             req.Body.IsSome
-            ((auth @ secret) |> List.map (fun (k, _) -> k.ToLowerInvariant()) |> Set.ofList)
+            ((urlAuth @ auth @ secret) |> List.map (fun (k, _) -> k.ToLowerInvariant()) |> Set.ofList)
             req.Headers
 
         let host =
@@ -7228,7 +7260,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "src"; "dst" ])
           "Dir.copy",
           (bd
-              "Copy a directory and everything in it from src to dst. Raises if the destination exists (use Dir.deleteAll first to replace it) or lies inside the source. The copy is always recursive; symlinks are copied as links, never followed."
+              "Copy a directory and everything in it from src to dst. Raises if the destination exists (use Dir.deleteAll first to replace it) or lies inside the source. The copy is always recursive; symlinks are copied as links, never followed, and a FIFO, socket or device is recreated, never opened (as cp -R does)."
               (Some "let d = Path.newTempDir ()\nDir.copy d $\"{d}-c\"\nDir.deleteAll d\nDir.deleteAll $\"{d}-c\"")
               None
            |> named [ "src"; "dst" ])

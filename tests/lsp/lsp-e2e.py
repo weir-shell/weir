@@ -184,6 +184,37 @@ comp = read_msg()
 labels = [c["label"] for c in comp["result"]]
 expect("anon.ip" in labels and "anon.n" in labels, f"anon literal fields missing: {labels[:10]}")
 
+# a `$` splice completes what the checker admits there
+# [D:argv-splice-complete]: inside a yaml block the yaml splice law (seq,
+# float, Yaml, Option — never a record); in argv nothing inside "…" or
+# glued after `--x=`, never a bare record (its fields instead), the same
+# filter inside $(…) and if/for bodies
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": 'let xs = ["a"]\nlet fl = 1.5\nlet m = {| k = 1 |}\nlet d = yaml\n    a: $\n    b: $x\n'}]}})
+read_msg()
+yl = {}
+for i, (ln, ch) in enumerate([(4, 8), (5, 9)]):
+    send({"jsonrpc": "2.0", "id": 610 + i, "method": "textDocument/completion",
+          "params": {"textDocument": {"uri": URI}, "position": {"line": ln, "character": ch}}})
+    yl[i] = [c["label"] for c in read_msg()["result"]]
+expect("xs" in yl[0] and "fl" in yl[0] and "m" not in yl[0], f"a yaml block's $ offers the yaml splices, not a record: {yl[0]}")
+expect(yl[1] == ["xs"], f"a yaml block's $x offers xs: {yl[1]}")
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": 'let qs = "s"\nlet qt = 1\ntype R = { name: string; tags: seq<string>; n: int; f: float }\nlet vr = { name = "a"; tags = ["t"]; n = 1; f = 1.0 }\necho "$q\necho --x=$q\necho $v\nlet z = $(echo $q\nif true then echo $q\nfor f in ["a"] do echo $q\necho $vr.\necho $@vr.\n'}]}})
+read_msg()
+sl = {}
+for i, (ln, ch) in enumerate([(4, 8), (5, 11), (6, 7), (7, 17), (8, 20), (9, 25), (10, 9), (11, 10)]):
+    send({"jsonrpc": "2.0", "id": 620 + i, "method": "textDocument/completion",
+          "params": {"textDocument": {"uri": URI}, "position": {"line": ln, "character": ch}}})
+    sl[i] = sorted(c["label"] for c in read_msg()["result"])
+expect(sl[0] == [] and sl[1] == [], f"no splice pool inside a string or glued after --x=: {sl[0]} {sl[1]}")
+expect("vr" not in sl[2], f"a bare record never completes after $: {sl[2]}")
+expect(sl[3] == ["qs", "qt"] and sl[4] == ["qs", "qt"] and sl[5] == ["qs", "qt"], f"$(…)/if/for bodies filter as argv does: {sl[3]} {sl[4]} {sl[5]}")
+expect(sl[6] == ["vr.n", "vr.name"], f"$vr. offers the fields $ admits: {sl[6]}")
+expect(sl[7] == ["vr.tags"], f"$@vr. offers the seq<string> fields: {sl[7]}")
+
 # the to-adapter slot [D:to-jsonl]: completion after `to ` offers
 # jsonl (derived from builtinDocs), and the word hovers its own doc
 send({"jsonrpc": "2.0", "method": "textDocument/didChange",

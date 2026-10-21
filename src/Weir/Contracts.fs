@@ -516,12 +516,20 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
         // filtered per hop), dropping the credential headers on a
         // cross-origin change. Covers both the API-resolution request and the
         // artifact download — every fetchBytesWith caller.
-        let mutable curHeaders = headers
+        // a userinfo URL from argv rides as Basic auth, as Http.send sends
+        // it, unless a token header already set Authorization [D:url-redact]
+        let mutable curHeaders =
+            if headers |> List.exists (fun (k, _) -> String.Equals(k, "Authorization", StringComparison.OrdinalIgnoreCase)) then
+                headers
+            else
+                (Http.userinfoAuth url |> Option.toList) @ headers
+
         let mutable hops = 0
         let mutable result: Net.Http.HttpResponseMessage = null
         let mutable go = true
 
         while go do
+            Http.checkEnvProxy curUrl
             use msg = new Net.Http.HttpRequestMessage(Net.Http.HttpMethod.Get, curUrl)
 
             for k, v in curHeaders do
@@ -555,7 +563,7 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
         use resp = result
 
         if not resp.IsSuccessStatusCode then
-            Error $"{Http.redactUrl url} answered {int resp.StatusCode} ({resp.StatusCode})"
+            Error $"{quoteData (Http.redactUrl url)} answered {int resp.StatusCode} ({resp.StatusCode})"
         else
             let ct =
                 match resp.Content.Headers.ContentType with
@@ -579,13 +587,17 @@ let rawUrlHint (url: string) : string =
         Text.RegularExpressions.Regex.Match(url, "^https://github\\.com/([^/]+)/([^/]+)/blob/(.+)$")
 
     if m.Success then
-        $" — this is a GitHub file page; use the raw URL: https://raw.githubusercontent.com/{m.Groups[1].Value}/{m.Groups[2].Value}/{m.Groups[3].Value}"
+        let raw =
+            $"https://raw.githubusercontent.com/{m.Groups[1].Value}/{m.Groups[2].Value}/{m.Groups[3].Value}"
+
+        $" — this is a GitHub file page; use the raw URL: {quoteData raw}"
     else
         let g =
             Text.RegularExpressions.Regex.Match(url, "^https://gitlab\\.com/(.+)/-/blob/(.+)$")
 
         if g.Success then
-            $" — this is a GitLab file page; use the raw URL: https://gitlab.com/{g.Groups[1].Value}/-/raw/{g.Groups[2].Value}"
+            let raw = $"https://gitlab.com/{g.Groups[1].Value}/-/raw/{g.Groups[2].Value}"
+            $" — this is a GitLab file page; use the raw URL: {quoteData raw}"
         else
             " — if this is a GitHub or GitLab file page, use the raw URL"
 
@@ -671,7 +683,7 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
                         "an explicit @ref is required — @main, @v1.2.0, or @<sha>; weir does not guess a default branch"
                 else
                     match left.IndexOf "/" with
-                    | -1 -> Error $"the shorthand is <host>/<org>/<repo>//<path>@<ref>; '{left}' has no repo part"
+                    | -1 -> Error $"the shorthand is <host>/<org>/<repo>//<path>@<ref>; '{quoteData left}' has no repo part"
                     | k ->
                         let host = left.Substring(0, k)
                         let repo = left.Substring(k + 1)
@@ -688,10 +700,10 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
                             (match
                                 fetchBytesWith (uaHeader @ [ "Accept", "application/vnd.github+json" ] @ apiAuth) api
                              with
-                             | Error e -> Error(hintPrivate host $"resolving @{refName}: {e}")
+                             | Error e -> Error(hintPrivate host $"resolving @{quoteData refName}: {e}")
                              | Ok(bytes, _) ->
                                  match shaFrom "sha" bytes with
-                                 | None -> Error $"unexpected answer resolving @{refName} at {api}"
+                                 | None -> Error $"unexpected answer resolving @{quoteData refName} at {quoteData api}"
                                  | Some sha ->
                                      let rawAuth =
                                          match hostToken host with
@@ -713,10 +725,10 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
                                 $"https://gitlab.com/api/v4/projects/{Uri.EscapeDataString repo}/repository/commits/{Uri.EscapeDataString refName}"
 
                             (match fetchBytesWith (uaHeader @ auth) api with
-                             | Error e -> Error(hintPrivate host $"resolving @{refName}: {e}")
+                             | Error e -> Error(hintPrivate host $"resolving @{quoteData refName}: {e}")
                              | Ok(bytes, _) ->
                                  match shaFrom "id" bytes with
-                                 | None -> Error $"unexpected answer resolving @{refName} at {api}"
+                                 | None -> Error $"unexpected answer resolving @{quoteData refName} at {quoteData api}"
                                  | Some sha ->
                                      Ok
                                          { Url = $"https://gitlab.com/{repo}/-/raw/{sha}/{path}"
@@ -725,7 +737,7 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
                                            Host = Some host })
                         | h ->
                             Error
-                                $"unknown host '{h}' — the shorthand knows github.com and gitlab.com; any other host takes the full raw URL: weir add module https://… --as <name>"
+                                $"unknown host '{quoteData h}' — the shorthand knows github.com and gitlab.com; any other host takes the full raw URL: weir add module https://… --as <name>"
 
 /// the credential a re-fetch of a locked module carries — the same
 /// WEIR_TOKEN_<host> header `add module` sent, derived from the locked
@@ -1150,6 +1162,13 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                 else
                     None
 
+            // a format the scalar fold would drop (uint64, int-or-string)
+            // beside null keeps its draft under the Option [D:schema-null-format]
+            let formattedNull (r: Result<Schema, string>) =
+                match r with
+                | Ok(SNullable(SUint64Format _ | SIntOrStringFormat _)) -> true
+                | _ -> false
+
             match getProp "$ref" with
             | Some r when r.ValueKind = Text.Json.JsonValueKind.String ->
                 // a $ref node is the reference; its shape siblings apply
@@ -1270,6 +1289,7 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                         | Some alts ->
                             // the IntOrString idiom: every alternative must be scalar-typed
                             (match scalarAlts alts, nullPair "oneOf" alts with
+                             | _, Some r when formattedNull r -> r
                              | Some s, _ -> Ok s
                              | None, Some r -> r
                              | None, None ->
@@ -1327,6 +1347,7 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                                 // generator, unvalidated for the district
                                 // [D:schema-types]
                                 (match scalarAlts alts, nullPair "anyOf" alts with
+                                 | _, Some r when formattedNull r -> r
                                  | Some s, _ -> Ok s
                                  | None, Some r -> r
                                  | None, None ->
@@ -1650,7 +1671,7 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
             match parseJsonBytesBounded bytes with
             | Ok d -> Ok d
             | Error(Some why) -> Error $"the response is valid JSON, but {why}; nothing was written"
-            | Error None -> Error $"the response is not JSON (Content-Type: {ct}){rawUrlHint url}; nothing was written"
+            | Error None -> Error $"the response is not JSON (Content-Type: {quoteData ct}){rawUrlHint url}; nothing was written"
 
         match parsed with
         | Error e -> Error e
@@ -1695,7 +1716,7 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                         if kind = "schema" then
                             if not (anyClosedProps root) then
                                 Console.Error.WriteLine
-                                    $"weir add: warning: {name} has no `additionalProperties: false` anywhere — unknown-field checking will NOT fire for it (for k8s, use the -standalone-strict variant)"
+                                    $"weir add: warning: {quoteData name} has no `additionalProperties: false` anywhere — unknown-field checking will NOT fire for it (for k8s, use the -standalone-strict variant)"
 
                         // only now touch the disk — the file and the lock entry
                         // land together or not at all
@@ -1721,7 +1742,7 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                         | Ok() ->
                             try
                                 writeLock weirDir (others @ [ entry ])
-                                Ok $"added {kind} {name} ({hash.Substring(0, 12)}…) from {Http.redactUrl url}"
+                                Ok $"added {kind} {quoteData name} ({hash.Substring(0, 12)}…) from {quoteData (Http.redactUrl url)}"
                             with ex ->
                                 (try
                                     File.Delete dest
@@ -1789,7 +1810,7 @@ let restore (weirDir: string) : Result<string list, string> =
 
                         // the re-add names the entry's own kind — a module's
                         // locked url is the raw URL `add module` accepts
-                        let readd = $"`weir add {e.Kind} {Http.redactUrl e.Url} --as {e.Name}`"
+                        let readd = $"`weir add {e.Kind} {quoteData (Http.redactUrl e.Url)} --as {quoteData e.Name}`"
 
                         if hash <> e.Sha256 then
                             Error
@@ -1809,7 +1830,7 @@ let restore (weirDir: string) : Result<string list, string> =
                                 if repaired then
                                     $"{e.Kind} {e.Name}: repaired — refetched over a modified copy"
                                 else
-                                    $"{e.Kind} {e.Name}: restored from {Http.redactUrl e.Url}"
+                                    $"{e.Kind} {e.Name}: restored from {quoteData (Http.redactUrl e.Url)}"
                             ))
 
         match
@@ -1878,6 +1899,80 @@ let probeMaxBytes = 4 * 1024 * 1024
 /// after the tool exits, its pipes get this long to drain — a daemon it
 /// left holding stdout never closes them
 let probeGraceMs = 1000
+
+// what a probe holds while it runs [D:sig-probe-bounds]: its process group
+// (or, on the managed path, its Process) and the temp dirs generation
+// made. The probe's own group never sees the terminal's ^C, so a signal
+// to weir kills each group and removes the dirs, then dies by the signal
+// (the runtime's default action: the handler does not cancel). A probe
+// that starts once the signal arrived is killed at its start.
+module ProbeGuard =
+    [<DllImport("libc", SetLastError = true, EntryPoint = "kill")>]
+    extern int private sysKill(int pid, int signal)
+
+    let private groups = Collections.Concurrent.ConcurrentDictionary<int, unit>()
+    let private procs = Collections.Concurrent.ConcurrentDictionary<Diagnostics.Process, unit>()
+    let private paths = Collections.Concurrent.ConcurrentDictionary<string, unit>()
+    let mutable private stopping = 0
+    let mutable private installed = 0
+    let mutable private roots: obj list = []
+
+    let private killGroup (pgid: int) =
+        try
+            sysKill (-pgid, 9) |> ignore
+        with _ ->
+            ()
+
+    let private killProc (p: Diagnostics.Process) =
+        try
+            p.Kill true
+        with _ ->
+            ()
+
+    let private sweep () =
+        Threading.Volatile.Write(&stopping, 1)
+
+        for kv in groups do
+            killGroup kv.Key
+
+        for kv in procs do
+            killProc kv.Key
+
+        for kv in paths do
+            try
+                if Directory.Exists kv.Key then Directory.Delete(kv.Key, true)
+                elif File.Exists kv.Key then File.Delete kv.Key
+            with _ ->
+                ()
+
+    /// the signal hook, once per process (POSIX only: Windows delivers
+    /// Ctrl+C to the console's whole group, the probe included)
+    let install () =
+        if not (OperatingSystem.IsWindows()) && Threading.Interlocked.Exchange(&installed, 1) = 0 then
+            for s in [ PosixSignal.SIGINT; PosixSignal.SIGTERM; PosixSignal.SIGHUP; PosixSignal.SIGQUIT ] do
+                try
+                    roots <- (PosixSignalRegistration.Create(s, (fun _ -> sweep ())) :> obj) :: roots
+                with _ ->
+                    ()
+
+    let stoppingNow () = Threading.Volatile.Read &stopping = 1
+
+    let trackGroup (pgid: int) =
+        groups[pgid] <- ()
+        if stoppingNow () then killGroup pgid
+
+    let untrackGroup (pgid: int) = groups.TryRemove pgid |> ignore
+
+    let trackProc (p: Diagnostics.Process) =
+        procs[p] <- ()
+        if stoppingNow () then killProc p
+
+    let untrackProc (p: Diagnostics.Process) = procs.TryRemove p |> ignore
+
+    /// a temp dir or file generation made: removed if a signal ends weir
+    let trackPath (path: string) = paths[path] <- ()
+
+    let untrackPath (path: string) = paths.TryRemove path |> ignore
 
 // the probe's own process group [D:sig-probe-bounds]: .NET cannot start a
 // child in a new group, so on Linux the probe is a posix_spawn with
@@ -2056,6 +2151,7 @@ module private ProbeSpawn =
                     close errP[0] |> ignore
                     None
                 else
+                    ProbeGuard.trackGroup pid
                     let bufs = [| new MemoryStream(); new MemoryStream() |]
                     let fds = [| outP[0]; errP[0] |]
                     let isOpen = [| true; true |]
@@ -2147,6 +2243,7 @@ module private ProbeSpawn =
                               Err = text bufs[1]
                               Cut = cut }
                     finally
+                        ProbeGuard.untrackGroup pid
                         close fds[0] |> ignore
                         close fds[1] |> ignore
 
@@ -2165,6 +2262,7 @@ let private runProbeManaged (prog: string) (args: string list) (cwd: string) : P
         psi.UseShellExecute <- false
         psi.WorkingDirectory <- cwd
         use p = Diagnostics.Process.Start psi
+        ProbeGuard.trackProc p
         p.StandardInput.Close()
         let mutable cut = false
 
@@ -2212,6 +2310,8 @@ let private runProbeManaged (prog: string) (args: string list) (cwd: string) : P
         let get (b: MemoryStream) =
             lock b (fun () -> Text.Encoding.UTF8.GetString(b.GetBuffer(), 0, int b.Length))
 
+        ProbeGuard.untrackProc p
+
         Some
             { Exit = (if exited then Some p.ExitCode else None)
               Out = get outB
@@ -2228,18 +2328,24 @@ let mutable private nativeProbe = OperatingSystem.IsLinux()
 /// (probeMaxBytes per stream), the probe's process group killed at any
 /// bound. None: it did not start
 let runProbe (prog: string) (args: string list) (cwd: string option) : ProbeOutput option =
+    ProbeGuard.install ()
+
     let dir =
         match cwd with
         | Some d -> d
         | None ->
             let d = Path.Combine(Path.GetTempPath(), $"weir-sigprobe-{Guid.NewGuid():N}")
+            ProbeGuard.trackPath d
             Directory.CreateDirectory d |> ignore
             d
 
     try
         let viaManaged () = runProbeManaged prog args dir
 
-        if nativeProbe then
+        // a signal already arrived: weir is dying, nothing more starts
+        if ProbeGuard.stoppingNow () then
+            None
+        elif nativeProbe then
             try
                 ProbeSpawn.run prog args dir
             with
@@ -2256,6 +2362,8 @@ let runProbe (prog: string) (args: string list) (cwd: string option) : ProbeOutp
                 Directory.Delete(dir, true)
             with _ ->
                 ()
+
+            ProbeGuard.untrackPath dir
 
 /// one probe rung: spawn `<tool> <arg>` and read the exit code.
 /// stdin is null and the cwd a fresh temp dir — probing the bare

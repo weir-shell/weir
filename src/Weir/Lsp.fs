@@ -520,6 +520,23 @@ let private analyze (uri: string) (text: string) =
 
     diags, stmts, env0, lls
 
+// is a physical line (0-based) inside a yaml block? Its nearest less
+// indented line above is a yaml district marker, or is itself inside one
+let private inYamlBlock (lines: string[]) (idx: int) : bool =
+    let indentOf (s: string) = s.Length - s.TrimStart().Length
+
+    let rec under (i: int) =
+        let ind = indentOf lines[i]
+        let mutable j = i - 1
+
+        while j >= 0 && (lines[j].Trim() = "" || indentOf lines[j] >= ind) do
+            j <- j - 1
+
+        j >= 0
+        && (Parser.isYamlMarkerPiece ((Script.stripComment lines[j]).Trim()) || under j)
+
+    lines[idx].Trim() <> "" && under idx
+
 // find the containing logical line among all assembled lines
 let private logicalAt (lls: Script.LogicalLine list) (line: int) (col: int) =
     lls
@@ -1534,7 +1551,7 @@ let private schemaHover (path: string) (name: string) : string option =
                         entries
                         |> List.tryPick (fun e ->
                             if e.Kind = "schema" && e.Name = name then
-                                Some $"source: {Http.redactUrl e.Url}"
+                                Some $"source: {Weir.Types.quoteData (Http.redactUrl e.Url)}"
                             else
                                 None)
                     | Error _ -> None
@@ -2793,8 +2810,23 @@ let run (debug: bool) : int =
                                         else
                                             []
 
+                                // a `$` inside a yaml block takes the yaml
+                                // district's splice law, not the argv one
+                                // [D:argv-splice-complete]
+                                let yamlSplice =
+                                    if
+                                        wordStart >= 1
+                                        && upto[wordStart - 1] = '$'
+                                        && line - 1 < lines.Length
+                                        && inYamlBlock lines (line - 1)
+                                    then
+                                        Some(Complete.yamlSplicePool env word)
+                                    else
+                                        None
+
                                 let items =
                                     match repaired with
+                                    | _ when yamlSplice.IsSome -> yamlSplice.Value
                                     | Some fields when not fields.IsEmpty -> fields
                                     | _ when not aliasCmd.IsEmpty -> aliasCmd
                                     | _ when not sessionKeys.IsEmpty -> sessionKeys

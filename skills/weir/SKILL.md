@@ -665,7 +665,11 @@ print $"{key} -> {value}"
   every subdomain, trailing dots ignored, a non-ASCII host matched by
   its punycode (write the entry as `xn--…`), `*` for every host, an
   address or a CIDR (`10.0.0.0/8`, `::1`, bracket-less) for an IP
-  host, no ports. A dead proxy, a proxy
+  host, no ports. A malformed proxy variable (`http://h:99999`) raises,
+  naming it — never a silent direct connection. A URL's
+  `user:pass@` is sent as `Authorization: Basic` (percent-decoded),
+  as curl does, unless the request sets Authorization; displays mask
+  it. A dead proxy, a proxy
   refusing the tunnel (407, 403, 502) or closing the connection is
   named in the error — host:port, never
   its credentials. `auth` plus an
@@ -732,7 +736,8 @@ print $"{key} -> {value}"
   loser blocked reading stdin or a FIFO is cut too (POSIX; on Linux the
   cut closes the FIFO, so a later read gets the writer's data
   [D:fifo-read-polled]), and so is one writing, hashing or copying a FIFO
-  (Linux; `File.writeAtomic` refuses a FIFO) [D:fifo-ops-polled]. `exit n` in an arm ends the race and the
+  (Linux; `File.writeAtomic` refuses a FIFO) [D:fifo-ops-polled]; `Dir.copy`
+  recreates a FIFO and never opens it [D:dircopy-special]. `exit n` in an arm ends the race and the
   script, as in `pmap`.
 - A SCOPED background process is `within proc srv = <command>` +
   an indented block [D:scoped-procs]: the scope IS the lifetime —
@@ -901,7 +906,8 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   to the dead terminal is that command's failure). A full or closed
   stderr (`2>/dev/full`, `2>&-`) never aborts or fails a run either:
   `printerr`, `Log.*` and the final error write nothing and the exit
-  code is the run's own [D:console-write].
+  code is the run's own; a closed stdin reads nothing and a closed
+  stdout writes nowhere [D:console-write].
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel, a `kill -INT`) tree-kills the running foreground command and
   every fan-out arm's command too, scoped or not [D:sigint-reaps]. A
@@ -923,7 +929,11 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   start with SIGINT and SIGQUIT ignored, so a terminal ^C or ^\ cannot
   kill them, while they keep the terminal and its input (a pager
   works; one that handles ^C itself still quits on it)
-  [D:cleanup-sigign].
+  [D:cleanup-sigign]. Without a tty, a group-directed TERM/HUP (`kill --
+  -pgid`) that kills a cleanup's running statement command is the
+  signal's and the cleanup runs on; a value the cleanup captures from a
+  killed command fails instead — a truncated output is never a value
+  [D:cleanup-group-signal].
   A `pmap`/`piter`/`pfirst` takes no new arm after the signal (or the
   closed stdout), and arms already running are cut at their next
   builtin call, command, sleep or wait and JOINED before any
@@ -1887,8 +1897,13 @@ type Bad = C of int
   (`Yaml.parse`/`yaml patch`) keeps such a number's TEXT and `to yaml`
   writes it back unchanged (a Pod's `defaultMode: 0644` survives a
   patch), while reading `0644` into an `int` field REFUSES (write
-  `0o644`, `644`, or quote it); 1.1-only forms (`1_000`, `0b101`,
-  `1:20`) are strings, written quoted. A plain value holding `: ` (`f: a: b`) refuses, as every YAML reader does — quote it. A block sequence reads in BOTH indent
+  `0o644`, `644`, or quote it — a `float` field refuses it too); a
+  FLOAT weir would write differently (`1e5`, `+.5`, `3.10`) keeps its
+  text the same way, `1e400` rides a YStr written plain, and `to json`
+  writes values (an int past int64 as decimal digits, `0x…` too);
+  KEYS are strings, but a key the document wrote plain (`200:`,
+  `true:`) writes back plain — a key built in weir is quoted; 1.1-only forms
+  (`1_000`, `0b101`, `1:20`) are strings, written quoted. A plain value holding `: ` (`f: a: b`) refuses, as every YAML reader does — quote it. A block sequence reads in BOTH indent
   styles — indented under its key OR at the SAME column as its key
   (kubectl's `items:` / `- apiVersion: v1` flush-left form). Only the
   EMPTY flow collections `{}` and `[]` are read (into an empty
@@ -2097,7 +2112,9 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   label (a `Windows-1252` `.vcproj`), non-ASCII under an undecodable
   one refuses (iconv to UTF-8 AND change the declaration), a malformed
   label refuses [D:xml-labels]; text under a non-UTF-8 declaration
-  reads only if ASCII. Element text is read AS WRITTEN — whitespace-only
+  reads only if ASCII; a UTF-16/32 label over 8-bit bytes (no BOM)
+  refuses as a contradiction [D:xml-label-contradiction]; nesting past
+  500 elements refuses [D:xml-depth]. Element text is read AS WRITTEN — whitespace-only
   text (`&#32;`, `  `) is kept, as `xml.etree` reads it
   [D:xml-whitespace]. A DTD (`<!DOCTYPE …>`) refuses
   [D:xml-no-dtd] — no declared entity expands or resolves.

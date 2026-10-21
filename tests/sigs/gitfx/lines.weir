@@ -13,3 +13,10 @@ gitfx remote set-head origin --auto // clean
 gitfx remote add --tags -f o https://x // clean
 gitfx remote set-head o --autoo // typo: --autoo
 gitfx remote -v show o // clean
+gitfx stash show --stat --name-only stash@{1} // clean
+gitfx stash show -u --patience // clean
+gitfx stash -u // clean
+gitfx stash --include-untraked // typo: --include-untraked
+gitfx stash push --keep-indx // typo: --keep-indx
+gitfx stash pop --index // clean
+gitfx stash list --oneline // clean

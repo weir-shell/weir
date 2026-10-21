@@ -1,0 +1,13 @@
+=== --version
+trfx (GNU coreutils) 9.7
+=== --help
+Usage: trfx [OPTION]... STRING1 [STRING2]
+Translate, squeeze, and/or delete characters from standard input,
+writing to standard output.
+
+  -c, -C, --complement    use the complement of STRING1
+  -d, --delete            delete characters in STRING1, do not translate
+  -s, --squeeze-repeats   replace each sequence of a repeated character
+  -t, --truncate-set1     first truncate STRING1 to length of STRING2
+      --help        display this help and exit
+      --version     output version information and exit

@@ -1,0 +1,47 @@
+=== --version
+1.4.3
+=== --help
+@exit 1
+Usage: bunxfx [flags] <package><@version> [flags and arguments for the package]
+Execute an npm package executable (CLI), automatically installing into a global shared cache if not installed in node_modules.
+
+Flags:
+  --bun                  Force the command to run with Bun instead of Node.js
+  -p, --package <package>    Specify package to install when binary name differs from package name
+  --no-install           Skip installation if package is not already installed
+  --verbose              Enable verbose output during installation
+  --silent               Suppress output during installation
+
+Examples:
+  bunxfx prisma migrate
+  bunxfx prettier foo.js
+=== -h
+@exit 1
+Usage: bunxfx [flags] <package><@version> [flags and arguments for the package]
+Execute an npm package executable (CLI), automatically installing into a global shared cache if not installed in node_modules.
+
+Flags:
+  --bun                  Force the command to run with Bun instead of Node.js
+  -p, --package <package>    Specify package to install when binary name differs from package name
+  --no-install           Skip installation if package is not already installed
+  --verbose              Enable verbose output during installation
+  --silent               Suppress output during installation
+
+Examples:
+  bunxfx prisma migrate
+  bunxfx prettier foo.js
+=== -help
+@exit 1
+Usage: bunxfx [flags] <package><@version> [flags and arguments for the package]
+Execute an npm package executable (CLI), automatically installing into a global shared cache if not installed in node_modules.
+
+Flags:
+  --bun                  Force the command to run with Bun instead of Node.js
+  -p, --package <package>    Specify package to install when binary name differs from package name
+  --no-install           Skip installation if package is not already installed
+  --verbose              Enable verbose output during installation
+  --silent               Suppress output during installation
+
+Examples:
+  bunxfx prisma migrate
+  bunxfx prettier foo.js

@@ -994,6 +994,121 @@ module PlanMode =
             | struct (0, _, below) when not (isNull below) -> realPathIn outer below
             | _ -> None
 
+    // one layer's view of a path walked a component at a time
+    // [D:plan-preconditions] — viewIn's loop as a step, so canonIn
+    // extends the view of its prefix instead of re-walking it per
+    // component: Node, this layer's node (null off the trie); Below, the
+    // path to ask the layer below (null when nothing below counts);
+    // Dead, no extension is decided below any more (absent or a file)
+    [<Struct>]
+    type private LayerAt =
+        { Node: SimNode
+          Below: string
+          Cleared: bool
+          Dead: bool }
+
+    let private layerStart (root: SimNode) =
+        { Node = root
+          Below = null
+          Cleared = false
+          Dead = false }
+
+    let private layerDead =
+        { Node = null
+          Below = null
+          Cleared = true
+          Dead = true }
+
+    let private appendComp (b: string) (c: string) =
+        if isNull b then c
+        elif b.Length > 0 && b[b.Length - 1] = sep then b + c
+        else b + string sep + c
+
+    // one component further; also says whether Below jumped (a mirror)
+    let private layerStep (s: LayerAt) (c: string) : struct (LayerAt * bool) =
+        if s.Dead then
+            struct (s, false)
+        elif isNull s.Node then
+            if s.Cleared then
+                struct (layerDead, false)
+            else
+                struct ({ s with Below = appendComp s.Below c }, false)
+        else
+            match s.Node.Find c with
+            | null ->
+                if s.Cleared then
+                    struct (layerDead, false)
+                else
+                    struct ({ s with Node = null; Below = appendComp s.Below c }, false)
+            | child when child.State = 3 || child.State = 1 -> struct (layerDead, false)
+            | child when not (isNull child.Mirror) ->
+                struct ({ Node = child; Below = child.Mirror; Cleared = false; Dead = false }, true)
+            | child when child.Cleared || s.Cleared ->
+                struct ({ Node = child; Below = null; Cleared = true; Dead = false }, false)
+            | child -> struct ({ s with Node = child; Below = appendComp s.Below c }, false)
+
+    // the path to ask below, or null when this layer decided
+    let private layerBelow (s: LayerAt) : string =
+        if s.Dead || s.Cleared || isNull s.Below then null
+        elif not (isNull s.Node) && s.Node.State = 2 then null
+        elif s.Below = "" then string sep
+        else s.Below
+
+    let private layerWalk (root: SimNode) (p: string) : LayerAt =
+        let mutable s = layerStart root
+
+        for c in compsOf p do
+            let struct (n, _) = layerStep s c
+            s <- n
+
+        s
+
+    // every layer's view of one path, innermost (the top frame) first;
+    // a layer's input is the path the one above asks below
+    let private cursorWalk (frames: PlanFrame[]) (from: int) (into: LayerAt[]) (p: string) =
+        let mutable path = p
+
+        for i in from .. frames.Length - 1 do
+            if isNull path then
+                into[i] <- layerDead
+            else
+                into[i] <- layerWalk frames[i].Sim path
+                path <- if into[i].Dead || into[i].Cleared then null else into[i].Below
+
+    let private layerInput (s: LayerAt) =
+        if s.Dead || s.Cleared then null else s.Below
+
+    let private cursorStep (frames: PlanFrame[]) (cur: LayerAt[]) (c: string) : LayerAt[] =
+        let out = Array.zeroCreate cur.Length
+        let mutable i = 0
+
+        while i < cur.Length do
+            if i > 0 && isNull (layerInput out[i - 1]) then
+                out[i] <- layerDead
+                i <- i + 1
+            else
+                let struct (n, jumped) = layerStep cur[i] c
+                out[i] <- n
+                i <- i + 1
+
+                // a mirror: the layers beneath now see another path
+                if jumped && i < cur.Length then
+                    cursorWalk frames i out (layerInput n)
+                    i <- cur.Length
+
+        out
+
+    // the real path a cursor ends at (realPathIn's answer)
+    let private cursorReal (cur: LayerAt[]) (p: string) : string option =
+        let mutable path = p
+        let mutable i = 0
+
+        while not (isNull path) && i < cur.Length do
+            path <- layerBelow cur[i]
+            i <- i + 1
+
+        Option.ofObj path
+
     // the entry names a directory holds, before asking each one's kind
     let rec private namesIn (frames: PlanFrame list) (p: string) : string list =
         match frames with
@@ -1037,8 +1152,18 @@ module PlanMode =
                     cache[r] <- t
                     t
 
+        // the layers' view of each prefix of `cur`, extended a component
+        // at a time — linear in depth, not a walk per component
+        let layers = Array.ofList frames
+
+        let rootView (root: string) =
+            let v = Array.zeroCreate layers.Length
+            cursorWalk layers 0 v root
+            v
+
         let full = System.IO.Path.GetFullPath p
         let mutable cur = System.IO.Path.GetPathRoot full
+        let mutable views = [ rootView cur ]
         let mutable pending = split (full.Substring cur.Length)
         let mutable hops = 0
         let mutable lastLink = false
@@ -1052,20 +1177,28 @@ module PlanMode =
             elif part = ".." then
                 match System.IO.Path.GetDirectoryName cur with
                 | null -> ()
-                | parent -> cur <- parent
+                | parent ->
+                    cur <- parent
+
+                    views <-
+                        match views with
+                        | _ :: (_ :: _ as up) -> up
+                        | vs -> vs
             else
                 let next = System.IO.Path.Combine(cur, part)
+                let view = cursorStep layers views.Head part
 
                 let target =
                     if (pending.IsEmpty && not followLast) || hops >= 40 then
                         null
                     else
-                        match realPathIn frames next with
+                        match cursorReal view next with
                         | Some r -> linkAt r
                         | None -> null
 
                 if isNull target then
                     cur <- next
+                    views <- view :: views
                 else
                     hops <- hops + 1
                     lastLink <- lastLink || pending.IsEmpty
@@ -1073,6 +1206,7 @@ module PlanMode =
                     if System.IO.Path.IsPathRooted target then
                         let t = System.IO.Path.GetFullPath target
                         cur <- System.IO.Path.GetPathRoot t
+                        views <- [ rootView cur ]
                         pending <- split (t.Substring cur.Length) @ pending
                     else
                         pending <- split target @ pending
@@ -1125,14 +1259,20 @@ module PlanMode =
     /// a path with its symlinks followed, as the plan leaves them
     let simCanon (p: string) : string = canon true p
 
-    /// the plan-time kind of a path (0 absent, 1 file, 2 dir, 4 other —
-    /// a link whose target the plan removed dangles)
-    let simKind (p: string) : int =
+    // the plan-time kind, and whether a final link dangles
+    let private simKindLink (p: string) : struct (int * bool) =
         let struct (c, viaLink) = canonPlan true p
 
         match kindIn stack.Value c with
-        | 0 when viaLink -> 4
-        | k -> k
+        | 0 when viaLink -> struct (1, true)
+        | k -> struct (k, false)
+
+    /// the plan-time kind of a path (0 absent, 1 file, 2 dir, 4 other) —
+    /// a dangling link is a file row, as realKind reports it, so a delete
+    /// or move acts on the link itself
+    let simKind (p: string) : int =
+        let struct (k, _) = simKindLink p
+        k
 
     /// is the path a directory at plan time?
     let simIsDir (p: string) : bool =
@@ -1148,7 +1288,7 @@ module PlanMode =
     /// a dangling link at plan time: a link whose target the plan
     /// removed, or a real one no op has touched
     let simDangling (isDangling: string -> bool) (p: string) : bool =
-        simKind p = 4
+        (let struct (_, dangles) = simKindLink p in dangles)
         || (match realPathIn stack.Value (canon false p) with
             | Some r -> isDangling r
             | None -> false)
@@ -2058,6 +2198,21 @@ let private withSourceText (raw: string) (node: Value) : Value =
     yamlSourceText.AddOrUpdate(node, raw)
     node
 
+// an exponent float carries a dot and a signed exponent (1.0e-05): a
+// YAML 1.1 reader (PyYAML) loads `1e-05` as a string [D:yaml-interop]
+let private yamlFloat (f: float) : string =
+    let s = formatFloat f
+    let e = s.IndexOf 'e'
+
+    if e < 0 then
+        s
+    else
+        let mant = s.Substring(0, e)
+        let exp = s.Substring(e + 1)
+        let mant = if mant.Contains '.' then mant else mant + ".0"
+        let exp = if exp.StartsWith "-" || exp.StartsWith "+" then exp else "+" + exp
+        mant + "e" + exp
+
 let yamlFloatNode (raw: string) (f: float) : Value =
     let node = VUnion("YFloat", Some(VFloat f))
 
@@ -2066,11 +2221,38 @@ let yamlFloatNode (raw: string) (f: float) : Value =
     else
         node
 
+/// a plain YAML float keeps its text whenever weir would write it back
+/// differently (`1e5`, `+.5`, `3.10`): a YAML 1.1 reader takes some of
+/// those as strings, and an untouched round trip rewrites none
+/// [D:yaml-float-text]
+let yamlPlainFloatNode (raw: string) (f: float) : Value =
+    let node = VUnion("YFloat", Some(VFloat f))
+
+    if integerShaped raw || yamlFloat f <> raw then
+        withSourceText raw node
+    else
+        node
+
+/// a YAML 1.2 core `0x…`/`0o…` int's value at any size
+let private yamlRadixBig (raw: string) : System.Numerics.BigInteger =
+    let radix = if raw.StartsWith "0x" then 16 else 8
+
+    raw.Substring 2
+    |> Seq.fold
+        (fun (acc: System.Numerics.BigInteger) c ->
+            acc * System.Numerics.BigInteger radix + System.Numerics.BigInteger(System.Uri.FromHex c))
+        System.Numerics.BigInteger.Zero
+
+/// the decimal digits of an integer past int64 a YFloat node was read
+/// from (decimal with any leading zeros, 0x, 0o) [D:yaml-node-bigint] —
+/// None for a float's own text, which writes its value
 let yamlBigIntText (node: Value) : string option =
     match node with
     | VUnion("YFloat", _) ->
         match yamlSourceText.TryGetValue node with
-        | true, t -> Some t
+        | true, t when integerShaped t ->
+            Some(System.Numerics.BigInteger.Parse(t, System.Globalization.CultureInfo.InvariantCulture).ToString())
+        | true, t when t.StartsWith "0x" || t.StartsWith "0o" -> Some((yamlRadixBig t).ToString())
         | _ -> None
     | _ -> None
 
@@ -2112,6 +2294,11 @@ let yamlCoreRadixInt (raw: string) : int64 option option =
     if raw.StartsWith "0x" then digits 16 System.Uri.IsHexDigit
     elif raw.StartsWith "0o" then digits 8 (fun c -> c >= '0' && c <= '7')
     else None
+
+/// the YAML 1.2 core schema's number shapes (int and float) — the text
+/// every 1.2 reader types as a number, finite or not
+let private yamlCoreNumberRx =
+    System.Text.RegularExpressions.Regex @"^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$"
 
 /// the YAML 1.2 core schema's non-finite floats — numbers to every
 /// reader, no value a weir float holds [D:yaml-number-text]
@@ -2811,6 +2998,25 @@ let private xmlUndecodable (who: string) (name: string) =
     failwith
         $"{who}: the document declares encoding '{excerpt name}', which weir cannot decode, and holds non-ASCII characters — UTF-8, UTF-16, UTF-32, US-ASCII and ISO-8859-1 read; convert it to UTF-8 (iconv -f {excerpt name} -t UTF-8) and change the declaration to encoding=\"UTF-8\""
 
+// UTF-16/UTF-32: code units wider than a byte, so a declaration read
+// as 8-bit text cannot be theirs [D:xml-label-contradiction]
+let private xmlWideUnits (enc: System.Text.Encoding) =
+    match enc.CodePage with
+    | 1200
+    | 1201
+    | 12000
+    | 12001 -> true
+    | _ -> false
+
+let private xmlWideContradiction (who: string) (name: string) (what: string) =
+    failwith
+        $"{who}: the document declares encoding '{excerpt name}', but its {what} with an 8-bit '<?xml' and no byte-order mark — the declaration contradicts it; if the file is UTF-8, change the declaration to encoding=\"UTF-8\""
+
+// element nesting ceiling [D:xml-depth]: the document readers' 500
+// (yaml, toml, the expression parser) — a typed read never reaches that
+// deep, and an adversarial ladder stops at the bound
+let private xmlMaxDepth = 500
+
 /// the input of `from xml`: text (already decoded as UTF-8) or the
 /// document's bytes, which decode per their BOM or declaration
 type XmlInput =
@@ -2851,6 +3057,9 @@ let private xmlDoc
 
                 match xmlEncoding name with
                 | None when nonAscii -> xmlUndecodable who name
+                // a declaration the text itself contradicts: its head
+                // read as 8-bit characters, never 16/32-bit units
+                | Some enc when xmlWideUnits enc && nonAscii -> xmlWideContradiction who name "text starts"
                 | Some enc when enc.CodePage <> 65001 && nonAscii ->
                     let tyName =
                         match top with
@@ -2894,6 +3103,10 @@ let private xmlDoc
                         let name = xmlDeclName who m
 
                         match xmlEncoding name with
+                        // no BOM and an 8-bit `<?xml` head: a UTF-16/32
+                        // label contradicts the bytes, whose decode
+                        // would be mojibake
+                        | Some e when xmlWideUnits e -> xmlWideContradiction who name "bytes start"
                         | Some e -> e
                         // pure ASCII reads the same under any
                         // ASCII-compatible label [D:xml-labels]
@@ -2921,9 +3134,25 @@ let private xmlDoc
 
     let root =
         try
-            use sr = new System.IO.StringReader(text)
-            use reader = System.Xml.XmlReader.Create(sr, settings)
-            (XDocument.Load reader).Root
+            // the nesting bound [D:xml-depth]: a streaming pre-scan stops
+            // at the bound, before XDocument's superlinear build
+            let deep =
+                use sr = new System.IO.StringReader(text)
+                use scan = System.Xml.XmlReader.Create(sr, settings)
+                let mutable deep = false
+
+                while not deep && scan.Read() do
+                    if scan.NodeType = System.Xml.XmlNodeType.Element && scan.Depth >= xmlMaxDepth then
+                        deep <- true
+
+                deep
+
+            if deep then
+                None
+            else
+                use sr = new System.IO.StringReader(text)
+                use reader = System.Xml.XmlReader.Create(sr, settings)
+                Some (XDocument.Load reader).Root
         with
         // Prohibit's own error carries no position; the declaration's
         // spelling is what names it
@@ -2933,6 +3162,13 @@ let private xmlDoc
         | _ ->
             // never System.Xml's words, mirroring the JSON boundary
             failwith $"{who}: not valid XML: {shown}"
+
+    let root =
+        match root with
+        | Some r -> r
+        | None ->
+            failwith
+                $"{who}: the document nests elements deeper than {xmlMaxDepth} levels, weir's bound for a document: {shown}"
 
     // children / attributes matched by local name — namespaces
     // (msbuild's default xmlns) are ignored so field names stay plain
@@ -3233,7 +3469,15 @@ let yamlScalarValue (raw: string) (quoted: bool) : Value =
     else
         match (if quoted then None else yamlCoreRadixInt raw) with
         | Some(Some n) -> withSourceText raw (VUnion("YInt", Some(VInt n)))
-        | Some None -> withSourceText raw (VUnion("YStr", Some(VStr raw)))
+        // past int64 a radix int is the decimal's sibling: its nearest
+        // float, the text kept [D:yaml-float-text]
+        | Some None ->
+            let f = float (yamlRadixBig raw)
+
+            if System.Double.IsFinite f then
+                withSourceText raw (VUnion("YFloat", Some(VFloat f)))
+            else
+                withSourceText raw (VUnion("YStr", Some(VStr raw)))
         | None ->
         match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
         | true, n when yamlLeadingZero raw -> withSourceText raw (VUnion("YInt", Some(VInt n)))
@@ -3243,7 +3487,11 @@ let yamlScalarValue (raw: string) (quoted: bool) : Value =
             // — `cpu: 1.5` must not render as "1.5" (same as int;
             // parseFloat refuses non-finite so nan/inf text stays string)
             match (if quoted then Error "" else parseFloat raw) with
-            | Ok f -> yamlFloatNode raw f
+            | Ok f -> yamlPlainFloatNode raw f
+            // a 1.2 number past float range (1e400): no float holds it,
+            // so the text rides a YStr and writes back plain, as .inf
+            // does [D:yaml-float-text]
+            | Error _ when not quoted && yamlCoreNumberRx.IsMatch raw -> withSourceText raw (VUnion("YStr", Some(VStr raw)))
             | Error _ -> VUnion("YStr", Some(VStr raw))
 
 let rec yamlNodeValue (node: Yaml.Node) : Value =
@@ -3261,6 +3509,28 @@ let rec yamlNodeValue (node: Yaml.Node) : Value =
             Some(VSeq(entries |> List.map (fun (k, v) -> VTuple [ VStr k; yamlNodeValue v ]) |> List.toSeq))
         )
 
+// ruling R3 [D:yaml-number-text]: a typed read of a leading-zero
+// literal refuses — 1.2 reads decimal, the 1.1 readers beside weir
+// (PyYAML, kubectl) do not; `asInt` offers the 0o spelling, which a
+// float field cannot read
+let private yamlLeadingZeroRefusal (line: int) (raw: string) (asInt: bool) : Value =
+    let r = raw.TrimStart('-', '+')
+    let n = System.Numerics.BigInteger.Parse(raw, System.Globalization.CultureInfo.InvariantCulture)
+
+    let sign = if raw.StartsWith "-" then "-" else ""
+
+    let theirs, octal =
+        if r |> Seq.forall (fun c -> c <= '7') then
+            let oct = yamlRadixBig ("0o" + r)
+            // the core schema's 0o form is unsigned
+            $"octal ({sign}{oct})",
+            (if asInt && r = raw then $"0o{(r.TrimStart '0').PadLeft(1, '0')} for octal, " else "")
+        else
+            "a string", ""
+
+    failwith
+        $"from yaml: line {line}: '{quoteData raw}' has a leading zero — YAML 1.2 (weir) reads decimal {n}, YAML 1.1 readers (PyYAML, kubectl) read it as {theirs}; write {octal}{n} for decimal, or quote it for a string"
+
 // `localDate line raw`: is this scalar an offset-less TOML datetime
 // [D:toml-local-instant] — false for every yaml read
 let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.Shape) (node: Yaml.Node) : Value =
@@ -3274,21 +3544,7 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
             failwith $"from yaml: line {line}: a quoted scalar is a string; this field expects int"
         else
             match System.Int64.TryParse raw with
-            | true, n when yamlLeadingZero raw ->
-                // ruling R3 [D:yaml-number-text]: 1.2 reads decimal, the
-                // 1.1 readers beside weir (PyYAML, kubectl) do not
-                let r = raw.TrimStart('-', '+')
-
-                let theirs, octal =
-                    if r |> Seq.forall (fun c -> c <= '7') then
-                        // the core schema's 0o form is unsigned
-                        $"octal ({System.Convert.ToInt64(r, 8)})",
-                        (if r = raw then $"0o{(r.TrimStart '0').PadLeft(1, '0')} for octal, " else "")
-                    else
-                        "a string", ""
-
-                failwith
-                    $"from yaml: line {line}: '{quoteData raw}' has a leading zero — YAML 1.2 (weir) reads decimal {n}, YAML 1.1 readers (PyYAML, kubectl) read it as {theirs}; write {octal}{n} for decimal, or quote it for a string"
+            | true, _ when yamlLeadingZero raw -> yamlLeadingZeroRefusal line raw true
             | true, n -> VInt n
             | _ ->
                 match yamlCoreRadixInt raw with
@@ -3331,6 +3587,9 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
                     $"from yaml: line {line}: '{quoteData raw}' is not representable — weir floats are finite (non-finite results raise; there is no value to read into)"
             | _ ->
                 match parseFloat raw with
+                // a float field is no way around the int refusal
+                // [D:yaml-float-text]
+                | Ok f when yamlLeadingZero raw -> yamlLeadingZeroRefusal line raw false
                 | Ok f -> VFloat f
                 | Error _ -> failwith $"from yaml: line {line}: expected float, got '{quoteData raw}'"
     | Yaml.SStr, Yaml.NScalar(raw, _, _) -> VStr raw
@@ -3552,21 +3811,6 @@ type private Rendered =
 // with more have no form in the subset (`|+` is rejected) and fall
 // back below, since dropping bytes is the one thing a renderer must
 // never do
-// an exponent float carries a dot and a signed exponent (1.0e-05): a
-// YAML 1.1 reader (PyYAML) loads `1e-05` as a string [D:yaml-interop]
-let private yamlFloat (f: float) : string =
-    let s = formatFloat f
-    let e = s.IndexOf 'e'
-
-    if e < 0 then
-        s
-    else
-        let mant = s.Substring(0, e)
-        let exp = s.Substring(e + 1)
-        let mant = if mant.Contains '.' then mant else mant + ".0"
-        let exp = if exp.StartsWith "-" || exp.StartsWith "+" then exp else "+" + exp
-        mant + "e" + exp
-
 let private renderString (s: string) : Rendered =
     // U+2028/U+2029 are line breaks to a YAML reader, so block content
     // cannot carry them; the quoted form escapes them [D:block-scalars]
@@ -3634,7 +3878,7 @@ let rec private yamlRender
             match v with
             | VUnion("None", None) when omitNone -> []
             | _ ->
-                let key = Yaml.renderScalar k
+                let key = Yaml.renderKey k
 
                 match yamlRender renames unions (depth + 1) g v with
                 | Inline "" -> [ $"{key}:" ]
@@ -4264,6 +4508,44 @@ let private unknownFlagMessage (t: string) (known: string list) (tyOf: string ->
         $"unknown flag '{quoteData name}=…'{didYouMean name known}"
     | _ -> $"unknown flag '{quoteData t}'{didYouMean t known}"
 
+// a single-dash token with something attached (`-t=x`, `-tx`): the
+// short flag's value is the next argument. Echoed only when every
+// reading of the letter is a known non-Secret flag [D:args-secret-echo];
+// a number (`-42`) is a stray argument, shown as is.
+let private attachedShortMessage
+    (t: string)
+    (shorts: Map<string, ShortOwner>)
+    (tyOf: string -> Ty option)
+    : string =
+    let isSecret ty =
+        match ty with
+        | Some TSecret
+        | Some(TNamed("Option", [ TSecret ])) -> true
+        | _ -> false
+
+    let short = t.Substring(0, 2)
+    let value = t.Substring 2
+    let value = if value.StartsWith "=" then value.Substring 1 else value
+
+    match Map.tryFind (t.Substring(1, 1)) shorts with
+    | _ when
+        System.Double.TryParse(
+            t,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture
+        )
+        |> fst
+        ->
+        $"unexpected argument '{quoteData t}'"
+    | Some(ShortOf flag) when isSecret (tyOf flag) ->
+        $"unknown flag '{quoteData short}***' — a flag's value is the next argument: write '{quoteData short} <value>'"
+    | Some(ShortOf flag) when tyOf flag = Some TBool ->
+        $"unknown flag '{quoteData t}' — '{quoteData short}' ({flag}) is a presence flag and takes no value"
+    | Some(ShortOf _) ->
+        $"unknown flag '{quoteData t}' — a flag's value is the next argument: write '{quoteData short} {quoteData value}'"
+    | Some(AmbiguousShort _)
+    | None -> $"unexpected argument '{quoteData short}…'"
+
 let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
     // minted --no-X twins ride the index as negative entries
     // [D:default-attr]; they join did-you-mean via the same list
@@ -4307,6 +4589,12 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
             | None ->
                 problems.Add $"unknown flag '{quoteData t}'"
                 go rest
+        | t :: rest when t.StartsWith "-" && t.Length > 2 ->
+            let tyOf flag =
+                Map.tryFind flag longIndex |> Option.map (fun (_, ty, _) -> ty)
+
+            problems.Add(attachedShortMessage t shortIndex tyOf)
+            go rest
         | t :: rest ->
             problems.Add $"unexpected argument '{quoteData t}'"
             go rest
@@ -4424,6 +4712,15 @@ let private argvLoadShared
                         problems.Add $"""'{quoteData t}' is ambiguous: {String.concat ", " candidates}"""
                         Choice3Of3()
                     | None -> Choice2Of3()
+                elif t.StartsWith "-" && t.Length > 2 then
+                    let tyOf flag =
+                        match Map.tryFind flag sharedLong, Map.tryFind flag payloadLong with
+                        | Some(_, ty, _), _
+                        | None, Some(_, ty, _) -> Some ty
+                        | _ -> None
+
+                    problems.Add(attachedShortMessage t scopeShorts tyOf)
+                    Choice3Of3()
                 else
                     problems.Add $"unexpected argument '{quoteData t}'"
                     Choice3Of3()
@@ -4884,6 +5181,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
         System.Console.Out.Flush()
         Proc.runChainInherited (chainSpecs env arg chead cargs cenvO)
         VUnit
+    // a statement command with its output redirected relays its lines,
+    // which are never a value [D:cleanup-group-signal]
+    | TEPipe({ Kind = TECmd(head, args, cenvO) } as c, ({ Kind = TEVar "|print" } as fn)) ->
+        let f = eval env fn
+        callAtWith fn f (commandLines true env c head args cenvO)
+    | TEPipe({ Kind = TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) }) }, ({ Kind = TEVar "|print" } as fn)) ->
+        let f = eval env fn
+        let specs = chainSpecs env arg chead cargs cenvO
+        callAtWith fn f (VSeq(Seq.delay (fun () -> Proc.chainStatementLinesOf specs) |> Seq.map VStr))
     | TEPipe(arg, fn) -> callAt env fn arg
     | TEField(target, field) ->
         match eval env target with
@@ -5016,21 +5322,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             source
     | TEList items -> VSeq(items |> List.map (eval env))
     | TETuple items -> VTuple(items |> List.map (eval env))
-    | TECmd(head, args, cenvO) ->
-        let argv = argvOf env args
-
-        // only the enclosing `within` scopes are captured
-        // [D:ambient-capture-within]
-        let spec: Proc.Spec =
-            { Prog = Proc.resolveProg (progOf env head)
-              Args = argv
-              Env = overlayOf env cenvO
-              Input = None
-              Cwd = Weir.Session.scopedCwd ()
-              Ambient = Weir.Session.scopedAmbient () }
-
-        // the command takes the blame wherever it is read [D:runtime-position]
-        VSeq(Seq.delay (fun () -> Proc.linesOf spec) |> Seq.map VStr |> blameOn (box te))
+    | TECmd(head, args, cenvO) -> commandLines false env te head args cenvO
     | TEInterp parts ->
         let sb = System.Text.StringBuilder()
 
@@ -5467,9 +5759,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // created and registered inside the spawn gate, so no spill dir
             // appears after the teardown kill; removed when the start
             // refuses [D:teardown-stops-arms]
-            Session.gatedSpawn (fun () ->
-                Session.createPrivateDir spill
-                Session.registerTmpDir spill)
+            Session.gatedSpawn (fun () -> Session.createRegisteredDir spill)
 
             let p, drain =
                 try
@@ -5949,11 +6239,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let dir =
                 System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
 
-            Session.createPrivateDir dir
             // the exit hook's backstop registration [D:exit-hook]: a hard
             // exit (pfirst exit-race, Ctrl-C) sweeps what this finally
             // could not; the clean path deregisters and the hook is idle
-            Session.registerTmpDir dir
+            Session.createRegisteredDir dir
             // opened inside a plan: a captured op under it is refused
             // [D:plan-within-tmp]
             PlanMode.noteTmp dir
@@ -6187,7 +6476,39 @@ and apply (fn: Value) (arg: Value) : Value =
 // [D:runtime-position-call]
 and private callAt (env: Env) (fn: TypedExpr) (arg: TypedExpr) : Value =
     let f = eval env fn
-    let a = eval env arg
+    callAtWith fn f (eval env arg)
+
+// a command's lazy lines; `statement`: armed as a statement, output unused
+and private commandLines
+    (statement: bool)
+    (env: Env)
+    (te: TypedExpr)
+    (head: Check.TCmdHead)
+    (args: TypedExpr list)
+    (cenvO: TypedExpr option)
+    : Value =
+    let argv = argvOf env args
+
+    // only the enclosing `within` scopes are captured
+    // [D:ambient-capture-within]
+    let spec: Proc.Spec =
+        { Prog = Proc.resolveProg (progOf env head)
+          Args = argv
+          Env = overlayOf env cenvO
+          Input = None
+          Cwd = Weir.Session.scopedCwd ()
+          Ambient = Weir.Session.scopedAmbient () }
+
+    let lines =
+        if statement then
+            Proc.statementLinesOf
+        else
+            Proc.linesOf
+
+    // the command takes the blame wherever it is read [D:runtime-position]
+    VSeq(Seq.delay (fun () -> lines spec) |> Seq.map VStr |> blameOn (box te))
+
+and private callAtWith (fn: TypedExpr) (f: Value) (a: Value) : Value =
 
     // a reifier's call is its command's: blamed at the command, whose
     // program is the reifier's first argument

@@ -1,0 +1,5 @@
+#sig clickfx
+clickfx -v build --release -o out // clean
+clickfx --config c.toml deploy --dry-run prod // clean
+clickfx build --relase // typo: --relase
+clickfx --verbos build // typo: --verbos

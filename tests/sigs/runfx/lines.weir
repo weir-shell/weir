@@ -1,0 +1,4 @@
+#sig runfx
+runfx --user --scope -p MemoryMax=1G make -j4 // clean
+runfx -u x ls -la // clean
+runfx --scoep make // typo: --scoep

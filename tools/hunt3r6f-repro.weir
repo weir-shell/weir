@@ -1,0 +1,2376 @@
+#!/usr/bin/env weir
+// Acceptance instrument for dev/plans/PLAN-hunt3r6-fixes.md: one probe per
+// medium-or-high finding of hunt 3 round 6 (H3R6-*). Each probe prints
+// `<id> OK` when its item is fixed and `<id> REPRODUCES (...)` otherwise,
+// naming every sub-case still failing, so one script is both the bug report
+// and the stages' gate. A missing instrument prints a SKIP line, which keeps
+// the gate shut.
+//
+//     weir tools/hunt3r6f-repro.weir --bin ./path/to/weir [--only H3R6-C1-2]
+//         [--sigscore ./path/to/tools/sig-score.weir]
+//
+// Labels are the findings' ids (H3R6-E1 … H3R6-D2). `--only` selects the
+// probes and controls with a label word starting with its text — an id
+// ending in a digit never selects a longer number (H3R6-E1 is not H3R6-E10,
+// so E10 and E11 are named in full), a prefix selects a family (`--only
+// H3R6-C1`); controls carry the ids they guard. Not here: W1 (Windows only —
+// pinned by an e2e cell in stage A), C1-7 (a rare startup race: stage A pins
+// it in its own unit/e2e test) and the lows (BACKLOG). The judgements
+// follow the FIXED behaviour the plan's rulings R1-R4 describe; where a
+// ruling leaves the output open, a probe asserts the invariant, never a
+// wording. A signal's exit is judged as either spelling (128+n or a death by
+// n). B8 may be ruled by design: its probe stands alone so it can be dropped.
+// S7 judges the scorer itself: tools/sig-score.weir beside this file, or the
+// one `--sigscore` names (a stage-S branch passes its own).
+//
+// Cost findings are bounds against yardsticks measured in the same run
+// (C1-3: the same loop exiting 1; C2-3: the same REPL loop exiting 1; D1: the
+// same race through `$( )`; D2: the same plan with no copied dir or link on
+// its path), with 2x margins or more either way, never absolute figures;
+// the storms stay the full gate. E3 costs its 15s probe bound by design.
+//
+// Stage S probes write fake tools into their probe dir (shell scripts
+// printing the real tools' help pages, a tab spelled <T> in the heredocs), so
+// CI needs nothing installed; S1 and S6 use the real git and SKIP without it.
+// C2-5 and F3 drive `weir lsp` (the REPL completes from the same engine).
+//
+// Loud, in every direction:
+//   - a probe that fails to run counts as reproducing, never as a pass;
+//   - a missing instrument (timeout, env, sh, python3, ps, kill, setsid,
+//     bash, ln, mkfifo, /proc; git for S1/S6) is a named SKIP
+//     counted with the failures;
+//   - the exit code is the number of lines keeping the gate shut (failed
+//     probes, failed controls and skips), capped at 255.
+//
+// Signals go to weir's pid ALONE unless a probe says group (the signal
+// driver spawns the child in its own session with default dispositions; a
+// `g` spec targets the group). A terminal ^C is a 0x03 byte written to a
+// pseudo-terminal whose session weir leads; job control is an interactive
+// bash on a pty. Signals land at points the fixtures mark (a log line or a
+// file appearing), timing limits leave a 2x margin or more. Orphans are
+// found by a per-run marker — a `sleep <marker>` argv, matched exactly —
+// and killed after counting.
+//
+// CI-robust: every child weir runs under `env -u` of the proxy variables
+// (E6 sets its own) with TMPDIR in its probe dir (C1-6 runs weir from sh with
+// a closed fd, unsetting them there); REPL probes pin HOME and every XDG_*
+// dir to their probe dir. Servers are python's, bound to port 0, reporting
+// the kernel's pick [D:harness-ports]; no probe takes a fixed port.
+// Everything binds loopback; nothing leaves the machine.
+//
+// Positive controls (`control-*`) pin the neighbouring behaviour each fix
+// must keep, so no probe can pass by the binary being broken in a new way; a
+// failed control counts toward the exit code.
+//
+// python3 helpers (run `python3 -I`, written into each probe's temp dir from
+// the heredocs below) where weir cannot express the shape: a pseudo-terminal
+// driver, a signal driver, a job-control bash, an LSP client, an echo server
+// and schema/file servers.
+
+type Cli = {
+    /// the weir binary under test
+    [<Default "weir">]
+    bin: string
+    /// run only the probes and controls whose label contains this text
+    only: Option<string>
+    /// the sig-score.weir H3R6-S7 judges (default: the one beside this file)
+    sigscore: Option<string>
+}
+
+let cli = Args.load Cli
+
+let toolsReady =
+    sh -c "command -v timeout && command -v env && command -v python3 && command -v ps && command -v kill && command -v setsid && command -v bash && command -v ln && command -v mkfifo && test -d /proc/self" | succeeds
+
+// ---- runners ---------------------------------------------------------------
+
+let put dir name lines =
+    let p = $"{dir}/{name}"
+    lines |> File.write p
+    p
+
+let noProxy = [
+    "-u"; "HTTP_PROXY"; "-u"; "http_proxy"; "-u"; "HTTPS_PROXY"; "-u"; "https_proxy"
+    "-u"; "ALL_PROXY"; "-u"; "all_proxy"; "-u"; "NO_PROXY"; "-u"; "no_proxy"
+]
+
+// a child weir in `dir`, proxies stripped, its temp dirs under `dir`, extra
+// NAME=value words for env
+let runEnv dir secs extra args =
+    within cd dir
+        let r = timeout -k 2 $secs env $@noProxy $"TMPDIR={dir}" $@extra $cli.bin $@args | complete
+        r
+
+let runIn dir secs args = runEnv dir secs [] args
+
+let outOf { stdout = s } = s |> Str.join "\n"
+let errOf { stderr = s } = s |> Str.join "\n"
+
+// `weir check` writes its diagnostics to stdout; judge both streams
+let diagOf r = outOf r + "\n" + errOf r
+let codeOf { exitCode = c } = c
+
+let failing cases =
+    cases |> Seq.where (fun (_, ok) -> not ok) |> Seq.map fst |> Seq.freeze
+
+let hx s = Bytes.toHex (Str.toUtf8 s)
+
+let msOf f =
+    let t0 = Instant.now ()
+    let r = f ()
+    (Duration.toMillis (Instant.now () - t0), r)
+
+let linesOf p = if File.exists p then File.read p |> Seq.freeze else []
+
+let oneLine s = s |> Str.trim |> Str.replace "\n" " | "
+
+let joined ls = ls |> Str.join " | "
+
+// terminal-driving bytes, built from hex so this file stays plain text
+let esc = Str.fromUtf8 (Bytes.fromHex "1b")
+let bel = Str.fromUtf8 (Bytes.fromHex "07")
+let cr = Str.fromUtf8 (Bytes.fromHex "0d")
+
+// a per-run marker for `sleep <marker>` children: a float sleep(1) takes,
+// unique to this harness run and this use
+let markOf secs k = $"{secs}.{Self.pid}{k}"
+
+// (pid, stat) of every live `sleep <mark>`, the argv matched exactly
+let sleepersOf mark =
+    let r = ps -eo "pid=,stat=,args=" | complete
+    r.stdout
+    |> Seq.map (fun l -> l |> Str.fields |> Seq.freeze)
+    |> Seq.where (fun f -> (f |> Seq.length) == 4 && f[2] == "sleep" && f[3] == mark)
+    |> Seq.map (fun f -> (f[0], f[1]))
+    |> Seq.freeze
+
+let reap mark =
+    let pids = sleepersOf mark |> Seq.map fst |> Seq.freeze
+    if not (Seq.isEmpty pids) then
+        let _k = kill -9 $@pids | complete
+        ()
+
+// a signal's exit, either spelling: 128+n from exit(), -n from a death by
+// the signal (python's view of a wait status)
+let sigExit rc n = rc == $"{128 + n}" || rc == $"-{n}"
+
+// ---- python helpers ----------------------------------------------------------
+
+// a pseudo-terminal whose session the child leads: `HEX <bytes>` /
+// `SLEEP <ms>` / `GET <port>` (a background HTTP GET of / on 127.0.0.1) /
+// `HANGUP` (close the master: the terminal hangs up) / `SIG <NAME>` (a
+// signal to the child's pid) / `GSIG <NAME>` (to its process group) lines on
+// stdin. Prints
+// the session (CRLF as a newline, a bare CR as <CR>, ESC as <ESC>), then
+// `EXIT <code|timeout>` (a death by a signal is -n), `EXITMS <ms from spawn
+// to exit, -1 on timeout>`, `SENT <ms of each HEX write>`, `STATUS <status
+// line|closed|error>` per GET
+let ptyPy = <<<
+    import os, pty, sys, time, select, signal, fcntl, termios, struct, threading, socket
+    timeout = float(sys.argv[1]); cmd = sys.argv[2:]
+    steps = []
+    for line in sys.stdin.read().splitlines():
+        if line.startswith("SLEEP "): steps.append(("sleep", int(line[6:])))
+        elif line.startswith("HEX "): steps.append(("send", bytes.fromhex(line[4:].strip())))
+        elif line.startswith("GET "): steps.append(("get", int(line[4:])))
+        elif line.strip() == "HANGUP": steps.append(("hangup", 0))
+        elif line.startswith("SIG "): steps.append(("sig", line[4:].strip()))
+        elif line.startswith("GSIG "): steps.append(("gsig", line[5:].strip()))
+    pid, fd = pty.fork()
+    if pid == 0:
+        for sig in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE):
+            signal.signal(sig, signal.SIG_DFL)
+        os.execvp(cmd[0], cmd)
+    t0 = time.monotonic()
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 160, 0, 0))
+    out = b""; code = None; exitms = -1; sent = []; gets = []; threads = []; closed = False
+    def ms(): return int((time.monotonic() - t0) * 1000)
+    def reap():
+        global code, exitms
+        if code is None:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done: code = os.waitstatus_to_exitcode(status); exitms = ms()
+    def pump(until):
+        global out
+        while time.monotonic() < until:
+            reap()
+            if closed:
+                if code is not None: return
+                time.sleep(0.01); continue
+            r, _, _ = select.select([fd], [], [], 0.01)
+            if r:
+                try: c = os.read(fd, 65536)
+                except OSError: c = b""
+                if not c:
+                    if code is not None: return
+                    time.sleep(0.01)
+                out += c
+    def get(port):
+        try:
+            s = socket.create_connection(("127.0.0.1", port), timeout=20)
+            s.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n" % port)
+            d = b""
+            while True:
+                x = s.recv(65536)
+                if not x: break
+                d += x
+            gets.append(d.split(b"\r\n")[0].decode("latin-1") or "closed")
+        except Exception as e: gets.append("error " + type(e).__name__)
+    for kind, arg in steps:
+        if code is not None: break
+        if kind == "sleep": pump(time.monotonic() + arg / 1000.0)
+        elif kind == "send":
+            try: os.write(fd, arg); sent.append(ms())
+            except OSError: pass
+        elif kind == "hangup":
+            os.close(fd); closed = True; sent.append(ms())
+        elif kind in ("sig", "gsig"):
+            try:
+                if kind == "sig": os.kill(pid, getattr(signal, "SIG" + arg))
+                else: os.killpg(pid, getattr(signal, "SIG" + arg))
+                sent.append(ms())
+            except OSError: pass
+        else:
+            t = threading.Thread(target=get, args=(arg,), daemon=True); t.start(); threads.append(t)
+    deadline = time.monotonic() + timeout
+    while code is None and time.monotonic() < deadline: pump(time.monotonic() + 0.05)
+    if code is None:
+        os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0); code = "timeout"
+    else: pump(time.monotonic() + 0.3)
+    for t in threads: t.join(5)
+    mode = "closed"
+    if not closed:
+        try:
+            lf = termios.tcgetattr(fd)[3]
+            mode = "icanon=%d echo=%d isig=%d" % (int(bool(lf & termios.ICANON)), int(bool(lf & termios.ECHO)), int(bool(lf & termios.ISIG)))
+        except Exception as e: mode = "error " + type(e).__name__
+    text = out.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "<CR>").replace("\x1b", "<ESC>")
+    sys.stdout.write(text)
+    print("\nEXIT", code)
+    print("EXITMS", exitms)
+    print("SENT", " ".join(str(x) for x in sent))
+    for g in gets: print("STATUS", g)
+    print("TTYMODE", mode)
+
+// the signal driver: DIR TIMEOUT MARK SPEC... -- argv. Spawns argv in a new
+// session (default dispositions, stdin /dev/null, stdout/stderr to DIR/out,
+// DIR/err) and sends each SPEC in turn to the child's pid alone: `SIG@ms`
+// (ms after spawn) or `SIG@log+ms` (ms after DIR/log holds "BODY DONE");
+// `ign:SIG` starts the child with SIG ignored (an inherited SIG_IGN); a `g`
+// before the name (`gHUP@log+300`) sends to the child's process group. Waits
+// up to TIMEOUT s after the last (then HANG: SIGKILL the session), counts the
+// `sleep MARK`s left 300ms later and kills them. One line:
+//     rc=<code|HANG> ms=<last-signal-to-exit> left=<n> sig=<names>
+// (rc is -n for a death by signal n)
+let sigPy = <<<
+    import os, sys, time, signal, subprocess
+    a = sys.argv[1:]
+    d, tmo, mark = a[0], float(a[1]), a[2].encode()
+    i = a.index("--"); specs = [x for x in a[3:i] if not x.startswith("ign:")]; argv = a[i + 1:]
+    ign = [getattr(signal, "SIG" + x[4:]) for x in a[3:i] if x.startswith("ign:")]
+    def pre():
+        for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE):
+            signal.signal(s, signal.SIG_DFL)
+        for s in ign: signal.signal(s, signal.SIG_IGN)
+    def marked():
+        out = []
+        for e in os.listdir("/proc"):
+            if not e.isdigit(): continue
+            try: v = open("/proc/%s/cmdline" % e, "rb").read().split(b"\0")
+            except OSError: continue
+            if len(v) >= 2 and os.path.basename(v[0]) == b"sleep" and v[1] == mark: out.append(int(e))
+        return out
+    log = os.path.join(d, "log")
+    p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=open(os.path.join(d, "out"), "wb"),
+                         stderr=open(os.path.join(d, "err"), "wb"), preexec_fn=pre, start_new_session=True)
+    t0 = time.monotonic(); ts = None; names = []
+    for spec in specs:
+        sname, when = spec.split("@")
+        if when.startswith("log+"):
+            while time.monotonic() - t0 < 30 and p.poll() is None:
+                try:
+                    if "BODY DONE" in open(log).read(): break
+                except OSError: pass
+                time.sleep(0.0005)
+            base = time.monotonic(); delay = float(when[4:]) / 1000.0
+        else:
+            base = t0; delay = float(when) / 1000.0
+        while time.monotonic() < base + delay: time.sleep(0.0005)
+        if p.poll() is not None: break
+        grp = sname.startswith("g"); sname = sname[1:] if grp else sname
+        try:
+            if grp: os.killpg(p.pid, getattr(signal, "SIG" + sname))
+            else: os.kill(p.pid, getattr(signal, "SIG" + sname))
+            ts = time.monotonic(); names.append(("g" if grp else "") + sname)
+        except ProcessLookupError: pass
+    try: rc = str(p.wait(timeout=tmo))
+    except subprocess.TimeoutExpired:
+        rc = "HANG"
+        try: os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        p.wait()
+    ms = int((time.monotonic() - (ts or t0)) * 1000)
+    time.sleep(0.3)
+    left = marked()
+    for x in left:
+        try: os.kill(x, signal.SIGKILL)
+        except ProcessLookupError: pass
+    try: os.killpg(p.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError): pass
+    print("rc=%s ms=%d left=%d sig=%s" % (rc, ms, len(left), "+".join(names) or "none"))
+
+
+// a python server written into `dir` from `src`, run with `args`; the body
+// gets the server's first stdout line (servers bind port 0 and print it)
+let withPy dir name src args body =
+    let py = put dir name src
+    within proc srv = python3 -I $py $@args
+        let reported =
+            poll timeout=10s interval=50ms watch=srv
+                Proc.tail srv |> Seq.tryHead
+            until l
+                l <> None
+        let v = body (reported |> Option.defaultValue "")
+        v
+
+let portOf line = line |> Str.fields |> Seq.head |> Str.toInt
+
+type PtyRun = { text: string; code: string; exitMs: int; sent: seq<int>; statuses: seq<string>; ttyMode: string }
+
+let fieldOf ls tag =
+    ls |> Seq.tryPick (fun l -> if l |> Str.startsWith (tag + " ") then Some (Str.sub (Str.length tag + 1) (Str.length l - Str.length tag - 1) l) else None)
+
+// one pty session; `args` is the child's argv (env-wrapped here)
+let ptyRun d secs args steps =
+    let py = put d "ptydrive.py" ptyPy
+    within cd d
+        let r = steps | timeout 120 python3 -I $py $secs env $@noProxy $"TMPDIR={d}" $@args | complete
+        let ls = r.stdout |> Seq.freeze
+        let ints s = s |> Str.fields |> Seq.map Str.toInt |> Seq.freeze
+        {
+            text = outOf r
+            code = fieldOf ls "EXIT" |> Option.defaultValue "none"
+            exitMs = fieldOf ls "EXITMS" |> Option.map Str.toInt |> Option.defaultValue -1
+            sent = fieldOf ls "SENT" |> Option.map ints |> Option.defaultValue []
+            statuses = ls |> Seq.choose (fun l -> if l |> Str.startsWith "STATUS " then Some (Str.sub 7 (Str.length l - 7) l) else None) |> Seq.freeze
+            ttyMode = fieldOf ls "TTYMODE" |> Option.defaultValue "none"
+        }
+
+let typedLine s = $"HEX {hx s}0d"
+
+// Alt-Enter: a REPL line that continues the entry
+let contLine s = $"HEX {hx s}1b0d"
+
+let ctrlC = "HEX 03"
+
+// a REPL's HOME and every XDG dir pinned to the probe dir, as env words
+let replEnv d =
+    Dir.create $"{d}/home"
+    let h = $"{d}/home"
+    [$"HOME={h}"; $"XDG_CONFIG_HOME={h}/.config"; $"XDG_STATE_HOME={h}/.state"; $"XDG_DATA_HOME={h}/.data"; $"XDG_CACHE_HOME={h}/.cache"; "NO_COLOR=1"]
+
+// the same as a pty argv
+let replArgv d = Seq.append ["env"] (Seq.append (replEnv d) [cli.bin]) |> Seq.freeze
+
+type SigRun = { rc: string; ms: int; left: int; out: seq<string>; err: string; summary: string }
+
+// one signalled run through the driver, extra NAME=value words for env;
+// the script's log is {d}/log
+let sigRunEnv d extra specs tmo mark args =
+    let py = put d "sigdrive.py" sigPy
+    within cd d
+        let r = env $@noProxy $"TMPDIR={d}" $@extra python3 -I $py $d $tmo $mark $@specs -- $cli.bin $@args | complete
+        let line = outOf r |> Str.trim
+        let err = linesOf $"{d}/err" |> Str.join "\n"
+        match line with
+        | Regex @"rc=(\S+) ms=(\d+) left=(\d+) sig=(\S+)" (rc, ms, left, s) -> { rc = rc; ms = Str.toInt ms; left = Str.toInt left; out = linesOf $"{d}/out"; err = err; summary = $"{s}, rc={rc}, {ms}ms after the last, {left} left" }
+        | _ -> fail $"the signal driver said '{line}' ({errOf r |> oneLine})"
+
+let sigRun d specs tmo mark args = sigRunEnv d [] specs tmo mark args
+
+// ---- formats: shared fixtures ------------------------------------------------
+
+// a static file server on port 0 (schemas): prints the port, serves DIR
+let fFilesPy = <<<
+    import http.server, sys, functools
+    class H(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a): pass
+    s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(H, directory=sys.argv[1]))
+    print(s.server_address[1], flush=True)
+    s.serve_forever()
+
+// serve the schemas, run `weir add schema` + `gen types` per name in its own
+// project dir; the body gets (name, (add, gen)) per schema
+let fGen d schemas body =
+    Dir.create $"{d}/srv"
+    schemas |> Seq.iter (fun (n, s) -> [s] |> File.write $"{d}/srv/{n}.json")
+    withPy d "files.py" fFilesPy [$"{d}/srv"] (fun line ->
+        let port = portOf line
+        let results =
+            schemas
+            |> Seq.map (fun (n, _) ->
+                let proj = $"{d}/p-{n}"
+                Dir.create proj
+                let add = runIn proj "30" ["add"; "schema"; $"http://127.0.0.1:{port}/{n}.json"; "--as"; n]
+                let gen = runIn proj "30" ["gen"; "types"; "--schema"; n]
+                (n, (add, gen)))
+            |> Seq.freeze
+        body results)
+
+let fText d n = linesOf $"{d}/p-{n}/.weir/types/{n}.weir"
+
+let fTypeOf n = Str.toUpper (Str.sub 0 1 n) + Str.sub 1 (Str.length n - 1) n
+
+// the drafted type has the field `f: ty` (one line of a record body)
+let fHasField lines f ty = lines |> Seq.exists (fun l -> Str.trim l == $"{f}: {ty}")
+
+// read one JSON document through the generated type and write it back
+let fRead d n doc =
+    let proj = $"{d}/p-{n}"
+    let k = Str.sha256 doc |> Str.sub 0 10
+    [doc] |> File.write $"{proj}/doc-{k}.json"
+    let src = [$"import \"weir:{n}\" as M"; $"let v = File.read \"doc-{k}.json\" |> from json {fTypeOf n}"; "v |> to json |> Seq.iter print"]
+    runIn proj "30" [put proj $"r-{k}.weir" src]
+
+let fAddGen (add, gen) = ($"add/gen succeed (exit {codeOf add}/{codeOf gen}: {diagOf add |> oneLine} {diagOf gen |> oneLine})", codeOf add == 0 && codeOf gen == 0)
+
+// ---- core: shared fixtures -----------------------------------------------------
+
+// a cleanup whose own command exits `code` while a teardown runs; the body
+// parks in a marked sleep the signal cuts
+let ownFixture mark code = $$<<<
+    let log = Self.args |> Seq.head
+    let ev s = File.append log [s]
+    within
+        within
+            ev "BODY DONE"
+            sleep $mark
+        always
+            ev "cleanup start"
+            sh -c "sleep 0.5; exit $code"
+            ev "cleanup after own exit"
+    always
+        ev "outer cleanup"
+
+// ---- H3R6-C1-1: a cleanup command's own exit of 128+n is swallowed (R4) ---------
+
+let c11Run d name spec code =
+    let sd = $"{d}/{name}"
+    Dir.create sd
+    let mark = markOf 20 (40 + code % 10)
+    let run = sigRun sd [spec] "15" mark [put sd "own.weir" (ownFixture mark code); $"{sd}/log"]
+    reap mark
+    (run, linesOf $"{sd}/log")
+
+// a cleanup's own exit 1 under the same teardown: reported, the rest of that
+// cleanup cut, the outer cleanup run
+let ctlAOwnExit1 d =
+    let (run, ls) = c11Run d "c1" "TERM@log+300" 1
+    sigExit run.rc 15 && (run.err |> Str.contains "ALSO failed") && not (ls |> Seq.contains "cleanup after own exit") && (ls |> Seq.contains "outer cleanup")
+
+let c11Failed ls err code = not (ls |> Seq.contains "cleanup after own exit") && (ls |> Seq.contains "outer cleanup") && (err |> Str.contains $"{code}")
+
+let h3r6c11 d =
+    let pidCases =
+        [("a pid-directed SIGTERM, the cleanup command exiting 143", "TERM@log+300", 143, 15); ("a pid-directed SIGHUP, the cleanup command exiting 129", "HUP@log+300", 129, 1)]
+        |> Seq.indexed
+        |> Seq.map (fun (k, (label, spec, code, n)) ->
+            let (run, ls) = c11Run d $"p{k}" spec code
+            ($"""{label} on its own after the signal: a failure like any other exit (the rest of that cleanup cut, the code named), death by the signal ({run.summary}, log '{joined ls}', stderr '{run.err |> oneLine}')""", sigExit run.rc n && c11Failed ls run.err code))
+        |> Seq.freeze
+    let td = $"{d}/tty"
+    Dir.create td
+    let mark = markOf 20 49
+    let run = ptyRun td "15" [cli.bin; put td "own.weir" (ownFixture mark 130); $"{td}/log"] ["SLEEP 1500"; ctrlC; "SLEEP 3000"]
+    reap mark
+    let ls = linesOf $"{td}/log"
+    let tty = ($"""a terminal ^C, the cleanup command (started after it) exiting 130 on its own: a failure, the rest of that cleanup cut (EXIT {run.code}, log '{joined ls}')""", sigExit run.code 2 && not (ls |> Seq.contains "cleanup after own exit") && (ls |> Seq.contains "outer cleanup"))
+    Seq.append pidCases [tty] |> failing
+
+// ---- H3R6-C1-2 / H3R6-C2-2: a cleanup capture killed by a group signal (R4) -----
+
+// the cleanup captures a command a group TERM kills mid-output
+let c12Fixture capture = $$<<<
+    let log = Self.args |> Seq.head
+    let _out = Self.args |> Seq.item 1
+    let ev s = File.append log [s]
+    within
+        ev "BODY DONE"
+    always
+        ev "cleanup start"
+        $capture
+        ev "cleanup end"
+
+let c12Freeze = "let lines = sh -c \"echo line1; sleep 1; echo line2\" |> Seq.freeze\n    File.write _out lines\n    ev $\"LATE wrote {Seq.length lines}\""
+
+let c12Pmap = "let r = [0; 1] |> Seq.pmap (fun i -> sh -c $\"sleep 1; echo arm{i}\" |> Seq.head)\n    ev $\"\"\"LATE pmap {r |> Str.join \",\"}\"\"\""
+
+let c22Line = "let x = sh -c \"sleep 1; echo a\" | line\n    ev $\"LATE after [{x}]\""
+
+let c12Run d name capture =
+    let sd = $"{d}/{name}"
+    Dir.create sd
+    let run = sigRun sd ["gTERM@log+400"] "15" "0" [put sd "cap.weir" (c12Fixture capture); $"{sd}/log"; $"{sd}/out.txt"]
+    (run, linesOf $"{sd}/log", linesOf $"{sd}/out.txt")
+
+// the pass R4 keeps: a cleanup STATEMENT command running when the group TERM
+// lands is no failure, the cleanup goes on
+let ctlACleanupStatementPass d =
+    let (run, ls, _) = c12Run d "st" "sh -c \"sleep 1\""
+    sigExit run.rc 15 && (ls |> Seq.contains "cleanup end") && not (run.err |> Str.contains "command failed") && not (run.err |> Str.contains "ALSO failed")
+
+let h3r6c12 d =
+    let (r1, l1, o1) = c12Run d "freeze" c12Freeze
+    let (r2, l2, _) = c12Run d "pmap" c12Pmap
+    let late ls = ls |> Seq.exists (Str.startsWith "LATE")
+    failing [
+        ($"""a group TERM killing a command a cleanup captures (|> Seq.freeze): the capture must fail, never become the value ({r1.summary}, log '{joined l1}', out.txt '{joined o1}', stderr '{r1.err |> oneLine}')""", sigExit r1.rc 15 && not (late l1) && not (Seq.equal o1 ["line1"]))
+        ($"""the same in a cleanup's pmap arms: the arms fail on the death, not as an empty sequence ({r2.summary}, log '{joined l2}', stderr '{r2.err |> oneLine}')""", sigExit r2.rc 15 && not (late l2) && not (r2.err |> Str.contains "empty"))
+    ]
+
+let h3r6c22 d =
+    let (run, ls, _) = c12Run d "line" c22Line
+    failing [
+        ($"""a group TERM killing a cleanup's `| line` command: it fails on the death, not "expected exactly one line" ({run.summary}, log '{joined ls}', stderr '{run.err |> oneLine}')""", sigExit run.rc 15 && not (ls |> Seq.exists (Str.startsWith "LATE")) && not (run.err |> Str.contains "expected exactly one line"))
+    ]
+
+// ---- H3R6-C1-3: every failing command exiting 129/131/143 waits 250ms ------------
+
+// 8 failing captures per code given; prints `<code> <ms>` each
+let c13Fixture = <<<
+    let ms t = Duration.toMillis (Instant.now () - t)
+    for code in Self.args do
+        let t0 = Instant.now ()
+        [1..8] |> Seq.iter (fun _ ->
+            let _r = $(sh -c $"exit {code}") |> try
+            ())
+        print $"{code} {ms t0}"
+
+let c13Times r =
+    r.stdout |> Seq.choose (function | Regex @"^(\d+) (\d+)$" (c, ms) -> Some (c, Str.toInt ms) | _ -> None) |> Seq.freeze
+
+let h3r6c13 d =
+    let r = runIn d "60" [put d "c13.weir" c13Fixture; "1"; "129"; "131"; "143"]
+    let ts = c13Times r
+    let base = ts |> Seq.tryFind (fun (c, _) -> c == "1") |> Option.map snd |> Option.defaultValue -1
+    let cases =
+        ["129"; "131"; "143"]
+        |> Seq.map (fun code ->
+            let t = ts |> Seq.tryFind (fun (c, _) -> c == code) |> Option.map snd |> Option.defaultValue -1
+            let per = (t - base) / 8
+            ($"8 failing commands exiting {code}, no signal pending: each must cost at most 60ms over exit 1 ({per}ms each; {t}ms vs {base}ms, exit {codeOf r})", codeOf r == 0 && base >= 0 && t >= 0 && per <= 60))
+        |> Seq.freeze
+    failing cases
+
+// ---- H3R6-C2-3: a tty REPL child exiting 130 on its own waits 250ms --------------
+
+let c23Entry code tag = [
+    contLine "let t0 = Instant.now ()"
+    "SLEEP 150"
+    contLine $"let xs = [1..20] |> Seq.map (fun _ -> sh -c \"exit {code}\" | exitCode) |> Seq.freeze"
+    "SLEEP 150"
+    typedLine $"print $\"{tag}={{Duration.toMillis (Instant.now () - t0)}} n={{Seq.length xs}}\""
+]
+
+// a ^C during a REPL entry's command still ends the entry
+let ctlAReplCommandCut d =
+    let steps = Seq.concat [["SLEEP 2500"; typedLine "sh -c \"sleep 3\""; "SLEEP 800"; ctrlC; "SLEEP 3000"; typedLine "print (Str.toUpper \"still-here\")"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]] |> Seq.freeze
+    let run = ptyRun d "20" (replArgv d) steps
+    (run.text |> Str.contains "exit 130") && (run.text |> Str.contains "STILL-HERE")
+
+let h3r6c23 d =
+    let steps = Seq.concat [["SLEEP 2500"]; c23Entry 1 "ONE"; ["SLEEP 4000"]; c23Entry 130 "SIG"; ["SLEEP 9000"; "HEX 04"; "SLEEP 500"]] |> Seq.freeze
+    let run = ptyRun d "40" (replArgv d) steps
+    let num tag =
+        match Str.rmatch (tag + @"=(\d+) n=20") run.text with
+        | Some g -> g |> Seq.head |> Str.toInt
+        | None -> -1
+    let one = num "ONE"
+    let sg = num "SIG"
+    failing [
+        ($"a tty REPL entry of 20 children exiting 130 on their own (no ^C) must cost at most 2x the same entry exiting 1, +200ms ({sg}ms vs {one}ms)", one >= 0 && sg >= 0 && sg <= 2 * one + 200)
+    ]
+
+// ---- H3R6-C1-4: a shebang-less executable runs from a tty cleanup ---------------
+
+let c14Fixture = <<<
+    let c = Self.args |> Seq.head
+    let probe label =
+        let v = $(^$c) |> try result
+        print $"{label} {v}"
+    within
+        probe "BODY"
+    always
+        probe "CLEANUP"
+
+let c14Tool d shebang =
+    let p = put d "nosb" (if shebang then ["#!/bin/sh"; "echo ran-it"] else ["echo ran-it"])
+    chmod +x $p | orFail "chmod"
+    p
+
+let c14Verdicts text =
+    let at tag = text |> Str.split "\n" |> Seq.tryPick (fun l -> Str.trySplitOnce $"{tag} " l |> Option.map (fun (_, rest) -> $"{tag} {rest}")) |> Option.defaultValue "<none>"
+    (at "BODY", at "CLEANUP")
+
+// without a terminal both refuse; with a shebang the tty cleanup runs it
+let ctlANoShebang d =
+    let nd = $"{d}/n"
+    Dir.create nd
+    let r = runIn nd "20" [put nd "c.weir" c14Fixture; c14Tool nd false]
+    let (b, c) = c14Verdicts (outOf r)
+    let sd = $"{d}/s"
+    Dir.create sd
+    let run = ptyRun sd "15" [cli.bin; put sd "c.weir" c14Fixture; c14Tool sd true] ["SLEEP 2500"]
+    let (_, tc) = c14Verdicts run.text
+    (b |> Str.startsWith "BODY Error") && (c |> Str.startsWith "CLEANUP Error") && (tc |> Str.contains "ran-it")
+
+let h3r6c14 d =
+    let run = ptyRun d "15" [cli.bin; put d "c14.weir" c14Fixture; c14Tool d false] ["SLEEP 2500"]
+    let (b, c) = c14Verdicts run.text
+    failing [
+        ($"at a tty, a cleanup command must refuse a shebang-less executable as the body does (no sh fallback): '{b}' / '{c}' (EXIT {run.code}, session '{run.text |> oneLine}')", (b |> Str.startsWith "BODY Error") && (c |> Str.startsWith "CLEANUP Error"))
+    ]
+
+// ---- H3R6-C1-5: a weir foregrounded after its cleanup command spawned ----------
+
+// an interactive bash on a pty: `T text` (typed + CR) / `H hex` / `S ms`
+// steps on stdin; prints the transcript
+let jcPy = <<<
+    import os, pty, sys, time, select, signal
+    steps = [l for l in sys.stdin.read().splitlines() if l.strip()]
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["PS1"] = "$ "; os.environ["TERM"] = "dumb"
+        os.execvp("bash", ["bash", "--norc", "--noprofile", "-i"])
+    out = b""
+    def pump(d):
+        global out
+        end = time.monotonic() + d
+        while time.monotonic() < end:
+            r, _, _ = select.select([fd], [], [], 0.01)
+            if r:
+                try: out += os.read(fd, 65536)
+                except OSError: return
+    pump(0.5)
+    for s in steps:
+        k, _, v = s.partition(" ")
+        if k == "S": pump(int(v) / 1000)
+        elif k == "T": os.write(fd, v.encode() + b"\r")
+        elif k == "H": os.write(fd, bytes.fromhex(v))
+    pump(0.3)
+    os.write(fd, b"exit\r"); pump(0.3)
+    try: os.kill(pid, signal.SIGKILL)
+    except OSError: pass
+    print(out.decode("utf-8", "replace").replace("\r\n", "\n").replace("\x1b", "<ESC>"))
+
+let c15Fixture mark = $$<<<
+    within
+        printerr "body start"
+        sleep 1
+    always
+        printerr "cleanup start"
+        sh -c "sleep 1"
+        sh -c "sleep $mark; echo cmd-done"
+        printerr "cleanup end"
+
+let jcRun d steps =
+    let py = put d "jc.py" jcPy
+    within cd d
+        let r = steps | timeout 60 python3 -I $py | complete
+        outOf r
+
+// the typed command line weir runs from, env words included
+let jcLine d file tail =
+    let words = Seq.append noProxy [$"TMPDIR={d}"] |> Str.join " "
+    $"env {words} '{cli.bin}' '{file}'{tail}"
+
+// started in the foreground: a ^C during the cleanup's command leaves it be
+let ctlAFgCleanup d =
+    let mark = markOf 2 51
+    let f = put d "c.weir" (c15Fixture mark)
+    let t = jcRun d [$"T {jcLine d f ""}"; "S 2500"; "H 03"; "S 3500"]
+    reap mark
+    (t |> Str.contains "cmd-done") && (t |> Str.contains "cleanup end")
+
+let h3r6c15 d =
+    let mark = markOf 2 52
+    let f = put d "bg.weir" (c15Fixture mark)
+    let bgfg = jcRun d [$"T {jcLine d f " &"}"; "S 2300"; "T fg"; "S 500"; "H 03"; "S 3500"]
+    reap mark
+    let zd = $"{d}/z"
+    Dir.create zd
+    let zmark = markOf 2 53
+    let fz = put zd "z.weir" (c15Fixture zmark)
+    let zbg = jcRun zd [$"T {jcLine zd fz ""}"; "S 1500"; "H 1a"; "S 300"; "T bg"; "S 1500"; "T fg"; "S 500"; "H 03"; "S 3500"]
+    reap zmark
+    let shown t = t |> Str.split "\n" |> Seq.where (fun l -> (l |> Str.contains "cleanup") || (l |> Str.contains "cmd-done") || (l |> Str.contains "error")) |> joined
+    failing [
+        ($"weir started with &, then fg, ^C during its cleanup's command: the command (spawned while background) must survive it ('{shown bgfg}')", (bgfg |> Str.contains "cmd-done") && (bgfg |> Str.contains "cleanup end"))
+        ($"weir ^Z'd and bg'd mid-cleanup, then fg, ^C: the command spawned while background must survive it ('{shown zbg}')", (zbg |> Str.contains "cmd-done") && (zbg |> Str.contains "cleanup end"))
+    ]
+
+// ---- H3R6-C1-6: a closed fd 0/1 lands on a runtime fd ----------------------------
+
+let c16Stdin = ["let n = Self.stdin |> Seq.take 3 |> Seq.length"; "printerr $\"LINES={n}\""]
+
+let c16Stdout = ["print \"x\""; "printerr \"WROTE\""]
+
+// weir straight from sh with fd setup `redir`; (RC, stderr lines)
+let c16Run d name lines redir =
+    let p = put d name lines
+    within cd d
+        let r = timeout 20 sh -c $"unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy NO_PROXY no_proxy; TMPDIR='{d}' '{cli.bin}' '{p}' {redir} 2>'{d}/{name}.err'; echo RC=$?" | complete
+        let rc = r.stdout |> Seq.tryPick (function | Regex @"^RC=(\d+)$" c -> Some (Str.toInt c) | _ -> None) |> Option.defaultValue -1
+        (rc, linesOf $"{d}/{name}.err" |> Str.join " | ")
+
+// /dev/null on both: no lines, the write succeeds
+let ctlAFdOpen d =
+    let (r1, e1) = c16Run d "c1.weir" c16Stdin "</dev/null"
+    let (r2, e2) = c16Run d "c2.weir" c16Stdout ">/dev/null"
+    r1 == 0 && (e1 |> Str.contains "LINES=0") && r2 == 0 && (e2 |> Str.contains "WROTE")
+
+let h3r6c16 d =
+    let (r1, e1) = c16Run d "s.weir" c16Stdin "<&-"
+    let (r2, e2) = c16Run d "o.weir" c16Stdout ">&-"
+    failing [
+        ($"weir with stdin closed: Self.stdin must read as empty (RC {r1}, stderr '{e1}')", r1 == 0 && (e1 |> Str.contains "LINES=0"))
+        ($"weir with stdout closed: print must not fail (RC {r2}, stderr '{e2}')", r2 == 0 && (e2 |> Str.contains "WROTE"))
+    ]
+
+// ---- H3R6-C2-1: Dir.copy of a dir holding a FIFO hangs --------------------------
+
+let c21Race = <<<
+    let src = Self.args |> Seq.head
+    let dst = Self.args |> Seq.item 1
+    let arm i =
+        if i == 0 then
+            Duration.sleep 300ms
+            "win"
+        else
+            Dir.copy src dst
+            "copied"
+    let r = [0; 1] |> Seq.pfirst arm
+    print $"race: {r}"
+
+let c21Direct = <<<
+    let src = Self.args |> Seq.head
+    let dst = Self.args |> Seq.item 1
+    Dir.copy src dst
+    print "copied"
+
+// src/: a.txt, sub/b.txt and (with `fifo`) the FIFO `pipe`
+let c21Src d fifo =
+    let s = $"{d}/src"
+    Dir.create $"{s}/sub"
+    ["a"] |> File.write $"{s}/a.txt"
+    ["b"] |> File.write $"{s}/sub/b.txt"
+    if fifo then
+        mkfifo $"{s}/pipe" | orFail "mkfifo"
+    s
+
+let ctlADirCopyPlain d =
+    let s = c21Src d false
+    let r = runIn d "10" [put d "c.weir" c21Direct; s; $"{d}/dst"]
+    codeOf r == 0 && Seq.equal (linesOf $"{d}/dst/sub/b.txt") ["b"] && Seq.equal (linesOf $"{d}/dst/a.txt") ["a"]
+
+let h3r6c21 d =
+    let dd = $"{d}/direct"
+    Dir.create dd
+    let s = c21Src dd true
+    let (ms, r) = msOf (fun () -> runIn dd "5" [put dd "d.weir" c21Direct; s; $"{dd}/dst"])
+    let isFifo = sh -c $"test -p '{dd}/dst/pipe'" | succeeds
+    let rd = $"{d}/race"
+    Dir.create rd
+    let rs = c21Src rd true
+    let (rms, rr) = msOf (fun () -> runIn rd "5" [put rd "r.weir" c21Race; rs; $"{rd}/dst"])
+    failing [
+        ($"""Dir.copy of a dir holding a FIFO must recreate it as cp -r does, never read it (exit {codeOf r} after {ms}ms, dst/pipe a FIFO: {isFifo}, a.txt '{linesOf $"{dd}/dst/a.txt" |> joined}')""", codeOf r == 0 && isFifo && Seq.equal (linesOf $"{dd}/dst/sub/b.txt") ["b"])
+        ($"the same Dir.copy in a pfirst loser: the race returns (exit {codeOf rr} after {rms}ms, out '{outOf rr}')", codeOf rr == 0 && (outOf rr |> Str.startsWith "race: "))
+    ]
+
+// ---- H3R6-C2-4: #infer's source and the prompt function run with ISIG off -------
+
+let c24Json d = ["{\"a\": 1}"] |> File.write $"{d}/j.json"
+
+// a quick #infer let binds and types
+let ctlAReplInfer d =
+    c24Json d
+    let steps = ["SLEEP 2500"; typedLine $"#infer let po = sh -c \"cat {d}/j.json\" |> from json as _"; "SLEEP 1500"; typedLine "print $\"A={po.a}\""; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]
+    let run = ptyRun d "20" (replArgv d) steps
+    run.text |> Str.contains "A=1"
+
+let c24Init flag = $$<<<
+    #init
+
+    let sigil () =
+        let s = sh -c "if [ -e $flag ]; then sleep 20; fi; echo P" | line
+        $"{s}> "
+
+    #session {
+        prompt = sigil
+    }
+
+let h3r6c24 d =
+    let id = $"{d}/infer"
+    Dir.create id
+    c24Json id
+    let isteps = ["SLEEP 2500"; typedLine $"#infer let po = sh -c \"sleep 6; cat {id}/j.json\" |> from json as _"; "SLEEP 1000"; ctrlC; "SLEEP 800"; typedLine "print (Str.toUpper \"next-line\")"; "SLEEP 1500"; "HEX 04"; "SLEEP 500"]
+    let irun = ptyRun id "12" (replArgv id) isteps
+    let pd = $"{d}/prompt"
+    Dir.create pd
+    let flag = $"{pd}/hang"
+    let env = replEnv pd
+    Dir.create $"{pd}/home/.config/weir"
+    c24Init flag |> File.write $"{pd}/home/.config/weir/init.weir"
+    let psteps = ["SLEEP 2500"; typedLine $"File.write \"{flag}\" [\"x\"]"; "SLEEP 1000"; ctrlC; "SLEEP 800"; typedLine "print (Str.toUpper \"responsive\")"; "SLEEP 1500"; "HEX 04"; "SLEEP 500"]
+    let prun = ptyRun pd "12" (Seq.append ["env"] (Seq.append env [cli.bin]) |> Seq.freeze) psteps
+    failing [
+        ($"a ^C during #infer's source command must stop it, and the next line runs (NEXT-LINE: {irun.text |> Str.contains "NEXT-LINE"}, EXIT {irun.code})", irun.text |> Str.contains "NEXT-LINE")
+        ($"a ^C during the prompt function must stop it, and the next line runs (RESPONSIVE: {prun.text |> Str.contains "RESPONSIVE"}, EXIT {prun.code})", prun.text |> Str.contains "RESPONSIVE")
+    ]
+
+// ---- H3R6-D1: a wide pfirst of `| complete` arms waits for thread injection ------
+
+let d1Script mark capture = $$<<<
+    let one i =
+        $capture
+    let t0 = Instant.now ()
+    let w = [1..32] |> Seq.pfirst one
+    print $"winner {w} ms={Duration.toMillis (Instant.now () - t0)}"
+
+let d1Complete mark = d1Script mark $"let r = sh -c $\"[ {{i}} -eq 32 ] || sleep {mark}; echo {{i}}\" | complete\n    if r.exitCode == 0 && i == 32 then r.stdout |> Seq.head else fail \"lost\""
+
+let d1Capture mark = d1Script mark $"let r = $(sh -c $\"[ {{i}} -eq 32 ] || sleep {mark}; echo {{i}}\") |> Seq.head\n    if i == 32 then r else fail \"lost\""
+
+let d1Ms r =
+    match Str.rmatch @"winner 32 ms=(\d+)" (outOf r) with
+    | Some g -> g |> Seq.head |> Str.toInt
+    | None -> -1
+
+// the `| complete` race returns its winner's output
+let ctlAPfirstComplete d =
+    let mark = markOf 60 61
+    let r = runIn d "60" [put d "c.weir" (d1Complete mark)]
+    reap mark
+    codeOf r == 0 && d1Ms r >= 0
+
+let h3r6d1 d =
+    let mark = markOf 60 62
+    let rc = runIn d "60" [put d "cap.weir" (d1Capture mark)]
+    reap mark
+    let mark2 = markOf 60 63
+    let rp = runIn d "60" [put d "cmp.weir" (d1Complete mark2)]
+    reap mark2
+    let yard = d1Ms rc
+    let t = d1Ms rp
+    failing [
+        ($"a 32-arm pfirst of `| complete` arms, the winner instant, must cost at most 2x the same race through $( ), +1000ms ({t}ms vs {yard}ms; exit {codeOf rp}/{codeOf rc})", yard >= 0 && t >= 0 && t <= 2 * yard + 1000)
+    ]
+
+// ---- this part's lists ----------------------------------------------------------
+
+let controlsA = [
+    ("control-own-exit-1 (H3R6-C1-1)", ctlAOwnExit1)
+    ("control-cleanup-statement-pass (H3R6-C1-2 H3R6-C2-2)", ctlACleanupStatementPass)
+    ("control-repl-command-cut (H3R6-C2-3 H3R6-C2-4)", ctlAReplCommandCut)
+    ("control-noshebang (H3R6-C1-4)", ctlANoShebang)
+    ("control-fg-cleanup (H3R6-C1-5)", ctlAFgCleanup)
+    ("control-fd-open (H3R6-C1-6)", ctlAFdOpen)
+    ("control-dircopy-plain (H3R6-C2-1)", ctlADirCopyPlain)
+    ("control-repl-infer (H3R6-C2-4)", ctlAReplInfer)
+    ("control-pfirst-complete (H3R6-D1)", ctlAPfirstComplete)
+]
+
+let probesA = [
+    ("H3R6-C1-1", h3r6c11); ("H3R6-C1-2", h3r6c12); ("H3R6-C2-2", h3r6c22); ("H3R6-C1-3", h3r6c13); ("H3R6-C2-3", h3r6c23)
+    ("H3R6-C1-4", h3r6c14); ("H3R6-C1-5", h3r6c15); ("H3R6-C1-6", h3r6c16); ("H3R6-C2-1", h3r6c21); ("H3R6-C2-4", h3r6c24); ("H3R6-D1", h3r6d1)
+]
+
+// ---- plans: fixtures ----------------------------------------------------------
+
+// a fixture tree in `w`: s/f.txt "x", real/sub/, L -> real/sub
+let pTree d name =
+    let w = $"{d}/{name}"
+    Dir.create $"{w}/s"
+    Dir.create $"{w}/real/sub"
+    ["x"] |> File.write $"{w}/s/f.txt"
+    within cd w
+        ln -s real/sub L | orFail "ln -s"
+    w
+
+// a script run in `w`: the plan holds `ops`; PREVIEWED/APPLIED mark how far
+// it got
+let pPlan ops = Seq.concat [
+    ["within cd (Self.args |> Seq.head)"; "    let pl ="; "        plan"]
+    ops |> Seq.map (fun l -> "            " + l)
+    ["    pl |> Plan.preview |> Seq.iter print"; "    print \"PREVIEWED\""; "    Plan.apply pl"; "    print \"APPLIED\""]
+] |> Seq.freeze
+
+let pRun d name w ops =
+    let r = runIn d "30" [put d $"{name}.weir" (pPlan ops); w]
+    (r, r.stdout |> Seq.contains "PREVIEWED", r.stdout |> Seq.contains "APPLIED")
+
+// raised at capture: nonzero, nothing previewed or applied, a message
+let pRefused (r, previewed, applied) = codeOf r <> 0 && not previewed && not applied && (errOf r |> Str.trim) <> ""
+
+let pApplied (r, previewed, applied) = codeOf r == 0 && previewed && applied
+
+let pShown (r, previewed, applied) = $"""exit {codeOf r}, previewed {previewed}, applied {applied}: {diagOf r |> oneLine}"""
+
+let dotNet s = (s |> Str.contains "Could not find a part of the path") || (s |> Str.contains "Invalid argument") || (s |> Str.contains "Access to the path")
+
+let isLink p = sh -c $"test -L '{p}'" | succeeds
+
+let pLink w name target =
+    within cd w
+        ln -s $target $name | orFail "ln -s"
+
+// a copy of a real dir, a write through a live symlink, a delete of a live
+// link: capture and apply
+let ctlPPlanApplies d =
+    let w = pTree d "w"
+    pLink w "live" "s/f.txt"
+    let run = pRun d "c" w ["Dir.copy \"s\" \"t\""; "File.write \"L/n.txt\" [\"n\"]"; "File.delete \"live\""]
+    pApplied run && Seq.equal (linesOf $"{w}/t/f.txt") ["x"] && Seq.equal (linesOf $"{w}/real/sub/n.txt") ["n"] && not (isLink $"{w}/live") && File.exists $"{w}/s/f.txt"
+
+// ---- H3R6-F1: Dir.copy skips the destination-parent check -------------------------
+
+let f1Direct = ["within cd (Self.args |> Seq.head)"; "    Dir.copy \"s\" \"no/such/s\""]
+
+// a direct Dir.copy into an existing parent works
+let ctlPDirCopyDirect d =
+    let w = pTree d "w"
+    let r = runIn d "30" [put d "c.weir" ["within cd (Self.args |> Seq.head)"; "    Dir.copy \"s\" \"real/s\""]; w]
+    codeOf r == 0 && Seq.equal (linesOf $"{w}/real/s/f.txt") ["x"]
+
+let h3r6f1 d =
+    let wd = pTree d "wd"
+    let direct = runIn d "30" [put d "f1d.weir" f1Direct; wd]
+    let de = errOf direct
+    let wf = pTree d "wf"
+    let file = pRun d "f1f" wf ["File.write \"h.txt\" [\"z\"]"; "Dir.copy \"s\" \"h.txt/sub/s\""]
+    let wm = pTree d "wm"
+    let missing = pRun d "f1m" wm ["Dir.copy \"s\" \"no/such/s\""]
+    failing [
+        ($"""a direct Dir.copy into a missing parent must refuse naming it, as File.copy/Dir.move do (exit {codeOf direct}: {de |> oneLine}, no/such created: {Dir.exists $"{wd}/no"})""", codeOf direct <> 0 && (de |> Str.contains "no/such") && not (Dir.exists $"{wd}/no") && not (dotNet de))
+        ($"""a plan's Dir.copy under a planned FILE must raise at capture ({pShown file}, h.txt written: {File.exists $"{wf}/h.txt"})""", pRefused file && not (File.exists $"{wf}/h.txt") && not (dotNet (diagOf (let (r, _, _) = file in r))))
+        ($"""a plan's Dir.copy into a missing parent must raise at capture ({pShown missing}, no/ created: {Dir.exists $"{wm}/no"})""", pRefused missing && not (Dir.exists $"{wm}/no"))
+    ]
+
+// ---- H3R6-F2: a plan refuses to delete/move a dangling symlink --------------------
+
+let h3r6f2 d =
+    let wd = pTree d "wd"
+    pLink wd "ff" "nowhere"
+    let del = pRun d "f2d" wd ["File.delete \"ff\""]
+    let delGone = not (isLink $"{wd}/ff")
+    let wm = pTree d "wm"
+    pLink wm "gg" "nowhere"
+    let mv = pRun d "f2m" wm ["File.move \"gg\" \"hh\""]
+    let moved = isLink $"{wm}/hh" && not (isLink $"{wm}/gg")
+    failing [
+        ($"a plan's File.delete of a pre-existing dangling symlink must act on the link, as the direct call does ({pShown del}, link gone: {delGone})", pApplied del && delGone)
+        ($"a plan's File.move of a pre-existing dangling symlink must move the link ({pShown mv}, moved: {moved})", pApplied mv && moved)
+    ]
+
+// ---- H3R6-F5: a plan write through a link into a missing dir ---------------------
+
+let h3r6f5 d =
+    let w = pTree d "w"
+    pLink w "DL" "nowhere/x"
+    let run = pRun d "f5" w ["File.write \"DL\" [\"a\"]"]
+    let (r, _, _) = run
+    failing [
+        ($"a plan's write through a symlink whose target dir does not exist must raise at capture, no .NET text ({pShown run})", pRefused run && not (dotNet (diagOf r)))
+    ]
+
+// ---- H3R6-D2: plan simulation is O(depth^2) through a copied dir or a link -------
+
+let d2Script = <<<
+    let a = Self.args |> Seq.freeze
+    let root = a |> Seq.head
+    let d = a |> Seq.item 1 |> Str.toInt
+    let n = a |> Seq.item 2 |> Str.toInt
+    let rel = [1..d] |> Seq.map (fun _ -> "d") |> Str.join "/"
+    let t0 = Instant.now ()
+    let pf =
+        plan
+            for i in [1..n] do
+                File.write $"{root}/src/{rel}/new{i}" ["y"]
+    let t1 = Instant.now ()
+    let pc =
+        plan
+            Dir.copy $"{root}/src" $"{root}/dst"
+            for i in [1..n] do
+                File.write $"{root}/dst/{rel}/new{i}" ["y"]
+    let t2 = Instant.now ()
+    let pl =
+        plan
+            for i in [1..n] do
+                File.write $"{root}/L/{rel}/new{i}" ["y"]
+    let t3 = Instant.now ()
+    print $"fast={Duration.toMillis (t1 - t0)} copy={Duration.toMillis (t2 - t1)} link={Duration.toMillis (t3 - t2)} ops={pf |> Plan.ops |> Seq.length},{pc |> Plan.ops |> Seq.length},{pl |> Plan.ops |> Seq.length}"
+
+let d2Depth = 200
+
+let d2N = 1500
+
+let h3r6d2 d =
+    let root = $"{d}/r"
+    let rel = [1..d2Depth] |> Seq.map (fun _ -> "d") |> Str.join "/"
+    Dir.create $"{root}/src/{rel}"
+    pLink root "L" "src"
+    let r = runIn d "120" [put d "d2.weir" d2Script; root; $"{d2Depth}"; $"{d2N}"]
+    let o = outOf r
+    match o with
+    | Regex @"fast=(\d+) copy=(\d+) link=(\d+) ops=(\d+),(\d+),(\d+)" (f, c, l, n1, n2, n3) ->
+        let fast = Str.toInt f
+        let bound = 4 * fast + 200
+        let opsOk = n1 == $"{d2N}" && n2 == $"{d2N + 1}" && n3 == $"{d2N}"
+        failing [
+            ($"{d2N} plan writes at depth {d2Depth} under a copied dir must cost at most 4x the same writes on a plain path, +200ms ({c}ms vs {fast}ms, ops {n2})", opsOk && Str.toInt c <= bound)
+            ($"{d2N} plan writes at depth {d2Depth} through a top-level symlink must cost at most 4x the plain path, +200ms ({l}ms vs {fast}ms, ops {n3})", opsOk && Str.toInt l <= bound)
+        ]
+    | _ -> fail $"the plan script said '{o}' (exit {codeOf r}: {errOf r |> oneLine})"
+
+// ---- completion: an LSP client ----------------------------------------------------
+
+// `weir lsp` over stdio: FILE then "line:col" positions; prints one
+// `@line:col label label …` row per position (labels sorted)
+let lspPy = <<<
+    import json, subprocess, sys, os
+    binp = sys.argv[1]; path = sys.argv[2]; src = open(path).read()
+    p = subprocess.Popen([binp, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    def send(m):
+        b = json.dumps(m).encode(); p.stdin.write(b"Content-Length: %d\r\n\r\n" % len(b) + b); p.stdin.flush()
+    def recv():
+        h = b""
+        while not h.endswith(b"\r\n\r\n"):
+            c = p.stdout.read(1)
+            if not c: return None
+            h += c
+        n = int([l for l in h.split(b"\r\n") if l.lower().startswith(b"content-length")][0].split(b":")[1])
+        return json.loads(p.stdout.read(n))
+    def call(i, method, params):
+        send({"jsonrpc": "2.0", "id": i, "method": method, "params": params})
+        while True:
+            m = recv()
+            if m is None: return None
+            if m.get("id") == i and "method" not in m: return m
+    uri = "file://" + os.path.abspath(path)
+    call(1, "initialize", {"processId": None, "rootUri": None, "capabilities": {}})
+    send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+    send({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {"textDocument": {"uri": uri, "languageId": "weir", "version": 1, "text": src}}})
+    i = 10
+    for pos in sys.argv[3:]:
+        l, c = [int(x) for x in pos.split(":")]
+        r = call(i, "textDocument/completion", {"textDocument": {"uri": uri}, "position": {"line": l, "character": c}}); i += 1
+        res = r.get("result") if r else None
+        items = res.get("items", res) if isinstance(res, dict) else (res or [])
+        print("@%d:%d %s" % (l, c, " ".join(sorted(x["label"] for x in items))))
+    p.kill()
+
+// completion labels at each (line, col) of the source (0-based)
+let lspAt d name src positions =
+    let f = put d name src
+    let py = put d "lsp.py" lspPy
+    let words = positions |> Seq.map (fun (l, c) -> $"{l}:{c}") |> Seq.freeze
+    let r = timeout 60 python3 -I $py $cli.bin $f $@words | complete
+    positions
+    |> Seq.map (fun (l, c) ->
+        let row = r.stdout |> Seq.tryFind (Str.startsWith $"@{l}:{c} ")
+        match row with
+        | Some x -> x |> Str.fields |> Seq.skip 1 |> Seq.freeze
+        | None -> fail $"the LSP client gave no row for {l}:{c} ({errOf r |> oneLine})")
+    |> Seq.freeze
+
+// ---- H3R6-F3: `$` completion inside a yaml block applies the argv filter ---------
+
+let f3Src = <<<
+    let xs = ["a"]
+    let fl = 1.5
+    let y = YStr "a"
+    let o = Some 2
+    let m = {| k = 1 |}
+    let d = yaml
+        a: $
+        b: $x
+
+let h3r6f3 d =
+    let res = lspAt d "f3.weir" f3Src [(6, 8); (7, 9)]
+    let a = res |> Seq.item 0
+    let b = res |> Seq.item 1
+    let has ls n = ls |> Seq.contains n
+    failing [
+        ($"""LSP completion after `$` in a yaml block must offer the yaml splices xs fl y o, not the record m ('{a |> Str.join " "}')""", has a "xs" && has a "fl" && has a "y" && has a "o" && not (has a "m"))
+        ($"""LSP completion of `$x` in a yaml block must offer xs ('{b |> Str.join " "}')""", has b "xs")
+    ]
+
+// ---- H3R6-C2-5: `$name` completion offers what the checker refuses ----------------
+
+let c25Src = <<<
+    let qs = "s"
+    let qt = 1
+    let qfz = echo hi |> Seq.freeze
+    type R = { name: string; tags: seq<string>; n: int; f: float }
+    let vr = { name = "a"; tags = ["t"]; n = 1; f = 1.0 }
+    echo "$q
+    echo --x=$q
+    echo $q
+    echo $v
+    let z = $(echo $q
+    if true then echo $q
+    for f in ["a"] do echo $q
+    echo $vr.
+
+// at top level the pool is the splice-able bindings
+let ctlPSpliceTop d =
+    let res = lspAt d "c.weir" c25Src [(7, 7)]
+    Seq.equal (res |> Seq.head) ["qs"; "qt"]
+
+let h3r6c25 d =
+    let res = lspAt d "c25.weir" c25Src [(5, 9); (6, 11); (8, 7); (9, 17); (10, 20); (11, 25); (12, 9)]
+    let at k = res |> Seq.item k
+    let shown k = at k |> Str.join " "
+    let only ls = Seq.equal ls ["qs"; "qt"]
+    failing [
+        ($"""`echo "$q` completes splices inside a string, where $ is literal ('{shown 0}')""", Seq.isEmpty (at 0))
+        ($"""`echo --x=$q` completes splices where the checker refuses a word-join ('{shown 1}')""", Seq.isEmpty (at 1))
+        ($"""`echo $v` offers the record vr, which the checker refuses bare ('{shown 2}')""", not (at 2 |> Seq.contains "vr"))
+        ($"""`$(echo $q` must filter like the top level: qs qt ('{shown 3}')""", only (at 3))
+        ($"""`if true then echo $q` must filter like the top level: qs qt ('{shown 4}')""", only (at 4))
+        ($"""`for … do echo $q` must filter like the top level: qs qt ('{shown 5}')""", only (at 5))
+        ($"""`echo $vr.` must offer the record's splice-able fields vr.name/vr.n ('{shown 6}')""", (at 6 |> Seq.contains "vr.name") && (at 6 |> Seq.contains "vr.n"))
+    ]
+
+// ---- H3R6-C2-6: Esc then Enter within ~100ms runs the abandoned line (R3) --------
+
+let c26Typed s = $"HEX {hx s}"
+
+// ESC CR in one write (a real Alt+Enter, a paste) continues the entry
+let ctlPAltEnter d =
+    let steps = ["SLEEP 2500"; contLine "let w = Str.toUpper \"joined\""; "SLEEP 300"; typedLine "print w"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]
+    let run = ptyRun d "15" (replArgv d) steps
+    run.text |> Str.contains "JOINED"
+
+let h3r6c26 d =
+    [40; 80]
+    |> Seq.map (fun gap ->
+        let sd = $"{d}/g{gap}"
+        Dir.create sd
+        let steps = ["SLEEP 2500"; c26Typed "print (Str.toUpper \"danger\")"; "SLEEP 300"; "HEX 1b"; $"SLEEP {gap}"; "HEX 0d"; "SLEEP 500"; typedLine "print (Str.toUpper \"next-up\")"; "SLEEP 1200"; "HEX 04"; "SLEEP 500"]
+        let run = ptyRun sd "15" (replArgv sd) steps
+        ($"""a human's Esc, then Enter {gap}ms later, must abandon the line (DANGER ran: {run.text |> Str.contains "DANGER"}, NEXT-UP ran: {run.text |> Str.contains "NEXT-UP"})""", not (run.text |> Str.contains "DANGER") && (run.text |> Str.contains "NEXT-UP")))
+    |> failing
+
+// ---- this part's lists ----------------------------------------------------------
+
+let controlsP = [
+    ("control-plan-applies (H3R6-F1 H3R6-F2 H3R6-F5 H3R6-D2)", ctlPPlanApplies)
+    ("control-dircopy-direct (H3R6-F1)", ctlPDirCopyDirect)
+    ("control-splice-top (H3R6-C2-5 H3R6-F3)", ctlPSpliceTop)
+    ("control-alt-enter (H3R6-C2-6)", ctlPAltEnter)
+]
+
+let probesP = [
+    ("H3R6-F1", h3r6f1); ("H3R6-F2", h3r6f2); ("H3R6-F5", h3r6f5); ("H3R6-D2", h3r6d2)
+    ("H3R6-F3", h3r6f3); ("H3R6-C2-5", h3r6c25); ("H3R6-C2-6", h3r6c26)
+]
+
+// ---- safety: servers ------------------------------------------------------------
+
+// a server on port 0: /echo answers `AUTH=<the Authorization header, or
+// none> N=<how many>`; /s.json a schema; anything else 200 "ok"
+let bSrvPy = <<<
+    import http.server, sys
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def do_GET(self):
+            if self.path.startswith("/echo"):
+                vs = self.headers.get_all("Authorization") or []
+                b = ("AUTH=%s N=%d" % (vs[0] if vs else "none", len(vs))).encode()
+            elif self.path.startswith("/s.json"):
+                b = b'{"type":"object","properties":{"a":{"type":"string"}}}'
+            else:
+                b = b"ok"
+            self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    print(s.server_address[1], flush=True)
+    s.serve_forever()
+
+// "PP P4": an http proxy answering "via-proxy" and a direct server answering
+// "direct", both on 127.0.0.1
+let bPairPy = <<<
+    import http.server, threading
+    S = http.server.ThreadingHTTPServer
+    def handler(text):
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                b = text.encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+            def log_message(self, *a): pass
+        return H
+    sp = S(("127.0.0.1", 0), handler("via-proxy")); s4 = S(("127.0.0.1", 0), handler("direct"))
+    for s in (sp, s4): threading.Thread(target=s.serve_forever, daemon=True).start()
+    print(sp.server_address[1], s4.server_address[1], flush=True)
+    threading.Event().wait()
+
+let bSrv d body = withPy d "srv.py" bSrvPy [] (fun line -> body (portOf line))
+
+let bPair d body =
+    withPy d "pair.py" bPairPy [] (fun line ->
+        match line |> Str.fields |> Seq.map Str.toInt |> Seq.freeze with
+        | [pp; p4] -> body pp p4
+        | _ -> fail $"the pair server said '{line}'")
+
+// a stream carries a terminal-driving byte raw
+let bRawCtl s = (s |> Str.contains esc) || (s |> Str.contains bel) || (s |> Str.contains cr)
+
+// ---- H3R6-E5: Args.load echoes a Secret's attached short value -----------------
+
+let e5Script = ["type Cli = { tok: Secret; n: Option<int> }"; "let a = Args.load Cli"; "print (show a)"]
+
+// the spaced form loads and shows masked; --tok=v is refused without the value
+let ctlBArgsSecret d =
+    let p = put d "c.weir" e5Script
+    let ok = runIn d "20" [p; "--tok"; "hunter2"]
+    let eq = runIn d "20" [p; "--tok=hunter2"]
+    codeOf ok == 0 && outOf ok == "{ tok = ***; n = None }" && codeOf eq <> 0 && not (diagOf eq |> Str.contains "hunter2")
+
+let h3r6e5 d =
+    let p = put d "e5.weir" e5Script
+    ["-t=hunter2"; "-thunter2"]
+    |> Seq.map (fun a ->
+        let r = runIn d "20" [p; a]
+        ($"Args.load {a} for a Secret field: the error must never repeat the value (exit {codeOf r}: {diagOf r |> oneLine})", codeOf r <> 0 && not (diagOf r |> Str.contains "hunter2")))
+    |> failing
+
+// ---- H3R6-E6: a malformed HTTP_PROXY is ignored (egress bypass) -----------------
+
+let e6Script = ["let r = Http.send { Http.get (Self.args |> Seq.head) with timeout = 3s }"; "print $\"{r.status} {r.body |> Str.join \"\"}\""]
+
+let e6Run d proxy url =
+    runEnv d "30" [$"HTTP_PROXY={proxy}"; $"http_proxy={proxy}"] [put d "e6.weir" e6Script; url]
+
+// a well-formed proxy is used
+let ctlBProxyValid d =
+    bPair d (fun pp p4 ->
+        let r = e6Run d $"http://127.0.0.1:{pp}" $"http://127.0.0.1:{p4}/"
+        outOf r == "200 via-proxy")
+
+let h3r6e6 d =
+    bPair d (fun _ p4 ->
+        ["http://127.0.0.1:99999"; "http://[::1"]
+        |> Seq.map (fun proxy ->
+            let r = e6Run d proxy $"http://127.0.0.1:{p4}/"
+            ($"HTTP_PROXY={proxy} (malformed): weir must refuse, as curl does, never go direct (exit {codeOf r}, out '{outOf r}': {errOf r |> oneLine})", codeOf r <> 0 && not (outOf r |> Str.contains "direct")))
+        |> failing)
+
+// ---- H3R6-E7: URL userinfo never sent (R1) ---------------------------------------
+
+let e7Script = ["let r = Http.send (Http.get (Self.args |> Seq.head))"; "print (r.body |> Str.join \"\")"]
+
+let e7Header = ["let r = Http.send { Http.get (Self.args |> Seq.head) with headers = [(\"Authorization\", \"Bearer tok1\")] }"; "print (r.body |> Str.join \"\")"]
+
+// auth = Basic sends one Basic header
+let ctlBBasicAuth d =
+    bSrv d (fun port ->
+        let src = ["let r = Http.send { Http.get (Self.args |> Seq.head) with auth = Basic (\"bob\", Secret.of \"S3cr3t\") }"; "print (r.body |> Str.join \"\")"]
+        let r = runIn d "30" [put d "c.weir" src; $"http://127.0.0.1:{port}/echo"]
+        outOf r == "AUTH=Basic Ym9iOlMzY3IzdA== N=1")
+
+let h3r6e7 d =
+    bSrv d (fun port ->
+        let r = runIn d "30" [put d "e7.weir" e7Script; $"http://bob:S3cr3t@127.0.0.1:{port}/echo"]
+        let h = runIn d "30" [put d "e7h.weir" e7Header; $"http://bob:S3cr3t@127.0.0.1:{port}/echo"]
+        let cases = [
+            ($"a URL's userinfo must arrive as Authorization: Basic, as curl sends it (exit {codeOf r}, server saw '{outOf r}')", outOf r == "AUTH=Basic Ym9iOlMzY3IzdA== N=1")
+            ($"a script's own Authorization header wins over the URL's userinfo, exactly one sent (exit {codeOf h}, server saw '{outOf h}')", outOf h == "AUTH=Bearer tok1 N=1")
+        ]
+        failing cases)
+
+// ---- H3R6-E8: restore/add print a URL's control bytes raw, piped (R2) -----------
+
+let e8Data = esc + "]52;c;ZXZpbA==" + bel + cr
+
+// a project whose committed lock names a schema URL carrying OSC 52, BEL, CR
+let e8Lock port = [
+    "{ \"schemaVersion\": 1, \"artifacts\": [ { \"kind\": \"schema\", \"name\": \"s2\","
+    $"  \"url\": \"http://127.0.0.1:{port}/nope\\u001b]52;c;ZXZpbA==\\u0007\\r\","
+    "  \"sha256\": \"59c23259e0885dbc4c2f746d071abed3c976dd479e1051c6838d9dd25f26db51\", \"path\": \"schemas/s2.json\" } ] }"
+]
+
+let e8Proj d name =
+    let proj = $"{d}/{name}"
+    Dir.create $"{proj}/.weir"
+    ["x"] |> File.write $"{proj}/.git"
+    proj
+
+// a plain add schema reports its URL and locks it
+let ctlBAddSchemaPlain d =
+    bSrv d (fun port ->
+        let proj = e8Proj d "p"
+        let r = runIn proj "30" ["add"; "schema"; $"http://127.0.0.1:{port}/s.json"; "--as"; "s1"]
+        codeOf r == 0 && (diagOf r |> Str.contains $"127.0.0.1:{port}/s.json") && (linesOf $"{proj}/.weir/lock.json" |> Seq.exists (Str.contains $"\"http://127.0.0.1:{port}/s.json\"")))
+
+let h3r6e8 d =
+    bSrv d (fun port ->
+        let rp = e8Proj d "restore"
+        e8Lock port |> File.write $"{rp}/.weir/lock.json"
+        let rs = runIn rp "30" ["restore"]
+        let ap = e8Proj d "add"
+        let ad = runIn ap "30" ["add"; "schema"; $"http://127.0.0.1:{port}/s.json?q={e8Data}"; "--as"; "s5"]
+        let cases = [
+            ($"""weir restore of a lock URL carrying ESC/BEL/CR, output piped: its messages must escape them (exit {codeOf rs}, raw: {bRawCtl (diagOf rs)}, names the URL: {diagOf rs |> Str.contains "/nope"})""", (diagOf rs |> Str.contains "/nope") && not (bRawCtl (diagOf rs)))
+            ($"""weir add schema of a URL carrying ESC/BEL/CR, output piped: the "added" line must escape them (exit {codeOf ad}, raw: {bRawCtl (diagOf ad)}: {diagOf ad |> Str.replace esc "<ESC>" |> Str.replace bel "<BEL>" |> Str.replace cr "<CR>" |> oneLine})""", codeOf ad == 0 && not (bRawCtl (diagOf ad)))
+        ]
+        failing cases)
+
+// ---- this part's lists ----------------------------------------------------------
+
+let controlsB = [
+    ("control-args-secret (H3R6-E5)", ctlBArgsSecret)
+    ("control-proxy-valid (H3R6-E6)", ctlBProxyValid)
+    ("control-basic-auth (H3R6-E7)", ctlBBasicAuth)
+    ("control-add-schema-plain (H3R6-E8)", ctlBAddSchemaPlain)
+]
+
+let probesB = [
+    ("H3R6-E5", h3r6e5); ("H3R6-E6", h3r6e6); ("H3R6-E7", h3r6e7); ("H3R6-E8", h3r6e8)
+]
+
+// ---- formats: YAML numbers and plain values ---------------------------------------
+
+let yRoundTrip = ["File.read (Self.args |> Seq.head) |> Yaml.parse |> to yaml |> Seq.iter print"]
+
+let yToJson = ["File.read (Self.args |> Seq.head) |> Yaml.parse |> to json |> Seq.iter print"]
+
+// one document through a script taking its path; (run, stdout lines)
+let yRun d name doc src =
+    let p = put d $"{name}.yaml" doc
+    let r = runIn d "30" [put d $"{name}.weir" src; p]
+    (r, r.stdout |> Seq.freeze)
+
+// plain numbers keep their spelling; a typed float reads 1.5; a bigint
+// writes digits to json
+let ctlFYamlNumbers d =
+    let (r1, l1) = yRun d "c1" ["p: 1.5"; "i: 42"] yRoundTrip
+    let (r2, l2) = yRun d "c2" ["mode: 1.5"] ["let v = File.read (Self.args |> Seq.head) |> from yaml {| mode: float |}"; "print $\"{v.mode}\""]
+    let (r3, l3) = yRun d "c3" ["k: 18446744073709551616"] yToJson
+    codeOf r1 == 0 && Seq.equal l1 ["p: 1.5"; "i: 42"] && codeOf r2 == 0 && Seq.equal l2 ["1.5"] && codeOf r3 == 0 && Seq.equal l3 ["{\"k\":18446744073709551616}"]
+
+// ---- H3R6-B1: to json of a leading-zero bigint node is raw .NET text ------------
+
+let h3r6b1 d =
+    let (r, ls) = yRun d "b1" ["k: 012345678901234567890"] yToJson
+    failing [
+        ($"""to json of the YAML node 012345678901234567890 must write digits, no .NET text ('{joined ls}', exit {codeOf r}: {errOf r |> oneLine})""", codeOf r == 0 && (outOf r |> Str.contains "12345678901234567890") && not (errOf r |> Str.contains "LineNumber"))
+    ]
+
+// ---- H3R6-B2: a value of only NBSP / U+3000 reads as null --------------------------
+
+let b2Nbsp = Str.fromUtf8 (Bytes.fromHex "c2a0")
+
+let b2Ideo = Str.fromUtf8 (Bytes.fromHex "e38080")
+
+// spaces around a word still trim; NBSP inside a value is kept
+let ctlFYamlTrim d =
+    let (r, ls) = yRun d "c" ["s:   x  "; $"t: a{b2Nbsp}b"] ["let v = File.read (Self.args |> Seq.head) |> from yaml {| s: string; t: string |}"; "print $\"[{v.s}] {Str.length v.t}\""]
+    codeOf r == 0 && Seq.equal ls ["[x] 3"]
+
+let h3r6b2 d =
+    let (r, ls) = yRun d "b2" [$"a: {b2Nbsp}"; $"b: {b2Ideo}"] ["let v = File.read (Self.args |> Seq.head) |> from yaml {| a: string; b: string |}"; "print $\"{Str.length v.a} {Str.length v.b}\""]
+    failing [
+        ($"""a plain value of only NBSP / only U+3000 must read as that string, not null ('{joined ls}', exit {codeOf r}: {errOf r |> oneLine})""", codeOf r == 0 && Seq.equal ls ["1 1"])
+    ]
+
+// ---- H3R6-B3: overflowing floats are written back quoted ---------------------------
+
+let h3r6b3 d =
+    let (r, ls) = yRun d "b3" ["big: 1e400"; "huge: 1.5e309"] yRoundTrip
+    failing [
+        ($"""Yaml.parse |> to yaml must keep the overflowing floats 1e400 / 1.5e309 plain ('{joined ls}', exit {codeOf r})""", codeOf r == 0 && Seq.equal ls ["big: 1e400"; "huge: 1.5e309"])
+    ]
+
+// ---- H3R6-B4: floats a YAML 1.1 reader takes as strings lose their text ---------
+
+let b4Doc = ["sha: 1e5"; "a: 1E5"; "b: 1e+5"; "c: +.5"; "v: 3.10"]
+
+let h3r6b4 d =
+    let (r, ls) = yRun d "b4" b4Doc yRoundTrip
+    b4Doc
+    |> Seq.map (fun l -> ($"""Yaml.parse |> to yaml must keep '{l}' as written (exit {codeOf r}, got '{joined ls}')""", codeOf r == 0 && (ls |> Seq.contains l)))
+    |> failing
+
+// ---- H3R6-B5: hex/octal past int64 write to json as strings ------------------------
+
+let h3r6b5 d =
+    let (r, ls) = yRun d "b5" ["h: 0x8000000000000000"; "o: 0o1000000000000000000000"; "d: 9223372036854775808"] yToJson
+    failing [
+        ($"""to json of hex/octal past int64 must write digits as decimal does — all three are 2^63 ('{joined ls}', exit {codeOf r})""", codeOf r == 0 && Seq.equal ls ["{\"h\":9223372036854775808,\"o\":9223372036854775808,\"d\":9223372036854775808}"])
+    ]
+
+// ---- H3R6-B7: a float field reads 0644 as 644.0 -------------------------------------
+
+let h3r6b7 d =
+    let p = put d "b7.yaml" ["mode: 0644"]
+    let src = [
+        "let p = Self.args |> Seq.head"
+        "print $\"\"\"F {File.read p |> from yaml {| mode: float |} |> try result |> Result.isOk}\"\"\""
+        "print $\"\"\"O {File.read p |> from yaml {| mode: Option<float> |} |> try result |> Result.isOk}\"\"\""
+    ]
+    let r = runIn d "30" [put d "b7.weir" src; p]
+    failing [
+        ($"""a float field must refuse the leading-zero literal 0644, as int does ('{joined r.stdout}', exit {codeOf r})""", r.stdout |> Seq.contains "F false")
+        ($"""an Option<float> field must refuse 0644 too ('{joined r.stdout}')""", r.stdout |> Seq.contains "O false")
+    ]
+
+// ---- H3R6-B8: plain non-string keys come back quoted (may be ruled by design) ----
+
+// string keys stay plain
+let ctlFYamlKeys d =
+    let (r, ls) = yRun d "c" ["name: web"; "spec:"; "  port: 80"] yRoundTrip
+    codeOf r == 0 && Seq.equal ls ["name: web"; "spec:"; "  port: 80"]
+
+let h3r6b8 d =
+    let doc = ["responses:"; "  200: ok"; "flags:"; "  true: yes-key"; "  null: none"; "modes:"; "  0644: rw"]
+    let (r, ls) = yRun d "b8" doc yRoundTrip
+    ["  200: ok"; "  true: yes-key"; "  null: none"; "  0644: rw"]
+    |> Seq.map (fun l -> ($"""Yaml.parse |> to yaml must keep the plain key in '{Str.trim l}' plain ('{joined ls}', exit {codeOf r})""", codeOf r == 0 && (ls |> Seq.contains l)))
+    |> failing
+
+// ---- H3R6-B6: an XML declaration contradicting the bytes gives mojibake ---------
+
+let b6Script = ["type R = { a: string }"; "print $\"{File.readBytes (Self.args |> Seq.head) |> from xml R |> try result}\""]
+
+let b6Doc d name label bytesHex =
+    let p = $"{d}/{name}.xml"
+    File.writeBytes p (Bytes.fromHex (hx $"<?xml version=\"1.0\" encoding=\"{label}\"?>\n<R><a>caf" + bytesHex + hx "</a></R>\n"))
+    p
+
+// a UTF-16 document labelled utf-16 (with its BOM) reads
+let ctlFXmlUtf16 d =
+    let ascii = "<?xml version=\"1.0\" encoding=\"utf-16\"?><R><a>caf"
+    let le s = Bytes.toHex (Str.toUtf8 s) |> Str.rmatchAll @"(..)" |> Seq.map (fun g -> (g |> Seq.head) + "00") |> Str.join ""
+    let p = $"{d}/u16.xml"
+    File.writeBytes p (Bytes.fromHex ("fffe" + le ascii + "e900" + le "</a></R>"))
+    let r = runIn d "30" [put d "c.weir" b6Script; p]
+    outOf r == "Ok ({ a = \"café\" })"
+
+let h3r6b6 d =
+    let p = b6Doc d "b6" "utf-16" "c3a9"
+    let r = runIn d "30" [put d "b6.weir" b6Script; p]
+    let o = outOf r
+    let mojibake = Str.isMatch @"[　-鿿]" o
+    failing [
+        ($"""an XML document labelled utf-16 but stored UTF-8: the error must say the declaration contradicts the bytes, no mojibake (mojibake: {mojibake}, '{o}')""", (o |> Str.startsWith "Error") && not mojibake && (Str.toLower o |> Str.contains "utf-16"))
+    ]
+
+// ---- H3R6-E10: from xml has no depth bound ------------------------------------------
+
+let e10Script = ["type R = { x: Option<string> }"; "print $\"{File.read (Self.args |> Seq.head) |> from xml R |> try result |> Result.isOk}\""]
+
+// `n` nested <a> elements under <r>
+let e10Doc d name n =
+    let p = $"{d}/{name}.xml"
+    [$"<r>{Str.replicate n "<a>"}{Str.replicate n "</a>"}</r>"] |> File.write p
+    p
+
+let ctlFXmlShallow d =
+    let r = runIn d "30" [put d "c.weir" e10Script; e10Doc d "s" 20]
+    codeOf r == 0 && outOf r == "true"
+
+let h3r6e10 d =
+    let (ms, r) = msOf (fun () -> runIn d "60" [put d "e10.weir" e10Script; e10Doc d "deep" 30000])
+    failing [
+        ($"""from xml of a 30000-deep document must refuse at a depth bound, as JSON/YAML do (exit {codeOf r}, Ok: {outOf r}, {ms}ms)""", codeOf r == 0 && outOf r == "false")
+    ]
+
+// ---- gen types: fixtures ----------------------------------------------------------
+
+// does the drafted file hold a raw terminal-driving byte
+let genRaw lines = lines |> Seq.exists bRawCtl
+
+// the neighbour: an optional nullable property drafts Option; plain keys
+// read back
+let ctlFGenOptional d =
+    fGen d [("nb", """{"type": "object", "properties": {"name": {"type": "string"}, "p": {"type": ["string", "null"]}}, "required": ["name"]}""")] (fun res ->
+        let (add, gen) = res |> Seq.head |> snd
+        let t = fText d "nb"
+        let r = fRead d "nb" """{"name": "a"}"""
+        codeOf add == 0 && codeOf gen == 0 && fHasField t "p" "Option<string>" && codeOf r == 0 && outOf r == "{\"name\":\"a\"}")
+
+// ---- H3R6-E9: gen types does not escape schema keys / enum values ---------------
+
+let e9Schemas = [
+    ("kq", """{"type":"object","additionalProperties":false,"properties":{"p\"q":{"type":"string"}}}""")
+    ("kb", """{"type":"object","additionalProperties":false,"properties":{"r\\s":{"type":"string"}}}""")
+    ("en", """{"type": "object", "additionalProperties": false, "properties": {"x": {"enum": ["a", "b\r"]}}}""")
+    ("ke", """{"type": "object", "additionalProperties": false, "properties": {"a\u001b]52;c;ZXZp\u0007b": {"type": "string"}, "ok": {"type": "string", "description": "doc \u001b]0;PWN\u0007 here\r\nline2"}}}""")
+]
+
+let h3r6e9 d =
+    fGen d e9Schemas (fun res ->
+        let genCases =
+            res
+            |> Seq.collect (fun (n, (add, gen)) ->
+                let t = fText d n
+                let cs = [
+                    ($"gen types of schema {n} (keys/values with quotes, backslashes, CR, ESC/BEL) must succeed (exit {codeOf add}/{codeOf gen}: {diagOf gen |> Str.replace esc "<ESC>" |> Str.replace bel "<BEL>" |> oneLine})", codeOf add == 0 && codeOf gen == 0 && not (diagOf gen |> Str.contains "generator bug"))
+                    ($"gen types of schema {n} must write no raw ESC/BEL/CR into the module or its output (module raw: {genRaw t}, output raw: {bRawCtl (diagOf gen)})", not (Seq.isEmpty t) && not (genRaw t) && not (bRawCtl (diagOf gen)))
+                ]
+                cs)
+            |> Seq.freeze
+        let rq = fRead d "kq" """{"p\"q": "v1"}"""
+        let rb = fRead d "kb" """{"r\\s": "v2"}"""
+        let readCases = [
+            ($"""a key holding a quote reads and writes back through the drafted type (exit {codeOf rq}: {diagOf rq |> oneLine})""", codeOf rq == 0 && outOf rq == "{\"p\\\"q\":\"v1\"}")
+            ($"""a key holding a backslash reads and writes back through the drafted type (exit {codeOf rb}: {diagOf rb |> oneLine})""", codeOf rb == 0 && outOf rb == "{\"r\\\\s\":\"v2\"}")
+        ]
+        Seq.append genCases readCases |> failing)
+
+// ---- H3R6-B9: uint64 under a nullable anyOf/oneOf drafts Option<int> -------------
+
+let b9Schema = """{"type":"object","properties":{"plain":{"type":"integer","format":"uint64"},"anyof":{"anyOf":[{"type":"integer","format":"uint64"},{"type":"null"}]},"oneof":{"oneOf":[{"type":"null"},{"type":"integer","format":"uint64"}]}}}"""
+
+let h3r6b9 d =
+    fGen d [("u9", b9Schema)] (fun res ->
+        let (add, gen) = res |> Seq.head |> snd
+        let t = fText d "u9"
+        let fieldOf f = t |> Seq.where (Str.contains $" {f}:") |> joined
+        let ra = fRead d "u9" """{"anyof": 18446744073709551615}"""
+        let ro = fRead d "u9" """{"oneof": 18446744073709551615}"""
+        let cases = [
+            fAddGen (add, gen)
+            ($"""format uint64 under a nullable anyOf must keep 18446744073709551615 through the drafted type ('{fieldOf "anyof"}'; exit {codeOf ra}: {diagOf ra |> oneLine})""", codeOf ra == 0 && outOf ra == "{\"anyof\":18446744073709551615}")
+            ($"""format uint64 under a nullable oneOf must keep 18446744073709551615 through the drafted type ('{fieldOf "oneof"}'; exit {codeOf ro}: {diagOf ro |> oneLine})""", codeOf ro == 0 && outOf ro == "{\"oneof\":18446744073709551615}")
+        ]
+        failing cases)
+
+// ---- H3R6-F4: inferShape drafts int for 0644, string for 0x1F / .inf ------------
+
+let f4Sample = ["mode: 0644"; "mask: 0x1F"; "num: 0o17"; "max: .inf"; "name: web"]
+
+let f4Draft = ["print (Yaml.inferShape (File.read (Self.args |> Seq.head)))"]
+
+// the field type drafted for `f` ("" when absent)
+let f4FieldType draft f =
+    draft |> Seq.tryPick (fun l -> match Str.trim l with | Regex @"^(\w+): (.+)$" (k, ty) when k == f -> Some ty | _ -> None) |> Option.defaultValue ""
+
+// the drafted type reads its own sample
+let f4Reads d name draft sample =
+    let p = put d $"{name}.yaml" sample
+    let src = Seq.concat [draft; ["let r = File.read (Self.args |> Seq.head) |> from yaml Root |> try result"; "print $\"{r |> Result.isOk}\""]] |> Seq.freeze
+    runIn d "30" [put d $"{name}.weir" src; p]
+
+// a decimal sample drafts int and reads back
+let ctlFInferDecimal d =
+    let sample = ["mode: 644"; "name: web"]
+    let (r, draft) = yRun d "c" sample f4Draft
+    let rr = f4Reads d "cr" draft sample
+    codeOf r == 0 && f4FieldType draft "mode" == "int" && outOf rr == "true"
+
+let h3r6f4 d =
+    let (r, draft) = yRun d "f4" f4Sample f4Draft
+    let shown = draft |> Seq.where (fun l -> (l |> Str.contains ":") && not (l |> Str.startsWith "//")) |> Seq.map Str.trim |> joined
+    let leading = ["mode: 0644"; "name: web"]
+    let (_, ldraft) = yRun d "f4l" leading f4Draft
+    let lr = f4Reads d "f4lr" ldraft leading
+    failing [
+        ($"""Yaml.inferShape of `mode: 0644` must draft a type that reads its own sample (drafted '{f4FieldType ldraft "mode"}', the read Ok: {outOf lr}; {errOf lr |> oneLine})""", outOf lr == "true")
+        ($"""Yaml.inferShape must draft 0x1F / 0o17 as int and .inf as a number, not string (exit {codeOf r}: '{shown}')""", codeOf r == 0 && f4FieldType draft "mask" == "int" && f4FieldType draft "num" == "int" && f4FieldType draft "max" <> "string" && f4FieldType draft "max" <> "")
+    ]
+
+// ---- this part's lists ----------------------------------------------------------
+
+let controlsF = [
+    ("control-yaml-numbers (H3R6-B1 H3R6-B3 H3R6-B4 H3R6-B5 H3R6-B7)", ctlFYamlNumbers)
+    ("control-yaml-trim (H3R6-B2)", ctlFYamlTrim)
+    ("control-yaml-keys (H3R6-B8)", ctlFYamlKeys)
+    ("control-xml-utf16 (H3R6-B6)", ctlFXmlUtf16)
+    ("control-xml-shallow (H3R6-E10)", ctlFXmlShallow)
+    ("control-gen-optional (H3R6-E9 H3R6-B9)", ctlFGenOptional)
+    ("control-infer-decimal (H3R6-F4)", ctlFInferDecimal)
+]
+
+let probesF = [
+    ("H3R6-B1", h3r6b1); ("H3R6-B2", h3r6b2); ("H3R6-B3", h3r6b3); ("H3R6-B4", h3r6b4); ("H3R6-B5", h3r6b5); ("H3R6-B6", h3r6b6)
+    ("H3R6-B7", h3r6b7); ("H3R6-B8", h3r6b8); ("H3R6-B9", h3r6b9); ("H3R6-E9", h3r6e9); ("H3R6-E10", h3r6e10); ("H3R6-F4", h3r6f4)
+]
+
+// ---- command signatures: shared fixtures -------------------------------------
+
+let sTab = Str.fromUtf8 (Bytes.fromHex "09")
+
+// a fake tool: `--version` prints bin/<name>.version (exit 1 when absent),
+// `--help`/`-h`/`-help` print bin/<name>.help and exit bin/<name>.rc (0 when
+// absent), anything else exits 1
+let sFake = <<<
+    #!/bin/sh
+    d=$(dirname "$0"); n=$(basename "$0")
+    case "$1" in
+      --version) [ -s "$d/$n.version" ] && { cat "$d/$n.version"; exit 0; }; exit 1;;
+      --help|-h|-help) cat "$d/$n.help"; [ -s "$d/$n.rc" ] && exit "$(cat "$d/$n.rc")"; exit 0;;
+    esac
+    exit 1
+
+// a project dir `key` under d: a .git marker and an empty bin/
+let sProj d key =
+    let proj = $"{d}/{key}"
+    Dir.create $"{proj}/bin"
+    ["x"] |> File.write $"{proj}/.git"
+    proj
+
+let sChmod p =
+    chmod +x $p | orFail $"chmod {p}"
+
+// the fake `name` in proj/bin; `<T>` in the help lines is a tab
+let sTool proj name ver help =
+    if ver <> "" then [ver] |> File.write $"{proj}/bin/{name}.version"
+    help |> Seq.map (Str.replace "<T>" sTab) |> File.write $"{proj}/bin/{name}.help"
+    sChmod (put proj $"bin/{name}" sFake)
+
+let sPathOf proj = $"""PATH={proj}/bin:{Env.get "PATH" |> Option.defaultValue "/usr/bin:/bin"}"""
+
+let sAdd proj tool = runEnv proj "60" [sPathOf proj] ["add"; "sig"; tool]
+
+// `weir check` of a one-line script under `#sig tool`
+let sCheck proj tool k line =
+    let p = put proj $"c{k}.weir" [$"#sig {tool}"; line]
+    runEnv proj "30" [sPathOf proj] ["check"; p]
+
+let sFlagged r = diagOf r |> Str.contains "unknown flag"
+
+// a check's diagnostics without the temp paths: the text after `[sig]: `,
+// up to the `(#sig …)` provenance
+let sDiag r =
+    let ls =
+        (diagOf r) |> Str.split "\n"
+        |> Seq.choose (fun l -> Str.trySplitOnce "]: " l |> Option.map (fun (_, t) -> Str.trySplitOnce " (#sig" t |> Option.map fst |> Option.defaultValue t))
+        |> Seq.freeze
+    ls |> Str.join " | "
+
+let sAddCase tool add = ($"""weir add sig {tool} (exit {codeOf add}: {diagOf add |> oneLine})""", codeOf add == 0)
+
+// add the tool's sig, then each line must check clean (rc 0, no unknown flag)
+let sLinesClean proj tool lines =
+    let add = sAdd proj tool
+    let lineCases =
+        lines
+        |> Seq.indexed
+        |> Seq.map (fun (k, line) ->
+            let r = sCheck proj tool k line
+            ($"""'{line}' under the generated sig warns (exit {codeOf r}: {sDiag r})""", codeOf r == 0 && not (sFlagged r)))
+        |> Seq.freeze
+    Seq.append [sAddCase tool add] lineCases |> Seq.freeze
+
+// add the tool's sig, then each (line, flag) must warn naming the flag
+let sLinesFlagged proj tool lines =
+    let add = sAdd proj tool
+    let lineCases =
+        lines
+        |> Seq.indexed
+        |> Seq.map (fun (k, (line, flag)) ->
+            let r = sCheck proj tool (20 + k) line
+            ($"""'{line}' under the generated sig must warn naming {flag} (exit {codeOf r}: '{sDiag r}')""", sFlagged r && (diagOf r |> Str.contains flag)))
+        |> Seq.freeze
+    Seq.append [sAddCase tool add] lineCases |> Seq.freeze
+
+// ---- help pages the fakes print (trimmed from the real tools' --help) -------
+
+let sSudoHelp = <<<
+    sudo - execute a command as another user
+
+    usage: sudo -h | -K | -k | -V
+    usage: sudo -v [-ABkNnS] [-g group] [-h host] [-p prompt] [-u user]
+    usage: sudo -l [-ABkNnS] [-g group] [-h host] [-p prompt] [-U user]
+                [-u user] [command [arg ...]]
+    usage: sudo [-ABbEHkNnPS] [-r role] [-t type] [-C num] [-D directory]
+                [-g group] [-h host] [-p prompt] [-R directory] [-T timeout]
+                [-u user] [VAR=value] [-i | -s] [command [arg ...]]
+    usage: sudo -e [-ABkNnS] [-r role] [-t type] [-C num] [-D directory]
+                [-g group] [-h host] [-p prompt] [-R directory] [-T timeout]
+                [-u user] file ...
+
+    Options:
+      -A, --askpass                 use a helper program for password prompting
+      -b, --background              run command in the background
+      -B, --bell                    ring bell when prompting
+      -C, --close-from=num          close all file descriptors >= num
+      -D, --chdir=directory         change the working directory before running
+                                    command
+      -E, --preserve-env            preserve user environment when running command
+          --preserve-env=list       preserve specific environment variables
+      -e, --edit                    edit files instead of running a command
+      -g, --group=group             run command as the specified group name or ID
+      -H, --set-home                set HOME variable to target user's home dir
+      -h, --help                    display help message and exit
+      -h, --host=host               run command on host (if supported by plugin)
+      -i, --login                   run login shell as the target user; a command
+                                    may also be specified
+      -K, --remove-timestamp        remove timestamp file completely
+      -k, --reset-timestamp         invalidate timestamp file
+      -l, --list                    list user's privileges or check a specific
+                                    command; use twice for longer format
+      -n, --non-interactive         non-interactive mode, no prompts are used
+      -P, --preserve-groups         preserve group vector instead of setting to
+                                    target's
+      -p, --prompt=prompt           use the specified password prompt
+      -R, --chroot=directory        change the root directory before running command
+      -S, --stdin                   read password from standard input
+      -s, --shell                   run shell as the target user; a command may
+                                    also be specified
+      -T, --command-timeout=timeout terminate command after the specified time limit
+      -U, --other-user=user         in list mode, display privileges for user
+      -u, --user=user               run command (or edit file) as specified user
+                                    name or ID
+      -V, --version                 display version information and exit
+      -v, --validate                update user's timestamp without running a
+                                    command
+      --                            stop processing command line arguments
+
+let sSystemdRunHelp = <<<
+    systemd-run [OPTIONS...] COMMAND [ARGUMENTS...]
+
+    Run the specified command in a transient scope or service.
+
+      -h --help                       Show this help
+         --version                    Show package version
+         --no-ask-password            Do not prompt for password
+         --user                       Run as user unit
+      -H --host=[USER@]HOST           Operate on remote host
+      -M --machine=CONTAINER          Operate on local container
+         --scope                      Run this as scope rather than service
+      -u --unit=UNIT                  Run under the specified unit name
+      -p --property=NAME=VALUE        Set service or scope unit property
+         --description=TEXT           Description for unit
+         --slice=SLICE                Run in the specified slice
+         --no-block                   Do not wait until operation finished
+      -r --remain-after-exit          Leave service around until explicitly stopped
+         --wait                       Wait until service stopped again
+         --uid=USER                   Run as system user
+         --gid=GROUP                  Run as system group
+      -E --setenv=NAME[=VALUE]        Set environment variable
+      -t --pty                        Run service on pseudo TTY as STDIN/STDOUT/
+                                      STDERR
+      -P --pipe                       Pass STDIN/STDOUT/STDERR directly to service
+      -q --quiet                      Suppress information messages during runtime
+      -G --collect                    Unload unit after it ran, even when failed
+         --no-pager                   Do not pipe output into a pager
+
+    See the systemd-run(1) man page for details.
+
+let sRun0Help = <<<
+    run0 [OPTIONS...] COMMAND [ARGUMENTS...]
+
+    Elevate privileges interactively.
+
+      -h --help                       Show this help
+      -V --version                    Show package version
+         --no-ask-password            Do not prompt for password
+         --machine=CONTAINER          Operate on local container
+         --unit=UNIT                  Run under the specified unit name
+         --property=NAME=VALUE        Set service or scope unit property
+      -u --user=USER                  Run as system user
+      -g --group=GROUP                Run as system group
+         --nice=NICE                  Nice level
+      -D --chdir=PATH                 Set working directory
+         --setenv=NAME[=VALUE]        Set environment variable
+         --pty                        Request allocation of a pseudo TTY for stdio
+         --pipe                       Request direct pipe for stdio
+
+    See the run0(1) man page for details.
+
+let sChrtHelp = <<<
+    Show or change the real-time scheduling attributes of a process.
+
+    Set policy:
+     chrt [options] <priority> <command> [<arg>...]
+     chrt [options] --pid <priority> <pid>
+
+    Get policy:
+     chrt [options] -p <pid>
+
+    Policy options:
+     -b, --batch          set policy to SCHED_BATCH
+     -d, --deadline       set policy to SCHED_DEADLINE
+     -f, --fifo           set policy to SCHED_FIFO
+     -i, --idle           set policy to SCHED_IDLE
+     -o, --other          set policy to SCHED_OTHER
+     -r, --rr             set policy to SCHED_RR (default)
+
+    Scheduling options:
+     -R, --reset-on-fork       set reset-on-fork flag
+     -T, --sched-runtime <ns>  runtime parameter for DEADLINE
+     -P, --sched-period <ns>   period parameter for DEADLINE
+     -D, --sched-deadline <ns> deadline parameter for DEADLINE
+
+    Other options:
+     -a, --all-tasks      operate on all the tasks (threads) for a given pid
+     -m, --max            show min and max valid priorities
+     -p, --pid            operate on existing given pid
+     -v, --verbose        display status information
+
+     -h, --help           display this help
+     -V, --version        display version
+
+    For more details see chrt(1).
+
+let sStraceHelp = <<<
+    Usage: strace [-ACdffhikqqrtttTvVwxxyyzZ] [-I N] [-b execve] [-e EXPR]...
+                  [-a COLUMN] [-o FILE] [-s STRSIZE] [-X FORMAT] [-O OVERHEAD]
+                  [-S SORTBY] [-U COLUMNS] [-P PATH]... [-p PID]... [-u USERNAME]
+                  { -p PID | [-DDD] [-E VAR[=VAL]]... PROG [ARGS] }
+
+    General:
+      -e EXPR        a qualifying expression: OPTION=[!]all or OPTION=[!]VAL1[,VAL2]...
+      -f, --follow-forks
+                     follow forks
+      -o FILE, --output=FILE
+                     send trace output to FILE instead of stderr
+      -p PID, --attach=PID
+                     trace process with process id PID, may be repeated
+      -s STRSIZE, --string-limit=STRSIZE
+                     limit length of print strings to STRSIZE chars (default 32)
+
+let sUvxHelp = <<<
+    Run a command provided by a Python package.
+
+    Usage: uvx [OPTIONS] [COMMAND]
+
+    Options:
+          --from <FROM>        Use the given package to provide the command
+          --with <WITH>        Run with the given packages installed
+      -p, --python <PYTHON>    The Python interpreter to use
+      -q, --quiet              Use quiet output
+
+let sBunxHelp = <<<
+    Usage: bunx [flags] <package><@version> [flags and arguments for the package]
+    Execute an npm package executable (CLI), automatically installing into a global shared cache if not installed in node_modules.
+
+    Flags:
+      --bun                  Force the command to run with Bun instead of Node.js
+      -p, --package <package>    Specify package to install when binary name differs from package name
+      --no-install           Skip installation if package is not already installed
+      --verbose              Enable verbose output during installation
+      --silent               Suppress output during installation
+
+    Examples:
+      bunx prisma migrate
+      bunx prettier foo.js
+      bunx -p @angular/cli ng new my-app
+      bunx --bun vite dev foo.js
+
+let sKillHelp = <<<
+
+    Usage:
+     kill [options] <pid> [...]
+
+    Options:
+     <pid> [...]            send signal to every <pid> listed
+     -<signal>, -s, --signal <signal>
+                            specify the <signal> to be sent
+     -q, --queue <value>    integer value to be sent with the signal
+     -l, --list=[<signal>]  list all signal names, or convert one to a name
+     -L, --table            list all signal names in a nice table
+
+     -h, --help     display this help and exit
+     -V, --version  output version information and exit
+
+    For more details see kill(1).
+
+let sPkillHelp = <<<
+
+    Usage:
+     pkill [options] <pattern>
+
+    Options:
+     -<sig>                    signal to send (either number or name)
+     -H, --require-handler     match only if signal handler is present
+     -q, --queue <value>       integer value to be sent with the signal
+     -e, --echo                display what is killed
+     -c, --count               count of matching processes
+     -f, --full                use full process name to match
+     -g, --pgroup <PGID,...>   match listed process group IDs
+     -G, --group <GID,...>     match real group IDs
+     -i, --ignore-case         match case insensitively
+     -n, --newest              select most recently started
+     -o, --oldest              select least recently started
+     -O, --older <seconds>     select where older than seconds
+     -P, --parent <PPID,...>   match only child processes of the given parent
+     -s, --session <SID,...>   match session IDs
+         --signal <sig>        signal to send (either number or name)
+     -t, --terminal <tty,...>  match by controlling terminal
+     -u, --euid <ID,...>       match by effective IDs
+     -U, --uid <ID,...>        match by real IDs
+     -x, --exact               match exactly with the command name
+     -F, --pidfile <file>      read PIDs from file
+     -L, --logpidfile          fail if PID file is not locked
+     -r, --runstates <state>   match runstates [D,S,Z,...]
+     -A, --ignore-ancestors    exclude our ancestors from results
+
+     -h, --help     display this help and exit
+     -V, --version  output version information and exit
+
+    For more details see pgrep(1).
+
+let sSystemctlHelp = <<<
+    systemctl [OPTIONS...] COMMAND ...
+
+    Query or send control commands to the system manager.
+
+    Unit Commands:
+      list-units [PATTERN...]             List units currently in memory
+      list-timers [PATTERN...]            List timer units currently in memory,
+                                          ordered by next elapse
+      start UNIT...                       Start (activate) one or more units
+      stop UNIT...                        Stop (deactivate) one or more units
+
+    Options:
+      -h --help              Show this help
+         --version           Show package version
+         --system            Connect to system manager
+         --user              Connect to user service manager
+      -t --type=TYPE         List units of a particular type
+         --state=STATE       List units with particular LOAD or SUB or ACTIVE state
+      -a --all               Show all properties/all units currently in memory,
+                             including dead/empty ones
+         --legend=BOOL       Enable/disable the legend (column headers and hints)
+         --no-pager          Do not pipe output into a pager
+         --plain             Print unit dependencies as a list instead of a tree
+
+    See the systemctl(1) man page for details.
+
+let sTrHelp = <<<
+    Translate or delete characters
+
+    Usage: tr [OPTION]... SET1 [SET2]
+
+    Arguments:
+      [sets]...
+
+    Options:
+      -c, --complement       use the complement of SET1 [alias: -C]
+      -d, --delete           delete characters in SET1, do not translate
+      -s, --squeeze-repeats  replace each sequence of a repeated character that is listed in the last
+                             specified SET, with a single occurrence of that character
+      -t, --truncate-set1    first truncate SET1 to length of SET2
+      -h, --help             Print help
+      -V, --version          Print version
+
+    Translate, squeeze, and/or delete characters from standard input, writing to standard output.
+
+let sShaHelp = <<<
+    Print or check the SHA256 checksums
+
+    Usage: sha256sum [OPTIONS] [FILE]...
+
+    Options:
+      -c, --check           read checksums from the FILEs and check them
+      -w, --warn            warn about improperly formatted checksum lines
+          --status          don't output anything, status code shows success
+          --quiet           don't print OK for each successfully verified file
+          --ignore-missing  don't fail or report status for missing files
+          --strict          exit non-zero for improperly formatted checksum lines
+          --tag             create a BSD style checksum
+      -t, --text            read in text mode (default)
+      -z, --zero            end each output line with NUL, not newline, and disable file name escaping
+      -h, --help            Print help
+      -V, --version         Print version
+
+// (tool, version, help, the --help exit code)
+let sFakes = [
+    ("sudo", "Sudo version 1.9.16", sSudoHelp, "")
+    ("systemd-run", "systemd 258 (258.1)", sSystemdRunHelp, "")
+    ("run0", "systemd 258 (258.1)", sRun0Help, "")
+    ("chrt", "chrt from util-linux 2.41", sChrtHelp, "")
+    ("strace", "strace -- version 6.16", sStraceHelp, "")
+    ("uvx", "uvx 0.9.5", sUvxHelp, "")
+    ("bunx", "1.3.0", sBunxHelp, "1")
+    ("kill", "kill from procps-ng 4.0.4", sKillHelp, "")
+    ("pkill", "pkill from procps-ng 4.0.4", sPkillHelp, "")
+    ("systemctl", "systemd 258 (258.1)", sSystemctlHelp, "")
+    ("tr", "tr (uutils coreutils) 0.2.2", sTrHelp, "")
+    ("sha256sum", "sha256sum (uutils coreutils) 0.2.2", sShaHelp, "")
+]
+
+// the fake named `tool` in its own project under d
+let sFakeProj d key tool =
+    let proj = sProj d key
+    match sFakes |> Seq.tryFind (fun (t, _, _, _) -> t == tool) with
+    | Some (t, ver, help, rc) ->
+        sTool proj t ver help
+        if rc <> "" then [rc] |> File.write $"{proj}/bin/{t}.rc"
+        proj
+    | None -> fail $"no fake {tool}"
+
+// ---- H3R6-S2: wrappers stop at their operand ---------------------------------
+
+let s2Lines = [
+    ("sudo", ["sudo -u postgres psql -c x"; "sudo apt-get install -y curl"; "sudo -E make install -j4"])
+    ("systemd-run", ["systemd-run --user --scope -p MemoryMax=1G make -j4"])
+    ("run0", ["run0 -u root ls -la"])
+    ("chrt", ["chrt -r 1 make -j8"])
+    ("strace", ["strace -f -o out ls -la"])
+    ("uvx", ["uvx ruff check --fix ."])
+    ("bunx", ["bunx prettier --write ."; "bunx --bun vite --port 3000"; "bunx -p typescript tsc --init"])
+]
+
+let h3r6s2 d =
+    s2Lines
+    |> Seq.collect (fun (tool, lines) -> sLinesClean (sFakeProj d tool tool) tool lines)
+    |> failing
+
+// ---- H3R6-S3: dashWords swallows single-letter typos -------------------------
+
+let h3r6s3 d =
+    Seq.append
+        (sLinesFlagged (sFakeProj d "kill" "kill") "kill" [("kill -x 1234", "-x"); ("kill -a 1234", "-a")])
+        (sLinesFlagged (sFakeProj d "pkill" "pkill") "pkill" [("pkill -Q nginx", "-Q"); ("pkill -E nginx", "-E")])
+    |> failing
+
+// ---- H3R6-S4: a listed --x=BOOL does not add --no-x ---------------------------
+
+let h3r6s4 d =
+    sLinesClean (sFakeProj d "systemctl" "systemctl") "systemctl" ["systemctl list-units --no-legend --plain"; "systemctl list-timers --all --no-legend"] |> failing
+
+// ---- H3R6-S5: a fresh all-bool sig is read as an older one ---------------------
+
+let h3r6s5 d =
+    let partial =
+        Seq.append
+            (sLinesFlagged (sFakeProj d "sha" "sha256sum") "sha256sum" [("sha256sum -cQ s", "Q")])
+            (sLinesFlagged (sFakeProj d "tr" "tr") "tr" [("tr -dQ x", "Q")])
+        |> Seq.freeze
+    // the same sigs marked exhaustive by hand: the bundle typo is an error
+    let exhaustive =
+        [("sha", "sha256sum", "sha256sum -cQ s"); ("tr", "tr", "tr -dQ x")]
+        |> Seq.map (fun (key, tool, line) ->
+            let proj = $"{d}/{key}"
+            let f = $"{proj}/.weir/sigs/{tool}.weir"
+            if File.exists f then File.append f ["let exhaustive = true"]
+            let r = sCheck proj tool 40 line
+            ($"""'{line}' under the generated sig marked exhaustive must be an error naming Q (exit {codeOf r}: '{sDiag r}')""", codeOf r <> 0 && sFlagged r && (diagOf r |> Str.contains "Q")))
+        |> Seq.freeze
+    Seq.append partial exhaustive |> failing
+
+// the fakes' listed flags check clean and a made-up flag warns
+let sKnown = [
+    ("sudo", "sudo -u root id"); ("systemd-run", "systemd-run --user true"); ("run0", "run0 -u root id"); ("chrt", "chrt -m")
+    ("strace", "strace -f ls"); ("uvx", "uvx --from x ruff"); ("bunx", "bunx --bun vite"); ("kill", "kill -TERM 1234")
+    ("pkill", "pkill -e nginx"); ("systemctl", "systemctl --all list-units"); ("tr", "tr -d x"); ("sha256sum", "sha256sum -c s")
+]
+
+let ctlSKnownFlags d =
+    sKnown
+    |> Seq.forall (fun (tool, line) ->
+        let proj = sFakeProj d tool tool
+        let clean = sLinesClean proj tool [line] |> Seq.forall snd
+        let bogus = sCheck proj tool 9 $"{tool} --h3r6-bogus x"
+        clean && sFlagged bogus)
+
+// ---- H3R6-S1 / H3R6-S6: git (the real one) ------------------------------------
+
+let sGit d key =
+    let hasGit = sh -c "command -v git" | succeeds
+    if not hasGit then fail "SKIP: git not on PATH"
+    sProj d key
+
+let h3r6s1 d =
+    let proj = sGit d "git"
+    sLinesClean proj "git" ["git stash show --stat"; "git stash show --name-only stash@{1}"; "git stash show --patience -p"] |> failing
+
+let h3r6s6 d =
+    let proj = sGit d "git"
+    sLinesFlagged proj "git" [("git config --gloabl user.name x", "--gloabl"); ("git config --lisst", "--lisst"); ("git stash --include-untraked", "--include-untraked")] |> failing
+
+let ctlSGit d =
+    let proj = sGit d "git"
+    let clean = sLinesClean proj "git" ["git commit --amend -m x"; "git stash list --oneline"] |> Seq.forall snd
+    clean && sFlagged (sCheck proj "git" 9 "git commit --h3r6-bogus")
+
+// ---- H3R6-E1: a long tool path overflows NAME_MAX --------------------------------
+
+let e1Help = ["Usage: ft [opts]"; ""; "Options:"; "  --aa   aa doc"]
+
+let h3r6e1 d =
+    let proj = sProj d "p"
+    let deep = [0..49] |> Seq.map (fun i -> $"d{i}") |> Str.join "/"
+    let td = $"{d}/tools/{deep}"
+    Dir.create td
+    ["ft 1.0"] |> File.write $"{td}/ft.version"
+    e1Help |> File.write $"{td}/ft.help"
+    sChmod (put td "ft" sFake)
+    let r = runIn proj "60" ["add"; "sig"; $"{td}/ft"]
+    let names = if Dir.exists $"{proj}/.weir/sigs" then Dir.list $"{proj}/.weir/sigs" |> Seq.map Path.fileName |> Seq.freeze else []
+    let longest = names |> Seq.map (fun n -> Bytes.length (Str.toUtf8 n) |> Size.toBytes) |> Seq.fold (fun a b -> if b > a then b else a) 0
+    failing [
+        ($"""weir add sig of a tool at a {Str.length td}-char path must succeed with a sig file name under NAME_MAX (exit {codeOf r}, longest name {longest} bytes: {diagOf r |> oneLine |> Str.sub 0 200})""", codeOf r == 0 && not (Seq.isEmpty names) && longest <= 255 && not (diagOf r |> Str.contains "internal error"))
+    ]
+
+// ---- H3R6-E2: a signal to `weir add sig` orphans the probe ---------------------
+
+// --help prints help, marks the log, then becomes `sleep <mark>`
+let e2Tool log mark = [
+    "#!/bin/sh"
+    "case \"$1\" in"
+    "  --version) echo \"hng 1.0\";;"
+    $"  --help) printf 'Usage: hng [opts]\\n\\nOptions:\\n  --aa   aa\\n'; echo 'BODY DONE' >> '{log}'; exec sleep {mark};;"
+    "  *) exit 1;;"
+    "esac"
+]
+
+let e2Leftover proj = Dir.list proj |> Seq.where (fun p -> p |> Path.fileName |> Str.contains "sigprobe") |> Seq.length
+
+// a probe that exits at once leaves nothing behind
+let ctlSAddQuick d =
+    let proj = sProj d "quick"
+    sTool proj "quick" "quick 1.0" ["Usage: quick [opts]"; ""; "Options:"; "  --aa   aa"]
+    let (ms, r) = msOf (fun () -> sAdd proj "quick")
+    codeOf r == 0 && ms <= 10000 && File.exists $"{proj}/.weir/sigs/quick.weir" && e2Leftover proj == 0
+
+let h3r6e2 d =
+    let pp = sProj d "pid"
+    let mark = markOf 60 81
+    sChmod (put pp "bin/hng" (e2Tool $"{pp}/log" mark))
+    let run = sigRunEnv pp [sPathOf pp] ["TERM@log+300"] "15" mark ["add"; "sig"; "hng"]
+    reap mark
+    let pidLeft = e2Leftover pp
+    let tp = sProj d "tty"
+    let tmark = markOf 60 82
+    sChmod (put tp "bin/hng" (e2Tool $"{tp}/log" tmark))
+    let trun = ptyRun tp "15" [sPathOf tp; cli.bin; "add"; "sig"; "hng"] ["SLEEP 2500"; ctrlC; "SLEEP 2000"]
+    Duration.sleep 300ms
+    let ttyOrphans = sleepersOf tmark |> Seq.length
+    reap tmark
+    let ttyLeft = e2Leftover tp
+    failing [
+        ($"a pid-directed SIGTERM to weir add sig mid-probe: the probe dies and its temp dir goes ({run.summary}, temp dirs left {pidLeft})", sigExit run.rc 15 && run.left == 0 && pidLeft == 0)
+        ($"a terminal ^C to weir add sig mid-probe: the probe dies and its temp dir goes (EXIT {trun.code}, orphans {ttyOrphans}, temp dirs left {ttyLeft})", sigExit trun.code 2 && ttyOrphans == 0 && ttyLeft == 0)
+    ]
+
+// ---- H3R6-E3: a probe cut at its bound loses what it read ------------------------
+
+let h3r6e3 d =
+    let proj = sProj d "slow"
+    let mark = markOf 60 83
+    sChmod (put proj "bin/slow" ["#!/bin/sh"; "case \"$1\" in"; "  --version) echo \"slow 1.0\";;"; $"  --help) printf 'Usage: slow [opts]\\n\\nOptions:\\n  --aa   aa doc\\n  --bb   bb doc\\n'; exec sleep {mark};;"; "  *) exit 1;;"; "esac"])
+    let (ms, r) = msOf (fun () -> sAdd proj "slow")
+    reap mark
+    let sig = linesOf $"{proj}/.weir/sigs/slow.weir"
+    let kept = (sig |> Seq.exists (Str.contains "aa")) && (sig |> Seq.exists (Str.contains "bb"))
+    let said = Str.isMatch @"(?i)cut|timed? ?out|time limit|bound|stopped|killed" (diagOf r)
+    failing [
+        ($"a --help that prints at once then lingers past the probe bound: the sig keeps the flags read (kept: {kept}; exit {codeOf r} after {ms}ms: {diagOf r |> oneLine})", codeOf r == 0 && kept)
+        ($"the same: weir add sig says the probe was cut ({diagOf r |> oneLine})", said && not (diagOf r |> Str.contains "found no flags"))
+    ]
+
+// ---- H3R6-E4: a legacy-named sig owned by another entry is overwritten ----------
+
+type SLockArt = { kind: string; name: string; path: string }
+
+type SLock = { artifacts: seq<SLockArt> }
+
+// the shape the previous generator wrote for 'a b' under its legacy name
+let e4Legacy = ["module Ab"; "type Cmd = {"; "    [<Wire \"only-aSb\">]"; "    onlyASb: bool"; "}"]
+
+let h3r6e4 d =
+    let proj = sProj d "p"
+    Dir.create $"{proj}/.weir/sigs"
+    let legacy = $"{proj}/.weir/sigs/a_b.weir"
+    e4Legacy |> File.write legacy
+    let sha = File.sha256 legacy
+    ["{ \"schemaVersion\": 1, \"artifacts\": [ { \"kind\": \"sig\", \"name\": \"a b\", \"url\": \"generated:help\","; $"  \"sha256\": \"{sha}\", \"path\": \"sigs/a_b.weir\" }} ] }}"] |> File.write $"{proj}/.weir/lock.json"
+    sTool proj "a_b" "" ["Usage: t"; ""; "Options:"; "  --only-a_b   doc"]
+    let add = sAdd proj "a_b"
+    let arts = (linesOf $"{proj}/.weir/lock.json" |> from json SLock).artifacts |> Seq.where (fun a -> a.kind == "sig") |> Seq.freeze
+    let holds n flag =
+        match arts |> Seq.tryFind (fun a -> a.name == n) with
+        | Some a -> linesOf $"{proj}/.weir/{a.path}" |> Seq.exists (Str.contains flag)
+        | None -> false
+    let verify = runIn proj "30" ["verify"]
+    let paths = arts |> Seq.map (fun a -> $"{a.name}={a.path}") |> joined
+    failing [
+        ($"""weir add sig a_b beside a legacy-named a_b.weir owned by 'a b': 'a b' keeps its own flags (lock '{paths}'; add exit {codeOf add}: {diagOf add |> oneLine})""", holds "a b" "only-aSb")
+        ($"""the same: a_b gets its own sig (lock '{paths}')""", codeOf add == 0 && holds "a_b" "only-a_b")
+        ($"""the same: weir verify stays clean (exit {codeOf verify}: {diagOf verify |> oneLine})""", codeOf verify == 0)
+    ]
+
+// ---- H3R6-E11: the hand-write hint names the unencoded file ----------------------
+
+let h3r6e11 d =
+    let proj = sProj d "p"
+    sChmod (put proj "bin/g++" ["#!/bin/sh"; "echo \"no help here\""])
+    let add = sAdd proj "g++"
+    let hinted = match diagOf add with | Regex @"write (\S+\.weir) by hand" p -> Some p | _ -> None
+    match hinted with
+    | Some rel ->
+        let target = if rel |> Str.startsWith "/" then rel else $"{proj}/{rel}"
+        Dir.create (Path.dir target)
+        ["module Gpp"; "let version = \"g 1\""; "type Cmd = {"; "    aa: bool"; "}"; "let exhaustive = true"] |> File.write target
+        let r = sCheck proj "g++" 1 "g++ --zz x"
+        failing [
+            ($"""the "write … by hand" hint for g++ must name the file #sig g++ reads (hint '{rel}'; a sig written there, check: '{sDiag r}')""", sFlagged r && (diagOf r |> Str.contains "--zz"))
+        ]
+    | None -> fail $"weir add sig g++ gave no hand-write hint (exit {codeOf add}: {diagOf add |> oneLine})"
+
+// ---- H3R6-S7: sig-score passes on a crashed check, a broken sig, `// cleanup` ----
+
+let s7Scorer () =
+    let p =
+        match cli.sigscore with
+        | Some s -> s
+        | None -> Path.combine (Self.scriptPath |> Path.dir) "sig-score.weir"
+    if not (File.exists p) then fail $"SKIP: no sig-score.weir at {p}"
+    p
+
+// the weir under test, resolved to a file
+let s7Bin () =
+    if cli.bin |> Str.contains "/" then cli.bin else sh -c $"command -v '{cli.bin}'" | line
+
+// a scorer tree under d: tools/sig-score.weir and tests/sigs/<sample>/ with
+// a self-contained fake tool and the given lines.weir
+let s7Tree d sample lines =
+    let scorer = s7Scorer ()
+    Dir.create $"{d}/tools"
+    let copy = $"{d}/tools/sig-score.weir"
+    if not (File.exists copy) then File.copy scorer copy
+    let fx = $"{d}/tests/sigs/{sample}"
+    Dir.create $"{fx}/exe"
+    sChmod (put fx $"exe/{sample}" ["#!/bin/sh"; "case \"$1\" in"; $"  --help) printf 'Usage: {sample} [opts]\\n\\nOptions:\\n  --aa   aa doc\\n';;"; "  *) exit 1;;"; "esac"])
+    lines |> File.write $"{fx}/lines.weir"
+    copy
+
+// a fake weir: `check` (and with `brk`, a sig written by `add`) misbehaves,
+// everything else is the binary under test
+let s7Fake d name mode =
+    let real = s7Bin ()
+    let body =
+        match mode with
+        | "crash" -> ["#!/bin/sh"; "if [ \"$1\" = check ]; then echo 'Unhandled exception: boom' >&2; exit 134; fi"; $"exec '{real}' \"$@\""]
+        | _ -> ["#!/bin/sh"; $"if [ \"$1\" = add ]; then '{real}' \"$@\"; rc=$?; echo 'type Broken = {{' >> \".weir/sigs/$3.weir\"; exit $rc; fi"; $"exec '{real}' \"$@\""]
+    let p = put d name body
+    sChmod p
+    p
+
+let s7Score d scorer bin sample = runIn d "120" [scorer; "--bin"; bin; "--only"; sample]
+
+// the scorer passes a good sample and fails a real FP, with the real binary
+let ctlSScorer d =
+    let scorer = s7Tree d "s7ok" [$"#sig s7ok"; "s7ok --aa x // clean"; "s7ok --zz x // typo: --zz"]
+    let ok = s7Score d scorer (s7Bin ()) "s7ok"
+    let _t2 = s7Tree d "s7fp" [$"#sig s7fp"; "s7fp --zz x // clean"]
+    let fp = s7Score d scorer (s7Bin ()) "s7fp"
+    codeOf ok == 0 && codeOf fp <> 0
+
+let h3r6s7 d =
+    let scorer = s7Tree d "s7a" ["#sig s7a"; "s7a --aa x // clean"]
+    let crash = s7Score d scorer (s7Fake d "crash.sh" "crash") "s7a"
+    let _b = s7Tree d "s7b" ["#sig s7b"; "s7b --aa x // clean"]
+    let broken = s7Score d scorer (s7Fake d "broken.sh" "broken") "s7b"
+    let _c = s7Tree d "s7c" ["#sig s7c"; "s7c --aa x // clean"; "s7c --zz x // cleanup the tree"]
+    let cleanup = s7Score d scorer (s7Bin ()) "s7c"
+    let shown r = $"exit {codeOf r}: {outOf r |> oneLine}"
+    failing [
+        ($"sig-score must fail a sample whose `weir check` crashed ({shown crash})", codeOf crash <> 0)
+        ($"sig-score must fail a sample whose generated sig does not load ({shown broken})", codeOf broken <> 0)
+        ($"sig-score must read `// clean` exactly, never inside `// cleanup …` ({shown cleanup})", codeOf cleanup == 0)
+    ]
+
+// ---- this part's lists ----------------------------------------------------------
+
+let controlsS = [
+    ("control-sig-known-flags (H3R6-S2 H3R6-S3 H3R6-S4 H3R6-S5)", ctlSKnownFlags)
+    ("control-sig-git (H3R6-S1 H3R6-S6)", ctlSGit)
+    ("control-sig-add-quick (H3R6-E1 H3R6-E2 H3R6-E3 H3R6-E4 H3R6-E11)", ctlSAddQuick)
+    ("control-sig-scorer (H3R6-S7)", ctlSScorer)
+]
+
+let probesS = [
+    ("H3R6-E1", h3r6e1); ("H3R6-E2", h3r6e2); ("H3R6-E3", h3r6e3); ("H3R6-E4", h3r6e4); ("H3R6-E11", h3r6e11)
+    ("H3R6-S1", h3r6s1); ("H3R6-S2", h3r6s2); ("H3R6-S3", h3r6s3); ("H3R6-S4", h3r6s4); ("H3R6-S5", h3r6s5); ("H3R6-S6", h3r6s6); ("H3R6-S7", h3r6s7)
+]
+// ---- the lists ---------------------------------------------------------------
+
+let controls = Seq.concat [controlsA; controlsP; controlsB; controlsF; controlsS] |> Seq.freeze
+
+let probes = Seq.concat [probesA; probesP; probesB; probesF; probesS] |> Seq.freeze
+
+// a label word starting with the --only text; an id ending in a digit never
+// selects a longer number (H3R6-E1 is not H3R6-E10)
+let picks o w =
+    let rest = if Str.length w > Str.length o then Str.sub (Str.length o) (Str.length w - Str.length o) w else ""
+    (w |> Str.startsWith o) && not ((Str.isMatch @"[0-9]$" o) && (Str.isMatch @"^[0-9]" rest))
+
+let selected (label, _) =
+    match cli.only with
+    | Some o -> label |> Str.rsplit @"[ ()]+" |> Seq.exists (picks o)
+    | None -> true
+
+// ---- the verdict channel ------------------------------------------------------
+
+let record vpath line =
+    print $"  {line}"
+    File.append vpath [line]
+
+// every probe and control gets its own temp dir
+let runProbe vpath (label, probe) =
+    within tmp w
+        let (ms, res) = msOf (fun () -> probe w |> try result)
+        let took = $"[{ms}ms]"
+        match res with
+        | Ok fs when fs |> Seq.isEmpty -> record vpath $"{label} OK {took}"
+        | Ok fs -> record vpath $"""{label} REPRODUCES ({fs |> Str.join "; "}) {took}"""
+        | Error m when m |> Str.contains "SKIP: " -> record vpath $"{label} SKIP ({m})"
+        | Error m -> record vpath $"{label} REPRODUCES (the probe failed to run: {m}) {took}"
+
+let runControl vpath (label, ctl) =
+    within tmp w
+        let (ms, res) = msOf (fun () -> ctl w |> try result)
+        let took = $"[{ms}ms]"
+        match res with
+        | Ok true -> record vpath $"{label} OK {took}"
+        | Ok false -> record vpath $"*** CONTROL FAILED: {label} {took}"
+        | Error m when m |> Str.contains "SKIP: " -> record vpath $"{label} SKIP ({m})"
+        | Error m -> record vpath $"*** CONTROL FAILED: {label} (the control failed to run: {m})"
+
+// ---- the gate ----------------------------------------------------------------
+
+print "third bug hunt, round 6 fixes — repro gate (dev/plans/PLAN-hunt3r6-fixes.md)"
+print $"  binary: {cli.bin}"
+
+within tmp d
+    let vpath = $"{d}/verdicts"
+    [] |> File.write vpath
+
+    if not toolsReady then
+        record vpath "instruments SKIP (timeout/env/python3/ps/kill/setsid/bash/ln/mkfifo//proc missing) — every item stays OPEN"
+
+    if toolsReady then
+        print ""
+        print "controls"
+        controls |> Seq.where selected |> Seq.iter (runControl vpath)
+        print ""
+        print "probes"
+        probes |> Seq.where selected |> Seq.iter (runProbe vpath)
+
+    print ""
+    let verdicts = File.read vpath |> Seq.freeze
+    let open =
+        verdicts
+        |> Seq.where (fun l ->
+            (l |> Str.contains "REPRODUCES") || (l |> Str.contains "CONTROL FAILED") || (l |> Str.contains "SKIP"))
+        |> Seq.freeze
+
+    let repro = verdicts |> Seq.where (fun l -> l |> Str.contains "REPRODUCES") |> Seq.length
+    let skipped = verdicts |> Seq.where (fun l -> (l |> Str.startsWith "H3R6-") && (l |> Str.contains " SKIP")) |> Seq.length
+    let ok = verdicts |> Seq.where (fun l -> (l |> Str.startsWith "H3R6-") && (l |> Str.contains " OK")) |> Seq.length
+    print $"summary: {ok} probe(s) OK, {repro} REPRODUCE, {skipped} SKIP"
+
+    if open |> Seq.isEmpty then
+        print (if cli.only == None then "ALL ITEMS FIXED" else "ALL SELECTED ITEMS FIXED (--only)")
+    else
+        let n = open |> Seq.length
+        print $"{n} line(s) keep the gate shut (a SKIP or a failed control counts):"
+        open |> Seq.iter (fun l -> print $"  {l}")
+        exit (if n > 255 then 255 else n)

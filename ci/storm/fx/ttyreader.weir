@@ -1,4 +1,4 @@
-// a cleanup's commands read the terminal: a pager and a line reader (R1: at a tty they keep weir's group and the tty, ^C/^\ ignored)
+// a cleanup's commands read the terminal: a pager and a line reader (R1: at a tty they keep weir's group and the tty, ^C/^\ ignored), both statements: a hangup killing a capture fails it [D:cleanup-group-signal]
 // storm-feed: q\r 250
 // storm-cpu-max: 3
 let a = Self.args |> Seq.freeze
@@ -19,8 +19,8 @@ within
             ev "S outer/tmp/w"
             more $"{dir}/big.txt"
             ev "C outer/tmp/w paged"
-            let l = sh -c $"head -n1; : {tag}" |> Seq.length
-            ev $"C outer/tmp/w read {l}"
+            sh -c $"head -n1 > /dev/null; : {tag}"
+            ev "C outer/tmp/w read"
             ev "E outer/tmp/w"
         ev "B outer/tmp after"
     always

@@ -15,6 +15,7 @@ start a working area (see also: git help tutorial)
 commit
 log
 remote
+stash
 status
 === commit --weir-probe-unknown --git-completion-helper-all
 @exit 129
@@ -43,6 +44,81 @@ Commit contents options
     -n, --no-verify       bypass pre-commit and commit-msg hooks
 === log --weir-probe-unknown --git-completion-helper-all
 --quiet --source --decorate --no-quiet
+=== stash --weir-probe-unknown --git-completion-helper-all
+@exit 129
+error: unknown option `weir-probe-unknown'
+usage: git stash list [<log-options>]
+   or: git stash show [-u | --include-untracked | --only-untracked] [<diff-options>] [<stash>]
+   or: git stash pop [--index] [-q | --quiet] [<stash>]
+   or: git stash [push [-p | --patch] [-k | --[no-]keep-index] [-q | --quiet]
+                 [-u | --include-untracked] [(-m | --message) <message>]
+                 [--] [<pathspec>...]]
+=== stash --git-completion-helper-all
+apply clear drop pop branch list show store create push export import save
+=== stash -h
+@exit 129
+usage: git stash list [<log-options>]
+   or: git stash show [-u | --include-untracked | --only-untracked] [<diff-options>] [<stash>]
+   or: git stash pop [--index] [-q | --quiet] [<stash>]
+   or: git stash [push [-p | --patch] [-k | --[no-]keep-index] [-q | --quiet]
+                 [-u | --include-untracked] [(-m | --message) <message>]
+                 [--] [<pathspec>...]]
+=== stash list --weir-probe-unknown --git-completion-helper-all
+=== stash list --git-completion-helper-all
+=== stash --quiet -h
+@exit 129
+usage: git stash [push [-p | --patch] [-k | --[no-]keep-index] [-q | --quiet]
+                 [-u | --include-untracked] [(-m | --message) <message>]
+                 [--] [<pathspec>...]]
+
+    -k, --[no-]keep-index keep index
+    -p, --[no-]patch      stash in patch mode
+    -q, --[no-]quiet      quiet mode
+    -u, --[no-]include-untracked
+                          include untracked files in stash
+    -m, --[no-]message <message>
+                          stash message
+=== stash show --weir-probe-unknown --git-completion-helper-all
+@exit 1
+No stash entries found.
+=== stash show --git-completion-helper-all
+--include-untracked --only-untracked --no-include-untracked
+=== stash show -h
+@exit 129
+usage: git stash show [-u | --include-untracked | --only-untracked] [<diff-options>] [<stash>]
+
+    -u, --[no-]include-untracked
+                          include untracked files in the stash
+    --only-untracked      only show untracked files in the stash
+=== stash pop --weir-probe-unknown --git-completion-helper-all
+@exit 129
+error: unknown option `weir-probe-unknown'
+=== stash pop --git-completion-helper-all
+--quiet --index --no-quiet -- --no-index
+=== stash pop -h
+@exit 129
+usage: git stash pop [--index] [-q | --quiet] [<stash>]
+
+    -q, --[no-]quiet      be quiet, only report errors
+    --[no-]index          attempt to recreate the index
+=== stash push --weir-probe-unknown --git-completion-helper-all
+@exit 129
+error: unknown option `weir-probe-unknown'
+=== stash push --git-completion-helper-all
+--keep-index --patch --quiet --include-untracked --message= --no-keep-index -- --no-patch --no-quiet --no-include-untracked --no-message
+=== stash push -h
+@exit 129
+usage: git stash [push [-p | --patch] [-k | --[no-]keep-index] [-q | --quiet]
+                 [-u | --include-untracked] [(-m | --message) <message>]
+                 [--] [<pathspec>...]]
+
+    -k, --[no-]keep-index keep index
+    -p, --[no-]patch      stash in patch mode
+    -q, --[no-]quiet      quiet mode
+    -u, --[no-]include-untracked
+                          include untracked files in stash
+    -m, --[no-]message <message>
+                          stash message
 === status --weir-probe-unknown --git-completion-helper-all
 @exit 129
 error: unknown option `weir-probe-unknown'

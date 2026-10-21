@@ -109,6 +109,7 @@
     <Compile Include="Types.fs" />
     <Compile Include="Ast.fs" />
     <Compile Include="Argv.fs" />
+    <Compile Include="Scan.fs" />
     <!-- before Check: the checker builds from-yaml Shapes; before Eval:
          the adapters parse/render through it [D:yaml-v1] -->
     <Compile Include="Yaml.fs" />

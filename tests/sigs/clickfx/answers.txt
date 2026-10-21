@@ -1,0 +1,31 @@
+=== --version
+clickfx, version 1.0
+=== --help
+Usage: clickfx [OPTIONS] COMMAND [ARGS]...
+
+  A click tool.
+
+Options:
+  -v, --verbose      Verbose output.
+  -c, --config PATH  Config file.
+  --help             Show this message and exit.
+
+Commands:
+  build   Build the project.
+  deploy  Deploy the project.
+=== build --help
+Usage: clickfx build [OPTIONS] [TARGETS]...
+
+  Build the project.
+
+Options:
+  -o, --out PATH  Output dir.
+  --release       Release mode.
+  --help          Show this message and exit.
+=== deploy --help
+Usage: clickfx deploy [OPTIONS] ENV
+
+Options:
+  --dry-run   Do nothing.
+  -f, --force Force.
+  --help      Show this message and exit.
