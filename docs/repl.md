@@ -675,12 +675,25 @@ whole: a three-line match comes back as three lines that you can
 edit. Lines you type before the first prompt appears are kept, and
 their Enter submits them as usual.
 
+A new line starts at the indentation of the line above it, so a block
+body only needs its first line indented; <kbd>Backspace</kbd> in that
+leading space goes back one level (4 columns). There is no extra level
+after `=`, `do` or a block head: you add that yourself. Pasted text
+keeps exactly its own indentation (a newline with more input already
+behind it is not indented). An empty last line still submits when it
+holds only that indentation.
+
+For example, type `let total =` and Enter, then `    [1; 2; 3]` and
+Alt+Enter, then `|> Seq.sum` and Enter: the third line starts at
+column 4 without you typing the spaces, and `total` is 6.
+
 The key bindings (they can't be customized):
 
 | key | in the buffer |
 |---|---|
 | <kbd>Enter</kbd> | submit if complete, otherwise start a new line; on an empty last line, submit anyway (a way out of an unfinished statement: the error is shown and your input is kept) |
-| <kbd>Alt+Enter</kbd> / <kbd>Ctrl+J</kbd> | insert a newline (for formatting; the entry is still one statement). <kbd>Shift+Enter</kbd> can't be used, because terminals don't distinguish it from <kbd>Enter</kbd>. Windows Terminal uses left-<kbd>Alt+Enter</kbd> for fullscreen: use <kbd>Ctrl+J</kbd> or right-Alt there |
+| <kbd>Alt+Enter</kbd> / <kbd>Ctrl+J</kbd> | insert a newline (for formatting; the entry is still one statement). Like <kbd>Enter</kbd>'s new line, it starts at the line's indentation. <kbd>Shift+Enter</kbd> can't be used, because terminals don't distinguish it from <kbd>Enter</kbd>. Windows Terminal uses left-<kbd>Alt+Enter</kbd> for fullscreen: use <kbd>Ctrl+J</kbd> or right-Alt there |
+| <kbd>Backspace</kbd> | delete the character before the cursor; in a line's leading spaces, go back one indent level (to the previous multiple of 4) |
 | <kbd>Up</kbd> / <kbd>Down</kbd> | move between lines; <kbd>Up</kbd> on the first line recalls history |
 | <kbd>Ctrl+R</kbd> | history search (uses fzf when installed; each entry is shown on one line, joined with ⏎) |
 | <kbd>Ctrl+W</kbd> / <kbd>Ctrl+U</kbd> / <kbd>Ctrl+K</kbd> | cut the previous word / to the start of the line / to the end of the line, saving it for <kbd>Ctrl+Y</kbd> |

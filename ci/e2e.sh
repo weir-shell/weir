@@ -3870,8 +3870,10 @@ PYEOF
     echo "e2e ok: a REPL ^C that cut no wait (a | exitCode child, pure compute) ends the entry with exit 130"
 
     # D-1: a REPL ^C killing a command inside a `within` body ends the entry
-    # with exit 130, never "command failed … 130" [D:repl-interrupt]
-    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND within\x1b\r' 'SLEEP 100' 'SEND     sleep 3.41\x1b\r' 'SLEEP 100' 'SEND always\x1b\r' 'SLEEP 100' 'SEND     print (Str.toUpper "cl-ran")\r' 'SLEEP 800' 'SEND \x03' 'SLEEP 1500' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 15 "$BIN")
+    # with exit 130, never "command failed … 130" [D:repl-interrupt]. The
+    # entry goes in one write: queued input keeps its own indentation
+    # [D:repl-autoindent]
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND within\x1b\r    sleep 3.41\x1b\ralways\x1b\r    print (Str.toUpper "cl-ran")\r' 'SLEEP 800' 'SEND \x03' 'SLEEP 1500' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 15 "$BIN")
     for want in "CL-RAN" "exit 130" "STILL-HERE"; do
         echo "$tout" | grep -qF "$want" || fail "a REPL ^C in a within body: '$want' expected: $tout"
     done
@@ -4626,19 +4628,13 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     # unwind the scope), the block then checks its own dir. Linux is the
     # mechanism's platform; the cell runs wherever the pty pins do.
     # multi-line body via Alt-Enter (\x1b\r): plain Enter submits the
-    # moment the block parses complete — one body line suffices
+    # moment the block parses complete — one body line suffices. Indented
+    # entries go in one write, so they keep their own indentation
+    # [D:repl-autoindent]
     gatedir=$(mkweirtmp)
     cat > "$gatedir/gate.scn" <<'SCN'
 SLEEP 700
-SEND within tmp d\x1b\r
-SLEEP 150
-SEND     ["x"] |> File.write $"{d}/probe.txt"\x1b\r
-SLEEP 150
-SEND     print d\x1b\r
-SLEEP 150
-SEND     let n = [1..8000000] |> Seq.fold (fun a x -> a + 1) 0\x1b\r
-SLEEP 150
-SEND     print (if File.exists $"{d}/probe.txt" then Str.toUpper "kept" else Str.toUpper "gone")\r
+SEND within tmp d\x1b\r    ["x"] |> File.write $"{d}/probe.txt"\x1b\r    print d\x1b\r    let n = [1..8000000] |> Seq.fold (fun a x -> a + 1) 0\x1b\r    print (if File.exists $"{d}/probe.txt" then Str.toUpper "kept" else Str.toUpper "gone")\r
 SLEEP 1200
 SEND \x03
 SLEEP 5000
@@ -4688,13 +4684,7 @@ SEND     print (Str.toUpper "acquired")\r
 SLEEP 800
 SEND \x03
 SLEEP 500
-SEND within\x1b\r
-SLEEP 150
-SEND     Duration.sleep 30s\x1b\r
-SLEEP 150
-SEND always\x1b\r
-SLEEP 150
-SEND     print (Str.toUpper "cleanup-ran")\r
+SEND within\x1b\r    Duration.sleep 30s\x1b\ralways\x1b\r    print (Str.toUpper "cleanup-ran")\r
 SLEEP 800
 SEND \x03
 SLEEP 500
@@ -4760,17 +4750,7 @@ SCN
         hiport=8494
         cat > "$hidir/hi.scn" <<SCN
 SLEEP 700
-SEND within serve srv = { port = $hiport; maxConcurrent = 2 } (fun req -> Duration.sleep 10s; HttpServerResponse { status = 200; headers = []; body = Text "late" })\x1b\r
-SLEEP 150
-SEND     print (Str.toUpper "serving")\x1b\r
-SLEEP 150
-SEND     Duration.sleep 30s\x1b\r
-SLEEP 150
-SEND always\x1b\r
-SLEEP 150
-SEND     Duration.sleep 700ms\x1b\r
-SLEEP 150
-SEND     print (Str.toUpper \$"errs={Server.streamErrors srv |> Seq.length}")\r
+SEND within serve srv = { port = $hiport; maxConcurrent = 2 } (fun req -> Duration.sleep 10s; HttpServerResponse { status = 200; headers = []; body = Text "late" })\x1b\r    print (Str.toUpper "serving")\x1b\r    Duration.sleep 30s\x1b\ralways\x1b\r    Duration.sleep 700ms\x1b\r    print (Str.toUpper \$"errs={Server.streamErrors srv |> Seq.length}")\r
 SLEEP 2500
 SEND \x03
 SLEEP 3000

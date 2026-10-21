@@ -4,6 +4,10 @@
 
 ### Added
 
+- **The REPL editor keeps your indentation.** A new line (Enter on an
+  unfinished statement, Alt+Enter, Ctrl+J) starts at the indentation of
+  the line above it, and Backspace in leading spaces goes back one level
+  (4 columns). Pasted text keeps its own indentation.
 - **`#types [on|off]` shows or hides types in the REPL echo.** Bare
   `#types` reports the setting; `"types": "on"` in the REPL config turns
   them on at startup, and the directive overrides it for the session.

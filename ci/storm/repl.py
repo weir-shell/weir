@@ -74,9 +74,10 @@ def start(binp, d, buf, stderr=None):
     return storm.TtyProc([binp], env, buf, d, stderr=stderr)
 
 def type_entry(p, lines):
-    for j, l in enumerate(lines):
-        p.key(l.encode() + (b'\r' if j == len(lines) - 1 else b'\x1b\r'))
-        time.sleep(0.01)
+    # one write, Alt+Enter between lines: queued input keeps its own
+    # indentation, a typed newline would carry the previous line's
+    # [D:repl-autoindent]
+    p.key(b'\x1b\r'.join(l.encode() for l in lines) + b'\r')
 
 def calibrate(a, name):
     d = os.path.join(a.out, 'calib-' + name)

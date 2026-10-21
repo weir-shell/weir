@@ -33,9 +33,20 @@ def run(keys, cols=80, seed=None, path=None, until=None, deadline=20.0):
     # signal invalidates the cache so the pty size always wins
     os.kill(pid, signal.SIGWINCH)
     time.sleep(0.8)
-    for s, dl in keys:
-        os.write(fd, s.encode()); time.sleep(dl)
     out = b""
+    # drain while settling: an unread pty fills and blocks the editor's
+    # repaint, so later keys queue up behind it and read as a paste (no
+    # auto-indent [D:repl-autoindent]) instead of typing
+    for s, dl in keys:
+        os.write(fd, s.encode())
+        end = time.time() + dl
+        while time.time() < end:
+            r, _, _ = select.select([fd], [], [], max(0, end - time.time()))
+            if r:
+                try:
+                    out += os.read(fd, 4096)
+                except OSError:
+                    break
 
     if until is None:
         for _ in range(50):
@@ -242,8 +253,9 @@ if "\n2\r\n" not in t:
 
 # --- 9b. the other half: an indented buffer dedents whole (relative
 # structure preserved), and an indented line inside the open buffer
-# still continues it
-t, _ = run([("  match 1 with\r", 0.4), ("  | _ -> 8\r", 0.6), ("#quit\r", 0.3)])
+# still continues it (one write, a paste: a typed Enter would carry the
+# indent [D:repl-autoindent])
+t, _ = run([("  match 1 with\r  | _ -> 8\r", 0.6), ("#quit\r", 0.3)])
 if "\n8\r\n" not in t:
     failures.append(f"an indented entry must dedent whole and still assemble: {t[-300:]!r}")
 
@@ -266,6 +278,57 @@ if "match" not in t or "parse error" not in t:
 t, _ = run([("match 1 with", 0.3), ("\n", 0.2), ("\n", 0.2), ("| _ -> 6\r", 0.6), ("#quit\r", 0.3)])
 if "\n6\r\n" not in t:
     failures.append(f"a Ctrl+J blank inside composition must not submit: {t[-300:]!r}")
+
+# --- 9e. auto-indent [D:repl-autoindent]: a typed newline (Enter on an
+# incomplete statement, Alt+Enter, Ctrl+J) starts at the previous line's
+# indent; Backspace in an all-space prefix dedents one level (to the
+# previous multiple of 4). Each key goes in its own write (typed, nothing
+# queued). No explicit indent after the first of each level: the order
+# IN-A IN-B CL-C OUT-D FIN-E only comes out of this exact nesting
+def hist(d):
+    p = d + "/state/weir/history"
+    return open(p).read().splitlines() if os.path.exists(p) else []
+nested = [("within", 0.2), ("\r", 0.3),                       # Enter-incomplete
+          ("    within", 0.2), ("\r", 0.3),                   # carries 4
+          ("    print (Str.toUpper \"in-a\")", 0.2), ("\x1b\r", 0.3),  # Alt+Enter, carries 8
+          ("print (Str.toUpper \"in-b\")", 0.2), ("\n", 0.3),   # Ctrl+J, carries 8
+          ("\x7f", 0.2), ("always", 0.2), ("\n", 0.3),         # 8 -> 4
+          ("    print (Str.toUpper \"cl-c\")", 0.2), ("\n", 0.3),
+          ("\x7f", 0.2), ("print (Str.toUpper \"out-d\")", 0.2), ("\n", 0.3),
+          ("\x7f", 0.2), ("always", 0.2), ("\n", 0.3),         # 4 -> 0
+          ("    print (Str.toUpper \"fin-e\")", 0.2),
+          ("\r", 0.8), ("#quit\r", 0.3)]
+want = ('within\\n    within\\n        print (Str.toUpper "in-a")\\n        print (Str.toUpper "in-b")'
+        '\\n    always\\n        print (Str.toUpper "cl-c")\\n    print (Str.toUpper "out-d")'
+        '\\nalways\\n    print (Str.toUpper "fin-e")')
+t, d = run(nested)
+if want not in hist(d):
+    t, d = run(nested)
+order = [t.find(m) for m in ("\nIN-A", "\nIN-B", "\nCL-C", "\nOUT-D", "\nFIN-E")]
+if want not in hist(d):
+    failures.append(f"typed newlines must carry the indent, Backspace dedent one level: {hist(d)!r}")
+if -1 in order or order != sorted(order):
+    failures.append(f"the auto-indented nested within must run in order IN-A IN-B CL-C OUT-D FIN-E: {t[-400:]!r}")
+
+# a non-multiple prefix dedents to the previous multiple of 4; a prefix
+# with a non-space keeps the one-char Backspace
+t, d = run([("let a =", 0.2), ("\r", 0.3), ("      ", 0.2), ("\x7f", 0.2), ("1", 0.2), ("\r", 0.6),
+            ("let b =", 0.2), ("\r", 0.3), ("  x", 0.2), ("\x7f", 0.2), ("2", 0.2), ("\r", 0.6), ("#quit\r", 0.3)])
+if "let a =\\n    1" not in hist(d) or "let b =\\n  2" not in hist(d):
+    failures.append(f"Backspace must dedent an all-space prefix to the previous multiple of 4, only there: {hist(d)!r}")
+
+# a paste (one write) keeps its own indentation: the newline has input
+# queued behind it, so it carries nothing
+t, d = run([("within tmp d\x1b\r    print (Str.toUpper \"p-a\")\x1b\r    print (Str.toUpper \"p-b\")\r\r", 0.8), ("#quit\r", 0.3)])
+pasted = 'within tmp d\\n    print (Str.toUpper "p-a")\\n    print (Str.toUpper "p-b")'
+if pasted not in hist(d) or "\nP-B" not in t:
+    failures.append(f"a pasted indented block must keep exactly its own indentation: {hist(d)!r} {t[-300:]!r}")
+
+# the blank-line escape still fires on a final line holding only the
+# carried indent
+t, _ = run([("  match 1 with", 0.2), ("\r", 0.3), ("\r", 0.5), ("5 + 6\r", 0.5), ("#quit\r", 0.3)])
+if "\n11\r\n" not in t or "parse error" not in t:
+    failures.append(f"Enter on an indent-only final line must close the pending buffer: {t[-300:]!r}")
 
 # --- dup-type in the REPL: redeclaration replaces with the note; earlier
 # values keep the old shape [D:dup-type-decl]
