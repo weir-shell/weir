@@ -113,3 +113,18 @@ Harness first (`tools/hunt3r6f-repro.weir`, every probe REPRODUCES on
 1b13a23). Wave 1: A, S, C. Wave 2: P, B. Merge B → P → C → S → A. Lows to
 BACKLOG at the end with the ledger; then the release (decided before the
 round: release after round 6).
+
+## Status (2026-10-21)
+
+All four highs and every medium fixed on plan/hunt3r6f; W1 made
+defensive ([D:wait-after-cut], the Windows cause unconfirmed) and its
+Linux twin fixed; C1-7 pinned statistically in e2e. User rulings beside
+the plan: R5 (B8) parsed YAML keys keep their plain spelling
+([D:yaml-key-spelling]); R6 the settle wait is a 5 ms grace with no
+signal in flight, one ≤250 ms wait before dying of an uncaught 129-143
+failure ([D:settle-pending]). Final gates at cb777df:
+tools/hunt3r6f-repro.weir 46/46 (twice) with its controls, every older
+harness green, every storm step 0 bad / 0 known (300 per storm.py mode,
+240 per REPL mode), the race-tree fuzzer 0 bad in 500 trees, sig-score
+32 fixtures 0 failing. linux-hunts runs 12.5 min of its 20. Round-6
+lows in dev/BACKLOG.md. Round 6 FIXED; the release follows.
