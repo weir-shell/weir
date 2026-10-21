@@ -1588,13 +1588,29 @@ let private readLineTty () : string option =
         redraw ()
 
     // split the current line at the cursor — Enter-on-incomplete and the
-    // Alt+Enter / Ctrl+J force share it
+    // Alt+Enter / Ctrl+J force share it. A typed newline carries the split
+    // line's leading whitespace; one with input already queued behind it
+    // (a paste) stays plain so the block keeps its own indent
+    // [D:repl-autoindent]
     let insertNewline () =
-        let tail = cur().ToString().Substring col
+        let line = cur().ToString()
+        let tail = line.Substring col
         cur().Remove(col, cur().Length - col) |> ignore
-        lines.Insert(row + 1, Text.StringBuilder(tail: string))
+
+        let queued =
+            typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable)
+
+        let indent, tail =
+            if queued then
+                "", tail
+            else
+                let before = line.Substring(0, col)
+                before.Substring(0, before.Length - before.TrimStart([| ' '; '\t' |]).Length),
+                tail.TrimStart([| ' '; '\t' |])
+
+        lines.Insert(row + 1, Text.StringBuilder(indent + tail))
         row <- row + 1
-        col <- 0
+        col <- indent.Length
         redraw ()
 
     // park the cursor at the region end (echoes print below the buffer)
@@ -1701,7 +1717,14 @@ let private readLineTty () : string option =
              | Some entry -> setBuffer entry
              | None -> redraw ())
         | ConsoleKey.Backspace ->
-            if col > 0 then
+            if col > 0 && cur().ToString(0, col) |> Seq.forall ((=) ' ') then
+                // an all-space prefix dedents one level, to the previous
+                // multiple of 4 [D:repl-autoindent]
+                let n = col - (col - 1) / 4 * 4
+                cur().Remove(col - n, n) |> ignore
+                col <- col - n
+                redraw ()
+            elif col > 0 then
                 let n = stepBack ()
                 cur().Remove(col - n, n) |> ignore
                 col <- col - n

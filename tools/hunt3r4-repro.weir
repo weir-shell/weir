@@ -335,8 +335,10 @@ let ptyRun d secs args steps =
 
 let typedLine s = $"HEX {hx s}0d"
 
-// Alt-Enter: a REPL line that continues the entry
-let contLine s = $"HEX {hx s}1b0d"
+// a whole entry in one write, Alt-Enter between its lines: queued input
+// keeps its own indentation, a typed newline would carry the previous
+// line's [D:repl-autoindent]
+let pastedEntry ls = $"""HEX {ls |> Seq.map hx |> Str.join "1b0d"}0d"""
 
 let ctrlC = "HEX 03"
 
@@ -828,17 +830,14 @@ let p11Steps port = [
     "SLEEP 2500"
     typedLine "let h = fun req -> Duration.sleep 20s ; HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }"
     "SLEEP 800"
-    contLine $"within serve srv = {{ port = {port}; maxConcurrent = 2 }} h"
-    "SLEEP 150"
-    contLine "    within"
-    "SLEEP 150"
-    contLine "        Duration.sleep 20s"
-    "SLEEP 150"
-    contLine "    always"
-    "SLEEP 150"
-    contLine "        Duration.sleep 700ms"
-    "SLEEP 150"
-    typedLine "        Server.streamErrors srv |> Seq.iter (fun e -> print (\"SE=\" + e))"
+    pastedEntry [
+        $"within serve srv = {{ port = {port}; maxConcurrent = 2 }} h"
+        "    within"
+        "        Duration.sleep 20s"
+        "    always"
+        "        Duration.sleep 700ms"
+        "        Server.streamErrors srv |> Seq.iter (fun e -> print (\"SE=\" + e))"
+    ]
     "SLEEP 1200"
     $"GET {port}"
     "SLEEP 1000"
