@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.0.75
+## Unreleased
 
 ### Added
 
@@ -12,6 +12,11 @@
   (`let x =`, `->`, `then`, `else`, `do`, `with`, `within …`, `always`),
   and Backspace in leading spaces goes back one level (4 columns).
   Pasted text keeps its own indentation.
+
+## v0.0.75
+
+### Added
+
 - **`#types [on|off]` shows or hides types in the REPL echo.** Bare
   `#types` reports the setting; `"types": "on"` in the REPL config turns
   them on at startup, and the directive overrides it for the session.
