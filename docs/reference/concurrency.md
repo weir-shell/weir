@@ -270,7 +270,7 @@ opens waits for its reader and for room the same way
 opens it ([D:dircopy-special]). On macOS a
 FIFO's open and read run off the flow (`cutBlocking`), and an abandoned
 read may take one later write; a FIFO write there is not cut. A child's pipe is polled before each fill on
-POSIX; on Windows the pipe is peeked (PeekNamedPipe) before each fill, the cut checked between peeks, so no thread waits in ReadFile ([D:pipe-threads]). The tree walk is
+POSIX; on Windows the fill waits beside the token. The tree walk is
 Linux-only (I9). On Windows, Ctrl+C (`Console.CancelKeyPress`) is the
 same teardown — the main flow unwinds, a second Ctrl+C hard-exits —
 with no terminal-group rule, no EPIPE teardown and no death by signal:
