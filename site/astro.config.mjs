@@ -8,6 +8,7 @@ import { defineConfig } from "astro/config";
 import { unified } from "@astrojs/markdown-remark";
 import { readFileSync } from "node:fs";
 import { rewriteDocLinks } from "./src/remark/rewrite-doc-links.mjs";
+import { collapseChangelog } from "./src/rehype/collapse-changelog.mjs";
 import queilThemes from "./src/lib/queil-weir.mjs";
 
 // the ONE grammar, read from the repo — never a copy
@@ -67,6 +68,6 @@ export default defineConfig({
     // Astro 7 [D:site-skeleton]: remark plugins ride the unified()
     // processor (the markdown-level remarkPlugins key is deprecated);
     // shikiConfig stays at this level — the processor's renderer reads it
-    processor: unified({ remarkPlugins: [rewriteDocLinks] }),
+    processor: unified({ remarkPlugins: [rewriteDocLinks], rehypePlugins: [collapseChangelog] }),
   },
 });

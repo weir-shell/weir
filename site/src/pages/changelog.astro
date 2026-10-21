@@ -12,3 +12,13 @@ const toc = headings.filter((h) => h.depth === 2);
 <Base title="Changelog" toc={toc}>
   <Content />
 </Base>
+
+<style is:global>
+  details.changelog-release > summary {
+    cursor: pointer;
+    list-style-position: outside;
+  }
+  details.changelog-release > summary > h2 {
+    display: inline;
+  }
+</style>
