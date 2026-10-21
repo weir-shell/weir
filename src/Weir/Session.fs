@@ -1941,7 +1941,29 @@ let cutBlocking (f: unit -> 'a) : 'a =
 // The cut is checked once per fill, never per line. A soft teardown (the
 // terminal's ^C, which reached the child too) leaves the read be while the
 // child lives; once the child is gone (an orphan holds the pipe) it cuts
-// too [D:sigint-terminal-group]. Windows waits beside the token per fill
+// too [D:sigint-terminal-group]. Windows asks PeekNamedPipe the same
+// question: its pipes are synchronous, and a ReadAsync there parks a pool
+// thread in ReadFile, so a wide race's blocked losers starved the
+// winner's reads [D:pipe-threads]
+module private Kernel32 =
+    open System.Runtime.InteropServices
+
+    [<DllImport("kernel32.dll", SetLastError = true)>]
+    extern bool PeekNamedPipe(nativeint pipe, nativeint buffer, uint32 size, nativeint read, uint32& avail, nativeint left)
+
+    /// data waits in the pipe, or its writer is gone (the read returns at
+    /// once either way); None when the handle is no pipe
+    let pipeReady (h: nativeint) : bool option =
+        let mutable avail = 0u
+
+        if PeekNamedPipe(h, 0n, 0u, 0n, &avail, 0n) then
+            Some(avail > 0u)
+        else
+            // ERROR_BROKEN_PIPE: the writer closed it — EOF
+            match Marshal.GetLastPInvokeError() with
+            | 109 -> Some true
+            | _ -> None
+
 type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Process) =
     inherit System.IO.Stream()
 
@@ -1950,6 +1972,18 @@ type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Proces
         | :? System.IO.Pipes.PipeStream as ps when not (System.OperatingSystem.IsWindows()) ->
             int (ps.SafePipeHandle.DangerousGetHandle())
         | _ -> -1
+
+    // Windows: the pipe's handle, peeked before each fill
+    let winPipe =
+        if not (System.OperatingSystem.IsWindows()) then
+            0n
+        else
+            match inner with
+            | :? System.IO.FileStream as fs -> fs.SafeFileHandle.DangerousGetHandle()
+            | :? System.IO.Pipes.PipeStream as ps -> ps.SafePipeHandle.DangerousGetHandle()
+            | _ -> 0n
+
+    let mutable peekable = winPipe <> 0n
 
     // a cut this read honours: any but the soft teardown's, and that one
     // too once the child has exited
@@ -1998,9 +2032,23 @@ type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Proces
                     cutNow ()
 
             inner.Read(buffer, offset, count)
+        elif peekable && (cutNow (); Kernel32.pipeReady winPipe).IsSome then
+            // Windows: read only once the pipe has data or its writer is
+            // gone, checking the cut between peeks — no thread waits in
+            // ReadFile [D:pipe-threads]
+            let mutable nap = 1
+
+            while Kernel32.pipeReady winPipe = Some false do
+                System.Threading.Thread.Sleep nap
+                cutNow ()
+                nap <- min 20 (nap * 2)
+
+            inner.Read(buffer, offset, count)
         else
-            // Windows: a pipe read is synchronous underneath and ignores
-            // its token, so the fill waits beside the token instead
+            peekable <- false
+
+            // a stream that is no pipe: its read is synchronous underneath
+            // and ignores its token, so the fill waits beside the token
             cutRead
                 (fun () -> inner.Read(buffer, offset, count))
                 (fun t -> inner.ReadAsync(System.Memory<byte>(buffer, offset, count), t))
