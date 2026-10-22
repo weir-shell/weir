@@ -347,9 +347,9 @@ let main argv =
                 2
 
             match flags |> List.tryFind (fun f -> not (known.Contains f)), paths with
-            | Some f, _ -> usage $"unknown flag {f}{didYouMean f known}"
+            | Some f, _ -> usage $"unknown flag {quoteData f}{didYouMean f known}"
             | None, [] -> usage "which script? — give its path"
-            | None, _ :: _ :: _ -> usage $"""one script at a time — got {paths |> String.concat " "}"""
+            | None, _ :: _ :: _ -> usage $"""one script at a time — got {paths |> String.concat " " |> quoteData}"""
             | None, [ path ] ->
                 let has f = List.contains f flags
 
@@ -370,9 +370,9 @@ let main argv =
                 2
 
             match flags |> List.tryFind (fun f -> f <> "--check"), paths with
-            | Some f, _ -> usage $"""unknown flag {f}{didYouMean f [ "--check" ]}"""
+            | Some f, _ -> usage $"""unknown flag {quoteData f}{didYouMean f [ "--check" ]}"""
             | None, [] -> usage "which script? — give its path"
-            | None, _ :: _ :: _ -> usage $"""one script at a time — got {paths |> String.concat " "}"""
+            | None, _ :: _ :: _ -> usage $"""one script at a time — got {paths |> String.concat " " |> quoteData}"""
             | None, [ path ] -> Fmt.formatFile (List.contains "--check" flags) path
         // external contracts [D:contracts-spine]: `add <kind>` is
         // kind-aware (acquiring differs per kind); `restore`/`verify`
@@ -570,7 +570,7 @@ let main argv =
 
             (match walk Map.empty rest with
              | Error f ->
-                 Console.Error.WriteLine $"weir gen types: unexpected '{f}'\n{usage}"
+                 Console.Error.WriteLine $"weir gen types: unexpected '{quoteData f}'\n{usage}"
                  2
              | Ok m when not (Map.containsKey "--schema" m) ->
                  Console.Error.WriteLine usage
@@ -583,13 +583,13 @@ let main argv =
                      1
 
                  match Contracts.findWeirDir "." with
-                 | Error e -> fail1 $"{e} — vendor the schema first: weir add schema <url> --as {name}"
+                 | Error e -> fail1 $"{e} — vendor the schema first: weir add schema <url> --as {quoteData name}"
                  | Ok weirDir ->
                      match Contracts.readLock weirDir with
                      | Error e -> fail1 e
                      | Ok entries ->
                          match entries |> List.tryFind (fun e -> e.Kind = "schema" && e.Name = name) with
-                         | None -> fail1 $"no locked schema '{name}' — add it: weir add schema <url> --as {name}"
+                         | None -> fail1 $"no locked schema '{quoteData name}' — add it: weir add schema <url> --as {quoteData name}"
                          | Some entry ->
                              // gen types writes weir source, so it is the
                              // highest-value consumer of the lock-read
@@ -601,7 +601,7 @@ let main argv =
                              | Ok file ->
 
                              if not (IO.File.Exists file) then
-                                 fail1 $"schema '{name}': no {file} — the lock records it; run `weir restore`"
+                                 fail1 $"schema '{quoteData name}': no {quoteData file} — the lock records it; run `weir restore`"
                              else
                                  let bytes = IO.File.ReadAllBytes file
                                  let actual = Contracts.sha256Hex bytes
@@ -611,7 +611,7 @@ let main argv =
                                      // a drifted file would stamp a hash the bytes
                                      // do not carry
                                      fail1
-                                         $"schema '{name}': the vendored file hashes {actual.Substring(0, 12)}… but the lock records {entry.Sha256.Substring(0, 12)}… — `weir restore` repairs it, or re-add"
+                                         $"schema '{quoteData name}': the vendored file hashes {actual.Substring(0, 12)}… but the lock records {entry.Sha256.Substring(0, 12)}… — `weir restore` repairs it, or re-add"
                                  else
                                      match Contracts.parseSchema name (Text.Encoding.UTF8.GetString bytes) with
                                      | Error e -> fail1 e
@@ -631,12 +631,12 @@ let main argv =
                                                  && n |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_')
                                                  ->
                                                  if Set.contains n taken then
-                                                     Error $"'--as {n}' is a builtin type name — pick another"
+                                                     Error $"'--as {quoteData n}' is a builtin type name — pick another"
                                                  else
                                                      Ok()
                                              | Some n ->
                                                  Error
-                                                     $"'--as {n}' must be a type name: an uppercase letter first, then letters, digits or _"
+                                                     $"'--as {quoteData n}' must be a type name: an uppercase letter first, then letters, digits or _"
 
                                          match asNameOk with
                                          | Error e -> fail1 e
@@ -721,10 +721,10 @@ let main argv =
                                                                  $", {gen.NoteCount} note(s) inside"
 
                                                          Console.WriteLine
-                                                             $"generated {dest} — {gen.TypeCount} type(s){notes}; user-owned (re-run to regenerate)"
+                                                             $"generated {quoteData dest} — {gen.TypeCount} type(s){notes}; user-owned (re-run to regenerate)"
 
                                                          Console.WriteLine
-                                                             $"import it:  import {importPath} as {gen.ModuleName}"
+                                                             $"import it:  import {quoteData importPath} as {gen.ModuleName}"
 
                                                          Console.WriteLine
                                                              $"read with:  from json {gen.TopType} / from yaml {gen.TopType}  (type names resolve bare)"
@@ -754,7 +754,7 @@ let main argv =
             let spellings =
                 [ "-e"; "--help"; "--version"; "check"; "fmt"; "lsp"; "add"; "gen"; "restore"; "verify" ]
 
-            Console.Error.WriteLine $"weir: unknown option '{opt}'{didYouMean opt spellings} (weir --help for usage)"
+            Console.Error.WriteLine $"weir: unknown option '{quoteData opt}'{didYouMean opt spellings} (weir --help for usage)"
             2
         | args ->
             let usage =

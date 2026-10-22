@@ -833,7 +833,7 @@ let didYouMean (name: string) (candidates: seq<string>) : string =
     |> Seq.filter (fun (_, d) -> d <= 2)
     |> Seq.sortBy snd
     |> Seq.tryHead
-    |> Option.map (fun (c, _) -> $". Did you mean '{c}'?")
+    |> Option.map (fun (c, _) -> $". Did you mean '{quoteData c}'?")
     |> Option.defaultValue ""
 
 module Color =

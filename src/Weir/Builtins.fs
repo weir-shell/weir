@@ -2761,22 +2761,6 @@ module private AppendNative =
             use sfh = openAppend path
             writeAll (int (sfh.DangerousGetHandle())) payload
 
-    [<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
-    extern int private fsync(int fd)
-
-    let fsyncDir (dir: string) : unit =
-        let flags =
-            if System.OperatingSystem.IsMacOS() then
-                O_CLOEXEC_MACOS
-            else
-                O_CLOEXEC_LINUX
-
-        let fd = ``open`` (dir, flags, 0)
-
-        if fd >= 0 then
-            use sfh = new Microsoft.Win32.SafeHandles.SafeFileHandle(nativeint fd, true)
-            fsync (int (sfh.DangerousGetHandle())) |> ignore
-
 let private writePayload (keepBom: bool) (lines: Value seq) : byte[] =
     let sb = System.Text.StringBuilder()
 
@@ -2866,15 +2850,7 @@ let private refuseFifoAtomic (op: string) (r: string) : unit =
         failwith $"{op}: {quoteData r} is a FIFO — an atomic replace has no meaning there; use File.write"
 
 let private atomicReplace (r: string) (lines: Value seq) : unit =
-    let target =
-        let fi = FileInfo r
-
-        if fi.Exists then
-            match fi.ResolveLinkTarget true with
-            | null -> r
-            | t -> t.FullName
-        else
-            r
+    let target = Contracts.AtomicFile.resolveTarget r
 
     let keepBom =
         File.Exists target
@@ -2889,69 +2865,7 @@ let private atomicReplace (r: string) (lines: Value seq) : unit =
         else
             None
 
-    let dir =
-        match System.IO.Path.GetDirectoryName target with
-        | "" -> "."
-        | d -> d
-
-    // a SIGKILL mid-temp strands one dot-temp; the next writer to the
-    // same target sweeps stale twins — age-keyed, never pid-keyed
-    // (containers renumber pids across namespaces)
-    for stale in System.IO.Directory.EnumerateFiles(dir, $".{System.IO.Path.GetFileName target}.weir-tmp-*") do
-        try
-            if System.DateTime.UtcNow - File.GetLastWriteTimeUtc stale > System.TimeSpan.FromMinutes 10.0 then
-                File.Delete stale
-        with _ ->
-            ()
-
-    let tmp =
-        System.IO.Path.Combine(
-            dir,
-            $".{System.IO.Path.GetFileName target}.weir-tmp-{System.Environment.ProcessId}-{System.IO.Path.GetRandomFileName()}"
-        )
-
-    try
-        // the temp is born with the target's mode [D:private-temp]: a 0600
-        // target's new content is never readable wider before the rename
-        let opts =
-            FileStreamOptions(Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None)
-
-        match mode with
-        | Some m -> opts.UnixCreateMode <- System.Nullable m
-        | None -> ()
-
-        (use fs = new FileStream(tmp, opts)
-         fs.Write(payload, 0, payload.Length)
-         fs.Flush true)
-
-        match mode with
-        | Some m -> File.SetUnixFileMode(tmp, m)
-        | None -> ()
-
-        if System.OperatingSystem.IsWindows() then
-            // a reader holding the target without FILE_SHARE_DELETE makes
-            // the rename throw — bounded backoff, never on not-found
-            let rec move attempt =
-                try
-                    File.Move(tmp, target, true)
-                with :? IOException as e when
-                    not (e :? DirectoryNotFoundException)
-                    && not (e :? FileNotFoundException)
-                    && attempt < 6 ->
-                    System.Threading.Thread.Sleep(5 <<< attempt)
-                    move (attempt + 1)
-
-            move 0
-        else
-            File.Move(tmp, target, true)
-            AppendNative.fsyncDir dir
-    with e ->
-        (try
-            File.Delete tmp
-         with _ ->
-             ())
-
-        raise e
+    Contracts.AtomicFile.replaceBytes target payload mode
 
 // liberal-in: unpadded standard-alphabet base64 pads before decoding;
 // encoding emits padded (the one stated default). URL-safe (-_) is

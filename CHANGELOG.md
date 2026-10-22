@@ -13,6 +13,35 @@
   and Backspace in leading spaces goes back one level (4 columns).
   Pasted text keeps its own indentation.
 
+### Fixed
+
+- **A URL password with a raw `/`, `?`, `#` or `@` no longer prints.**
+  `show`, plans, "cannot reach" errors, `weir add` errors and the
+  bad-proxy message masked only up to the first of those characters, so
+  `http://deploy:Tr0ub/4dor@host` printed whole. They now mask through
+  the last `@` before the host (`http://***@host/…`), for `//user:pw@host`
+  and a scheme-less `user:pw@host` proxy value too.
+- **A malformed proxy variable is an error even when another one is
+  set.** `http_proxy=http://h:99999` beside a working `ALL_PROXY` sent
+  the request through `ALL_PROXY`; it now raises, naming `http_proxy`.
+- **`weir add` can no longer tear or lose `.weir/lock.json`.** A signal
+  during the write could leave a truncated lock, and parallel `weir add
+  sig` runs dropped each other's entries. The lock and a generated
+  signature are now replaced whole (temp file, then rename), and adds
+  take turns.
+- **Messages show control characters in the data they quote, piped
+  too:** `weir gen types`/`fmt`/`check` usage errors, the `#sig`
+  unknown-flag warning, `cannot resolve import: no file at …`,
+  `command not found: …`, and a remote schema's unresolvable `$ref` in
+  `weir add schema`.
+- **`weir gen types` leaves out a `""` property with a note**, as
+  `#infer` does, instead of failing as a "generator bug". A property
+  name with a bidi control character is left out the same way.
+- **`weir verify` says `weir add sig '<tool>'` for a missing
+  signature** instead of `weir restore`, which cannot bring a signature
+  back. A generated signature no longer lists a subcommand twice in
+  `stopAtOperand`.
+
 ## v0.0.75
 
 ### Added

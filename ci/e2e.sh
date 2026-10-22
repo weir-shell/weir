@@ -10281,6 +10281,124 @@ else
     echo "e2e skip: url-userinfo-basic / proxy-env-malformed / message-data-escape (python3 absent)"
 fi
 
+# ---- h3r7 stage B: userinfo masked through the last @, proxy fallthrough,
+# message sinks, lock writes ---------------------------------------------------
+# a password with a raw / ? # @ never shows [D:url-redact]; a malformed proxy
+# variable refuses even when a later one is set [D:proxy-env-malformed]; the
+# CLI/check/add messages escape their data [D:error-data-escape]; gen types
+# drops a "" key with a note [D:infer-wire-escape]; lock.json is replaced
+# whole under the .weir/ writer lock [D:weir-dir-lock]
+if command -v python3 >/dev/null 2>&1; then
+    h7dir=$(mkweirtmp)
+    noprox="env -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY -u all_proxy -u ALL_PROXY -u no_proxy -u NO_PROXY"
+    for u in "http://deploy:Tr0ub/4dor@127.0.0.1:1/x" "http://deploy:pa#ss@127.0.0.1:1/x" "http://deploy:p@ssw0rd@127.0.0.1:1/x" "http://deploy:q?wd@127.0.0.1:1/x"; do
+        out=$($noprox "$BIN" -e "show (Http.get \"$u\")" 2>&1) || fail "url-redact-last-at: show must succeed: $out"
+        echo "$out" | grep -qF 'http://***@127.0.0.1:1/x' || fail "url-redact-last-at: show must mask through the last @: $out"
+        out=$($noprox "$BIN" -e "Http.send (Http.get \"$u\")" 2>&1) && fail "url-redact-last-at: $u must not reach"
+        echo "$out" | grep -qE 'Tr0ub|4dor|pa#ss|ssw0rd|q\?wd|deploy' && fail "url-redact-last-at: the send error printed the credential: $out"
+        echo "$out" | grep -qF '***@127.0.0.1' || fail "url-redact-last-at: the send error must mask: $out"
+    done
+    mkdir -p "$h7dir/ua" && ( cd "$h7dir/ua" && git init -q . )
+    out=$( cd "$h7dir/ua" && $noprox "$BIN" add schema 'http://deploy:Tr0ub/4dor@127.0.0.1:1/s.json' --as s 2>&1 ) && fail "url-redact-last-at: add must fail"
+    echo "$out" | grep -qE 'Tr0ub|4dor' && fail "url-redact-last-at: weir add printed the credential: $out"
+    for v in 'http://u:SEC/RETPW@h:99999' '//u:SEC@RETPW@h:99999' 'u:SEC#RETPW@h:99999'; do
+        out=$($noprox HTTP_PROXY="$v" "$BIN" -e 'Http.send (Http.get "http://127.0.0.1:1/x")' 2>&1) && fail "url-redact-last-at: $v must refuse"
+        echo "$out" | grep -qF 'not a usable proxy URL' || fail "url-redact-last-at: $v must refuse as malformed: $out"
+        echo "$out" | grep -qE 'SEC|RETPW' && fail "url-redact-last-at: the proxy message printed the credential: $out"
+    done
+    echo "e2e ok: a URL's userinfo is masked through its last @, raw / ? # @ in the password included [D:url-redact]"
+
+    h7port=$((24500 + RANDOM % 200))
+    cat > "$h7dir/srv.py" <<H7EOF
+import http.server, json
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        open('$h7dir/srv.log', 'a').write(self.path + '\n')
+        if self.path.endswith('/ref.json'):
+            b = json.dumps({"type": "object", "properties": {"e": {"\$ref": "#/x\u001b]52;c;QQ==\u0007\r"}}}).encode()
+        elif self.path.endswith('/k.json'):
+            b = json.dumps({"type": "object", "properties": {"": {"type": "string"}, "ok": {"type": "string"}}}).encode()
+        else:
+            b = b'proxied'
+        self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(b)
+    def log_message(self, *x): pass
+http.server.HTTPServer(('127.0.0.1', $h7port), H).serve_forever()
+H7EOF
+    python3 "$h7dir/srv.py" & h7srv=$!
+    awaitTcp "$h7port" || { kill $h7srv 2>/dev/null || true; fail "h3r7-B: the server never came up"; }
+    # the runtime would skip the malformed variable and use the next one
+    for pair in "http_proxy ALL_PROXY" "all_proxy ALL_PROXY"; do
+        read -r pbad pgood <<< "$pair"
+        [ "$IS_WINDOWS" = "1" ] && [ "$pbad" = all_proxy ] && continue # one name on Windows
+        : > "$h7dir/srv.log"
+        out=$($noprox "$pbad=http://h:99999" "$pgood=http://127.0.0.1:$h7port" "$BIN" -e 'print (Http.send (Http.get "http://127.0.0.1:1/x")).body' 2>&1) && fail "proxy-fallthrough: a malformed $pbad must refuse beside $pgood: $out"
+        echo "$out" | grep -qiF "$pbad is set but is not a usable proxy URL" || fail "proxy-fallthrough: the refusal must name $pbad: $out"
+        [ -s "$h7dir/srv.log" ] && fail "proxy-fallthrough: the request went through $pgood: $(cat "$h7dir/srv.log")" || true
+    done
+    out=$($noprox "http_proxy=http://127.0.0.1:$h7port" "ALL_PROXY=http://h:99999" "$BIN" -e 'print (Http.send (Http.get "http://127.0.0.1:1/x")).body' 2>&1) || fail "proxy-fallthrough: a usable first variable must win: $out"
+    [ "$out" = "proxied" ] || fail "proxy-fallthrough: a usable first variable must win: $out"
+    echo "e2e ok: a malformed proxy variable refuses even when a later one is set [D:proxy-env-malformed]"
+
+    # message sinks: the data they quote renders visibly, piped
+    E=$(printf 'Q\033]52;c;QQ==\007\rZ')
+    mkdir -p "$h7dir/ms" && ( cd "$h7dir/ms" && git init -q . )
+    noraw() { printf '%s' "$2" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d or b'\x07' in d) else 0)" || fail "message-sinks: $1 put a raw ESC/BEL/CR in its message: $2"; }
+    out=$( cd "$h7dir/ms" && $BIN gen types "$E" 2>&1 ) && fail "message-sinks: gen types must refuse"; noraw "gen types arg" "$out"
+    out=$( cd "$h7dir/ms" && $BIN gen types --schema "$E" 2>&1 ) && fail "message-sinks: gen types must refuse"; noraw "gen types --schema" "$out"
+    out=$( cd "$h7dir/ms" && $BIN fmt "--$E" 2>&1 ) && fail "message-sinks: fmt must refuse"; noraw "fmt flag" "$out"
+    out=$( cd "$h7dir/ms" && $BIN check "--$E" 2>&1 ) && fail "message-sinks: check must refuse"; noraw "check flag" "$out"
+    echo "$out" | grep -qF 'unknown flag --Q\x1b]52;c;QQ==\x07\x0dZ' || fail "message-sinks: the check flag must render visibly: $out"
+    printf '#sig grep\ngrep --co\033c x\n' > "$h7dir/ms/sig.weir"; mkdir -p "$h7dir/ms/.weir/sigs"
+    printf 'module Grep\ntype Cmd = {\n    color: bool\n}\n' > "$h7dir/ms/.weir/sigs/grep.weir"
+    out=$( cd "$h7dir/ms" && $BIN check sig.weir 2>&1 ) || true; noraw "the sig warning" "$out"
+    echo "$out" | grep -qF "unknown flag '--co\x1bc'" || fail "message-sinks: the sig warning must quote the flag visibly: $out"
+    printf 'import "./no\033cfile.weir" as M\n' > "$h7dir/ms/imp.weir"
+    out=$( cd "$h7dir/ms" && $BIN check imp.weir 2>&1 ) && fail "message-sinks: a missing import must fail"; noraw "the import path" "$out"
+    echo "$out" | grep -qF 'no\x1bcfile.weir' || fail "message-sinks: the import path must render visibly: $out"
+    printf '^ech\033co hi\n' > "$h7dir/ms/cnf.weir"
+    out=$( cd "$h7dir/ms" && $BIN check cnf.weir 2>&1 ) && fail "message-sinks: an unknown head must fail"; noraw "command not found" "$out"
+    echo "$out" | grep -qF 'command not found: ech\x1bco' || fail "message-sinks: the head must render visibly: $out"
+    out=$( cd "$h7dir/ms" && $noprox "$BIN" add schema "http://127.0.0.1:$h7port/ref.json" --as ref 2>&1 ) && fail "message-sinks: an unresolvable \$ref must refuse"; noraw "add schema's \$ref" "$out"
+    echo "$out" | grep -qF '#/x\x1b]52;c;QQ==\x07\x0d' || fail "message-sinks: the \$ref must render visibly: $out"
+    echo "e2e ok: CLI, check and add messages escape the data they quote, piped [D:error-data-escape]"
+
+    # gen types drops a "" property key with a note, as #infer does
+    out=$( cd "$h7dir/ms" && $noprox "$BIN" add schema "http://127.0.0.1:$h7port/k.json" --as k 2>&1 ) || fail "gentypes-empty-key: add must succeed: $out"
+    out=$( cd "$h7dir/ms" && $BIN gen types --schema k --out - 2>&1 ) || fail "gentypes-empty-key: gen types must succeed: $out"
+    echo "$out" | grep -qF 'an empty-string key under' || fail "gentypes-empty-key: the drop must be noted: $out"
+    echo "$out" | grep -qF 'ok: Option<string>' || fail "gentypes-empty-key: the other field stays: $out"
+    kill $h7srv 2>/dev/null || true
+    echo "e2e ok: gen types drops a \"\" key with a note [D:infer-wire-escape]"
+
+    # parallel adds serialize under the .weir/ lock; lock.json is replaced whole
+    if [ "$IS_WINDOWS" = "0" ]; then
+        mkdir -p "$h7dir/pa/bin" && ( cd "$h7dir/pa" && git init -q . )
+        for t in s1 s2 s3 s4 s5 s6; do
+            printf '#!/bin/sh\n[ "$1" = --help ] || exit 1\nprintf "Usage: %s\\n\\nOptions:\\n  --only-%s   doc\\n"\n' "$t" "$t" > "$h7dir/pa/bin/$t"
+            chmod +x "$h7dir/pa/bin/$t"
+        done
+        pids=""
+        for t in s1 s2 s3 s4 s5 s6; do
+            ( cd "$h7dir/pa" && PATH="$h7dir/pa/bin:$PATH" "$BIN" add sig $t > /dev/null 2>&1 ) & pids="$pids $!"
+        done
+        for p in $pids; do wait $p || fail "weir-dir-lock: a parallel add sig failed"; done
+        n=$(grep -c '"name"' "$h7dir/pa/.weir/lock.json")
+        [ "$n" = 6 ] || fail "weir-dir-lock: 6 parallel adds must leave 6 lock entries, got $n: $(cat "$h7dir/pa/.weir/lock.json")"
+        inode() { if stat -c %i "$1" >/dev/null 2>&1; then stat -c %i "$1"; else stat -f %i "$1"; fi; }
+        i0=$(inode "$h7dir/pa/.weir/lock.json")
+        ( cd "$h7dir/pa" && PATH="$h7dir/pa/bin:$PATH" "$BIN" add sig s1 > /dev/null 2>&1 ) || fail "weir-dir-lock: a re-add must succeed"
+        [ "$(inode "$h7dir/pa/.weir/lock.json")" != "$i0" ] || fail "weir-dir-lock: lock.json must be replaced by rename, not rewritten in place"
+        ls -a "$h7dir/pa/.weir" "$h7dir/pa/.weir/sigs" | grep -qF 'weir-tmp' && fail "weir-dir-lock: a temp was left behind: $(ls -a "$h7dir/pa/.weir")" || true
+        # a missing signature is regenerated, never restored
+        rm -f "$h7dir/pa/.weir/sigs/s2.weir"
+        out=$( cd "$h7dir/pa" && PATH="$h7dir/pa/bin:$PATH" "$BIN" verify 2>&1 ) && fail "weir-dir-lock: verify must report the absent sig"
+        echo "$out" | grep -qF "sig s2: ABSENT — regenerate it: weir add sig 's2'" || fail "verify-sig-absent: the hint must name weir add sig: $out"
+        echo "e2e ok: parallel adds keep every lock entry; lock.json is replaced whole; an absent sig says weir add sig [D:weir-dir-lock]"
+    fi
+else
+    echo "e2e skip: h3r7 stage B (python3 absent)"
+fi
+
 # ---- Fix 2: parse/decode errors excerpt a huge invalid input [D:excerpt] ---
 # a multi-MB invalid input used to be echoed whole (a ~2MB stderr flood);
 # it is now bounded to a 64-char head + the true length. A short invalid
@@ -15142,8 +15260,10 @@ dout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" "$dg/src.weir" 2>&1)
 echo "$dout" | grep -qF '\x1b[31mtype error' || fail "tty-diag: weir's own colour must survive the sanitizer: $dout"
 $BIN check "$dg/imp.weir" > "$dg/imp.out" 2>&1 || true
 $BIN "$dg/src.weir" 2> "$dg/src.err" || true
-python3 -c "import sys; sys.exit(0 if all(b'\x1b]52;c;DIAG\x07' in open(f,'rb').read() for f in sys.argv[1:]) else 1)" "$dg/imp.out" "$dg/src.err" \
-    || fail "tty-diag: redirected diagnostics must stay byte-faithful"
+python3 -c "import sys; sys.exit(0 if all(b'\x1b]52;c;DIAG\x07' in open(f,'rb').read() for f in sys.argv[1:]) else 1)" "$dg/src.err" \
+    || fail "tty-diag: a redirected source echo must stay byte-faithful"
+# the import path is data in a message: escaped piped too [D:error-data-escape]
+grep -qF 'x\x1b]52;c;DIAG\x07.weir' "$dg/imp.out" || fail "tty-diag: a redirected import path must render escaped: $(cat "$dg/imp.out")"
 echo "e2e ok: tty-diag check/run diagnostics (import path, source echo, regex, #sig, no such script) sanitized at a tty, byte-faithful when redirected"
 # a runtime error escapes the data it quotes [D:error-data-escape] — always,
 # piped too: a parse input, a document excerpt, a path, an env var name

@@ -104,45 +104,113 @@ let classifyTransport (timeoutMs: int64) (port: int) (ex: exn) : TransportError 
 let private fmtMs (ms: int64) : string =
     if ms % 1000L = 0L then $"{ms / 1000L}s" else $"{ms}ms"
 
+// a `host[:port]` authority, bracketed IPv6 included
+let private hostPortRx =
+    Text.RegularExpressions.Regex(@"^(\[[^\]@]*\]|[^:@\[\]\s]*)(:\d*)?$")
+
 /// redact a URL's userinfo for a diagnostic [D:url-redact]: a credential
 /// in `scheme://user:pass@host/...` would otherwise print verbatim
-/// (terminal, CI log, REPL). Replace the whole `user:pass` span (between
-/// `://` and the first `@` before the path/query/fragment) with `***`,
+/// (terminal, CI log, REPL). Replace the whole userinfo span with `***`,
 /// keeping scheme and everything from the host on — a credential-free
 /// URL is returned unchanged, so the target is still named in full.
 /// Purely textual, so it works on a URL `Uri` could not parse (exactly
-/// the transport fallback's case). The authority ends at the first `/`,
-/// `?` or `#`; an `@` only counts as a userinfo separator before that,
-/// so an `@` in a path or query is left alone.
-let private replaceUserinfo (by: string) (url: string) : string =
+/// the transport fallback's case). The authority starts after `://`, a
+/// leading `//`, or at the start of a scheme-less `user:pass@host`. A
+/// password may hold a raw `/ ? # @`, so the span runs through the LAST
+/// `@` of the authority (which ends at the first `/ ? # \`), and further
+/// when in doubt: through a later `@` when the authority before the first
+/// delimiter is not a `host[:port]` (a raw `/` cut a password), or when
+/// that `@` is followed by a dotted, ported, bracketed or localhost host.
+/// An `@` in a path or query otherwise stays.
+let private userinfoSpan (url: string) : (int * int) option =
+    let authStart =
+        match url.IndexOf "://" with
+        | -1 -> if url.StartsWith "//" then 2 else 0
+        | i -> i + 3
+
+    let isDelim c = c = '/' || c = '?' || c = '#' || c = '\\'
+
+    let delimFrom (i: int) =
+        let mutable j = i
+
+        while j < url.Length && not (isDelim url[j]) do
+            j <- j + 1
+
+        j
+
+    let authEnd = delimFrom authStart
+
+    let hostish (h: string) =
+        h.Length > 0
+        && hostPortRx.IsMatch h
+        && (h.Contains '.' || h.Contains ':' || h.StartsWith "["
+            || h.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+
+    let authorityCut =
+        not (hostPortRx.IsMatch(url.Substring(authStart, authEnd - authStart)))
+
+    let rec pick (from: int) =
+        match if from < authStart then -1 else url.LastIndexOf('@', from) with
+        | at when at < authStart -> None
+        | at when at < authEnd -> Some at
+        | at ->
+            let host = url.Substring(at + 1, delimFrom (at + 1) - at - 1)
+
+            if (authorityCut && host.Length > 0 && not (host |> Seq.exists Char.IsWhiteSpace))
+               || hostish host then
+                Some at
+            else
+                pick (at - 1)
+
+    if url.Length = 0 then None
+    else pick (url.Length - 1) |> Option.map (fun at -> authStart, at)
+
+let redactUrl (url: string) : string =
+    match userinfoSpan url with
+    | Some(s, at) -> url.Substring(0, s) + "***@" + url.Substring(at + 1)
+    | None -> url
+
+/// a URL with its userinfo dropped, for what weir writes to a committed
+/// file [D:lock-no-userinfo]; a credential-free URL is returned
+/// unchanged. The client's own parse: the authority ends at the first
+/// `/ ? #`, its userinfo at the last `@` before that
+let stripUserinfo (url: string) : string =
     match url.IndexOf "://" with
     | -1 -> url
     | schemeEnd ->
         let authStart = schemeEnd + 3
-        // the authority runs to the first path/query/fragment delimiter
+
         let authEnd =
-            let rest = url.Substring authStart
+            match url.IndexOfAny([| '/'; '?'; '#' |], authStart) with
+            | -1 -> url.Length
+            | i -> i
 
-            match rest |> Seq.tryFindIndex (fun c -> c = '/' || c = '?' || c = '#') with
-            | Some i -> authStart + i
-            | None -> url.Length
-
-        let authority = url.Substring(authStart, authEnd - authStart)
-
-        match authority.IndexOf '@' with
+        match url.LastIndexOf('@', authEnd - 1, authEnd - authStart) with
         | -1 -> url
-        | at -> url.Substring(0, authStart) + by + url.Substring(authStart + at + 1)
+        | at -> url.Substring(0, authStart) + url.Substring(at + 1)
 
-let redactUrl (url: string) : string = replaceUserinfo "***@" url
+/// a proxy variable's value with its userinfo masked [D:proxy-env-malformed]:
+/// the runtime takes the userinfo through the value's last `@`, wherever
+/// it is, so the mask does too
+let redactProxyValue (value: string) : string =
+    let authStart =
+        match value.IndexOf "://" with
+        | -1 -> if value.StartsWith "//" then 2 else 0
+        | i -> i + 3
 
-/// a URL with its userinfo dropped, for what weir writes to a committed
-/// file [D:lock-no-userinfo]; a credential-free URL is returned unchanged
-let stripUserinfo (url: string) : string = replaceUserinfo "" url
+    match value.LastIndexOf '@' with
+    | at when at >= authStart -> value.Substring(0, authStart) + "***@" + value.Substring(at + 1)
+    | _ -> value
 
 /// every URL's userinfo in a runtime's text redacted [D:url-redact] — a
-/// .NET message can quote a proxy URI whole, credentials included
+/// .NET message can quote a proxy URI whole, credentials included; a URL
+/// (`scheme://` or `//`) runs to the next blank
 let redactUrlsIn (text: string) : string =
-    Text.RegularExpressions.Regex.Replace(text, @"([A-Za-z][A-Za-z0-9+.\-]*://)[^/?#@\s'""]*@", "$1***@")
+    Text.RegularExpressions.Regex.Replace(
+        text,
+        @"(?:[A-Za-z][A-Za-z0-9+.\-]*:)?//\S+",
+        fun m -> redactUrl m.Value
+    )
 
 let transportMessage (host: string) (err: TransportError) : string =
     match err with
@@ -154,20 +222,7 @@ let transportMessage (host: string) (err: TransportError) : string =
     | ConnectionEnded -> $"{host} closed the connection before answering"
     | ProxyRefused status -> $"the proxy refused to tunnel to {host}: {status}"
     | ProxyEnvUnusable(var, value) ->
-        // a scheme-less `user:pass@host` is a proxy spelling the runtime
-        // accepts, beyond redactUrl's `://` rule [D:url-redact]
-        let shown =
-            if value.Contains "://" then
-                redactUrl value
-            else
-                let stop =
-                    match value.IndexOfAny [| '/'; '?'; '#' |] with
-                    | -1 -> value.Length
-                    | i -> i
-
-                match value.LastIndexOf('@', max 0 (stop - 1)) with
-                | at when at >= 0 && at < stop -> "***@" + value.Substring(at + 1)
-                | _ -> value
+        let shown = redactProxyValue value
 
         $"{var} is set but is not a usable proxy URL ('{Weir.Types.quoteData shown}') — weir does not fall back to reaching {host} directly; fix it or unset it"
     | UnknownCharset(cs, status) ->
@@ -390,14 +445,66 @@ type private EnvNoProxy(inner: Net.IWebProxy) =
             else
                 isNull (proxyFor u)
 
+/// would the runtime take this proxy variable's value? The runtime's own
+/// reading (HttpEnvironmentProxy): an optional http/https/socks scheme
+/// (any other `://` refuses), userinfo through the last `@`, a port of
+/// leading digits that must fit 0-65535 (trailing text ignored), then the
+/// host must make a Uri [D:proxy-env-malformed]
+let private envProxyUsable (value: string) : bool =
+    let schemes =
+        [ "http://", "http", 80; "https://", "https", 443; "socks4://", "socks4", 80
+          "socks5://", "socks5", 80; "socks4a://", "socks4a", 80 ]
+
+    let picked =
+        schemes
+        |> List.tryFind (fun (p, _, _) -> value.StartsWith(p, StringComparison.OrdinalIgnoreCase))
+
+    match picked with
+    | None when value.Contains "://" -> false
+    | _ ->
+        let protocol, defaultPort, rest =
+            match picked with
+            | Some(p, proto, port) -> proto, port, value.Substring p.Length
+            | None -> "http", 80, value
+
+        let rest =
+            match rest.LastIndexOf '@' with
+            | -1 -> rest
+            | at -> rest.Substring(at + 1)
+
+        let v6End = rest.IndexOf ']'
+        let colon = rest.LastIndexOf ':'
+
+        let hostPort =
+            if colon = -1 || (v6End <> -1 && colon < v6End) then
+                Some(rest, defaultPort)
+            else
+                let digits =
+                    rest.Substring(colon + 1) |> Seq.takeWhile Char.IsDigit |> Seq.length
+
+                match UInt16.TryParse(rest.AsSpan(colon + 1, digits)) with
+                | true, port -> Some(rest.Substring(0, colon), int port)
+                | _ -> None
+
+        match hostPort with
+        | None -> false
+        | Some(host, port) ->
+            try
+                UriBuilder(protocol, host, port).Uri |> ignore
+                true
+            with _ ->
+                false
+
 exception private ProxyEnvBad of string * string
 
-/// refuse before connecting when the proxy variable for `url`'s scheme
-/// is set but the runtime could not use it [D:proxy-env-malformed]: the
-/// runtime drops a malformed value and connects directly; curl refuses.
-/// The variable is the runtime's lookup (lower case first, then the
-/// upper case name; ALL_PROXY when the scheme's is unset). A host
-/// NO_PROXY bypasses goes direct as asked.
+/// refuse before connecting when a proxy variable the runtime consults
+/// for `url`'s scheme is set but the runtime could not use it
+/// [D:proxy-env-malformed]: the runtime skips a malformed value — to the
+/// next variable, or a direct connect; curl refuses. The variables in the
+/// runtime's order: the scheme's lower case name, its upper case name
+/// (HTTP_PROXY under CGI too), all_proxy, ALL_PROXY.
+/// The first one set being malformed (or no proxy resolving) refuses. A
+/// host NO_PROXY bypasses goes direct as asked.
 let checkEnvProxy (url: string) : unit =
     let env (n: string) =
         match Environment.GetEnvironmentVariable n with
@@ -407,29 +514,32 @@ let checkEnvProxy (url: string) : unit =
 
     match Uri.TryCreate(url, UriKind.Absolute) with
     | true, u when u.Scheme = "http" || u.Scheme = "https" ->
-        let named =
+        let order =
             if u.Scheme = "http" then
-                env "http_proxy" |> Option.orElse (env "HTTP_PROXY")
+                [ "http_proxy"; "HTTP_PROXY" ]
             else
-                env "https_proxy" |> Option.orElse (env "HTTPS_PROXY")
-            |> Option.orElse (env "all_proxy")
-            |> Option.orElse (env "ALL_PROXY")
+                [ "https_proxy"; "HTTPS_PROXY" ]
+            @ [ "all_proxy"; "ALL_PROXY" ]
 
-        match named with
-        | Some(var, value) ->
+        let set = order |> List.choose env
+
+        let bypassed () =
+            let raw =
+                match env "no_proxy" with
+                | Some(_, v) -> v
+                | None -> env "NO_PROXY" |> Option.map snd |> Option.defaultValue ""
+
+            raw <> "" && noProxyMatch raw u.Host
+
+        // the runtime reads past a malformed value only, so the first set
+        // variable is the one it takes or skips
+        match set with
+        | (var, value) :: _ when not (bypassed ()) ->
             let p = EnvNoProxy(HttpClient.DefaultProxy) :> Net.IWebProxy
 
-            let bypassed =
-                let raw =
-                    match env "no_proxy" with
-                    | Some(_, v) -> v
-                    | None -> env "NO_PROXY" |> Option.map snd |> Option.defaultValue ""
-
-                raw <> "" && noProxyMatch raw u.Host
-
-            if not bypassed && isNull (p.GetProxy u) then
+            if not (envProxyUsable value) || isNull (p.GetProxy u) then
                 raise (ProxyEnvBad(var, value))
-        | None -> ()
+        | _ -> ()
     | _ -> ()
 
 /// the host a transport error names: the URL's host, or the whole URL

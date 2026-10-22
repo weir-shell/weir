@@ -436,18 +436,29 @@ let private mergeElems (note: Note -> unit) (path: string) (items: INode list) :
 
 /// the keys a [<Wire "…">] literal can spell: weir strings escape only
 /// \" \\ \n \t, so a key holding another control character (CR, ESC,
-/// BEL, …) has no spelling — DROPPED from the draft with a note, as the
-/// empty key is (reading tolerates an undeclared key) [D:infer-wire-escape]
+/// BEL, …) or a bidi control has no safe spelling — DROPPED from the
+/// draft with a note, as is the empty key, which no field name spells
+/// and [<Wire>] refuses (reading tolerates an undeclared key)
+/// [D:infer-wire-escape]
 let wireSpellable (reg: Registry) (where: string) (fields: (string * 'a) list) : (string * 'a) list =
     fields
     |> List.filter (fun (k, _) ->
-        let ok = k |> Seq.forall (fun c -> not (Char.IsControl c) || c = '\n' || c = '\t')
-
-        if not ok then
+        if k = "" then
             reg.AddNote
-                $"the key '{k}' under '{where}' holds a control character a [<Wire>] literal cannot spell — the key is DROPPED from the draft (reading tolerates the extra key)"
+                $"an empty-string key under '{where}' — no field name can spell it and [<Wire>] refuses an empty wire key, so the key is DROPPED from the draft (reading tolerates the extra key)"
 
-        ok)
+            false
+        else
+            // a bidi control spells raw only, reordering the source line
+            // around it — dropped with the controls
+            let bare = k.Replace("\n", "").Replace("\t", "")
+            let ok = Weir.Types.quoteData bare = bare
+
+            if not ok then
+                reg.AddNote
+                    $"the key '{k}' under '{where}' holds a control or bidi character a [<Wire>] literal cannot spell — the key is DROPPED from the draft (reading tolerates the extra key)"
+
+            ok)
 
 // `srcKey` is the wire key (or top name) that produced `desired` — every
 // note names the user's own spelling (the drafted field), not the derived
@@ -493,18 +504,10 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
             $"seq<string * {shapeOf reg (capitalize (singularize (identStem desired))) srcKey parentStem v}>"
         | None ->
             // an empty-string key is unspellable either way
-            // [D:infer-wire-sanitize]: a field name cannot be empty
-            // and [<Wire>] refuses an empty wire key — so the key is
-            // dropped from the draft, with a note (the readers
-            // tolerate an undeclared key, so the drafted type still
-            // reads the sample)
-            let nonEmpty = fields |> List.filter (fun (k, _) -> k <> "")
-
-            if List.length nonEmpty < List.length fields then
-                reg.AddNote
-                    $"an empty-string key under '{srcKey}' — no field name can spell it and [<Wire>] refuses an empty wire key, so the key is DROPPED from the draft (reading tolerates the extra key)"
-
-            let spellable = wireSpellable reg srcKey nonEmpty
+            // [D:infer-wire-sanitize]; wireSpellable drops it with a note
+            // (the readers tolerate an undeclared key, so the drafted
+            // type still reads the sample)
+            let spellable = wireSpellable reg srcKey fields
 
             match spellable with
             | [] ->

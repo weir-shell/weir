@@ -30517,6 +30517,122 @@ let hunt3PerfTests =
               growsLinearly "100k vs 10k deep" (refuse (deep 10000)) (refuse (deep 100000))
           } ]
 
+let hunt3r7SafetyTests =
+    // hunt-3 round 7, safety: userinfo masked through the last @
+    // [D:url-redact], a "" key in gen types and a bidi wire key
+    // [D:infer-wire-escape], the .weir/ writer lock and whole-file
+    // replace [D:weir-dir-lock], schema messages escape their data
+    // [D:error-data-escape]
+    let gen src =
+        match Weir.Contracts.parseSchema "t" src with
+        | Error e -> failtest e
+        | Ok d ->
+            match Weir.SchemaTypes.moduleText Weir.Parser.keywords Set.empty "t" None "0123456789abcdef" "http://src" d with
+            | Ok g -> g.Text
+            | Error e -> failtest e
+
+    testList
+        "hunt3r7 safety"
+        [ test "redactUrl masks through the last @ — a raw / ? # @ in the password never shows [D:url-redact]" {
+              for u, shown in
+                  [ "http://deploy:Tr0ub/4dor@127.0.0.1:1/x", "http://***@127.0.0.1:1/x"
+                    "http://deploy:pa#ss@127.0.0.1:1/x", "http://***@127.0.0.1:1/x"
+                    "http://deploy:p@ssw0rd@127.0.0.1:1/x", "http://***@127.0.0.1:1/x"
+                    "http://deploy:q?wd@h.example/x?y=1", "http://***@h.example/x?y=1"
+                    "https://tok/en+==@github.com/o/r", "https://***@github.com/o/r"
+                    "http://u:a/b@c@registry/v2", "http://***@registry/v2"
+                    "//u:pw@h:99/x", "//***@h:99/x"
+                    "u:p/w@h:3128", "***@h:3128" ] do
+                  Expect.equal (Weir.Http.redactUrl u) shown u
+
+              // an @ in a path or query of a credential-free URL stays
+              for u in [ "https://discord.com/api/users/@me"; "https://host/path@v2?to=a@b"; "http://127.0.0.1:8792/x" ] do
+                  Expect.equal (Weir.Http.redactUrl u) u u
+
+              Expect.equal
+                  (Weir.Http.redactUrlsIn "proxy 'http://u:S3/cr@t@h:1/' failed; see //a:b@k/x")
+                  "proxy 'http://***@h:1/' failed; see //***@k/x"
+                  "free text masks every URL through its last @"
+
+              Expect.equal (Weir.Http.redactProxyValue "u:SEC/RET#PW@h:99999") "***@h:99999" "scheme-less"
+              Expect.equal (Weir.Http.redactProxyValue "//u:hunter2@h:99999") "//***@h:99999" "scheme-relative"
+              Expect.equal (Weir.Http.redactProxyValue "http://u:a@b/c@h:1") "http://***@h:1" "the runtime's last @"
+              Expect.equal (Weir.Http.redactProxyValue "http://h:99999") "http://h:99999" "no userinfo"
+          }
+          test "stripUserinfo keeps the client's parse for what the lock records [D:lock-no-userinfo]" {
+              Expect.equal (Weir.Http.stripUserinfo "http://u:p@ss@h/s.json") "http://h/s.json" "the last @ of the authority"
+              Expect.equal (Weir.Http.stripUserinfo "https://h/users/@me") "https://h/users/@me" "a path @ is data"
+          }
+          test "gen types drops a \"\" property key with a note, as #infer does [D:infer-wire-escape]" {
+              let t = gen """{"type":"object","properties":{"":{"type":"string"},"ok":{"type":"string"}}}"""
+              Expect.stringContains t "an empty-string key under" "noted"
+              Expect.stringContains t "ok: Option<string>" "the other field drafted"
+              Expect.isFalse (t.Contains "[<Wire \"\">]") "no empty wire key"
+          }
+          test "a wire key holding a bidi control is dropped with a note, never spelled raw [D:infer-wire-escape]" {
+              let t = gen "{\"type\":\"object\",\"properties\":{\"a\\u202eb\":{\"type\":\"string\"},\"ok\":{\"type\":\"string\"}}}"
+              Expect.isFalse (t.Contains "\u202e") $"no raw U+202E: {t}"
+              Expect.stringContains t "a\\u202Eb" "the note names it visibly"
+              Expect.stringContains t "ok: Option<string>" "the other field drafted"
+          }
+          test "a remote schema's unresolvable $ref is quoted visibly [D:error-data-escape]" {
+              match Weir.Contracts.parseSchema "t" "{\"type\":\"object\",\"properties\":{\"e\":{\"$ref\":\"#/x\\u001b]52;c;QQ==\\u0007\"}}}" with
+              | Ok _ -> failtest "an unresolvable $ref refuses"
+              | Error e ->
+                  Expect.isFalse (e.Contains "\u001b" || e.Contains "\u0007") $"nothing raw: {e}"
+                  Expect.stringContains e "#/x\\x1b]52;c;QQ==\\x07" "rendered visibly"
+          }
+          test "lock.json is replaced whole, keeping its mode [D:weir-dir-lock]" {
+              let dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-atomic-{System.Guid.NewGuid():N}")
+              System.IO.Directory.CreateDirectory dir |> ignore
+
+              try
+                  let p = System.IO.Path.Combine(dir, "lock.json")
+                  System.IO.File.WriteAllText(p, "old")
+
+                  if not (System.OperatingSystem.IsWindows()) then
+                      System.IO.File.SetUnixFileMode(p, enum<System.IO.UnixFileMode> 0o600)
+
+                  Weir.Contracts.writeLock dir []
+                  Expect.stringContains (System.IO.File.ReadAllText p) "\"artifacts\"" "written"
+
+                  if not (System.OperatingSystem.IsWindows()) then
+                      Expect.equal (int (System.IO.File.GetUnixFileMode p)) 0o600 "mode kept"
+
+                  Expect.equal (System.IO.Directory.GetFiles dir |> Array.length) 1 "no temp left"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          test "the .weir/ writer lock serializes two holders [D:weir-dir-lock]" {
+              let root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-dirlock-{System.Guid.NewGuid():N}")
+              let weirDir = System.IO.Path.Combine(root, ".weir")
+              System.IO.Directory.CreateDirectory root |> ignore
+
+              try
+                  let inside = [| 0 |]
+                  let overlap = ref false
+
+                  let hold () =
+                      Weir.Contracts.AtomicFile.withWeirDirLock weirDir (fun () ->
+                          if System.Threading.Interlocked.Increment(&inside[0]) > 1 then
+                              overlap.Value <- true
+
+                          System.Threading.Thread.Sleep 200
+                          System.Threading.Interlocked.Decrement(&inside[0]) |> ignore
+                          Ok())
+
+                  let ts = [ for _ in 1..3 -> System.Threading.Tasks.Task.Run(fun () -> hold ()) ]
+                  System.Threading.Tasks.Task.WaitAll(ts |> List.map (fun t -> t :> System.Threading.Tasks.Task) |> Array.ofList)
+
+                  for t in ts do
+                      Expect.equal t.Result (Ok()) "every holder ran"
+
+                  Expect.isFalse overlap.Value "never two holders at once"
+                  Expect.isFalse (System.IO.Directory.Exists weirDir) "the lock creates no .weir/"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -30537,6 +30653,7 @@ let allTests =
           hunt3BehaviorTests
           hunt3r5FormatTests
           hunt3r6FormatTests
+          hunt3r7SafetyTests
           docsBinaryTests
           hunt2CheckerTests
           sweepFindingTests
