@@ -29200,6 +29200,46 @@ let hunt3r5Tests =
                   Expect.isFalse (Weir.Session.isFifo (Path.Combine(d, "none"))) "an absent path")
           } ]
 
+// hunt 3 round 7 stage A: the shim's exec check follows the #! chain as
+// execve does [D:cleanup-sigign]; the signal and thread halves are e2e cells
+let hunt3r7Tests =
+    testList
+        "hunt-3r7 stage A"
+        [ test "the shim's exec check follows the #! chain to a loadable native image, as execve does [D:cleanup-sigign]" {
+              skipUnlessLinux ()
+
+              withTempDir "weir-exec" (fun d ->
+                  let file (name: string) (text: string) =
+                      let p = Path.Combine(d, name)
+                      File.WriteAllText(p, text)
+                      File.SetUnixFileMode(p, enum<UnixFileMode> 0o755)
+                      p
+
+                  let accepts p =
+                      Weir.Session.CleanupShim.execAccepts p d (fun f -> File.Exists f)
+
+                  let sh = Weir.Session.CleanupShim.shell
+                  Expect.isTrue (accepts sh) "a native image"
+                  Expect.isTrue (accepts (file "s" "#!/bin/sh\necho s\n")) "a script of a native interpreter"
+                  let plain = file "plain" "echo plain\n"
+                  let gelf = file "gelf" "\u007fELF-not-an-image"
+                  Expect.isFalse (accepts plain) "a shebang-less file"
+                  Expect.isFalse (accepts gelf) "an ELF magic with no image behind it"
+                  Expect.isFalse (accepts (file "o1" $"#!{plain}\n")) "a script whose interpreter is shebang-less"
+                  Expect.isFalse (accepts (file "o2" $"#!{gelf}\n")) "a script whose interpreter is a garbage ELF"
+
+                  // five #! files then a native image run; a sixth is ELOOP
+                  let mutable top = sh
+
+                  for i in 1..6 do
+                      top <- file $"c{i}" $"#!{top}\n"
+
+                      if i <= 5 then
+                          Expect.isTrue (accepts top) $"a chain of {i} #! files"
+                      else
+                          Expect.isFalse (accepts top) "a chain of six #! files")
+          } ]
+
 let hunt2CheckerTests =
     // the second hunt's checker/adapter backlog: `+` decided by a later
     // anchor [D:plus-defer], generic records at the wire
@@ -30773,6 +30813,7 @@ let allTests =
           hunt3r4RaceTests
           hunt3r4SafetyTests
           hunt3r5Tests
+          hunt3r7Tests
           hunt3r5SafetyTests
           argsSecretEchoTests
           hunt3BehaviorTests

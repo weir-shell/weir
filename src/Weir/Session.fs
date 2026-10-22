@@ -1369,16 +1369,19 @@ module CleanupShim =
 
             go ()
 
-    /// what execve itself runs [D:cleanup-sigign]: a native image, or a
-    /// `#!` file whose interpreter execve runs in turn — on Linux up to five
-    /// `#!` files deep (then ELOOP), on macOS one (no nested interpreter).
-    /// The shim's `exec` would hand any other file to sh (its ENOEXEC
-    /// fallback), which a direct spawn refuses; read without blocking, so a
-    /// FIFO is never waited on
+    /// what execve itself runs [D:cleanup-sigign]: a native image — on Linux
+    /// an ELF the kernel's loader takes (this machine's class and arch, an
+    /// executable or shared-object type, whole program headers) — or a `#!`
+    /// file whose interpreter execve runs in turn: on Linux up to five `#!`
+    /// files deep (then ELOOP), on macOS one (no nested interpreter). The
+    /// shim's `exec` would hand any other file to sh (its ENOEXEC fallback),
+    /// which a direct spawn refuses; read without blocking, so a FIFO is
+    /// never waited on
     let execAccepts (path: string) (cwd: string) (runnable: string -> bool) : bool =
         let O_NONBLOCK = if System.OperatingSystem.IsLinux() then 0x800 else 0x4
         let maxScripts = if System.OperatingSystem.IsLinux() then 5 else 1
 
+        // the head and the file's length
         let headOf (path: string) =
             let fd = Libc.``open`` (path, O_NONBLOCK)
 
@@ -1391,15 +1394,72 @@ module CleanupShim =
                     let n = int (Libc.read (fd, buf, unativeint 256))
                     let bytes = Array.zeroCreate<byte> (max n 0)
                     System.Runtime.InteropServices.Marshal.Copy(buf, bytes, 0, bytes.Length)
-                    Some bytes
+                    Some(bytes, Libc.lseek (fd, 0L, 2))
                 finally
                     System.Runtime.InteropServices.Marshal.FreeHGlobal buf
                     Libc.close fd |> ignore
 
+        // ELF class and e_machine of this process's own images
+        let native =
+            match System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture with
+            | System.Runtime.InteropServices.Architecture.X64 -> Some(2uy, 62)
+            | System.Runtime.InteropServices.Architecture.Arm64 -> Some(2uy, 183)
+            | System.Runtime.InteropServices.Architecture.X86 -> Some(1uy, 3)
+            | System.Runtime.InteropServices.Architecture.Arm -> Some(1uy, 40)
+            | System.Runtime.InteropServices.Architecture.RiscV64 -> Some(2uy, 243)
+            | System.Runtime.InteropServices.Architecture.LoongArch64 -> Some(2uy, 258)
+            | System.Runtime.InteropServices.Architecture.Ppc64le -> Some(2uy, 21)
+            | System.Runtime.InteropServices.Architecture.S390x -> Some(2uy, 22)
+            | _ -> None
+
+        // the checks binfmt_elf makes before it maps anything — any that
+        // fails is ENOEXEC
+        let elfLoads (head: byte[]) (length: int64) =
+            match native with
+            | None -> true
+            | Some(cls, machine) ->
+                let wide = cls = 2uy
+                let ehsize = if wide then 64 else 52
+
+                head.Length >= ehsize
+                && head[4] = cls
+                && (head[5] = 1uy || head[5] = 2uy)
+                && (let u16 (o: int) =
+                        if head[5] = 1uy then
+                            int head[o] ||| (int head[o + 1] <<< 8)
+                        else
+                            (int head[o] <<< 8) ||| int head[o + 1]
+
+                    let u32 (o: int) =
+                        if head[5] = 1uy then
+                            int64 (u16 o) ||| (int64 (u16 (o + 2)) <<< 16)
+                        else
+                            (int64 (u16 o) <<< 16) ||| int64 (u16 (o + 2))
+
+                    let phoff =
+                        if wide then
+                            if head[5] = 1uy then
+                                u32 32 ||| (u32 36 <<< 32)
+                            else
+                                (u32 32 <<< 32) ||| u32 36
+                        else
+                            u32 28
+
+                    let phentsize, phnum = if wide then u16 54, u16 56 else u16 42, u16 44
+                    let size = int64 phnum * int64 phentsize
+
+                    (u16 16 = 2 || u16 16 = 3)
+                    && u16 18 = machine
+                    && phentsize = (if wide then 56 else 32)
+                    && size > 0L
+                    && size <= 65536L
+                    && phoff >= 0L
+                    && phoff + size <= length)
+
         let rec accepts (path: string) (scripts: int) =
             match headOf path with
             | None -> false
-            | Some head ->
+            | Some(head, length) ->
                 let starts (magic: byte list) =
                     head.Length >= magic.Length
                     && List.forall2 (fun i b -> head[i] = b) [ 0 .. magic.Length - 1 ] magic
@@ -1413,9 +1473,10 @@ module CleanupShim =
                     | interp ->
                         let interp = System.IO.Path.Combine(cwd, interp)
                         scripts < maxScripts && runnable interp && accepts interp (scripts + 1)
+                elif starts [ 0x7Fuy; 0x45uy; 0x4Cuy; 0x46uy ] then
+                    not (System.OperatingSystem.IsLinux()) || elfLoads head length
                 else
-                    [ [ 0x7Fuy; 0x45uy; 0x4Cuy; 0x46uy ] // ELF
-                      [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCEuy ] // Mach-O
+                    [ [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCEuy ] // Mach-O
                       [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCFuy ]
                       [ 0xCEuy; 0xFAuy; 0xEDuy; 0xFEuy ]
                       [ 0xCFuy; 0xFAuy; 0xEDuy; 0xFEuy ]
