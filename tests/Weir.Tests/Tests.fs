@@ -8719,6 +8719,7 @@ let pureRegionTests =
                     "Path.home ()", "'Path.home' reads the environment"
                     "Path.configHome ()", "'Path.configHome' reads the environment"
                     "Term.width ()", "'Term.width' reads the terminal"
+                    "Term.title \"t\"", "'Term.title' writes to the terminal"
                     "Color.red \"x\"", "'Color.red' reads the terminal" ] do
                   let e = firstErr [ "let x ="; "    pure"; "        " + body; "print $\"{x}\"" ]
                   Expect.stringContains e.Message phrase body
@@ -9043,6 +9044,8 @@ let readonlyBlockTests =
           test "cd is a mutation readonly refuses; pwd, home dirs, Term, Color are reads [D:purity-ambient]" {
               let e = firstErr [ "let x ="; "    readonly"; "        cd \"/tmp\""; "print x" ]
               Expect.stringContains e.Message "'cd' changes the working directory" "cd writes process state"
+              let e = firstErr [ "readonly"; "    Term.title \"t\"" ]
+              Expect.stringContains e.Message "'Term.title' writes to the terminal" "Term.title writes the terminal [D:term-title]"
 
               for body in [ "pwd"; "Path.home ()"; "Path.cacheHome ()"; "$\"{Term.width ()}\""; "Color.red \"x\"" ] do
                   Expect.isEmpty (errsOf [ "let x ="; "    readonly"; "        " + body; "print x" ]) body
@@ -24352,6 +24355,20 @@ let ttySanitizeTests =
               // never raises, which is the point for a piped tool
               Expect.equal (run "Term.width ()") (VInt 80L) "no terminal → 80"
               Expect.equal (formatTy (checkOk "Term.width").Ty) "unit -> int" "queried live, so a function"
+          }
+          test "Term.title drops controls, escapes and bidi, caps at 256 code points [D:term-title]" {
+              let san = Weir.Builtins.sanitizeTermTitle
+              Expect.equal (san "a\u001b]0;evil\u0007b") "a]0;evilb" "ESC and BEL dropped: no sequence can end or start"
+              Expect.equal (san "x\u009d0;y\u009cz") "x0;yz" "C1 (8-bit OSC/ST) dropped"
+              Expect.equal (san "t\u0000\t\n\r\u007fu") "tu" "C0 and DEL dropped"
+              Expect.equal (san "a\u202eb\u2066c\u2069\u200ed") "abcd" "bidi controls dropped"
+              Expect.equal (san "~/src (main) ≋ 日本") "~/src (main) ≋ 日本" "plain text untouched"
+              Expect.equal (san (System.String('x', 300))).Length 256 "capped at 256"
+              let emoji = String.replicate 300 "😀"
+              Expect.equal (san emoji) (String.replicate 256 "😀") "the cap counts code points, never splits a pair"
+              Expect.equal (formatTy (checkOk "Term.title").Ty) "string -> unit" "string -> unit"
+              // the test process has no terminal: a quiet no-op, never a raise
+              Expect.equal (run "Term.title \"t\"") VUnit "no terminal → nothing"
           } ]
 
 let logLevelTests =

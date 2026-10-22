@@ -4698,6 +4698,50 @@ WEOF
     echo "$spout" | grep -qF "SOK> " || fail "a clean entry must paint ok: $spout"
 
     echo "e2e ok: #session prompt — an init provider paints at a tty (commands run when called), a raising one falls back with one note, only SGR passes, and a bool provider carries the status"
+
+    # ---- Term.title [D:term-title] -------------------------------------------
+    # one OSC 0 per call, its text sanitized (ESC/BEL dropped, so the
+    # smuggled `ESC ]0;evil BEL` cannot end the title early or start a
+    # second sequence); stderr carries it when stdout is piped; nothing
+    # at all when neither stream is a terminal
+    ttdir=$(mkweirtmp)
+    cat > "$ttdir/t.weir" <<'WEOF'
+let esc = Str.fromUtf8 (Bytes.fromBase64 "Gw==")
+let bel = Str.fromUtf8 (Bytes.fromBase64 "Bw==")
+Term.title ("a" + esc + "]0;evil" + bel + "b")
+print "TTDONE"
+WEOF
+    ttout=$(printf 'SLEEP 400\n' | python3 "$ptyrun" 6 "$BIN" "$ttdir/t.weir")
+    [ "$(echo "$ttout" | grep -o '\\x1b]0;' | wc -l)" -eq 1 ] || fail "Term.title must emit exactly one OSC 0 at a tty: $ttout"
+    echo "$ttout" | grep -qF '\x1b]0;a]0;evilb\x07TTDONE' || fail "Term.title's text must be sanitized (ESC/BEL dropped): $ttout"
+    ttout=$(printf 'SLEEP 400\n' | python3 "$ptyrun" 6 sh -c "\"$BIN\" \"$ttdir/t.weir\" > \"$ttdir/o\"")
+    echo "$ttout" | grep -qF '\x1b]0;a]0;evilb\x07' || fail "Term.title must reach the terminal on stderr when stdout is piped: $ttout"
+    [ "$(cat "$ttdir/o")" = "TTDONE" ] || fail "the piped stdout must carry no title escape: $(od -c "$ttdir/o")"
+    "$BIN" "$ttdir/t.weir" > "$ttdir/o" 2> "$ttdir/e" || fail "Term.title with no terminal must not raise"
+    [ "$(cat "$ttdir/o")" = "TTDONE" ] && [ ! -s "$ttdir/e" ] || fail "Term.title with no terminal must write nothing: $(od -c "$ttdir/o" "$ttdir/e")"
+    # from the init.weir prompt function: the OSC lands before each
+    # prompt paint, never inside it — the prompt and its cursor column
+    # (`tt> ` = 4) are unchanged
+    cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
+#init
+let sigil () =
+    Term.title $"TT:{pwd |> Path.fileName}"
+    "tt> "
+
+#session {
+    prompt = sigil
+}
+WEOF
+    mkdir -p "$ttdir/here"
+    ptyabs="$(cd "$(dirname "$ptyrun")" && pwd)/pty-run.py"
+    spout=$(cd "$ttdir/here" && printf 'SLEEP 900\nSEND 1 + 1\\r\nSLEEP 400\nSEND #quit\\r\n' \
+        | XDG_CONFIG_HOME="$spdir/cfg" XDG_STATE_HOME="$spdir/state" python3 "$ptyabs" 10 "$BIN")
+    # the chunk reprs joined into one stream (a write may split across reads)
+    spjoin=$(echo "$spout" | sed -E "s/^[0-9]+ b'//; s/'\$//" | tr -d '\n')
+    [ "$(echo "$spjoin" | grep -o '\\x1b]0;TT:here\\x07' | wc -l)" -eq 2 ] || fail "the prompt function's Term.title must emit once per prompt: $spout"
+    [ "$(echo "$spjoin" | grep -oF '\x1b]0;TT:here\x07\r\x1b[Jtt> \r\x1b[4C' | wc -l)" -eq 2 ] || fail "the title escape must precede each prompt paint, cursor math unchanged: $spout"
+    echo "$spjoin" | grep -qF "[Jtt> \\x1b]0;" && fail "the title escape must never sit inside the painted prompt: $spout" || true
+    echo "e2e ok: Term.title — one sanitized OSC 0 at a tty (stderr when stdout is piped), nothing with no terminal, and from the prompt function it lands before each prompt paint"
 else
     echo "e2e skip: streaming-echo pty pins (POSIX + python3)"
 fi

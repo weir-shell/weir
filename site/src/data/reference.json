@@ -2072,6 +2072,13 @@
       "name": "Term",
       "members": [
         {
+          "name": "title",
+          "signature": "Term.title (text: string) : unit",
+          "summary": "Set the terminal window title. Control characters, escape sequences and bidi controls in the text are dropped, and it is cut to 256 characters. Does nothing when there is no terminal (output piped or redirected). Call it from the init.weir prompt function to keep the title current.",
+          "example": "Term.title $\u0022weir: {pwd |\u003E Path.fileName}\u0022",
+          "pointer": null
+        },
+        {
           "name": "width",
           "signature": "Term.width () : int",
           "summary": "The terminal width in columns, read each time it is called, so resizes are picked up. Returns 80 instead of raising when there is no terminal (output piped or redirected). Use it to size output, like \u0060tput cols\u0060.",

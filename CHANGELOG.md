@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **`Term.title` sets the terminal window title.** Call it from the
+  init.weir `prompt` function to show the current directory (or
+  anything else) in the title on every prompt:
+  `Term.title $"weir: {pwd}"`. Control characters, escape sequences and
+  bidi controls in the text are dropped and it is cut to 256
+  characters; with no terminal it does nothing. On Windows it sets the
+  console title.
+
 ### Changed
 
 - **No `(F1: keys)` hint beside the first continuation line, and no

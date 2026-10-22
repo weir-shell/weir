@@ -994,10 +994,10 @@ let pure leak p = File.write p ["x"]
 - `readonly` + an indented block is the READ-ONLY ASSERTION
   [D:pure-stage2], ONE TIER UP from `pure`: the body must reach no
   EXTERNAL MUTATION — `fs.write`/`fs.delete`, `proc` (a command or a
-  Proc member), `cd`, console writes, the mutating HTTP methods
+  Proc member), `cd`, console writes (`Term.title` too), the mutating HTTP methods
   (POST/PUT/DELETE/PATCH and any `Other` verb), any `within` resource — but AMBIENT READS
   are fine: `fs.read`, `Env`/`Args`, `pwd`, `Path.home`/`configHome`/
-  `stateHome`/`cacheHome`, `Term`/`Color` (they read the terminal),
+  `stateHome`/`cacheHome`, `Term.width`/`Color` (they read the terminal),
   the clock (`Instant.now`), the
   `Uuid` generators, the query HTTP methods (`Http.query`, and
   `Http.send`/`Http.expect` of a GET/HEAD/OPTIONS/QUERY request), and
@@ -2899,7 +2899,7 @@ not the teaching.
 - `Retry`: `defaults`
 - `Secret`: `map` `of` `reveal`
 - `Color`: `red` `green` `yellow` `blue` `magenta` `cyan` `gray` `bold` `dim` `underline` `sgr` — each `string -> string`, wrapping in a colour/attribute. Context-aware: emits the escape only at a terminal with colour on (no `NO_COLOR`) and returns the plain string when piped, so `print (Color.green x)` colours interactively and stays plain in a pipe. Nest to combine (`Color.bold (Color.red "!")`); `Color.sgr "38;5;208" s` is the raw-code escape hatch for 256-colour/truecolor. `print` keeps colour (SGR) at a tty but still neutralizes every terminal-driving escape a value carries (title, clipboard, cursor) and shows bidi controls as a visible `\uXXXX`; a bare CR passes.
-- `Term`: `width` — `Term.width () : int`, the terminal columns queried live; falls back to 80 when there is no terminal (piped/redirected), so it never raises. The `tput cols` primitive.
+- `Term`: `width` `title` — `Term.width () : int`, the terminal columns queried live; falls back to 80 when there is no terminal (piped/redirected), so it never raises. The `tput cols` primitive. `Term.title : string -> unit` sets the window title (an OSC 0 to stdout, or stderr when only that is a terminal; `Console.Title` on Windows); controls, escapes and bidi controls in the text are dropped and it is capped at 256 code points; with no terminal it does nothing. A console write: `pure` and `readonly` refuse it. Call it from the init.weir `prompt` function to keep the title current.
 - `Self`: `prompt`, everywhere — writes its message to stderr and reads one stdin line (raises at end of input); and `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `initInfinite` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `fromHex` `hmacSha256` `length` `sha256` `sub` `toBase64` `toHex` `tryFromBase64`
