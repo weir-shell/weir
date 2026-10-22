@@ -698,7 +698,13 @@ total = 6
 ```
 
 The key bindings (they can't be customized). `#keys` prints them at
-the prompt:
+the prompt, and <kbd>F1</kbd> prints them in the middle of an edit:
+the list appears below what you have typed, then the prompt and every
+line of the buffer come back with the cursor where it was (nothing is
+submitted or added to history). The first time a session's entry grows
+a second line, a dim `(F1: keys)` hint appears after it until the
+line gets too long or the entry ends (shown once per session; with
+`NO_COLOR` it is plain text).
 
 | key | in the buffer |
 |---|---|
@@ -716,6 +722,7 @@ the prompt:
 | <kbd>Ctrl+Y</kbd> | paste the last cut text at the cursor. Cut text is kept for the whole session, so you can cut on one line and paste into a later one. (To copy from *elsewhere*, use your terminal's mouse selection; weir does not read the OS clipboard.) |
 | <kbd>Esc</kbd> / <kbd>Ctrl+C</kbd> | abandon the whole buffer |
 | <kbd>Ctrl+D</kbd> | EOF on an empty buffer; delete/join otherwise |
+| <kbd>F1</kbd> | print these bindings below the buffer, then redraw the buffer unchanged |
 
 A session with redirected input (`printf '…' | weir`) has no editor,
 but it still groups multi-line statements the way a script does. It

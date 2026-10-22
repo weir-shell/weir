@@ -1184,7 +1184,8 @@ let keyBindings: (string list * string) list =
       [ "Ctrl+W"; "Ctrl+U"; "Ctrl+K" ], "cut the previous word / to line start / to line end"
       [ "Ctrl+Y" ], "paste the last cut text"
       [ "Esc"; "Ctrl+C" ], "abandon the whole buffer"
-      [ "Ctrl+D" ], "exit on an empty buffer; delete or join otherwise" ]
+      [ "Ctrl+D" ], "exit on an empty buffer; delete or join otherwise"
+      [ "F1" ], "show these bindings; the buffer stays as it was" ]
 
 /// `#keys` [D:repl-keys]: the bindings in two aligned columns, the keys
 /// dim at a tty (meta output), plain when piped; then the typed-newline
@@ -1395,6 +1396,10 @@ let private bufferComplete (bufLines: string list) : bool =
 // tty only.
 let mutable private contPrompt = "   … "
 
+// the one-time "F1: keys" hint [D:repl-f1-keys]: once per session, on
+// the first typed continuation line
+let mutable private f1HintShown = false
+
 // type-ahead [D:repl-typeahead]: keys typed while the terminal was
 // cooked — before the first prompt, or during an entry's evaluation (eval
 // runs cooked [D:repl-isig]) — where ICRNL already turned Enter into
@@ -1446,6 +1451,31 @@ let private escThenEnter () : bool =
         true
     | _ -> false
 
+/// the length of the F1 sequence tail (what follows its ESC) that
+/// `queued` starts with, if any [D:repl-f1-keys]
+let f1Tail (queued: string) : int option =
+    [ "OP"; "[11~"; "[[A" ]
+    |> List.tryFind (fun t -> queued.StartsWith(t, StringComparison.Ordinal))
+    |> Option.map String.length
+
+/// after a bare Esc: is the rest of an F1 sequence already queued
+/// behind it (SS3 `O P`, `[ 1 1 ~`, the Linux console's `[ [ A`)? The
+/// fallback for when .NET hands the bytes over undecoded — consumed and
+/// read as F1, so an F1 never abandons or inserts [D:repl-f1-keys]. No
+/// waiting, as for escThenEnter [D:repl-esc-enter]; anything else stays
+/// queued
+let private escF1Tail () : bool =
+    while ttyIo (fun () -> Console.KeyAvailable) do
+        typeAhead.Enqueue(ttyIo (fun () -> Console.ReadKey(intercept = true)))
+
+    match f1Tail (typeAhead |> Seq.truncate 4 |> Seq.map (fun k -> k.KeyChar) |> Array.ofSeq |> String) with
+    | Some n ->
+        for _ in 1 .. n do
+            typeAhead.Dequeue() |> ignore
+
+        true
+    | None -> false
+
 let private deriveContPrompt (w: int) =
     let on = Types.Color.onStdout.Value
 
@@ -1473,6 +1503,10 @@ let private readLineTty () : string option =
     // display rows between the region top and the cursor at the last
     // paint — the way back up through wraps
     let mutable lastCursorDisplay = 0
+    // the line carrying the one-time F1 hint (by identity: rows shift as
+    // lines come and go) [D:repl-f1-keys]
+    let mutable hintLine: Text.StringBuilder option = None
+    let hintText = "  (F1: keys)"
 
     let termWidth () =
         try
@@ -1586,6 +1620,14 @@ let private readLineTty () : string option =
                     prompt
 
             out.Append(if i = 0 then p0 else contPrompt).Append painted |> ignore
+
+            // the hint paints only where it fits on the line's one row,
+            // so the row math below never sees it [D:repl-f1-keys]
+            match hintLine with
+            | Some h when obj.ReferenceEquals(h, lines[i]) && promptWidth + text.Length + hintText.Length < w ->
+                out.Append(Types.Color.dim Types.Color.onStdout.Value hintText) |> ignore
+            | _ -> ()
+
             totalRows <- totalRows + dispRows w text.Length
 
             if i < lines.Count - 1 then
@@ -1650,12 +1692,33 @@ let private readLineTty () : string option =
         lines.Insert(row + 1, Text.StringBuilder(indent + tail))
         row <- row + 1
         col <- indent.Length
+
+        // the first typed continuation line of the session carries the
+        // F1 hint; a paste does not spend it [D:repl-f1-keys]
+        if not queued && not f1HintShown && not Console.IsOutputRedirected then
+            f1HintShown <- true
+            hintLine <- Some lines[row]
+
         redraw ()
 
     // park the cursor at the region end (echoes print below the buffer)
     let toEnd () =
+        hintLine <- None
         row <- lines.Count - 1
         col <- lines[row].Length
+        redraw ()
+
+    // F1 [D:repl-f1-keys]: #keys' text below the buffer, then the
+    // prompt and the whole buffer repainted with the cursor where it was
+    // (the Tab listing's park-and-restore)
+    let showKeys () =
+        let keepRow, keepCol = row, col
+        toEnd ()
+        Console.WriteLine()
+        Console.WriteLine(keysText Types.Color.onStdout.Value)
+        row <- keepRow
+        col <- keepCol
+        lastCursorDisplay <- 0
         redraw ()
 
     let mutable result: string option option = None
@@ -1743,6 +1806,8 @@ let private readLineTty () : string option =
             // paste, a loaded box): the newline, not an abandon
             // [D:repl-esc-enter]
             insertNewline ()
+        | ConsoleKey.Escape when escF1Tail () -> showKeys ()
+        | ConsoleKey.F1 -> showKeys ()
         | ConsoleKey.Escape ->
             // Esc mid-buffer: abandon the whole buffer [D:repl-multiline]
             toEnd ()

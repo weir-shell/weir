@@ -6,6 +6,10 @@
 
 - **`#keys` lists the REPL editor's key bindings** (Ctrl+Y, Ctrl+R,
   Alt+Enter and the rest), so you don't have to look them up.
+- **F1 shows the key bindings in the middle of an edit.** The list
+  prints below the buffer, then the buffer comes back as it was, every
+  line and the cursor. The first multi-line entry of a session shows a
+  one-time `(F1: keys)` hint.
 - **The REPL editor indents for you.** A new line (Enter on an
   unfinished statement, Alt+Enter, Ctrl+J) starts at the indentation of
   the line above it, one level deeper after a line that opens a body
