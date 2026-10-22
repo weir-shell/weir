@@ -1,18 +1,19 @@
 #!/usr/bin/env weir
-// LOC per tracked file, grouped by extension (group totals descending,
-// files descending within each group), with a repo total.
+// LOC of the F# code: every tracked .fs file, grouped by top-level
+// directory (group totals descending, files descending within each
+// group), with a total. The vendored tests/toml-test suite is data, not
+// ours, and is left out.
 
 let counts =
-    git ls-files
+    git ls-files "*.fs"
+    |> Seq.where (fun f -> not (Str.startsWith "tests/toml-test/" f))
     |> Seq.map (fun f -> (f, File.read f |> Seq.length))
     |> Seq.freeze
 
 let group f =
-    match Path.extension f with
-    | "" -> "(no extension)"
-    | ".fs" when Str.startsWith "src/" f -> ".fs (src)"
-    | ".fs" when Str.startsWith "tests/" f -> ".fs (tests)"
-    | e -> e
+    match Str.trySplitOnce "/" f with
+    | Some(dir, _) -> dir
+    | None -> "."
 
 let locOf items =
     items |> Seq.map snd |> Seq.sum
