@@ -1983,12 +1983,22 @@ let private readLineTty () : string option =
                 // the session entry: alias heads join the head-slot pool
                 // [D:command-head-alias]; the session values feed the
                 // map-key slot [D:value-key-complete]
-                Complete.suggestSession
-                    currentAliasNames.Value
-                    currentVals.Value
-                    currentEnv.Value
-                    (text.Substring(0, col))
-                    ws
+                let all =
+                    Complete.suggestSession
+                        currentAliasNames.Value
+                        currentVals.Value
+                        currentEnv.Value
+                        (text.Substring(0, col))
+                        ws
+
+                // a directive is only a whole entry's first line
+                // [D:repl-directives]: a continuation line offers none
+                if row = 0 then
+                    all
+                elif text.Substring(0, ws).Trim() = "#" then
+                    []
+                else
+                    all |> List.filter (fun c -> not (c.StartsWith "#"))
 
             (match suggestions with
              | [] -> ()

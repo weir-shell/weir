@@ -428,6 +428,15 @@ if "weir> #" not in t:
 if "help" not in t or "infer" not in t or "save" not in t:
     failures.append(f"an empty-prompt Tab must offer the session directives: {t[-400:]!r}")
 
+# a continuation line is not an entry's first line: Tab there offers no
+# directive, and a typed '#' there completes none [D:repl-directives]
+t = pty_tab("let tabx =\r", taps=2)
+if re.search(r"\u2026\s+#", t) or re.search(r"\bhelp\s+history\b", t):
+    failures.append(f"a continuation-line Tab must not offer directives: {t[-400:]!r}")
+t = pty_tab("let tabx =\r#", taps=2)
+if re.search(r"\bhelp\s+history\b", t) or re.search(r"\u2026\s+#help", t):
+    failures.append(f"a continuation-line '#' must not complete directives: {t[-400:]!r}")
+
 # `Wr` at a head has a single completion and it is not the WriteFile
 # constructor — Tab either does nothing visible or completes a function;
 # WriteFile must not be the offered head
@@ -560,4 +569,4 @@ if failures:
         print("repl-directives FAIL:", f)
     sys.exit(1)
 
-print("repl-directives: #help x3 (one source), glance rendering (member + module blurbs), #find fallback (substring/usage/no-match), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), #types (default off, on restores, report, teach, config seed + override, piped pinned), #history (path header, count, bare-all, tail-n, help-listed, typo did-you-mean), unknown-directive message trimmed (#sig redirect, #schema unknown), #alias recognized (list/add/single-hop/help), #keys (help-listed, Ctrl+Y/Ctrl+R/Alt+Enter, piped plain, typo did-you-mean), empty-prompt Tab offers directives, constructor not a head")
+print("repl-directives: #help x3 (one source), glance rendering (member + module blurbs), #find fallback (substring/usage/no-match), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), #types (default off, on restores, report, teach, config seed + override, piped pinned), #history (path header, count, bare-all, tail-n, help-listed, typo did-you-mean), unknown-directive message trimmed (#sig redirect, #schema unknown), #alias recognized (list/add/single-hop/help), #keys (help-listed, Ctrl+Y/Ctrl+R/Alt+Enter, piped plain, typo did-you-mean), empty-prompt Tab offers directives (continuation lines none), constructor not a head")
