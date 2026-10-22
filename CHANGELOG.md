@@ -60,6 +60,17 @@
   quoted values, `#` comments and `|` block text. This applies to the
   editor (LSP) and to REPL Tab.
 
+- **A SIGHUP sent to weir's process group under heavy CPU load is the
+  teardown, not "command failed … 129".** Its handler could start late
+  enough that the dying child read as a failure — a cleanup stopped, or
+  `|> try` swallowed the signal and the script went on.
+- **A wide `Seq.pfirst` over `| complete` arms uses one thread per arm
+  again,** and a thread the OS refuses (a pids/`ulimit -u` limit) is a weir
+  error naming the limit instead of .NET's "TaskScheduler" text.
+- **A cleanup command at a terminal refuses a `#!` script whose
+  interpreter chain does not end in a runnable program,** as the same
+  command does in the body.
+
 ## v0.0.75
 
 ### Added
