@@ -328,6 +328,30 @@ send({"jsonrpc": "2.0", "id": 47, "method": "textDocument/completion",
 labels = [c["label"] for c in read_msg()["result"]]
 expect(labels == ["t.Name", "t.Stack"], f"row-compat must restore the edited field: {labels}")
 
+# the REPL's entry shapes in a document [D:entry-complete]: a for binder
+# on the line above types the head inside a hole (its only occurrence is
+# the cursor's), and the `_.` shorthand as a stage's argument after a for
+# header's pipe completes the element's fields, while a bare `|> _.`
+# stage over a seq offers nothing — the REPL and the LSP agree (a script
+# spells `Seq.where`: bare members are the REPL session's)
+FILEROW = ["bytes", "hidden", "kind", "modified", "name", "path", "target"]
+for rid, text, pos, want in [
+    (73, 'for p in ls |> Seq.where (fun f -> f.kind == Directory) do\n    print $"THIS: {p.}"\n',
+     {"line": 1, "character": 21}, ["p." + f for f in FILEROW]),
+    (74, 'for p in ls do\n    print $"THIS: {p.na}"\n', {"line": 1, "character": 23}, ["p.name"]),
+    (75, "for p in ls |> _.\n", {"line": 0, "character": 17}, []),
+    (78, "for p in ls |> Seq.map _.\n", {"line": 0, "character": 25}, ["_." + f for f in FILEROW]),
+    (76, "let rows = ls\nrows |> Seq.map _.\n", {"line": 1, "character": 18}, ["_." + f for f in FILEROW]),
+    (77, "ls |> Seq.map (fun x ->\n    x.\n", {"line": 1, "character": 6}, ["x." + f for f in FILEROW]),
+]:
+    send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+          "params": {"textDocument": {"uri": URI}, "contentChanges": [{"text": text}]}})
+    read_msg()
+    send({"jsonrpc": "2.0", "id": rid, "method": "textDocument/completion",
+          "params": {"textDocument": {"uri": URI}, "position": pos}})
+    labels = sorted(c["label"] for c in read_msg()["result"])
+    expect(labels == want, f"entry-context completion {text!r}: {labels}")
+
 # completion at line head -> a PATH command appears
 send({"jsonrpc": "2.0", "method": "textDocument/didChange",
       "params": {"textDocument": {"uri": URI}, "contentChanges": [{"text": "gi\n"}]}})

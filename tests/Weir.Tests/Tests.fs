@@ -3921,6 +3921,80 @@ let completionTests =
               Expect.isTrue (inHole |> List.forall (fun s -> s.StartsWith "Path.")) $"all Path members: {inHole}"
               Expect.equal inHole bare "the hole completes exactly as its bare interior expression"
           }
+          test "completion sees the whole entry: a binder on an earlier line types the head [D:entry-complete]" {
+              // the REPL's Tab over a multi-line entry: the entry up to the
+              // cursor (last line cut there), the cursor's line, the word start
+              let entry (lines: string list) =
+                  let cur = List.last lines
+                  Weir.Script.suggestEntry Set.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
+
+              let fileRow =
+                  [ "bytes"; "hidden"; "kind"; "modified"; "name"; "path"; "target" ]
+
+              let under (head: string) = fileRow |> List.map (fun f -> head + "." + f)
+
+              // the user's report: a for binder above, the cursor in a hole below
+              Expect.equal
+                  (entry
+                      [ "for p in ls |> where (fun f -> f.kind == Directory) do"
+                        "    print $\"THIS: {p." ])
+                  (under "p")
+                  "the for binder's element type completes inside the hole"
+
+              Expect.equal
+                  (entry [ "for p in ls do"; "    print $\"THIS: {p.na" ])
+                  [ "p.name" ]
+                  "a prefix narrows inside the hole"
+
+              Expect.equal
+                  (entry [ "ls |> Seq.map (fun x ->"; "    x." ])
+                  (under "x")
+                  "a fun binder on an earlier line, its paren still open"
+
+              Expect.equal
+                  (entry [ "let rows = ls"; "rows |> Seq.map _." ])
+                  (under "_")
+                  "an earlier statement's let joins the env: the shorthand gets the element's fields"
+
+              Expect.equal
+                  (entry [ "ls"; "|> where (fun f -> f.kind == Directory)"; "|> Seq.map _.na" ])
+                  [ "_.name" ]
+                  "a pipeline continued across lines types the shorthand's element"
+
+              Expect.equal
+                  (entry [ "let r = {| zname = \"a\" |}"; "r.zn" ])
+                  [ "r.zname" ]
+                  "an anonymous record bound on an earlier line of the entry"
+
+              Expect.equal (entry [ "for p in ls do"; "    print $\"{q." ]) [] "an unbound head still offers nothing"
+          }
+          test "the shorthand `_.` completes the pipeline's element [D:entry-complete]" {
+              let fileRow =
+                  [ "_.bytes"; "_.hidden"; "_.kind"; "_.modified"; "_.name"; "_.path"; "_.target" ]
+
+              let ask (t: string) = suggest t (Weir.Complete.wordStartAt t t.Length)
+              // a `for … in` header (or a let binder) leads the pipe's source
+              Expect.equal (ask "for p in ls |> map _.") fileRow "a for header before the pipe"
+              Expect.equal (ask "let n = ls |> Seq.map _.na") [ "_.name" ] "a let binder before the pipe"
+              Expect.equal (ask "ls |> Seq.where _.hi") [ "_.hidden" ] "an argument to a pipe stage"
+              Expect.equal (ask "ls |> map _.") fileRow "the stage-head spelling"
+              // a bare shorthand stage over a seq never type-checks: nothing
+              // (user-ruled); a record flowing in keeps its fields (the
+              // [D:hole-completion] pin's `r |> _.`)
+              Expect.equal (ask "for p in ls |> _.") [] "the user's report: a bare stage after a for header"
+              Expect.equal (ask "ls |> _.") [] "a bare stage over a seq"
+              Expect.equal (ask "ls\n|> _.") [] "a bare stage on a continuation line"
+              // the repair sees the shorthand too (the LSP's path)
+              Expect.equal
+                  (Weir.Script.repairedFields env "ls |> where (fun f -> f.kind == Directory) |> Seq.map _." "")
+                  (Some fileRow)
+                  "repairedFields types the shorthand as a lambda over the element"
+
+              Expect.equal
+                  (Weir.Script.repairedFields env "ls |> where (fun f -> f.kind == Directory) |> _." "")
+                  None
+                  "repairedFields: a bare stage over a seq types to no record"
+          }
           test "argv path completion keeps the directory prefix [D:complete-argv]" {
               // the word rule is where this lived: both callers cut the word at the
               // slash, so `micro ci/e` completed against the CWD and `micro ci/`
