@@ -4346,7 +4346,7 @@ if [ "$(id -u)" != 0 ]; then
     ptok=""
     for _ in 1 2 3; do
         ptn=$(ps -L -u "$(id -u)" -o lwp= | wc -l)
-        out=$( (ulimit -u $((ptn + 150)); timeout 60 "$BIN" "$r6dir/pt.weir" 256) 2>&1)
+        out=$( (ulimit -u $((ptn + 150)); timeout 60 "$BIN" "$r6dir/pt.weir" 256) 2>&1) || true
         echo "$out" | grep -qF "TaskScheduler" && fail "a refused thread never shows .NET's text: $out"
         if echo "$out" | grep -qF "cannot start a thread for a pfirst arm: the process/thread limit is reached"; then
             ptok=1
