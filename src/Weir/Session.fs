@@ -1369,47 +1369,60 @@ module CleanupShim =
 
             go ()
 
-    /// what execve itself runs [D:cleanup-sigign]: a `#!` line naming an
-    /// executable interpreter, or a native image. The shim's `exec` would
-    /// hand any other file to sh (its ENOEXEC fallback), which a direct
-    /// spawn refuses; read without blocking, so a FIFO is never waited on
+    /// what execve itself runs [D:cleanup-sigign]: a native image, or a
+    /// `#!` file whose interpreter execve runs in turn — on Linux up to five
+    /// `#!` files deep (then ELOOP), on macOS one (no nested interpreter).
+    /// The shim's `exec` would hand any other file to sh (its ENOEXEC
+    /// fallback), which a direct spawn refuses; read without blocking, so a
+    /// FIFO is never waited on
     let execAccepts (path: string) (cwd: string) (runnable: string -> bool) : bool =
         let O_NONBLOCK = if System.OperatingSystem.IsLinux() then 0x800 else 0x4
-        let fd = Libc.``open`` (path, O_NONBLOCK)
+        let maxScripts = if System.OperatingSystem.IsLinux() then 5 else 1
 
-        if fd < 0 then
-            false
-        else
-            let head =
+        let headOf (path: string) =
+            let fd = Libc.``open`` (path, O_NONBLOCK)
+
+            if fd < 0 then
+                None
+            else
                 let buf = System.Runtime.InteropServices.Marshal.AllocHGlobal 256
 
                 try
                     let n = int (Libc.read (fd, buf, unativeint 256))
                     let bytes = Array.zeroCreate<byte> (max n 0)
                     System.Runtime.InteropServices.Marshal.Copy(buf, bytes, 0, bytes.Length)
-                    bytes
+                    Some bytes
                 finally
                     System.Runtime.InteropServices.Marshal.FreeHGlobal buf
                     Libc.close fd |> ignore
 
-            let starts (magic: byte list) =
-                head.Length >= magic.Length && List.forall2 (fun i b -> head[i] = b) [ 0 .. magic.Length - 1 ] magic
+        let rec accepts (path: string) (scripts: int) =
+            match headOf path with
+            | None -> false
+            | Some head ->
+                let starts (magic: byte list) =
+                    head.Length >= magic.Length
+                    && List.forall2 (fun i b -> head[i] = b) [ 0 .. magic.Length - 1 ] magic
 
-            if starts [ 0x23uy; 0x21uy ] then
-                let line =
-                    System.Text.Encoding.UTF8.GetString(head, 2, head.Length - 2).Split('\n').[0]
+                if starts [ 0x23uy; 0x21uy ] then
+                    let line =
+                        System.Text.Encoding.UTF8.GetString(head, 2, head.Length - 2).Split('\n').[0]
 
-                match line.Trim([| ' '; '\t' |]).Split([| ' '; '\t' |], 2).[0] with
-                | "" -> false
-                | interp -> runnable (System.IO.Path.Combine(cwd, interp))
-            else
-                [ [ 0x7Fuy; 0x45uy; 0x4Cuy; 0x46uy ] // ELF
-                  [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCEuy ] // Mach-O
-                  [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCFuy ]
-                  [ 0xCEuy; 0xFAuy; 0xEDuy; 0xFEuy ]
-                  [ 0xCFuy; 0xFAuy; 0xEDuy; 0xFEuy ]
-                  [ 0xCAuy; 0xFEuy; 0xBAuy; 0xBEuy ] ]
-                |> List.exists starts
+                    match line.Trim([| ' '; '\t' |]).Split([| ' '; '\t' |], 2).[0] with
+                    | "" -> false
+                    | interp ->
+                        let interp = System.IO.Path.Combine(cwd, interp)
+                        scripts < maxScripts && runnable interp && accepts interp (scripts + 1)
+                else
+                    [ [ 0x7Fuy; 0x45uy; 0x4Cuy; 0x46uy ] // ELF
+                      [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCEuy ] // Mach-O
+                      [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCFuy ]
+                      [ 0xCEuy; 0xFAuy; 0xEDuy; 0xFEuy ]
+                      [ 0xCFuy; 0xFAuy; 0xEDuy; 0xFEuy ]
+                      [ 0xCAuy; 0xFEuy; 0xBAuy; 0xBEuy ] ]
+                    |> List.exists starts
+
+        accepts path 0
 
 /// a spawn here goes through `CleanupShim`: it runs inside a cleanup and
 /// weir has a controlling terminal (POSIX) — foreground or not, since a

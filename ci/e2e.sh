@@ -4198,6 +4198,22 @@ PYEOF
     echo "$tout" | grep -qF "not executable" || fail "a shebang-less executable in a cleanup at a tty is refused: $tout"
     echo "$tout" | grep -qF "noshebang-ran" && fail "a shebang-less executable never runs through the shim's sh: $tout"
     echo "e2e ok: a shebang-less executable in a cleanup at a tty is refused, as a direct spawn refuses it"
+    # T1-1: ... followed down the #! chain as execve follows it: a script
+    # whose interpreter is such a file is refused too; a chain of real
+    # scripts runs [D:cleanup-sigign]
+    printf '#!%s\necho chain-outer-ran\n' "$stdir/nosb" > "$stdir/nosbo"; chmod +x "$stdir/nosbo"
+    tout=$(printf 'SLEEP 1500\n' | python3 "$ptyrun" 8 "$BIN" "$stdir/nosb.weir" "$stdir/nosbo")
+    echo "$tout" | grep -qF "not executable" || fail "a #! script whose interpreter is shebang-less is refused in a cleanup at a tty: $tout"
+    echo "$tout" | grep -qE "chain-outer-ran|noshebang-ran" && fail "a #! script whose interpreter is shebang-less never runs through the shim's sh: $tout"
+    # (macOS runs no nested interpreter: the chain is Linux's)
+    if [ "$(uname -s)" = Linux ]; then
+        printf '#!/bin/sh\necho "chain-ran $#"\n' > "$stdir/ch0"; chmod +x "$stdir/ch0"
+        printf '#!%s\n' "$stdir/ch0" > "$stdir/ch1"; chmod +x "$stdir/ch1"
+        printf '#!%s\n' "$stdir/ch1" > "$stdir/ch2"; chmod +x "$stdir/ch2"
+        tout=$(printf 'SLEEP 1500\n' | python3 "$ptyrun" 8 "$BIN" "$stdir/nosb.weir" "$stdir/ch2")
+        echo "$tout" | grep -qF "chain-ran 2" || fail "a chain of #! scripts ending at a native interpreter runs in a cleanup at a tty: $tout"
+    fi
+    echo "e2e ok: the shim follows the #! chain as execve does — a shebang-less interpreter is refused, a script chain runs"
 
     # C1-5: the shim holds for a weir started in the background and brought
     # to the foreground while its cleanup runs: the ^C never kills the

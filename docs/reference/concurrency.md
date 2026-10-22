@@ -311,7 +311,8 @@ its own handler (a pager quits on ^C); a second signal kills it (I12).
 A shim a ^C killed before its `trap` never started the command, so on
 Linux it is started again (`CleanupShim.passedTrap` reads its /proc
 status). The shim refuses what a direct spawn refuses: a file that is
-neither a native image nor a `#!` script with an executable interpreter
+neither a native image nor a `#!` script whose interpreter chain execve
+follows to a native image (five `#!` files deep on Linux, one on macOS)
 never reaches sh's ENOEXEC fallback (`CleanupShim.execAccepts`). Without
 a tty the spawn is direct. On Windows the command
 starts in a new process group, which Ctrl+C does not reach. Rests on
