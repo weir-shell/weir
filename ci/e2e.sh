@@ -10420,6 +10420,12 @@ if command -v python3 >/dev/null 2>&1; then
         echo "$out" | grep -qE 'Tr0ub|4dor|pa#ss|ssw0rd|q\?wd|deploy' && fail "url-redact-last-at: the send error printed the credential: $out"
         echo "$out" | grep -qF '***@127.0.0.1' || fail "url-redact-last-at: the send error must mask: $out"
     done
+    # a single-label host after `user:<digits>` and a raw delimiter
+    for u in "http://deploy:2024/01/15@intranet/x" "http://u:2024#pw@gitlab/x"; do
+        out=$($noprox "$BIN" -e "show (Http.get \"$u\")" 2>&1) || fail "url-redact-last-at: show must succeed: $out"
+        echo "$out" | grep -qE '2024|deploy|pw@' && fail "url-redact-last-at: show printed the credential: $out"
+        echo "$out" | grep -qE 'http://\*\*\*@(intranet|gitlab)/x' || fail "url-redact-last-at: show must mask a ported user:digits authority: $out"
+    done
     mkdir -p "$h7dir/ua" && ( cd "$h7dir/ua" && git init -q . )
     out=$( cd "$h7dir/ua" && $noprox "$BIN" add schema 'http://deploy:Tr0ub/4dor@127.0.0.1:1/s.json' --as s 2>&1 ) && fail "url-redact-last-at: add must fail"
     echo "$out" | grep -qE 'Tr0ub|4dor' && fail "url-redact-last-at: weir add printed the credential: $out"

@@ -30707,7 +30707,12 @@ let hunt3r7SafetyTests =
                     "https://tok/en+==@github.com/o/r", "https://***@github.com/o/r"
                     "http://u:a/b@c@registry/v2", "http://***@registry/v2"
                     "//u:pw@h:99/x", "//***@h:99/x"
-                    "u:p/w@h:3128", "***@h:3128" ] do
+                    "u:p/w@h:3128", "***@h:3128"
+                    // `user:<digits>` before the raw delimiter reads as host:port
+                    "http://u:2024/pw@intranet/x", "http://***@intranet/x"
+                    "http://deploy:2024/01/15@intranet/x", "http://***@intranet/x"
+                    "http://deploy:8080?4dor@gitea/x", "http://***@gitea/x"
+                    "http://u:2024#pw@gitlab/x", "http://***@gitlab/x" ] do
                   Expect.equal (Weir.Http.redactUrl u) shown u
 
               // an @ in a path or query of a credential-free URL stays

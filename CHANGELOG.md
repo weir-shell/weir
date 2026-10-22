@@ -20,7 +20,10 @@
   bad-proxy message masked only up to the first of those characters, so
   `http://deploy:Tr0ub/4dor@host` printed whole. They now mask through
   the last `@` before the host (`http://***@host/…`), for `//user:pw@host`
-  and a scheme-less `user:pw@host` proxy value too.
+  and a scheme-less `user:pw@host` proxy value too — including a password
+  that starts with digits (`http://u:2024/pw@intranet`, which reads like
+  `host:port`). The cost: a credential-free URL with a port and an `@` in
+  its path (`http://localhost:3000/users/@me`) also shows masked.
 - **A malformed proxy variable is an error even when another one is
   set.** `http_proxy=http://h:99999` beside a working `ALL_PROXY` sent
   the request through `ALL_PROXY`; it now raises, naming `http_proxy`.

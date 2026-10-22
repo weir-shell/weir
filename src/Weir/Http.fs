@@ -119,8 +119,9 @@ let private hostPortRx =
 /// password may hold a raw `/ ? # @`, so the span runs through the LAST
 /// `@` of the authority (which ends at the first `/ ? # \`), and further
 /// when in doubt: through a later `@` when the authority before the first
-/// delimiter is not a `host[:port]` (a raw `/` cut a password), or when
-/// that `@` is followed by a dotted, ported, bracketed or localhost host.
+/// delimiter is not a `host` or carries an explicit port (a raw `/` cut a
+/// password — `user:2024/pw` reads as `host:port`), or when that `@` is
+/// followed by a dotted, ported, bracketed or localhost host.
 /// An `@` in a path or query otherwise stays.
 let private userinfoSpan (url: string) : (int * int) option =
     let authStart =
@@ -146,8 +147,12 @@ let private userinfoSpan (url: string) : (int * int) option =
         && (h.Contains '.' || h.Contains ':' || h.StartsWith "["
             || h.Equals("localhost", StringComparison.OrdinalIgnoreCase))
 
-    let authorityCut =
-        not (hostPortRx.IsMatch(url.Substring(authStart, authEnd - authStart)))
+    let authority = hostPortRx.Match(url.Substring(authStart, authEnd - authStart))
+    let authorityCut = not authority.Success
+
+    // `host:port` is also how `user:<digits>` reads once a raw delimiter
+    // cut the password, so an explicit port is ambiguous too
+    let authorityPorted = authority.Success && authority.Groups[2].Length > 1
 
     let rec pick (from: int) =
         match if from < authStart then -1 else url.LastIndexOf('@', from) with
@@ -156,7 +161,7 @@ let private userinfoSpan (url: string) : (int * int) option =
         | at ->
             let host = url.Substring(at + 1, delimFrom (at + 1) - at - 1)
 
-            if (authorityCut && host.Length > 0 && not (host |> Seq.exists Char.IsWhiteSpace))
+            if ((authorityCut || authorityPorted) && host.Length > 0 && not (host |> Seq.exists Char.IsWhiteSpace))
                || hostish host then
                 Some at
             else
