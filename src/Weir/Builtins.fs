@@ -3558,21 +3558,24 @@ type private FsProbe =
       IsDir: string -> bool // Kind = 2, in one stat
       EmptyDir: string -> bool
       Dangling: string -> bool
-      Canon: string -> string } // every symlink followed
+      Canon: string -> string // every symlink followed
+      Looped: string -> bool } // its symlinks loop (ELOOP)
 
 let private realProbe =
     { Kind = PlanMode.realKind
       IsDir = System.IO.Directory.Exists
       EmptyDir = fun r -> System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty
       Dangling = isDangling
-      Canon = PlanMode.realCanon }
+      Canon = PlanMode.realCanon
+      Looped = PlanMode.realLooped }
 
 let private planProbe =
     { Kind = PlanMode.simKind
       IsDir = PlanMode.simIsDir
       EmptyDir = PlanMode.simEmptyDir
       Dangling = PlanMode.simDangling isDangling
-      Canon = PlanMode.simCanon }
+      Canon = PlanMode.simCanon
+      Looped = PlanMode.simLooped }
 
 // a new entry's parent must be a directory
 let private requireParent (pr: FsProbe) (op: string) (r: string) : unit =
@@ -3584,6 +3587,8 @@ let private requireParent (pr: FsProbe) (op: string) (r: string) : unit =
 let private preWrite (pr: FsProbe) (op: string) (r: string) : unit =
     if pr.IsDir r then
         failwith $"{op}: {quoteData r} is a directory"
+    elif pr.Looped r then
+        failwith $"{op}: cannot access {quoteData r} — Too many levels of symbolic links"
     else
         requireParent pr op r
 

@@ -10269,6 +10269,90 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(root, true)
           }
+          // [D:plan-preconditions]: a moved link stays a link at its new
+          // path; a write through a dangling link creates its target; a
+          // write through a loop refuses (ELOOP) — at capture, as directly
+          test "a plan simulates a moved symlink as a link, a write through a dangling link, and a loop" {
+              skipOnWindows ()
+              let root = td ()
+              System.IO.Directory.CreateDirectory root |> ignore
+              let d = weirPath root
+              let at (n: string) = System.IO.Path.Combine(root, n)
+              let isLink (p: string) = not (isNull (System.IO.FileInfo(p).LinkTarget))
+
+              let refused (needle: string) (body: string list) =
+                  runFile (
+                      [ "let mk () =" ; "    plan" ]
+                      @ (body |> List.map (fun l -> "        " + l))
+                      @ [ "let r = mk () |> try result"
+                          "match r with"
+                          $"| Error e -> if not (e |> Str.contains \"{needle}\") then fail e"
+                          "| Ok _ -> fail \"captured\"" ]
+                  )
+
+              try
+                  System.IO.Directory.CreateDirectory(at "a") |> ignore
+                  System.IO.Directory.CreateSymbolicLink(at "L", "a") |> ignore
+                  System.IO.File.WriteAllText(at "f", "hi\n")
+                  System.IO.File.CreateSymbolicLink(at "FL", "f") |> ignore
+
+                  Expect.equal
+                      (refused
+                          "no such directory"
+                          [ $"Dir.move \"{d}/L\" \"{d}/M\""
+                            $"Dir.deleteAll \"{d}/a\""
+                            $"File.write \"{d}/M/x\" [\"w\"]" ])
+                      0
+                      "a moved dir link still points at its deleted target"
+
+                  Expect.equal
+                      (refused
+                          "dangling symlink"
+                          [ $"File.move \"{d}/FL\" \"{d}/FM\""
+                            $"File.delete \"{d}/f\""
+                            $"File.copy \"{d}/FM\" \"{d}/z\"" ])
+                      0
+                      "a moved file link still points at its deleted target"
+
+                  Expect.isTrue (isLink (at "L") && isLink (at "FL")) "nothing applied"
+
+                  // an absolute link moved into b: a copy of b into its target is not into itself
+                  System.IO.Directory.CreateDirectory(at "b") |> ignore
+                  System.IO.Directory.CreateSymbolicLink(at "AL", at "a") |> ignore
+
+                  Expect.equal
+                      (runFile
+                          [ "let p ="
+                            "    plan"
+                            $"        Dir.move \"{d}/AL\" \"{d}/b/b\""
+                            $"        Dir.copy \"{d}/b\" \"{d}/b/b/L\""
+                            "p |> Plan.apply" ])
+                      0
+                      "captured and applied"
+
+                  Expect.isTrue (isLink (at "a/L/b")) "the copy keeps the moved link a link"
+
+                  // a write through a dangling link creates its target
+                  System.IO.File.CreateSymbolicLink(at "DG", "nowhere") |> ignore
+
+                  Expect.equal
+                      (runFile
+                          [ "let p ="
+                            "    plan"
+                            $"        File.write \"{d}/DG\" [\"w\"]"
+                            $"        File.copy \"{d}/DG\" \"{d}/c\""
+                            "p |> Plan.apply" ])
+                      0
+                      "the copy reads the written target"
+
+                  Expect.equal (System.IO.File.ReadAllText(at "c")) "w\n" "copied"
+
+                  // a loop
+                  System.IO.File.CreateSymbolicLink(at "LP", "LP") |> ignore
+                  Expect.equal (refused "Too many levels of symbolic links" [ $"File.write \"{d}/LP\" [\"w\"]" ]) 0 "a loop refuses at capture"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
           // [D:plan-preconditions]: a write follows its final link — the
           // target's parent must be a directory, directly and at capture
           test "a write through a link into a missing directory refuses, directly and at capture" {

@@ -41,6 +41,20 @@
   signature** instead of `weir restore`, which cannot bring a signature
   back. A generated signature no longer lists a subcommand twice in
   `stopAtOperand`.
+- **A plan treats a moved symlink as a link.** After `Dir.move` or
+  `File.move` of a link, the plan treated the new path as a real
+  directory or file. So a plan that then deleted the link's target was
+  captured and failed at apply, after its earlier steps had run. And
+  `Dir.copy b b/b/L`, where `b/b` was a moved link to a directory
+  outside `b`, was refused as a copy into itself. Both now behave as
+  the direct calls do.
+- **A plan that writes through a dangling symlink can copy it next.**
+  `File.write "b"` with `b -> nowhere` creates `nowhere`, but a
+  following `File.copy "b" "c"` in the same plan was refused as a copy
+  from a dangling link. It now applies.
+- **A write through a symlink loop (`ln -s b b`) is refused when the
+  plan captures it**, not when it applies, with `Too many levels of
+  symbolic links`. The direct call gives the same message.
 
 ## v0.0.75
 
