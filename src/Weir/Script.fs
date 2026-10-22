@@ -5399,24 +5399,6 @@ let entryContext (env: TypeEnv) (lines: string list) : TypeEnv * string option =
             env', Some(last.Text.Substring(0, last.Text.Length - suffix.Length))
         | _ -> env, None
 
-/// the REPL's Tab over its entry [D:entry-complete]: `entry` is the
-/// entry up to the cursor (dedented, its last line cut there), `text`
-/// the cursor's own line up to the cursor and `wordStart` within it. A
-/// repaired `head.`/`_.` word answers first (the LSP's precedence), the
-/// line machinery under the entry's env otherwise
-let suggestEntry
-    (aliasHeads: Set<string>)
-    (values: Map<string, Eval.Value>)
-    (env: TypeEnv)
-    (entry: string list)
-    (text: string)
-    (wordStart: int)
-    : string list =
-    let ctxEnv, stmt = entryContext env entry
-
-    match stmt |> Option.bind (fun s -> repairedFields ctxEnv s "") with
-    | Some(_ :: _ as fields) -> fields
-    | _ -> Complete.suggestSession aliasHeads values ctxEnv text wordStart
 
 // ---------------------------------------------------------------------------
 // weir check [--json] [D:check-lsp-chain]. Check-everything, no
@@ -5679,12 +5661,21 @@ type SigArity =
 type SigSurface =
     { Longs: Map<string, SigArity>
       Shorts: Map<string, SigArity>
-      Literals: Map<string, SigArity> }
+      Literals: Map<string, SigArity>
+      // what a value-taking flag's value completes to, keyed by spelling
+      // as typed (`--file`, `-F`, `-name`); absent = nothing
+      // [D:sig-arg-complete]
+      Values: Map<string, SigValue> }
+
+and SigValue =
+    | VPath
+    | VChoices of string list
 
 let emptySigSurface =
     { Longs = Map.empty
       Shorts = Map.empty
-      Literals = Map.empty }
+      Literals = Map.empty
+      Values = Map.empty }
 
 // a loaded signature's checkable surface. Subs: kebab-cased subcommand
 // -> (long-flag set, short set), the globals folded in (what completion
@@ -5724,7 +5715,24 @@ type SigInfo =
       Version: string
       SubRecords: Map<string, string> }
 
-let private sigSurface (def: RecordDef) : SigSurface =
+// a value word that names a file: the field's name or a spelling has a
+// path word, or its doc's first line does [D:sig-arg-complete] —
+// generated sigs record `string`, and help rows say `<file>`/"read from
+// file" far more reliably than they say anything typed
+let private pathWords =
+    set [ "file"; "files"; "path"; "paths"; "dir"; "dirs"; "directory"; "folder" ]
+
+let private pathish (names: string list) (doc: string option) : bool =
+    let words (s: string) =
+        Text.RegularExpressions.Regex.Split(s.ToLowerInvariant(), "[^a-z]+")
+        |> Array.filter (fun w -> w <> "")
+
+    names |> List.exists (fun n -> words n |> Array.exists pathWords.Contains)
+    || (match doc with
+        | Some d -> words (d.Split('\n')[0]) |> Array.exists pathWords.Contains
+        | None -> false)
+
+let private sigSurface (choicesOf: string -> string list option) (def: RecordDef) : SigSurface =
     let positional f =
         match Map.tryFind f def.Attrs with
         | Some specs -> specs |> List.exists (fun (n, _) -> n = "Positional")
@@ -5791,9 +5799,38 @@ let private sigSurface (def: RecordDef) : SigSurface =
                             { acc with Longs = Map.add w a acc.Longs })
                     acc
 
-            match shortOf f with
-            | Some sh -> { acc with Shorts = Map.add sh a acc.Shorts }
-            | None -> acc)
+            let acc =
+                match shortOf f with
+                | Some sh -> { acc with Shorts = Map.add sh a acc.Shorts }
+                | None -> acc
+
+            // the value's completion, under every spelling this field took
+            let value =
+                let rec named t =
+                    match t with
+                    | TNamed("Option", [ inner ])
+                    | TSeq inner -> named inner
+                    | TNamed(n, []) -> choicesOf n
+                    | _ -> None
+
+                if a = ANone then
+                    None
+                else
+                    match named ty with
+                    | Some cs -> Some(VChoices cs)
+                    | None when pathish (Weir.Argv.kebabFlag f :: wires) (Weir.Argv.docOf def f) -> Some VPath
+                    | None -> None
+
+            match value with
+            | None -> acc
+            | Some v ->
+                let spelled =
+                    (if dashed then [] else [ "--" + Weir.Argv.kebabFlag f ])
+                    @ (wires |> List.map (fun w -> if w.StartsWith "-" then w else "--" + w))
+                    @ (shortOf f |> Option.map (fun sh -> "-" + sh) |> Option.toList)
+
+                { acc with
+                    Values = spelled |> List.fold (fun m k -> Map.add k v m) acc.Values })
         emptySigSurface
 
 // later spellings never displace earlier ones: a case's own flag keeps
@@ -5804,7 +5841,18 @@ let private mergeSurface (a: SigSurface) (b: SigSurface) : SigSurface =
 
     { Longs = into a.Longs b.Longs
       Shorts = into a.Shorts b.Shorts
-      Literals = into a.Literals b.Literals }
+      Literals = into a.Literals b.Literals
+      Values =
+        b.Values
+        |> Map.fold
+            (fun acc k v ->
+                let ownedByA =
+                    Map.containsKey k a.Literals
+                    || (k.StartsWith "--" && Map.containsKey (k.Substring 2) a.Longs)
+                    || (k.Length = 2 && Map.containsKey (k.Substring 1) a.Shorts)
+
+                if Map.containsKey k acc || ownedByA then acc else Map.add k v acc)
+            a.Values }
 
 let private surfaceSets (s: SigSurface) : Set<string> * Set<string> =
     (s.Longs |> Map.keys |> Set.ofSeq), (s.Shorts |> Map.keys |> Set.ofSeq)
@@ -5871,6 +5919,73 @@ let private legacySigFileName (tool: string) : string =
         .TrimStart('.')
     + ".weir"
 
+/// the file a `#sig <tool>` names from a script in `scriptDir`: the
+/// override, else the nearest .weir/sigs/ under the tool's own name, a
+/// legacy name only where the lock records it [D:sig-probe-bounds]
+let resolveSigFile (scriptDir: string) (decl: SigDecl) : Result<string, string> =
+    match decl.Override with
+    | Some p -> Ok(IO.Path.GetFullPath(IO.Path.Combine(scriptDir, p)))
+    | None ->
+        match Contracts.findWeirDir scriptDir with
+        | Error e -> Error $"#sig {quoteData decl.Tool}: {e}"
+        | Ok weirDir ->
+            let at name = IO.Path.Combine(weirDir, "sigs", name)
+            let current = at (sigFileName decl.Tool)
+            let legacy = at (legacySigFileName decl.Tool)
+
+            // the legacy name only where the lock records it
+            // for this very tool — never another tool's file
+            let lockedLegacy () =
+                match Contracts.readLock weirDir with
+                | Ok entries ->
+                    entries
+                    |> List.exists (fun e ->
+                        e.Kind = "sig"
+                        && e.Name = decl.Tool
+                        && e.Path.Replace('\\', '/') = "sigs/" + legacySigFileName decl.Tool)
+                | Error _ -> false
+
+            // the plain name another tool's lock entry records
+            // (its legacy name) is that tool's file, never this one's
+            let ownedByOther () =
+                match Contracts.readLock weirDir with
+                | Ok entries ->
+                    let rel = "sigs/" + sigFileName decl.Tool
+
+                    if entries |> List.exists (fun e -> e.Kind = "sig" && e.Name = decl.Tool && e.Path.Replace('\\', '/') = rel) then
+                        None
+                    else
+                        entries
+                        |> List.tryFind (fun e -> e.Kind = "sig" && e.Name <> decl.Tool && e.Path.Replace('\\', '/') = rel)
+                        |> Option.map (fun e -> e.Name)
+                | Error _ -> None
+
+            if not (IO.File.Exists current) && IO.File.Exists legacy && lockedLegacy () then
+                Ok legacy
+            else
+                match (if IO.File.Exists current then ownedByOther () else None) with
+                | Some other ->
+                    Error
+                        $"#sig {decl.Tool}: sigs/{sigFileName decl.Tool} is the signature of '{Eval.sanitizeTtyEcho other}' (the lock records it under its legacy name) — regenerate that one, which moves it to its own name: weir add sig '{Eval.sanitizeTtyEcho other}'"
+                | None -> Ok current
+
+let private fieldDocsFor (rawLines: string list) (ll: LogicalLine) : Map<string, string> =
+    let physLines = ll.Segments |> List.map (fun (_, p, _) -> p) |> Set.ofList
+    let arr = List.toArray rawLines
+
+    docAttachments rawLines
+    |> List.choose (fun d ->
+        match d.Doc with
+        | first :: _ when
+            first <> ""
+            && Set.contains d.Line physLines
+            && d.Line - 1 < arr.Length
+            && d.Col - 1 + d.Len <= arr[d.Line - 1].Length
+            ->
+            Some(arr[d.Line - 1].Substring(d.Col - 1, d.Len), first)
+        | _ -> None)
+    |> Map.ofList
+
 /// load the signatures a file declared; errors become diagnostics at
 /// the declaring line. The sig file is an ordinary weir module
 /// (decl-only + weak purity for free): `module X`, `let version =
@@ -5908,52 +6023,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
             let bare = decl.Tool.Trim '"'
             diags.Add(mk decl.Line $"#sig takes a bare tool name — drop the quotes: #sig {quoteData bare}")
         else
-            let resolved =
-                match decl.Override with
-                | Some p -> Ok(IO.Path.GetFullPath(IO.Path.Combine(scriptDir, p)))
-                | None ->
-                    match Contracts.findWeirDir scriptDir with
-                    | Error e -> Error $"#sig {quoteData decl.Tool}: {e}"
-                    | Ok weirDir ->
-                        let at name = IO.Path.Combine(weirDir, "sigs", name)
-                        let current = at (sigFileName decl.Tool)
-                        let legacy = at (legacySigFileName decl.Tool)
-
-                        // the legacy name only where the lock records it
-                        // for this very tool — never another tool's file
-                        let lockedLegacy () =
-                            match Contracts.readLock weirDir with
-                            | Ok entries ->
-                                entries
-                                |> List.exists (fun e ->
-                                    e.Kind = "sig"
-                                    && e.Name = decl.Tool
-                                    && e.Path.Replace('\\', '/') = "sigs/" + legacySigFileName decl.Tool)
-                            | Error _ -> false
-
-                        // the plain name another tool's lock entry records
-                        // (its legacy name) is that tool's file, never this one's
-                        let ownedByOther () =
-                            match Contracts.readLock weirDir with
-                            | Ok entries ->
-                                let rel = "sigs/" + sigFileName decl.Tool
-
-                                if entries |> List.exists (fun e -> e.Kind = "sig" && e.Name = decl.Tool && e.Path.Replace('\\', '/') = rel) then
-                                    None
-                                else
-                                    entries
-                                    |> List.tryFind (fun e -> e.Kind = "sig" && e.Name <> decl.Tool && e.Path.Replace('\\', '/') = rel)
-                                    |> Option.map (fun e -> e.Name)
-                            | Error _ -> None
-
-                        if not (IO.File.Exists current) && IO.File.Exists legacy && lockedLegacy () then
-                            Ok legacy
-                        else
-                            match (if IO.File.Exists current then ownedByOther () else None) with
-                            | Some other ->
-                                Error
-                                    $"#sig {decl.Tool}: sigs/{sigFileName decl.Tool} is the signature of '{Eval.sanitizeTtyEcho other}' (the lock records it under its legacy name) — regenerate that one, which moves it to its own name: weir add sig '{Eval.sanitizeTtyEcho other}'"
-                            | None -> Ok current
+            let resolved = resolveSigFile scriptDir decl
 
             match resolved with
             | Error e -> diags.Add(mk decl.Line e)
@@ -6002,10 +6072,37 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                     // `let version` is optional [D:sig-version-probe]: a
                     // tool that does not answer --version has no identity
                     // to record — absence is a stated fact, not a defect
+                    // the `///` field docs, which a loaded module's records
+                    // do not carry: a value's doc can say it names a file
+                    // [D:sig-arg-complete]
+                    let fieldDocs =
+                        try
+                            let raw = IO.File.ReadAllLines sigFile |> List.ofArray
+
+                            let numbered =
+                                raw
+                                |> List.mapi (fun i l -> i + 1, l)
+                                |> List.filter (fun (_, l) -> classifyLine l <> LineKind.CommentOnly)
+                                |> List.map (fun (n, l) -> n, stripComment l)
+
+                            match assemble numbered with
+                            | Ok lls ->
+                                lls
+                                |> List.choose (fun ll ->
+                                    let m = Text.RegularExpressions.Regex.Match(ll.Text, @"^type\s+(\w+)")
+                                    if m.Success then Some(m.Groups[1].Value, fieldDocsFor raw ll) else None)
+                                |> Map.ofList
+                            | Error _ -> Map.empty
+                        with _ ->
+                            Map.empty
+
                     let recordOf name =
                         lm.TypeDefs
                         |> List.tryPick (function
-                            | (n, Record rd) when n = name -> Some rd
+                            | (n, Record rd) when n = name ->
+                                match Map.tryFind name fieldDocs with
+                                | Some docs when rd.Docs.IsEmpty -> Some { rd with Docs = docs }
+                                | _ -> Some rd
                             | _ -> None)
 
                     let letStrs name =
@@ -6043,6 +6140,18 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                 $"#sig {quoteData decl.Tool}: `let convention = \"{convention}\"` names no flag convention — use \"gnu\" (the default), \"go\" or \"find\""
                         )
 
+                    // a field typed by a union of bare cases records its
+                    // choices (`type Color = | Always | Never | Auto` →
+                    // always, never, auto) [D:sig-arg-complete]
+                    let choicesOf name =
+                        lm.TypeDefs
+                        |> List.tryPick (function
+                            | (n, Union ud) when n = name && ud.Cases |> List.forall (fun (_, p) -> p.IsNone) ->
+                                Some(ud.Cases |> List.map (fun (c, _) -> Weir.Argv.kebabFlag c))
+                            | _ -> None)
+
+                    let sigSurface = sigSurface choicesOf
+
                     let globals = recordOf "Globals" |> Option.map sigSurface
 
                     let info surfaces subRecords =
@@ -6072,7 +6181,8 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                 decl.Line
                                 $"#sig {quoteData decl.Tool}: the signature declares no type `Cmd` — the command surface is the type named Cmd (a union of subcommands, or a record of flags)"
                         )
-                    | Some(_, Record rd) -> infos.Add(info (Map [ "", sigSurface rd ]) (Map [ "", "Cmd" ]))
+                    | Some(_, Record rd) ->
+                        infos.Add(info (Map [ "", sigSurface (recordOf "Cmd" |> Option.defaultValue rd) ]) (Map [ "", "Cmd" ]))
                     | Some(_, Union ud) ->
                         let surfaces =
                             ud.Cases
@@ -6122,6 +6232,48 @@ let targetSourceLines (absPath: string) : string list option =
 let sigInfosForFile (path: string) (rawLines: string list) : SigInfo list =
     let _, _, decls = scriptBody rawLines
     loadSigs path decls |> snd
+
+// the top level: the flat record, or `type Globals`; a scoped sig
+// without one checks the case intersection — what rides every case is
+// global — and an empty intersection (hand-written unions that never
+// duplicate) checks nothing there [D:scoped-sigs]
+let private sigRootSurface (si: SigInfo) : SigSurface option =
+    let globals = si.Globals |> Option.defaultValue emptySigSurface
+
+    match Map.tryFind "" si.Surfaces, si.Globals with
+    | Some sf, _ -> Some(mergeSurface sf globals)
+    | None, Some g -> Some g
+    | None, None ->
+        match si.Surfaces |> Map.toList |> List.map snd with
+        | [] -> None
+        | c0 :: rest ->
+            let inter (pick: SigSurface -> Map<string, 'v>) =
+                pick c0 |> Map.filter (fun k _ -> rest |> List.forall (fun c -> Map.containsKey k (pick c)))
+
+            let longs = inter (fun c -> c.Longs)
+
+            if longs.IsEmpty then
+                None
+            else
+                Some
+                    { Longs = longs
+                      Shorts = inter (fun c -> c.Shorts)
+                      Literals = inter (fun c -> c.Literals)
+                      Values = inter (fun c -> c.Values) }
+
+/// the surface a case key checks (and completes) against: its own
+/// flags and the Globals; "" is the top level
+let sigSurfaceAt (si: SigInfo) (key: string) : SigSurface option =
+    if key = "" then
+        sigRootSurface si
+    else
+        let globals = si.Globals |> Option.defaultValue emptySigSurface
+        Map.tryFind key si.Surfaces |> Option.map (fun sf -> mergeSurface sf globals)
+
+/// a case key with deeper cases under it — an operand there names one
+let sigHasChildren (si: SigInfo) (key: string) : bool =
+    not (Map.containsKey "" si.Surfaces)
+    && (key = "" || si.Surfaces |> Map.exists (fun k _ -> k.StartsWith(key + "-")))
 
 let sigCmdDiagnostics
     (path: string)
@@ -6211,43 +6363,8 @@ let sigCmdDiagnostics
                             | Check.TEStr w -> Some w, a.Span
                             | _ -> None, a.Span)
 
-                    let scoped = not (Map.containsKey "" si.Surfaces)
-                    let globals = si.Globals |> Option.defaultValue emptySigSurface
-
-                    // the top level: the flat record, or `type Globals`; a
-                    // scoped sig without one checks the case intersection —
-                    // what rides every case is global — and an empty
-                    // intersection (hand-written unions that never
-                    // duplicate) checks nothing there [D:scoped-sigs]
-                    let rootSurface =
-                        match Map.tryFind "" si.Surfaces, si.Globals with
-                        | Some sf, _ -> Some(mergeSurface sf globals)
-                        | None, Some g -> Some g
-                        | None, None ->
-                            match si.Surfaces |> Map.toList |> List.map snd with
-                            | [] -> None
-                            | c0 :: rest ->
-                                let inter (pick: SigSurface -> Map<string, SigArity>) =
-                                    pick c0 |> Map.filter (fun k _ -> rest |> List.forall (fun c -> Map.containsKey k (pick c)))
-
-                                let longs = inter (fun c -> c.Longs)
-
-                                if longs.IsEmpty then
-                                    None
-                                else
-                                    Some
-                                        { Longs = longs
-                                          Shorts = inter (fun c -> c.Shorts)
-                                          Literals = inter (fun c -> c.Literals) }
-
-                    let surfaceAt key =
-                        if key = "" then
-                            rootSurface
-                        else
-                            Map.tryFind key si.Surfaces |> Option.map (fun sf -> mergeSurface sf globals)
-
-                    let hasChildren key =
-                        scoped && (key = "" || si.Surfaces |> Map.exists (fun k _ -> k.StartsWith(key + "-")))
+                    let surfaceAt = sigSurfaceAt si
+                    let hasChildren = sigHasChildren si
 
                     // a scoped surface names its case in the warning, as
                     // typed (`gh issue list`) [D:scoped-sigs]
@@ -6566,6 +6683,415 @@ let sigCmdDiagnostics
                         []
                     else
                         walk [] "" [] words |> List.rev))
+
+// ---- signature-driven argument completion [D:sig-arg-complete] -------------
+// One completer for the REPL's Tab and the LSP: subcommand words, a
+// case's flags, a flag's value by arity — walked by the checker's own
+// rules (the longest case run, the globals at the top, the operand stop,
+// unchecked cases), so what completes is what the check accepts.
+
+/// what a sig says the word at the cursor is
+type SigCompletion =
+    /// these words, already filtered by what is typed
+    | SigWords of string list
+    /// the sig cannot know: the caller's path completion, unchanged
+    | SigPaths
+    /// a value the sig knows nothing about: no offer
+    | SigNothing
+
+module SigComplete =
+    // argv words, whitespace-split outside quotes and parens
+    let private tokens (s: string) : string list =
+        let out = ResizeArray<string>()
+        let cur = Text.StringBuilder()
+        let mutable quote = ' '
+        let mutable depth = 0
+
+        for c in s do
+            if quote <> ' ' then
+                cur.Append c |> ignore
+                if c = quote then quote <- ' '
+            elif c = '"' || c = '\'' then
+                quote <- c
+                cur.Append c |> ignore
+            elif c = '(' then
+                depth <- depth + 1
+                cur.Append c |> ignore
+            elif c = ')' then
+                depth <- max 0 (depth - 1)
+                cur.Append c |> ignore
+            elif (c = ' ' || c = '\t') && depth = 0 then
+                if cur.Length > 0 then
+                    out.Add(cur.ToString())
+                    cur.Clear() |> ignore
+            else
+                cur.Append c |> ignore
+
+        if cur.Length > 0 then
+            out.Add(cur.ToString())
+
+        List.ofSeq out
+
+    let private isFlag (w: string) = w.Length > 1 && w[0] = '-'
+
+    // a flag word (no `=value`) against one surface, by the convention:
+    // its arity and the spelling its value is recorded under — the
+    // checker's checkFlag lookups, diagnostics aside
+    let private flagArity (si: SigInfo) (sf: SigSurface) (name: string) : (SigArity * string) option =
+        let long k = Map.tryFind k sf.Longs |> Option.map (fun a -> a, "--" + k)
+        let short k = Map.tryFind k sf.Shorts |> Option.map (fun a -> a, "-" + k)
+        let literal k = Map.tryFind k sf.Literals |> Option.map (fun a -> a, k)
+
+        match si.Convention with
+        | "go" ->
+            let bare = name.TrimStart '-'
+
+            [ long bare; short bare; literal ("-" + bare); literal ("--" + bare) ]
+            |> List.tryPick id
+        | "find" ->
+            literal name
+            |> Option.orElse (if name.StartsWith "--" then long (name.Substring 2) else None)
+            |> Option.orElse (if name.Length = 2 then short (name.Substring 1) else None)
+        | _ when name.StartsWith "--" ->
+            let k = name.Substring 2
+
+            match long k |> Option.orElse (literal name) with
+            | Some hit -> Some hit
+            | None when si.Negatable && k.StartsWith "no-" ->
+                match Map.tryFind (k.Substring 3) sf.Longs with
+                | Some(ANone | AOpt) -> Some(ANone, name)
+                | _ -> None
+            | None when si.Abbreviations && k.Length >= 2 ->
+                match sf.Longs |> Map.toList |> List.filter (fun (l, _) -> l.StartsWith k) with
+                | [ (l, a) ] -> Some(a, "--" + l)
+                | _ -> None
+            | None -> None
+        | _ ->
+            match literal name with
+            | Some hit -> Some hit
+            | None when name.Length = 2 -> short (name.Substring 1)
+            | None when si.DashWords && not (sf.Shorts.ContainsKey(string name[1])) -> None
+            | None when si.Bundles || not sf.Shorts.IsEmpty ->
+                // a bundle: a value-taking letter takes the rest of the
+                // word (attached: no value word follows) or, last, the next
+                let rec bundle i =
+                    if i >= name.Length then
+                        Some(ANone, "")
+                    else
+                        match Map.tryFind (string name[i]) sf.Shorts with
+                        | None -> None
+                        | Some ANone -> bundle (i + 1)
+                        | Some a when i = name.Length - 1 -> Some(a, "-" + string name[i])
+                        | Some _ -> Some(ANone, "")
+
+                bundle 1
+            | None -> None
+
+    // the surfaces a flag word completes from: the case's, or — at a top
+    // level no rule gives a surface — every case's
+    let private flagSurfaces (si: SigInfo) (key: string) : SigSurface list =
+        match sigSurfaceAt si key with
+        | Some sf -> [ sf ]
+        | None when key = "" -> si.Surfaces |> Map.toList |> List.map snd
+        | None -> []
+
+    // the spellings a `-` word may complete to, by the convention
+    let private flagWords (si: SigInfo) (word: string) (sf: SigSurface) : string list =
+        let longs = sf.Longs |> Map.keys |> List.ofSeq
+        let shorts = sf.Shorts |> Map.keys |> Seq.map (fun s -> "-" + s) |> List.ofSeq
+        let literals = sf.Literals |> Map.keys |> List.ofSeq
+
+        match si.Convention with
+        | "go" ->
+            // Go's flag package takes `-x` and `--x` alike; the single dash
+            // is how Go tools document them
+            let dash = if word.StartsWith "--" then "--" else "-"
+            (longs |> List.map (fun l -> dash + l))
+            @ shorts
+            @ (literals |> List.map (fun l -> dash + l.TrimStart '-'))
+        | "find" -> literals @ shorts @ (longs |> List.map (fun l -> "--" + l))
+        | _ ->
+            let negs =
+                if si.Negatable then
+                    sf.Longs
+                    |> Map.toList
+                    |> List.filter (fun (l, a) -> (a = ANone || a = AOpt) && not (l.StartsWith "no-"))
+                    |> List.map (fun (l, _) -> "--no-" + l)
+                else
+                    []
+
+            shorts @ (longs |> List.map (fun l -> "--" + l)) @ negs @ literals
+
+    // the next subcommand word under `key`: per deeper case, the shortest
+    // run of its segments that is a case itself or groups two or more
+    // (`container` of container-run/container-ls), else its whole rest —
+    // the kebab key cannot tell `remote set-head` from `remote set head`,
+    // and a lone nested case reads as one word
+    let private subWords (si: SigInfo) (key: string) : string list =
+        let prefix = if key = "" then "" else key + "-"
+
+        let keys =
+            si.Surfaces
+            |> Map.keys
+            |> Seq.filter (fun k -> k <> "" && k <> key && k.StartsWith prefix)
+            |> List.ofSeq
+
+        keys
+        |> List.map (fun k ->
+            let segs = k.Substring(prefix.Length).Split '-'
+
+            [ 1 .. segs.Length ]
+            |> List.pick (fun n ->
+                let cand = String.concat "-" segs[.. n - 1]
+                let grouped = keys |> List.filter (fun o -> o.StartsWith(prefix + cand + "-")) |> List.length
+
+                if n = segs.Length || Map.containsKey (prefix + cand) si.Surfaces || grouped >= 2 then
+                    Some cand
+                else
+                    None))
+        |> List.distinct
+
+    // where the complete words before the cursor leave the walk
+    type private At =
+        | InCase of string
+        | Value of SigValue option
+        | Open
+
+    let rec private walk (si: SigInfo) (key: string) (ws: string list) : At =
+        match ws with
+        | [] -> InCase key
+        | "--" :: _ -> Open
+        | w :: rest when isFlag w ->
+            let name, attached =
+                match w.IndexOf '=' with
+                | -1 -> w, false
+                | i -> w.Substring(0, i), true
+
+            let hit =
+                sigSurfaceAt si key
+                |> Option.bind (fun sf -> flagArity si sf name |> Option.map (fun (a, k) -> a, Map.tryFind k sf.Values))
+
+            match hit with
+            | Some(AOne, v) when not attached ->
+                match rest with
+                | [] -> Value v
+                | _ :: r -> walk si key r
+            | Some(ARest, v) when not attached ->
+                match rest with
+                | [] -> Value v
+                | _ -> Open
+            | Some(ARest, _) -> Open
+            | _ -> walk si key rest
+        | _ :: rest ->
+            if sigHasChildren si key then
+                // the longest run of operand words naming a case
+                let run = ws |> List.takeWhile (fun w -> not (isFlag w)) |> List.truncate 4
+
+                let deeper =
+                    [ run.Length .. -1 .. 1 ]
+                    |> List.tryPick (fun n ->
+                        let k = String.concat "-" ((if key = "" then [] else [ key ]) @ List.truncate n run)
+                        if Map.containsKey k si.Surfaces then Some(n, k) else None)
+
+                // a group no case names (`container` of container-run):
+                // the cursor still sits among its words
+                let group =
+                    let k = String.concat "-" ((if key = "" then [] else [ key ]) @ run)
+
+                    if run.Length = ws.Length && si.Surfaces |> Map.exists (fun o _ -> o.StartsWith(k + "-")) then
+                        Some k
+                    else
+                        None
+
+                match deeper, group with
+                | Some(_, k), _ when Set.contains k si.Unchecked -> Open
+                | Some(n, k), _ -> walk si k (List.skip n ws)
+                | None, Some k -> InCase k
+                | None, None -> Open
+            elif Set.contains key si.StopAtOperand then
+                Open
+            else
+                walk si key rest
+
+    let private value (v: SigValue option) (typed: string) : SigCompletion =
+        match v with
+        | Some VPath -> SigPaths
+        | Some(VChoices cs) -> SigWords(cs |> List.filter (fun c -> c.StartsWith typed) |> List.sort)
+        | None -> SigNothing
+
+    /// complete at the end of `argText` — the text after the tool's name
+    /// up to the cursor. `word` is the editor's word there (Complete.
+    /// wordStartAt): offers come back as its replacements, so a value
+    /// typed after `--flag=` completes alone
+    let complete (si: SigInfo) (argText: string) (word: string) : SigCompletion =
+        let ts = tokens argText
+
+        let before, cur =
+            if argText = "" || Char.IsWhiteSpace argText[argText.Length - 1] then
+                ts, ""
+            else
+                List.truncate (ts.Length - 1) ts, List.last ts
+
+        // the token's part before the editor's word stays typed; offers
+        // that keep it are cut back to the word
+        let asWord (r: SigCompletion) =
+            match r with
+            | SigWords cs when cur.EndsWith word ->
+                let lead = cur.Length - word.Length
+
+                SigWords(
+                    cs
+                    |> List.filter (fun c -> c.Length >= lead && c.StartsWith(cur.Substring(0, lead)))
+                    |> List.map (fun c -> c.Substring lead)
+                )
+            | SigWords _ -> SigNothing
+            | r -> r
+
+        if Set.contains "" si.Unchecked then
+            // an open tool [D:sig-open-tool]
+            SigPaths
+        else
+            match walk si "" before with
+            | Open -> SigPaths
+            | Value v ->
+                match value v cur with
+                | SigWords cs -> asWord (SigWords cs)
+                | r -> r
+            | InCase key when isFlag cur && cur.Contains '=' ->
+                let i = cur.IndexOf '='
+                let name, typed = cur.Substring(0, i), cur.Substring(i + 1)
+
+                match
+                    sigSurfaceAt si key
+                    |> Option.bind (fun sf -> flagArity si sf name |> Option.map (fun (a, k) -> a, Map.tryFind k sf.Values))
+                with
+                | Some(ANone, _)
+                | None -> SigNothing
+                | Some(_, v) ->
+                    match value v typed with
+                    | SigWords cs -> asWord (SigWords(cs |> List.map (fun c -> name + "=" + c)))
+                    | r -> r
+            | InCase key when cur.StartsWith "-" ->
+                flagSurfaces si key
+                |> List.collect (flagWords si cur)
+                |> List.distinct
+                |> List.filter (fun f -> f.StartsWith cur)
+                |> List.sort
+                |> SigWords
+                |> asWord
+            | InCase key when sigHasChildren si key ->
+                match subWords si key |> List.filter (fun t -> t.StartsWith cur) |> List.sort with
+                | [] -> SigPaths
+                | subs -> asWord (SigWords subs)
+            | InCase _ -> SigPaths
+
+/// the sigs the REPL sees, by tool name at Tab time [D:sig-arg-complete]:
+/// the nearest project .weir/sigs/ (resolved as #sig resolves it), then
+/// the user dir. Loaded once per file version — path + mtime
+module SigLookup =
+    let private cache =
+        Collections.Generic.Dictionary<string, DateTime * SigInfo option>()
+
+    /// `$XDG_CONFIG_HOME/weir/sigs` (`~/.config/weir/sigs`; `%APPDATA%`
+    /// on Windows) — `weir add sig --global` writes here
+    let userDir () : string =
+        IO.Path.Combine(Builtins.configDir (), "weir", "sigs")
+
+    let private load (path: string) (tool: string) : SigInfo option =
+        try
+            let mtime = IO.File.GetLastWriteTimeUtc path
+            let key = path + "\n" + tool
+
+            lock cache (fun () ->
+                match cache.TryGetValue key with
+                | true, (m, si) when m = mtime -> si
+                | _ ->
+                    let si =
+                        loadSigs
+                            (path + ".from")
+                            [ { Tool = tool
+                                Override = Some path
+                                Line = 1 } ]
+                        |> snd
+                        |> List.tryHead
+
+                    cache[key] <- (mtime, si)
+                    si)
+        with _ ->
+            None
+
+    /// the signature for `tool` seen from `cwd`, the project's before
+    /// `user`'s, if any loads
+    let findIn (cwd: string) (user: string) (tool: string) : SigInfo option =
+        let project =
+            match
+                resolveSigFile
+                    cwd
+                    { Tool = tool
+                      Override = None
+                      Line = 1 }
+            with
+            | Ok p when IO.File.Exists p -> load p tool
+            | _ -> None
+
+        match project with
+        | Some si -> Some si
+        | None ->
+            let file = IO.Path.Combine(user, sigFileName tool)
+            if IO.File.Exists file then load file tool else None
+
+    let find (cwd: string) (tool: string) : SigInfo option = findIn cwd (userDir ()) tool
+
+/// a command argv word the sig of its head completes: Some offers, Some
+/// [] for "nothing", None when the line machinery decides (no sig, a
+/// path the sig defers to, a splice, a quoted word)
+let sigArgvComplete (env: TypeEnv) (text: string) (wordStart: int) : string list option =
+    let before = text.Substring(0, min wordStart text.Length)
+    let word = text.Substring(min wordStart text.Length)
+
+    let plainSlot =
+        word.IndexOf '/' < 0
+        && not (word.StartsWith "~")
+        && (before = "" || Char.IsWhiteSpace before[before.Length - 1] || before[before.Length - 1] = '=')
+        && not (Weir.Scan.endsInsideString before)
+
+    if not plainSlot then
+        None
+    else
+        match Complete.commandArgvAt env before with
+        | None -> None
+        | Some(head, argText) ->
+            match SigLookup.find (Session.resolve ".") head with
+            | None -> None
+            | Some si ->
+                match SigComplete.complete si (argText + word) word with
+                | SigWords ws -> Some ws
+                | SigNothing -> Some []
+                | SigPaths -> None
+
+/// the REPL's Tab over its entry [D:entry-complete]: `entry` is the
+/// entry up to the cursor (dedented, its last line cut there), `text`
+/// the cursor's own line up to the cursor and `wordStart` within it. A
+/// repaired `head.`/`_.` word answers first (the LSP's precedence), the
+/// sig of a command's head next, the line machinery under the entry's
+/// env otherwise
+let suggestEntry
+    (aliasHeads: Set<string>)
+    (values: Map<string, Eval.Value>)
+    (env: TypeEnv)
+    (entry: string list)
+    (text: string)
+    (wordStart: int)
+    : string list =
+    let ctxEnv, stmt = entryContext env entry
+
+    match stmt |> Option.bind (fun s -> repairedFields ctxEnv s "") with
+    | Some(_ :: _ as fields) -> fields
+    | _ ->
+        // a command argv word under a sig'd head [D:sig-arg-complete]
+        match sigArgvComplete ctxEnv text wordStart with
+        | Some offers -> offers
+        | None -> Complete.suggestSession aliasHeads values ctxEnv text wordStart
 
 // ---- `weir add sig <tool>`: generation [D:command-signatures] --------------
 // Sources in fidelity order [D:sig-sources], the chosen one recorded in the
@@ -7414,7 +7940,7 @@ module SigGen =
                 | None -> [])
             |> List.tryFind IO.File.Exists
 
-    let generate (weirDir: string) (tool: string) : Result<string, string> =
+    let generateTo (globalDir: string option) (weirDir: string) (tool: string) : Result<string, string> =
         cutProbes.Clear()
         slowProbes.Clear()
         probed.Clear()
@@ -8212,6 +8738,38 @@ module SigGen =
 
                         Error $"generated signature does not validate: {d.Message}{atLine} — this is a generator bug"
                     | [], _ ->
+                        let versionNote =
+                            match version with
+                            | Some v -> v
+                            | None -> $"none — '{tool}' answers neither --version nor version"
+
+                        let surfaceNote =
+                            if nodes.IsEmpty then
+                                $"{flags.Length} flag(s)"
+                            else
+                                let total =
+                                    (flags @ (nodes |> List.collect (fun n -> n.Flags)))
+                                    |> List.map keyOf
+                                    |> List.distinct
+                                    |> List.length
+
+                                $"{total} flag(s) across {nodes.Length} subcommand case(s)"
+
+                        match globalDir with
+                        | Some dir ->
+                            // the user dir [D:sig-arg-complete]: no lock — a
+                            // user-level sig serves the REPL's Tab only, so
+                            // verify/restore never see it and no #sig reads it
+                            let dest = IO.Path.Combine(dir, sigFileName tool)
+                            IO.Directory.CreateDirectory dir |> ignore
+                            Contracts.AtomicFile.replaceFile dest (Text.UTF8Encoding(false).GetBytes text)
+
+                            let cutTail =
+                                [ cutNote; slowNote ] |> List.filter ((<>) "") |> List.map (fun n -> "; " + n) |> String.concat ""
+
+                            Ok
+                                $"added sig {tool} to {dest} ({surfaceNote}, source: {fullSource}, version: {versionNote}{cutTail}) — user-level: the REPL's Tab reads it in every directory; no lock entry"
+                        | None ->
                         let rel = "sigs/" + sigFileName tool
 
                         Contracts.AtomicFile.withWeirDirLock weirDir (fun () ->
@@ -8288,23 +8846,6 @@ module SigGen =
                                     with _ ->
                                         ()
 
-                                let versionNote =
-                                    match version with
-                                    | Some v -> v
-                                    | None -> $"none — '{tool}' answers neither --version nor version"
-
-                                let surfaceNote =
-                                    if nodes.IsEmpty then
-                                        $"{flags.Length} flag(s)"
-                                    else
-                                        let total =
-                                            (flags @ (nodes |> List.collect (fun n -> n.Flags)))
-                                            |> List.map keyOf
-                                            |> List.distinct
-                                            |> List.length
-
-                                        $"{total} flag(s) across {nodes.Length} subcommand case(s)"
-
                                 let cutTail =
                                     ([ cutNote; slowNote ] |> List.filter ((<>) "") |> List.map (fun n -> "; " + n) |> String.concat "")
                                     + movedNote
@@ -8318,6 +8859,9 @@ module SigGen =
                         ()
 
                     Contracts.ProbeGuard.untrackPath tmp
+
+    /// generate into the project's .weir/sigs/ and lock it
+    let generate (weirDir: string) (tool: string) : Result<string, string> = generateTo None weirDir tool
 
 // ---- the init file [D:repl-init] ------------------------------------------
 // ONE home for every static init rule [D:init-check-one-home] — `weir
@@ -9554,23 +10098,6 @@ let checkOnly (json: bool) (path: string) : int =
 // physical line, so scope by the decl's physical lines (its Segments); a
 // field name is unique within a decl. An empty first line -> no help entry
 // (silence beats a mystery), same as no doc.
-let private fieldDocsFor (rawLines: string list) (ll: LogicalLine) : Map<string, string> =
-    let physLines = ll.Segments |> List.map (fun (_, p, _) -> p) |> Set.ofList
-    let arr = List.toArray rawLines
-
-    docAttachments rawLines
-    |> List.choose (fun d ->
-        match d.Doc with
-        | first :: _ when
-            first <> ""
-            && Set.contains d.Line physLines
-            && d.Line - 1 < arr.Length
-            && d.Col - 1 + d.Len <= arr[d.Line - 1].Length
-            ->
-            Some(arr[d.Line - 1].Substring(d.Col - 1, d.Len), first)
-        | _ -> None)
-    |> Map.ofList
-
 let run (path: string) (scriptArgs: string list) : int =
     match readEntryScript path with
     | Error msg ->

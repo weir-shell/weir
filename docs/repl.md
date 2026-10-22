@@ -23,8 +23,9 @@ fields, keywords, bindings, and, where a command can go, the programs
 you can run. A command can go at the start of a statement *or right
 after `=` in a top-level `let`*, so `let svc = kubect<TAB>` completes
 just like a bare `kubect<TAB>`. The words after a command complete as
-arguments: directory entries, or session bindings after a `$` (see
-below).
+arguments: subcommands, flags and flag values when the command has a
+signature, otherwise directory entries, or session bindings after a
+`$` (see below).
 
 Coloring follows the same rule. The command word is colored as you
 type, so in `let svc = kubectl …` the color of `kubectl` shows
@@ -62,6 +63,17 @@ Some behaviours worth knowing:
   finding its keys would mean running the pipeline. Bind it first
   (`let d = …`) and the keys complete. A lazy seq is never read, for
   the same reason.
+- **A command's signature completes its arguments.** With a
+  signature for `git` (`weir add sig git`), `git com<TAB>` gives
+  `git commit`, `git commit --am<TAB>` gives `--amend`, and after a
+  flag that takes a value (`--file <TAB>`, `--color=<TAB>`) you get
+  paths for a file, the choices the signature lists, or nothing. The
+  REPL looks the signature up by the command name: the project's
+  `.weir/sigs/` first, then `$XDG_CONFIG_HOME/weir/sigs/`, where
+  `weir add sig --global git` puts one for every directory. This works
+  after `^`, after `NAME=value` prefixes, in a pipeline stage and after
+  `let x =`. See
+  [signatures drive Tab completion](tooling.md#signatures-drive-tab-completion).
 - **A `$` splice in a command argument completes session bindings.**
   `az … --location $l<TAB>` offers every binding whose name starts
   with `l`, such as `$location`. An argument without `$` completes
@@ -80,8 +92,8 @@ Some behaviours worth knowing:
   `cat ~/.con<TAB>` becomes `cat /home/you/.config/`, and `cd ~<TAB>`
   becomes `cd "/home/you/"`, so the line shows exactly what will run.
 
-Completion never runs anything; at most it reads a directory or
-looks up a cached PATH entry.
+Completion never runs anything; at most it reads a directory, a
+signature file, or looks up a cached PATH entry.
 
 ## What the echo shows
 

@@ -963,9 +963,14 @@ open(os.path.join(td6, ".weir", "sigs", "comptool.weir"), "w").write(
     "    sessionId: bool\n"
     "    settings: bool\n"
     "}\n"
+    "type Level = | Low | High\n"
     "type RunFlags = {\n"
     "    slow: bool\n"
     "    verbose: bool\n"
+    "    /// read settings from file\n"
+    "    config: string\n"
+    "    level: Level\n"
+    "    note: string\n"
     "}\n"
     "type PsDeepFlags = {\n"
     "    depth: bool\n"
@@ -977,7 +982,7 @@ open(os.path.join(td6, ".weir", "sigs", "comptool.weir"), "w").write(
 docp6 = os.path.join(td6, "use.weir")
 doc6 = "#sig comptool\ncomptool ps --s"
 open(docp6, "w").write(doc6 + "\n")
-p6 = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+p6 = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, cwd=td6)
 PROCS.append(p6)
 def send6(o):
     b = json.dumps(o).encode()
@@ -1050,6 +1055,31 @@ while m.get("id") != 66:
     m = read6()
 labels66 = [c["label"] for c in m["result"]]
 expect("deep" in labels66, f"the NESTED segment un-glues: {labels66[:8]}")
+# the shared completer [D:sig-arg-complete] — what the REPL's Tab offers:
+# a flag's value by arity (a file flag defers to paths, an enumerated one
+# offers its choices — after `--flag=` too —, a plain one nothing)
+def labels_at6(doc, rid):
+    send6({"jsonrpc": "2.0", "method": "textDocument/didChange",
+           "params": {"textDocument": {"uri": uri6}, "contentChanges": [{"text": "#sig comptool\n" + doc + "\n"}]}})
+    m = read6()
+    while m.get("method") != "textDocument/publishDiagnostics":
+        m = read6()
+    send6({"jsonrpc": "2.0", "id": rid, "method": "textDocument/completion",
+           "params": {"textDocument": {"uri": uri6}, "position": {"line": 1, "character": len(doc)}}})
+    m = read6()
+    while m.get("id") != rid:
+        m = read6()
+    return [c["label"] for c in m["result"]]
+l67 = labels_at6("comptool run --config ", 67)
+expect("use.weir" in l67, f"a file flag's value completes as a path: {l67[:8]}")
+l68 = labels_at6("comptool run --level=", 68)
+expect(sorted(l68) == ["high", "low"], f"--flag= offers the enumerated value part: {l68[:8]}")
+l69 = labels_at6("comptool run --level h", 69)
+expect(l69 == ["high"], f"the next word after an enumerated flag: {l69[:8]}")
+l70 = labels_at6("comptool run --note ", 70)
+expect(l70 == [], f"a plain value offers nothing: {l70[:8]}")
+l71 = labels_at6("comptool ", 71)
+expect(sorted(l71) == ["ps", "run"], f"the subcommand words after the tool: {l71[:8]}")
 # go-to-definition into the sig [D:scoped-sigs]: a flag lands on its
 # FIELD, a sub token on its case's RECORD declaration
 sig6 = furi(os.path.join(td6, ".weir", "sigs", "comptool.weir"))

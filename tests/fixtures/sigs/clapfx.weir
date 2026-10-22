@@ -1,0 +1,36 @@
+module Clapfx
+/// generated from 'clapfx' on 2026-10-22
+/// source: help — a scraped surface may be incomplete (partial
+/// by default; add `let exhaustive = true` once verified by hand)
+/// flat surface: flags checked across the whole line — split into
+/// subcommand records by hand if the tool warrants it
+let version = "clapfx 10.3.0"
+/// a multi-letter single-dash word is a bundle of shorts (`-xzf`)
+let bundles = true
+type Cmd = {
+    /// Exclude entries that match the given glob
+    [<Short "E">]
+    exclude: string
+    /// Execute a command for each search result
+    [<Short "x">]
+    exec: seq<string>
+    /// Filter by file extension
+    [<Short "e">]
+    extension: string
+    /// Print help (see more with '--help')
+    help: bool
+    [<Wire "-h">]
+    shorth: bool
+    /// Search hidden files and directories
+    [<Short "H">]
+    hidden: bool
+    /// Set maximum search depth (default: none)
+    [<Short "d">]
+    maxDepth: string
+    /// Filter by type: file (f), directory (d)
+    [<Wire "type"; Short "t">]
+    typeFlag: string
+    /// Print version
+    [<Short "V">]
+    version: bool
+}

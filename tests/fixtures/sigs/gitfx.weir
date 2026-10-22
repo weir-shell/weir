@@ -1,0 +1,208 @@
+module Gitfx
+/// generated from 'gitfx' on 2026-10-22
+/// source: git-helper+subs — a scraped surface may be incomplete (partial
+/// by default; add `let exhaustive = true` once verified by hand)
+/// scoped surface [D:scoped-sigs]: the LONGEST matching subcommand
+/// path picks the case (issue list beats issue); a case checks its
+/// own flags and the Globals; an unlisted subcommand is not checked
+let version = "git version 2.53.0"
+/// a multi-letter single-dash word is a bundle of shorts (`-xzf`)
+let bundles = true
+/// these pass options the source cannot list (git's revision options):
+/// reaching one ends the check
+let unchecked = [ "log"; "stash show" ]
+type Globals = {
+    bare: bool
+    [<Wire "-C">]
+    shortC: string
+    [<Wire "-c">]
+    shortc: string
+    execPath: Option<string>
+    gitDir: string
+    [<Wire "-h">]
+    shorth: bool
+    help: bool
+    htmlPath: bool
+    infoPath: bool
+    manPath: bool
+    namespace: string
+    noPager: bool
+    noReplaceObjects: bool
+    [<Wire "-P">]
+    shortP: bool
+    [<Wire "-p">]
+    shortp: bool
+    paginate: bool
+    [<Wire "-v">]
+    shortv: bool
+    version: bool
+    workTree: string
+}
+type CommitFlags = {
+    /// commit all changed files
+    [<Short "a">]
+    all: bool
+    allowEmpty: bool
+    amend: bool
+    /// override author for commit
+    author: string
+    /// read message from file
+    [<Short "F">]
+    file: string
+    interactive: bool
+    /// commit message
+    [<Short "m">]
+    message: string
+    noFile: bool
+    noMessage: bool
+    noQuiet: bool
+    noVerbose: bool
+    /// bypass pre-commit and commit-msg hooks
+    [<Short "n">]
+    noVerify: bool
+    patch: bool
+    /// suppress summary after successful commit
+    [<Short "q">]
+    quiet: bool
+    resetAuthor: bool
+    [<Wire "-s">]
+    shorts: bool
+    [<Wire "-u">]
+    shortu: Option<string>
+    /// show diff in commit message template
+    [<Short "v">]
+    verbose: bool
+}
+type RemoteFlags = {
+    [<Wire "-f">]
+    shortf: bool
+    [<Wire "-m">]
+    shortm: string
+    mirror: string
+    [<Wire "-n">]
+    shortn: bool
+    noTags: bool
+    noVerbose: bool
+    [<Wire "-t">]
+    shortt: string
+    tags: bool
+    /// be verbose; must be placed before a subcommand
+    [<Short "v">]
+    verbose: bool
+}
+type RemoteAddFlags = {
+    /// fetch the remote branches
+    [<Short "f">]
+    fetch: bool
+    /// master branch
+    [<Short "m">]
+    master: string
+    mirror: string
+    noFetch: bool
+    noMaster: bool
+    noMirror: bool
+    noTags: bool
+    noTrack: bool
+    /// import all tags and associated objects when fetching
+    tags: bool
+    /// branch(es) to track
+    [<Short "t">]
+    track: string
+}
+type RemoteSetHeadFlags = {
+    /// set refs/remotes/<name>/HEAD according to remote
+    [<Short "a">]
+    auto: bool
+    /// delete refs/remotes/<name>/HEAD
+    [<Short "d">]
+    delete: bool
+    noAuto: bool
+    noDelete: bool
+}
+type StashFlags = {
+    /// include untracked files in stash
+    [<Short "u">]
+    includeUntracked: bool
+    /// attempt to recreate the index
+    index: bool
+    /// keep index
+    [<Short "k">]
+    keepIndex: bool
+    /// stash message
+    [<Short "m">]
+    message: string
+    noIncludeUntracked: bool
+    noIndex: bool
+    noKeepIndex: bool
+    noMessage: bool
+    noPatch: bool
+    noQuiet: bool
+    onlyUntracked: bool
+    /// stash in patch mode
+    [<Short "p">]
+    patch: bool
+    /// be quiet, only report errors
+    [<Short "q">]
+    quiet: bool
+}
+type StashPopFlags = {
+    /// attempt to recreate the index
+    index: bool
+    noIndex: bool
+    noQuiet: bool
+    /// be quiet, only report errors
+    [<Short "q">]
+    quiet: bool
+}
+type StashPushFlags = {
+    /// include untracked files in stash
+    [<Short "u">]
+    includeUntracked: bool
+    /// keep index
+    [<Short "k">]
+    keepIndex: bool
+    /// stash message
+    [<Short "m">]
+    message: string
+    noIncludeUntracked: bool
+    noKeepIndex: bool
+    noMessage: bool
+    noPatch: bool
+    noQuiet: bool
+    /// stash in patch mode
+    [<Short "p">]
+    patch: bool
+    /// quiet mode
+    [<Short "q">]
+    quiet: bool
+}
+type StatusFlags = {
+    /// show branch information
+    [<Short "b">]
+    branch: bool
+    noBranch: bool
+    noShort: bool
+    noVerbose: bool
+    /// machine-readable output
+    porcelain: Option<string>
+    /// show status concisely
+    [<Short "s">]
+    short: bool
+    /// show untracked files
+    [<Short "u">]
+    untrackedFiles: Option<string>
+    /// be verbose
+    [<Short "v">]
+    verbose: bool
+}
+type Cmd =
+    | Commit of CommitFlags
+    | Log
+    | Remote of RemoteFlags
+    | RemoteAdd of RemoteAddFlags
+    | RemoteSetHead of RemoteSetHeadFlags
+    | Stash of StashFlags
+    | StashShow
+    | StashPop of StashPopFlags
+    | StashPush of StashPushFlags
+    | Status of StatusFlags

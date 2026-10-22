@@ -498,7 +498,7 @@ let headSlotAt (before: string) : HeadSlot =
 // first token that no binding, builtin, or module claims — or a ^
 // forced external. `anyHead` drops the claimed-name test: a `$`
 // splice word is argv-like after any head [D:argv-splice-complete].
-let private commandArgvPosition (env: TypeEnv) (anyHead: bool) (before: string) : bool =
+let private commandArgvStmt (env: TypeEnv) (anyHead: bool) (before: string) : string option =
     let stmt =
         let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
         (if i >= 0 then before.Substring(i + 1) else before).TrimStart()
@@ -545,22 +545,44 @@ let private commandArgvPosition (env: TypeEnv) (anyHead: bool) (before: string) 
         | _ -> stmt
 
     if stmt.Contains "|>" || stmt.Contains " = " || parenDepth > 0 then
-        false
+        None
     else
-        match
-            stmt.Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries)
-            |> Array.tryHead
-        with
-        | None -> false
-        | Some h when h.StartsWith "^" -> true
-        | Some h when h.StartsWith "./" || h.StartsWith "/" -> true
-        | Some h ->
-            h.Length > 0
-            && (System.Char.IsLetter h[0] || h[0] = '_')
-            && not (h.Contains '.')
-            && not (Weir.Parser.keywords.Contains h)
-            && (anyHead
-                || not (Map.containsKey h env.Values) && not (Map.containsKey h env.Modules))
+        let argv =
+            match
+                (stripEnvPrefixes stmt).Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries)
+                |> Array.tryHead
+            with
+            | None -> false
+            | Some h when h.StartsWith "^" -> true
+            | Some h when h.StartsWith "./" || h.StartsWith "/" -> true
+            | Some h ->
+                h.Length > 0
+                && (System.Char.IsLetter h[0] || h[0] = '_')
+                && not (h.Contains '.')
+                && not (Weir.Parser.keywords.Contains h)
+                && (anyHead
+                    || not (Map.containsKey h env.Values) && not (Map.containsKey h env.Modules))
+
+        if argv then Some stmt else None
+
+let private commandArgvPosition (env: TypeEnv) (anyHead: bool) (before: string) : bool =
+    (commandArgvStmt env anyHead before).IsSome
+
+/// the command whose argv the word after `before` sits in: its head as
+/// written (env prefixes and the `^` sigil off) and the argv text after
+/// it — None off an argv position [D:sig-arg-complete]
+let commandArgvAt (env: TypeEnv) (before: string) : (string * string) option =
+    match commandArgvStmt env false before with
+    | None -> None
+    | Some stmt ->
+        let s = stripEnvPrefixes stmt
+        let headEnd = s.IndexOfAny [| ' '; '\t' |]
+
+        if headEnd <= 0 then
+            None
+        else
+            let head = s.Substring(0, headEnd).TrimStart '^'
+            if head = "" then None else Some(head, s.Substring headEnd)
 
 // a word at a path parameter position [D:path-param-completion]:
 // cd is a builtin, so the argv gate correctly does not apply — the

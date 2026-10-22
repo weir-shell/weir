@@ -1,0 +1,32 @@
+module Fishfx
+/// generated from 'fishfx' on 2026-10-22
+/// source: fish-file — a scraped surface may be incomplete (partial
+/// by default; add `let exhaustive = true` once verified by hand)
+/// flat surface: flags checked across the whole line — split into
+/// subcommand records by hand if the tool warrants it
+let version = "fishfx 15.1.0"
+/// a multi-letter single-dash word is a bundle of shorts (`-xzf`)
+let bundles = true
+type Cmd = {
+    /// Show NUM lines after each match.
+    [<Short "A">]
+    afterContext: string
+    /// Search binary files.
+    binary: bool
+    /// Request compressed response
+    compressed: bool
+    /// Search hidden files.
+    hidden: bool
+    /// Write to file instead of stdout
+    [<Short "o">]
+    output: string
+    /// An old-style single-dash word
+    [<Wire "-plain">]
+    plain: bool
+    /// A pattern to search for.
+    [<Short "e">]
+    regexp: string
+    /// Reduce the level of \"smart\" filtering.
+    [<Short "u">]
+    unrestricted: bool
+}

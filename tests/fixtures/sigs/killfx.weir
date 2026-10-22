@@ -1,0 +1,34 @@
+module Killfx
+/// generated from 'killfx' on 2026-10-22
+/// source: help — a scraped surface may be incomplete (partial
+/// by default; add `let exhaustive = true` once verified by hand)
+/// flat surface: flags checked across the whole line — split into
+/// subcommand records by hand if the tool warrants it
+let version = "killfx from procps-ng 4.0.4"
+/// the tool takes a unique prefix of a long flag (`--verb` for `--verbose`)
+let abbreviations = true
+/// a dash word no short spells is a value (the help's `-<signal>`)
+let dashWords = true
+/// a multi-letter single-dash word is a bundle of shorts (`-xzf`)
+let bundles = true
+type Cmd = {
+    /// display this help and exit
+    help: bool
+    [<Wire "-h">]
+    shorth: bool
+    /// list all signal names, or convert one to a name
+    [<Short "l">]
+    list: string
+    /// integer value to be sent with the signal
+    [<Short "q">]
+    queue: string
+    /// specify the <signal> to be sent
+    [<Short "s">]
+    signal: string
+    /// list all signal names in a nice table
+    [<Short "L">]
+    table: bool
+    /// output version information and exit
+    [<Short "V">]
+    version: bool
+}

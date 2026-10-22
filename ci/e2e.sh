@@ -176,6 +176,7 @@ replPtyProbes() {
         replProbe repl-b repl-mapkeys.py "repl map-key completion" "e2e ok: repl map-key completion — a bound value's keys inside a Map lookup literal; a pipeline receiver stays silent [D:value-key-complete]"
         replProbe repl-b repl-anon-complete.py "repl anonymous-record field completion" "e2e ok: repl an anonymous record's fields complete on the next line [D:anon-literals]"
         replProbe repl-b repl-entry-complete.py "repl entry-context completion" "e2e ok: repl Tab completes a binder from an earlier line of the entry and the \`_.\` argument's element, nothing for a bare \`|> _.\` stage [D:entry-complete]"
+        replProbe repl-b repl-sig-complete.py "repl sig argument completion" "e2e ok: repl Tab completes subcommands, flags and --flag= values from the project's and the user dir's sigs; a sig-less head keeps paths [D:sig-arg-complete]"
         replProbe repl-b repl-splice-complete.py "repl \$ splice completion" "e2e ok: repl a \$ splice completes only the bindings the checker admits there, after an external or builtin head [D:argv-splice-complete]"
         replProbe repl-a repl-multiline.py "repl multiline editor" "e2e ok: repl 2D buffer, Enter-completeness, whole-entry history, wrap at two widths"
     fi
@@ -12171,6 +12172,14 @@ cd "$sgdir/proj"
 SIGTOOL_MARK="$sgdir/gen-mark" PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig sigtool | grep -qF "added sig sigtool (2 flag(s), source: help" || fail "add sig generates"
 test -f .weir/sigs/sigtool.weir || fail "sig file written"
 grep -qF '"version": "sigtool 3.1.4"' .weir/lock.json || fail "lock carries the verbatim version"
+# --global [D:sig-arg-complete]: the user dir, no lock entry (the lock is
+# byte-identical after it)
+cp .weir/lock.json "$sgdir/lock.before"
+out=$(SIGTOOL_MARK="$sgdir/gen-mark-g" XDG_CONFIG_HOME="$sgdir/cfg" APPDATA="$sgdir/cfg" PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig --global sigtool 2>&1) || fail "add sig --global: $out"
+echo "$out" | grep -qF "no lock entry" || fail "add sig --global says it locks nothing: $out"
+test -f "$sgdir/cfg/weir/sigs/sigtool.weir" || fail "add sig --global writes the user dir: $out"
+cmp -s .weir/lock.json "$sgdir/lock.before" || fail "add sig --global must not touch the lock"
+echo "e2e ok: add sig --global writes \$XDG_CONFIG_HOME/weir/sigs, no lock entry [D:sig-arg-complete]"
 # checking: typo caught, and check spawns nothing (the marker pin)
 printf '#sig sigtool\nsigtool --dry-run --nmae x\nprint "done"\n' > use.weir
 rm -f "$sgdir/gen-mark"

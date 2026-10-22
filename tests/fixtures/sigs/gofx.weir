@@ -1,0 +1,28 @@
+module Gofx
+/// generated from 'gofx' on 2026-10-22
+/// source: help — a scraped surface may be incomplete (partial
+/// by default; add `let exhaustive = true` once verified by hand)
+/// flat surface: flags checked across the whole line — split into
+/// subcommand records by hand if the tool warrants it
+let version = "gofx v1.9.3"
+let convention = "go"
+type Cmd = {
+    /// Data for request contents.
+    [<Wire "-d">]
+    shortd: string
+    /// Additional headers in 'name: value' format.
+    [<Wire "-H">]
+    shortH: string
+    /// The path to a directory from which proto sources can be imported.
+    [<Wire "-import-path">]
+    importPath: string
+    /// The maximum total time the operation can take, in seconds.
+    [<Wire "-max-time">]
+    maxTime: string
+    /// Use plain-text HTTP/2 when connecting to server (no TLS).
+    [<Wire "-plaintext">]
+    plaintext: bool
+    /// Enable verbose output.
+    [<Wire "-v">]
+    shortv: bool
+}
