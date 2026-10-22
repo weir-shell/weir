@@ -4131,6 +4131,65 @@ WEOF
     echo "$tout" | grep -qF "FAST" || fail "a REPL child exiting 130 with no ^C never waits the 250ms: $tout"
     echo "e2e ok: a 129/130/131/143 exit with no signal in flight never waits the 250ms — script, tty script, tty REPL"
 
+    # T1-2: a group-directed SIGHUP is the teardown even when its handler
+    # starts late — .NET runs SIGHUP's handler as a pool item, which CPU
+    # contention can hold past the 5ms grace. Here the pool's worker is held
+    # (ptrace-stopped) for 150ms while the HUP lands: the cleanup's command
+    # it killed never reads as "command failed", the cleanup runs on, weir
+    # dies by the signal [D:settle-pending]
+    if [ "$(uname -s)" = Linux ]; then
+        cat > "$stdir/hold.py" <<'PYEOF'
+# hold.py LOG MS -- argv: when LOG says "cleanup", stop weir's pool workers, group-HUP it, resume them after MS
+import ctypes, os, sys, time, signal, subprocess
+log, ms = sys.argv[1], int(sys.argv[2]); argv = sys.argv[4:]
+libc = ctypes.CDLL(None, use_errno=True)
+libc.ptrace.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]
+def pre():
+    for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE): signal.signal(s, signal.SIG_DFL)
+p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, preexec_fn=pre, start_new_session=True)
+t0 = time.monotonic()
+while time.monotonic() - t0 < 10:
+    try:
+        if 'cleanup' in open(log).read().split(): break
+    except OSError: pass
+    time.sleep(0.02)
+time.sleep(0.2)
+tids = [int(t) for t in os.listdir('/proc/%d/task' % p.pid) if open('/proc/%d/task/%s/comm' % (p.pid, t)).read().strip() == '.NET TP Worker']
+held = []
+for t in tids:
+    if libc.ptrace(0x4206, t, None, None) == 0:  # PTRACE_SEIZE
+        libc.ptrace(0x4207, t, None, None)  # PTRACE_INTERRUPT
+        os.waitpid(t, 0x40000000)  # __WALL
+        held.append(t)
+os.killpg(p.pid, signal.SIGHUP)
+time.sleep(ms / 1000)
+for t in held:
+    if libc.ptrace(17, t, None, None) != 0:  # PTRACE_DETACH; a thread weir's exit took is reaped here
+        try: os.waitpid(t, 0x40000000)
+        except OSError: pass
+try: o = p.communicate(timeout=10)[0]
+except subprocess.TimeoutExpired: os.killpg(p.pid, signal.SIGKILL); o = p.communicate()[0]; p.returncode = 'HANG'
+print('held %d status %s out %s' % (len(held), p.returncode, o.decode(errors='replace').replace('\n', ' | ')))
+PYEOF
+        printf '%s\n' 'let log = Self.args |> Seq.head' 'within' '    sh -c "true"' '    File.append log ["body"]' 'always' '    File.append log ["cleanup"]' '    sh -c "sleep 4"' '    File.append log ["after"]' > "$stdir/hupl.weir"
+        rm -f "$stdir/hupl.log"
+        r=$(python3 "$stdir/hold.py" "$stdir/hupl.log" 150 -- "$BIN" "$stdir/hupl.weir" "$stdir/hupl.log")
+        case "$r" in
+            "held 0 "*) echo "e2e skip: no pool worker to hold (ptrace refused?): $r" ;;
+            *)
+                echo "$r" | grep -q "status -1 " || fail "a group SIGHUP whose handler starts late is the teardown: $r"
+                echo "$r" | grep -qF "command failed" && fail "a group SIGHUP whose handler starts late never reads as 'command failed': $r"
+                [ "$(stlog "$stdir/hupl.log")" = "body,cleanup,after," ] || fail "a group SIGHUP whose handler starts late: the cleanup runs on whole: $(stlog "$stdir/hupl.log")"
+                # held past the 250ms settle: the cleanup reads it as a
+                # failure, but the exit still settles it — weir dies by it
+                rm -f "$stdir/hupl.log"
+                r=$(python3 "$stdir/hold.py" "$stdir/hupl.log" 400 -- "$BIN" "$stdir/hupl.weir" "$stdir/hupl.log")
+                echo "$r" | grep -q "status -1 " || fail "a group SIGHUP whose handler starts past the settle is never dropped at the exit: $r"
+                echo "e2e ok: a group SIGHUP whose handler starts late is the teardown — the cleanup runs on; past the settle the exit still dies by it"
+                ;;
+        esac
+    fi
+
     # C1-4: a cleanup's command through the shim refuses what a direct spawn
     # refuses — a shebang-less executable never runs through sh [D:cleanup-sigign]
     printf 'echo noshebang-ran\n' > "$stdir/nosb"; chmod +x "$stdir/nosb"

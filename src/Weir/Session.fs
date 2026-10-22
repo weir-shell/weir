@@ -1648,6 +1648,60 @@ let private dieByFlushing (flush: bool) (code: int) : unit =
 
 let private dieBy (code: int) : unit = dieByFlushing false code
 
+// the thread pool has work queued or a worker taking an item (the calling
+// thread aside). .NET's signal thread reads the signals in delivery order
+// and queues SIGHUP's handler as a pool item before it reaps a child that
+// died after the signal reached weir, so a HUP weir received and has not
+// acted on is pool work when the death is seen [D:settle-pending]
+let private poolBusy () =
+    let mutable available = 0
+    let mutable most = 0
+    let mutable io = 0
+    System.Threading.ThreadPool.GetAvailableThreads(&available, &io)
+    System.Threading.ThreadPool.GetMaxThreads(&most, &io)
+
+    let self =
+        if System.Threading.Thread.CurrentThread.IsThreadPoolThread then
+            1
+        else
+            0
+
+    System.Threading.ThreadPool.PendingWorkItemCount > 0L || most - available > self
+
+// a signal the handler is acting on: wait (bounded) until it is done
+// [D:settle-pending]. A signal weir has received reaches its handler a
+// fraction of a millisecond after the kernel delivered it (.NET hands it
+// to a thread or a pool item first), sometimes after the dead child is
+// reaped: with none in flight the wait is a 5ms grace for one to appear,
+// never the 250ms. `pool`: the signal is SIGHUP, whose handler may still
+// sit in the pool's queue — busy pool work counts as in flight
+let private settleWhile (pool: bool) (waiting: unit -> bool) : unit =
+    let clock = System.Diagnostics.Stopwatch.StartNew()
+
+    let inFlight () =
+        System.Threading.Volatile.Read &signalsInFlight > 0
+        || (pool && poolBusy ())
+
+    let mutable lastSeen = 0L
+    let mutable go = true
+
+    while go do
+        let now = clock.ElapsedMilliseconds
+        let pending = inFlight ()
+
+        if pending then
+            lastSeen <- now
+
+        go <- waiting () && now < 250L && (pending || now - lastSeen < 5L)
+
+        if go then
+            System.Threading.Thread.Sleep(if pending then 1 else 0)
+
+// a command died 129-143 since the start: the exit settles a signal still
+// on its way to the handler first, so a received signal is never dropped
+// [D:settle-pending]
+let mutable private signalDeathSeen = 0
+
 /// the requested exit code, or `code` when none was requested — the
 /// runner's result, so a request racing a statement's normal end still
 /// exits with the request's code; a signal's teardown dies by the signal
@@ -1655,6 +1709,9 @@ let private dieBy (code: int) : unit = dieByFlushing false code
 let exitCodeOr (code: int) : int =
     if System.Threading.Volatile.Read &hardExiting <> 0 then
         park ()
+
+    if System.Threading.Volatile.Read &signalDeathSeen <> 0 then
+        settleWhile true (fun () -> System.Threading.Volatile.Read &teardownCode = 0)
 
     match System.Threading.Volatile.Read &teardownCode with
     | 0 -> code
@@ -1701,22 +1758,6 @@ let cleanupKilledByTeardown (statement: bool) (runningAtSignal: bool) (code: int
     && code = System.Threading.Volatile.Read &teardownCode
     && not (inRace (currentNode ()))
 
-// a signal the handler is acting on: wait (bounded) until it is done
-// [D:settle-pending]. A signal weir has received reaches its handler a
-// fraction of a millisecond after the kernel delivered it (.NET hands it
-// to a thread or a pool item first), sometimes after the dead child is
-// reaped: with none in flight the wait is a 5ms grace for one to appear,
-// never the 250ms
-let private settleWhile (waiting: unit -> bool) : unit =
-    let clock = System.Diagnostics.Stopwatch.StartNew()
-
-    let inFlight () =
-        System.Threading.Volatile.Read &signalsInFlight > 0
-
-    while waiting ()
-          && clock.ElapsedMilliseconds < (if inFlight () then 250L else 5L) do
-        System.Threading.Thread.Sleep(if inFlight () then 1 else 0)
-
 /// a command that died of INT, HUP, QUIT or TERM while weir's handler is
 /// acting on a signal most likely took it with weir (the terminal's ^C,
 /// a hangup, ^\, `kill -- -pgid`) [D:sigint-terminal-group]
@@ -1730,7 +1771,8 @@ let settleInterrupt (code: int) : unit =
         && mainThreadId <> 0
         && not replFlow
     then
-        settleWhile (fun () -> System.Threading.Volatile.Read &teardownCode = 0)
+        System.Threading.Volatile.Write(&signalDeathSeen, 1)
+        settleWhile (code = 129) (fun () -> System.Threading.Volatile.Read &teardownCode = 0)
 
 /// a script about to die of a command's 129/130/131/143 failure: the
 /// command may have taken a signal before weir did (a supervisor's kill
@@ -1758,7 +1800,7 @@ let settleFatal (code: int) : int =
 /// [D:settle-pending]. Returns the code
 let settleReplInterrupt (code: int) : int =
     if code = 130 && replFlow && not (System.OperatingSystem.IsWindows()) then
-        settleWhile (fun () -> not (interruptRequested ()))
+        settleWhile false (fun () -> not (interruptRequested ()))
 
     code
 
