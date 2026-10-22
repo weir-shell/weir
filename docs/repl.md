@@ -72,7 +72,9 @@ Some behaviours worth knowing:
   `.weir/sigs/` first, then `$XDG_CONFIG_HOME/weir/sigs/`, where
   `weir add sig --global git` puts one for every directory. This works
   after `^`, after `NAME=value` prefixes, in a pipeline stage and after
-  `let x =`. See
+  `let x =`. A session [alias](#alias-command-head-aliases) completes
+  as what it expands to: with `#alias co = git checkout`, `co -<TAB>`
+  offers checkout's flags. See
   [signatures drive Tab completion](tooling.md#signatures-drive-tab-completion).
 - **A `$` splice in a command argument completes session bindings.**
   `az … --location $l<TAB>` offers every binding whose name starts

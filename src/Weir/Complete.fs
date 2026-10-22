@@ -569,7 +569,7 @@ let private commandArgvPosition (env: TypeEnv) (anyHead: bool) (before: string) 
     (commandArgvStmt env anyHead before).IsSome
 
 /// the command whose argv the word after `before` sits in: its head as
-/// written (env prefixes and the `^` sigil off) and the argv text after
+/// written (env prefixes off, a `^` sigil kept) and the argv text after
 /// it — None off an argv position [D:sig-arg-complete]
 let commandArgvAt (env: TypeEnv) (before: string) : (string * string) option =
     match commandArgvStmt env false before with
@@ -581,8 +581,8 @@ let commandArgvAt (env: TypeEnv) (before: string) : (string * string) option =
         if headEnd <= 0 then
             None
         else
-            let head = s.Substring(0, headEnd).TrimStart '^'
-            if head = "" then None else Some(head, s.Substring headEnd)
+            let head = s.Substring(0, headEnd)
+            if head.TrimStart '^' = "" then None else Some(head, s.Substring headEnd)
 
 // a word at a path parameter position [D:path-param-completion]:
 // cd is a builtin, so the argv gate correctly does not apply — the

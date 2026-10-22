@@ -3926,7 +3926,7 @@ let completionTests =
               // cursor (last line cut there), the cursor's line, the word start
               let entry (lines: string list) =
                   let cur = List.last lines
-                  Weir.Script.suggestEntry Set.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
+                  Weir.Script.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
 
               let fileRow =
                   [ "bytes"; "hidden"; "kind"; "modified"; "name"; "path"; "target" ]
@@ -31136,7 +31136,7 @@ let sigCompleteTests =
               Expect.equal (at "gitfx ") (Some("gitfx", " ")) "bare"
               Expect.equal (at "gitfx commit --") (Some("gitfx", " commit --")) "args"
               Expect.equal (at "FOO=1.2 gitfx ") (Some("gitfx", " ")) "env prefix"
-              Expect.equal (at "^gitfx ") (Some("gitfx", " ")) "forced"
+              Expect.equal (at "^gitfx ") (Some("^gitfx", " ")) "forced, the sigil kept"
               Expect.equal (at "let r = gitfx ") (Some("gitfx", " ")) "let RHS"
               Expect.equal (at "ls | gitfx ") (Some("gitfx", " ")) "stage"
               Expect.equal (at "gitfx") None "the head itself"
@@ -31149,17 +31149,31 @@ let sigCompleteTests =
                   File.Copy(Path.Combine(fixtureDir, "gitfx.weir"), Path.Combine(d, ".weir", "sigs", "gitfx.weir"))
 
                   inCwd d (fun () ->
-                      let tab (line: string) =
-                          Weir.Script.suggestEntry Set.empty Map.empty env [ line ] line (Weir.Complete.wordStartAt line line.Length)
+                      let tabWith aliases (line: string) =
+                          Weir.Script.suggestEntry aliases Map.empty env [ line ] line (Weir.Complete.wordStartAt line line.Length)
+
+                      let tab = tabWith Map.empty
 
                       Expect.equal (tab "gitfx com") [ "commit" ] "subcommand"
                       Expect.equal (tab "gitfx commit --am") [ "--amend" ] "flag"
                       Expect.equal (tab "let r = gitfx commit --am") [ "--amend" ] "let RHS"
                       Expect.equal (tab "GIT_X=1 gitfx st") [ "stash"; "status" ] "env prefix"
                       Expect.equal (tab "gitfx commit -m ") [] "a message offers nothing"
+                      Expect.equal (tab "^gitfx com") [ "commit" ] "forced"
+                      // a session alias expands first [D:command-head-alias]:
+                      // its exe's sig, its prefix words as typed
+                      let aliases =
+                          Map [ "co", ("gitfx", [ "commit" ]); "g", ("gitfx", []); "ed", ("nosigtool", [ "-x" ]) ]
+
+                      Expect.equal (tabWith aliases "co --am") [ "--amend" ] "alias with a prefix"
+                      Expect.contains (tabWith aliases "co -") "-m" "the prefix's case flags"
+                      Expect.isFalse (List.contains "--keep-index" (tabWith aliases "co -")) "never another case's"
+                      Expect.equal (tabWith aliases "g st") [ "stash"; "status" ] "alias without a prefix"
+                      Expect.equal (tabWith aliases "^co com") [] "^ skips the alias table"
                       // no sig for the head: today's path completion
                       File.WriteAllText(Path.Combine(d, "commit-notes.txt"), "")
-                      Expect.equal (tab "nosigtool comm") [ "commit-notes.txt" ] "paths"))
+                      Expect.equal (tab "nosigtool comm") [ "commit-notes.txt" ] "paths"
+                      Expect.equal (tabWith aliases "ed comm") [ "commit-notes.txt" ] "an alias to a sig-less tool: paths"))
           } ]
 
 [<Tests>]

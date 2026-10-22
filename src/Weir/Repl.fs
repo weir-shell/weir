@@ -188,10 +188,11 @@ let mutable private killRing = ""
 // command verbatim.
 let mutable private lastStreamed: string option = None
 
-// the session's live alias names [D:command-head-alias]: a ref like
-// currentEnv (the loop refreshes both), read by the one membership
-// below and the Tab pool — the alias table itself stays in State
-let private currentAliasNames: Set<string> ref = ref Set.empty
+// the session's live aliases, name -> (exe, prefix) [D:command-head-alias]:
+// a ref like currentEnv (the loop refreshes both), read by the one
+// membership below and by Tab (the head pool, and the sig lookup through
+// an alias [D:sig-arg-complete]) — the alias table itself stays in State
+let private currentAliases: Map<string, string * string list> ref = ref Map.empty
 
 // the alias head lookup for the parse/completeness resolver
 // [D:command-head-alias]: bufferComplete parses the buffer to decide
@@ -218,7 +219,7 @@ let private knownInWith (aliases: Set<string>) (env: TypeEnv) (n: string) : bool
     || aliases.Contains n
 
 let private knownIn (env: TypeEnv) : string -> bool =
-    knownInWith currentAliasNames.Value env
+    knownInWith (currentAliases.Value |> Map.keys |> Set.ofSeq) env
 
 // The session transcript [D:repl-save]: the accepted statements, in
 // order, that `#save` distills into a runnable .weir file (option B — a
@@ -1961,7 +1962,7 @@ let private readLineTty () : string option =
                 // `head.`/`_.` word repairs over its whole statement
                 let all =
                     Script.suggestEntry
-                        currentAliasNames.Value
+                        currentAliases.Value
                         currentVals.Value
                         currentEnv.Value
                         (dedentEntry (List.init row (fun i -> lines[i].ToString()) @ [ text.Substring(0, col) ]))
@@ -3889,7 +3890,7 @@ let rec private loop (state: State) =
     currentEnv.Value <- state.TypeEnv
     // the alias names ride along [D:command-head-alias]: the head tint
     // and the Tab pool read the ref, never a second table
-    currentAliasNames.Value <- Set.ofSeq (Map.keys state.Aliases)
+    currentAliases.Value <- state.Aliases |> Map.map (fun _ a -> a.Exe, a.Prefix)
 
     // and the head lookup for the parse/completeness resolver, the same
     // shape the eval resolver builds [D:command-head-alias]

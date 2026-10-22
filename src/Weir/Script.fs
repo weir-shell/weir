@@ -7047,7 +7047,12 @@ module SigLookup =
 /// a command argv word the sig of its head completes: Some offers, Some
 /// [] for "nothing", None when the line machinery decides (no sig, a
 /// path the sig defers to, a splice, a quoted word)
-let sigArgvComplete (env: TypeEnv) (text: string) (wordStart: int) : string list option =
+let sigArgvComplete
+    (aliases: Map<string, string * string list>)
+    (env: TypeEnv)
+    (text: string)
+    (wordStart: int)
+    : string list option =
     let before = text.Substring(0, min wordStart text.Length)
     let word = text.Substring(min wordStart text.Length)
 
@@ -7063,7 +7068,16 @@ let sigArgvComplete (env: TypeEnv) (text: string) (wordStart: int) : string list
         match Complete.commandArgvAt env before with
         | None -> None
         | Some(head, argText) ->
-            match SigLookup.find (Session.resolve ".") head with
+            // a session alias expands first, single-hop like the resolver
+            // [D:command-head-alias]: its exe's sig, its prefix words as
+            // typed; `^` skips the alias table
+            let tool, argText =
+                match Map.tryFind head aliases with
+                | Some(exe, prefix) when not (head.StartsWith "^") ->
+                    exe, (if prefix.IsEmpty then argText else " " + String.concat " " prefix + argText)
+                | _ -> head.TrimStart '^', argText
+
+            match SigLookup.find (Session.resolve ".") tool with
             | None -> None
             | Some si ->
                 match SigComplete.complete si (argText + word) word with
@@ -7073,12 +7087,13 @@ let sigArgvComplete (env: TypeEnv) (text: string) (wordStart: int) : string list
 
 /// the REPL's Tab over its entry [D:entry-complete]: `entry` is the
 /// entry up to the cursor (dedented, its last line cut there), `text`
-/// the cursor's own line up to the cursor and `wordStart` within it. A
+/// the cursor's own line up to the cursor and `wordStart` within it,
+/// `aliases` the session's (name -> exe, prefix). A
 /// repaired `head.`/`_.` word answers first (the LSP's precedence), the
 /// sig of a command's head next, the line machinery under the entry's
 /// env otherwise
 let suggestEntry
-    (aliasHeads: Set<string>)
+    (aliases: Map<string, string * string list>)
     (values: Map<string, Eval.Value>)
     (env: TypeEnv)
     (entry: string list)
@@ -7091,9 +7106,9 @@ let suggestEntry
     | Some(_ :: _ as fields) -> fields
     | _ ->
         // a command argv word under a sig'd head [D:sig-arg-complete]
-        match sigArgvComplete ctxEnv text wordStart with
+        match sigArgvComplete aliases ctxEnv text wordStart with
         | Some offers -> offers
-        | None -> Complete.suggestSession aliasHeads values ctxEnv text wordStart
+        | None -> Complete.suggestSession (aliases |> Map.keys |> Set.ofSeq) values ctxEnv text wordStart
 
 // ---- `weir add sig <tool>`: generation [D:command-signatures] --------------
 // Sources in fidelity order [D:sig-sources], the chosen one recorded in the

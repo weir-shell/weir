@@ -17,7 +17,9 @@
   `--color=<Tab>`) you get paths for a file, the choices the signature
   lists, or nothing. A negatable tool's `--no-x` forms appear once you
   type `--no-`. The REPL looks a signature up by the command name:
-  the project's `.weir/sigs/`, then `$XDG_CONFIG_HOME/weir/sigs/`.
+  the project's `.weir/sigs/`, then `$XDG_CONFIG_HOME/weir/sigs/`. A
+  session alias completes as what it expands to: with `#alias co = git
+  checkout`, `co -<Tab>` offers checkout's flags.
 - **`weir add sig --global <tool>`** writes the signature to
   `$XDG_CONFIG_HOME/weir/sigs/`, so the REPL completes that tool in
   every directory. It gets no lock entry; `weir verify`/`restore` and

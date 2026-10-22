@@ -4,7 +4,8 @@
 # $XDG_CONFIG_HOME/weir/sigs/ (a hand sig with enumerated choices) — the
 # subcommand word, a case's flag, a `--flag=` value (paths for a file
 # flag, the choices for an enumerated one), and a sig-less head keeps its
-# path completion. Waits on text, never fixed sleeps.
+# path completion; a session #alias completes as its exe plus prefix
+# words. Waits on text, never fixed sleeps.
 import os
 import shutil
 import sys
@@ -34,7 +35,9 @@ open(os.path.join(cfg, "weir", "sigs", "chtool.weir"), "w").write(
     "    verbose: bool\n"
     "}\n")
 
-env = {"XDG_CONFIG_HOME": cfg, "XDG_STATE_HOME": os.path.join(root, "state")}
+# gitfx on PATH: an #alias resolves its exe when defined
+env = {"XDG_CONFIG_HOME": cfg, "XDG_STATE_HOME": os.path.join(root, "state"),
+       "PATH": os.path.join(HERE, "..", "sigs", "gitfx", "exe") + os.pathsep + os.environ.get("PATH", "")}
 failures = []
 r = Repl(WEIR, cwd=proj, env=env)
 try:
@@ -55,6 +58,9 @@ try:
     tab("gitfx commit --file=zq\t", r"--file=zqmsg\.txt", "a file flag's value part completes as a path")
     tab("chtool --color=ne\t", r"chtool --color=never", "an enumerated value from the user-dir sig")
     tab("chtool --verb\t", r"chtool --verbose", "a flag from the user-dir sig")
+    # a session alias expands before the sig lookup [D:command-head-alias]
+    r.submit("#alias co = gitfx commit\r")
+    tab("co --am\t", r"co --amend", "an alias completes as its exe and prefix words")
     tab("nosigtool zqm\t", r"nosigtool zqmsg\.txt", "a sig-less head keeps path completion")
 finally:
     r.close()
@@ -65,4 +71,4 @@ if failures:
         print("repl-sig-complete FAIL:", f)
     sys.exit(1)
 
-print("repl-sig-complete: Tab completes subcommands, flags and --flag= values from project and user-dir sigs")
+print("repl-sig-complete: Tab completes subcommands, flags and --flag= values from project and user-dir sigs, through a session alias")
