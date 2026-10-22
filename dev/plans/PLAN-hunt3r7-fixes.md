@@ -63,3 +63,14 @@ known, and T1-2's pinned-contention shape at 0 misreads.
 Harness first (`tools/hunt3r7f-repro.weir`, every probe REPRODUCES on
 aea52bc). A, P and B in parallel (disjoint files). Merge B → P → A.
 Lows to BACKLOG with the ledger at the end.
+
+## Status (2026-10-22)
+
+Both highs and every medium fixed on plan/hunt3r7f. Final gates at
+c528bab: tools/hunt3r7f-repro.weir 13/13 (twice) with its controls,
+every older harness green, every storm step 0 bad / 0 known (300 per
+storm.py mode, 240 per REPL mode), the race-tree fuzzer 0 bad in 500
+trees, the plan differential fuzzer down to the one documented deleteAll
+low in 2,333 trees, sig-score 32 fixtures 0 failing. linux-hunts runs
+14 min of its 20. Round-7 lows in dev/BACKLOG.md. Round 7 FIXED — hunt 3
+closes here.
