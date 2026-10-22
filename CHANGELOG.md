@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **No `(F1: keys)` hint beside the first continuation line, and no
+  indentation note under `#keys`/F1** — the list is just the bindings.
+
 ## v0.0.76
 
 ### Added

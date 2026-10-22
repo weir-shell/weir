@@ -1197,12 +1197,7 @@ let keysText (color: bool) : string =
     let rows =
         List.map2 (fun (k: string) (_, what) -> "  " + Types.Color.dim color (k.PadRight w) + "  " + what) keys keyBindings
 
-    String.concat
-        "\n"
-        (rows
-         @ [ "A new line starts at the indentation of the line above, one level (4 spaces) deeper after"
-             "a line that opens a body (`=`, `->`, `then`, `else`, `do`, `with`, `within …`, `always`);"
-             "a paste keeps its own indentation." ])
+    String.concat "\n" rows
 
 // Ctrl+Left/Right navigation; '.' stays a separator here (unlike
 // completion's wordStartAt) so field chains hop segment by segment
@@ -1396,10 +1391,6 @@ let private bufferComplete (bufLines: string list) : bool =
 // tty only.
 let mutable private contPrompt = "   … "
 
-// the one-time "F1: keys" hint [D:repl-f1-keys]: once per session, on
-// the first typed continuation line
-let mutable private f1HintShown = false
-
 // type-ahead [D:repl-typeahead]: keys typed while the terminal was
 // cooked — before the first prompt, or during an entry's evaluation (eval
 // runs cooked [D:repl-isig]) — where ICRNL already turned Enter into
@@ -1503,10 +1494,6 @@ let private readLineTty () : string option =
     // display rows between the region top and the cursor at the last
     // paint — the way back up through wraps
     let mutable lastCursorDisplay = 0
-    // the line carrying the one-time F1 hint (by identity: rows shift as
-    // lines come and go) [D:repl-f1-keys]
-    let mutable hintLine: Text.StringBuilder option = None
-    let hintText = "  (F1: keys)"
 
     let termWidth () =
         try
@@ -1621,13 +1608,6 @@ let private readLineTty () : string option =
 
             out.Append(if i = 0 then p0 else contPrompt).Append painted |> ignore
 
-            // the hint paints only where it fits on the line's one row,
-            // so the row math below never sees it [D:repl-f1-keys]
-            match hintLine with
-            | Some h when obj.ReferenceEquals(h, lines[i]) && promptWidth + text.Length + hintText.Length < w ->
-                out.Append(Types.Color.dim Types.Color.onStdout.Value hintText) |> ignore
-            | _ -> ()
-
             totalRows <- totalRows + dispRows w text.Length
 
             if i < lines.Count - 1 then
@@ -1693,17 +1673,10 @@ let private readLineTty () : string option =
         row <- row + 1
         col <- indent.Length
 
-        // the first typed continuation line of the session carries the
-        // F1 hint; a paste does not spend it [D:repl-f1-keys]
-        if not queued && not f1HintShown && not Console.IsOutputRedirected then
-            f1HintShown <- true
-            hintLine <- Some lines[row]
-
         redraw ()
 
     // park the cursor at the region end (echoes print below the buffer)
     let toEnd () =
-        hintLine <- None
         row <- lines.Count - 1
         col <- lines[row].Length
         redraw ()
