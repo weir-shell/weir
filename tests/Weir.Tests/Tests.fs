@@ -31053,6 +31053,11 @@ let sigCompleteTests =
               let n = fx "nodefx"
               has (words n " --no-") [ "--no-warnings"; "--no-trace-warnings"; "--no-test" ]
               lacks (words n " --no-") [ "--no-eval"; "--no-no-warnings" ]
+              // a bare -- lists the real flags only
+              let bare = words n " --"
+              has bare [ "--warnings"; "--no-warnings"; "--trace-warnings" ]
+              lacks bare [ "--no-trace-warnings"; "--no-test" ]
+              lacks (words n " --no") [ "--no-trace-warnings" ]
               isNothing n " --input-type "
               isPaths n " script.js -"
           }

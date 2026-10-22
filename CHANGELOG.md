@@ -15,7 +15,8 @@
   in the editor, `git com<Tab>` offers `commit`, `git commit --am<Tab>`
   offers `--amend`, and after a flag that takes a value (`--file <Tab>`,
   `--color=<Tab>`) you get paths for a file, the choices the signature
-  lists, or nothing. The REPL looks a signature up by the command name:
+  lists, or nothing. A negatable tool's `--no-x` forms appear once you
+  type `--no-`. The REPL looks a signature up by the command name:
   the project's `.weir/sigs/`, then `$XDG_CONFIG_HOME/weir/sigs/`.
 - **`weir add sig --global <tool>`** writes the signature to
   `$XDG_CONFIG_HOME/weir/sigs/`, so the REPL completes that tool in

@@ -146,7 +146,8 @@ the editor (through `weir lsp`) offer the same things.
 - After the tool and after each subcommand word: the subcommand words
   (`git com<TAB>` gives `git commit`).
 - A word starting with `-`: the flags of the subcommand you are in,
-  `--long` and `-x`, plus `--no-x` when the signature is `negatable`.
+  `--long` and `-x`. When the signature is `negatable`, typing `--no-`
+  offers the `--no-x` forms too (a bare `--` lists only the real flags).
   A Go tool's flags are offered as `-name`, find's predicates as
   `-name`. For a tool that takes unique prefixes, the full name is
   offered.

@@ -6811,8 +6811,10 @@ module SigComplete =
             @ (literals |> List.map (fun l -> dash + l.TrimStart '-'))
         | "find" -> literals @ shorts @ (longs |> List.map (fun l -> "--" + l))
         | _ ->
+            // the `--no-x` twins only once `--no-` is typed: a bare `--`
+            // lists the real flags [D:sig-arg-complete]
             let negs =
-                if si.Negatable then
+                if si.Negatable && word.StartsWith "--no-" then
                     sf.Longs
                     |> Map.toList
                     |> List.filter (fun (l, a) -> (a = ANone || a = AOpt) && not (l.StartsWith "no-"))
