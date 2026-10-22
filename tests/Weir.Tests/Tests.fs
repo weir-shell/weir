@@ -8002,6 +8002,22 @@ let replColorTests =
               Expect.stringContains c "\u001b[36m$x\u001b[0m" "the splice island"
               Expect.isFalse (c.Contains "\u001b[2mhead") "after | the stage is expression land"
           }
+          test "an interpolation hole paints as code, not string [D:interp-hole-complete]" {
+              let c = colorize "for r in ls |> Seq.where (fun f -> File.exists $\"{f.path}/AGENTS.md\") do"
+              Expect.equal (strip c) "for r in ls |> Seq.where (fun f -> File.exists $\"{f.path}/AGENTS.md\") do" "transparent"
+              Expect.isFalse (c.Contains "\u001b[32m\"{f.path}/AGENTS.md\"") "the hole is not inside the string span"
+              Expect.stringContains c "/AGENTS.md\"" "the literal part stays"
+              Expect.stringContains c "\u001b[32m}/AGENTS.md\"\u001b[0m" "the text after the hole is string"
+              // a hole in argv is an expression, not a dim argv word
+              let g = colorize "git commit -m $\"wip {n + 1}\""
+              Expect.isFalse (g.Contains "\u001b[2mn") "a hole in command argv is not dimmed"
+              Expect.stringContains g "\u001b[36m1\u001b[0m" "a number in the hole paints as a number"
+              // {{ is a literal brace, a string inside a hole stays a string
+              Expect.stringContains (colorize "print $\"{{x}}\"") "\u001b[32m\"{{x}}\"\u001b[0m" "{{ stays string"
+              let n = colorize "print $\"{f \"s\"}\""
+              Expect.stringContains n "\u001b[32m\"s\"" "a nested string stays string"
+              Expect.stringContains n "\u001b[0mf " "the hole's code is not string"
+          }
           test "an uppercase stage word is never a program, whatever PATH holds" {
               // a case-insensitive filesystem finds `Seq` as seq — the casing
               // rule decides first

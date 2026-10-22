@@ -7,6 +7,12 @@
 - **No `(F1: keys)` hint beside the first continuation line, and no
   indentation note under `#keys`/F1** — the list is just the bindings.
 
+### Fixed
+
+- **The REPL colours the code inside a `$"…{hole}…"` string as code,**
+  not as part of the string, and a hole in a command's arguments is not
+  dimmed like a literal argument.
+
 ## v0.0.76
 
 ### Added
