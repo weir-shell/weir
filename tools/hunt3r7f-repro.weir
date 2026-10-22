@@ -1,0 +1,1192 @@
+#!/usr/bin/env weir
+// Acceptance instrument for dev/plans/PLAN-hunt3r7-fixes.md: one probe per
+// medium-or-high finding of hunt 3 round 7 (H3R7-*). Each probe prints
+// `<id> OK` when its item is fixed and `<id> REPRODUCES (...)` otherwise,
+// naming every sub-case still failing, so one script is both the bug report
+// and the stages' gate. A missing instrument prints a SKIP line, which keeps
+// the gate shut.
+//
+//     weir tools/hunt3r7f-repro.weir --bin ./path/to/weir [--only H3R7-T1-2]
+//
+// Labels are the findings' ids (H3R7-T1-1 … H3R7-T3-6). `--only` selects the
+// probes and controls with a label word starting with its text — an id
+// ending in a digit never selects a longer number (H3R7-T1-1 would not
+// select a T1-10), a prefix selects a family (`--only H3R7-T3`); controls
+// carry the ids they guard. Not here: the lows (BACKLOG), and T1-3's second
+// half — a thread that cannot start (EAGAIN under a pid cap) raising a weir
+// error naming the limit — which no black-box probe reaches deterministically
+// (RLIMIT_NPROC counts every process of the user, the cgroup cap is the
+// box's): stage A pins it in a unit test. Where the plan leaves the output
+// open, a probe asserts the invariant, never a wording. A signal's exit is
+// judged as either spelling (128+n or a death by n).
+//
+// T1-2 is a race by nature: a group SIGHUP whose .NET handler starts late (a
+// pool item) on a CPU weir shares with busy loops. The probe runs lanes of
+// weir + 4 bounded busy loops pinned to one CPU each (3 lanes on 12+ CPUs, 2
+// on 8+, else 1), loads the rest of the box to 2x its CPUs (every loop
+// `timeout`-bounded, tagged, killed by the probe), and runs the two shapes of
+// the finding up to 20 times per lane each, the signal 2s after the spawn —
+// any misread reproduces (and ends the shape's runs). The race needs weir in
+// its own session (its own scheduler autogroup) and the command waited on
+// for a while: a SIGHUP soon after the spawn, or weir sharing the loops'
+// session, almost never misreads. The base binary misreads 3-15% of runs on
+// a 15-CPU box (the rate follows the box's other load), so up to 120 runs
+// miss it rarely, not never. It SKIPs without python's sched_setaffinity
+// (taskset's syscall). Its cost on a fixed binary is the probe's own: ~95s
+// (20 runs of ~2.3s per lane and shape), on any CPU count.
+//
+// Cost findings are bounds against yardsticks measured in the same run (T1-3:
+// the threads of the same race through `$( )`), never absolute figures.
+//
+// Loud, in every direction:
+//   - a probe that fails to run counts as reproducing, never as a pass;
+//   - a missing instrument (timeout, env, sh, python3, ps, kill, ln, /proc)
+//     is a named SKIP counted with the failures;
+//   - the exit code is the number of lines keeping the gate shut (failed
+//     probes, failed controls and skips), capped at 255.
+//
+// A terminal is a pseudo-terminal whose session weir leads. Orphans are
+// found by a per-run marker — a `sleep <marker>` argv, matched exactly — and
+// killed after counting.
+//
+// CI-robust: every child weir runs under `env -u` of the proxy variables
+// (T3-1 and T3-6 set their own) with TMPDIR in its probe dir. Servers are
+// python's, bound to port 0, reporting the kernel's pick [D:harness-ports];
+// no probe takes a fixed port. Everything binds loopback; nothing leaves the
+// machine. Every fixture is written by this script.
+//
+// Positive controls (`control-*`) pin the neighbouring behaviour each fix
+// must keep, so no probe can pass by the binary being broken in a new way; a
+// failed control counts toward the exit code.
+//
+// python3 helpers (run `python3 -I`, written into each probe's temp dir from
+// the heredocs below) where weir cannot express the shape: a pseudo-terminal
+// driver, a contended signal driver, a thread sampler, a lockfile racer, an
+// LSP client and http servers.
+
+type Cli = {
+    /// the weir binary under test
+    [<Default "weir">]
+    bin: string
+    /// run only the probes and controls whose label contains this text
+    only: Option<string>
+}
+
+let cli = Args.load Cli
+
+let toolsReady =
+    sh -c "command -v timeout && command -v env && command -v python3 && command -v ps && command -v kill && command -v ln && test -d /proc/self" | succeeds
+
+// ---- runners ---------------------------------------------------------------
+
+let put dir name lines =
+    let p = $"{dir}/{name}"
+    lines |> File.write p
+    p
+
+let noProxy = [
+    "-u"; "HTTP_PROXY"; "-u"; "http_proxy"; "-u"; "HTTPS_PROXY"; "-u"; "https_proxy"
+    "-u"; "ALL_PROXY"; "-u"; "all_proxy"; "-u"; "NO_PROXY"; "-u"; "no_proxy"
+]
+
+// a child weir in `dir`, proxies stripped, its temp dirs under `dir`, extra
+// NAME=value words for env
+let runEnv dir secs extra args =
+    within cd dir
+        let r = timeout -k 2 $secs env $@noProxy $"TMPDIR={dir}" $@extra $cli.bin $@args | complete
+        r
+
+let runIn dir secs args = runEnv dir secs [] args
+
+let outOf { stdout = s } = s |> Str.join "\n"
+let errOf { stderr = s } = s |> Str.join "\n"
+
+// `weir check` writes its diagnostics to stdout; judge both streams
+let diagOf r = outOf r + "\n" + errOf r
+let codeOf { exitCode = c } = c
+
+let failing cases =
+    cases |> Seq.where (fun (_, ok) -> not ok) |> Seq.map fst |> Seq.freeze
+
+let msOf f =
+    let t0 = Instant.now ()
+    let r = f ()
+    (Duration.toMillis (Instant.now () - t0), r)
+
+let linesOf p = if File.exists p then File.read p |> Seq.freeze else []
+
+let oneLine s = s |> Str.trim |> Str.replace "\n" " | "
+
+let joined ls = ls |> Str.join " | "
+
+// terminal-driving bytes, built from hex so this file stays plain text
+let esc = Str.fromUtf8 (Bytes.fromHex "1b")
+let bel = Str.fromUtf8 (Bytes.fromHex "07")
+let cr = Str.fromUtf8 (Bytes.fromHex "0d")
+
+// a stream carries a terminal-driving byte raw
+let rawCtl s = (s |> Str.contains esc) || (s |> Str.contains bel) || (s |> Str.contains cr)
+
+let visible s = s |> Str.replace esc "<ESC>" |> Str.replace bel "<BEL>" |> Str.replace cr "<CR>" |> oneLine
+
+// a per-run marker for `sleep <marker>` children: a float sleep(1) takes,
+// unique to this harness run and this use
+let markOf secs k = $"{secs}.{Self.pid}{k}"
+
+// the pids of every live `sleep <mark>`, the argv matched exactly
+let sleepersOf mark =
+    let r = ps -eo "pid=,args=" | complete
+    r.stdout
+    |> Seq.map (fun l -> l |> Str.fields |> Seq.freeze)
+    |> Seq.where (fun f -> (f |> Seq.length) == 3 && f[1] == "sleep" && f[2] == mark)
+    |> Seq.map (fun f -> f[0])
+    |> Seq.freeze
+
+let reap mark =
+    let pids = sleepersOf mark
+    if not (Seq.isEmpty pids) then
+        let _k = kill -9 $@pids | complete
+        ()
+
+// a signal's exit, either spelling: 128+n from exit(), -n from a death by
+// the signal (python's view of a wait status)
+let sigExit rc n = rc == $"{128 + n}" || rc == $"-{n}"
+
+// a python server written into `dir` from `src`, run with `args`; the body
+// gets the server's first stdout line (servers bind port 0 and print it)
+let withPy dir name src args body =
+    let py = put dir name src
+    within proc srv = python3 -I $py $@args
+        let reported =
+            poll timeout=10s interval=50ms watch=srv
+                Proc.tail srv |> Seq.tryHead
+            until l
+                l <> None
+        let v = body (reported |> Option.defaultValue "")
+        v
+
+let portOf line = line |> Str.fields |> Seq.head |> Str.toInt
+
+// ---- the pseudo-terminal driver ------------------------------------------------
+
+// a pseudo-terminal whose session the child leads: `HEX <bytes>` /
+// `SLEEP <ms>` / `GET <port>` (a background HTTP GET of / on 127.0.0.1) /
+// `HANGUP` (close the master: the terminal hangs up) / `SIG <NAME>` (a
+// signal to the child's pid) / `GSIG <NAME>` (to its process group) lines on
+// stdin. Prints
+// the session (CRLF as a newline, a bare CR as <CR>, ESC as <ESC>), then
+// `EXIT <code|timeout>` (a death by a signal is -n), `EXITMS <ms from spawn
+// to exit, -1 on timeout>`, `SENT <ms of each HEX write>`, `STATUS <status
+// line|closed|error>` per GET
+let ptyPy = <<<
+    import os, pty, sys, time, select, signal, fcntl, termios, struct, threading, socket
+    timeout = float(sys.argv[1]); cmd = sys.argv[2:]
+    steps = []
+    for line in sys.stdin.read().splitlines():
+        if line.startswith("SLEEP "): steps.append(("sleep", int(line[6:])))
+        elif line.startswith("HEX "): steps.append(("send", bytes.fromhex(line[4:].strip())))
+        elif line.startswith("GET "): steps.append(("get", int(line[4:])))
+        elif line.strip() == "HANGUP": steps.append(("hangup", 0))
+        elif line.startswith("SIG "): steps.append(("sig", line[4:].strip()))
+        elif line.startswith("GSIG "): steps.append(("gsig", line[5:].strip()))
+    pid, fd = pty.fork()
+    if pid == 0:
+        for sig in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE):
+            signal.signal(sig, signal.SIG_DFL)
+        os.execvp(cmd[0], cmd)
+    t0 = time.monotonic()
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 160, 0, 0))
+    out = b""; code = None; exitms = -1; sent = []; gets = []; threads = []; closed = False
+    def ms(): return int((time.monotonic() - t0) * 1000)
+    def reap():
+        global code, exitms
+        if code is None:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done: code = os.waitstatus_to_exitcode(status); exitms = ms()
+    def pump(until):
+        global out
+        while time.monotonic() < until:
+            reap()
+            if closed:
+                if code is not None: return
+                time.sleep(0.01); continue
+            r, _, _ = select.select([fd], [], [], 0.01)
+            if r:
+                try: c = os.read(fd, 65536)
+                except OSError: c = b""
+                if not c:
+                    if code is not None: return
+                    time.sleep(0.01)
+                out += c
+    def get(port):
+        try:
+            s = socket.create_connection(("127.0.0.1", port), timeout=20)
+            s.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n" % port)
+            d = b""
+            while True:
+                x = s.recv(65536)
+                if not x: break
+                d += x
+            gets.append(d.split(b"\r\n")[0].decode("latin-1") or "closed")
+        except Exception as e: gets.append("error " + type(e).__name__)
+    for kind, arg in steps:
+        if code is not None: break
+        if kind == "sleep": pump(time.monotonic() + arg / 1000.0)
+        elif kind == "send":
+            try: os.write(fd, arg); sent.append(ms())
+            except OSError: pass
+        elif kind == "hangup":
+            os.close(fd); closed = True; sent.append(ms())
+        elif kind in ("sig", "gsig"):
+            try:
+                if kind == "sig": os.kill(pid, getattr(signal, "SIG" + arg))
+                else: os.killpg(pid, getattr(signal, "SIG" + arg))
+                sent.append(ms())
+            except OSError: pass
+        else:
+            t = threading.Thread(target=get, args=(arg,), daemon=True); t.start(); threads.append(t)
+    deadline = time.monotonic() + timeout
+    while code is None and time.monotonic() < deadline: pump(time.monotonic() + 0.05)
+    if code is None:
+        os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0); code = "timeout"
+    else: pump(time.monotonic() + 0.3)
+    for t in threads: t.join(5)
+    mode = "closed"
+    if not closed:
+        try:
+            lf = termios.tcgetattr(fd)[3]
+            mode = "icanon=%d echo=%d isig=%d" % (int(bool(lf & termios.ICANON)), int(bool(lf & termios.ECHO)), int(bool(lf & termios.ISIG)))
+        except Exception as e: mode = "error " + type(e).__name__
+    text = out.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "<CR>").replace("\x1b", "<ESC>")
+    sys.stdout.write(text)
+    print("\nEXIT", code)
+    print("EXITMS", exitms)
+    print("SENT", " ".join(str(x) for x in sent))
+    for g in gets: print("STATUS", g)
+    print("TTYMODE", mode)
+
+type PtyRun = { text: string; code: string }
+
+let fieldOf ls tag =
+    ls |> Seq.tryPick (fun l -> if l |> Str.startsWith (tag + " ") then Some (Str.sub (Str.length tag + 1) (Str.length l - Str.length tag - 1) l) else None)
+
+// one pty session; `args` is the child's argv (env-wrapped here)
+let ptyRun d secs args steps =
+    let py = put d "ptydrive.py" ptyPy
+    within cd d
+        let r = steps | timeout 120 python3 -I $py $secs env $@noProxy $"TMPDIR={d}" $@args | complete
+        let ls = r.stdout |> Seq.freeze
+        { text = outOf r; code = fieldOf ls "EXIT" |> Option.defaultValue "none" }
+
+// ---- H3R7-T1-1: the shim's exec check is one interpreter deep ------------------
+
+// the body and a cleanup each run the executable named by the first arg,
+// printing the try result
+let t11Fixture = <<<
+    let c = Self.args |> Seq.head
+    let probe label =
+        let v = $(^$c) |> try result
+        print $"{label} {v}"
+    within
+        probe "BODY"
+    always
+        probe "CLEANUP"
+
+let t11Exec d name lines =
+    let p = put d name lines
+    chmod +x $p | orFail $"chmod {p}"
+    p
+
+let t11Verdicts text =
+    let at tag = text |> Str.split "\n" |> Seq.tryPick (fun l -> Str.trySplitOnce $"{tag} " l |> Option.map (fun (_, rest) -> $"{tag} {rest}")) |> Option.defaultValue "<none>"
+    (at "BODY", at "CLEANUP")
+
+let t11Tty d script exe =
+    let run = ptyRun d "15" [cli.bin; script; exe] ["SLEEP 2500"]
+    let (b, c) = t11Verdicts run.text
+    (b, c, run.code)
+
+// a #! chain the kernel runs (outer -> mid, a #!/bin/sh script): both the
+// body and the tty cleanup run it
+let ctlAShebangChain d =
+    let mid = t11Exec d "mid" ["#!/bin/sh"; "exec /bin/sh \"$@\""]
+    let outer = t11Exec d "chain" [$"#!{mid}"; "echo chain-ran"]
+    let (b, c, _) = t11Tty d (put d "c.weir" t11Fixture) outer
+    (b |> Str.contains "chain-ran") && (c |> Str.contains "chain-ran")
+
+let h3r7t11 d =
+    let script = put d "t11.weir" t11Fixture
+    let inner = t11Exec d "inner" ["echo inner-ran-it-7f"]
+    let outer = t11Exec d "outer" [$"#!{inner}"; "echo ran-it-7f"]
+    let gelf = t11Exec d "gelf" [Str.fromUtf8 (Bytes.fromHex "7f") + "ELF-not-an-image"]
+    let outer2 = t11Exec d "outer2" [$"#!{gelf}"; "echo ran-it-7f"]
+    let (b1, c1, e1) = t11Tty d script outer
+    let (b2, c2, e2) = t11Tty d script outer2
+    let refused v = (v |> Str.contains " Error ") && not (v |> Str.contains "ran-it-7f")
+    failing [
+        ($"at a tty, a cleanup command whose #! interpreter is a shebang-less script must refuse as the body does, as execve would: '{b1}' / '{c1}' (EXIT {e1})", refused b1 && refused c1)
+        ($"at a tty, a cleanup command whose #! interpreter is a garbage ELF must refuse as the body does: '{b2}' / '{c2}' (EXIT {e2})", refused b2 && refused c2)
+    ]
+
+// ---- H3R7-T1-2: a late SIGHUP handler under CPU contention is misread -----------
+
+// the contended signal driver: DIR LANES PER BOX N DELAYMS MARK -- argv.
+// Each of LANES lanes owns one CPU (the last ones of the driver's affinity)
+// and PER busy loops pinned to it; BOX more loops run unpinned. Every loop is
+// `timeout 150 sh -c 'while :; do :; done' hunt3r7f-hog-MARK`. The lanes then
+// share N runs, concurrently: each spawns argv + [its log] pinned to its CPU
+// in a new session (default dispositions, stdin /dev/null), sends SIGHUP to
+// its group DELAYMS after the spawn, waits (20s, then HANG); a run not dying
+// by the SIGHUP stops every lane after its current run. Kills every loop
+// and every `sleep MARK` at the end, whatever happened. One line per run:
+// `RUN rc=<code|HANG> armed=<0|1> log=<log lines,> err=<stderr>` (armed: the
+// log said ARMED before the signal), then `HOGS left=<n>`
+let t12Py = <<<
+    import os, sys, time, signal, subprocess, threading
+    a = sys.argv[1:]; i = a.index("--"); argv = a[i + 1:]
+    d, lanes, per, nbox, n, dl, mark = a[0], int(a[1]), int(a[2]), int(a[3]), int(a[4]), float(a[5]) / 1000.0, a[6]
+    cpus = sorted(os.sched_getaffinity(0))[-lanes:]; tag = "hunt3r7f-hog-" + mark
+    def pinner(c): return lambda: os.sched_setaffinity(0, {c})
+    def starter(c):
+        def pre():
+            os.sched_setaffinity(0, {c})
+            for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE): signal.signal(s, signal.SIG_DFL)
+        return pre
+    def procs(test):
+        out = []
+        for e in os.listdir("/proc"):
+            if not e.isdigit(): continue
+            try: v = open("/proc/%s/cmdline" % e, "rb").read().split(b"\0")
+            except OSError: continue
+            if test(v): out.append(int(e))
+        return out
+    def kill(pids):
+        for x in pids:
+            try: os.kill(x, signal.SIGKILL)
+            except ProcessLookupError: pass
+    hog = ["timeout", "150", "sh", "-c", "while :; do :; done", tag]
+    hogs = []; out = []; lock = threading.Lock(); stop = threading.Event()
+    def lane(k, runs):
+        c = cpus[k]; log = os.path.join(d, "log%d" % k)
+        for _ in range(runs):
+            if stop.is_set(): break
+            open(log, "w").close()
+            p = subprocess.Popen(argv + [log], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, preexec_fn=starter(c), start_new_session=True)
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < dl and p.poll() is None: time.sleep(0.002)
+            armed = int("ARMED" in open(log).read())
+            try: os.killpg(p.pid, signal.SIGHUP)
+            except ProcessLookupError: pass
+            try: e = p.communicate(timeout=20)[1]; rc = str(p.returncode)
+            except subprocess.TimeoutExpired:
+                rc = "HANG"
+                try: os.killpg(p.pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+                e = p.communicate()[1]
+            try: os.killpg(p.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError): pass
+            line = "RUN rc=%s armed=%d log=%s err=%s" % (rc, armed, open(log).read().replace("\n", ","), e.decode("utf-8", "replace").replace("\n", " | ")[-300:])
+            with lock: out.append(line)
+            if rc not in ("-1", "129"): stop.set()
+    try:
+        for c in cpus:
+            for _ in range(per): hogs.append(subprocess.Popen(hog, preexec_fn=pinner(c)))
+        for _ in range(nbox): hogs.append(subprocess.Popen(hog))
+        ts = [threading.Thread(target=lane, args=(k, n // lanes + (1 if k < n % lanes else 0))) for k in range(lanes)]
+        for t in ts: t.start()
+        for t in ts: t.join()
+    finally:
+        for h in hogs:
+            try: os.killpg(h.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError): pass
+        kill([h.pid for h in hogs])
+        for h in hogs: h.wait()
+        kill(procs(lambda v: tag.encode() in v))
+        kill(procs(lambda v: len(v) >= 2 and os.path.basename(v[0]) == b"sleep" and v[1] == mark.encode()))
+    for l in out: print(l)
+    time.sleep(0.2)
+    print("HOGS left=%d" % len(procs(lambda v: tag.encode() in v)))
+
+// a cleanup's statement command a group SIGHUP kills: the signal's, the
+// cleanup runs on, death by SIGHUP [D:cleanup-group-signal]
+let t12Cleanup mark = $$<<<
+    let log = Self.args |> Seq.head
+    within
+        File.append log ["body"]
+    always
+        File.append log ["ARMED"]
+        sh -c "sleep $mark"
+        File.append log ["after"]
+
+// a capture outside a cleanup the group SIGHUP kills: the script dies by the
+// signal, `|> try` never catches it
+let t12Try mark = $$<<<
+    let log = Self.args |> Seq.head
+    File.append log ["ARMED"]
+    let r = $(sh -c "sleep $mark") |> try result
+    File.append log [$"LEAK {r}"]
+
+type T12Run = { rc: string; armed: bool; log: string; err: string }
+
+let t12Runs { stdout = so } =
+    so
+    |> Seq.choose (function | Regex @"^RUN rc=(\S+) armed=(\d) log=(.*?) err=(.*)$" (rc, a, l, e) -> Some { rc = rc; armed = a == "1"; log = l; err = e } | _ -> None)
+    |> Seq.freeze
+
+let t12Left { stdout = so } =
+    so |> Seq.tryPick (function | Regex @"^HOGS left=(\d+)$" n -> Some (Str.toInt n) | _ -> None) |> Option.defaultValue -1
+
+let t12Affinity =
+    sh -c "python3 -I -c 'import os; os.sched_setaffinity(0, os.sched_getaffinity(0))'" | succeeds
+
+// one batch of `n` runs of `script` under the driver
+let t12Batch d name script lanes per nbox n delay mark =
+    let sd = $"{d}/{name}"
+    Dir.create sd
+    let py = put sd "t12.py" t12Py
+    let f = put sd $"{name}.weir" script
+    within cd sd
+        let r = timeout 170 env $@noProxy $"TMPDIR={sd}" python3 -I $py $sd $"{lanes}" $"{per}" $"{nbox}" $"{n}" $"{delay}" $mark -- $cli.bin $f | complete
+        reap mark
+        (t12Runs r, t12Left r, errOf r)
+
+let t12CleanupOk { rc = rc; err = e; log = l } = sigExit rc 1 && not (e |> Str.contains "command failed") && (l |> Str.contains "after")
+
+let t12TryOk { rc = rc; log = l } = sigExit rc 1 && not (l |> Str.contains "LEAK")
+
+let t12Cpus () = sh -c "nproc" | line |> Str.toInt
+
+// uncontended, each shape dies by the SIGHUP
+let ctlASighupUncontended d =
+    if not t12Affinity then fail "SKIP: python3 has no os.sched_setaffinity (Linux only)"
+    let mark = markOf 30 71
+    let (cl, l1, _) = t12Batch d "c" (t12Cleanup mark) 1 0 0 2 1200 mark
+    let (tr, l2, _) = t12Batch d "t" (t12Try mark) 1 0 0 2 1200 mark
+    (cl |> Seq.length) == 2 && (cl |> Seq.forall (fun x -> x.armed && t12CleanupOk x)) && (tr |> Seq.length) == 2 && (tr |> Seq.forall (fun x -> x.armed && t12TryOk x)) && l1 == 0 && l2 == 0
+
+// runs per shape: 20 per lane, fewer when one misreads early
+let t12PerLane = 20
+
+let h3r7t12 d =
+    if not t12Affinity then fail "SKIP: python3 has no os.sched_setaffinity (Linux only)"
+    let cpus = t12Cpus ()
+    let lanes = if cpus >= 12 then 3 elif cpus >= 8 then 2 else 1
+    let box = 2 * cpus - 4 * lanes
+    let nbox = if box < 0 then 0 else box
+    let t12N = t12PerLane * lanes
+    let mark = markOf 30 72
+    let (cl, l1, e1) = t12Batch d "cl" (t12Cleanup mark) lanes 4 nbox t12N 2000 mark
+    let (tr, l2, e2) = t12Batch d "try" (t12Try mark) lanes 4 nbox t12N 2000 mark
+    let bad ok runs = runs |> Seq.where (fun x -> not (ok x)) |> Seq.freeze
+    let shown runs = runs[..1] |> Seq.map (fun x -> $"rc={x.rc} log '{x.log}' err '{x.err}'") |> joined
+    let armed runs = runs |> Seq.where (fun x -> x.armed) |> Seq.length
+    let bc = bad t12CleanupOk cl
+    let bt = bad t12TryOk tr
+    failing [
+        ($"""a group SIGHUP killing a cleanup's statement command, weir and 4 busy loops on one CPU ({lanes} such lanes), the box at 2x: never "command failed", the cleanup runs on, death by SIGHUP — {bc |> Seq.length}/{cl |> Seq.length} misread ({armed cl} armed; {shown bc}{oneLine e1})""", (cl |> Seq.length) == t12N && Seq.isEmpty bc)
+        ($"""the same SIGHUP killing a capture outside a cleanup: `|> try` never catches it, death by SIGHUP — {bt |> Seq.length}/{tr |> Seq.length} misread ({armed tr} armed; {shown bt}{oneLine e2})""", (tr |> Seq.length) == t12N && Seq.isEmpty bt)
+        ($"every busy loop the probe started is gone ({l1}/{l2} left)", l1 == 0 && l2 == 0)
+    ]
+
+// ---- H3R7-T1-3: a `| complete` arm takes two threads --------------------------
+
+// the thread sampler: TIMEOUT -- argv. Runs argv, reads /proc/<pid>/status
+// Threads every 5ms; prints `peak=<n> rc=<code> out=<stdout>`
+let t13Py = <<<
+    import sys, time, subprocess
+    tmo = float(sys.argv[1]); argv = sys.argv[3:]
+    p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    peak = 0; t0 = time.monotonic()
+    while p.poll() is None and time.monotonic() - t0 < tmo:
+        try:
+            for l in open("/proc/%d/status" % p.pid):
+                if l.startswith("Threads:"): peak = max(peak, int(l.split()[1]))
+        except OSError: pass
+        time.sleep(0.005)
+    if p.poll() is None: p.kill()
+    o = p.communicate()[0]
+    print("peak=%d rc=%s out=%s" % (peak, p.returncode, o.decode("utf-8", "replace").strip().replace("\n", " | ")))
+
+// a pfirstWith n race: arm 1 wins once every other arm has started its
+// command (each logs first), half a second later; the others park in a
+// marked sleep, through `| complete` or `$( )`
+let t13Script = <<<
+    let a = Self.args |> Seq.freeze
+    let n = a |> Seq.head |> Str.toInt
+    let shape = a |> Seq.item 1
+    let mark = a |> Seq.item 2
+    let log = a |> Seq.item 3
+    let arm i =
+        if i == 1 then
+            let _seen =
+                poll timeout=60s interval=50ms
+                    (File.read log |> Seq.length) >= n - 1
+            Duration.sleep 500ms
+            0
+        else
+            File.append log [$"{i}"]
+            if shape == "complete" then
+                let r = sh -c $"echo e >&2; sleep {mark}" | complete
+                r.exitCode
+            else
+                let r = $(sh -c $"echo e >&2; sleep {mark}") |> Seq.length
+                r
+    let w = [1..n] |> Seq.pfirstWith n arm
+    print $"won {w}"
+
+let t13N = 128
+
+// (peak threads, rc, stdout) of one race
+let t13Run d shape k =
+    let mark = markOf 60 (80 + k)
+    let log = put d $"log-{shape}" []
+    let py = put d "t13.py" t13Py
+    let f = put d "t13.weir" t13Script
+    within cd d
+        let r = timeout 90 env $@noProxy $"TMPDIR={d}" python3 -I $py 80 -- $cli.bin $f $"{t13N}" $shape $mark $log | complete
+        reap mark
+        match outOf r with
+        | Regex @"peak=(\d+) rc=(\S+) out=(.*)" (pk, rc, o) -> (Str.toInt pk, rc, o)
+        | o -> fail $"the thread sampler said '{o}' ({errOf r |> oneLine})"
+
+// both races return the winner
+let ctlARaceShapes d =
+    let (_, rc1, o1) = t13Run d "complete" 1
+    let (_, rc2, o2) = t13Run d "capture" 2
+    rc1 == "0" && o1 == "won 0" && rc2 == "0" && o2 == "won 0"
+
+let h3r7t13 d =
+    let (cap, rc1, o1) = t13Run d "capture" 3
+    let (cmp, rc2, o2) = t13Run d "complete" 4
+    let bound = cap + t13N / 4 + 16
+    failing [
+        ($"a {t13N}-arm pfirstWith of `| complete` arms must take one thread per arm, as the same race through $( ) does: peak at most {bound} threads ({cmp} vs {cap} through $( ); rc {rc2}/{rc1}, '{o2}'/'{o1}')", cap > 0 && rc1 == "0" && rc2 == "0" && cmp <= bound)
+    ]
+
+// ---- this part's lists ----------------------------------------------------------
+
+let controlsA = [
+    ("control-shebang-chain (H3R7-T1-1)", ctlAShebangChain)
+    ("control-sighup-uncontended (H3R7-T1-2)", ctlASighupUncontended)
+    ("control-race-shapes (H3R7-T1-3)", ctlARaceShapes)
+]
+
+let probesA = [
+    ("H3R7-T1-1", h3r7t11); ("H3R7-T1-2", h3r7t12); ("H3R7-T1-3", h3r7t13)
+]
+
+// ---- plans: fixtures ----------------------------------------------------------
+
+// a script run in `w`: the plan holds `ops`; PREVIEWED/APPLIED mark how far
+// it got
+let pPlan ops = Seq.concat [
+    ["within cd (Self.args |> Seq.head)"; "    let pl ="; "        plan"]
+    ops |> Seq.map (fun l -> "            " + l)
+    ["    pl |> Plan.preview |> Seq.iter print"; "    print \"PREVIEWED\""; "    Plan.apply pl"; "    print \"APPLIED\""]
+] |> Seq.freeze
+
+let pRun d name w ops =
+    let r = runIn d "30" [put d $"{name}.weir" (pPlan ops); w]
+    (r, r.stdout |> Seq.contains "PREVIEWED", r.stdout |> Seq.contains "APPLIED")
+
+// raised at capture: nonzero, nothing previewed or applied, a message
+let pRefused (r, previewed, applied) = codeOf r <> 0 && not previewed && not applied && (errOf r |> Str.trim) <> ""
+
+let pApplied (r, previewed, applied) = codeOf r == 0 && previewed && applied
+
+let pShown (r, previewed, applied) = $"""exit {codeOf r}, previewed {previewed}, applied {applied}: {diagOf r |> oneLine}"""
+
+let isLink p = sh -c $"test -L '{p}'" | succeeds
+
+let pLink w name target =
+    within cd w
+        ln -s $target $name | orFail "ln -s"
+
+// a fresh dir `name` under d
+let pDir d name =
+    let w = $"{d}/{name}"
+    Dir.create w
+    w
+
+// a moved real dir and file, a write through a live link, a copy of a file
+// written through a link: capture and apply
+let ctlPPlanApplies d =
+    let w = pDir d "w"
+    Dir.create $"{w}/a"
+    Dir.create $"{w}/real"
+    ["x"] |> File.write $"{w}/f"
+    ["y"] |> File.write $"{w}/real/t"
+    pLink w "L" "real"
+    pLink w "T" "real/t"
+    let run = pRun d "c" w ["Dir.move \"a\" \"b\""; "File.move \"f\" \"g\""; "File.write \"L/n\" [\"n\"]"; "File.write \"T\" [\"z\"]"; "File.copy \"T\" \"u\""]
+    pApplied run && Dir.exists $"{w}/b" && Seq.equal (linesOf $"{w}/g") ["x"] && Seq.equal (linesOf $"{w}/real/n") ["n"] && Seq.equal (linesOf $"{w}/u") ["z"] && isLink $"{w}/T"
+
+// ---- H3R7-T2-1: a moved symlink is simulated as a real dir/file ------------------
+
+let h3r7t21 d =
+    let wd = pDir d "dir"
+    Dir.create $"{wd}/a"
+    pLink wd "L" "a"
+    let dir = pRun d "t21d" wd ["Dir.move \"L\" \"M\""; "Dir.deleteAll \"a\""; "File.write \"M/x\" [\"w\"]"]
+    let wf = pDir d "file"
+    ["hi"] |> File.write $"{wf}/f"
+    pLink wf "L" "f"
+    let file = pRun d "t21f" wf ["File.move \"L\" \"M\""; "File.delete \"f\""; "File.copy \"M\" \"z\""]
+    let wi = pDir d "into"
+    Dir.create $"{wi}/a"
+    Dir.create $"{wi}/b"
+    pLink wi "L" $"{wi}/a"
+    let into = pRun d "t21i" wi ["Dir.move \"L\" \"b/b\""; "Dir.copy \"b\" \"b/b/L\""]
+    failing [
+        ($"""a plan moving a dir symlink L -> M, deleting its target, then writing M/x must raise at capture — M is still a link (nothing applied: {isLink $"{wd}/L" && Dir.exists $"{wd}/a"}; {pShown dir})""", pRefused dir && isLink $"{wd}/L" && Dir.exists $"{wd}/a")
+        ($"""a plan moving a file symlink L -> M, deleting its target, then copying M must raise at capture — M dangles (nothing applied: {isLink $"{wf}/L" && File.exists $"{wf}/f"}; {pShown file})""", pRefused file && isLink $"{wf}/L" && File.exists $"{wf}/f")
+        ($"""a plan moving a dir symlink to b/b, then copying b into b/b/L (= a/L, outside b) must apply ({pShown into}, a/L made: {Dir.exists $"{wi}/a/L"})""", pApplied into && Dir.exists $"{wi}/a/L")
+    ]
+
+// ---- H3R7-T2-2: a write through a dangling link leaves it dangling in the plan ----
+
+let h3r7t22 d =
+    let w = pDir d "w"
+    pLink w "b" "nowhere"
+    let run = pRun d "t22" w ["File.write \"b\" [\"w\"]"; "File.copy \"b\" \"c\""]
+    failing [
+        ($"""a plan writing through a dangling link b -> nowhere, then copying b, must apply as the direct calls do ({pShown run}, c '{linesOf $"{w}/c" |> joined}')""", pApplied run && Seq.equal (linesOf $"{w}/c") ["w"] && Seq.equal (linesOf $"{w}/nowhere") ["w"])
+    ]
+
+// ---- H3R7-T2-3: a write through a symlink loop is captured -----------------------
+
+let h3r7t23 d =
+    let w = pDir d "w"
+    pLink w "b" "b"
+    let run = pRun d "t23" w ["File.write \"b\" [\"w\"]"]
+    failing [
+        ($"a plan writing through a symlink loop (b -> b) must raise at capture, as the kernel's ELOOP will ({pShown run})", pRefused run)
+    ]
+
+// ---- the LSP client ----------------------------------------------------------------
+
+// `weir lsp` over stdio: FILE then "line:col" positions; prints one
+// `@line:col label label …` row per position (labels sorted)
+let lspPy = <<<
+    import json, subprocess, sys, os
+    binp = sys.argv[1]; path = sys.argv[2]; src = open(path).read()
+    p = subprocess.Popen([binp, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    def send(m):
+        b = json.dumps(m).encode(); p.stdin.write(b"Content-Length: %d\r\n\r\n" % len(b) + b); p.stdin.flush()
+    def recv():
+        h = b""
+        while not h.endswith(b"\r\n\r\n"):
+            c = p.stdout.read(1)
+            if not c: return None
+            h += c
+        n = int([l for l in h.split(b"\r\n") if l.lower().startswith(b"content-length")][0].split(b":")[1])
+        return json.loads(p.stdout.read(n))
+    def call(i, method, params):
+        send({"jsonrpc": "2.0", "id": i, "method": method, "params": params})
+        while True:
+            m = recv()
+            if m is None: return None
+            if m.get("id") == i and "method" not in m: return m
+    uri = "file://" + os.path.abspath(path)
+    call(1, "initialize", {"processId": None, "rootUri": None, "capabilities": {}})
+    send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+    send({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {"textDocument": {"uri": uri, "languageId": "weir", "version": 1, "text": src}}})
+    i = 10
+    for pos in sys.argv[3:]:
+        l, c = [int(x) for x in pos.split(":")]
+        r = call(i, "textDocument/completion", {"textDocument": {"uri": uri}, "position": {"line": l, "character": c}}); i += 1
+        res = r.get("result") if r else None
+        items = res.get("items", res) if isinstance(res, dict) else (res or [])
+        print("@%d:%d %s" % (l, c, " ".join(sorted(x["label"] for x in items))))
+    p.kill()
+
+// completion labels at each (line, col) of the source (0-based)
+let lspAt d name src positions =
+    let f = put d name src
+    let py = put d "lsp.py" lspPy
+    let words = positions |> Seq.map (fun (l, c) -> $"{l}:{c}") |> Seq.freeze
+    let r = timeout 60 python3 -I $py $cli.bin $f $@words | complete
+    positions
+    |> Seq.map (fun (l, c) ->
+        let row = r.stdout |> Seq.tryFind (Str.startsWith $"@{l}:{c} ")
+        match row with
+        | Some x -> x |> Str.fields |> Seq.skip 1 |> Seq.freeze
+        | None -> fail $"the LSP client gave no row for {l}:{c} ({errOf r |> oneLine})")
+    |> Seq.freeze
+
+// ---- H3R7-T2-4: `$` completion where `$` is literal ------------------------------
+
+// every kind of binding, so any offer shows
+let t24Pre = <<<
+    type R = { name: string; n: int; fl: float; tags: seq<string> }
+    let vstr = "a"
+    let vint = 1
+    let vbool = true
+    let vsec = Secret.of "x"
+    let vuuid = Uuid.v7 ()
+    let vseq = ["a"; "b"]
+    let vflt = 1.5
+    let vfun x = x + "a"
+    let vopt = Some "a"
+    let vrec = { name = "a"; n = 1; fl = 1.0; tags = ["t"] }
+    let vints = [1; 2]
+
+let t24Names = ["vstr"; "vint"; "vbool"; "vsec"; "vuuid"; "vseq"; "vflt"; "vfun"; "vopt"; "vrec"; "vints"]
+
+// (label, lines after the bindings, cursor line within them, cursor column —
+// just after the `$`)
+let t24Cases = [
+    ("a `<<<` text-block body", ["let z = <<<"; "    echo $"; "print z"], 1, 10)
+    ("a `$<<<` text-block body", ["let z = $<<<"; "    echo $"; "print z"], 1, 10)
+    ("a yaml double-quoted scalar", ["let z = yaml"; "    a: \"$\""; "print (z |> to yaml)"], 1, 9)
+    ("a yaml single-quoted scalar", ["let z = yaml"; "    a: '$'"; "print (z |> to yaml)"], 1, 9)
+    ("a yaml # comment", ["let z = yaml"; "    a: x # $"; "print (z |> to yaml)"], 1, 12)
+    ("a yaml | block scalar", ["let z = yaml"; "    a: |"; "      $"; "print (z |> to yaml)"], 2, 7)
+    ("a // comment", ["echo a // $"], 0, 11)
+]
+
+let t24Offered labels = labels |> Seq.where (fun l -> t24Names |> Seq.contains (l |> Str.split "." |> Seq.last)) |> Seq.freeze
+
+// a command's `$` at top level offers the splice-able bindings
+let ctlPSpliceTop d =
+    let base = t24Pre |> Seq.length
+    let res = lspAt d "c.weir" (Seq.append t24Pre ["echo $"] |> Seq.freeze) [(base, 6)]
+    let got = t24Offered (res |> Seq.head)
+    (got |> Seq.contains "vstr") && (got |> Seq.contains "vint") && not (got |> Seq.contains "vrec")
+
+let h3r7t24 d =
+    let base = t24Pre |> Seq.length
+    t24Cases
+    |> Seq.indexed
+    |> Seq.map (fun (k, (label, lines, l, c)) ->
+        let res = lspAt d $"t24-{k}.weir" (Seq.append t24Pre lines |> Seq.freeze) [(base + l, c)]
+        let got = t24Offered (res |> Seq.head)
+        ($"""`$` completion inside {label} must offer nothing — the `$` is literal there (offered '{got |> Str.join " "}')""", Seq.isEmpty got))
+    |> failing
+
+// ---- this part's lists ----------------------------------------------------------
+
+let controlsP = [
+    ("control-plan-applies (H3R7-T2-1 H3R7-T2-2 H3R7-T2-3)", ctlPPlanApplies)
+    ("control-splice-top (H3R7-T2-4)", ctlPSpliceTop)
+]
+
+let probesP = [
+    ("H3R7-T2-1", h3r7t21); ("H3R7-T2-2", h3r7t22); ("H3R7-T2-3", h3r7t23); ("H3R7-T2-4", h3r7t24)
+]
+
+// ---- safety: servers ------------------------------------------------------------
+
+// a static file server on port 0 (schemas): prints the port, serves DIR
+let bFilesPy = <<<
+    import http.server, sys, functools
+    class H(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a): pass
+    s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(H, directory=sys.argv[1]))
+    print(s.server_address[1], flush=True)
+    s.serve_forever()
+
+// "PP P4": an http proxy answering "via-proxy" and a direct server answering
+// "direct", both on 127.0.0.1
+let bPairPy = <<<
+    import http.server, threading
+    S = http.server.ThreadingHTTPServer
+    def handler(text):
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                b = text.encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+            def log_message(self, *a): pass
+        return H
+    sp = S(("127.0.0.1", 0), handler("via-proxy")); s4 = S(("127.0.0.1", 0), handler("direct"))
+    for s in (sp, s4): threading.Thread(target=s.serve_forever, daemon=True).start()
+    print(sp.server_address[1], s4.server_address[1], flush=True)
+    threading.Event().wait()
+
+let bPair d body =
+    withPy d "pair.py" bPairPy [] (fun line ->
+        match line |> Str.fields |> Seq.map Str.toInt |> Seq.freeze with
+        | [pp; p4] -> body pp p4
+        | _ -> fail $"the pair server said '{line}'")
+
+// a project dir `name` under d (a .git marker), schemas served from d/srv;
+// the body gets the project dir and the server's port
+let bSchemas d schemas body =
+    Dir.create $"{d}/srv"
+    schemas |> Seq.iter (fun (n, s) -> [s] |> File.write $"{d}/srv/{n}.json")
+    withPy d "files.py" bFilesPy [$"{d}/srv"] (fun line -> body (portOf line))
+
+let bProj d name =
+    let proj = $"{d}/{name}"
+    Dir.create proj
+    ["x"] |> File.write $"{proj}/.git"
+    proj
+
+let bAddSchema proj port n = runIn proj "30" ["add"; "schema"; $"http://127.0.0.1:{port}/{n}.json"; "--as"; n]
+
+// ---- H3R7-T3-1: URL userinfo with a raw / ? # @ leaks ------------------------------
+
+// show, an interpolation hole, Plan.preview and Http.expect's error of a URL
+let t31Shows = <<<
+    let u = Self.args |> Seq.head
+    print (show (Http.get u))
+    print $"{Http.get u}"
+    let p =
+        plan
+            let _r = Http.send (Http.post u)
+            ()
+    p |> Plan.preview |> Seq.iter print
+    let r = Http.get u |> Http.expect |> try result
+    print $"{r}"
+
+let t31Send = ["let r = Http.send { Http.get (Self.args |> Seq.head) with timeout = 3s }"; "print $\"{r.status}\""]
+
+// (password, the part a leak shows)
+let t31Passwords = [("Tr0ub/4dorQ1", "4dorQ1"); ("pa?ssQ2", "ssQ2"); ("pa#ssQ3", "ssQ3"); ("p@ssQ4", "ssQ4")]
+
+let t31Leaks text (pw, tail) = (text |> Str.contains pw) || (text |> Str.contains tail)
+
+// a plain password is masked; a URL with no userinfo shows whole
+let ctlBUserinfoPlain d =
+    let s = put d "c.weir" t31Shows
+    let r1 = runIn d "30" [s; "http://deploy:plainQ9@127.0.0.1:1/x"]
+    let r2 = runIn d "30" [s; "http://127.0.0.1:1/x"]
+    codeOf r1 == 0 && not (diagOf r1 |> Str.contains "plainQ9") && (outOf r1 |> Str.contains "@127.0.0.1:1/x") && codeOf r2 == 0 && (outOf r2 |> Str.contains "\"http://127.0.0.1:1/x\"")
+
+let h3r7t31 d =
+    let s = put d "t31.weir" t31Shows
+    let shows =
+        t31Passwords
+        |> Seq.map (fun (pw, tail) ->
+            let r = runIn d "30" [s; $"http://deploy:{pw}@127.0.0.1:1/x"]
+            ($"show / a hole / Plan.preview / the 'cannot reach' error of http://deploy:{pw}@127.0.0.1:1/x must never show the password (exit {codeOf r}: {diagOf r |> oneLine})", codeOf r == 0 && not (t31Leaks (diagOf r) (pw, tail))))
+        |> Seq.freeze
+    let proj = bProj d "p"
+    let add = runIn proj "30" ["add"; "schema"; "http://deploy:Tr0ub/4dorQ5@127.0.0.1:1/s.json"; "--as"; "s"]
+    let addCase = ($"weir add schema of http://deploy:Tr0ub/4dorQ5@…: the error must never show the password (exit {codeOf add}: {diagOf add |> oneLine})", codeOf add <> 0 && not (t31Leaks (diagOf add) ("Tr0ub/4dorQ5", "4dorQ5")))
+    let send = put d "send.weir" t31Send
+    let proxies =
+        [("http://u:SEC/RETQ6@h:99999", "RETQ6"); ("http://u:p@ssQ7@h:99999", "ssQ7"); ("//u:hunter2Q8@h:99999", "hunter2Q8")]
+        |> Seq.map (fun (proxy, tail) ->
+            let r = runEnv d "30" [$"HTTP_PROXY={proxy}"; $"http_proxy={proxy}"] [send; "http://127.0.0.1:1/x"]
+            ($"HTTP_PROXY={proxy} (malformed): the refusal must never show the password (exit {codeOf r}: {diagOf r |> oneLine})", codeOf r <> 0 && not (diagOf r |> Str.contains tail)))
+        |> Seq.freeze
+    Seq.concat [shows; [addCase]; proxies] |> failing
+
+// ---- H3R7-T3-2: lock.json and sig files are rewritten in place ---------------------
+
+// the lockfile racer: WEIRBIN DIR MODE N, against DIR/p/.weir with fake
+// tools t1..t6 in DIR/bin (`--help` lists --only-tN):
+//   one   one `add sig t1` into a fresh project -> `one ok=<0|1> <detail>`
+//   inode `add sig t1`, then `add sig t2` and `add sig t1` again: does each
+//         rewrite replace lock.json / sigs/t1.weir (a new inode)? -> `inode
+//         lock=<same|new> sig=<same|new>`
+//   term/kill  N times: an 8 MB lock, SIGTERM/SIGKILL the moment lock.json
+//         changes -> `<mode> torn=<k>/<n> <detail>`
+//   par   N times: six parallel `add sig` into a fresh .weir -> `par
+//         bad=<k>/<n> <detail>` (bad: an entry or sig file lost, or an add
+//         failed)
+let t32Py = <<<
+    import os, sys, time, signal, subprocess, json, shutil
+    w, d, mode, n = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+    b = os.path.join(d, "bin"); p = os.path.join(d, "p"); tmp = os.path.join(d, "tmp")
+    for x in (b, p, tmp): os.makedirs(x, exist_ok=True)
+    open(os.path.join(p, ".git"), "w").write("x\n")
+    names = ["t%d" % i for i in range(1, 7)]
+    for t in names:
+        f = os.path.join(b, t)
+        open(f, "w").write('#!/bin/sh\n[ "$1" = --help ] || exit 1\nprintf "Usage: %s\\n\\nOptions:\\n  --only-%s   doc\\n"\n' % (t, t))
+        os.chmod(f, 0o755)
+    env = dict(os.environ); env["PATH"] = b + ":" + env.get("PATH", "/usr/bin:/bin"); env["TMPDIR"] = tmp
+    for k in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"): env.pop(k, None)
+    wd = os.path.join(p, ".weir"); lock = os.path.join(wd, "lock.json")
+    def parse():
+        try: data = open(lock, "rb").read()
+        except OSError: return None, -1
+        try: return json.loads(data), len(data)
+        except Exception: return None, len(data)
+    def add(t):
+        return subprocess.Popen([w, "add", "sig", t], cwd=p, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    def names_in(doc): return sorted(a.get("name") for a in doc.get("artifacts", []))
+    def sig(t): return os.path.join(wd, "sigs", t + ".weir")
+    bad = 0; detail = {}
+    def note(k): detail[k] = detail.get(k, 0) + 1
+    if mode == "one":
+        shutil.rmtree(wd, ignore_errors=True)
+        q = add("t1"); e = q.communicate(timeout=120)[1].decode("utf-8", "replace").strip()
+        doc, size = parse()
+        ok = q.returncode == 0 and doc is not None and names_in(doc) == ["t1"] and os.path.getsize(sig("t1")) > 0
+        print("one ok=%d rc=%s entries=%s %s" % (int(ok), q.returncode, names_in(doc) if doc else "torn", e[-200:].replace("\n", " | ")))
+    elif mode == "inode":
+        shutil.rmtree(wd, ignore_errors=True)
+        add("t1").communicate(timeout=120)
+        l0 = os.stat(lock).st_ino; s0 = os.stat(sig("t1")).st_ino
+        add("t2").communicate(timeout=120)
+        l1 = os.stat(lock).st_ino
+        add("t1").communicate(timeout=120)
+        s1 = os.stat(sig("t1")).st_ino
+        print("inode lock=%s sig=%s" % ("same" if l0 == l1 else "new", "same" if s0 == s1 else "new"))
+    elif mode in ("term", "kill"):
+        sg = signal.SIGTERM if mode == "term" else signal.SIGKILL
+        arts = [{"kind": "sig", "name": "z%05d" % i, "url": "generated:help", "sha256": "%064x" % i, "path": "sigs/z%05d.weir" % i} for i in range(40000)]
+        big = json.dumps({"schemaVersion": 1, "artifacts": arts}, indent=2).encode()
+        for i in range(n):
+            shutil.rmtree(wd, ignore_errors=True); os.makedirs(os.path.join(wd, "sigs"))
+            open(lock, "wb").write(big); st0 = os.stat(lock)
+            q = add("t1"); t0 = time.monotonic(); sent = False
+            while q.poll() is None and time.monotonic() - t0 < 60:
+                try: st = os.stat(lock)
+                except OSError: continue
+                if (st.st_mtime_ns, st.st_size, st.st_ino) != (st0.st_mtime_ns, st0.st_size, st0.st_ino):
+                    q.send_signal(sg); sent = True; break
+            if q.poll() is None and not sent: q.kill()
+            q.wait()
+            doc, size = parse()
+            if doc is None: bad += 1
+            note(("ok" if doc is not None else "torn (%d bytes)" % size) + " rc=%s" % q.returncode)
+        print("%s torn=%d/%d %s" % (mode, bad, n, "; ".join("%s x%d" % kv for kv in sorted(detail.items()))))
+    else:
+        for i in range(n):
+            shutil.rmtree(wd, ignore_errors=True)
+            qs = [add(t) for t in names]; errs = []
+            for q in qs:
+                e = q.communicate(timeout=120)[1].decode("utf-8", "replace").strip().splitlines()
+                if q.returncode != 0: errs.append((e[-1:] or ["rc %d" % q.returncode])[0])
+            doc, size = parse()
+            got = names_in(doc) if doc else []
+            files = [t for t in names if os.path.exists(sig(t)) and os.path.getsize(sig(t)) > 0]
+            if not (doc is not None and got == names and files == names and not errs):
+                bad += 1
+                note("entries=%s files=%d failed=%d%s" % (len(got) if doc else "torn", len(files), len(errs), (" (" + errs[0][:100] + ")") if errs else ""))
+        print("par bad=%d/%d %s" % (bad, n, "; ".join("%s x%d" % kv for kv in sorted(detail.items()))))
+
+let t32Run d mode n =
+    let sd = $"{d}/{mode}"
+    Dir.create sd
+    let py = put sd "lockrace.py" t32Py
+    let r = timeout 170 python3 -I $py $cli.bin $sd $mode $"{n}" | complete
+    let line = outOf r |> Str.trim
+    if line == "" then fail $"the lockfile racer ({mode}) said nothing ({errOf r |> oneLine})"
+    line
+
+// one add into a fresh project locks t1 and writes its sig
+let ctlBAddSigOne d = t32Run d "one" 1 |> Str.startsWith "one ok=1"
+
+let h3r7t32 d =
+    let ino = t32Run d "inode" 1
+    let term = t32Run d "term" 12
+    let killed = t32Run d "kill" 8
+    let par = t32Run d "par" 4
+    failing [
+        ($"a re-add must replace lock.json and the sig file whole (temp + rename: a new inode), never rewrite them in place ({ino})", ino == "inode lock=new sig=new")
+        ($"SIGTERM to weir add sig the moment an 8 MB lock.json changes: the lock must never be torn ({term})", term |> Str.startsWith "term torn=0/")
+        ($"SIGKILL at the same moment: the lock must never be torn ({killed})", killed |> Str.startsWith "kill torn=0/")
+        ($"six parallel weir add sig into one project: every entry and sig file kept, no add failing ({par})", par |> Str.startsWith "par bad=0/")
+    ]
+
+// ---- H3R7-T3-3: message sinks pass raw ESC/BEL/CR, piped -----------------------------
+
+let t33Data = "Q" + esc + "]52;c;QQ==" + bel + cr + "Z"
+
+// the usage errors of fmt/check name the bad flag
+let ctlBUsageFlag d =
+    let r = runIn d "30" ["fmt"; "--bogusq"]
+    codeOf r <> 0 && (diagOf r |> Str.contains "--bogusq")
+
+let h3r7t33 d =
+    bSchemas d [("s", """{"type":"object","properties":{"a":{"type":"string"}}}""")] (fun port ->
+        let proj = bProj d "p"
+        let add = bAddSchema proj port "s"
+        let at args = runIn proj "30" args
+        Dir.create $"{proj}/.weir/sigs"
+        ["module Grep"; "type Cmd = {"; "    color: bool"; "}"] |> File.write $"{proj}/.weir/sigs/grep.weir"
+        let sigf = put proj "sig.weir" ["#sig grep"; "grep --co" + esc + "c x"]
+        let imp = put proj "imp.weir" ["import \"./no" + esc + "cfile.weir\" as M"]
+        let cnf = put proj "cnf.weir" ["^ech" + esc + "co hi"]
+        let cases = [
+            ("weir gen types <data> (an unexpected argument)", at ["gen"; "types"; t33Data])
+            ("weir gen types --schema <data> (no locked schema)", at ["gen"; "types"; "--schema"; t33Data])
+            ("weir gen types --schema s --as <data>", at ["gen"; "types"; "--schema"; "s"; "--as"; t33Data])
+            ("weir fmt --<data> (an unknown flag)", at ["fmt"; "--" + t33Data])
+            ("weir check --<data> (an unknown flag)", at ["check"; "--" + t33Data])
+            ("weir check of `grep --co<ESC>c` under #sig grep (the warning's flag quote)", at ["check"; sigf])
+            ("weir check of an import path holding ESC (cannot resolve import)", at ["check"; imp])
+            ("weir check of a head holding ESC (command not found and its parse excerpt)", at ["check"; cnf])
+        ]
+        let sinkCases =
+            cases
+            |> Seq.map (fun (label, r) -> ($"{label}, output piped: no raw ESC/BEL/CR (exit {codeOf r}: {visible (diagOf r)})", (diagOf r |> Str.trim) <> "" && not (rawCtl (diagOf r))))
+            |> Seq.freeze
+        Seq.append [($"the fixture schema adds (exit {codeOf add}: {diagOf add |> oneLine})", codeOf add == 0)] sinkCases |> failing)
+
+// ---- H3R7-T3-4: add schema quotes a remote $ref raw ----------------------------------
+
+// an unresolvable plain $ref refuses, naming it
+let ctlBRefPlain d =
+    bSchemas d [("rp", """{"type":"object","properties":{"e":{"$ref":"#/nopeq"}}}""")] (fun port ->
+        let r = bAddSchema (bProj d "p") port "rp"
+        codeOf r <> 0 && (diagOf r |> Str.contains "#/nopeq"))
+
+let h3r7t34 d =
+    bSchemas d [("ref", """{"type":"object","properties":{"e":{"$ref":"#/x\u001b]52;c;QQ==\u0007"}}}""")] (fun port ->
+        let r = bAddSchema (bProj d "p") port "ref"
+        let cases = [
+            ($"weir add schema of a schema whose unresolvable $ref holds OSC 52, piped: the refusal must escape it (exit {codeOf r}: {visible (diagOf r)})", codeOf r <> 0 && (diagOf r |> Str.contains "$ref") && not (rawCtl (diagOf r)))
+        ]
+        failing cases)
+
+// ---- H3R7-T3-5: gen types fails on a "" property key -----------------------------------
+
+// read one JSON document through the generated type `T` and write it back
+let t35Read proj n ty doc =
+    [doc] |> File.write $"{proj}/doc.json"
+    runIn proj "30" [put proj "r.weir" [$"import \"weir:{n}\" as M"; $"let v = File.read \"doc.json\" |> from json {ty}"; "v |> to json |> Seq.iter print"]]
+
+// an ordinary schema generates and reads back
+let ctlBGenPlain d =
+    bSchemas d [("gp", """{"type":"object","properties":{"ok":{"type":"string"}}}""")] (fun port ->
+        let proj = bProj d "p"
+        let add = bAddSchema proj port "gp"
+        let gen = runIn proj "30" ["gen"; "types"; "--schema"; "gp"]
+        let r = t35Read proj "gp" "Gp" """{"ok": "b"}"""
+        codeOf add == 0 && codeOf gen == 0 && outOf r == "{\"ok\":\"b\"}")
+
+let h3r7t35 d =
+    bSchemas d [("k", """{"type":"object","properties":{"":{"type":"string"},"ok":{"type":"string"}}}""")] (fun port ->
+        let proj = bProj d "p"
+        let add = bAddSchema proj port "k"
+        let gen = runIn proj "30" ["gen"; "types"; "--schema"; "k"]
+        let t = linesOf $"{proj}/.weir/types/k.weir"
+        let note = t |> Seq.exists (fun l -> (l |> Str.trim |> Str.startsWith "// note:") && (l |> Str.toLower |> Str.contains "empty"))
+        let r = t35Read proj "k" "K" """{"": "a", "ok": "b"}"""
+        let cases = [
+            ($"gen types of a schema with a \"\" property key must drop it with a note, as #infer does (add/gen exit {codeOf add}/{codeOf gen}: {diagOf gen |> oneLine}; note: {note})", codeOf add == 0 && codeOf gen == 0 && not (diagOf gen |> Str.contains "generator bug") && note)
+            ($"the drafted type reads {{\"\": \"a\", \"ok\": \"b\"}} and writes back {{\"ok\":\"b\"}} (exit {codeOf r}: {diagOf r |> oneLine})", codeOf r == 0 && outOf r == "{\"ok\":\"b\"}")
+        ]
+        failing cases)
+
+// ---- H3R7-T3-6: a malformed proxy variable falls through to another ----------------
+
+let t36Script = ["let r = Http.send { Http.get (Self.args |> Seq.head) with timeout = 3s }"; "print $\"{r.status} {r.body |> Str.join \"\"}\""]
+
+// a well-formed proxy is used; a malformed one alone refuses
+let ctlBProxyAlone d =
+    bPair d (fun pp p4 ->
+        let s = put d "c.weir" t36Script
+        let ok = runEnv d "30" [$"HTTP_PROXY=http://127.0.0.1:{pp}"] [s; $"http://127.0.0.1:{p4}/"]
+        let bad = runEnv d "30" ["http_proxy=http://127.0.0.1:99999"] [s; $"http://127.0.0.1:{p4}/"]
+        outOf ok == "200 via-proxy" && codeOf bad <> 0 && not (outOf bad |> Str.contains "direct"))
+
+let h3r7t36 d =
+    bPair d (fun pp p4 ->
+        let s = put d "t36.weir" t36Script
+        let good = $"http://127.0.0.1:{pp}"
+        let r1 = runEnv d "30" ["http_proxy=http://h:99999"; $"HTTP_PROXY={good}"] [s; $"http://127.0.0.1:{p4}/x"]
+        let r2 = runEnv d "30" ["all_proxy=http://h:99999"; $"ALL_PROXY={good}"] [s; $"http://127.0.0.1:{p4}/x"]
+        let r3 = runEnv d "30" ["https_proxy=http://h:99999"; $"ALL_PROXY={good}"] [s; $"https://127.0.0.1:{p4}/x"]
+        let cases = [
+            ($"http_proxy malformed, HTTP_PROXY a working proxy: weir must refuse naming http_proxy, never use the other (exit {codeOf r1}, out '{outOf r1}': {errOf r1 |> oneLine})", codeOf r1 <> 0 && not (outOf r1 |> Str.contains "via-proxy") && (errOf r1 |> Str.contains "http_proxy"))
+            ($"all_proxy malformed, ALL_PROXY a working proxy: weir must refuse naming all_proxy (exit {codeOf r2}, out '{outOf r2}': {errOf r2 |> oneLine})", codeOf r2 <> 0 && not (outOf r2 |> Str.contains "via-proxy") && (errOf r2 |> Str.contains "all_proxy"))
+            ($"https_proxy malformed, ALL_PROXY a working proxy, an https URL: weir must refuse naming https_proxy (exit {codeOf r3}: {errOf r3 |> oneLine})", codeOf r3 <> 0 && (errOf r3 |> Str.contains "https_proxy"))
+        ]
+        failing cases)
+
+// ---- this part's lists ----------------------------------------------------------
+
+let controlsB = [
+    ("control-userinfo-plain (H3R7-T3-1)", ctlBUserinfoPlain)
+    ("control-add-sig-one (H3R7-T3-2)", ctlBAddSigOne)
+    ("control-usage-flag (H3R7-T3-3)", ctlBUsageFlag)
+    ("control-ref-plain (H3R7-T3-4)", ctlBRefPlain)
+    ("control-gen-plain (H3R7-T3-5)", ctlBGenPlain)
+    ("control-proxy-alone (H3R7-T3-6)", ctlBProxyAlone)
+]
+
+let probesB = [
+    ("H3R7-T3-1", h3r7t31); ("H3R7-T3-2", h3r7t32); ("H3R7-T3-3", h3r7t33); ("H3R7-T3-4", h3r7t34); ("H3R7-T3-5", h3r7t35); ("H3R7-T3-6", h3r7t36)
+]
+
+// ---- the lists ---------------------------------------------------------------
+
+let controls = Seq.concat [controlsA; controlsP; controlsB] |> Seq.freeze
+
+let probes = Seq.concat [probesA; probesP; probesB] |> Seq.freeze
+
+// a label word starting with the --only text; an id ending in a digit never
+// selects a longer number (H3R7-T1-1 is not a T1-10)
+let picks o w =
+    let rest = if Str.length w > Str.length o then Str.sub (Str.length o) (Str.length w - Str.length o) w else ""
+    (w |> Str.startsWith o) && not ((Str.isMatch @"[0-9]$" o) && (Str.isMatch @"^[0-9]" rest))
+
+let selected (label, _) =
+    match cli.only with
+    | Some o -> label |> Str.rsplit @"[ ()]+" |> Seq.exists (picks o)
+    | None -> true
+
+// ---- the verdict channel ------------------------------------------------------
+
+let record vpath line =
+    print $"  {line}"
+    File.append vpath [line]
+
+// every probe and control gets its own temp dir
+let runProbe vpath (label, probe) =
+    within tmp w
+        let (ms, res) = msOf (fun () -> probe w |> try result)
+        let took = $"[{ms}ms]"
+        match res with
+        | Ok fs when fs |> Seq.isEmpty -> record vpath $"{label} OK {took}"
+        | Ok fs -> record vpath $"""{label} REPRODUCES ({fs |> Str.join "; "}) {took}"""
+        | Error m when m |> Str.contains "SKIP: " -> record vpath $"{label} SKIP ({m})"
+        | Error m -> record vpath $"{label} REPRODUCES (the probe failed to run: {m}) {took}"
+
+let runControl vpath (label, ctl) =
+    within tmp w
+        let (ms, res) = msOf (fun () -> ctl w |> try result)
+        let took = $"[{ms}ms]"
+        match res with
+        | Ok true -> record vpath $"{label} OK {took}"
+        | Ok false -> record vpath $"*** CONTROL FAILED: {label} {took}"
+        | Error m when m |> Str.contains "SKIP: " -> record vpath $"{label} SKIP ({m})"
+        | Error m -> record vpath $"*** CONTROL FAILED: {label} (the control failed to run: {m})"
+
+// ---- the gate ----------------------------------------------------------------
+
+print "third bug hunt, round 7 fixes — repro gate (dev/plans/PLAN-hunt3r7-fixes.md)"
+print $"  binary: {cli.bin}"
+
+within tmp d
+    let vpath = $"{d}/verdicts"
+    [] |> File.write vpath
+
+    if not toolsReady then
+        record vpath "instruments SKIP (timeout/env/python3/ps/kill/ln//proc missing) — every item stays OPEN"
+
+    if toolsReady then
+        print ""
+        print "controls"
+        controls |> Seq.where selected |> Seq.iter (runControl vpath)
+        print ""
+        print "probes"
+        probes |> Seq.where selected |> Seq.iter (runProbe vpath)
+
+    print ""
+    let verdicts = File.read vpath |> Seq.freeze
+    let open =
+        verdicts
+        |> Seq.where (fun l ->
+            (l |> Str.contains "REPRODUCES") || (l |> Str.contains "CONTROL FAILED") || (l |> Str.contains "SKIP"))
+        |> Seq.freeze
+
+    let repro = verdicts |> Seq.where (fun l -> l |> Str.contains "REPRODUCES") |> Seq.length
+    let skipped = verdicts |> Seq.where (fun l -> (l |> Str.startsWith "H3R7-") && (l |> Str.contains " SKIP")) |> Seq.length
+    let ok = verdicts |> Seq.where (fun l -> (l |> Str.startsWith "H3R7-") && (l |> Str.contains " OK")) |> Seq.length
+    print $"summary: {ok} probe(s) OK, {repro} REPRODUCE, {skipped} SKIP"
+
+    if open |> Seq.isEmpty then
+        print (if cli.only == None then "ALL ITEMS FIXED" else "ALL SELECTED ITEMS FIXED (--only)")
+    else
+        let n = open |> Seq.length
+        print $"{n} line(s) keep the gate shut (a SKIP or a failed control counts):"
+        open |> Seq.iter (fun l -> print $"  {l}")
+        exit (if n > 255 then 255 else n)
