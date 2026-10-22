@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.0.76
 
 ### Added
 
@@ -77,6 +77,10 @@
 - **A cleanup command at a terminal refuses a `#!` script whose
   interpreter chain does not end in a runnable program,** as the same
   command does in the body.
+
+- **Tab on a continuation line no longer offers `#` directives.** A
+  directive is only valid as an entry's first line, so an empty or
+  indented continuation line completed `#help` & co. for nothing.
 
 ## v0.0.75
 
