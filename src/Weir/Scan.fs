@@ -117,6 +117,25 @@ let stringScan (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a * bool =
 
 let foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a = fst (stringScan f init s)
 
+/// where a line's `//` comment starts, or -1
+let commentAt (line: string) : int =
+    // comment only at line start or after whitespace: bareword URLs
+    // (https://...) live in command lines (nuget-script receipt)
+    foldOutsideStrings
+        (fun cut i c ->
+            if
+                cut < 0
+                && c = '/'
+                && i + 1 < line.Length
+                && line[i + 1] = '/'
+                && (i = 0 || System.Char.IsWhiteSpace line[i - 1])
+            then
+                i
+            else
+                cut)
+        -1
+        line
+
 // All four weir string kinds are single-line, so a line ending inside
 // one can never be completed by more input — the multiline REPL submits
 // such a buffer instead of growing it [D:repl-multiline]

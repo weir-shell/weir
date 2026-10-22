@@ -135,6 +135,217 @@ let confineRealUnder (root: string) (dest: string) : Result<string, string> =
         else
             Error $"'{dest}' resolves through a symlink to outside .weir/ — the real object escapes the vendor directory"
 
+// ---- whole-file swap and the .weir/ writer lock [D:weir-dir-lock] ----------
+
+/// the whole-file swap File.writeAtomic and the .weir/ writers share
+/// [D:write-integrity]: the payload lands in a same-directory exclusive
+/// temp, is fsynced, and renames over the target — a reader sees the
+/// complete old file or the complete new one, never a window, and a
+/// signal mid-write leaves the old file whole
+module AtomicFile =
+    [<Literal>]
+    let private O_CLOEXEC_LINUX = 0x80000
+
+    [<Literal>]
+    let private O_CLOEXEC_MACOS = 0x1000000
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private ``open``(string pathname, int flags, int mode)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private fsync(int fd)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private flock(int fd, int operation)
+
+    // a read-only fd on a directory (O_RDONLY = 0), None when it cannot open
+    let private openDir (dir: string) : Microsoft.Win32.SafeHandles.SafeFileHandle option =
+        let flags =
+            if OperatingSystem.IsMacOS() then O_CLOEXEC_MACOS else O_CLOEXEC_LINUX
+
+        match ``open`` (dir, flags, 0) with
+        | fd when fd >= 0 -> Some(new Microsoft.Win32.SafeHandles.SafeFileHandle(nativeint fd, true))
+        | _ -> None
+
+    let fsyncDir (dir: string) : unit =
+        match openDir dir with
+        | Some h ->
+            use h = h
+            fsync (int (h.DangerousGetHandle())) |> ignore
+        | None -> ()
+
+    /// the file a write lands in: a symlink's target, not the link
+    let resolveTarget (path: string) : string =
+        let fi = FileInfo path
+
+        if fi.Exists then
+            match fi.ResolveLinkTarget true with
+            | null -> path
+            | t -> t.FullName
+        else
+            path
+
+    /// replace `target` (already resolved) with `payload`; the temp is
+    /// born with `mode` [D:private-temp]
+    let replaceBytes (target: string) (payload: byte[]) (mode: UnixFileMode option) : unit =
+        let dir =
+            match Path.GetDirectoryName target with
+            | "" -> "."
+            | d -> d
+
+        // a SIGKILL mid-temp strands one dot-temp; the next writer to the
+        // same target sweeps stale twins — age-keyed, never pid-keyed
+        // (containers renumber pids across namespaces)
+        for stale in Directory.EnumerateFiles(dir, $".{Path.GetFileName target}.weir-tmp-*") do
+            try
+                if DateTime.UtcNow - File.GetLastWriteTimeUtc stale > TimeSpan.FromMinutes 10.0 then
+                    File.Delete stale
+            with _ ->
+                ()
+
+        let tmp =
+            Path.Combine(
+                dir,
+                $".{Path.GetFileName target}.weir-tmp-{Environment.ProcessId}-{Path.GetRandomFileName()}"
+            )
+
+        try
+            let opts =
+                FileStreamOptions(Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None)
+
+            match mode with
+            | Some m -> opts.UnixCreateMode <- Nullable m
+            | None -> ()
+
+            (use fs = new FileStream(tmp, opts)
+             fs.Write(payload, 0, payload.Length)
+             fs.Flush true)
+
+            match mode with
+            | Some m -> File.SetUnixFileMode(tmp, m)
+            | None -> ()
+
+            if OperatingSystem.IsWindows() then
+                // a reader holding the target without FILE_SHARE_DELETE makes
+                // the rename throw — bounded backoff, never on not-found
+                let rec move attempt =
+                    try
+                        File.Move(tmp, target, true)
+                    with :? IOException as e when
+                        not (e :? DirectoryNotFoundException)
+                        && not (e :? FileNotFoundException)
+                        && attempt < 6 ->
+                        Threading.Thread.Sleep(5 <<< attempt)
+                        move (attempt + 1)
+
+                move 0
+            else
+                File.Move(tmp, target, true)
+                fsyncDir dir
+        with e ->
+            (try
+                File.Delete tmp
+             with _ ->
+                 ())
+
+            raise e
+
+    /// replace a file (through a symlink to its target), keeping its mode
+    let replaceFile (path: string) (payload: byte[]) : unit =
+        let target = resolveTarget path
+
+        let mode =
+            if not (OperatingSystem.IsWindows()) && File.Exists target then
+                Some(File.GetUnixFileMode target)
+            else
+                None
+
+        replaceBytes target payload mode
+
+    let private lockWaitMs = 60000L
+
+    /// run `f` holding the .weir/ writer lock [D:weir-dir-lock]: every
+    /// read-modify-write of lock.json and a vendored file runs under it,
+    /// so parallel adds serialize instead of losing entries. The lock is
+    /// on the directory holding `.weir/` (it exists before the first add
+    /// creates `.weir/`): Unix an flock on its fd, released by the kernel
+    /// at exit; Windows a share-exclusive `.weir.lock` there, deleted on
+    /// close. A directory that will not open runs unlocked.
+    let withWeirDirLock (weirDir: string) (f: unit -> Result<'a, string>) : Result<'a, string> =
+        let parent =
+            match Path.GetDirectoryName(Path.GetFullPath weirDir) with
+            | null
+            | "" -> "."
+            | d -> d
+
+        let timedOut =
+            Error
+                $"another weir is updating {Weir.Types.quoteData weirDir} — waited {lockWaitMs / 1000L}s for its lock; nothing was written, retry when it finishes"
+
+        let sw = Diagnostics.Stopwatch.StartNew()
+
+        if OperatingSystem.IsWindows() then
+            let path = Path.Combine(parent, ".weir.lock")
+
+            let rec acquire () =
+                let attempt =
+                    try
+                        Ok(
+                            new FileStream(
+                                path,
+                                FileMode.OpenOrCreate,
+                                FileAccess.ReadWrite,
+                                FileShare.None,
+                                1,
+                                FileOptions.DeleteOnClose
+                            )
+                        )
+                    with
+                    | :? UnauthorizedAccessException
+                    | :? DirectoryNotFoundException -> Error false
+                    | :? IOException -> Error true
+
+                match attempt with
+                | Ok fs -> Ok(Some fs)
+                | Error false -> Ok None
+                | Error true when sw.ElapsedMilliseconds < lockWaitMs ->
+                    Threading.Thread.Sleep 25
+                    acquire ()
+                | Error true -> Error()
+
+            match acquire () with
+            | Error() -> timedOut
+            | Ok held ->
+                try
+                    f ()
+                finally
+                    held |> Option.iter (fun fs -> fs.Dispose())
+        else
+            match openDir parent with
+            | None -> f ()
+            | Some h ->
+                use h = h
+                let fd = int (h.DangerousGetHandle())
+                let LOCK_EX, LOCK_NB = 2, 4
+                let EINTR = 4
+                let EWOULDBLOCK = if OperatingSystem.IsLinux() then 11 else 35
+
+                // false: timed out; a filesystem without flock runs unlocked
+                let rec acquire () =
+                    if flock (fd, LOCK_EX ||| LOCK_NB) = 0 then
+                        true
+                    else
+                        match Marshal.GetLastPInvokeError() with
+                        | e when e = EINTR -> acquire ()
+                        | e when e = EWOULDBLOCK && sw.ElapsedMilliseconds < lockWaitMs ->
+                            Threading.Thread.Sleep 25
+                            acquire ()
+                        | e when e = EWOULDBLOCK -> false
+                        | _ -> true
+
+                // closing the fd releases the lock
+                if acquire () then f () else timedOut
+
 /// POSIX open(2) with O_NOFOLLOW on the final component, the TOCTOU-tight
 /// write [D:lockfile-symlink-confinement]: the parent is realpath-verified
 /// under root by the caller, and O_NOFOLLOW makes the kernel refuse if the
@@ -483,7 +694,7 @@ let writeLock (weirDir: string) (entries: LockEntry list) : unit =
      w.WriteEndArray()
      w.WriteEndObject())
 
-    File.WriteAllBytes(lockPath weirDir, ms.ToArray())
+    AtomicFile.replaceFile (lockPath weirDir) (ms.ToArray())
 
 // ---- fetch (ruling 4: each failure mode its own message) -------------------
 
@@ -777,43 +988,44 @@ let vendorFile
     (url: string)
     (bytes: byte[])
     : Result<string * string option, string> =
-    match readLock weirDir with
-    | Error e -> Error e
-    | Ok entries ->
-        let prior =
-            entries
-            |> List.tryFind (fun e -> e.Kind = kind && e.Name = name)
-            |> Option.map (fun e -> e.Sha256)
+    AtomicFile.withWeirDirLock weirDir (fun () ->
+        match readLock weirDir with
+        | Error e -> Error e
+        | Ok entries ->
+            let prior =
+                entries
+                |> List.tryFind (fun e -> e.Kind = kind && e.Name = name)
+                |> Option.map (fun e -> e.Sha256)
 
-        let dest = Path.Combine(weirDir, rel)
-        let hash = sha256Hex bytes
+            let dest = Path.Combine(weirDir, rel)
+            let hash = sha256Hex bytes
 
-        let entry =
-            { Kind = kind
-              Name = name
-              Url = Http.stripUserinfo url
-              Sha256 = hash
-              Path = rel
-              Version = None }
+            let entry =
+                { Kind = kind
+                  Name = name
+                  Url = Http.stripUserinfo url
+                  Sha256 = hash
+                  Path = rel
+                  Version = None }
 
-        let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
+            let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
 
-        // even a vendored kind directory (.weir/modules) can be a symlink
-        // out [D:lockfile-symlink-confinement] — writeConfined realpath-
-        // verifies the parent and opens the leaf O_NOFOLLOW
-        match writeConfined weirDir dest bytes with
-        | Error w -> Error w
-        | Ok() ->
-            try
-                writeLock weirDir (others @ [ entry ])
-                Ok(hash, prior)
-            with ex ->
-                (try
-                    File.Delete dest
-                 with _ ->
-                     ())
+            // even a vendored kind directory (.weir/modules) can be a symlink
+            // out [D:lockfile-symlink-confinement] — writeConfined realpath-
+            // verifies the parent and opens the leaf O_NOFOLLOW
+            match writeConfined weirDir dest bytes with
+            | Error w -> Error w
+            | Ok() ->
+                try
+                    writeLock weirDir (others @ [ entry ])
+                    Ok(hash, prior)
+                with ex ->
+                    (try
+                        File.Delete dest
+                     with _ ->
+                         ())
 
-                Error $"write failed: {ex.Message} — the partial file was removed"
+                    Error $"write failed: {quoteData ex.Message} — the partial file was removed")
 
 // ---- the JSON Schema subset [D:yaml-schemas] -------------------------------
 
@@ -923,18 +1135,18 @@ let private validationKeys =
           "contentMediaType" ]
 
 let private rejectedTeaching (path: string) (kw: string) : string =
-    let where = if path = "" then "the schema root" else path
+    let where = if path = "" then "the schema root" else quoteData path
 
     match kw with
     | "$defs"
     | "definitions"
     | "components" ->
-        $"at {where}: '{kw}' holds shared definitions at the schema ROOT only — in-document $ref resolves against the root holders"
+        $"at {where}: '{quoteData kw}' holds shared definitions at the schema ROOT only — in-document $ref resolves against the root holders"
     | "not"
     | "if"
     | "then"
-    | "else" -> $"at {where}: '{kw}' (schema composition) is outside the subset — zero uses in the measured corpus"
-    | _ -> $"at {where}: '{kw}' is outside the schema subset (it joins when a corpus needs it)"
+    | "else" -> $"at {where}: '{quoteData kw}' (schema composition) is outside the subset — zero uses in the measured corpus"
+    | _ -> $"at {where}: '{quoteData kw}' is outside the schema subset (it joins when a corpus needs it)"
 
 /// the in-document $ref forms the subset resolves [D:schema-types]:
 /// #/definitions/<name>, #/$defs/<name>, #/components/schemas/<name> —
@@ -1013,7 +1225,7 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
     let unenforced = ctx.Unenforced
     let parseNode = parseNode ctx
     let objectNode = objectNode ctx
-    let where = if path = "" then "the schema root" else path
+    let where = if path = "" then "the schema root" else quoteData path
 
     if el.ValueKind <> Text.Json.JsonValueKind.Object then
         Error $"at {where}: a schema node must be an object"
@@ -1202,7 +1414,7 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                  | Some name -> withSiblings (SRef name)
                  | None ->
                      Error
-                         $"at {where}: '$ref' \"{raw}\" does not point into this document — in-document refs only (#/definitions/<name>, #/$defs/<name>, #/components/schemas/<name>); for cross-file refs add a bundled or standalone variant of the schema")
+                         $"at {where}: '$ref' \"{quoteData raw}\" does not point into this document — in-document refs only (#/definitions/<name>, #/$defs/<name>, #/components/schemas/<name>); for cross-file refs add a bundled or standalone variant of the schema")
                 |> applyNullable
             | Some _ -> Error $"at {where}: '$ref' must be a string"
             | None ->
@@ -1511,7 +1723,7 @@ let rec private refsOf (s: Schema) : string list =
 /// Errors carry the schema name and the JSON path of the offender.
 let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
     match parseJsonBounded text with
-    | Error(Some why) -> Error $"schema {name}: valid JSON, but {why}"
+    | Error(Some why) -> Error $"schema {quoteData name}: valid JSON, but {why}"
     | Error None ->
         let why =
             try
@@ -1520,7 +1732,7 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
             with ex ->
                 ex.Message
 
-        Error $"schema {name}: not valid JSON — {Weir.Types.quoteData why}"
+        Error $"schema {quoteData name}: not valid JSON — {Weir.Types.quoteData why}"
     | Ok parsed ->
     try
         use doc = parsed
@@ -1586,7 +1798,7 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
                      | key :: rest ->
                          match pointerTarget root key with
                          | None ->
-                             Error $"'$ref' \"{key}\" does not resolve — no such location in this document"
+                             Error $"'$ref' \"{quoteData key}\" does not resolve — no such location in this document"
                          | Some el ->
                              let prefix =
                                  (key.Substring(2).Split '/'
@@ -1611,15 +1823,15 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
 
                  match dangling with
                  | Some n ->
-                     Error $"'$ref' to '{n}' does not resolve — no such definition in the document's root holders"
+                     Error $"'$ref' to '{quoteData n}' does not resolve — no such definition in the document's root holders"
                  | None ->
                      Ok
                          { Root = rootSchema
                            Defs = defs
                            Unenforced = List.ofSeq unenforced })
-        |> Result.mapError (fun e -> $"schema {name}: {e}")
+        |> Result.mapError (fun e -> $"schema {quoteData name}: {e}")
     with ex ->
-        Error $"schema {name}: not valid JSON — {Weir.Types.quoteData ex.Message}"
+        Error $"schema {quoteData name}: not valid JSON — {Weir.Types.quoteData ex.Message}"
 
 /// follow a chain of pure refs to a shape (a ref-to-a-ref); a ref cycle
 /// with no shape in between lands on SAny — validation relaxes, the
@@ -1705,51 +1917,52 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                 | Error e -> Error $"{e}; nothing was written"
                 | Ok() ->
 
-                    match readLock weirDir with
-                    | Error e -> Error e
-                    | Ok entries ->
-                        // a schema with no `additionalProperties: false` anywhere cannot
-                        // fire unknown-field checks — the feature's whole point — so a
-                        // silently-inert contract warns at add time (the vacuous-pin
-                        // class). Plain `-standalone` k8s variants have exactly this
-                        // shape; `-standalone-strict` is the load-bearing variant.
-                        if kind = "schema" then
-                            if not (anyClosedProps root) then
-                                Console.Error.WriteLine
-                                    $"weir add: warning: {quoteData name} has no `additionalProperties: false` anywhere — unknown-field checking will NOT fire for it (for k8s, use the -standalone-strict variant)"
+                    AtomicFile.withWeirDirLock weirDir (fun () ->
+                        match readLock weirDir with
+                        | Error e -> Error e
+                        | Ok entries ->
+                            // a schema with no `additionalProperties: false` anywhere cannot
+                            // fire unknown-field checks — the feature's whole point — so a
+                            // silently-inert contract warns at add time (the vacuous-pin
+                            // class). Plain `-standalone` k8s variants have exactly this
+                            // shape; `-standalone-strict` is the load-bearing variant.
+                            if kind = "schema" then
+                                if not (anyClosedProps root) then
+                                    Console.Error.WriteLine
+                                        $"weir add: warning: {quoteData name} has no `additionalProperties: false` anywhere — unknown-field checking will NOT fire for it (for k8s, use the -standalone-strict variant)"
 
-                        // only now touch the disk — the file and the lock entry
-                        // land together or not at all
-                        let rel = Path.Combine(kind + "s", name + ".json")
-                        let dest = Path.Combine(weirDir, rel)
-                        let hash = sha256Hex bytes
+                            // only now touch the disk — the file and the lock entry
+                            // land together or not at all
+                            let rel = Path.Combine(kind + "s", name + ".json")
+                            let dest = Path.Combine(weirDir, rel)
+                            let hash = sha256Hex bytes
 
-                        let entry =
-                            { Kind = kind
-                              Name = name
-                              Url = Http.stripUserinfo url
-                              Sha256 = hash
-                              Path = rel
-                              Version = None }
+                            let entry =
+                                { Kind = kind
+                                  Name = name
+                                  Url = Http.stripUserinfo url
+                                  Sha256 = hash
+                                  Path = rel
+                                  Version = None }
 
-                        let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
+                            let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
 
-                        // a symlinked kind directory (.weir/schemas → outside)
-                        // must not redirect the vendored write
-                        // [D:lockfile-symlink-confinement]
-                        match writeConfined weirDir dest bytes with
-                        | Error w -> Error w
-                        | Ok() ->
-                            try
-                                writeLock weirDir (others @ [ entry ])
-                                Ok $"added {kind} {quoteData name} ({hash.Substring(0, 12)}…) from {quoteData (Http.redactUrl url)}"
-                            with ex ->
-                                (try
-                                    File.Delete dest
-                                 with _ ->
-                                     ())
+                            // a symlinked kind directory (.weir/schemas → outside)
+                            // must not redirect the vendored write
+                            // [D:lockfile-symlink-confinement]
+                            match writeConfined weirDir dest bytes with
+                            | Error w -> Error w
+                            | Ok() ->
+                                try
+                                    writeLock weirDir (others @ [ entry ])
+                                    Ok $"added {kind} {quoteData name} ({hash.Substring(0, 12)}…) from {quoteData (Http.redactUrl url)}"
+                                with ex ->
+                                    (try
+                                        File.Delete dest
+                                     with _ ->
+                                         ())
 
-                                Error $"write failed: {ex.Message} — the partial file was removed"
+                                    Error $"write failed: {quoteData ex.Message} — the partial file was removed")
 
 let restore (weirDir: string) : Result<string list, string> =
     match readLock weirDir with
@@ -2453,7 +2666,11 @@ let verify (resolve: string -> string) (weirDir: string) : Result<string list * 
             // the hash arm: vendored artifacts verify by content
             | _ when not (File.Exists dest) ->
                 findings.Add(Absent e)
-                lines.Add $"{e.Kind} {e.Name}: ABSENT — run `weir restore`"
+                // a sig is generated, never fetched: restore cannot bring it back
+                if e.Kind = "sig" then
+                    lines.Add $"{e.Kind} {e.Name}: ABSENT — regenerate it: weir add sig '{e.Name}'"
+                else
+                    lines.Add $"{e.Kind} {e.Name}: ABSENT — run `weir restore`"
             | _ ->
                 let actual = sha256Hex (File.ReadAllBytes dest)
 
@@ -2519,7 +2736,7 @@ let private didYouMean (k: string) (props: (string * Schema) list) =
     |> List.map fst
     |> List.filter (fun p -> k.Length > 3 && levenshtein k p <= 2)
     |> function
-        | best :: _ -> $" — did you mean '{best}'?"
+        | best :: _ -> $" — did you mean '{quoteData best}'?"
         | [] -> ""
 
 /// the scalar kind a weir type guarantees, or None when the type
@@ -2558,20 +2775,20 @@ let private literalKind (raw: string) (quoted: bool) =
 // paths are always in the message (ruling: a few characters buys a
 // self-contained CI log — the span still carries editor identity).
 // The root renders without a suffix so shallow messages stay terse.
-let private atPath (p: string) = if p = "" then "" else $" at {p}"
+let private atPath (p: string) = if p = "" then "" else $" at {quoteData p}"
 
 let private fieldName (p: string) =
-    if p = "" then "this value" else $"field {p}"
+    if p = "" then "this value" else $"field {quoteData p}"
 
 // enum rendering: a single allowed value states it plainly (k8s `kind`
 // is a one-element enum — the common case); longer lists cap at 6 with
 // an honest remainder count, never a decorative ellipsis
 let private enumText (values: string list) =
     match values with
-    | [ one ] -> $"'{one}'"
-    | vs when List.length vs <= 6 -> "one of " + String.Join(", ", vs)
+    | [ one ] -> $"'{quoteData one}'"
+    | vs when List.length vs <= 6 -> "one of " + String.Join(", ", vs |> List.map quoteData)
     | vs ->
-        let shown = vs |> List.truncate 6 |> String.concat ", "
+        let shown = vs |> List.truncate 6 |> List.map quoteData |> String.concat ", "
         $"one of {shown} (+{List.length vs - 6} more)"
 
 let rec validateTpl
@@ -2620,9 +2837,9 @@ let rec validateTpl
         match pick, tpl with
         | Some alt, tpl -> validateTpl name defs path alt tpl
         | None, Check.TYtScalar(_, _, span)
-        | None, Check.TYtBlock(_, span) -> [ span, $"schema {name}: {fieldName path} expects {kindsText kinds}, got a scalar" ]
-        | None, Check.TYtMap(_, span) -> [ span, $"schema {name}: {fieldName path} expects {kindsText kinds}, got a mapping" ]
-        | None, Check.TYtSeq(_, span) -> [ span, $"schema {name}: {fieldName path} expects {kindsText kinds}, got a sequence" ]
+        | None, Check.TYtBlock(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a scalar" ]
+        | None, Check.TYtMap(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a mapping" ]
+        | None, Check.TYtSeq(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a sequence" ]
         | None, _ -> []
     | SObject(props, required, additional), Check.TYtMap(entries, mspan) ->
         let hasDynamic =
@@ -2648,7 +2865,7 @@ let rec validateTpl
                         match additional with
                         | Vals s -> validateTpl name defs (child k) s v
                         | OpenProps -> []
-                        | Closed -> [ kspan, $"schema {name}: unknown field '{k}'{atPath path}{didYouMean k props}" ]
+                        | Closed -> [ kspan, $"schema {quoteData name}: unknown field '{quoteData k}'{atPath path}{didYouMean k props}" ]
                 | Check.TYtPair(Check.TYtKeySplice _, v) ->
                     // a dynamic key: unknowable at check; its value still
                     // checks when the schema constrains all values
@@ -2663,12 +2880,12 @@ let rec validateTpl
             else
                 required
                 |> List.filter (fun r -> not (List.contains r literalKeys))
-                |> List.map (fun r -> mspan, $"schema {name}: missing required field '{r}'{atPath path}")
+                |> List.map (fun r -> mspan, $"schema {quoteData name}: missing required field '{quoteData r}'{atPath path}")
 
         entryErrors entries @ missing
     | SObject _, Check.TYtScalar(_, _, span)
-    | SObject _, Check.TYtBlock(_, span) -> [ span, $"schema {name}: {fieldName path} expects a mapping, got a scalar" ]
-    | SObject _, Check.TYtSeq(_, span) -> [ span, $"schema {name}: {fieldName path} expects a mapping, got a sequence" ]
+    | SObject _, Check.TYtBlock(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects a mapping, got a scalar" ]
+    | SObject _, Check.TYtSeq(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects a mapping, got a sequence" ]
     | SArray items, Check.TYtSeq(elems, _) ->
         let rec itemErrors (es: Check.TypedYamlTplItem list) =
             es
@@ -2680,35 +2897,35 @@ let rec validateTpl
 
         itemErrors elems
     | SArray _, Check.TYtScalar(_, _, span)
-    | SArray _, Check.TYtBlock(_, span) -> [ span, $"schema {name}: {fieldName path} expects a sequence, got a scalar" ]
-    | SArray _, Check.TYtMap(_, span) -> [ span, $"schema {name}: {fieldName path} expects a sequence, got a mapping" ]
+    | SArray _, Check.TYtBlock(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects a sequence, got a scalar" ]
+    | SArray _, Check.TYtMap(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects a sequence, got a mapping" ]
     | SScalar kinds, Check.TYtScalar(raw, quoted, span) ->
         let got = literalKind raw quoted
 
         if kindOk kinds got then
             []
         else
-            [ span, $"schema {name}: {fieldName path} expects {kindsText kinds}, got {got} ('{raw}')" ]
+            [ span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got {got} ('{quoteData raw}')" ]
     | SScalar kinds, Check.TYtBlock(_, span) ->
         if kindOk kinds "string" then
             []
         else
-            [ span, $"schema {name}: {fieldName path} expects {kindsText kinds}, got a block scalar (string)" ]
-    | SScalar _, Check.TYtMap(_, span) -> [ span, $"schema {name}: {fieldName path} expects a scalar, got a mapping" ]
-    | SScalar _, Check.TYtSeq(_, span) -> [ span, $"schema {name}: {fieldName path} expects a scalar, got a sequence" ]
+            [ span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a block scalar (string)" ]
+    | SScalar _, Check.TYtMap(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects a scalar, got a mapping" ]
+    | SScalar _, Check.TYtSeq(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects a scalar, got a sequence" ]
     | SEnum(values, _, _), Check.TYtScalar(raw, _, span) ->
         if List.contains raw values then
             []
         else
-            [ span, $"schema {name}: {fieldName path} expects {enumText values}, got '{raw}'" ]
+            [ span, $"schema {quoteData name}: {fieldName path} expects {enumText values}, got '{quoteData raw}'" ]
     | SEnum(values, _, _), Check.TYtBlock(text, span) ->
         if List.contains text values then
             []
         else
-            [ span, $"schema {name}: {fieldName path} expects {enumText values}, got a block scalar" ]
+            [ span, $"schema {quoteData name}: {fieldName path} expects {enumText values}, got a block scalar" ]
     | SEnum _, Check.TYtMap(_, span)
     | SEnum _, Check.TYtSeq(_, span) ->
-        [ span, $"schema {name}: {fieldName path} expects a scalar (enum), got a collection" ]
+        [ span, $"schema {quoteData name}: {fieldName path} expects a scalar (enum), got a collection" ]
 
 and private spliceCheck
     (name: string)
@@ -2755,7 +2972,7 @@ and private spliceCheck
     | SScalar kinds ->
         match te.Ty with
         | TSeq _ ->
-            [ te.Span, $"schema {name}: {fieldName path}: a seq splices as sequence items; it expects {kindsText kinds}" ]
+            [ te.Span, $"schema {quoteData name}: {fieldName path}: a seq splices as sequence items; it expects {kindsText kinds}" ]
         | t ->
             match tyKind t with
             | None -> []
@@ -2763,10 +2980,10 @@ and private spliceCheck
                 if kindOk kinds got then
                     []
                 else
-                    [ te.Span, $"schema {name}: {fieldName path} expects {kindsText kinds}, but the splice is {got}" ]
+                    [ te.Span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, but the splice is {got}" ]
     | SObject _ ->
         match tyKind te.Ty with
-        | Some got -> [ te.Span, $"schema {name}: {fieldName path} expects a mapping, but the splice is {got}" ]
+        | Some got -> [ te.Span, $"schema {quoteData name}: {fieldName path} expects a mapping, but the splice is {got}" ]
         | None -> []
     | SArray items ->
         match te.Ty with
@@ -2774,9 +2991,9 @@ and private spliceCheck
             (match items, tyKind elem with
              | SScalar kinds, Some got when not (kindOk kinds got) ->
                  [ te.Span,
-                   $"schema {name}: {fieldName path}: sequence items expect {kindsText kinds}, but the spliced seq's elements are {got}" ]
+                   $"schema {quoteData name}: {fieldName path}: sequence items expect {kindsText kinds}, but the spliced seq's elements are {got}" ]
              | _ -> [])
         | t ->
             match tyKind t with
-            | Some got -> [ te.Span, $"schema {name}: {fieldName path} expects a sequence, but the splice is {got}" ]
+            | Some got -> [ te.Span, $"schema {quoteData name}: {fieldName path} expects a sequence, but the splice is {got}" ]
             | None -> []

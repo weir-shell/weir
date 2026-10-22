@@ -11,8 +11,9 @@ that enforces it. The user-facing promises are in
 
 Cancellation and cleanup ownership live in one tree of nodes
 ([D:scope-tree]). The current node rides one AsyncLocal
-(`Session.currentNode`), so a flow's helper tasks (a capture's stderr
-reader, a chain's pumps, a `cutBlocking` call) run in the flow's node.
+(`Session.currentNode`), so a flow's helper tasks (a chain's pumps, a
+stdin feed, a `cutBlocking` call) run in the flow's node; a capture's
+pipes are read on the flow's own thread ([D:pipe-threads]).
 
 | node | made by | its flow runs on | cut by |
 |---|---|---|---|
@@ -164,13 +165,17 @@ the entry ends with `↳ exit 130`. Rests on [D:teardown-kill-not-failure],
 [D:sigint-terminal-group], [D:cleanup-group-signal], [D:settle-pending].
 Enforced by `Proc.raiseNonzero`, which calls `settleInterrupt` (a 129,
 130, 131 or 143 death waits, up to 250ms, for the request while the
-signal handler is acting on a signal, and with none in flight only a
-5ms grace for one to appear; not in the REPL; a script dying of such a
+signal handler is acting on a signal — for a 129 also while the thread
+pool has work queued or running, where .NET keeps SIGHUP's handler
+until a worker runs it — and with none in flight only a 5ms grace for
+one to appear; not in the REPL; a script dying of such a
 failure uncaught, raised outside a cleanup, waits up to 250ms for the
 signal first, `Proc.fatalTeardown`), then `checkTeardown`, then `checkCancelled`, then
 `checkInterrupted` for a 130, then `cleanupKilledByTeardown` (a
 statement consumer, a child spawned before the teardown request). The
-dispatch requests the teardown before it kills.
+dispatch requests the teardown before it kills. A script that saw such
+a death settles the same way at its exit (`exitCodeOr`), so a signal
+whose handler starts later still ends weir by the signal.
 
 **I8. Every exit settles the tree kills in flight.** It waits up to 2s
 for the in-flight count to reach zero, so no SIGSTOPped orphan
@@ -306,7 +311,9 @@ its own handler (a pager quits on ^C); a second signal kills it (I12).
 A shim a ^C killed before its `trap` never started the command, so on
 Linux it is started again (`CleanupShim.passedTrap` reads its /proc
 status). The shim refuses what a direct spawn refuses: a file that is
-neither a native image nor a `#!` script with an executable interpreter
+neither a native image (on Linux an ELF the kernel's loader takes) nor
+a `#!` script whose interpreter chain execve follows to one (five `#!`
+files deep on Linux, one on macOS)
 never reaches sh's ENOEXEC fallback (`CleanupShim.execAccepts`). Without
 a tty the spawn is direct. On Windows the command
 starts in a new process group, which Ctrl+C does not reach. Rests on
@@ -366,10 +373,13 @@ REPL set is restored, at its prompt too. A closed stdout's 141 is an exit. Rests
   [D:cleanup-sigign]). Its descendants inherit SIGINT/SIGQUIT ignored.
 - A hard exit leaves a running cleanup where it stood (I12): a cleanup
   that must finish needs one signal, not two.
-- A settle wait sees a signal from the moment its handler runs, after a
-  5ms grace at most ([D:settle-pending]); a handler later than that
-  (heavy load) leaves the child's death a failure a `try` catches, and
-  in the REPL ends the entry a statement late.
+- A settle wait sees INT, QUIT and TERM from the moment their handler
+  thread runs (.NET starts it before it reaps the child) and HUP from
+  the moment its pool item is queued, waiting up to 250ms
+  ([D:settle-pending]); a handler later than that (a pool held that
+  long) leaves the child's death a failure a `try` catches, and in the
+  REPL ends the entry a statement late; the exit's settle still dies by
+  a signal whose handler runs within its own 250ms.
 
 ## Discrepancies
 

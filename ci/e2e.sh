@@ -4132,6 +4132,65 @@ WEOF
     echo "$tout" | grep -qF "FAST" || fail "a REPL child exiting 130 with no ^C never waits the 250ms: $tout"
     echo "e2e ok: a 129/130/131/143 exit with no signal in flight never waits the 250ms — script, tty script, tty REPL"
 
+    # T1-2: a group-directed SIGHUP is the teardown even when its handler
+    # starts late — .NET runs SIGHUP's handler as a pool item, which CPU
+    # contention can hold past the 5ms grace. Here the pool's worker is held
+    # (ptrace-stopped) for 150ms while the HUP lands: the cleanup's command
+    # it killed never reads as "command failed", the cleanup runs on, weir
+    # dies by the signal [D:settle-pending]
+    if [ "$(uname -s)" = Linux ]; then
+        cat > "$stdir/hold.py" <<'PYEOF'
+# hold.py LOG MS -- argv: when LOG says "cleanup", stop weir's pool workers, group-HUP it, resume them after MS
+import ctypes, os, sys, time, signal, subprocess
+log, ms = sys.argv[1], int(sys.argv[2]); argv = sys.argv[4:]
+libc = ctypes.CDLL(None, use_errno=True)
+libc.ptrace.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]
+def pre():
+    for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE): signal.signal(s, signal.SIG_DFL)
+p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, preexec_fn=pre, start_new_session=True)
+t0 = time.monotonic()
+while time.monotonic() - t0 < 10:
+    try:
+        if 'cleanup' in open(log).read().split(): break
+    except OSError: pass
+    time.sleep(0.02)
+time.sleep(0.2)
+tids = [int(t) for t in os.listdir('/proc/%d/task' % p.pid) if open('/proc/%d/task/%s/comm' % (p.pid, t)).read().strip() == '.NET TP Worker']
+held = []
+for t in tids:
+    if libc.ptrace(0x4206, t, None, None) == 0:  # PTRACE_SEIZE
+        libc.ptrace(0x4207, t, None, None)  # PTRACE_INTERRUPT
+        os.waitpid(t, 0x40000000)  # __WALL
+        held.append(t)
+os.killpg(p.pid, signal.SIGHUP)
+time.sleep(ms / 1000)
+for t in held:
+    if libc.ptrace(17, t, None, None) != 0:  # PTRACE_DETACH; a thread weir's exit took is reaped here
+        try: os.waitpid(t, 0x40000000)
+        except OSError: pass
+try: o = p.communicate(timeout=10)[0]
+except subprocess.TimeoutExpired: os.killpg(p.pid, signal.SIGKILL); o = p.communicate()[0]; p.returncode = 'HANG'
+print('held %d status %s out %s' % (len(held), p.returncode, o.decode(errors='replace').replace('\n', ' | ')))
+PYEOF
+        printf '%s\n' 'let log = Self.args |> Seq.head' 'within' '    sh -c "true"' '    File.append log ["body"]' 'always' '    File.append log ["cleanup"]' '    sh -c "sleep 4"' '    File.append log ["after"]' > "$stdir/hupl.weir"
+        rm -f "$stdir/hupl.log"
+        r=$(python3 "$stdir/hold.py" "$stdir/hupl.log" 150 -- "$BIN" "$stdir/hupl.weir" "$stdir/hupl.log")
+        case "$r" in
+            "held 0 "*) echo "e2e skip: no pool worker to hold (ptrace refused?): $r" ;;
+            *)
+                echo "$r" | grep -q "status -1 " || fail "a group SIGHUP whose handler starts late is the teardown: $r"
+                echo "$r" | grep -qF "command failed" && fail "a group SIGHUP whose handler starts late never reads as 'command failed': $r"
+                [ "$(stlog "$stdir/hupl.log")" = "body,cleanup,after," ] || fail "a group SIGHUP whose handler starts late: the cleanup runs on whole: $(stlog "$stdir/hupl.log")"
+                # held past the 250ms settle: the cleanup reads it as a
+                # failure, but the exit still settles it — weir dies by it
+                rm -f "$stdir/hupl.log"
+                r=$(python3 "$stdir/hold.py" "$stdir/hupl.log" 400 -- "$BIN" "$stdir/hupl.weir" "$stdir/hupl.log")
+                echo "$r" | grep -q "status -1 " || fail "a group SIGHUP whose handler starts past the settle is never dropped at the exit: $r"
+                echo "e2e ok: a group SIGHUP whose handler starts late is the teardown — the cleanup runs on; past the settle the exit still dies by it"
+                ;;
+        esac
+    fi
+
     # C1-4: a cleanup's command through the shim refuses what a direct spawn
     # refuses — a shebang-less executable never runs through sh [D:cleanup-sigign]
     printf 'echo noshebang-ran\n' > "$stdir/nosb"; chmod +x "$stdir/nosb"
@@ -4140,6 +4199,22 @@ WEOF
     echo "$tout" | grep -qF "not executable" || fail "a shebang-less executable in a cleanup at a tty is refused: $tout"
     echo "$tout" | grep -qF "noshebang-ran" && fail "a shebang-less executable never runs through the shim's sh: $tout"
     echo "e2e ok: a shebang-less executable in a cleanup at a tty is refused, as a direct spawn refuses it"
+    # T1-1: ... followed down the #! chain as execve follows it: a script
+    # whose interpreter is such a file is refused too; a chain of real
+    # scripts runs [D:cleanup-sigign]
+    printf '#!%s\necho chain-outer-ran\n' "$stdir/nosb" > "$stdir/nosbo"; chmod +x "$stdir/nosbo"
+    tout=$(printf 'SLEEP 1500\n' | python3 "$ptyrun" 8 "$BIN" "$stdir/nosb.weir" "$stdir/nosbo")
+    echo "$tout" | grep -qF "not executable" || fail "a #! script whose interpreter is shebang-less is refused in a cleanup at a tty: $tout"
+    echo "$tout" | grep -qE "chain-outer-ran|noshebang-ran" && fail "a #! script whose interpreter is shebang-less never runs through the shim's sh: $tout"
+    # (macOS runs no nested interpreter: the chain is Linux's)
+    if [ "$(uname -s)" = Linux ]; then
+        printf '#!/bin/sh\necho "chain-ran $#"\n' > "$stdir/ch0"; chmod +x "$stdir/ch0"
+        printf '#!%s\n' "$stdir/ch0" > "$stdir/ch1"; chmod +x "$stdir/ch1"
+        printf '#!%s\n' "$stdir/ch1" > "$stdir/ch2"; chmod +x "$stdir/ch2"
+        tout=$(printf 'SLEEP 1500\n' | python3 "$ptyrun" 8 "$BIN" "$stdir/nosb.weir" "$stdir/ch2")
+        echo "$tout" | grep -qF "chain-ran 2" || fail "a chain of #! scripts ending at a native interpreter runs in a cleanup at a tty: $tout"
+    fi
+    echo "e2e ok: the shim follows the #! chain as execve does — a shebang-less interpreter is refused, a script chain runs"
 
     # C1-5: the shim holds for a weir started in the background and brought
     # to the foreground while its cleanup runs: the ^C never kills the
@@ -4235,6 +4310,53 @@ took=$(( $(now_ms) - start_ms ))
 [ "$out" = "winner 32" ] || fail "a 32-arm pfirst over | complete: $out"
 [ "$took" -lt 5000 ] || fail "a 32-arm pfirst over | complete finishes with its winner (took ${took}ms)"
 echo "e2e ok: a 32-arm pfirst over | complete finishes with its winner (${took}ms)"
+fi
+
+# T1-3: a `| complete` arm reads both pipes on its own thread — one thread
+# per arm, not two — and a thread the process/thread limit refuses is a weir
+# error naming the limit [D:pipe-threads]
+if [ "$(uname -s)" = Linux ]; then
+cat > "$r6dir/pt.weir" <<'WEOF'
+let n = Self.args |> Seq.head |> Str.toInt
+let arm i =
+    if i == 1 then
+        let r = sh -c "echo w-err >&2; sleep 1.5; echo w-out" | complete
+        $"{r.stdout |> Seq.head} {r.stderr |> Seq.head}"
+    else
+        let r = sh -c "sleep 30" | complete
+        $"{r.exitCode}"
+let w = [1..n] |> Seq.pfirstWith n arm
+print $"won {w}"
+WEOF
+"$BIN" "$r6dir/pt.weir" 64 > "$r6dir/pt.out" 2>&1 &
+ptpid=$!
+ptpeak=0
+while kill -0 "$ptpid" 2>/dev/null; do
+    t=$(awk '/^Threads:/{print $2}' "/proc/$ptpid/status" 2>/dev/null)
+    [ -n "$t" ] && [ "$t" -gt "$ptpeak" ] && ptpeak=$t
+    sleep 0.05
+done
+wait "$ptpid"
+[ "$(cat "$r6dir/pt.out")" = "won w-out w-err" ] || fail "a 64-arm pfirst over | complete: $(cat "$r6dir/pt.out")"
+[ "$ptpeak" -lt 104 ] || fail "a 64-arm pfirst over | complete takes one thread per arm (peak $ptpeak threads)"
+echo "e2e ok: a 64-arm pfirst over | complete takes one thread per arm (peak $ptpeak threads)"
+# (RLIMIT_NPROC binds a non-root user only; .NET's own pool can still abort
+# when it cannot add a worker at the limit — a runtime residual, so up to
+# three tries)
+if [ "$(id -u)" != 0 ]; then
+    ptok=""
+    for _ in 1 2 3; do
+        ptn=$(ps -L -u "$(id -u)" -o lwp= | wc -l)
+        out=$( (ulimit -u $((ptn + 150)); timeout 60 "$BIN" "$r6dir/pt.weir" 256) 2>&1) || true
+        echo "$out" | grep -qF "TaskScheduler" && fail "a refused thread never shows .NET's text: $out"
+        if echo "$out" | grep -qF "cannot start a thread for a pfirst arm: the process/thread limit is reached"; then
+            ptok=1
+            break
+        fi
+    done
+    [ -n "$ptok" ] || fail "a thread the limit refuses is a weir error naming the limit: $out"
+    echo "e2e ok: a fan-out thread the process/thread limit refuses is a weir error naming the limit"
+fi
 fi
 
 # W1: after a cut nothing waits for the EOF of a pipe a descendant the kill
@@ -10282,6 +10404,130 @@ else
     echo "e2e skip: url-userinfo-basic / proxy-env-malformed / message-data-escape (python3 absent)"
 fi
 
+# ---- h3r7 stage B: userinfo masked through the last @, proxy fallthrough,
+# message sinks, lock writes ---------------------------------------------------
+# a password with a raw / ? # @ never shows [D:url-redact]; a malformed proxy
+# variable refuses even when a later one is set [D:proxy-env-malformed]; the
+# CLI/check/add messages escape their data [D:error-data-escape]; gen types
+# drops a "" key with a note [D:infer-wire-escape]; lock.json is replaced
+# whole under the .weir/ writer lock [D:weir-dir-lock]
+if command -v python3 >/dev/null 2>&1; then
+    h7dir=$(mkweirtmp)
+    noprox="env -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY -u all_proxy -u ALL_PROXY -u no_proxy -u NO_PROXY"
+    for u in "http://deploy:Tr0ub/4dor@127.0.0.1:1/x" "http://deploy:pa#ss@127.0.0.1:1/x" "http://deploy:p@ssw0rd@127.0.0.1:1/x" "http://deploy:q?wd@127.0.0.1:1/x"; do
+        out=$($noprox "$BIN" -e "show (Http.get \"$u\")" 2>&1) || fail "url-redact-last-at: show must succeed: $out"
+        echo "$out" | grep -qF 'http://***@127.0.0.1:1/x' || fail "url-redact-last-at: show must mask through the last @: $out"
+        out=$($noprox "$BIN" -e "Http.send (Http.get \"$u\")" 2>&1) && fail "url-redact-last-at: $u must not reach"
+        echo "$out" | grep -qE 'Tr0ub|4dor|pa#ss|ssw0rd|q\?wd|deploy' && fail "url-redact-last-at: the send error printed the credential: $out"
+        echo "$out" | grep -qF '***@127.0.0.1' || fail "url-redact-last-at: the send error must mask: $out"
+    done
+    # a single-label host after `user:<digits>` and a raw delimiter
+    for u in "http://deploy:2024/01/15@intranet/x" "http://u:2024#pw@gitlab/x"; do
+        out=$($noprox "$BIN" -e "show (Http.get \"$u\")" 2>&1) || fail "url-redact-last-at: show must succeed: $out"
+        echo "$out" | grep -qE '2024|deploy|pw@' && fail "url-redact-last-at: show printed the credential: $out"
+        echo "$out" | grep -qE 'http://\*\*\*@(intranet|gitlab)/x' || fail "url-redact-last-at: show must mask a ported user:digits authority: $out"
+    done
+    mkdir -p "$h7dir/ua" && ( cd "$h7dir/ua" && git init -q . )
+    out=$( cd "$h7dir/ua" && $noprox "$BIN" add schema 'http://deploy:Tr0ub/4dor@127.0.0.1:1/s.json' --as s 2>&1 ) && fail "url-redact-last-at: add must fail"
+    echo "$out" | grep -qE 'Tr0ub|4dor' && fail "url-redact-last-at: weir add printed the credential: $out"
+    for v in 'http://u:SEC/RETPW@h:99999' '//u:SEC@RETPW@h:99999' 'u:SEC#RETPW@h:99999'; do
+        out=$($noprox HTTP_PROXY="$v" "$BIN" -e 'Http.send (Http.get "http://127.0.0.1:1/x")' 2>&1) && fail "url-redact-last-at: $v must refuse"
+        echo "$out" | grep -qF 'not a usable proxy URL' || fail "url-redact-last-at: $v must refuse as malformed: $out"
+        echo "$out" | grep -qE 'SEC|RETPW' && fail "url-redact-last-at: the proxy message printed the credential: $out"
+    done
+    echo "e2e ok: a URL's userinfo is masked through its last @, raw / ? # @ in the password included [D:url-redact]"
+
+    h7port=$((24500 + RANDOM % 200))
+    cat > "$h7dir/srv.py" <<H7EOF
+import http.server, json
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        open('$h7dir/srv.log', 'a').write(self.path + '\n')
+        if self.path.endswith('/ref.json'):
+            b = json.dumps({"type": "object", "properties": {"e": {"\$ref": "#/x\u001b]52;c;QQ==\u0007\r"}}}).encode()
+        elif self.path.endswith('/k.json'):
+            b = json.dumps({"type": "object", "properties": {"": {"type": "string"}, "ok": {"type": "string"}}}).encode()
+        else:
+            b = b'proxied'
+        self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(b)
+    def log_message(self, *x): pass
+http.server.HTTPServer(('127.0.0.1', $h7port), H).serve_forever()
+H7EOF
+    python3 "$h7dir/srv.py" & h7srv=$!
+    awaitTcp "$h7port" || { kill $h7srv 2>/dev/null || true; fail "h3r7-B: the server never came up"; }
+    # the runtime would skip the malformed variable and use the next one
+    for pair in "http_proxy ALL_PROXY" "all_proxy ALL_PROXY"; do
+        read -r pbad pgood <<< "$pair"
+        [ "$IS_WINDOWS" = "1" ] && [ "$pbad" = all_proxy ] && continue # one name on Windows
+        : > "$h7dir/srv.log"
+        out=$($noprox "$pbad=http://h:99999" "$pgood=http://127.0.0.1:$h7port" "$BIN" -e 'print (Http.send (Http.get "http://127.0.0.1:1/x")).body' 2>&1) && fail "proxy-fallthrough: a malformed $pbad must refuse beside $pgood: $out"
+        echo "$out" | grep -qiF "$pbad is set but is not a usable proxy URL" || fail "proxy-fallthrough: the refusal must name $pbad: $out"
+        [ -s "$h7dir/srv.log" ] && fail "proxy-fallthrough: the request went through $pgood: $(cat "$h7dir/srv.log")" || true
+    done
+    out=$($noprox "http_proxy=http://127.0.0.1:$h7port" "ALL_PROXY=http://h:99999" "$BIN" -e 'print (Http.send (Http.get "http://127.0.0.1:1/x")).body' 2>&1) || fail "proxy-fallthrough: a usable first variable must win: $out"
+    [ "$out" = "proxied" ] || fail "proxy-fallthrough: a usable first variable must win: $out"
+    echo "e2e ok: a malformed proxy variable refuses even when a later one is set [D:proxy-env-malformed]"
+
+    # message sinks: the data they quote renders visibly, piped
+    E=$(printf 'Q\033]52;c;QQ==\007\rZ')
+    mkdir -p "$h7dir/ms" && ( cd "$h7dir/ms" && git init -q . )
+    noraw() { printf '%s' "$2" | python3 -c "import sys; d=sys.stdin.buffer.read(); sys.exit(1 if (b'\x1b' in d or b'\r' in d or b'\x07' in d) else 0)" || fail "message-sinks: $1 put a raw ESC/BEL/CR in its message: $2"; }
+    out=$( cd "$h7dir/ms" && $BIN gen types "$E" 2>&1 ) && fail "message-sinks: gen types must refuse"; noraw "gen types arg" "$out"
+    out=$( cd "$h7dir/ms" && $BIN gen types --schema "$E" 2>&1 ) && fail "message-sinks: gen types must refuse"; noraw "gen types --schema" "$out"
+    out=$( cd "$h7dir/ms" && $BIN fmt "--$E" 2>&1 ) && fail "message-sinks: fmt must refuse"; noraw "fmt flag" "$out"
+    out=$( cd "$h7dir/ms" && $BIN check "--$E" 2>&1 ) && fail "message-sinks: check must refuse"; noraw "check flag" "$out"
+    echo "$out" | grep -qF 'unknown flag --Q\x1b]52;c;QQ==\x07\x0dZ' || fail "message-sinks: the check flag must render visibly: $out"
+    printf '#sig grep\ngrep --co\033c x\n' > "$h7dir/ms/sig.weir"; mkdir -p "$h7dir/ms/.weir/sigs"
+    printf 'module Grep\ntype Cmd = {\n    color: bool\n}\n' > "$h7dir/ms/.weir/sigs/grep.weir"
+    out=$( cd "$h7dir/ms" && $BIN check sig.weir 2>&1 ) || true; noraw "the sig warning" "$out"
+    echo "$out" | grep -qF "unknown flag '--co\x1bc'" || fail "message-sinks: the sig warning must quote the flag visibly: $out"
+    printf 'import "./no\033cfile.weir" as M\n' > "$h7dir/ms/imp.weir"
+    out=$( cd "$h7dir/ms" && $BIN check imp.weir 2>&1 ) && fail "message-sinks: a missing import must fail"; noraw "the import path" "$out"
+    echo "$out" | grep -qF 'no\x1bcfile.weir' || fail "message-sinks: the import path must render visibly: $out"
+    printf '^ech\033co hi\n' > "$h7dir/ms/cnf.weir"
+    out=$( cd "$h7dir/ms" && $BIN check cnf.weir 2>&1 ) && fail "message-sinks: an unknown head must fail"; noraw "command not found" "$out"
+    echo "$out" | grep -qF 'command not found: ech\x1bco' || fail "message-sinks: the head must render visibly: $out"
+    out=$( cd "$h7dir/ms" && $noprox "$BIN" add schema "http://127.0.0.1:$h7port/ref.json" --as ref 2>&1 ) && fail "message-sinks: an unresolvable \$ref must refuse"; noraw "add schema's \$ref" "$out"
+    echo "$out" | grep -qF '#/x\x1b]52;c;QQ==\x07\x0d' || fail "message-sinks: the \$ref must render visibly: $out"
+    echo "e2e ok: CLI, check and add messages escape the data they quote, piped [D:error-data-escape]"
+
+    # gen types drops a "" property key with a note, as #infer does
+    out=$( cd "$h7dir/ms" && $noprox "$BIN" add schema "http://127.0.0.1:$h7port/k.json" --as k 2>&1 ) || fail "gentypes-empty-key: add must succeed: $out"
+    out=$( cd "$h7dir/ms" && $BIN gen types --schema k --out - 2>&1 ) || fail "gentypes-empty-key: gen types must succeed: $out"
+    echo "$out" | grep -qF 'an empty-string key under' || fail "gentypes-empty-key: the drop must be noted: $out"
+    echo "$out" | grep -qF 'ok: Option<string>' || fail "gentypes-empty-key: the other field stays: $out"
+    kill $h7srv 2>/dev/null || true
+    echo "e2e ok: gen types drops a \"\" key with a note [D:infer-wire-escape]"
+
+    # parallel adds serialize under the .weir/ lock; lock.json is replaced whole
+    if [ "$IS_WINDOWS" = "0" ]; then
+        mkdir -p "$h7dir/pa/bin" && ( cd "$h7dir/pa" && git init -q . )
+        for t in s1 s2 s3 s4 s5 s6; do
+            printf '#!/bin/sh\n[ "$1" = --help ] || exit 1\nprintf "Usage: %s\\n\\nOptions:\\n  --only-%s   doc\\n"\n' "$t" "$t" > "$h7dir/pa/bin/$t"
+            chmod +x "$h7dir/pa/bin/$t"
+        done
+        pids=""
+        for t in s1 s2 s3 s4 s5 s6; do
+            ( cd "$h7dir/pa" && PATH="$h7dir/pa/bin:$PATH" "$BIN" add sig $t > /dev/null 2>&1 ) & pids="$pids $!"
+        done
+        for p in $pids; do wait $p || fail "weir-dir-lock: a parallel add sig failed"; done
+        n=$(grep -c '"name"' "$h7dir/pa/.weir/lock.json")
+        [ "$n" = 6 ] || fail "weir-dir-lock: 6 parallel adds must leave 6 lock entries, got $n: $(cat "$h7dir/pa/.weir/lock.json")"
+        inode() { if stat -c %i "$1" >/dev/null 2>&1; then stat -c %i "$1"; else stat -f %i "$1"; fi; }
+        i0=$(inode "$h7dir/pa/.weir/lock.json")
+        ( cd "$h7dir/pa" && PATH="$h7dir/pa/bin:$PATH" "$BIN" add sig s1 > /dev/null 2>&1 ) || fail "weir-dir-lock: a re-add must succeed"
+        [ "$(inode "$h7dir/pa/.weir/lock.json")" != "$i0" ] || fail "weir-dir-lock: lock.json must be replaced by rename, not rewritten in place"
+        ls -a "$h7dir/pa/.weir" "$h7dir/pa/.weir/sigs" | grep -qF 'weir-tmp' && fail "weir-dir-lock: a temp was left behind: $(ls -a "$h7dir/pa/.weir")" || true
+        # a missing signature is regenerated, never restored
+        rm -f "$h7dir/pa/.weir/sigs/s2.weir"
+        out=$( cd "$h7dir/pa" && PATH="$h7dir/pa/bin:$PATH" "$BIN" verify 2>&1 ) && fail "weir-dir-lock: verify must report the absent sig"
+        echo "$out" | grep -qF "sig s2: ABSENT — regenerate it: weir add sig 's2'" || fail "verify-sig-absent: the hint must name weir add sig: $out"
+        echo "e2e ok: parallel adds keep every lock entry; lock.json is replaced whole; an absent sig says weir add sig [D:weir-dir-lock]"
+    fi
+else
+    echo "e2e skip: h3r7 stage B (python3 absent)"
+fi
+
 # ---- Fix 2: parse/decode errors excerpt a huge invalid input [D:excerpt] ---
 # a multi-MB invalid input used to be echoed whole (a ~2MB stderr flood);
 # it is now bounded to a 64-char head + the true length. A short invalid
@@ -15143,8 +15389,10 @@ dout=$(printf 'SLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" "$dg/src.weir" 2>&1)
 echo "$dout" | grep -qF '\x1b[31mtype error' || fail "tty-diag: weir's own colour must survive the sanitizer: $dout"
 $BIN check "$dg/imp.weir" > "$dg/imp.out" 2>&1 || true
 $BIN "$dg/src.weir" 2> "$dg/src.err" || true
-python3 -c "import sys; sys.exit(0 if all(b'\x1b]52;c;DIAG\x07' in open(f,'rb').read() for f in sys.argv[1:]) else 1)" "$dg/imp.out" "$dg/src.err" \
-    || fail "tty-diag: redirected diagnostics must stay byte-faithful"
+python3 -c "import sys; sys.exit(0 if all(b'\x1b]52;c;DIAG\x07' in open(f,'rb').read() for f in sys.argv[1:]) else 1)" "$dg/src.err" \
+    || fail "tty-diag: a redirected source echo must stay byte-faithful"
+# the import path is data in a message: escaped piped too [D:error-data-escape]
+grep -qF 'x\x1b]52;c;DIAG\x07.weir' "$dg/imp.out" || fail "tty-diag: a redirected import path must render escaped: $(cat "$dg/imp.out")"
 echo "e2e ok: tty-diag check/run diagnostics (import path, source echo, regex, #sig, no such script) sanitized at a tty, byte-faithful when redirected"
 # a runtime error escapes the data it quotes [D:error-data-escape] — always,
 # piped too: a parse input, a document excerpt, a path, an env var name

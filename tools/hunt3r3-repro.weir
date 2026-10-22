@@ -880,9 +880,10 @@ let h3r3d1 d =
     let p = put d "d1.weir" d1Script
     let (t0, r0) = msOf (fun () -> runIn d "30" [p; "300000"; "r"])
     // the fixed guard keeps one lstat per new path, ~4-8x the reads alone;
-    // the broken one is quadratic in depth and hits the 12s cap
+    // the broken one is quadratic in depth and runs past the limit, which
+    // also sets the kill cap so a slow runner is judged by the ratio
     let limit = 12 * t0 + 1000
-    let (t, r) = msOf (fun () -> runIn d "12" [p; "300000"; "w"])
+    let (t, r) = msOf (fun () -> runIn d $"{limit / 1000 + 2}" [p; "300000"; "w"])
     failing [
         ($"the baseline ran (exit {codeOf r0}, '{outOf r0}')", codeOf r0 == 0 && outOf r0 == "0")
         underMs $"300000 write-if-absent ops at depth 10 inside a plan (the reads alone: {t0}ms)" limit (t, r)

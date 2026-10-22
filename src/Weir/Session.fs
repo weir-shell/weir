@@ -1369,47 +1369,121 @@ module CleanupShim =
 
             go ()
 
-    /// what execve itself runs [D:cleanup-sigign]: a `#!` line naming an
-    /// executable interpreter, or a native image. The shim's `exec` would
-    /// hand any other file to sh (its ENOEXEC fallback), which a direct
-    /// spawn refuses; read without blocking, so a FIFO is never waited on
+    /// what execve itself runs [D:cleanup-sigign]: a native image — on Linux
+    /// an ELF the kernel's loader takes (this machine's class and arch, an
+    /// executable or shared-object type, whole program headers) — or a `#!`
+    /// file whose interpreter execve runs in turn: on Linux up to five `#!`
+    /// files deep (then ELOOP), on macOS one (no nested interpreter). The
+    /// shim's `exec` would hand any other file to sh (its ENOEXEC fallback),
+    /// which a direct spawn refuses; read without blocking, so a FIFO is
+    /// never waited on
     let execAccepts (path: string) (cwd: string) (runnable: string -> bool) : bool =
         let O_NONBLOCK = if System.OperatingSystem.IsLinux() then 0x800 else 0x4
-        let fd = Libc.``open`` (path, O_NONBLOCK)
+        let maxScripts = if System.OperatingSystem.IsLinux() then 5 else 1
 
-        if fd < 0 then
-            false
-        else
-            let head =
+        // the head and the file's length
+        let headOf (path: string) =
+            let fd = Libc.``open`` (path, O_NONBLOCK)
+
+            if fd < 0 then
+                None
+            else
                 let buf = System.Runtime.InteropServices.Marshal.AllocHGlobal 256
 
                 try
                     let n = int (Libc.read (fd, buf, unativeint 256))
                     let bytes = Array.zeroCreate<byte> (max n 0)
                     System.Runtime.InteropServices.Marshal.Copy(buf, bytes, 0, bytes.Length)
-                    bytes
+                    Some(bytes, Libc.lseek (fd, 0L, 2))
                 finally
                     System.Runtime.InteropServices.Marshal.FreeHGlobal buf
                     Libc.close fd |> ignore
 
-            let starts (magic: byte list) =
-                head.Length >= magic.Length && List.forall2 (fun i b -> head[i] = b) [ 0 .. magic.Length - 1 ] magic
+        // ELF class and e_machine of this process's own images
+        let native =
+            match System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture with
+            | System.Runtime.InteropServices.Architecture.X64 -> Some(2uy, 62)
+            | System.Runtime.InteropServices.Architecture.Arm64 -> Some(2uy, 183)
+            | System.Runtime.InteropServices.Architecture.X86 -> Some(1uy, 3)
+            | System.Runtime.InteropServices.Architecture.Arm -> Some(1uy, 40)
+            | System.Runtime.InteropServices.Architecture.RiscV64 -> Some(2uy, 243)
+            | System.Runtime.InteropServices.Architecture.LoongArch64 -> Some(2uy, 258)
+            | System.Runtime.InteropServices.Architecture.Ppc64le -> Some(2uy, 21)
+            | System.Runtime.InteropServices.Architecture.S390x -> Some(2uy, 22)
+            | _ -> None
 
-            if starts [ 0x23uy; 0x21uy ] then
-                let line =
-                    System.Text.Encoding.UTF8.GetString(head, 2, head.Length - 2).Split('\n').[0]
+        // the checks binfmt_elf makes before it maps anything — any that
+        // fails is ENOEXEC
+        let elfLoads (head: byte[]) (length: int64) =
+            match native with
+            | None -> true
+            | Some(cls, machine) ->
+                let wide = cls = 2uy
+                let ehsize = if wide then 64 else 52
 
-                match line.Trim([| ' '; '\t' |]).Split([| ' '; '\t' |], 2).[0] with
-                | "" -> false
-                | interp -> runnable (System.IO.Path.Combine(cwd, interp))
-            else
-                [ [ 0x7Fuy; 0x45uy; 0x4Cuy; 0x46uy ] // ELF
-                  [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCEuy ] // Mach-O
-                  [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCFuy ]
-                  [ 0xCEuy; 0xFAuy; 0xEDuy; 0xFEuy ]
-                  [ 0xCFuy; 0xFAuy; 0xEDuy; 0xFEuy ]
-                  [ 0xCAuy; 0xFEuy; 0xBAuy; 0xBEuy ] ]
-                |> List.exists starts
+                head.Length >= ehsize
+                && head[4] = cls
+                && (head[5] = 1uy || head[5] = 2uy)
+                && (let u16 (o: int) =
+                        if head[5] = 1uy then
+                            int head[o] ||| (int head[o + 1] <<< 8)
+                        else
+                            (int head[o] <<< 8) ||| int head[o + 1]
+
+                    let u32 (o: int) =
+                        if head[5] = 1uy then
+                            int64 (u16 o) ||| (int64 (u16 (o + 2)) <<< 16)
+                        else
+                            (int64 (u16 o) <<< 16) ||| int64 (u16 (o + 2))
+
+                    let phoff =
+                        if wide then
+                            if head[5] = 1uy then
+                                u32 32 ||| (u32 36 <<< 32)
+                            else
+                                (u32 32 <<< 32) ||| u32 36
+                        else
+                            u32 28
+
+                    let phentsize, phnum = if wide then u16 54, u16 56 else u16 42, u16 44
+                    let size = int64 phnum * int64 phentsize
+
+                    (u16 16 = 2 || u16 16 = 3)
+                    && u16 18 = machine
+                    && phentsize = (if wide then 56 else 32)
+                    && size > 0L
+                    && size <= 65536L
+                    && phoff >= 0L
+                    && phoff + size <= length)
+
+        let rec accepts (path: string) (scripts: int) =
+            match headOf path with
+            | None -> false
+            | Some(head, length) ->
+                let starts (magic: byte list) =
+                    head.Length >= magic.Length
+                    && List.forall2 (fun i b -> head[i] = b) [ 0 .. magic.Length - 1 ] magic
+
+                if starts [ 0x23uy; 0x21uy ] then
+                    let line =
+                        System.Text.Encoding.UTF8.GetString(head, 2, head.Length - 2).Split('\n').[0]
+
+                    match line.Trim([| ' '; '\t' |]).Split([| ' '; '\t' |], 2).[0] with
+                    | "" -> false
+                    | interp ->
+                        let interp = System.IO.Path.Combine(cwd, interp)
+                        scripts < maxScripts && runnable interp && accepts interp (scripts + 1)
+                elif starts [ 0x7Fuy; 0x45uy; 0x4Cuy; 0x46uy ] then
+                    not (System.OperatingSystem.IsLinux()) || elfLoads head length
+                else
+                    [ [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCEuy ] // Mach-O
+                      [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCFuy ]
+                      [ 0xCEuy; 0xFAuy; 0xEDuy; 0xFEuy ]
+                      [ 0xCFuy; 0xFAuy; 0xEDuy; 0xFEuy ]
+                      [ 0xCAuy; 0xFEuy; 0xBAuy; 0xBEuy ] ]
+                    |> List.exists starts
+
+        accepts path 0
 
 /// a spawn here goes through `CleanupShim`: it runs inside a cleanup and
 /// weir has a controlling terminal (POSIX) — foreground or not, since a
@@ -1648,6 +1722,60 @@ let private dieByFlushing (flush: bool) (code: int) : unit =
 
 let private dieBy (code: int) : unit = dieByFlushing false code
 
+// the thread pool has work queued or a worker taking an item (the calling
+// thread aside). .NET's signal thread reads the signals in delivery order
+// and queues SIGHUP's handler as a pool item before it reaps a child that
+// died after the signal reached weir, so a HUP weir received and has not
+// acted on is pool work when the death is seen [D:settle-pending]
+let private poolBusy () =
+    let mutable available = 0
+    let mutable most = 0
+    let mutable io = 0
+    System.Threading.ThreadPool.GetAvailableThreads(&available, &io)
+    System.Threading.ThreadPool.GetMaxThreads(&most, &io)
+
+    let self =
+        if System.Threading.Thread.CurrentThread.IsThreadPoolThread then
+            1
+        else
+            0
+
+    System.Threading.ThreadPool.PendingWorkItemCount > 0L || most - available > self
+
+// a signal the handler is acting on: wait (bounded) until it is done
+// [D:settle-pending]. A signal weir has received reaches its handler a
+// fraction of a millisecond after the kernel delivered it (.NET hands it
+// to a thread or a pool item first), sometimes after the dead child is
+// reaped: with none in flight the wait is a 5ms grace for one to appear,
+// never the 250ms. `pool`: the signal is SIGHUP, whose handler may still
+// sit in the pool's queue — busy pool work counts as in flight
+let private settleWhile (pool: bool) (waiting: unit -> bool) : unit =
+    let clock = System.Diagnostics.Stopwatch.StartNew()
+
+    let inFlight () =
+        System.Threading.Volatile.Read &signalsInFlight > 0
+        || (pool && poolBusy ())
+
+    let mutable lastSeen = 0L
+    let mutable go = true
+
+    while go do
+        let now = clock.ElapsedMilliseconds
+        let pending = inFlight ()
+
+        if pending then
+            lastSeen <- now
+
+        go <- waiting () && now < 250L && (pending || now - lastSeen < 5L)
+
+        if go then
+            System.Threading.Thread.Sleep(if pending then 1 else 0)
+
+// a command died 129-143 since the start: the exit settles a signal still
+// on its way to the handler first, so a received signal is never dropped
+// [D:settle-pending]
+let mutable private signalDeathSeen = 0
+
 /// the requested exit code, or `code` when none was requested — the
 /// runner's result, so a request racing a statement's normal end still
 /// exits with the request's code; a signal's teardown dies by the signal
@@ -1655,6 +1783,9 @@ let private dieBy (code: int) : unit = dieByFlushing false code
 let exitCodeOr (code: int) : int =
     if System.Threading.Volatile.Read &hardExiting <> 0 then
         park ()
+
+    if System.Threading.Volatile.Read &signalDeathSeen <> 0 then
+        settleWhile true (fun () -> System.Threading.Volatile.Read &teardownCode = 0)
 
     match System.Threading.Volatile.Read &teardownCode with
     | 0 -> code
@@ -1701,22 +1832,6 @@ let cleanupKilledByTeardown (statement: bool) (runningAtSignal: bool) (code: int
     && code = System.Threading.Volatile.Read &teardownCode
     && not (inRace (currentNode ()))
 
-// a signal the handler is acting on: wait (bounded) until it is done
-// [D:settle-pending]. A signal weir has received reaches its handler a
-// fraction of a millisecond after the kernel delivered it (.NET hands it
-// to a thread or a pool item first), sometimes after the dead child is
-// reaped: with none in flight the wait is a 5ms grace for one to appear,
-// never the 250ms
-let private settleWhile (waiting: unit -> bool) : unit =
-    let clock = System.Diagnostics.Stopwatch.StartNew()
-
-    let inFlight () =
-        System.Threading.Volatile.Read &signalsInFlight > 0
-
-    while waiting ()
-          && clock.ElapsedMilliseconds < (if inFlight () then 250L else 5L) do
-        System.Threading.Thread.Sleep(if inFlight () then 1 else 0)
-
 /// a command that died of INT, HUP, QUIT or TERM while weir's handler is
 /// acting on a signal most likely took it with weir (the terminal's ^C,
 /// a hangup, ^\, `kill -- -pgid`) [D:sigint-terminal-group]
@@ -1730,7 +1845,8 @@ let settleInterrupt (code: int) : unit =
         && mainThreadId <> 0
         && not replFlow
     then
-        settleWhile (fun () -> System.Threading.Volatile.Read &teardownCode = 0)
+        System.Threading.Volatile.Write(&signalDeathSeen, 1)
+        settleWhile (code = 129) (fun () -> System.Threading.Volatile.Read &teardownCode = 0)
 
 /// a script about to die of a command's 129/130/131/143 failure: the
 /// command may have taken a signal before weir did (a supervisor's kill
@@ -1758,7 +1874,7 @@ let settleFatal (code: int) : int =
 /// [D:settle-pending]. Returns the code
 let settleReplInterrupt (code: int) : int =
     if code = 130 && replFlow && not (System.OperatingSystem.IsWindows()) then
-        settleWhile (fun () -> not (interruptRequested ()))
+        settleWhile false (fun () -> not (interruptRequested ()))
 
     code
 
@@ -1973,6 +2089,12 @@ type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Proces
                 then
                     raiseWoken ()
 
+    /// the pipe's fd (POSIX), or -1: the fill waits beside the token
+    member _.Fd = fd
+
+    /// raise when a cut this read honours is made
+    member _.CutCheck() = cutNow ()
+
     override _.CanRead = true
     override _.CanSeek = false
     override _.CanWrite = false
@@ -2008,9 +2130,106 @@ type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Proces
     // the child's pipe is the Process's to close
     override _.Dispose(_: bool) = ()
 
+/// a thread the OS refused to start (EAGAIN: the pids cgroup's limit or
+/// `ulimit -u` reached; or no memory for its stack) as a weir error that
+/// names the limit, not .NET's text [D:pipe-threads]
+let threadLimitError (what: string) : exn =
+    let readTrim (path: string) =
+        try
+            System.IO.File.ReadAllText(path).Trim()
+        with _ ->
+            ""
+
+    let threads =
+        readTrim "/proc/self/status"
+        |> fun st ->
+            st.Split('\n')
+            |> Array.tryFind (fun l -> l.StartsWith "Threads:")
+            |> Option.map (fun l -> l.Substring(8).Trim())
+
+    let pidsMax =
+        // cgroup v2: "0::/path"
+        readTrim "/proc/self/cgroup"
+        |> fun cg ->
+            cg.Split('\n')
+            |> Array.tryFind (fun l -> l.StartsWith "0::")
+            |> Option.map (fun l -> readTrim ("/sys/fs/cgroup" + l.Substring(3).TrimEnd('/') + "/pids.max"))
+            |> Option.filter (fun v -> v <> "" && v <> "max")
+
+    let limit =
+        match pidsMax with
+        | Some m -> $"cgroup pids.max {m}, or ulimit -u"
+        | None -> "ulimit -u, or the cgroup's pids.max"
+
+    let running =
+        match threads with
+        | Some n -> $"; weir runs {n} threads"
+        | None -> ""
+
+    exn
+        $"cannot start a thread for {what}: the process/thread limit is reached ({limit}){running} — lower the parallel width (pmapWith/pfirstWith n) or raise the limit"
+
+/// start a thread weir needs; a refusal is `threadLimitError`
+let startThread (what: string) (t: System.Threading.Thread) : unit =
+    try
+        t.Start()
+    with
+    | :? System.OutOfMemoryException
+    | :? System.Threading.ThreadStartException -> raise (threadLimitError what)
+
 /// a child's output stream, cut as the flow is [D:scope-tree]
 let cutStream (child: System.Diagnostics.Process) (s: System.IO.Stream) : System.IO.Stream =
     new CutStream(s, child) :> System.IO.Stream
+
+/// several child output streams (each from `cutStream`) that one thread
+/// can drain by poll(2) — POSIX pipes [D:pipe-threads]
+let pollablePipes (streams: System.IO.Stream[]) : bool =
+    streams
+    |> Array.forall (fun s ->
+        match s with
+        | :? CutStream as c -> c.Fd >= 0
+        | _ -> false)
+
+/// wait until one of the live streams (`pollablePipes`; null = done) is
+/// ready to fill — data, EOF or an error, whatever its next read reports —
+/// and mark each ready one in `ready`. Cut as a CutStream fill is: checked
+/// first and every 50ms while every pipe is empty [D:pipe-threads]
+let waitPipes (streams: System.IO.Stream[]) (ready: bool[]) : unit =
+    let live =
+        streams
+        |> Array.mapi (fun i s -> i, s)
+        |> Array.choose (fun (i, s) ->
+            match s with
+            | :? CutStream as c -> Some(i, c)
+            | _ -> None)
+
+    let fds = Array.zeroCreate<Libc.PollFd> live.Length
+
+    for k in 0 .. live.Length - 1 do
+        fds[k].fd <- (snd live[k]).Fd
+        fds[k].events <- 1s // POLLIN
+
+    let poll ms =
+        for k in 0 .. fds.Length - 1 do
+            fds[k].revents <- 0s
+
+        fds.Length > 0 && Libc.poll (&fds[0], unativeint fds.Length, ms) > 0
+
+    let cutAll () =
+        for _, c in live do
+            c.CutCheck()
+
+    cutAll ()
+
+    if not (poll 0) then
+        while not (poll 50) do
+            cutAll ()
+
+    System.Array.Clear ready
+
+    for k in 0 .. live.Length - 1 do
+        if fds[k].revents <> 0s then
+            ready[fst live[k]] <- true
 
 /// a reader over a child's output, cut as the flow is: the encoding the
 /// Process gave it, a larger buffer

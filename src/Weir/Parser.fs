@@ -4147,7 +4147,7 @@ let private envPrefixGuard () : Parser<'a, unit> =
         | Some(w, sp) when not (keywords.Contains w) ->
             failFatallyAtCol
                 sp.Start.Col
-                $"command not found: {w} (after the environment prefix {name}=…) — `NAME=value cmd` sets a variable for that one command"
+                $"command not found: {quoteData w} (after the environment prefix {quoteData name}=…) — `NAME=value cmd` sets a variable for that one command"
         | _ ->
             failFatallyAt
                 at
@@ -4265,7 +4265,7 @@ let private commandSegment
                 if r.IsExternal w then
                     preturn (ExternalHead, w, span)
                 else
-                    failFatally $"command not found: {w}{didYouMean w (r.ExternalNames())}"
+                    failFatally $"command not found: {quoteData w}{didYouMean w (r.ExternalNames())}"
             elif isIdentLike w && (r.AliasHead w).IsSome then
                 // the alias table is consulted before builtins and PATH, so
                 // an alias shadowing a real name (`#alias ls = ls --color`)

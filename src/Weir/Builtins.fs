@@ -1698,6 +1698,21 @@ let private refuseParallelInPlan (combinator: string) =
         failwith
             $"'{combinator}' is refused inside 'plan' — its per-worker callbacks run on threads that do not inherit the plan's capture frame, so their effects cannot be captured; run parallel/race combinators outside the plan"
 
+// a fan-out's workers, each on a thread of its own (LongRunning). A thread
+// the OS refuses (the process/thread limit) stops the fan-out as an arm's
+// raise would — `stop` cuts the started arms, which then join — with an
+// error naming the limit [D:pipe-threads]
+let private startWorkers (what: string) (n: int) (worker: int -> unit -> unit) (stop: exn -> unit) : Task[] =
+    let started = ResizeArray<Task>(n)
+
+    try
+        for w in 0 .. n - 1 do
+            started.Add(Task.Factory.StartNew(worker w, TaskCreationOptions.LongRunning))
+    with :? TaskSchedulerException ->
+        stop (Session.threadLimitError what)
+
+    started.ToArray()
+
 let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value array =
     if degree < 1 then
         failwith $"parallel degree must be at least 1, got {degree}"
@@ -1792,7 +1807,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
 
     try
         let tasks =
-            Array.init workers (fun w -> Task.Factory.StartNew(worker w, TaskCreationOptions.LongRunning))
+            startWorkers "a pmap arm" workers worker (fun e -> stop e)
 
         Session.waitTask (Task.WhenAll(tasks: Task[]))
     finally
@@ -1920,7 +1935,8 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
             let tasks =
                 try
-                    Array.init workers (fun _ -> Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning))
+                    startWorkers "a pfirst arm" workers (fun _ -> worker) (fun e ->
+                        settle null (fun () -> outcome.TrySetException e |> ignore))
                 finally
                     Session.setParallelDepth depth
 
@@ -2761,22 +2777,6 @@ module private AppendNative =
             use sfh = openAppend path
             writeAll (int (sfh.DangerousGetHandle())) payload
 
-    [<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
-    extern int private fsync(int fd)
-
-    let fsyncDir (dir: string) : unit =
-        let flags =
-            if System.OperatingSystem.IsMacOS() then
-                O_CLOEXEC_MACOS
-            else
-                O_CLOEXEC_LINUX
-
-        let fd = ``open`` (dir, flags, 0)
-
-        if fd >= 0 then
-            use sfh = new Microsoft.Win32.SafeHandles.SafeFileHandle(nativeint fd, true)
-            fsync (int (sfh.DangerousGetHandle())) |> ignore
-
 let private writePayload (keepBom: bool) (lines: Value seq) : byte[] =
     let sb = System.Text.StringBuilder()
 
@@ -2866,15 +2866,7 @@ let private refuseFifoAtomic (op: string) (r: string) : unit =
         failwith $"{op}: {quoteData r} is a FIFO — an atomic replace has no meaning there; use File.write"
 
 let private atomicReplace (r: string) (lines: Value seq) : unit =
-    let target =
-        let fi = FileInfo r
-
-        if fi.Exists then
-            match fi.ResolveLinkTarget true with
-            | null -> r
-            | t -> t.FullName
-        else
-            r
+    let target = Contracts.AtomicFile.resolveTarget r
 
     let keepBom =
         File.Exists target
@@ -2889,69 +2881,7 @@ let private atomicReplace (r: string) (lines: Value seq) : unit =
         else
             None
 
-    let dir =
-        match System.IO.Path.GetDirectoryName target with
-        | "" -> "."
-        | d -> d
-
-    // a SIGKILL mid-temp strands one dot-temp; the next writer to the
-    // same target sweeps stale twins — age-keyed, never pid-keyed
-    // (containers renumber pids across namespaces)
-    for stale in System.IO.Directory.EnumerateFiles(dir, $".{System.IO.Path.GetFileName target}.weir-tmp-*") do
-        try
-            if System.DateTime.UtcNow - File.GetLastWriteTimeUtc stale > System.TimeSpan.FromMinutes 10.0 then
-                File.Delete stale
-        with _ ->
-            ()
-
-    let tmp =
-        System.IO.Path.Combine(
-            dir,
-            $".{System.IO.Path.GetFileName target}.weir-tmp-{System.Environment.ProcessId}-{System.IO.Path.GetRandomFileName()}"
-        )
-
-    try
-        // the temp is born with the target's mode [D:private-temp]: a 0600
-        // target's new content is never readable wider before the rename
-        let opts =
-            FileStreamOptions(Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None)
-
-        match mode with
-        | Some m -> opts.UnixCreateMode <- System.Nullable m
-        | None -> ()
-
-        (use fs = new FileStream(tmp, opts)
-         fs.Write(payload, 0, payload.Length)
-         fs.Flush true)
-
-        match mode with
-        | Some m -> File.SetUnixFileMode(tmp, m)
-        | None -> ()
-
-        if System.OperatingSystem.IsWindows() then
-            // a reader holding the target without FILE_SHARE_DELETE makes
-            // the rename throw — bounded backoff, never on not-found
-            let rec move attempt =
-                try
-                    File.Move(tmp, target, true)
-                with :? IOException as e when
-                    not (e :? DirectoryNotFoundException)
-                    && not (e :? FileNotFoundException)
-                    && attempt < 6 ->
-                    System.Threading.Thread.Sleep(5 <<< attempt)
-                    move (attempt + 1)
-
-            move 0
-        else
-            File.Move(tmp, target, true)
-            AppendNative.fsyncDir dir
-    with e ->
-        (try
-            File.Delete tmp
-         with _ ->
-             ())
-
-        raise e
+    Contracts.AtomicFile.replaceBytes target payload mode
 
 // liberal-in: unpadded standard-alphabet base64 pads before decoding;
 // encoding emits padded (the one stated default). URL-safe (-_) is
@@ -3644,21 +3574,24 @@ type private FsProbe =
       IsDir: string -> bool // Kind = 2, in one stat
       EmptyDir: string -> bool
       Dangling: string -> bool
-      Canon: string -> string } // every symlink followed
+      Canon: string -> string // every symlink followed
+      Looped: string -> bool } // its symlinks loop (ELOOP)
 
 let private realProbe =
     { Kind = PlanMode.realKind
       IsDir = System.IO.Directory.Exists
       EmptyDir = fun r -> System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty
       Dangling = isDangling
-      Canon = PlanMode.realCanon }
+      Canon = PlanMode.realCanon
+      Looped = PlanMode.realLooped }
 
 let private planProbe =
     { Kind = PlanMode.simKind
       IsDir = PlanMode.simIsDir
       EmptyDir = PlanMode.simEmptyDir
       Dangling = PlanMode.simDangling isDangling
-      Canon = PlanMode.simCanon }
+      Canon = PlanMode.simCanon
+      Looped = PlanMode.simLooped }
 
 // a new entry's parent must be a directory
 let private requireParent (pr: FsProbe) (op: string) (r: string) : unit =
@@ -3670,6 +3603,8 @@ let private requireParent (pr: FsProbe) (op: string) (r: string) : unit =
 let private preWrite (pr: FsProbe) (op: string) (r: string) : unit =
     if pr.IsDir r then
         failwith $"{op}: {quoteData r} is a directory"
+    elif pr.Looped r then
+        failwith $"{op}: cannot access {quoteData r} — Too many levels of symbolic links"
     else
         requireParent pr op r
 

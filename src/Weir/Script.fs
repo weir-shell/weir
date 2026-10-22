@@ -19,23 +19,7 @@ let stringStep (st: StringState) (chunk: string) : StringState = Scan.stringStep
 let isInsideString (st: StringState) : bool = Scan.isInsideString st
 
 let stripComment (line: string) : string =
-    // comment only at line start or after whitespace: bareword URLs
-    // (https://...) live in command lines (nuget-script receipt)
-    let cut =
-        foldOutsideStrings
-            (fun cut i c ->
-                if
-                    cut < 0
-                    && c = '/'
-                    && i + 1 < line.Length
-                    && line[i + 1] = '/'
-                    && (i = 0 || System.Char.IsWhiteSpace line[i - 1])
-                then
-                    i
-                else
-                    cut)
-            -1
-            line
+    let cut = Scan.commentAt line
 
     // TrimEnd only when a comment was cut [D:trailing-comments]: the
     // code before a comment never needs its gap (district heads match
@@ -3355,6 +3339,8 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
         && not (not (Builtins.debugEnabled ()) && isBacktrackNoise l)
         && l.Trim() <> "")
     |> dropEmptyOpeners
+    // the dump quotes source text (a head, an excerpt) [D:error-data-escape]
+    |> List.map quoteData
     |> String.concat "\n"
 
 // ---- transitive types [D:transitive-types] -------------------------------
@@ -4730,7 +4716,7 @@ let rec loadModuleCachedWith
               Message = msg }
 
     let notAModule =
-        stmt $"{absPath} is not a module; add `module` at the top, or invoke it as a command"
+        stmt $"{quoteData absPath} is not a module; add `module` at the top, or invoke it as a command"
 
     if
         path.StartsWith "weir:"
@@ -4741,7 +4727,7 @@ let rec loadModuleCachedWith
         let m, t = (vendoredCollision importingAbsPath path).Value
 
         stmt
-            $"'{path}' names two vendored files, {m} and {t} — a vendored module and a generated types module cannot share a name; regenerate the types under another name (weir gen types --schema <schema> --out .weir/types/<other>.weir) or re-add the module with another --as"
+            $"'{quoteData path}' names two vendored files, {quoteData m} and {quoteData t} — a vendored module and a generated types module cannot share a name; regenerate the types under another name (weir gen types --schema <schema> --out .weir/types/<other>.weir) or re-add the module with another --as"
     elif key = realPath importingAbsPath then
         stmt "a file cannot import itself"
     elif List.contains key chain then
@@ -4754,7 +4740,7 @@ let rec loadModuleCachedWith
             |> List.map IO.Path.GetFileName
             |> String.concat " → "
 
-        stmt $"import cycle: {loop}"
+        stmt $"import cycle: {quoteData loop}"
     elif cache.ContainsKey key then
         // a diamond's shared module is checked once; re-alias per import site
         let cached = cache[key]
@@ -4772,10 +4758,10 @@ let rec loadModuleCachedWith
             let n = path.Substring 5
 
             stmt
-                $"no vendored module '{n}' ({absPath}) — vendor it: weir add module <host>/<org>/<repo>//<file>@<ref> --as {n} (a generated types module lands here via: weir gen types --schema {n})"
+                $"no vendored module '{quoteData n}' ({quoteData absPath}) — vendor it: weir add module <host>/<org>/<repo>//<file>@<ref> --as {quoteData n} (a generated types module lands here via: weir gen types --schema {quoteData n})"
         else
-            stmt $"cannot resolve import: no file at {absPath}"
-    | IUnreadable reason -> stmt $"cannot read import {absPath}: {reason}"
+            stmt $"cannot resolve import: no file at {quoteData absPath}"
+    | IUnreadable reason -> stmt $"cannot read import {quoteData absPath}: {quoteData reason}"
     | IBadUtf8(l, c) ->
         Error
             { File = Some absPath
@@ -4801,7 +4787,7 @@ let rec loadModuleCachedWith
                 match importAs |> Option.orElse natural with
                 | None ->
                     stmt
-                        $"cannot derive a module name from '{IO.Path.GetFileName absPath}'; name it (module Name) or import it as a name (import \"…\" as Name)"
+                        $"cannot derive a module name from '{quoteData (IO.Path.GetFileName absPath)}'; name it (module Name) or import it as a name (import \"…\" as Name)"
                 | Some alias ->
                     // transitive: a reached module's own imports resolve, sharing
                     // the cache, with this module pushed on the chain
@@ -6027,7 +6013,7 @@ let sigCmdDiagnostics
 
                     // a scoped surface names its case in the warning, as
                     // typed (`gh issue list`) [D:scoped-sigs]
-                    let toolAndSub (typed: string list) = String.concat " " (si.Tool :: typed)
+                    let toolAndSub (typed: string list) = quoteData (String.concat " " (si.Tool :: typed))
 
                     let sev = if si.Exhaustive then "error" else "warning"
 
@@ -6083,7 +6069,7 @@ let sigCmdDiagnostics
                         |> Seq.filter (fun (_, d) -> d = 0 || (d <= limit && d < bare.Length))
                         |> Seq.sortBy (fun (c, d) -> d, abs (c.Length - typed.Length), c)
                         |> Seq.tryHead
-                        |> Option.map (fun (c, _) -> $". Did you mean '{c}'?")
+                        |> Option.map (fun (c, _) -> $". Did you mean '{quoteData c}'?")
                         |> Option.defaultValue ""
 
                     let spellings (sf: SigSurface) =
@@ -6103,7 +6089,7 @@ let sigCmdDiagnostics
                         | ARest -> if attached then 2 else 3
 
                     let unknown (sf: SigSurface) typed (shown: string) (sp: Span) =
-                        mk sp $"unknown flag '{shown}' for {toolAndSub typed}{dym shown (spellings sf)} {note}"
+                        mk sp $"unknown flag '{quoteData shown}' for {toolAndSub typed}{dym shown (spellings sf)} {note}"
 
                     // one flag word against one surface: the diagnostics and
                     // the value-word step
@@ -6133,7 +6119,7 @@ let sigCmdDiagnostics
                                 let goSpellings =
                                     spellings sf |> Seq.map (fun s -> (if name.StartsWith "--" then "--" else "-") + s.TrimStart '-')
 
-                                [ mk sp $"unknown flag '{name}' for {toolAndSub typed}{dym name goSpellings} {note}" ], 0
+                                [ mk sp $"unknown flag '{quoteData name}' for {toolAndSub typed}{dym name goSpellings} {note}" ], 0
                         | "find" ->
                             // whole words: a predicate (`-name`), a listed
                             // `--help`; a one-letter option may carry its
@@ -6217,9 +6203,9 @@ let sigCmdDiagnostics
 
                                             match Map.tryFind c sf.Shorts with
                                             | None ->
-                                                let inWord = if w.Length > 2 then $" (in '{w}')" else ""
+                                                let inWord = if w.Length > 2 then $" (in '{quoteData w}')" else ""
 
-                                                [ mk sp $"unknown flag '-{c}'{inWord} for {toolAndSub typed} {note}" ], 0
+                                                [ mk sp $"unknown flag '-{quoteData (string c)}'{inWord} for {toolAndSub typed} {note}" ], 0
                                             | Some ANone -> bundle (i + 1)
                                             | Some a -> [], after a (i + 1 < w.Length)
 
@@ -7872,6 +7858,8 @@ module SigGen =
 
                               for a in n.Aliases do
                                   yield caseKey a ]
+                    // an alias can repeat a case or another alias
+                    |> List.distinct
 
                 if not stops.IsEmpty then
                     line "/// the first operand of these ends the tool's own options (what follows is"
@@ -7988,102 +7976,103 @@ module SigGen =
                     | [], _ ->
                         let rel = "sigs/" + sigFileName tool
 
-                        match Contracts.readLock weirDir with
-                        | Error e -> Error e
-                        | Ok entries0 ->
-                        // a file another lock entry records under this name
-                        // (a legacy name: `a b` wrote sigs/a_b.weir) is that
-                        // tool's signature — never overwritten: it moves to
-                        // its owner's own name first, its lock entry with it
-                        // [D:sig-probe-bounds]
-                        let moved =
-                            match
-                                entries0
-                                |> List.tryFind (fun e -> e.Kind = "sig" && e.Name <> tool && e.Path.Replace('\\', '/') = rel)
-                            with
-                            | None -> Ok(entries0, "")
-                            | Some owner ->
-                                let ownName = sigFileName owner.Name
-                                let src = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
-                                let dst = IO.Path.Combine(weirDir, "sigs", ownName)
-                                let shown = Eval.sanitizeTtyEcho owner.Name
+                        Contracts.AtomicFile.withWeirDirLock weirDir (fun () ->
+                            match Contracts.readLock weirDir with
+                            | Error e -> Error e
+                            | Ok entries0 ->
+                            // a file another lock entry records under this name
+                            // (a legacy name: `a b` wrote sigs/a_b.weir) is that
+                            // tool's signature — never overwritten: it moves to
+                            // its owner's own name first, its lock entry with it
+                            // [D:sig-probe-bounds]
+                            let moved =
+                                match
+                                    entries0
+                                    |> List.tryFind (fun e -> e.Kind = "sig" && e.Name <> tool && e.Path.Replace('\\', '/') = rel)
+                                with
+                                | None -> Ok(entries0, "")
+                                | Some owner ->
+                                    let ownName = sigFileName owner.Name
+                                    let src = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
+                                    let dst = IO.Path.Combine(weirDir, "sigs", ownName)
+                                    let shown = Eval.sanitizeTtyEcho owner.Name
 
-                                if IO.File.Exists dst then
-                                    Error
-                                        $"{rel} is the signature of '{shown}' (the lock records it under the name it had before file names were injective), and sigs/{ownName} exists too — move or remove one by hand"
-                                else
+                                    if IO.File.Exists dst then
+                                        Error
+                                            $"{rel} is the signature of '{shown}' (the lock records it under the name it had before file names were injective), and sigs/{ownName} exists too — move or remove one by hand"
+                                    else
+                                        try
+                                            if IO.File.Exists src then
+                                                IO.File.Move(src, dst)
+
+                                            Ok(
+                                                entries0
+                                                |> List.map (fun e ->
+                                                    if e = owner then
+                                                        { e with Path = IO.Path.Combine("sigs", ownName) }
+                                                    else
+                                                        e),
+                                                $"; moved the signature of '{shown}' from {rel} to sigs/{ownName}"
+                                            )
+                                        with ex ->
+                                            Error $"{rel} is the signature of '{shown}', and moving it to sigs/{ownName} failed: {ex.Message}"
+
+                            match moved with
+                            | Error e -> Error e
+                            | Ok(entries, movedNote) ->
+                                let dest = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
+                                IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore
+                                Contracts.AtomicFile.replaceFile dest (Text.UTF8Encoding(false).GetBytes text)
+                                let bytes = IO.File.ReadAllBytes dest
+
+                                let entry: Contracts.LockEntry =
+                                    { Kind = "sig"
+                                      Name = tool
+                                      Url = "generated:" + source + (if nodes.IsEmpty then "" else "+subs")
+                                      Sha256 = Contracts.sha256Hex bytes
+                                      Path = IO.Path.Combine("sigs", sigFileName tool)
+                                      Version = version }
+
+                                let others = entries |> List.filter (fun e -> not (e.Kind = "sig" && e.Name = tool))
+
+                                Contracts.writeLock weirDir (others @ [ entry ])
+
+                                // this tool's file under the legacy name is
+                                // superseded — unless another entry owns that
+                                // name [D:sig-probe-bounds]
+                                let legacy = "sigs/" + legacySigFileName tool
+
+                                if legacy <> "sigs/" + sigFileName tool
+                                   && entries |> List.exists (fun e -> e.Kind = "sig" && e.Name = tool && e.Path.Replace('\\', '/') = legacy)
+                                   && not (others |> List.exists (fun e -> e.Path.Replace('\\', '/') = legacy)) then
                                     try
-                                        if IO.File.Exists src then
-                                            IO.File.Move(src, dst)
+                                        IO.File.Delete(IO.Path.Combine(weirDir, legacy))
+                                    with _ ->
+                                        ()
 
-                                        Ok(
-                                            entries0
-                                            |> List.map (fun e ->
-                                                if e = owner then
-                                                    { e with Path = IO.Path.Combine("sigs", ownName) }
-                                                else
-                                                    e),
-                                            $"; moved the signature of '{shown}' from {rel} to sigs/{ownName}"
-                                        )
-                                    with ex ->
-                                        Error $"{rel} is the signature of '{shown}', and moving it to sigs/{ownName} failed: {ex.Message}"
+                                let versionNote =
+                                    match version with
+                                    | Some v -> v
+                                    | None -> $"none — '{tool}' answers neither --version nor version"
 
-                        match moved with
-                        | Error e -> Error e
-                        | Ok(entries, movedNote) ->
-                            let dest = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
-                            IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore
-                            IO.File.WriteAllText(dest, text)
-                            let bytes = IO.File.ReadAllBytes dest
+                                let surfaceNote =
+                                    if nodes.IsEmpty then
+                                        $"{flags.Length} flag(s)"
+                                    else
+                                        let total =
+                                            (flags @ (nodes |> List.collect (fun n -> n.Flags)))
+                                            |> List.map keyOf
+                                            |> List.distinct
+                                            |> List.length
 
-                            let entry: Contracts.LockEntry =
-                                { Kind = "sig"
-                                  Name = tool
-                                  Url = "generated:" + source + (if nodes.IsEmpty then "" else "+subs")
-                                  Sha256 = Contracts.sha256Hex bytes
-                                  Path = IO.Path.Combine("sigs", sigFileName tool)
-                                  Version = version }
+                                        $"{total} flag(s) across {nodes.Length} subcommand case(s)"
 
-                            let others = entries |> List.filter (fun e -> not (e.Kind = "sig" && e.Name = tool))
+                                let cutTail =
+                                    ([ cutNote; slowNote ] |> List.filter ((<>) "") |> List.map (fun n -> "; " + n) |> String.concat "")
+                                    + movedNote
 
-                            Contracts.writeLock weirDir (others @ [ entry ])
-
-                            // this tool's file under the legacy name is
-                            // superseded — unless another entry owns that
-                            // name [D:sig-probe-bounds]
-                            let legacy = "sigs/" + legacySigFileName tool
-
-                            if legacy <> "sigs/" + sigFileName tool
-                               && entries |> List.exists (fun e -> e.Kind = "sig" && e.Name = tool && e.Path.Replace('\\', '/') = legacy)
-                               && not (others |> List.exists (fun e -> e.Path.Replace('\\', '/') = legacy)) then
-                                try
-                                    IO.File.Delete(IO.Path.Combine(weirDir, legacy))
-                                with _ ->
-                                    ()
-
-                            let versionNote =
-                                match version with
-                                | Some v -> v
-                                | None -> $"none — '{tool}' answers neither --version nor version"
-
-                            let surfaceNote =
-                                if nodes.IsEmpty then
-                                    $"{flags.Length} flag(s)"
-                                else
-                                    let total =
-                                        (flags @ (nodes |> List.collect (fun n -> n.Flags)))
-                                        |> List.map keyOf
-                                        |> List.distinct
-                                        |> List.length
-
-                                    $"{total} flag(s) across {nodes.Length} subcommand case(s)"
-
-                            let cutTail =
-                                ([ cutNote; slowNote ] |> List.filter ((<>) "") |> List.map (fun n -> "; " + n) |> String.concat "")
-                                + movedNote
-
-                            Ok
-                                $"added sig {tool} ({surfaceNote}, source: {fullSource}, version: {versionNote}{cutTail}) — partial by default; verify and mark exhaustive by hand"
+                                Ok
+                                    $"added sig {tool} ({surfaceNote}, source: {fullSource}, version: {versionNote}{cutTail}) — partial by default; verify and mark exhaustive by hand")
                 finally
                     try
                         IO.File.Delete tmp

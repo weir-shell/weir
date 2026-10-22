@@ -4080,6 +4080,47 @@ let completionTests =
 
               Expect.equal (ask "let z = $(echo $@q") [ "qfz" ] "$@ inside $(…)"
           }
+          test "a $ completes nothing where it is literal text: comments, text blocks, yaml quotes, comments and block scalars [D:argv-splice-complete]" {
+              let envS =
+                  { env with Values = env.Values |> Map.add "qs" (Weir.Types.mono Weir.Types.TStr) }
+
+              let ask (text: string) =
+                  Weir.Complete.suggest envS text (Weir.Complete.wordStartAt text text.Length)
+
+              Expect.equal (ask "echo a // $q") [] "a // comment"
+              Expect.equal (ask "echo a // $@q") [] "a // comment, $@"
+              Expect.equal (ask "echo \"a // b\" $q") [ "qs" ] "a // inside a string is no comment"
+
+              // the district is read off the lines above (LSP and REPL Tab)
+              let literal (above: string list) (pre: string) = Weir.Complete.dollarLiteral (Array.ofList above) pre
+
+              for above, pre in
+                  [ [ "let z = <<<" ], "    echo "
+                    [ "let z = $<<<" ], "    echo "
+                    [ "let z ="; "    <<<" ], "        a "
+                    [ "let z = <<<"; "    a"; "" ], "        b "
+                    [ "let z = yaml" ], "    a: \""
+                    [ "let z = yaml" ], "    a: 'x "
+                    [ "let z = yaml" ], "    - \""
+                    [ "let z = yaml" ], "    \""
+                    [ "let z = yaml" ], "    a: x # "
+                    [ "let z = yaml" ], "    # "
+                    [ "let z = yaml"; "    a: |" ], "      "
+                    [ "let z = yaml"; "    a: |-"; "      x" ], "        "
+                    [ "let z = yaml"; "    - |" ], "      x " ] do
+                  Expect.isTrue (literal above pre) $"literal: {above} / {pre}"
+
+              for above, pre in
+                  [ [], "echo "
+                    [ "let z = $$<<<" ], "    echo "
+                    [ "let z = <<<"; "    a" ], "echo "
+                    [ "let z = yaml" ], "    a: "
+                    [ "let z = yaml" ], "    - "
+                    [ "let z = yaml"; "    a:" ], "      b: "
+                    [ "let z = yaml"; "    a: \"x\"" ], "    b: "
+                    [ "let z = yaml"; "    a: |"; "      x" ], "b: " ] do
+                  Expect.isFalse (literal above pre) $"a splice: {above} / {pre}"
+          }
           test "a line-head '#' completes the session directives, bare [D:repl-directives]" {
               // bare names: the editor's word starts after the '#', so
               // replacement yields `#help` — never `##help` or `head`
@@ -10276,6 +10317,90 @@ let planApplyTests =
                             "| Ok _ -> fail \"captured\"" ])
                       0
                       "a copy from a dangling link names it, as the direct call does"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-preconditions]: a moved link stays a link at its new
+          // path; a write through a dangling link creates its target; a
+          // write through a loop refuses (ELOOP) — at capture, as directly
+          test "a plan simulates a moved symlink as a link, a write through a dangling link, and a loop" {
+              skipOnWindows ()
+              let root = td ()
+              System.IO.Directory.CreateDirectory root |> ignore
+              let d = weirPath root
+              let at (n: string) = System.IO.Path.Combine(root, n)
+              let isLink (p: string) = not (isNull (System.IO.FileInfo(p).LinkTarget))
+
+              let refused (needle: string) (body: string list) =
+                  runFile (
+                      [ "let mk () =" ; "    plan" ]
+                      @ (body |> List.map (fun l -> "        " + l))
+                      @ [ "let r = mk () |> try result"
+                          "match r with"
+                          $"| Error e -> if not (e |> Str.contains \"{needle}\") then fail e"
+                          "| Ok _ -> fail \"captured\"" ]
+                  )
+
+              try
+                  System.IO.Directory.CreateDirectory(at "a") |> ignore
+                  System.IO.Directory.CreateSymbolicLink(at "L", "a") |> ignore
+                  System.IO.File.WriteAllText(at "f", "hi\n")
+                  System.IO.File.CreateSymbolicLink(at "FL", "f") |> ignore
+
+                  Expect.equal
+                      (refused
+                          "no such directory"
+                          [ $"Dir.move \"{d}/L\" \"{d}/M\""
+                            $"Dir.deleteAll \"{d}/a\""
+                            $"File.write \"{d}/M/x\" [\"w\"]" ])
+                      0
+                      "a moved dir link still points at its deleted target"
+
+                  Expect.equal
+                      (refused
+                          "dangling symlink"
+                          [ $"File.move \"{d}/FL\" \"{d}/FM\""
+                            $"File.delete \"{d}/f\""
+                            $"File.copy \"{d}/FM\" \"{d}/z\"" ])
+                      0
+                      "a moved file link still points at its deleted target"
+
+                  Expect.isTrue (isLink (at "L") && isLink (at "FL")) "nothing applied"
+
+                  // an absolute link moved into b: a copy of b into its target is not into itself
+                  System.IO.Directory.CreateDirectory(at "b") |> ignore
+                  System.IO.Directory.CreateSymbolicLink(at "AL", at "a") |> ignore
+
+                  Expect.equal
+                      (runFile
+                          [ "let p ="
+                            "    plan"
+                            $"        Dir.move \"{d}/AL\" \"{d}/b/b\""
+                            $"        Dir.copy \"{d}/b\" \"{d}/b/b/L\""
+                            "p |> Plan.apply" ])
+                      0
+                      "captured and applied"
+
+                  Expect.isTrue (isLink (at "a/L/b")) "the copy keeps the moved link a link"
+
+                  // a write through a dangling link creates its target
+                  System.IO.File.CreateSymbolicLink(at "DG", "nowhere") |> ignore
+
+                  Expect.equal
+                      (runFile
+                          [ "let p ="
+                            "    plan"
+                            $"        File.write \"{d}/DG\" [\"w\"]"
+                            $"        File.copy \"{d}/DG\" \"{d}/c\""
+                            "p |> Plan.apply" ])
+                      0
+                      "the copy reads the written target"
+
+                  Expect.equal (System.IO.File.ReadAllText(at "c")) "w\n" "copied"
+
+                  // a loop
+                  System.IO.File.CreateSymbolicLink(at "LP", "LP") |> ignore
+                  Expect.equal (refused "Too many levels of symbolic links" [ $"File.write \"{d}/LP\" [\"w\"]" ]) 0 "a loop refuses at capture"
               finally
                   System.IO.Directory.Delete(root, true)
           }
@@ -29085,6 +29210,46 @@ let hunt3r5Tests =
                   Expect.isFalse (Weir.Session.isFifo (Path.Combine(d, "none"))) "an absent path")
           } ]
 
+// hunt 3 round 7 stage A: the shim's exec check follows the #! chain as
+// execve does [D:cleanup-sigign]; the signal and thread halves are e2e cells
+let hunt3r7Tests =
+    testList
+        "hunt-3r7 stage A"
+        [ test "the shim's exec check follows the #! chain to a loadable native image, as execve does [D:cleanup-sigign]" {
+              skipUnlessLinux ()
+
+              withTempDir "weir-exec" (fun d ->
+                  let file (name: string) (text: string) =
+                      let p = Path.Combine(d, name)
+                      File.WriteAllText(p, text)
+                      File.SetUnixFileMode(p, enum<UnixFileMode> 0o755)
+                      p
+
+                  let accepts p =
+                      Weir.Session.CleanupShim.execAccepts p d (fun f -> File.Exists f)
+
+                  let sh = Weir.Session.CleanupShim.shell
+                  Expect.isTrue (accepts sh) "a native image"
+                  Expect.isTrue (accepts (file "s" "#!/bin/sh\necho s\n")) "a script of a native interpreter"
+                  let plain = file "plain" "echo plain\n"
+                  let gelf = file "gelf" "\u007fELF-not-an-image"
+                  Expect.isFalse (accepts plain) "a shebang-less file"
+                  Expect.isFalse (accepts gelf) "an ELF magic with no image behind it"
+                  Expect.isFalse (accepts (file "o1" $"#!{plain}\n")) "a script whose interpreter is shebang-less"
+                  Expect.isFalse (accepts (file "o2" $"#!{gelf}\n")) "a script whose interpreter is a garbage ELF"
+
+                  // five #! files then a native image run; a sixth is ELOOP
+                  let mutable top = sh
+
+                  for i in 1..6 do
+                      top <- file $"c{i}" $"#!{top}\n"
+
+                      if i <= 5 then
+                          Expect.isTrue (accepts top) $"a chain of {i} #! files"
+                      else
+                          Expect.isFalse (accepts top) "a chain of six #! files")
+          } ]
+
 let hunt2CheckerTests =
     // the second hunt's checker/adapter backlog: `+` decided by a later
     // anchor [D:plus-defer], generic records at the wire
@@ -30527,6 +30692,127 @@ let hunt3PerfTests =
               growsLinearly "100k vs 10k deep" (refuse (deep 10000)) (refuse (deep 100000))
           } ]
 
+let hunt3r7SafetyTests =
+    // hunt-3 round 7, safety: userinfo masked through the last @
+    // [D:url-redact], a "" key in gen types and a bidi wire key
+    // [D:infer-wire-escape], the .weir/ writer lock and whole-file
+    // replace [D:weir-dir-lock], schema messages escape their data
+    // [D:error-data-escape]
+    let gen src =
+        match Weir.Contracts.parseSchema "t" src with
+        | Error e -> failtest e
+        | Ok d ->
+            match Weir.SchemaTypes.moduleText Weir.Parser.keywords Set.empty "t" None "0123456789abcdef" "http://src" d with
+            | Ok g -> g.Text
+            | Error e -> failtest e
+
+    testList
+        "hunt3r7 safety"
+        [ test "redactUrl masks through the last @ — a raw / ? # @ in the password never shows [D:url-redact]" {
+              for u, shown in
+                  [ "http://deploy:Tr0ub/4dor@127.0.0.1:1/x", "http://***@127.0.0.1:1/x"
+                    "http://deploy:pa#ss@127.0.0.1:1/x", "http://***@127.0.0.1:1/x"
+                    "http://deploy:p@ssw0rd@127.0.0.1:1/x", "http://***@127.0.0.1:1/x"
+                    "http://deploy:q?wd@h.example/x?y=1", "http://***@h.example/x?y=1"
+                    "https://tok/en+==@github.com/o/r", "https://***@github.com/o/r"
+                    "http://u:a/b@c@registry/v2", "http://***@registry/v2"
+                    "//u:pw@h:99/x", "//***@h:99/x"
+                    "u:p/w@h:3128", "***@h:3128"
+                    // `user:<digits>` before the raw delimiter reads as host:port
+                    "http://u:2024/pw@intranet/x", "http://***@intranet/x"
+                    "http://deploy:2024/01/15@intranet/x", "http://***@intranet/x"
+                    "http://deploy:8080?4dor@gitea/x", "http://***@gitea/x"
+                    "http://u:2024#pw@gitlab/x", "http://***@gitlab/x" ] do
+                  Expect.equal (Weir.Http.redactUrl u) shown u
+
+              // an @ in a path or query of a credential-free URL stays
+              for u in [ "https://discord.com/api/users/@me"; "https://host/path@v2?to=a@b"; "http://127.0.0.1:8792/x" ] do
+                  Expect.equal (Weir.Http.redactUrl u) u u
+
+              Expect.equal
+                  (Weir.Http.redactUrlsIn "proxy 'http://u:S3/cr@t@h:1/' failed; see //a:b@k/x")
+                  "proxy 'http://***@h:1/' failed; see //***@k/x"
+                  "free text masks every URL through its last @"
+
+              Expect.equal (Weir.Http.redactProxyValue "u:SEC/RET#PW@h:99999") "***@h:99999" "scheme-less"
+              Expect.equal (Weir.Http.redactProxyValue "//u:hunter2@h:99999") "//***@h:99999" "scheme-relative"
+              Expect.equal (Weir.Http.redactProxyValue "http://u:a@b/c@h:1") "http://***@h:1" "the runtime's last @"
+              Expect.equal (Weir.Http.redactProxyValue "http://h:99999") "http://h:99999" "no userinfo"
+          }
+          test "stripUserinfo keeps the client's parse for what the lock records [D:lock-no-userinfo]" {
+              Expect.equal (Weir.Http.stripUserinfo "http://u:p@ss@h/s.json") "http://h/s.json" "the last @ of the authority"
+              Expect.equal (Weir.Http.stripUserinfo "https://h/users/@me") "https://h/users/@me" "a path @ is data"
+          }
+          test "gen types drops a \"\" property key with a note, as #infer does [D:infer-wire-escape]" {
+              let t = gen """{"type":"object","properties":{"":{"type":"string"},"ok":{"type":"string"}}}"""
+              Expect.stringContains t "an empty-string key under" "noted"
+              Expect.stringContains t "ok: Option<string>" "the other field drafted"
+              Expect.isFalse (t.Contains "[<Wire \"\">]") "no empty wire key"
+          }
+          test "a wire key holding a bidi control is dropped with a note, never spelled raw [D:infer-wire-escape]" {
+              let t = gen "{\"type\":\"object\",\"properties\":{\"a\\u202eb\":{\"type\":\"string\"},\"ok\":{\"type\":\"string\"}}}"
+              Expect.isFalse (t.Contains "\u202e") $"no raw U+202E: {t}"
+              Expect.stringContains t "a\\u202Eb" "the note names it visibly"
+              Expect.stringContains t "ok: Option<string>" "the other field drafted"
+          }
+          test "a remote schema's unresolvable $ref is quoted visibly [D:error-data-escape]" {
+              match Weir.Contracts.parseSchema "t" "{\"type\":\"object\",\"properties\":{\"e\":{\"$ref\":\"#/x\\u001b]52;c;QQ==\\u0007\"}}}" with
+              | Ok _ -> failtest "an unresolvable $ref refuses"
+              | Error e ->
+                  Expect.isFalse (e.Contains "\u001b" || e.Contains "\u0007") $"nothing raw: {e}"
+                  Expect.stringContains e "#/x\\x1b]52;c;QQ==\\x07" "rendered visibly"
+          }
+          test "lock.json is replaced whole, keeping its mode [D:weir-dir-lock]" {
+              let dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-atomic-{System.Guid.NewGuid():N}")
+              System.IO.Directory.CreateDirectory dir |> ignore
+
+              try
+                  let p = System.IO.Path.Combine(dir, "lock.json")
+                  System.IO.File.WriteAllText(p, "old")
+
+                  if not (System.OperatingSystem.IsWindows()) then
+                      System.IO.File.SetUnixFileMode(p, enum<System.IO.UnixFileMode> 0o600)
+
+                  Weir.Contracts.writeLock dir []
+                  Expect.stringContains (System.IO.File.ReadAllText p) "\"artifacts\"" "written"
+
+                  if not (System.OperatingSystem.IsWindows()) then
+                      Expect.equal (int (System.IO.File.GetUnixFileMode p)) 0o600 "mode kept"
+
+                  Expect.equal (System.IO.Directory.GetFiles dir |> Array.length) 1 "no temp left"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          test "the .weir/ writer lock serializes two holders [D:weir-dir-lock]" {
+              let root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-dirlock-{System.Guid.NewGuid():N}")
+              let weirDir = System.IO.Path.Combine(root, ".weir")
+              System.IO.Directory.CreateDirectory root |> ignore
+
+              try
+                  let inside = [| 0 |]
+                  let overlap = ref false
+
+                  let hold () =
+                      Weir.Contracts.AtomicFile.withWeirDirLock weirDir (fun () ->
+                          if System.Threading.Interlocked.Increment(&inside[0]) > 1 then
+                              overlap.Value <- true
+
+                          System.Threading.Thread.Sleep 200
+                          System.Threading.Interlocked.Decrement(&inside[0]) |> ignore
+                          Ok())
+
+                  let ts = [ for _ in 1..3 -> System.Threading.Tasks.Task.Run(fun () -> hold ()) ]
+                  System.Threading.Tasks.Task.WaitAll(ts |> List.map (fun t -> t :> System.Threading.Tasks.Task) |> Array.ofList)
+
+                  for t in ts do
+                      Expect.equal t.Result (Ok()) "every holder ran"
+
+                  Expect.isFalse overlap.Value "never two holders at once"
+                  Expect.isFalse (System.IO.Directory.Exists weirDir) "the lock creates no .weir/"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -30542,11 +30828,13 @@ let allTests =
           hunt3r4RaceTests
           hunt3r4SafetyTests
           hunt3r5Tests
+          hunt3r7Tests
           hunt3r5SafetyTests
           argsSecretEchoTests
           hunt3BehaviorTests
           hunt3r5FormatTests
           hunt3r6FormatTests
+          hunt3r7SafetyTests
           docsBinaryTests
           hunt2CheckerTests
           sweepFindingTests

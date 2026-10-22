@@ -536,7 +536,8 @@ type private GuardNode(comparer: System.Collections.Generic.IEqualityComparer<st
 // below decides), 1 file, 2 directory, 3 absent; Cleared: nothing below
 // it in the layer beneath counts any more (deleted, overwritten, a fresh
 // copy); Mirror: the path whose layer-beneath contents back this
-// subtree (a copied or moved directory)
+// subtree (a copied or moved directory); Link: the target of a symlink
+// an op moved here — a moved link stays a link
 [<AllowNullLiteral>]
 type private SimNode(comparer: System.Collections.Generic.IEqualityComparer<string>) =
     let mutable kids: System.Collections.Generic.Dictionary<string, SimNode> = null
@@ -563,9 +564,11 @@ type private SimNode(comparer: System.Collections.Generic.IEqualityComparer<stri
     member val State = 0 with get, set
     member val Cleared = false with get, set
     member val Mirror: string = null with get, set
+    member val Link: string = null with get, set
 
     member this.Clone() : SimNode =
-        let n = SimNode(comparer, State = this.State, Cleared = this.Cleared, Mirror = this.Mirror)
+        let n =
+            SimNode(comparer, State = this.State, Cleared = this.Cleared, Mirror = this.Mirror, Link = this.Link)
 
         for k in this.Names do
             n.Add(k, this.Find(k).Clone())
@@ -594,9 +597,9 @@ type private PlanFrame =
       // the simulation's link cache [D:plan-preconditions]: a real path
       // to its symlink's target, null for no link — read once per plan
       SimLinks: System.Collections.Generic.Dictionary<string, string>
-      // a directory copy or move was captured: some simulated path is
-      // backed by another real one, so the real filesystem alone may not
-      // say a path holds no link
+      // a directory copy or move, or a link move, was captured: some
+      // simulated path is backed by another real one (or is a link), so
+      // the real filesystem alone may not say a path holds no link
       mutable Mirrored: bool
       // the file identities in-place writes target [D:plan-guard-inode]:
       // (device, inode) — the Windows file index — to the path a
@@ -1027,7 +1030,7 @@ module PlanMode =
     // one component further; also says whether Below jumped (a mirror)
     let private layerStep (s: LayerAt) (c: string) : struct (LayerAt * bool) =
         if s.Dead then
-            struct (s, false)
+            struct (layerDead, false)
         elif isNull s.Node then
             if s.Cleared then
                 struct (layerDead, false)
@@ -1040,6 +1043,9 @@ module PlanMode =
                     struct (layerDead, false)
                 else
                     struct ({ s with Node = null; Below = appendComp s.Below c }, false)
+            | child when child.State = 1 && not (isNull child.Link) ->
+                // a moved link: decided here, the node kept for its target
+                struct ({ layerDead with Node = child }, false)
             | child when child.State = 3 || child.State = 1 -> struct (layerDead, false)
             | child when not (isNull child.Mirror) ->
                 struct ({ Node = child; Below = child.Mirror; Cleared = false; Dead = false }, true)
@@ -1098,16 +1104,24 @@ module PlanMode =
 
         out
 
-    // the real path a cursor ends at (realPathIn's answer)
-    let private cursorReal (cur: LayerAt[]) (p: string) : string option =
+    // the symlink target a cursor ends at: a link an op moved there, else
+    // the real path's link (`real`) when no layer decided; null for none
+    let private cursorLink (cur: LayerAt[]) (p: string) (real: string -> string) : string =
         let mutable path = p
+        let mutable link: string = null
         let mutable i = 0
 
         while not (isNull path) && i < cur.Length do
-            path <- layerBelow cur[i]
-            i <- i + 1
+            let s = cur[i]
 
-        Option.ofObj path
+            if not (isNull s.Node) && not (isNull s.Node.Link) then
+                link <- s.Node.Link
+                path <- null
+            else
+                path <- layerBelow s
+                i <- i + 1
+
+        if isNull path then link else real path
 
     // the entry names a directory holds, before asking each one's kind
     let rec private namesIn (frames: PlanFrame list) (p: string) : string list =
@@ -1127,12 +1141,17 @@ module PlanMode =
 
     // `p` (absolute) with its symlinks followed as the layers see them,
     // as the kernel resolves a path: an entry no op touched is a link
-    // when its real path is one; an entry an op made never is (a plan
-    // makes no links). `followLast = false` keeps the last component — a
-    // delete or move acts on a link itself. `..` steps up from the
-    // resolved prefix (physical). A loop stops after 40 links, the
-    // kernel's bound. Also says whether the last component was a link
-    let private canonIn (frames: PlanFrame list) (followLast: bool) (p: string) : struct (string * bool) =
+    // when its real path is one; an entry an op made is one only when an
+    // op moved a link there (a plan makes no new links). `followLast =
+    // false` keeps the last component — a delete or move acts on a link
+    // itself. `..` steps up from the resolved prefix (physical). A loop
+    // stops after 40 links, the kernel's bound. Also says whether the
+    // last component was a link, and whether a loop stopped it (ELOOP)
+    let private canonIn
+        (frames: PlanFrame list)
+        (followLast: bool)
+        (p: string)
+        : struct (string * bool * bool) =
         let seps = [| '/'; sep |]
         let split (s: string) = s.Split(seps, System.StringSplitOptions.RemoveEmptyEntries) |> List.ofArray
 
@@ -1167,6 +1186,7 @@ module PlanMode =
         let mutable pending = split (full.Substring cur.Length)
         let mutable hops = 0
         let mutable lastLink = false
+        let mutable looped = false
 
         while not pending.IsEmpty do
             let part = pending.Head
@@ -1189,12 +1209,16 @@ module PlanMode =
                 let view = cursorStep layers views.Head part
 
                 let target =
-                    if (pending.IsEmpty && not followLast) || hops >= 40 then
+                    if pending.IsEmpty && not followLast then
                         null
                     else
-                        match cursorReal view next with
-                        | Some r -> linkAt r
-                        | None -> null
+                        let t = cursorLink view next linkAt
+
+                        if not (isNull t) && hops >= 40 then
+                            looped <- true
+                            null
+                        else
+                            t
 
                 if isNull target then
                     cur <- next
@@ -1211,9 +1235,10 @@ module PlanMode =
                     else
                         pending <- split target @ pending
 
-        struct (cur, lastLink)
+        struct (cur, lastLink, looped)
 
-    // does a path pass through a copied or moved directory in any layer?
+    // does a path pass through a copied or moved directory, or a moved
+    // link, in any layer?
     let private throughMirror (frames: PlanFrame list) (p: string) : bool =
         let comps = compsOf p
 
@@ -1226,7 +1251,7 @@ module PlanMode =
 
                 while not hit && not (isNull node) && i < comps.Length do
                     node <- node.Find comps[i]
-                    hit <- not (isNull node) && not (isNull node.Mirror)
+                    hit <- not (isNull node) && not (isNull node.Mirror && isNull node.Link)
                     i <- i + 1
 
                 hit))
@@ -1245,7 +1270,11 @@ module PlanMode =
                 with _ ->
                     false)
 
-        if plain then struct (p, false) else canonIn frames followLast p
+        if plain then
+            struct (p, false)
+        else
+            let struct (c, viaLink, _) = canonIn frames followLast p
+            struct (c, viaLink)
 
     let private canon (followLast: bool) (p: string) =
         let struct (c, _) = canonPlan followLast p
@@ -1253,8 +1282,18 @@ module PlanMode =
 
     /// a path with its symlinks followed, on the real filesystem
     let realCanon (p: string) : string =
-        let struct (c, _) = canonIn [] true p
+        let struct (c, _, _) = canonIn [] true p
         c
+
+    /// does a path's symlink chain loop (ELOOP) on the real filesystem?
+    let realLooped (p: string) : bool =
+        let struct (_, _, looped) = canonIn [] true p
+        looped
+
+    /// does a path's symlink chain loop (ELOOP) as the plan leaves it?
+    let simLooped (p: string) : bool =
+        let struct (_, _, looped) = canonIn stack.Value true p
+        looped
 
     /// a path with its symlinks followed, as the plan leaves them
     let simCanon (p: string) : string = canon true p
@@ -1286,12 +1325,13 @@ module PlanMode =
         |> List.forall (fun n -> kindIn stack.Value (System.IO.Path.Combine(c, n)) = 0)
 
     /// a dangling link at plan time: a link whose target the plan
-    /// removed, or a real one no op has touched
+    /// removed, or a real one no op has touched — nor its target (a
+    /// write through a dangling link creates the target)
     let simDangling (isDangling: string -> bool) (p: string) : bool =
         (let struct (_, dangles) = simKindLink p in dangles)
-        || (match realPathIn stack.Value (canon false p) with
-            | Some r -> isDangling r
-            | None -> false)
+        || (match realPathIn stack.Value (canon false p), realPathIn stack.Value (canon true p) with
+            | Some r, Some _ -> isDangling r
+            | _ -> false)
 
     // the top layer's node for a path, created along the way
     let private ensure (root: SimNode) (p: string) : SimNode =
@@ -1328,9 +1368,25 @@ module PlanMode =
         n.State <- state
         n.Cleared <- true
         n.Mirror <- null
+        n.Link <- null
 
         if state <> 3 then
             markParents root p
+
+    // the target of the symlink at an entry path as the layers see it —
+    // one an op moved there, or a real one no op touched — or null
+    let private linkIn (frames: PlanFrame list) (entry: string) : string =
+        let layers = Array.ofList frames
+        let view = Array.zeroCreate layers.Length
+        cursorWalk layers 0 view entry
+        cursorLink view entry (fun r -> Option.toObj (linkOf r))
+
+    // a moved link stays a link at its new path
+    let private setLink (frames: PlanFrame list) (p: string) (target: string) =
+        let top = List.head frames
+        setLeaf top.Sim p 1
+        (ensure top.Sim p).Link <- target
+        top.Mirrored <- true
 
     // a directory copy: the destination is the source's view, overlay
     // cloned, the layer beneath mirrored
@@ -1384,12 +1440,18 @@ module PlanMode =
         | VUnion("Copy", Some(VTuple [ VStr _; VStr d ])) -> setLeaf top (entry d) 1
         | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) ->
             let s, d = entry s, entry d
+            let link = linkIn frames s
+
+            if isNull link then setLeaf top d 1 else setLink frames d link
+
             setLeaf top s 3
-            setLeaf top d 1
         | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> copyTree frames (through s) (entry d)
         | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) ->
-            let from, s, d = through s, entry s, entry d
-            copyTree frames from d
+            let s, d = entry s, entry d
+            let link = linkIn frames s
+
+            if isNull link then copyTree frames (through s) d else setLink frames d link
+
             setLeaf top s 3
         | _ -> ()
 

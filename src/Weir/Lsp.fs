@@ -2813,8 +2813,21 @@ let run (debug: bool) : int =
                                 // a `$` inside a yaml block takes the yaml
                                 // district's splice law, not the argv one
                                 // [D:argv-splice-complete]
+                                let sigil =
+                                    if wordStart >= 2 && upto.Substring(wordStart - 2, 2) = "$@" then 2
+                                    elif wordStart >= 1 && upto[wordStart - 1] = '$' then 1
+                                    else 0
+
                                 let yamlSplice =
                                     if
+                                        sigil > 0
+                                        && Complete.dollarLiteral
+                                            lines[0 .. min (line - 2) (lines.Length - 1)]
+                                            (upto.Substring(0, wordStart - sigil))
+                                    then
+                                        // where the `$` is literal text: nothing
+                                        Some []
+                                    elif
                                         wordStart >= 1
                                         && upto[wordStart - 1] = '$'
                                         && line - 1 < lines.Length
