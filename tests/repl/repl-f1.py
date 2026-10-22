@@ -2,8 +2,7 @@
 # F1 in the editor [D:repl-f1-keys]: #keys' bindings print below the
 # buffer and the buffer comes back whole (every line, the cursor's row and
 # column) — nothing submitted, abandoned or recorded; each raw F1 sequence
-# terminals send works; the one-time "(F1: keys)" hint shows on the first
-# typed continuation line only, plain under NO_COLOR, never piped.
+# terminals send works; no hint is painted beside a continuation line.
 # Assertions ride evaluated output and the history file, never cursor
 # positions.
 import os, pty, signal, sys, time, select, re, tempfile, fcntl, struct, termios, subprocess
@@ -98,23 +97,13 @@ t, _, _ = run([("1 +", 0.3), ("\x1b[[A", 0.6), (" 2\r", 0.6)])
 if BINDING not in t or "\n3\r\n" not in t:
     failures.append(f"ESC [ [ A must be F1 and keep the buffer (1 + 2): {t[-600:]!r}")
 
-# --- 4. the one-time hint: on the first typed continuation line, dim at a
-# colour tty; the session's second multi-line entry has none
-t, raw, _ = run([("let a =\r", 0.5), ("1\r", 0.6), ("let b =\r", 0.5), ("2\r", 0.6)])
-first, _, second = t.partition("a = 1")
-if HINT not in first:
-    failures.append(f"the first continuation line must carry the hint: {t[-600:]!r}")
-if HINT in second:
-    failures.append(f"the hint must show once per session: {second[-600:]!r}")
-if "\x1b[2m  " + HINT not in raw:
-    failures.append(f"the hint must be dim at a colour tty: {raw[-600:]!r}")
-if "b = 2" not in t:
-    failures.append(f"entries with the hint must still run: {t[-600:]!r}")
-
-# --- 5. NO_COLOR: the hint still shows once, without the dim
-t, raw, _ = run([("let a =\r", 0.5), ("1\r", 0.6)], {"NO_COLOR": "1"})
-if HINT not in t or "\x1b[2m" in raw:
-    failures.append(f"NO_COLOR: hint shown plain: {raw[-600:]!r}")
+# --- 4. no hint and no indentation note: a continuation line carries
+# nothing extra, and #keys/F1 list only the bindings
+t, raw, _ = run([("let a =\r", 0.5), ("1\r", 0.6), ("#keys\r", 0.6)])
+if HINT in t or "indentation of the line above" in t:
+    failures.append(f"no F1 hint, no indentation note: {t[-600:]!r}")
+if "a = 1" not in t:
+    failures.append(f"the entry still runs: {t[-600:]!r}")
 
 # --- 6. piped: no editor, no hint
 p = subprocess.run([WEIR], input="let a =\n    1\na\n", capture_output=True, text=True, timeout=30)
@@ -125,4 +114,4 @@ if failures:
     for f in failures:
         print("FAIL:", f, file=sys.stderr)
     sys.exit(1)
-print("ok: repl F1 bindings mid-buffer, raw F1 sequences, one-time hint")
+print("ok: repl F1 bindings mid-buffer, raw F1 sequences, no hint or note")

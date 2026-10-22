@@ -701,10 +701,7 @@ The key bindings (they can't be customized). `#keys` prints them at
 the prompt, and <kbd>F1</kbd> prints them in the middle of an edit:
 the list appears below what you have typed, then the prompt and every
 line of the buffer come back with the cursor where it was (nothing is
-submitted or added to history). The first time a session's entry grows
-a second line, a dim `(F1: keys)` hint appears after it until the
-line gets too long or the entry ends (shown once per session; with
-`NO_COLOR` it is plain text).
+submitted or added to history).
 
 | key | in the buffer |
 |---|---|
