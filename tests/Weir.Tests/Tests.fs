@@ -4142,6 +4142,16 @@ let completionTests =
               Expect.equal starts.Length 1 $"one description column: {starts}"
               Expect.contains Weir.Complete.sessionDirectives "keys" "#help, completion and did-you-mean see #keys"
           }
+          test "an F1 tail queued behind a bare Esc reads as F1 [D:repl-f1-keys]" {
+              Expect.equal (Weir.Repl.f1Tail "OP") (Some 2) "SS3 P"
+              Expect.equal (Weir.Repl.f1Tail "[11~x") (Some 4) "CSI 11 ~, the next key stays queued"
+              Expect.equal (Weir.Repl.f1Tail "[[A") (Some 3) "the Linux console"
+
+              for other in [ ""; "\r"; "O"; "[1"; "[12~"; "[A"; "x" ] do
+                  Expect.isNone (Weir.Repl.f1Tail other) $"not F1: {other}"
+
+              Expect.isTrue (Weir.Repl.keyBindings |> List.exists (fun (ks, _) -> ks = [ "F1" ])) "#keys lists F1"
+          }
           test "docs/repl.md's key table lists exactly #keys' keys [D:repl-keys]" {
               let doc =
                   System.IO.File.ReadAllText(

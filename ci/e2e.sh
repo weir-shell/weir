@@ -170,6 +170,7 @@ replPtyProbes() {
         replProbe repl-b waiting-indicator.py "waiting indicator" "e2e ok: repl waiting indicator (grace, erase, fast/piped/child-owned silent)"
         replProbe repl-b cooked-trap.py "cooked trap / echo-once" "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
         replProbe repl-b repl-it-streamed.py "it FSI-parity / function echo" "e2e ok: it FSI-parity — streamed binds (), misuse teaches the capture, functions echo mini-help, a failed command quiets to an exit-code status [D:repl-it] [D:repl-fn-echo] [D:repl-cmd-fail]"
+        replProbe repl-b repl-f1.py "repl F1 key bindings" "e2e ok: repl F1 prints the bindings mid-buffer and keeps it, raw F1 sequences, one-time hint [D:repl-f1-keys]"
         replProbe repl-b repl-directives.py "repl directives" "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"
         replProbe repl-b repl-pathquote.py "repl path-quote completion" "e2e ok: repl path completion quotes in expression position, bare in command-argv [D:repl-path-quote]"
         replProbe repl-b repl-mapkeys.py "repl map-key completion" "e2e ok: repl map-key completion — a bound value's keys inside a Map lookup literal; a pipeline receiver stays silent [D:value-key-complete]"
