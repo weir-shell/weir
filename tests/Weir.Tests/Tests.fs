@@ -4080,6 +4080,47 @@ let completionTests =
 
               Expect.equal (ask "let z = $(echo $@q") [ "qfz" ] "$@ inside $(…)"
           }
+          test "a $ completes nothing where it is literal text: comments, text blocks, yaml quotes, comments and block scalars [D:argv-splice-complete]" {
+              let envS =
+                  { env with Values = env.Values |> Map.add "qs" (Weir.Types.mono Weir.Types.TStr) }
+
+              let ask (text: string) =
+                  Weir.Complete.suggest envS text (Weir.Complete.wordStartAt text text.Length)
+
+              Expect.equal (ask "echo a // $q") [] "a // comment"
+              Expect.equal (ask "echo a // $@q") [] "a // comment, $@"
+              Expect.equal (ask "echo \"a // b\" $q") [ "qs" ] "a // inside a string is no comment"
+
+              // the district is read off the lines above (LSP and REPL Tab)
+              let literal (above: string list) (pre: string) = Weir.Complete.dollarLiteral (Array.ofList above) pre
+
+              for above, pre in
+                  [ [ "let z = <<<" ], "    echo "
+                    [ "let z = $<<<" ], "    echo "
+                    [ "let z ="; "    <<<" ], "        a "
+                    [ "let z = <<<"; "    a"; "" ], "        b "
+                    [ "let z = yaml" ], "    a: \""
+                    [ "let z = yaml" ], "    a: 'x "
+                    [ "let z = yaml" ], "    - \""
+                    [ "let z = yaml" ], "    \""
+                    [ "let z = yaml" ], "    a: x # "
+                    [ "let z = yaml" ], "    # "
+                    [ "let z = yaml"; "    a: |" ], "      "
+                    [ "let z = yaml"; "    a: |-"; "      x" ], "        "
+                    [ "let z = yaml"; "    - |" ], "      x " ] do
+                  Expect.isTrue (literal above pre) $"literal: {above} / {pre}"
+
+              for above, pre in
+                  [ [], "echo "
+                    [ "let z = $$<<<" ], "    echo "
+                    [ "let z = <<<"; "    a" ], "echo "
+                    [ "let z = yaml" ], "    a: "
+                    [ "let z = yaml" ], "    - "
+                    [ "let z = yaml"; "    a:" ], "      b: "
+                    [ "let z = yaml"; "    a: \"x\"" ], "    b: "
+                    [ "let z = yaml"; "    a: |"; "      x" ], "b: " ] do
+                  Expect.isFalse (literal above pre) $"a splice: {above} / {pre}"
+          }
           test "a line-head '#' completes the session directives, bare [D:repl-directives]" {
               // bare names: the editor's word starts after the '#', so
               // replacement yields `#help` — never `##help` or `head`

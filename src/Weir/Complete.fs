@@ -691,6 +691,63 @@ let yamlSplicePool (env: TypeEnv) (word: string) : string list =
             None)
     |> List.sort
 
+// a `$` the cursor line ends in (`pre`, the line up to it) is literal
+// text, never a splice [D:argv-splice-complete]: in a `//` comment; in a
+// `<<<` or `$<<<` body (a `$$<<<` body splices); in a yaml block, inside a
+// quoted scalar or key, a `#` comment, or a `|` block scalar's content.
+// `above`: the lines above the cursor's, in order — the district is read
+// off its ancestors by indentation
+let dollarLiteral (above: string[]) (pre: string) : bool =
+    let indentOf (s: string) = s.Length - s.TrimStart().Length
+
+    let piece (s: string) =
+        let c = Weir.Scan.commentAt s
+        (if c >= 0 then s.Substring(0, c) else s).Trim()
+
+    // a yaml line's value: past its `- ` item marks and its `key:`
+    let valueOf (t: string) =
+        let mutable v = t.TrimStart()
+
+        while v = "-" || v.StartsWith "- " do
+            v <- if v = "-" then "" else v.Substring(2).TrimStart()
+
+        match Yaml.splitKey v with
+        | Some(_, rest) -> rest.TrimStart()
+        | None -> v
+
+    let yamlLiteral (chain: string list) =
+        let quoted (v: string) = v.StartsWith "\"" || v.StartsWith "'"
+        let t = pre.TrimStart()
+        let bare = pre.TrimEnd(' ', '\t')
+
+        chain
+        |> List.exists (fun l -> Yaml.blockHeader (valueOf (Yaml.stripDistrictComment l)) |> Option.isSome)
+        || t.StartsWith "#"
+        || (Yaml.stripDistrictComment pre).Length < bare.Length
+        || quoted t
+        || quoted (valueOf t)
+
+    // the nearest less indented line above, until a district marker
+    let rec walk (ind: int) (j: int) (chain: string list) =
+        let mutable k = j
+
+        while k >= 0 && (above[k].Trim() = "" || indentOf above[k] >= ind) do
+            k <- k - 1
+
+        if k < 0 then
+            false
+        else
+            let p = piece above[k]
+
+            if Parser.isHeredocMarkerPiece p then
+                not (p = "$$<<<" || p.EndsWith " $$<<<")
+            elif Parser.isYamlMarkerPiece p then
+                yamlLiteral chain
+            else
+                walk (indentOf above[k]) (k - 1) (above[k] :: chain)
+
+    Weir.Scan.commentAt pre >= 0 || walk (indentOf pre) (above.Length - 1) []
+
 // the binder scope can be wider than the completion text: the LSP
 // completes one line but its binders (a let's params two lines up)
 // live in the whole document [D:complete-argv]
@@ -1013,7 +1070,7 @@ let rec suggestScopedWith
                 let at = wordStart - sigil.Length
                 let pre = text.Substring(0, at)
 
-                if Weir.Scan.endsInsideString pre then
+                if Weir.Scan.endsInsideString pre || Weir.Scan.commentAt pre >= 0 then
                     Some []
                 elif at > 0 && not (pre[at - 1] = ' ' || pre[at - 1] = '\t') then
                     Some []

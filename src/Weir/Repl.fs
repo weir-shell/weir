@@ -1899,7 +1899,22 @@ let private readLineTty () : string option =
             // past it must not leak into the word (a typed closer like
             // ` })` would join the prefix and kill every match);
             // insertion below re-attaches the tail
+            let sigil =
+                if ws >= 2 && text.Substring(ws - 2, 2) = "$@" then 2
+                elif ws >= 1 && ws <= text.Length && text[ws - 1] = '$' then 1
+                else 0
+
             let suggestions =
+                // a `$` that is literal text — the buffer's lines above
+                // decide the district [D:argv-splice-complete]
+                if
+                    sigil > 0
+                    && Complete.dollarLiteral
+                        [| for i in 0 .. row - 1 -> lines[i].ToString() |]
+                        (text.Substring(0, ws - sigil))
+                then
+                    []
+                else
                 // the session entry: alias heads join the head-slot pool
                 // [D:command-head-alias]; the session values feed the
                 // map-key slot [D:value-key-complete]

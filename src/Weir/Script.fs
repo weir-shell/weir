@@ -19,23 +19,7 @@ let stringStep (st: StringState) (chunk: string) : StringState = Scan.stringStep
 let isInsideString (st: StringState) : bool = Scan.isInsideString st
 
 let stripComment (line: string) : string =
-    // comment only at line start or after whitespace: bareword URLs
-    // (https://...) live in command lines (nuget-script receipt)
-    let cut =
-        foldOutsideStrings
-            (fun cut i c ->
-                if
-                    cut < 0
-                    && c = '/'
-                    && i + 1 < line.Length
-                    && line[i + 1] = '/'
-                    && (i = 0 || System.Char.IsWhiteSpace line[i - 1])
-                then
-                    i
-                else
-                    cut)
-            -1
-            line
+    let cut = Scan.commentAt line
 
     // TrimEnd only when a comment was cut [D:trailing-comments]: the
     // code before a comment never needs its gap (district heads match

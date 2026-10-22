@@ -200,6 +200,18 @@ for i, (ln, ch) in enumerate([(4, 8), (5, 9)]):
     yl[i] = [c["label"] for c in read_msg()["result"]]
 expect("xs" in yl[0] and "fl" in yl[0] and "m" not in yl[0], f"a yaml block's $ offers the yaml splices, not a record: {yl[0]}")
 expect(yl[1] == ["xs"], f"a yaml block's $x offers xs: {yl[1]}")
+# where the `$` is literal text, nothing: a text-block body, a yaml quoted
+# scalar, a yaml comment, a yaml | block scalar, a // comment
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": 'let xs = "a"\nlet t = <<<\n    echo $x\nlet d = yaml\n    a: "$x"\n    b: 1 # $x\n    c: |\n      $x\necho a // $x\n'}]}})
+read_msg()
+ll = {}
+for i, (ln, ch) in enumerate([(2, 11), (4, 10), (5, 12), (7, 8), (8, 12)]):
+    send({"jsonrpc": "2.0", "id": 615 + i, "method": "textDocument/completion",
+          "params": {"textDocument": {"uri": URI}, "position": {"line": ln, "character": ch}}})
+    ll[i] = [c["label"] for c in read_msg()["result"]]
+expect(all(v == [] for v in ll.values()), f"a literal $ offers nothing (<<< body, yaml \"…\", yaml #, yaml |, //): {ll}")
 send({"jsonrpc": "2.0", "method": "textDocument/didChange",
       "params": {"textDocument": {"uri": URI},
                  "contentChanges": [{"text": 'let qs = "s"\nlet qt = 1\ntype R = { name: string; tags: seq<string>; n: int; f: float }\nlet vr = { name = "a"; tags = ["t"]; n = 1; f = 1.0 }\necho "$q\necho --x=$q\necho $v\nlet z = $(echo $q\nif true then echo $q\nfor f in ["a"] do echo $q\necho $vr.\necho $@vr.\n'}]}})

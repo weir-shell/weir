@@ -35,6 +35,21 @@ try:
         start = len(r.out)
         r.send(b"\x03")
         r.prompt(start)
+    # a `$` that is literal text offers nothing: a // comment, and a
+    # text-block body (the district read off the buffer's lines above)
+    for keys, what in [
+        ("echo a // $t", "a // comment"),
+        ("let z = <<<\r    echo $t", "a <<< body"),
+    ]:
+        start = len(r.out)
+        r.send(keys + "\t" + "QQ")
+        r.wait_for(r"QQ", start, timeout=5)
+        text = r.out[start:].decode(errors="replace")
+        if "tq" in text:
+            failures.append(f"{what}: Tab after a literal $ must offer nothing: {text[-300:]!r}")
+        start = len(r.out)
+        r.send(b"\x03")
+        r.prompt(start)
 finally:
     r.close()
 
@@ -43,4 +58,4 @@ if failures:
         print("repl-splice-complete FAIL:", f)
     sys.exit(1)
 
-print("repl-splice-complete: a $ splice completes only spliceable bindings (external and builtin heads)")
+print("repl-splice-complete: a $ splice completes only spliceable bindings (external and builtin heads), nothing where $ is literal")

@@ -55,6 +55,10 @@
 - **A write through a symlink loop (`ln -s b b`) is refused when the
   plan captures it**, not when it applies, with `Too many levels of
   symbolic links`. The direct call gives the same message.
+- **`$` completion offers nothing where `$` is plain text**: in `//`
+  comments, `<<<` and `$<<<` text blocks, and, inside yaml blocks,
+  quoted values, `#` comments and `|` block text. This applies to the
+  editor (LSP) and to REPL Tab.
 
 ## v0.0.75
 
