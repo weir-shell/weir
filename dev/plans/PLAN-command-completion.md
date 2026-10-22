@@ -72,14 +72,18 @@ Rules (each to confirm below):
 - the output is untrusted text: escaped for display ([D:error-data-escape]),
   inserted only as an argv word (quoted when it needs it).
 
-## Decisions
+## Decisions (user 2026-10-22)
 
-- D1: user-level sig dir location (`$XDG_CONFIG_HOME/weir/sigs/`), and
-  whether `weir add sig --global <tool>` writes there.
-- D2: layer 2 opt-in mechanism (sig flag written by `add sig`, user
-  config list, or both) and the timeout.
-- D3: does the LSP get layer 2 too (it runs in editors, where a Tab-time
-  child is more expected), or REPL only.
+- D1: sigs are found in the nearest project `.weir/sigs/`, then the user
+  dir `$XDG_CONFIG_HOME/weir/sigs/`; `weir add sig --global <tool>`
+  writes to the user dir.
+- D2: layer 2 is opted into by the sig: `weir add sig` writes
+  `let dynamic = true` when it detects a cobra tool or git (deletable);
+  300 ms bound, killed on expiry or the next key, cached per edit.
+- D3: layer 2 is REPL-only. A script names what it means, not what
+  exists on the author's machine right now (a pod or branch name from
+  the current cluster/repo is rarely what a script should hard-code), so
+  the LSP keeps layer 1 (subcommands, flags, values by arity) only.
 
 ## Order
 
