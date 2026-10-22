@@ -14,11 +14,60 @@ const toc = headings.filter((h) => h.depth === 2);
 </Base>
 
 <style is:global>
+  /* a release is a <details> whose <summary> is its own h2: the marker is
+     drawn here, beside the heading, so the h2 keeps its block look (rule
+     under it, full width) and nothing hangs outside the column on a
+     phone */
   details.changelog-release > summary {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
     cursor: pointer;
-    list-style-position: outside;
+    list-style: none;
+  }
+  details.changelog-release > summary::-webkit-details-marker {
+    display: none;
+  }
+  details.changelog-release > summary::before {
+    content: "▸";
+    color: var(--muted);
+    font-size: var(--text-lg);
+    flex: none;
+  }
+  details.changelog-release[open] > summary::before {
+    content: "▾";
   }
   details.changelog-release > summary > h2 {
-    display: inline;
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 </style>
+
+<script is:inline>
+  // a link to a release (or to anything inside one) opens that release
+  // and folds the others, so the TOC lands on readable text
+  (() => {
+    const open = () => {
+      const id = decodeURIComponent(location.hash.slice(1));
+      if (!id) return;
+      const target = document.getElementById(id);
+      if (!target) return;
+      const mine = target.closest("details.changelog-release");
+      for (const d of document.querySelectorAll("details.changelog-release[open]"))
+        if (d !== mine) d.open = false;
+      if (mine) mine.open = true;
+      const toc = document.querySelector("details.toc-mobile[open]");
+      if (toc) toc.open = false;
+      target.scrollIntoView();
+    };
+    addEventListener("hashchange", open);
+    // a second click on the same link fires no hashchange
+    document.addEventListener("click", (e) => {
+      const a = e.target.closest('a[href^="#"]');
+      if (a && a.getAttribute("href") === location.hash) open();
+    });
+    if (document.readyState === "loading") addEventListener("DOMContentLoaded", open);
+    else open();
+  })();
+</script>
