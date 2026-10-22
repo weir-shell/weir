@@ -2015,6 +2015,12 @@ type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Proces
                 then
                     raiseWoken ()
 
+    /// the pipe's fd (POSIX), or -1: the fill waits beside the token
+    member _.Fd = fd
+
+    /// raise when a cut this read honours is made
+    member _.CutCheck() = cutNow ()
+
     override _.CanRead = true
     override _.CanSeek = false
     override _.CanWrite = false
@@ -2050,9 +2056,106 @@ type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Proces
     // the child's pipe is the Process's to close
     override _.Dispose(_: bool) = ()
 
+/// a thread the OS refused to start (EAGAIN: the pids cgroup's limit or
+/// `ulimit -u` reached; or no memory for its stack) as a weir error that
+/// names the limit, not .NET's text [D:pipe-threads]
+let threadLimitError (what: string) : exn =
+    let readTrim (path: string) =
+        try
+            System.IO.File.ReadAllText(path).Trim()
+        with _ ->
+            ""
+
+    let threads =
+        readTrim "/proc/self/status"
+        |> fun st ->
+            st.Split('\n')
+            |> Array.tryFind (fun l -> l.StartsWith "Threads:")
+            |> Option.map (fun l -> l.Substring(8).Trim())
+
+    let pidsMax =
+        // cgroup v2: "0::/path"
+        readTrim "/proc/self/cgroup"
+        |> fun cg ->
+            cg.Split('\n')
+            |> Array.tryFind (fun l -> l.StartsWith "0::")
+            |> Option.map (fun l -> readTrim ("/sys/fs/cgroup" + l.Substring(3).TrimEnd('/') + "/pids.max"))
+            |> Option.filter (fun v -> v <> "" && v <> "max")
+
+    let limit =
+        match pidsMax with
+        | Some m -> $"cgroup pids.max {m}, or ulimit -u"
+        | None -> "ulimit -u, or the cgroup's pids.max"
+
+    let running =
+        match threads with
+        | Some n -> $"; weir runs {n} threads"
+        | None -> ""
+
+    exn
+        $"cannot start a thread for {what}: the process/thread limit is reached ({limit}){running} — lower the parallel width (pmapWith/pfirstWith n) or raise the limit"
+
+/// start a thread weir needs; a refusal is `threadLimitError`
+let startThread (what: string) (t: System.Threading.Thread) : unit =
+    try
+        t.Start()
+    with
+    | :? System.OutOfMemoryException
+    | :? System.Threading.ThreadStartException -> raise (threadLimitError what)
+
 /// a child's output stream, cut as the flow is [D:scope-tree]
 let cutStream (child: System.Diagnostics.Process) (s: System.IO.Stream) : System.IO.Stream =
     new CutStream(s, child) :> System.IO.Stream
+
+/// several child output streams (each from `cutStream`) that one thread
+/// can drain by poll(2) — POSIX pipes [D:pipe-threads]
+let pollablePipes (streams: System.IO.Stream[]) : bool =
+    streams
+    |> Array.forall (fun s ->
+        match s with
+        | :? CutStream as c -> c.Fd >= 0
+        | _ -> false)
+
+/// wait until one of the live streams (`pollablePipes`; null = done) is
+/// ready to fill — data, EOF or an error, whatever its next read reports —
+/// and mark each ready one in `ready`. Cut as a CutStream fill is: checked
+/// first and every 50ms while every pipe is empty [D:pipe-threads]
+let waitPipes (streams: System.IO.Stream[]) (ready: bool[]) : unit =
+    let live =
+        streams
+        |> Array.mapi (fun i s -> i, s)
+        |> Array.choose (fun (i, s) ->
+            match s with
+            | :? CutStream as c -> Some(i, c)
+            | _ -> None)
+
+    let fds = Array.zeroCreate<Libc.PollFd> live.Length
+
+    for k in 0 .. live.Length - 1 do
+        fds[k].fd <- (snd live[k]).Fd
+        fds[k].events <- 1s // POLLIN
+
+    let poll ms =
+        for k in 0 .. fds.Length - 1 do
+            fds[k].revents <- 0s
+
+        fds.Length > 0 && Libc.poll (&fds[0], unativeint fds.Length, ms) > 0
+
+    let cutAll () =
+        for _, c in live do
+            c.CutCheck()
+
+    cutAll ()
+
+    if not (poll 0) then
+        while not (poll 50) do
+            cutAll ()
+
+    System.Array.Clear ready
+
+    for k in 0 .. live.Length - 1 do
+        if fds[k].revents <> 0s then
+            ready[fst live[k]] <- true
 
 /// a reader over a child's output, cut as the flow is: the encoding the
 /// Process gave it, a larger buffer

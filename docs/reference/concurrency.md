@@ -11,8 +11,9 @@ that enforces it. The user-facing promises are in
 
 Cancellation and cleanup ownership live in one tree of nodes
 ([D:scope-tree]). The current node rides one AsyncLocal
-(`Session.currentNode`), so a flow's helper tasks (a capture's stderr
-reader, a chain's pumps, a `cutBlocking` call) run in the flow's node.
+(`Session.currentNode`), so a flow's helper tasks (a chain's pumps, a
+stdin feed, a `cutBlocking` call) run in the flow's node; a capture's
+pipes are read on the flow's own thread ([D:pipe-threads]).
 
 | node | made by | its flow runs on | cut by |
 |---|---|---|---|

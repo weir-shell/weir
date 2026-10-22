@@ -1698,6 +1698,21 @@ let private refuseParallelInPlan (combinator: string) =
         failwith
             $"'{combinator}' is refused inside 'plan' — its per-worker callbacks run on threads that do not inherit the plan's capture frame, so their effects cannot be captured; run parallel/race combinators outside the plan"
 
+// a fan-out's workers, each on a thread of its own (LongRunning). A thread
+// the OS refuses (the process/thread limit) stops the fan-out as an arm's
+// raise would — `stop` cuts the started arms, which then join — with an
+// error naming the limit [D:pipe-threads]
+let private startWorkers (what: string) (n: int) (worker: int -> unit -> unit) (stop: exn -> unit) : Task[] =
+    let started = ResizeArray<Task>(n)
+
+    try
+        for w in 0 .. n - 1 do
+            started.Add(Task.Factory.StartNew(worker w, TaskCreationOptions.LongRunning))
+    with :? TaskSchedulerException ->
+        stop (Session.threadLimitError what)
+
+    started.ToArray()
+
 let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value array =
     if degree < 1 then
         failwith $"parallel degree must be at least 1, got {degree}"
@@ -1792,7 +1807,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
 
     try
         let tasks =
-            Array.init workers (fun w -> Task.Factory.StartNew(worker w, TaskCreationOptions.LongRunning))
+            startWorkers "a pmap arm" workers worker (fun e -> stop e)
 
         Session.waitTask (Task.WhenAll(tasks: Task[]))
     finally
@@ -1920,7 +1935,8 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
             let tasks =
                 try
-                    Array.init workers (fun _ -> Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning))
+                    startWorkers "a pfirst arm" workers (fun _ -> worker) (fun e ->
+                        settle null (fun () -> outcome.TrySetException e |> ignore))
                 finally
                     Session.setParallelDepth depth
 

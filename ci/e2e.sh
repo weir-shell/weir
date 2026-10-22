@@ -4295,6 +4295,53 @@ took=$(( $(now_ms) - start_ms ))
 echo "e2e ok: a 32-arm pfirst over | complete finishes with its winner (${took}ms)"
 fi
 
+# T1-3: a `| complete` arm reads both pipes on its own thread — one thread
+# per arm, not two — and a thread the process/thread limit refuses is a weir
+# error naming the limit [D:pipe-threads]
+if [ "$(uname -s)" = Linux ]; then
+cat > "$r6dir/pt.weir" <<'WEOF'
+let n = Self.args |> Seq.head |> Str.toInt
+let arm i =
+    if i == 1 then
+        let r = sh -c "echo w-err >&2; sleep 1.5; echo w-out" | complete
+        $"{r.stdout |> Seq.head} {r.stderr |> Seq.head}"
+    else
+        let r = sh -c "sleep 30" | complete
+        $"{r.exitCode}"
+let w = [1..n] |> Seq.pfirstWith n arm
+print $"won {w}"
+WEOF
+"$BIN" "$r6dir/pt.weir" 64 > "$r6dir/pt.out" 2>&1 &
+ptpid=$!
+ptpeak=0
+while kill -0 "$ptpid" 2>/dev/null; do
+    t=$(awk '/^Threads:/{print $2}' "/proc/$ptpid/status" 2>/dev/null)
+    [ -n "$t" ] && [ "$t" -gt "$ptpeak" ] && ptpeak=$t
+    sleep 0.05
+done
+wait "$ptpid"
+[ "$(cat "$r6dir/pt.out")" = "won w-out w-err" ] || fail "a 64-arm pfirst over | complete: $(cat "$r6dir/pt.out")"
+[ "$ptpeak" -lt 104 ] || fail "a 64-arm pfirst over | complete takes one thread per arm (peak $ptpeak threads)"
+echo "e2e ok: a 64-arm pfirst over | complete takes one thread per arm (peak $ptpeak threads)"
+# (RLIMIT_NPROC binds a non-root user only; .NET's own pool can still abort
+# when it cannot add a worker at the limit — a runtime residual, so up to
+# three tries)
+if [ "$(id -u)" != 0 ]; then
+    ptok=""
+    for _ in 1 2 3; do
+        ptn=$(ps -L -u "$(id -u)" -o lwp= | wc -l)
+        out=$( (ulimit -u $((ptn + 150)); timeout 60 "$BIN" "$r6dir/pt.weir" 256) 2>&1)
+        echo "$out" | grep -qF "TaskScheduler" && fail "a refused thread never shows .NET's text: $out"
+        if echo "$out" | grep -qF "cannot start a thread for a pfirst arm: the process/thread limit is reached"; then
+            ptok=1
+            break
+        fi
+    done
+    [ -n "$ptok" ] || fail "a thread the limit refuses is a weir error naming the limit: $out"
+    echo "e2e ok: a fan-out thread the process/thread limit refuses is a weir error naming the limit"
+fi
+fi
+
 # W1: after a cut nothing waits for the EOF of a pipe a descendant the kill
 # missed still holds — a race loser's `within proc` whose child left a
 # reparented grandchild on its stdout [D:wait-after-cut]

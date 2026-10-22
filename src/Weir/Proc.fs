@@ -266,8 +266,9 @@ let private spawn
 // a pipe's reader or writer on its own thread, never the pool's: blocked
 // on a child that never writes (a race's loser), it holds no pool thread
 // a winner's reader waits for [D:pipe-threads]. The thread joins the
-// flow's node, as Task.Run's work would
-let private offPool (f: unit -> 'a) : System.Threading.Tasks.Task<'a> =
+// flow's node, as Task.Run's work would. A thread the OS refuses is a weir
+// error naming the limit
+let private offPool (what: string) (f: unit -> 'a) : System.Threading.Tasks.Task<'a> =
     let done' =
         System.Threading.Tasks.TaskCompletionSource<'a>(
             System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
@@ -283,7 +284,7 @@ let private offPool (f: unit -> 'a) : System.Threading.Tasks.Task<'a> =
             IsBackground = true
         )
 
-    t.Start()
+    Session.startThread what t
     done'.Task
 
 // the one starter: the shared spawn plus the stdin writer, which pulls
@@ -300,39 +301,43 @@ let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process * 
 
     match s.Input with
     | Some lines ->
-        offPool (fun () ->
-            try
+        try
+            offPool "a command's stdin feed" (fun () ->
                 try
-                    // a child's stdin is data: LF on every platform
-                    // [D:lf-output] — WriteLine's Environment.NewLine
-                    // fed \r\n into child hashes on Windows
-                    p.StandardInput.NewLine <- "\n"
-                    use e = lines.GetEnumerator()
-                    let mutable go = true
+                    try
+                        // a child's stdin is data: LF on every platform
+                        // [D:lf-output] — WriteLine's Environment.NewLine
+                        // fed \r\n into child hashes on Windows
+                        p.StandardInput.NewLine <- "\n"
+                        use e = lines.GetEnumerator()
+                        let mutable go = true
 
-                    while go do
-                        let more =
-                            try
-                                e.MoveNext()
-                            with ex ->
-                                System.Threading.Volatile.Write(&fault.contents, ex)
-                                false
+                        while go do
+                            let more =
+                                try
+                                    e.MoveNext()
+                                with ex ->
+                                    System.Threading.Volatile.Write(&fault.contents, ex)
+                                    false
 
-                        if more then
-                            try
-                                p.StandardInput.WriteLine e.Current
-                            with _ ->
+                            if more then
+                                try
+                                    p.StandardInput.WriteLine e.Current
+                                with _ ->
+                                    go <- false
+                            else
                                 go <- false
-                        else
-                            go <- false
-                with _ ->
-                    ()
-            finally
-                try
-                    p.StandardInput.Close()
-                with _ ->
-                    ())
-        |> ignore
+                    with _ ->
+                        ()
+                finally
+                    try
+                        p.StandardInput.Close()
+                    with _ ->
+                        ())
+            |> ignore
+        with _ ->
+            Session.killTree p
+            reraise ()
     | None -> ()
 
     let rethrowFault () =
@@ -662,14 +667,15 @@ type private Segments =
 
     member this.At(g: int) : byte = this.Segs[g >>> segBits][g &&& segMask]
 
-let private readAllBytes (stream: System.IO.Stream) : Segments =
+// one stream's capture as it fills
+type private SegmentsBuilder() =
     let segs = ResizeArray<byte[]>()
-    let mutable total = 0
     let mutable seg = Array.zeroCreate<byte> segSize
     let mutable fill = 0
-    let mutable n = readBytes stream seg fill (segSize - fill)
 
-    while n > 0 do
+    /// one read into the buffer; 0 at EOF
+    member _.Fill(stream: System.IO.Stream) : int =
+        let n = readBytes stream seg fill (segSize - fill)
         fill <- fill + n
 
         if fill = segSize then
@@ -677,16 +683,52 @@ let private readAllBytes (stream: System.IO.Stream) : Segments =
             seg <- Array.zeroCreate segSize
             fill <- 0
 
-        n <- readBytes stream seg fill (segSize - fill)
+        n
 
-    total <- segs.Count * segSize + fill
+    member _.Done() : Segments =
+        let total = segs.Count * segSize + fill
 
-    if fill > 0 || segs.Count = 0 then
-        // the tail segment, trimmed exact (small)
-        System.Array.Resize(&seg, fill)
-        segs.Add seg
+        if fill > 0 || segs.Count = 0 then
+            // the tail segment, trimmed exact (small)
+            System.Array.Resize(&seg, fill)
+            segs.Add seg
 
-    { Segs = segs.ToArray(); Total = total }
+        { Segs = segs.ToArray(); Total = total }
+
+let private readAllBytes (stream: System.IO.Stream) : Segments =
+    let b = SegmentsBuilder()
+
+    while b.Fill stream > 0 do
+        ()
+
+    b.Done()
+
+// a child's output pipes read to EOF on the calling thread, poll(2)
+// choosing the next fill [D:pipe-threads]: a `| complete` costs its arm
+// no second thread, and a loser blocked on its child holds no thread but
+// its own. Windows reads every pipe after the first on a thread of its own
+let private readAllPipes (streams: System.IO.Stream[]) : Segments[] =
+    if Session.pollablePipes streams then
+        let builders = streams |> Array.map (fun _ -> SegmentsBuilder())
+        let live = Array.copy streams
+        let ready = Array.zeroCreate<bool> streams.Length
+        let mutable open' = streams.Length
+
+        while open' > 0 do
+            Session.waitPipes live ready
+
+            for i in 0 .. live.Length - 1 do
+                if ready[i] && builders[i].Fill live[i] = 0 then
+                    live[i] <- null
+                    open' <- open' - 1
+
+        builders |> Array.map (fun b -> b.Done())
+    else
+        let rest =
+            streams[1..] |> Array.map (fun s -> offPool "a command's output reader" (fun () -> readAllBytes s))
+
+        let first = readAllBytes streams[0]
+        Array.append [| first |] (rest |> Array.map Session.cutJoin)
 
 // StreamReader's BOM detection is part of today's pinned contract: a
 // UTF-16/32 BOM switches decoding. Those captures take the fallback
@@ -814,11 +856,12 @@ let completedOf (s: Spec) : int * seq<string> * seq<string> =
 
     let outBytes, errBytes =
         try
-            let stderrTask =
-                offPool (fun () -> readAllBytes (Session.cutStream p p.StandardError.BaseStream))
+            let read =
+                readAllPipes
+                    [| Session.cutStream p p.StandardOutput.BaseStream
+                       Session.cutStream p p.StandardError.BaseStream |]
 
-            let outBytes = readAllBytes (Session.cutStream p p.StandardOutput.BaseStream)
-            outBytes, Session.cutJoin stderrTask
+            read[0], read[1]
         with _ ->
             // a cut stopped the reads before EOF: the tree dies before the
             // dispose, or the cut's own kill finds the Process disposed and
@@ -847,7 +890,7 @@ let private pumpBytes
     (dst: System.IO.Stream)
     (closeDst: unit -> unit)
     : System.Threading.Tasks.Task<bool> =
-    offPool (fun () ->
+    offPool "a pipe between two commands" (fun () ->
         let mutable broken = false
 
         try
@@ -896,17 +939,23 @@ let private startChain (tailOut: bool) (allErr: bool) (specs: Spec list) =
                 sp, spawn (i < lastIdx || tailOut) allErr true sp.Cwd sp.Ambient sp.Prog sp.Args sp.Env)
 
     let pumps =
-        procs
-        |> List.pairwise
-        |> List.map (fun ((_, a), (_, b)) ->
-            pumpBytes
-                a.StandardOutput.BaseStream
-                b.StandardInput.BaseStream
-                (fun () ->
-                    try
-                        b.StandardInput.Close()
-                    with _ ->
-                        ()))
+        try
+            procs
+            |> List.pairwise
+            |> List.map (fun ((_, a), (_, b)) ->
+                pumpBytes
+                    a.StandardOutput.BaseStream
+                    b.StandardInput.BaseStream
+                    (fun () ->
+                        try
+                            b.StandardInput.Close()
+                        with _ ->
+                            ()))
+        with _ ->
+            for _, p in procs do
+                Session.killTree p
+
+            reraise ()
 
     procs, pumps, headFault.Value
 
@@ -973,13 +1022,17 @@ let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
         let procs, pumps, producerFault = startChain true true specs
 
         try
-            let errTasks =
-                procs
-                |> List.map (fun (_, p) ->
-                    offPool (fun () -> readAllBytes (Session.cutStream p p.StandardError.BaseStream)))
-
             let _, last = List.last procs
-            let outBytes = readAllBytes (Session.cutStream last last.StandardOutput.BaseStream)
+
+            let read =
+                readAllPipes (
+                    Array.ofList (
+                        Session.cutStream last last.StandardOutput.BaseStream
+                        :: (procs |> List.map (fun (_, p) -> Session.cutStream p p.StandardError.BaseStream))
+                    )
+                )
+
+            let outBytes = read[0]
 
             for _, p in procs do
                 p.WaitForExit()
@@ -987,7 +1040,7 @@ let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
             producerFault ()
 
             let errLines =
-                errTasks |> List.map (fun t -> linesView (Session.cutJoin t) false |> List.ofSeq) |> List.concat
+                read[1..] |> List.ofArray |> List.map (fun b -> linesView b false |> List.ofSeq) |> List.concat
 
             Session.settleReplInterrupt(chainCode procs pumps), linesView outBytes true, (errLines :> seq<string>)
         finally
