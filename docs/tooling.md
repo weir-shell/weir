@@ -181,6 +181,59 @@ they never see it, and scripts never read it (a script's `#sig` always
 means the project's file, so the script checks the same way on every
 machine). To update it, run `weir add sig --global <tool>` again.
 
+#### Values from the tool itself
+
+Some values only the tool knows at the moment you type: branch names,
+pods, pull requests. A signature can let the REPL ask for them with
+one line naming how:
+
+- `let dynamic = "git"`: branches, tags and remotes, read by weir's own
+  fixed git commands (`git for-each-ref --format=%(refname:short)
+  refs/heads refs/remotes refs/tags`, `git remote`). Which operand takes
+  what is a small table: any operand of checkout, switch, merge, rebase,
+  diff, log, reset, cherry-pick, revert and show is a ref; `branch -d`/
+  `-D` and `-m`/`-c` take a branch, `tag -d` a tag; the first operand of
+  push, fetch and pull is a remote, push's and pull's second a branch;
+  `git remote remove|rename|set-url|… <remote>`. A typed `--`, or `-C`,
+  `-c`, `--git-dir`, `--work-tree` before the subcommand, asks nothing.
+- `let dynamic = "cobra"`: a Cobra tool (kubectl, helm, gh, docker…)
+  answers `<tool> __complete <the words typed> <partial>` itself.
+
+`weir add sig` writes the line when it read the tool through its Cobra
+endpoint or git's completion helper; delete it to turn it off.
+
+The tool is asked only for an operand or a flag's value where the
+signature has paths or nothing to offer; subcommands and flag names stay
+the signature's, so Tab starts no program there. If the tool answers,
+you get its candidates; if it has none, fails, or takes longer than
+300 ms, you get what the signature alone gives. A Cobra tool that says
+"no files" gets no path fallback. The child runs in the REPL's directory
+and environment with empty input, no terminal, and its error output
+discarded. It is killed (with its children) at 300 ms, past 1 MiB or
+10,000 lines of output, or as soon as you press another key, and that
+key still lands in the buffer. Answers are kept for the rest of the line
+you are editing. A candidate is offered only if it can be typed as a
+plain argument; anything that would need quoting is dropped.
+
+```text
+#alias co = git checkout
+co <TAB>          # your branches
+```
+
+Trust: a project's `.weir/sigs/` is read without asking, so a
+signature there must never make Tab run a program on its say-so. `"git"`
+runs only weir's own read-only git commands, never text from the
+signature, so any signature can use it. `"cobra"` runs the tool, so it
+is honored only from your user directory (`weir add sig --global
+<tool>`). A project signature asking for it still completes
+subcommands, flags and values, and the REPL says once per session:
+`dynamic completion for kubectl needs a user-level sig: weir add sig
+--global kubectl`.
+
+Only the REPL asks. In the editor a script names what it means, not
+whatever branch or pod exists right now, so `weir lsp` stays with the
+signature alone.
+
 ### Partial by default
 
 A generated signature is partial: an unknown flag is a warning, not

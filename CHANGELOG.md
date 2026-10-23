@@ -4,6 +4,23 @@
 
 Many of the changes and fixes below were found porting starship to weir.
 
+### Added
+
+- **Tab asks the tool for values: branches, pods, remotes.** A
+  signature with `let dynamic = "git"` lists refs and remotes where git
+  takes them (`git checkout <Tab>`, `git push <Tab>`, and with `#alias
+  co = git checkout`, `co <Tab>`), read by weir's own read-only git
+  commands. `let dynamic = "cobra"` asks a Cobra tool (kubectl, helm,
+  gh, docker) through its `__complete` endpoint, but only from a
+  signature in your user directory (`weir add sig --global <tool>`): a
+  project's signature is read without asking, so it never gets to run
+  a program on Tab, and the REPL says once how to install it globally.
+  `weir add sig` writes the line for a Cobra tool and for git. The tool
+  is asked only for an operand or a flag's value, never for subcommands
+  or flag names. It gets 300 ms and 1 MiB, and pressing another key
+  stops it (the key is kept); with no answer you get what the signature
+  alone gives. REPL only; the editor is unchanged.
+
 ### Changed
 
 - **`def` is an ordinary name.** `let def = 1` and a field called `def`
