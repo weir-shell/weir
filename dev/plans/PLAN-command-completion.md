@@ -85,6 +85,15 @@ Rules (each to confirm below):
   the current cluster/repo is rarely what a script should hard-code), so
   the LSP keeps layer 1 (subcommands, flags, values by arity) only.
 
+- D4 (user 2026-10-23, refines D2): the opt-in names its mechanism —
+  `let dynamic = "git"` or `let dynamic = "cobra"`. Project sigs load
+  automatically, so a planted sig must never make Tab run a program on
+  the sig's say-so (`rm __complete foo` on a non-cobra tool). `"git"`
+  runs only fixed read-only git commands built into weir (never sig
+  text), so any sig may use it. `"cobra"` is honored only from the user
+  dir (`add sig --global`); a project sig asking for it is ignored, with
+  a one-line hint to install it globally.
+
 ## Order
 
 Layer 1 first (one release), layer 2 after (its own release), each with
