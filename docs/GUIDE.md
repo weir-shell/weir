@@ -2337,7 +2337,9 @@ build them once and reuse them:
 
 `Seq.pmap` and `Seq.piter` process a sequence in parallel. Results
 come back in the same order as the input, and the first failure is
-raised again. Each worker gets its own copy of the session state, so
+raised again. `pfor x in xs do …` is the `for`-shaped spelling of
+`Seq.piter`: the same arms, written as a loop. Each worker gets its
+own copy of the session state, so
 a `cd` inside a worker only affects that worker and is gone when the
 workers finish. There's no async/await, and there won't be: in weir,
 you get concurrency from processes and pipelines. Under the hood,
