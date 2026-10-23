@@ -1,0 +1,42 @@
+module Nodefx
+/// generated from 'nodefx' on 2026-10-22
+/// source: help+v8-options — a scraped surface may be incomplete (partial
+/// by default; add `let exhaustive = true` once verified by hand)
+/// flat surface: flags checked across the whole line — split into
+/// subcommand records by hand if the tool warrants it
+let version = "v22.23.3"
+/// `--no-x` turns off any switch `--x`
+let negatable = true
+/// a multi-letter single-dash word is a bundle of shorts (`-xzf`)
+let bundles = true
+/// the first operand of these ends the tool's own options (what follows is
+/// handed on — a container's command, a script's arguments)
+let stopAtOperand = [ "" ]
+type Cmd = {
+    /// Source Map V3 support for stack traces
+    enableSourceMaps: bool
+    /// evaluate script
+    [<Short "e">]
+    eval: string
+    /// allow require of ES modules
+    experimentalRequireModule: bool
+    /// set module type for string input
+    inputType: string
+    /// activate inspector on host:port and break
+    inspectBrk: Option<string>
+    /// the heap size
+    maxOldSpaceSize: string
+    /// silence all process warnings
+    noWarnings: bool
+    /// default size of stack region v8 is allowed to use (in kBytes)
+    stackSize: string
+    /// launch test runner on startup
+    test: bool
+    /// report test output using the given reporter
+    testReporter: string
+    /// show stack traces on process warnings
+    traceWarnings: bool
+    /// print V8 command line options
+    v8Options: bool
+    warnings: bool
+}

@@ -20,7 +20,7 @@ usage: weir                                    the REPL
        weir check --can [--strict] [--json] <script>  the static capability report
        weir fmt [--check] <script>             canonical formatter
        weir lsp                                language server (stdio)
-       weir add sig <tool>                     generate a command signature from the installed binary
+       weir add sig [--global] <tool>          generate a command signature from the installed binary
        weir add schema <url> --as <name>       fetch an external contract, lock it
        weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it
        weir gen types --schema <name>          generate weir types from a locked schema
@@ -70,7 +70,9 @@ These maintain the [`.weir/` tree](#project-layout-weir):
 
 - `weir add sig <tool>` — read the flags of the installed tool and
   write `.weir/sigs/<tool>.weir`, plus an entry in the lock
-  ([signatures](#command-signatures)).
+  ([signatures](#command-signatures)). With `--global`, write it to
+  your user sig directory instead, with no lock entry
+  ([signatures drive Tab](#signatures-drive-tab-completion)).
 - `weir add schema <url> --as <name>` — download a JSON schema into
   `.weir/schemas/` and record it in the lock ([schemas](#yaml-schemas)).
 - `weir add module <src>//<file>@<ref> --as <name>` — download a copy
@@ -135,6 +137,49 @@ print pages of environment details.) `weir verify` compares it with the installe
 and reports any difference at all. When the tool updates, run
 `weir add sig` again. If the regenerated file shows no diff, nothing
 that matters to your scripts changed.
+
+### Signatures drive Tab completion
+
+A signature also completes the tool's arguments: the REPL's Tab and
+the editor (through `weir lsp`) offer the same things.
+
+- After the tool and after each subcommand word: the subcommand words
+  (`git com<TAB>` gives `git commit`).
+- A word starting with `-`: the flags of the subcommand you are in,
+  `--long` and `-x`. When the signature is `negatable`, typing `--no-`
+  offers the `--no-x` forms too (a bare `--` lists only the real flags).
+  A Go tool's flags are offered as `-name`, find's predicates as
+  `-name`. For a tool that takes unique prefixes, the full name is
+  offered.
+- After a flag that takes a value, and after `--flag=`: paths when the
+  value is a file or directory (the flag's name or its description
+  says so: `--file`, `-C <path>` described as "run in this
+  directory"…), the choices when the signature lists them (a field
+  typed by a union of bare cases: `type Color = | Always | Never |
+  Auto`, then `color: Option<Color>`), otherwise nothing.
+- After the first operand of a `stopAtOperand` subcommand, inside an
+  `unchecked` subcommand, after `--`, or after a subcommand the
+  signature doesn't know: paths only, since the signature can't know
+  what comes next.
+
+In a script, completion uses the signatures the `#sig` lines declare.
+The REPL has no `#sig` line, so it looks a signature up by the command
+name when you press Tab:
+
+1. the nearest project's `.weir/sigs/` (found the way `#sig` finds
+   it, from the REPL's current directory);
+2. then your user sig directory, `$XDG_CONFIG_HOME/weir/sigs/`
+   (`~/.config/weir/sigs/`; `%APPDATA%\weir\sigs\` on Windows).
+
+No signature means plain path completion, as before. A signature is
+read once and re-read when its file changes.
+
+`weir add sig --global <tool>` writes to the user directory, so one
+signature serves the REPL in every directory. It gets no lock entry:
+`weir verify` and `weir restore` only look at the project's lock, so
+they never see it, and scripts never read it (a script's `#sig` always
+means the project's file, so the script checks the same way on every
+machine). To update it, run `weir add sig --global <tool>` again.
 
 ### Partial by default
 

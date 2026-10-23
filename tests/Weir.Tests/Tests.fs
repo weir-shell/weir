@@ -3926,7 +3926,7 @@ let completionTests =
               // cursor (last line cut there), the cursor's line, the word start
               let entry (lines: string list) =
                   let cur = List.last lines
-                  Weir.Script.suggestEntry Set.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
+                  Weir.Script.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
 
               let fileRow =
                   [ "bytes"; "hidden"; "kind"; "modified"; "name"; "path"; "target" ]
@@ -30925,6 +30925,281 @@ let hunt3r7SafetyTests =
                   System.IO.Directory.Delete(root, true)
           } ]
 
+// signature-driven argument completion [D:sig-arg-complete]: the shared
+// completer over sigs `weir add sig` generated from the tests/sigs samples
+// (snapshots in tests/fixtures/sigs — regenerate with exe/ first on PATH:
+// `weir add sig <sample>`), one per help format
+let sigCompleteTests =
+    let fixtureDir =
+        Path.Combine(__SOURCE_DIRECTORY__, "..", "fixtures", "sigs")
+
+    let loadAt (path: string) (tool: string) =
+        match
+            Weir.Script.loadSigs
+                (path + ".from")
+                [ { Tool = tool
+                    Override = Some path
+                    Line = 1 } ]
+        with
+        | [], [ si ] -> si
+        | ds, _ -> failtest $"{tool}: sig did not load: {ds}"
+
+    let fx tool = loadAt (Path.Combine(fixtureDir, tool + ".weir")) tool
+
+    // complete at the end of `<tool><argText>`, the editor's word rule
+    let at (si: Weir.Script.SigInfo) (argText: string) =
+        let ws = Weir.Complete.wordStartAt argText argText.Length
+        Weir.Script.SigComplete.complete si argText (argText.Substring ws)
+
+    let words si argText =
+        match at si argText with
+        | Weir.Script.SigWords ws -> ws
+        | other -> failtest $"'{argText}': expected words, got {other}"
+
+    let isPaths si argText =
+        Expect.equal (at si argText) Weir.Script.SigPaths $"'{argText}' defers to paths"
+
+    let isNothing si argText =
+        Expect.equal (at si argText) Weir.Script.SigNothing $"'{argText}' offers nothing"
+
+    let has (xs: string list) (ys: string list) =
+        for y in ys do
+            Expect.contains xs y $"offers {y} in {xs}"
+
+    let lacks (xs: string list) (ys: string list) =
+        for y in ys do
+            Expect.isFalse (List.contains y xs) $"never {y} in {xs}"
+
+    testList
+        "sig argument completion"
+        [ test "git: subcommand words, by case, at every depth" {
+              let g = fx "gitfx"
+              Expect.equal (words g " ") [ "commit"; "log"; "remote"; "stash"; "status" ] "top"
+              Expect.equal (words g " com") [ "commit" ] "prefix"
+              Expect.equal (words g " st") [ "stash"; "status" ] "two"
+              // a lone nested case is one word: `remote set-head`, never `set`
+              Expect.equal (words g " remote ") [ "add"; "set-head" ] "nested"
+              Expect.equal (words g " stash p") [ "pop"; "push" ] "nested prefix"
+              // a global's value word is stepped over
+              Expect.equal (words g " -C /tmp st") [ "stash"; "status" ] "after -C <path>"
+          }
+          test "git: a case's flags — longs, shorts, the case only" {
+              let g = fx "gitfx"
+              Expect.equal (words g " commit --am") [ "--amend" ] "--am"
+              let dash = words g " commit -"
+              has dash [ "-a"; "-m"; "-F"; "--amend"; "--message"; "--no-verify"; "--git-dir"; "-C" ]
+              lacks dash [ "--index"; "--keep-index"; "--porcelain" ]
+              // the top level: the Globals
+              let top = words g " -"
+              has top [ "-C"; "--git-dir"; "--bare"; "--work-tree" ]
+              lacks top [ "--amend"; "--porcelain" ]
+              has (words g " status --") [ "--porcelain"; "--short"; "--bare" ]
+          }
+          test "git: values by arity — path-ish, else nothing" {
+              let g = fx "gitfx"
+              // -F/--file: `read message from file`
+              isPaths g " commit -F "
+              isPaths g " commit --file="
+              isNothing g " commit -m "
+              isNothing g " commit --message="
+              isNothing g " commit --author "
+              // a switch takes no value: the next word is a subcommand/operand
+              isPaths g " commit --amend "
+              // -am: a bundle whose last letter takes the next word
+              isNothing g " commit -am "
+          }
+          test "git: unchecked case, unknown subcommand, -- : paths only" {
+              let g = fx "gitfx"
+              isPaths g " log --"
+              isPaths g " log -"
+              isPaths g " stash show -"
+              isPaths g " frobnicate --"
+              isPaths g " commit -- "
+              isPaths g " commit -- --am"
+          }
+          test "cobra: grouped words, stopAtOperand, globals in a case" {
+              let c = fx "cobrafx"
+              Expect.equal (words c " ") [ "compose"; "container"; "ls"; "pr"; "ps"; "run" ] "top"
+              Expect.equal (words c " container ") [ "ls"; "run" ] "group"
+              Expect.equal (words c " pr ") [ "create"; "new"; "view" ] "pr"
+              has (words c " run -") [ "-d"; "--detach"; "--name"; "--context"; "-H" ]
+              isPaths c " run --name x img -"
+              isPaths c " container run img --"
+              isPaths c " compose -f "
+              isNothing c " run --name "
+          }
+          test "kill: abbreviations offer full names; a dash word is not a flag" {
+              let k = fx "killfx"
+              Expect.equal (words k " --sig") [ "--signal" ] "full name"
+              has (words k " -") [ "-l"; "-s"; "-L"; "--list"; "--signal" ]
+              Expect.equal (words k " -TE") [] "a -<signal> word"
+          }
+          test "find: predicates are single-dash words" {
+              let f = fx "findfx"
+              Expect.equal (words f " . -na") [ "-name" ] "-na"
+              has (words f " -") [ "-name"; "-newer"; "-print0"; "-H"; "--help" ]
+              // -exec takes the rest: its first word, then paths
+              isNothing f " . -exec "
+              isPaths f " . -exec rm -"
+          }
+          test "go: single-dash longs, doubled on --" {
+              let g = fx "gofx"
+              Expect.equal (words g " -im") [ "-import-path" ] "-im"
+              Expect.equal (words g " --im") [ "--import-path" ] "--im"
+              isPaths g " -import-path "
+              isNothing g " -max-time "
+          }
+          test "node: --no-x when negatable; the script ends node's options" {
+              let n = fx "nodefx"
+              has (words n " --no-") [ "--no-warnings"; "--no-trace-warnings"; "--no-test" ]
+              lacks (words n " --no-") [ "--no-eval"; "--no-no-warnings" ]
+              // a bare -- lists the real flags only
+              let bare = words n " --"
+              has bare [ "--warnings"; "--no-warnings"; "--trace-warnings" ]
+              lacks bare [ "--no-trace-warnings"; "--no-test" ]
+              lacks (words n " --no") [ "--no-trace-warnings" ]
+              isNothing n " --input-type "
+              isPaths n " script.js -"
+          }
+          test "clap and fish: a Wire long, a seq value" {
+              let c = fx "clapfx"
+              has (words c " --t") [ "--type" ]
+              isNothing c " -x "
+              isPaths c " -x ls -"
+              let f = fx "fishfx"
+              has (words f " -") [ "-A"; "-o"; "--after-context"; "-plain" ]
+          }
+          test "choices from a bare-case union; --flag= completes the value part" {
+              withTempDir "weir-sigch" (fun d ->
+                  let p = Path.Combine(d, "chtool.weir")
+
+                  File.WriteAllLines(
+                      p,
+                      [ "module Chtool"
+                        "type Color = | Always | Never | Auto"
+                        "type Mode = | Fast | SlowMotion"
+                        "type Cmd = {"
+                        "    color: Option<Color>"
+                        "    mode: Mode"
+                        "    /// read settings from file"
+                        "    config: string"
+                        "    /// a note"
+                        "    note: string"
+                        "}" ]
+                  )
+
+                  let si = loadAt p "chtool"
+                  Expect.equal (words si " --color=a") [ "always"; "auto" ] "attached value"
+                  Expect.equal (words si " --color=") [ "always"; "auto"; "never" ] "all"
+                  Expect.equal (words si " --mode ") [ "fast"; "slow-motion" ] "next word"
+                  Expect.equal (words si " --mode s") [ "slow-motion" ] "prefix"
+                  // Option takes an attached value only
+                  isPaths si " --color "
+                  // the doc names a file; a plain value offers nothing
+                  isPaths si " --config "
+                  isNothing si " --note ")
+          }
+          test "an untrusted sig's spellings: only bare words are offered, and -= never throws [D:sig-arg-complete]" {
+              withTempDir "weir-sigsp" (fun d ->
+                  let p = Path.Combine(d, "sptool.weir")
+
+                  File.WriteAllLines(
+                      p,
+                      [ "module Sptool"
+                        "let dashWords = true"
+                        "type Cmd = {"
+                        "    [<Wire \"ok-flag\">] ok: bool"
+                        "    [<Wire \"x y\">] spaced: bool"
+                        "    [<Wire \"q\\\"uote\">] quoted: bool"
+                        "    [<Wire \"nl\\nprint 1\">] newline: bool"
+                        "}" ]
+                  )
+
+                  let si = loadAt p "sptool"
+                  let offered = words si " --"
+                  Expect.contains offered "--ok-flag" "a bare word is offered"
+                  Expect.isFalse (offered |> List.exists (fun w -> w |> Seq.exists (fun c -> System.Char.IsWhiteSpace c || System.Char.IsControl c || c = '"'))) $"no spaced/quoted/control spelling: {offered}"
+                  // a one-character flag name under dashWords
+                  at si " -=" |> ignore
+                  at si " -= " |> ignore)
+          }
+          test "lookup: project sigs, then the user dir; mtime-keyed reload" {
+              withTempDir "weir-siglk" (fun root ->
+                  let proj = Path.Combine(root, "proj")
+                  let user = Path.Combine(root, "user")
+                  Directory.CreateDirectory(Path.Combine(proj, ".git")) |> ignore
+                  Directory.CreateDirectory(Path.Combine(proj, ".weir", "sigs")) |> ignore
+                  Directory.CreateDirectory user |> ignore
+                  let sub = Path.Combine(proj, "deep", "er")
+                  Directory.CreateDirectory sub |> ignore
+
+                  let sigOf (flag: string) =
+                      [ "module Lk"; "type Cmd = {"; $"    {flag}: bool"; "}" ]
+
+                  let longs () =
+                      match Weir.Script.SigLookup.findIn sub user "lktool" with
+                      | Some si -> si.Surfaces[""].Longs |> Map.keys |> List.ofSeq
+                      | None -> []
+
+                  Expect.equal (longs ()) [] "nothing found"
+                  File.WriteAllLines(Path.Combine(user, "lktool.weir"), sigOf "fromUser")
+                  Expect.equal (longs ()) [ "from-user" ] "the user dir"
+                  let projSig = Path.Combine(proj, ".weir", "sigs", "lktool.weir")
+                  File.WriteAllLines(projSig, sigOf "fromProject")
+                  Expect.equal (longs ()) [ "from-project" ] "the project wins"
+                  File.WriteAllLines(projSig, sigOf "edited")
+                  File.SetLastWriteTimeUtc(projSig, System.DateTime.UtcNow.AddMinutes 1.0)
+                  Expect.equal (longs ()) [ "edited" ] "a new mtime reloads"
+                  // a sig that does not load falls through to the user dir
+                  File.WriteAllLines(projSig, [ "module Lk"; "let x =" ])
+                  File.SetLastWriteTimeUtc(projSig, System.DateTime.UtcNow.AddMinutes 2.0)
+                  Expect.equal (longs ()) [ "from-user" ] "a broken project sig")
+          }
+          test "the argv slot: head and args through env prefixes, ^, let, stages" {
+              let at before = Weir.Complete.commandArgvAt env before
+              Expect.equal (at "gitfx ") (Some("gitfx", " ")) "bare"
+              Expect.equal (at "gitfx commit --") (Some("gitfx", " commit --")) "args"
+              Expect.equal (at "FOO=1.2 gitfx ") (Some("gitfx", " ")) "env prefix"
+              Expect.equal (at "^gitfx ") (Some("^gitfx", " ")) "forced, the sigil kept"
+              Expect.equal (at "let r = gitfx ") (Some("gitfx", " ")) "let RHS"
+              Expect.equal (at "ls | gitfx ") (Some("gitfx", " ")) "stage"
+              Expect.equal (at "gitfx") None "the head itself"
+              Expect.equal (at "xs |> gitfx ") None "a |> pipeline"
+          }
+          test "REPL Tab: a sig'd head completes from the session cwd's project" {
+              withTempDir "weir-sigtab" (fun d ->
+                  Directory.CreateDirectory(Path.Combine(d, ".git")) |> ignore
+                  Directory.CreateDirectory(Path.Combine(d, ".weir", "sigs")) |> ignore
+                  File.Copy(Path.Combine(fixtureDir, "gitfx.weir"), Path.Combine(d, ".weir", "sigs", "gitfx.weir"))
+
+                  inCwd d (fun () ->
+                      let tabWith aliases (line: string) =
+                          Weir.Script.suggestEntry aliases Map.empty env [ line ] line (Weir.Complete.wordStartAt line line.Length)
+
+                      let tab = tabWith Map.empty
+
+                      Expect.equal (tab "gitfx com") [ "commit" ] "subcommand"
+                      Expect.equal (tab "gitfx commit --am") [ "--amend" ] "flag"
+                      Expect.equal (tab "let r = gitfx commit --am") [ "--amend" ] "let RHS"
+                      Expect.equal (tab "GIT_X=1 gitfx st") [ "stash"; "status" ] "env prefix"
+                      Expect.equal (tab "gitfx commit -m ") [] "a message offers nothing"
+                      Expect.equal (tab "^gitfx com") [ "commit" ] "forced"
+                      // a session alias expands first [D:command-head-alias]:
+                      // its exe's sig, its prefix words as typed
+                      let aliases =
+                          Map [ "co", ("gitfx", [ "commit" ]); "g", ("gitfx", []); "ed", ("nosigtool", [ "-x" ]) ]
+
+                      Expect.equal (tabWith aliases "co --am") [ "--amend" ] "alias with a prefix"
+                      Expect.contains (tabWith aliases "co -") "-m" "the prefix's case flags"
+                      Expect.isFalse (List.contains "--keep-index" (tabWith aliases "co -")) "never another case's"
+                      Expect.equal (tabWith aliases "g st") [ "stash"; "status" ] "alias without a prefix"
+                      Expect.equal (tabWith aliases "^co com") [] "^ skips the alias table"
+                      // no sig for the head: today's path completion
+                      File.WriteAllText(Path.Combine(d, "commit-notes.txt"), "")
+                      Expect.equal (tab "nosigtool comm") [ "commit-notes.txt" ] "paths"
+                      Expect.equal (tabWith aliases "ed comm") [ "commit-notes.txt" ] "an alias to a sig-less tool: paths"))
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -30974,6 +31249,7 @@ let allTests =
           matchArmCommandTests
           retryPollTests
           sigTests
+          sigCompleteTests
           sizeTests
           windowsFindingsTests
           sizedFindingsTests

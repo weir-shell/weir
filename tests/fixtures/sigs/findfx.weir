@@ -1,0 +1,67 @@
+module Findfx
+/// generated from 'findfx' on 2026-10-22
+/// source: help — a scraped surface may be incomplete (partial
+/// by default; add `let exhaustive = true` once verified by hand)
+/// flat surface: flags checked across the whole line — split into
+/// subcommand records by hand if the tool warrants it
+let version = "find (GNU findutils) 4.10.0"
+let convention = "find"
+type Cmd = {
+    [<Wire "-and">]
+    and: bool
+    [<Wire "-D">]
+    shortD: string
+    [<Wire "-delete">]
+    delete: bool
+    [<Wire "-print0">]
+    print0: bool
+    [<Wire "-print">]
+    print: bool
+    [<Wire "-prune">]
+    prune: bool
+    [<Wire "-quit">]
+    quit: bool
+    [<Wire "-depth">]
+    depth: bool
+    [<Wire "-maxdepth">]
+    maxdepth: bool
+    [<Wire "-mindepth">]
+    mindepth: bool
+    [<Wire "-xdev">]
+    xdev: bool
+    /// ; -exec COMMAND {} + -ok COMMAND ;
+    [<Wire "-exec">]
+    exec: seq<string>
+    [<Wire "-H">]
+    shortH: bool
+    /// display this help and exit
+    help: bool
+    [<Wire "-iname">]
+    iname: string
+    [<Wire "-mtime">]
+    mtime: string
+    [<Wire "-name">]
+    name: string
+    [<Wire "-newer">]
+    newer: string
+    [<Wire "-L">]
+    shortL: bool
+    [<Wire "-not">]
+    not: string
+    [<Wire "-O">]
+    shortO: string
+    [<Wire "-ok">]
+    ok: seq<string>
+    [<Wire "-or">]
+    or: string
+    [<Wire "-P">]
+    shortP: bool
+    [<Wire "-path">]
+    path: string
+    [<Wire "-type">]
+    typeFlag: string
+    [<Wire "-empty">]
+    empty: string
+    /// output version information and exit
+    version: bool
+}

@@ -404,13 +404,21 @@ let main argv =
                  | Error e ->
                      Console.Error.WriteLine $"weir add: {e}"
                      1)
-        | [ "add"; "sig"; tool ] ->
+        | [ "add"; "sig"; tool ]
+        | [ "add"; "sig"; "--global"; tool ] when not (tool.StartsWith "-") ->
             let weirDir =
                 match Contracts.findWeirDir "." with
                 | Ok d -> d
                 | Error _ -> IO.Path.GetFullPath ".weir"
 
-            (match Script.SigGen.generate weirDir tool with
+            // --global: the user dir, no lock [D:sig-arg-complete]
+            let globalDir =
+                if Array.contains "--global" argv then
+                    Some(Script.SigLookup.userDir ())
+                else
+                    None
+
+            (match Script.SigGen.generateTo globalDir weirDir tool with
              | Ok line ->
                  // the line quotes the tool's --version [D:sig-text-sanitize]
                  Console.WriteLine(lockText line)
@@ -419,7 +427,7 @@ let main argv =
                  Console.Error.WriteLine $"weir add sig: {lockText e}"
                  1)
         | "add" :: "sig" :: _ ->
-            Console.Error.WriteLine "usage: weir add sig <tool>   generate a signature from the installed binary"
+            Console.Error.WriteLine "usage: weir add sig [--global] <tool>   generate a signature from the installed binary (--global: into the user dir, for the REPL's Tab everywhere)"
             2
         | [ "add"; "module"; spec; "--as"; name ] ->
             let weirDir =
@@ -512,7 +520,7 @@ let main argv =
             2
         | "add" :: _ ->
             Console.Error.WriteLine
-                "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig <tool>                 generate a signature from the installed binary\n       weir add module <src>//<file>@<ref> --as <name>   vendor a remote module, lock it"
+                "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig [--global] <tool>      generate a signature from the installed binary\n       weir add module <src>//<file>@<ref> --as <name>   vendor a remote module, lock it"
 
             2
         | [ "restore" ] ->
@@ -765,7 +773,7 @@ let main argv =
                 + "       weir check --can [--strict] [--json] <script>  the static capability report\n"
                 + "       weir fmt [--check] <script>             canonical formatter\n"
                 + "       weir lsp                                language server (stdio)\n"
-                + "       weir add sig <tool>                     generate a command signature from the installed binary\n"
+                + "       weir add sig [--global] <tool>          generate a command signature from the installed binary\n"
                 + "       weir add schema <url> --as <name>       fetch an external contract, lock it\n"
                 + "       weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it\n"
                 + "       weir gen types --schema <name>          generate weir types from a locked schema\n"

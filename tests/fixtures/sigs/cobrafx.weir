@@ -1,0 +1,98 @@
+module Cobrafx
+/// generated from 'cobrafx' on 2026-10-22
+/// source: cobra-complete+subs — a scraped surface may be incomplete (partial
+/// by default; add `let exhaustive = true` once verified by hand)
+/// scoped surface [D:scoped-sigs]: the LONGEST matching subcommand
+/// path picks the case (issue list beats issue); a case checks its
+/// own flags and the Globals; an unlisted subcommand is not checked
+let version = "cobrafx version v2.1.0, build dfc520d"
+/// a multi-letter single-dash word is a bundle of shorts (`-xzf`)
+let bundles = true
+/// the first operand of these ends the tool's own options (what follows is
+/// handed on — a container's command, a script's arguments)
+let stopAtOperand = [ "run"; "container run" ]
+type Globals = {
+    /// Name of the context
+    context: string
+    /// Enable debug mode
+    [<Short "D">]
+    debug: bool
+    /// Help
+    help: bool
+    /// Daemon socket
+    [<Short "H">]
+    host: string
+}
+type RunFlags = {
+    /// Run container in background
+    [<Short "d">]
+    detach: bool
+    /// Set environment variables
+    [<Short "e">]
+    env: string
+    /// Assign a name
+    name: string
+    /// Automatically remove
+    rm: bool
+}
+type PsFlags = {
+    /// Show all containers
+    [<Short "a">]
+    all: bool
+    /// Format output
+    format: string
+}
+type ComposeFlags = {
+    /// Compose configuration files
+    [<Short "f">]
+    file: string
+}
+type ComposeUpFlags = {
+    /// Build images
+    build: bool
+    /// Detached mode
+    [<Short "d">]
+    detach: bool
+    /// Compose configuration files
+    [<Short "f">]
+    file: bool
+}
+type PrFlags = {
+    /// Select another repository
+    [<Short "R">]
+    repo: bool
+}
+type PrCreateFlags = {
+    /// The branch
+    [<Short "B">]
+    base: string
+    /// Mark as draft
+    [<Short "d">]
+    draft: bool
+    /// Select another repository
+    [<Short "R">]
+    repo: bool
+    /// Title
+    [<Short "t">]
+    title: string
+}
+type PrViewFlags = {
+    /// Select another repository
+    [<Short "R">]
+    repo: bool
+    /// Open in the browser
+    [<Short "w">]
+    web: bool
+}
+type Cmd =
+    | ContainerRun of RunFlags
+    | ContainerLs of PsFlags
+    | Ls of PsFlags
+    | PrNew of PrCreateFlags
+    | Run of RunFlags
+    | Ps of PsFlags
+    | Compose of ComposeFlags
+    | ComposeUp of ComposeUpFlags
+    | Pr of PrFlags
+    | PrCreate of PrCreateFlags
+    | PrView of PrViewFlags
