@@ -856,6 +856,65 @@ let private adoptMain () =
     next ()
 
 
+// ---- the stop request [D:stop-request] ----------------------------------
+// While a stop-aware construct runs (a `repeat`, a `Self.waitForStop`), the
+// first stop signal only asks the program to stop: it sets the sticky
+// request, wakes the stop-aware waits and returns — no teardown, no cut, no
+// kill. A second signal, or any signal with none live, is the teardown.
+
+/// what a stop signal does
+type StopVerdict =
+    /// set the request and wake the stop-aware waits; nothing else
+    | StopRequested
+    /// the existing signal path
+    | Teardown
+
+/// the stop request's state: the live stop-aware constructs and the sticky
+/// request, with the token its waits wake on
+type StopMachine() =
+    let gate = obj ()
+    let mutable depth = 0
+    let mutable requested = false
+    let mutable cts = new System.Threading.CancellationTokenSource()
+
+    /// a stop-aware construct starts
+    member _.Enter() = lock gate (fun () -> depth <- depth + 1)
+
+    /// a stop-aware construct ends
+    member _.Exit() = lock gate (fun () -> depth <- max 0 (depth - 1))
+
+    member _.Depth = lock gate (fun () -> depth)
+
+    member _.Requested = lock gate (fun () -> requested)
+
+    /// the token the stop-aware waits wake on (cancelled once requested)
+    member _.Token = lock gate (fun () -> cts.Token)
+
+    /// a stop signal arrived: the first while a stop-aware construct is
+    /// live is the request, any other the teardown
+    member _.Signal() : StopVerdict =
+        let wake =
+            lock gate (fun () ->
+                if depth > 0 && not requested then
+                    requested <- true
+                    Some cts
+                else
+                    None)
+
+        match wake with
+        | Some c ->
+            c.Cancel()
+            StopRequested
+        | None -> Teardown
+
+    /// forget the request (the REPL, at an entry's end) [D:repl-stop-request]
+    member _.Clear() =
+        lock gate (fun () ->
+            if requested then
+                requested <- false
+                cts <- new System.Threading.CancellationTokenSource())
+
+
 // ---- the main-thread teardown [D:signal-main-unwind] [D:stdout-epipe] --
 // A signal or a closed stdout ends the script, but the teardown — every
 // `always`, every scope's release — runs on the MAIN thread, never in the
