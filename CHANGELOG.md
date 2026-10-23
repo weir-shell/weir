@@ -23,6 +23,18 @@ Many of the changes and fixes below were found porting starship to weir.
 
 ### Changed
 
+- **Two imports can declare the same type name.** Each is reached by
+  its qualified name, `A.LangDefaults` or `B.LangDefaults`, in every
+  place a type is written: record fields, union cases, signatures, the
+  `from json`/`from yaml` slot (`from json A.Config` used to be refused),
+  `Env.load`/`Args.load` and record literals. The two are different
+  types even with the same fields. The plain name still works while
+  only one import declares it; when two do, using it is an error that
+  lists both qualified names. Before, importing the second module failed
+  with "cross-module same-name types are not yet distinguishable". A
+  type you declare above an import of the same name now keeps the plain
+  name instead of failing, and at the REPL a session `type` over an
+  init import's type leaves the import's type reachable qualified.
 - **`def` is an ordinary name.** `let def = 1` and a field called `def`
   work. A line shaped like a definition, `def double x = …`, still gets
   "'def' is not a weir word — define with 'let f x = ...'".

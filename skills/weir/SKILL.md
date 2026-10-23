@@ -2009,8 +2009,8 @@ type Bad = C of int
   `uniqueItems`, `readOnly`, `const`, `format`, `contentEncoding`, …)
   are accepted but NOT enforced — each gets a `// note: not enforced:`
   line (`const` drafts its type); a root `$id` is ignored; import it with
-  `import "weir:<name>" as X` (type names resolve bare in the
-  adapter slot). `from table` stays the tier for tools with no
+  `import "weir:<name>" as X` (the slot takes `X.Name`, or the bare
+  name while no other import declares it). `from table` stays the tier for tools with no
   schema at all. The generated file is yours — regeneration is an
   explicit re-run, and every place the schema could not decide is a
   `// note:` line, never a silent guess.
@@ -2270,8 +2270,14 @@ conf |> Seq.iter print
   `let helper n = …`, annotation-free: the signature's types flow
   INTO its checking, so a param can pattern-match its declared union
   and a generic sig (`'a -> 'a`) is honoured — an impl that pins `'a`
-  refuses as less-general. A signature names types bare — an imported
-  type resolves by its plain name, never `X.Ty`. A type a module
+  refuses as less-general. An imported type is `X.Ty` in ANY type
+  position [D:qualified-type-names] — signature, field, case payload,
+  the adapter slot (`from json X.Cfg`, `seq<X.Cfg>`), `Env.load`/`Args.load`,
+  the literal `X.Cfg { … }` — and its bare name works while ONE import
+  declares it. Two imports declaring one name (`A.Cfg`, `B.Cfg`) are two
+  types, field-identical or not; the bare `Cfg` then refuses, naming both
+  spellings — never a silent pick. A local `type` keeps the bare name over
+  an import below it (the import's is reached qualified). A type a module
   imports crosses to ITS importers with the signatures that mention
   it (fields, show, `==`, match all work), but stays the defining
   module's — no `B.Pt { … }` literal through the re-exporter.
@@ -2331,6 +2337,27 @@ match M.grade 90 with
 // unsigned = module-private; the error names the signature to add
 import "./msig-lib.weir" as M
 print (show (M.raw 1))
+```
+
+```weir
+// two imports, one type name: each reached qualified [D:qualified-type-names]
+["module"; "type Cfg = { name: string }"] |> File.write "qtn-a.weir"
+["module"; "type Cfg = { name: string; port: int }"] |> File.write "qtn-b.weir"
+```
+
+```weir
+import "./qtn-a.weir" as A
+import "./qtn-b.weir" as B
+let a = A.Cfg { name = "x" }
+let b = ["{\"name\": \"y\", \"port\": 1}"] |> from json B.Cfg
+print $"{a.name} {b.port}"
+```
+
+```weir-error
+// the bare name two imports declare refuses, naming A.Cfg and B.Cfg
+import "./qtn-a.weir" as A
+import "./qtn-b.weir" as B
+let c = ["{}"] |> from json Cfg
 ```
 
 ```weir

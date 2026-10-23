@@ -739,12 +739,12 @@ type TypeEnv =
       PlanRefused: Map<string, string>
       Modules: Map<string, Map<string, Scheme>>
       Types: Map<string, TypeDef>
-      // imported modules [D:modules-v1]: alias -> the type names that
-      // module exported. Types themselves live flat in `Types` (plain
-      // name, so signatures/field-access/bare literals resolve); this
-      // records provenance so the qualified literal `Git.Ctx { .. }`
-      // can confirm the module owns that type. Empty for single-file.
-      ModuleTypes: Map<string, Set<string>>
+      // imported modules [D:modules-v1]: alias -> each type that module
+      // declares -> its key in `Types`. The key is the plain name while
+      // no other import declares that name, else the qualified one
+      // ("A.T") [D:qualified-type-names]; `A.T` resolves through here,
+      // a bare name through `Types`. Empty for single-file.
+      ModuleTypes: Map<string, Map<string, string>>
       // every imported type's identity [D:transitive-types]: its name in
       // this env -> "Module.Name@absPath" of the module that declared
       // it, so the same type reached twice is one type, and a type
