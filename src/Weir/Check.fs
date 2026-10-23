@@ -2083,6 +2083,18 @@ let regexGuarded (pat: string) (input: string) (f: unit -> 'a) : 'a =
             failwith
                 $"{ran} — the pattern backtracks catastrophically on this input (nested repetition like (a+)+ or (a|a)*); rewrite it so each character can match only one way"
 
+let private namedGroupMsg (opener: string) =
+    $"named group '{opener}' — weir names captures at the binder, not in the pattern: use a plain (…) group and name it in the binder list"
+
+// the first unescaped `(?P<name>` opener, if any
+let private pythonNamedGroup (pat: string) : string option =
+    let m = System.Text.RegularExpressions.Regex.Match(pat, @"(?<!\\)(?:\\\\)*\(\?P<([A-Za-z_][A-Za-z0-9_]*)>")
+
+    if m.Success then
+        Some $"(?P<{m.Groups[1].Value}>"
+    else
+        None
+
 let compileRegex (pat: string) : Result<System.Text.RegularExpressions.Regex, string> =
     match regexCache.TryGetValue pat with
     | true, rx -> Ok rx
@@ -2105,14 +2117,17 @@ let compileRegex (pat: string) : Result<System.Text.RegularExpressions.Regex, st
                 |> Array.tryFind (fun n -> not (n |> Seq.forall System.Char.IsDigit))
 
             match named with
-            | Some n ->
-                Error
-                    $"named group '(?<{n}>' — weir names captures at the binder, not in the pattern: use a plain (…) group and name it in the binder list"
+            | Some n -> Error(namedGroupMsg $"(?<{n}>")
             | None ->
                 regexCache[pat] <- rx
                 Ok rx
         with ex ->
-            Error ex.Message
+            // Python's `(?P<name>…)` is a named group too
+            // [D:no-named-groups]: .NET cannot parse it, so its raw
+            // "unrecognized grouping construct" would hide the teaching
+            match pythonNamedGroup pat with
+            | Some opener -> Error(namedGroupMsg opener)
+            | None -> Error ex.Message
 
 let casingError (span: Span) (name: string) : Result<'a, TypeError> =
     err

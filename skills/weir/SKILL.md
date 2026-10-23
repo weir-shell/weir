@@ -389,7 +389,7 @@ print $"""tok {s}"""
   CHECK time (invalid regex = check error) and the binder arity must
   equal the capture count — `()` for 0, one name for 1, a tuple for n
   (non-capturing `(?:...)` does not count). NAMED groups `(?<x>...)`
-  REJECT: weir names captures at the BINDER, not in the pattern
+  (and Python's `(?P<x>...)`) REJECT: weir names captures at the BINDER, not in the pattern
   (lookbehind `(?<=`/`(?<!` is fine). Groups bind as STRINGS;
   convert in the arm. Regex arms never complete a match. Computed
   hashing/encoding: `Str.sha256` (lowercase hex of UTF-8 bytes),

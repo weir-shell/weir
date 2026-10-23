@@ -837,6 +837,16 @@ let warningTests =
 
               Expect.stringContains m2 "named group '(?<y>'" "the quote spelling, same refusal"
           }
+          test "a Python (?P<name>) group gets the named-group teaching [D:no-named-groups]" {
+              let terr = checkErr "match \"a=1\" with | Regex @\"(?P<k>\\w+)=(\\d+)\" (k, v) -> k + v | _ -> \"\""
+              Expect.stringContains terr.Message "named group '(?P<k>'" "at check time"
+              Expect.stringContains terr.Message "names captures at the binder" "the teaching"
+              Expect.isFalse (terr.Message.Contains "Unrecognized grouping") "never .NET's raw message"
+
+              Expect.stringContains (msgOf "Str.isMatch @\"(?P<k>\\w+)\" \"abc\"") "named group '(?P<k>'" "expression side"
+              // an escaped paren is no group: a literal `(`, `?` on it
+              expectValue "Str.isMatch @\"\\(?P<k>\" \"P<k>\"" (VBool true)
+          }
           test "the detection's ONLY risk, pinned: lookbehinds and (?: still work [D:no-named-groups]" {
               // (?<= and (?<! share three characters with (?<name> — the
               // engine's own group table is the detector, so zero-width
