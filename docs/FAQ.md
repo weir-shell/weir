@@ -11,13 +11,13 @@ page is for when you know what you want and need the spelling.
 
 `ls` is a weir builtin: it lists the current directory as typed rows
 (`name`, `kind`, `path`, …), so you can filter it like any other
-value. `^ls` runs the program from PATH, and `Dir.list` gives the
-paths of another directory as strings.
+value. `^ls` runs the program from PATH, and `Dir.stat` gives the
+same rows for another directory.
 
 ```weir
 ls |> Seq.where (fun f -> f.kind == Directory) |> Seq.iter (fun f -> print f.name)
 ^ls -a
-Dir.list "/" |> Seq.take 3 |> Seq.iter print
+Dir.stat "/" |> Seq.where (fun f -> f.kind == Directory) |> Seq.iter (fun f -> print f.name)
 ```
 
 See [How a line decides](GUIDE.md#how-a-line-decides).
