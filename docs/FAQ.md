@@ -194,12 +194,16 @@ See [Script-only](reference/modules.md#script-only).
 
 ## The REPL and init.weir
 
-### Why does `#session` refuse a value computed by a command?
+### What can a `#session` value contain?
 
-`#session` settings are read, not computed: a value can't run a
-command, and it can't name the file's own declarations, because
-settings are read before those exist. Write the value inline; reading
-a file isn't running a command.
+Any expression, with two limits:
+
+- **No commands.** Nothing in init.weir runs a program while it loads,
+  so `"HOST", $(hostname)` is refused. Reading a file is fine; it
+  isn't running a program.
+- **No names from the same file** (except in `prompt`). Settings are
+  read before the file's `let`s are bound, so `"EDITOR", ed` with a
+  `let ed = …` in the file has nothing to name. Write the value inline.
 
 ```text
 #init
