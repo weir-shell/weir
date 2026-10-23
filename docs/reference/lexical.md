@@ -58,7 +58,7 @@ A keyword can't be used as a name — `let let = 1` is refused with
 | shared with F# | `do`, `elif`, `else`, `false`, `for`, `fun`, `function`, `if`, `in`, `let`, `match`, `module`, `of`, `then`, `true`, `type`, `when`, `with` |
 | weir's own | `always`, `from`, `import`, `plan`, `poll`, `pure`, `readonly`, `retry`, `to`, `try`, `until`, `within` |
 | reserved, unused | `mutable`, `rec` |
-| reserved for a helpful error | `def`, `return`, `while` |
+| reserved for a helpful error | `return`, `while` |
 
 After `within` comes the kind of scope: `cd`, `env`, `lock`, `proc`, `serve`, `tmp`.
 Data is read with `from` (`json`, `jsonl`, `table`, `toml`, `xml`, `yaml`) and written with `to`
@@ -82,14 +82,27 @@ let rec f x = x // 'rec' is reserved; weir has no let rec
 print "y"
 ```
 
-Three more are reserved only so that the error can help. weir has no
+Two more are reserved only so that the error can help. weir has no
 such constructs, but if you type one out of habit from another
 language, the error tells you what to write instead: `while` points
-at `retry`/`poll` and seq iteration, `return` at a function's last
-expression, and `def` at `let`:
+at `retry`/`poll` and seq iteration, and `return` at a function's last
+expression:
 
 ```weir-error
 while true do print "x" // 'while' is not a weir word — the error points at retry/poll
+```
+
+`def` is not reserved — `let def = 1` and a field named `def` work — but
+a line shaped like a definition, `def <name> … =`, gets the same kind of
+help and points at `let`:
+
+```weir-error
+def double x = x * 2 // 'def' is not a weir word — define with 'let f x = ...'
+```
+
+```weir
+let def = 21
+print (show (def * 2))
 ```
 
 ## Strings

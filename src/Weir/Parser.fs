@@ -59,11 +59,11 @@ let keywords =
           "function"
           // foreign control-flow words, reserved so they teach weir's
           // spelling instead of resolving as PATH programs
-          // (PLAN-dx-review D4)
+          // (PLAN-dx-review D4); `def` is an ordinary name whose
+          // teaching keys on the statement shape [D:def-shape]
           "while"
           "return"
-          "try"
-          "def" ]
+          "try" ]
 
 // the keyword set, exposed for tooling resolvers (weir check's
 // assume-command rule must never claim a keyword head)
@@ -3762,11 +3762,12 @@ let private seqSep = (str_ws ";" <|> str_ws sibSepStr) <?> "';'"
 // keywords fall through to the expression grammar exactly as the
 // statement classifier decides.
 // foreign control-flow words teach weir's spelling at statement
-// positions (PLAN-dx-review D4) — reserved words, so they can never
-// resolve as identifiers or PATH programs; the guard dominates the
+// positions (PLAN-dx-review D4) — reserved words (bar `def`
+// [D:def-shape]), so they can never resolve as identifiers or PATH
+// programs; the guard dominates the
 // expecting-list [D:anchor-before-read]
 /// the foreign words' keys, public so the diagnostic funnel can strip them
-/// from expecting-lists — a word reserved only to say "weir does not have
+/// from expecting-lists — a word kept only to say "weir does not have
 /// this" must never be offered as something the parser expects. One source:
 /// this list, never a second copy.
 let foreignKeywordWords = [ "while"; "return"; "try"; "def" ]
@@ -3778,11 +3779,26 @@ let private foreignKeywordTeachings =
       "'try' goes after a pipeline, not before a block — `<expr> |> try` gives an Option (None if it failed), `<expr> |> try result` a Result; for a failing command, `<command> | complete`; for cleanup that always runs, `within … always`"
       "def", "'def' is not a weir word — define with 'let f x = ...'" ]
 
+// `def` is not reserved [D:def-shape]: `let def = 1` and `x.def` are
+// ordinary names, so its teaching fires only on the definition
+// statement's shape — `def <name> … =` (a lone `=`, not `==`/`<=`/`>=`)
+let private defStatementShape: Parser<unit, unit> =
+    followedBy (regex @"def[ \t]+[A-Za-z_][A-Za-z0-9_']*[^\n]*?(?<![=<>!])=(?!=)")
+
+// the def teaching alone, for the command grammar: `def` is an ordinary
+// word, so a body line a command spine reaches first (a let RHS's) would
+// read `def g x = x` as a command line
+let private defStatementGuard () : Parser<'a, unit> =
+    let teach = foreignKeywordTeachings |> List.find (fst >> (=) "def") |> snd
+    attempt (getPosition .>> defStatementShape .>> pstring "def") >>= fun at -> failFatallyAt at teach
+
 let private foreignKeywordGuard () : Parser<'a, unit> =
     choice (
         foreignKeywordTeachings
         |> List.map (fun (w, teach) ->
-            attempt (getPosition .>> pstring w .>> notFollowedBy (satisfy isIdentCont))
+            let shape = if w = "def" then defStatementShape else preturn ()
+
+            attempt (getPosition .>> shape .>> pstring w .>> notFollowedBy (satisfy isIdentCont))
             >>= fun at -> failFatallyAt at teach)
     )
 
@@ -5021,8 +5037,9 @@ let private cmdLineWith
     (sigilEnv: Expr option)
     (r: Resolver)
     : Parser<Expr, unit> =
-    commandSegment builtinHeads argP sigilEnv r
-    .>>. pipedStages builtinHeads argP sigilEnv r
+    defStatementGuard ()
+    <|> (commandSegment builtinHeads argP sigilEnv r
+         .>>. pipedStages builtinHeads argP sigilEnv r)
     >>= fun (h, rest) ->
         match foldChain h rest with
         | Result.Ok e -> preturn e

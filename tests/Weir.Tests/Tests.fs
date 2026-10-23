@@ -4806,7 +4806,7 @@ let completionTests =
 
               Expect.equal
                   Weir.Complete.unsuggestedKeywords
-                  (Set [ "rec"; "mutable"; "function"; "while"; "return"; "def" ])
+                  (Set [ "rec"; "mutable"; "function"; "while"; "return" ])
                   "the exclusion set moved — its reasons live beside its definition"
 
               // behavioral, through suggest itself: the once-missing
@@ -24649,8 +24649,23 @@ let dxMessageTests =
           test "D4: foreign control-flow words teach weir's spelling" {
               mustSay [ "while true do"; "    print (show 1)" ] "'while' is not a weir word" "while"
               mustSay [ "let f n ="; "    return n"; "print (show (f 1))" ] "'return' is not a weir word" "return"
-              mustSay [ "def f():"; "    print (show 1)" ] "'def' is not a weir word" "def"
+              // the definition statement's shape [D:def-shape]
+              mustSay [ "def f x = x + 1" ] "'def' is not a weir word" "def"
               mustSay [ "let r = try (echo x)"; "print (show 1)" ] "'try' goes after a pipeline" "try"
+          }
+          test "def is an ordinary name; the teaching keys on `def <name> … =` [D:def-shape]" {
+              errorsCleanIn "def.weir" [ "let def = 1"; "print (show def)" ] "a binder"
+              errorsCleanIn "deff.weir" [ "type R = { def: int }"; "let r = { def = 3 }"; "print (show r.def)" ] "a field"
+              mustSayIn "d1.weir" [ "def f x = x + 1" ] "'def' is not a weir word" "top level"
+
+              mustSayIn
+                  "d2.weir"
+                  [ "let f () ="; "    def g x = x"; "    1"; "print (show (f ()))" ]
+                  "'def' is not a weir word"
+                  "a let body"
+
+              mustSayIn "d3.weir" [ "if true then"; "    def g x = x" ] "'def' is not a weir word" "an if body"
+              Expect.isFalse (Weir.Parser.isKeyword "def") "not a keyword"
           }
           test "D5: List/Array teach Seq; no cross-kind did-you-mean" {
               mustSay [ "let n = List.length [1]"; "print (show n)" ] "weir's sequences are 'Seq'" "List"
