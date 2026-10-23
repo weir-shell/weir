@@ -15408,6 +15408,20 @@ let agentFindingsTests =
               clean [ "let e = [Env.pair \"X\" \"1\"]"; "let v = $e(printenv X | line)"; "print v" ] "env twin binds a string"
               clean [ "let m = [\"a\"; \"b\"] | grep a | line"; "print m" ] "value-headed | line binds a string"
           }
+          test "a | line count error escapes the argv it echoes [D:error-data-escape]" {
+              skipOnWindows ()
+              let msg (src: string) = (Expect.throwsC (fun () -> runReal src |> ignore) id).Message
+
+              Expect.equal
+                  (msg "printf \"a\\nb\\n\" | line")
+                  "'printf a\\x0ab\\x0a | line' expected exactly one line of output, got 2"
+                  "a newline in the argv renders escaped"
+
+              Expect.equal
+                  (msg "printf \"a\\nb\\n\" | cat | line")
+                  "'printf a\\x0ab\\x0a | cat | line' expected exactly one line of output, got 2"
+                  "the chain form too"
+          }
           test "text desugars to the texted application and types as string [D:reify-text]" {
               match Weir.Parser.parseLine cmdResolver "echo hi | text" with
               | Ok(SCmd e)

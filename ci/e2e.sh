@@ -17048,6 +17048,12 @@ echo "$out" | grep -qF "is a UTF-16 surrogate, not a character" || fail "the sur
 out=$($BIN "$bbdir/sur.weir" 2>&1) && fail "a surrogate escape must not run"
 echo "$out" | grep -qF "ok" && fail "a parse error runs nothing: $out"
 echo "e2e ok: \\e and \\u{…} escapes decode in plain and interpolated strings; a surrogate refuses at parse [D:string-escapes]"
+# a | line count error renders its argv as data [D:error-data-escape]: the
+# newline in printf's argument is \x0a, never a raw line break
+out=$($BIN -e 'let x = printf "a\nb\n" | line
+print x' 2>&1) && fail "| line must raise on two lines"
+echo "$out" | grep -qF "'printf a\x0ab\x0a | line' expected exactly one line of output, got 2" || fail "| line must escape the argv it echoes: $out"
+echo "e2e ok: a | line count error escapes the argv it echoes [D:error-data-escape]"
 rm -rf "$bbdir"
 
 echo "e2e battery: all green"
