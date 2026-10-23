@@ -626,12 +626,22 @@ let sleepers mark =
     let r = pgrep -f $"^sleep {mark}$" | complete
     r.stdout |> Seq.length
 
+// TERM only once the fixture is inside its `within` (the ready file), as
+// the probe signals HUP: a fixed delay raced a slow runner's startup
 let ctlTermTeardown d =
     let mark = 3720000 + Self.pid % 10000
-    let r = runSig d "TERM" "2" [put d "c.weir" (e8Fixture mark)]
+    let p = put d "c.weir" (e8Fixture mark)
+    let code =
+        within cd d
+            within proc w = env $@noProxy $"TMPDIR={d}" $cli.bin $p
+                poll timeout=15s interval=50ms watch=w
+                    File.exists $"{d}/ready"
+                kill -TERM (Proc.pid w)
+                Proc.wait w
+    Duration.sleep 500ms
     let ok = File.exists $"{d}/always.marker" && sleepers mark == 0
     let _k = pkill -9 -f $"^sleep {mark}$" | complete
-    codeOf r == 124 && ok
+    code <> 0 && ok
 
 let h3e8 d =
     let mark = 3730000 + Self.pid % 10000
