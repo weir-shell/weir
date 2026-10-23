@@ -53,6 +53,14 @@ The fixes below were found porting starship's scripts to weir.
   json` and `from toml` do (`[Str.join "\n" lines] |> from yaml T`).
   `Yaml.parse` and `Yaml.inferShape` too; error line numbers count the
   lines of the joined text.
+- **A bare `split`, `map` or `where` after a command chain gets the
+  bare-name message.** In `git … | line |> split "/"` the error said
+  "'|>' applies functions; feed a program with '|'"; it now says
+  "'split' is a bare module member — spell it 'Str.split'", as it does
+  after a value. `weir check` and the run now agree on a two-module
+  name such as `xs |> contains x` ("'contains' is module-qualified"),
+  and a file whose first line is such a slip no longer opens with "this
+  does not look like a weir script".
 - **Python's `(?P<name>…)` named group gets weir's named-group
   message** (name captures in the binder) instead of .NET's
   "Unrecognized grouping construct".

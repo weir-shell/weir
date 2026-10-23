@@ -3635,7 +3635,7 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
                 (lm.PrivateMembers |> List.map (fun (n, s) -> n, renameScheme subst s) |> Map.ofList)
                 tenv.ModulePrivate }
 
-let private checkStatementCore
+let rec private checkStatementCore
     (gateExprs: bool)
     (sigCtx: SigContext option)
     (mkR: TypeEnv -> Parser.Resolver)
@@ -3788,7 +3788,24 @@ let private checkStatementCore
             // is an unresolvable command head (the backtrack note buries it).
             // Retry under the assume-resolver: if that parses, the failure is
             // missing commands — name them precisely instead of the dump.
-            match missingCommandDiag None with
+            // check reads a word that is no program as a command head
+            // (assume-resolver); the runner reads it as an expression, so
+            // a `|>`-into-a-program refusal of it is check's alone — take
+            // the runner's verdict instead, so check and run agree
+            // (`xs |> contains x` is module-qualified, not a program)
+            // [D:assume-resolver]
+            let runnersVerdict =
+                if f.Message.StartsWith "'|>' applies functions" then
+                    match Parser.parseLineFull (resolver tenv) ll.Text with
+                    | Ok _ ->
+                        match checkStatementCore gateExprs sigCtx resolver loadImport tenv ll with
+                        | Error d -> Some d
+                        | Ok _ -> None
+                    | Error _ -> None
+                else
+                    None
+
+            match missingCommandDiag None |> Option.orElse runnersVerdict with
             | Some d -> Error d
             | None ->
                 let physLine, physCol, hasCol =
@@ -10199,10 +10216,16 @@ let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
         // gate wants real diagnostics and not a human affordance. No
         // extension rule: this also covers shebang files, stdin and
         // extensionless fixtures, which an extension check cannot.
+        // a bare-member teaching is weir's own diagnosis of weir code —
+        // the file is weir, so no preamble [D:bare-partition]
         let notWeir =
             not parsedAny
             && diags
                |> List.exists (fun d -> d.Line = 1 && d.Code = "parse" && d.Severity = "error")
+            && not (
+                diags
+                |> List.exists (fun d -> d.Line = 1 && d.Message.Contains "is a bare module member")
+            )
 
         if notWeir then
             match diags with

@@ -16050,6 +16050,22 @@ for r in root.weir root2.weir fn.weir; do
     echo "$out" | grep -qE "Expecting|unbound variable" && fail "port: $r must not dump or say unbound: $out"
 done
 echo "e2e ok: a missing \$(cmd | complete) or function-body head gets the unknown-command teaching at run time [D:missing-command-diagnosis]"
+# a bare member after a chain's |> teaches the qualified spelling; a
+# bare-member first line is weir, so no not-weir preamble [D:bare-partition]
+printf 'let b () =\n    git rev-parse --abbrev-ref HEAD | line |> split "/" |> _[0]\nprint (b ())\n' > "$pfdir/sp.weir"
+printf 'let x = "a/b" |> map Str.length\n' > "$pfdir/sp3.weir"
+for r in sp.weir sp3.weir; do
+    out=$(cd "$pfdir" && $BIN check $r 2>&1) && fail "port: $r must not check clean"
+    echo "$out" | grep -qE "'(split|map)' is a bare module member — spell it '(Str.split|Seq.map)'" || fail "port: $r teaches the qualified spelling: $out"
+    echo "$out" | grep -qE "feed a program|does not look like a weir script" && fail "port: $r must not read as a program or as not-weir: $out"
+done
+printf 'let ok = ["a"] |> contains "a"\nprint (show ok)\n' > "$pfdir/two.weir"
+chk=$(cd "$pfdir" && $BIN check two.weir 2>&1) && fail "port: contains must not check clean"
+run=$(cd "$pfdir" && $BIN two.weir 2>&1) && fail "port: contains must not run"
+for o in "$chk" "$run"; do
+    echo "$o" | grep -qF "'contains' is module-qualified here; use Seq.contains or Str.contains" || fail "port: check and run agree on contains: $o"
+done
+echo "e2e ok: a bare or two-home member after |> teaches its qualified spelling, check and run alike, no not-weir preamble [D:bare-partition]"
 rm -rf "$pfdir"
 
 echo "e2e battery: all green"

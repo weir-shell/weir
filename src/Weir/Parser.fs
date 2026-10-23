@@ -4670,6 +4670,20 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
         (fun acc ((op, opSpan), seg) ->
             match acc with
             | Result.Error m -> Result.Error m
+            // a bare module member read as a program after `|>` (`cmd | line
+            // |> split "/"`) is the bare-name slip, taught as in a value
+            // pipe [D:bare-partition]
+            | Result.Ok _ when
+                op = "|>"
+                && (match seg with
+                    | Stage { Kind = ECmd(HeadLit n, _, _) } -> (ambientResolver.Value.BareHome n).IsSome
+                    | _ -> false)
+                ->
+                match seg with
+                | Stage({ Kind = ECmd(HeadLit n, _, _) } as e) ->
+                    let home = (ambientResolver.Value.BareHome n).Value
+                    Result.Error($"'{n}' is a bare module member — spell it '{home}.{n}' (bare names live in the REPL session)", e.Span)
+                | _ -> Result.Error(pipeOpError op, opSpan)
             | Result.Ok _ when op <> requiredPipeOp seg -> Result.Error(pipeOpError op, opSpan)
             | Result.Ok acc when
                 (match seg with

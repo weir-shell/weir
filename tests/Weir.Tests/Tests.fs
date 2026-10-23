@@ -31534,6 +31534,27 @@ let portFindingsTests =
 
               Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "a warning, never an error"
           }
+          test "a bare member after a command chain's `|>` gets the bare-member teaching [D:bare-partition]" {
+              for line, name, home in
+                  [ "    git rev-parse --abbrev-ref origin/HEAD | line |> split \"/\" |> _[0]", "split", "Str"
+                    "    git log --oneline -3 | head -2 |> map (fun l -> l)", "map", "Seq"
+                    "    git log --oneline -3 | line |> where (fun l -> l <> \"\")", "where", "Seq" ] do
+                  let ds = diagsIn "sp.weir" [ "let b () ="; line; "print (show (b ()))" ]
+                  let want = $"'{name}' is a bare module member — spell it '{home}.{name}'"
+                  Expect.exists ds (fun d -> d.Message.Contains want) $"{name}: {ds |> List.map _.Message}"
+                  Expect.isFalse (ds |> List.exists (fun d -> d.Message.Contains "feed a program")) $"{name}: never the program reading"
+
+              // a real program after `|>` keeps the glyph teaching
+              mustSayIn "sp2.weir" [ "git log -1 | head -1 |> grep x" ] "'|>' applies functions; feed a program with '|'" "grep"
+          }
+          test "a two-home name after `|>` gets the runner's module-qualified teaching at check too [D:assume-resolver]" {
+              let line = "let ok = [\"a\"] |> contains \"a\""
+              let want = "'contains' is module-qualified here; use Seq.contains or Str.contains"
+              let ds = diagsIn "c1.weir" [ line; "print (show ok)" ]
+              Expect.exists ds (fun d -> d.Message = want) $"check: {ds |> List.map _.Message}"
+              Expect.isFalse (ds |> List.exists (fun d -> d.Message.Contains "feed a program")) "never the program reading"
+              Expect.equal (stmtDiag line) want "run says the same"
+          }
           test "a missing head at run time gets the unknown-command teaching [D:missing-command-diagnosis]" {
               for line in
                   [ "let r = $(weirnosuchtoolzz -Vv | complete)"
