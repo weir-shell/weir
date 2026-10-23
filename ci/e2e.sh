@@ -15975,4 +15975,29 @@ out=$(cd "$w2dir" && "$BIN" lazy.weir 2>&1) || fail "GUIDE lazy-values example: 
 expect "GUIDE lazy values: read late, within cd/env keep their scope" '["b.txt"]|["b.txt"]|["hi"]' "$out"
 rm -rf "$w2dir"
 
+# ---- the starship port's CLI-level findings -------------------------------
+pfdir=$(mkweirtmp)
+# an importer checks a module as the module checks alone
+# [D:assume-resolver]; a reified head warns like a plain one
+printf 'module\n\nlet ver : unit -> seq<string>\nlet ver () =\n    let r = $(weirnosuchtoolzz -Vv | complete)\n    r.stdout\n' > "$pfdir/modmiss.weir"
+printf 'module\n\nlet ver : unit -> seq<string>\nlet ver () = weirnosuchtoolzz -Vv\n' > "$pfdir/modmiss2.weir"
+printf 'import "modmiss.weir" as M\nM.ver () |> Seq.iter print\n' > "$pfdir/root.weir"
+printf 'import "modmiss2.weir" as M\nM.ver () |> Seq.iter print\n' > "$pfdir/root2.weir"
+out=$(cd "$pfdir" && $BIN check modmiss.weir 2>&1) || fail "port: the lone module checks: $out"
+echo "$out" | grep -qF "warning [cmd-not-found]: command not found on PATH: weirnosuchtoolzz" || fail "port: a missing \$(cmd | complete) head warns: $out"
+for r in root.weir root2.weir; do
+    out=$(cd "$pfdir" && $BIN check $r 2>&1) || fail "port: $r must check as its module does alone: $out"
+done
+echo "e2e ok: an importer checks a module as the module checks alone; a reified missing head warns [D:assume-resolver]"
+# the run-time teaching for a missing head [D:missing-command-diagnosis]
+printf 'let f () =\n    weirnosuchtoolzz -Vv\nf () |> Seq.iter print\n' > "$pfdir/fn.weir"
+for r in root.weir root2.weir fn.weir; do
+    out=$(cd "$pfdir" && $BIN $r 2>&1) && fail "port: $r must fail at run time"
+    echo "$out" | grep -qF "unknown command 'weirnosuchtoolzz'" || fail "port: $r names the unknown command: $out"
+    echo "$out" | grep -qF '^$tool' || fail "port: $r teaches ^\$tool: $out"
+    echo "$out" | grep -qE "Expecting|unbound variable" && fail "port: $r must not dump or say unbound: $out"
+done
+echo "e2e ok: a missing \$(cmd | complete) or function-body head gets the unknown-command teaching at run time [D:missing-command-diagnosis]"
+rm -rf "$pfdir"
+
 echo "e2e battery: all green"

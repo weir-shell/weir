@@ -31322,11 +31322,84 @@ let sigCompleteTests =
                       Expect.equal (tabWith aliases "ed comm") [ "commit-notes.txt" ] "an alias to a sig-less tool: paths"))
           } ]
 
+// the starship port's confirmed findings: each repro, pinned
+let portFindingsTests =
+    let stmtDiag (line: string) =
+        let ll =
+            match Weir.Script.assemble [ 1, line ] with
+            | Ok [ ll ] -> ll
+            | other -> failtest $"assembly: {other}"
+
+        match
+            Weir.Script.checkStatement
+                false
+                None
+                Weir.Script.resolver
+                Weir.Script.scriptOnlyImport
+                Weir.Builtins.typeEnvStrict
+                ll
+        with
+        | Error d -> d.Message
+        | Ok _ -> failtest $"expected {line} to fail"
+
+    testList
+        "starship port findings"
+        [ test "an importer checks a module under its own (assume) resolver [D:assume-resolver]" {
+              withTempDir "weir-port-imp" (fun dir ->
+                  File.WriteAllLines(
+                      Path.Combine(dir, "modmiss.weir"),
+                      [| "module"
+                         ""
+                         "let ver : unit -> seq<string>"
+                         "let ver () ="
+                         "    let r = $(weirnosuchtoolzz -Vv | complete)"
+                         "    r.stdout" |]
+                  )
+
+                  File.WriteAllLines(
+                      Path.Combine(dir, "modmiss2.weir"),
+                      [| "module"; ""; "let ver : unit -> seq<string>"; "let ver () = weirnosuchtoolzz -Vv" |]
+                  )
+
+                  for m in [ "modmiss.weir"; "modmiss2.weir" ] do
+                      let root = Path.Combine(dir, "root.weir")
+                      let lines = [ $"import \"{m}\" as M"; "M.ver () |> Seq.iter print" ]
+                      errorsCleanIn root lines $"importing {m} checks like the lone module")
+          }
+          test "a missing `$(cmd | complete)` head warns like a plain head [D:exit-reifiers]" {
+              let ds =
+                  diagsIn
+                      "fnmiss.weir"
+                      [ "let f () ="
+                        "    let r = $(weirnosuchtoolzz -Vv | complete)"
+                        "    r.stdout"
+                        "f () |> Seq.iter print" ]
+
+              Expect.exists
+                  ds
+                  (fun d -> d.Code = "cmd-not-found" && d.Message.Contains "weirnosuchtoolzz" && d.Line = 2)
+                  $"the reified head warns: {ds |> List.map _.Message}"
+
+              Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "a warning, never an error"
+          }
+          test "a missing head at run time gets the unknown-command teaching [D:missing-command-diagnosis]" {
+              for line in
+                  [ "let r = $(weirnosuchtoolzz -Vv | complete)"
+                    "let f () = weirnosuchtoolzz -Vv"
+                    "let (a, b) = (1, $(weirnosuchtoolzz -V | line))" ] do
+                  let m = stmtDiag line
+                  Expect.stringContains m "unknown command 'weirnosuchtoolzz'" line
+                  Expect.stringContains m "^$tool" $"{line}: the run-time spelling"
+                  Expect.isFalse (m.Contains "Expecting") $"{line}: no FParsec list"
+                  Expect.isFalse (m.Contains "unbound variable") $"{line}: no unbound reading"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
-        [ hardeningTests
+        [ portFindingsTests
+          hardeningTests
           teardownSeamTests
           hunt3BehaviourTests
           hunt3r2CancelTests
