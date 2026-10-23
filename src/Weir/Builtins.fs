@@ -611,7 +611,8 @@ let private oneLine (prog: string) (argv: string list) (lines: seq<string>) : Va
     match List.ofSeq lines with
     | [ one ] -> VStr(one.Trim())
     | ls ->
-        let shown = Proc.showArgv (prog :: argv)
+        // the argv is data: a newline in it renders escaped [D:error-data-escape]
+        let shown = quoteData (Proc.showArgv (prog :: argv))
         failwith $"'{shown} | line' expected exactly one line of output, got {List.length ls}"
 
 let private linedWith (overlay: (string * string) list) : Value =
@@ -8257,7 +8258,7 @@ let private chainLinedImpl =
     chainBuiltin (fun specs ->
         match List.ofSeq (Proc.chainLinesOf specs) with
         | [ one ] -> VStr(one.Trim())
-        | ls -> failwith $"'{chainShown specs} | line' expected exactly one line of output, got {List.length ls}")
+        | ls -> failwith $"'{quoteData (chainShown specs)} | line' expected exactly one line of output, got {List.length ls}")
 
 let private chainTextedImpl =
     chainBuiltin (fun specs -> wholeText (Proc.chainLinesOf specs))
