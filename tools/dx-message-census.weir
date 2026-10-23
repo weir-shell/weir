@@ -34,7 +34,8 @@ type Cli = {
     [<Default "weir">]
     bin: string
     /// fail if fewer than this many cases teach a repair
-    [<Default 32>]
+    // py-def's `def f():` left the def teaching by ruling [D:def-shape]
+    [<Default 31>]
     baseline: int
 }
 
