@@ -39,7 +39,7 @@ let areaOfSrc p =
     | "src/Weir/Types.fs" -> Some "checker"
     | "src/Weir/Eval.fs" | "src/Weir/Session.fs" | "src/Weir/Proc.fs" -> Some "eval"
     | "src/Weir/Builtins.fs" | "src/Weir/Prelude.fs" -> Some "builtins"
-    | "src/Weir/Repl.fs" | "src/Weir/Complete.fs" -> Some "repl"
+    | "src/Weir/Repl.fs" | "src/Weir/Complete.fs" | "src/Weir/DynComplete.fs" -> Some "repl"
     | "src/Weir/Lsp.fs" -> Some "lsp"
     | "src/Weir/Fmt.fs" -> Some "fmt"
     // Serve is the server leg [D:http-serve] (Http's listener side of the

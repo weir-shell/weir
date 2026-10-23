@@ -1707,6 +1707,9 @@ let private readLineTty () : string option =
     Term.startWatchdog ()
     drainTypeAhead ()
 
+    // the tool's own values are cached for one edit [D:sig-dynamic-complete]
+    DynComplete.clearCache ()
+
     while result.IsNone do
         let k = readKey ()
         Term.snapshot ()
@@ -1943,6 +1946,8 @@ let private readLineTty () : string option =
                 elif ws >= 1 && ws <= text.Length && text[ws - 1] = '$' then 1
                 else 0
 
+            let notes = ResizeArray<string>()
+
             let suggestions =
                 // a `$` that is literal text — the buffer's lines above
                 // decide the district [D:argv-splice-complete]
@@ -1960,8 +1965,14 @@ let private readLineTty () : string option =
                 // to the cursor is the context [D:entry-complete] —
                 // earlier statements' bindings join the env, and a
                 // `head.`/`_.` word repairs over its whole statement
+                // the tool's own values [D:sig-dynamic-complete]: a child
+                // bounded by the timeout and the next key, which stays
+                // queued for the editor
                 let all =
-                    Script.suggestEntry
+                    Script.suggestEntryWith
+                        (Some
+                            { Run = DynComplete.ask (fun () -> typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable))
+                              Note = notes.Add })
                         currentAliases.Value
                         currentVals.Value
                         currentEnv.Value
@@ -1982,6 +1993,20 @@ let private readLineTty () : string option =
                     []
                 else
                     offered |> List.filter (fun c -> not (c.StartsWith "#"))
+
+            // a note under the buffer, the Tab listing's park-and-restore
+            if notes.Count > 0 then
+                let keepRow, keepCol = row, col
+                toEnd ()
+                Console.WriteLine()
+
+                for n in notes do
+                    Console.WriteLine(Types.Color.dim Types.Color.onStdout.Value n)
+
+                row <- keepRow
+                col <- keepCol
+                lastCursorDisplay <- 0
+                redraw ()
 
             (match suggestions with
              | [] -> ()
@@ -2066,6 +2091,7 @@ let private readLineTty () : string option =
         | _ -> ()
 
     activeRedraw.Value <- None
+    DynComplete.clearCache ()
     result |> Option.defaultValue None
 
 // rooted: a collected PosixSignalRegistration disposes and stops

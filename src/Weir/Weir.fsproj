@@ -150,6 +150,7 @@
     <!-- after Extern + Builtins: completion reuses the PATH cache and
          command-callable set for command-head suggestions [D:repl-quality] -->
     <Compile Include="Complete.fs" />
+    <Compile Include="DynComplete.fs" />
     <Compile Include="Prelude.fs" />
     <Compile Include="Script.fs" />
     <!-- after Script: the capability walker reads CheckedStmt trees

@@ -31582,6 +31582,363 @@ let portFindingsTests =
                   Expect.stringContains m "^$tool" $"{line}: the run-time spelling"
                   Expect.isFalse (m.Contains "Expecting") $"{line}: no FParsec list"
                   Expect.isFalse (m.Contains "unbound variable") $"{line}: no unbound reading"
+// dynamic values from the tool itself [D:sig-dynamic-complete]: the cobra
+// answer parser, git's fixed position table, the trust rule, the
+// `let dynamic` setting, the composition over fake hooks, the bounded
+// child, and `add sig` writing the line
+let sigDynamicTests =
+    let sampleDir =
+        Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "..", "sigs"))
+
+    let loadAt (path: string) (tool: string) =
+        Weir.Script.loadSigs
+            (path + ".from")
+            [ { Tool = tool
+                Override = Some path
+                Line = 1 } ]
+
+    let sigText (dynamicLine: string) =
+        [ "module Dy"
+          dynamicLine
+          "type Globals = {"
+          "    verbose: bool"
+          "    /// read the config from file"
+          "    config: string"
+          "    name: string"
+          "}"
+          "type Cmd ="
+          "    | Get"
+          "    | Config"
+          "    | ConfigView" ]
+
+    let answer cs nf = Weir.DynComplete.Answer(cs, nf)
+
+    // a fake runner: every request recorded, one canned outcome
+    let fakeHooks (outcome: Weir.DynComplete.Outcome) =
+        let asked = ResizeArray<Weir.DynComplete.Request>()
+        let notes = ResizeArray<string>()
+
+        let hooks: Weir.DynComplete.Hooks =
+            { Run =
+                fun r ->
+                    asked.Add r
+                    outcome
+              Note = notes.Add }
+
+        hooks, asked, notes
+
+    let tabIn hooks user aliases (line: string) =
+        Weir.Script.sigArgvCompleteWith (Some hooks) user aliases env line (Weir.Complete.wordStartAt line line.Length)
+
+    testSequenced
+    <| testList
+        "sig dynamic completion"
+        [ test "cobra: candidates, descriptions, directives, CRLF, a malformed last line" {
+              let p = Weir.DynComplete.parseCobra
+              Expect.equal (p "web-1\tRunning\nweb-2\tPending\n:4\n") (answer [ "web-1"; "web-2" ] true) "NoFileComp"
+              Expect.equal (p "a\r\nb\tdoc\r\n:0\r\n") (answer [ "a"; "b" ] false) "CRLF, default"
+              Expect.equal (p "a\n:2\n") (answer [ "a" ] false) "NoSpace changes nothing"
+              Expect.equal (p "a\n:1\n") (answer [] true) "Error: nothing at all"
+              Expect.equal (p "yaml\n:8\n") Weir.DynComplete.Fallback "FilterFileExt: paths"
+              Expect.equal (p ":16\n") Weir.DynComplete.Fallback "FilterDirs: paths"
+              Expect.equal (p "a\nb\n") Weir.DynComplete.Fallback "no directive line"
+              Expect.equal (p "a\n:x\n") Weir.DynComplete.Fallback "a directive that is no number"
+              Expect.equal (p "a\n:-3\n") Weir.DynComplete.Fallback "a negative directive"
+              Expect.equal (p "") Weir.DynComplete.Fallback "empty"
+              Expect.equal (p "_activeHelp_ pick a pod\npod-a\n:4") (answer [ "pod-a" ] true) "active help is prose"
+              Expect.equal (p "\tdoc only\n:0") (answer [] false) "an empty candidate"
+          }
+          test "git: the fixed position table" {
+              let w (s: string) =
+                  Weir.DynComplete.gitWant (s.Split(' ', System.StringSplitOptions.RemoveEmptyEntries) |> List.ofArray)
+
+              let open' = Weir.DynComplete.Refs
+              Expect.equal (w "checkout") (Some open') "checkout"
+              Expect.equal (w "checkout -b feat") (Some open') "a start point"
+              Expect.equal (w "switch") (Some open') "switch"
+              Expect.equal (w "log main") (Some open') "log, any operand"
+              for s in [ "merge"; "rebase"; "diff"; "reset"; "cherry-pick"; "revert"; "show" ] do
+                  Expect.equal (w s) (Some open') s
+              Expect.equal (w "branch") None "branch makes a name"
+              Expect.equal (w "branch -d") (Some Weir.DynComplete.Heads) "branch -d"
+              Expect.equal (w "branch -D x") (Some Weir.DynComplete.Heads) "branch -D, more"
+              Expect.equal (w "branch -m") (Some Weir.DynComplete.Heads) "rename: the old name"
+              Expect.equal (w "branch -m old") None "rename: the new name"
+              Expect.equal (w "tag -d") (Some Weir.DynComplete.TagNames) "tag -d"
+              Expect.equal (w "tag") None "tag makes a name"
+              Expect.equal (w "push") (Some Weir.DynComplete.Remotes) "push: a remote"
+              Expect.equal (w "fetch") (Some Weir.DynComplete.Remotes) "fetch: a remote"
+              Expect.equal (w "pull -r") (Some Weir.DynComplete.Remotes) "pull: a remote past a flag"
+              Expect.equal (w "push origin") (Some Weir.DynComplete.Heads) "push: then a branch"
+              Expect.equal (w "fetch origin") None "fetch: nothing more"
+              Expect.equal (w "remote") None "remote: its own subcommand"
+              Expect.equal (w "remote remove") (Some Weir.DynComplete.Remotes) "remote remove"
+              Expect.equal (w "remote set-url") (Some Weir.DynComplete.Remotes) "remote set-url"
+              Expect.equal (w "remote add") None "remote add names a new one"
+              Expect.equal (w "checkout --") None "a typed -- is paths"
+              Expect.equal (w "-C /x checkout") None "-C moves the repository"
+              Expect.equal (w "-c a=b checkout") None "-c can run anything"
+              Expect.equal (w "--git-dir=/x log") None "--git-dir"
+              Expect.equal (w "--no-pager log") (Some open') "a harmless global"
+              Expect.equal (w "") None "no subcommand yet"
+              Expect.equal (w "commit") None "commit"
+              Expect.equal
+                  (Weir.DynComplete.gitArgs Weir.DynComplete.Refs)
+                  [ "for-each-ref"; "--format=%(refname:short)"; "refs/heads"; "refs/remotes"; "refs/tags" ]
+                  "the fixed ref listing"
+              Expect.equal (Weir.DynComplete.gitArgs Weir.DynComplete.Remotes) [ "remote" ] "the remote listing"
+              Expect.equal (Weir.DynComplete.parseGit "main\norigin/HEAD\norigin/main\r\n\n") (answer [ "main"; "origin/main" ] false) "a remote's HEAD is no ref"
+          }
+          test "the dynamic setting: git, cobra, absent; anything else is a load error" {
+              withTempDir "weir-dyset" (fun d ->
+                  let load (line: string) =
+                      let p = Path.Combine(d, "dy.weir")
+                      File.WriteAllLines(p, sigText line)
+                      loadAt p "dy"
+
+                  for m in [ "git"; "cobra" ] do
+                      match load $"let dynamic = \"{m}\"" with
+                      | [], [ si ] -> Expect.equal si.Dynamic m m
+                      | ds, _ -> failtest $"{m}: {ds}"
+
+                  match load "" with
+                  | [], [ si ] -> Expect.equal si.Dynamic "" "absent"
+                  | ds, _ -> failtest $"absent: {ds}"
+
+                  for bad, says in
+                      [ "let dynamic = \"bash\"", "names no completion mechanism"
+                        "let dynamic = \"\"", "names no completion mechanism"
+                        "let dynamic = true", "takes a mechanism's name" ] do
+                      match load bad with
+                      | [ dg ], [ si ] ->
+                          Expect.stringContains dg.Message says bad
+                          Expect.stringContains dg.Message "\"git\" or \"cobra\"" bad
+                          Expect.equal si.Dynamic "" $"{bad}: nothing honored"
+                      | ds, _ -> failtest $"{bad}: expected one error, got {ds}")
+          }
+          test "trust: cobra only from the user dir, git from anywhere" {
+              withTempDir "weir-dytrust" (fun root ->
+                  let user = Path.Combine(root, "cfg", "weir", "sigs")
+                  let proj = Path.Combine(root, "proj", ".weir", "sigs")
+                  Directory.CreateDirectory user |> ignore
+                  Directory.CreateDirectory proj |> ignore
+
+                  let at dir line =
+                      let p = Path.Combine(dir, "dy.weir")
+                      File.WriteAllLines(p, sigText line)
+
+                      match loadAt p "dy" with
+                      | [], [ si ] -> Weir.Script.dynamicFor user si
+                      | ds, _ -> failtest $"{ds}"
+
+                  Expect.equal (at user "let dynamic = \"cobra\"") Weir.Script.DynCobra "user-dir cobra"
+                  Expect.equal (at proj "let dynamic = \"cobra\"") Weir.Script.DynRefused "project cobra"
+                  Expect.equal (at user "let dynamic = \"git\"") Weir.Script.DynGit "user-dir git"
+                  Expect.equal (at proj "let dynamic = \"git\"") Weir.Script.DynGit "project git"
+                  Expect.equal (at proj "") Weir.Script.DynOff "none")
+          }
+          test "Tab: project cobra never runs the tool, user-dir cobra does, layer 1 stays" {
+              withTempDir "weir-dytab" (fun root ->
+                  let user = Path.Combine(root, "cfg")
+                  let proj = Path.Combine(root, "proj")
+                  Directory.CreateDirectory user |> ignore
+                  Directory.CreateDirectory(Path.Combine(proj, ".git")) |> ignore
+                  Directory.CreateDirectory(Path.Combine(proj, ".weir", "sigs")) |> ignore
+                  File.WriteAllLines(Path.Combine(proj, ".weir", "sigs", "dyproj.weir"), sigText "let dynamic = \"cobra\"")
+                  File.WriteAllLines(Path.Combine(user, "dyuser.weir"), sigText "let dynamic = \"cobra\"")
+                  File.WriteAllText(Path.Combine(proj, "zqfile.txt"), "")
+
+                  inCwd proj (fun () ->
+                      // a project sig asking for cobra: nothing runs, one hint, layer 1
+                      let hooks, asked, notes = fakeHooks (answer [ "pod-a" ] true)
+                      Expect.isNone (tabIn hooks user Map.empty "dyproj get ") "paths, as layer 1"
+                      Expect.isNone (tabIn hooks user Map.empty "dyproj get zq") "again"
+                      Expect.equal asked.Count 0 "the tool never ran"
+                      Expect.equal (tabIn hooks user Map.empty "dyproj g") (Some [ "get" ]) "subcommands stay"
+                      Expect.equal notes.Count 1 "one hint"
+                      Expect.stringContains notes[0] "weir add sig --global dyproj" "the hint names the fix"
+                      let _ = tabIn hooks user Map.empty "dyproj config "
+                      Expect.equal notes.Count 1 "once per session per tool"
+
+                      // the user dir's: asked with the typed words and the partial
+                      let hooks, asked, notes = fakeHooks (answer [ "pod-a"; "pod-b"; "other"; "bad word"; "x$(y)" ] true)
+                      Expect.equal (tabIn hooks user Map.empty "dyuser get ") (Some [ "pod-a"; "pod-b"; "other" ]) "candidates, unquotable ones dropped"
+                      Expect.equal (asked |> Seq.map (fun r -> r.Mechanism, r.Exe, r.Args) |> List.ofSeq) [ "cobra", "dyuser", [ "get"; "" ] ] "an empty partial is \"\""
+                      Expect.equal (tabIn hooks user Map.empty "dyuser get po") (Some [ "pod-a"; "pod-b" ]) "filtered by the partial"
+                      Expect.equal asked[1].Args [ "get"; "po" ] "the partial"
+                      Expect.equal (tabIn hooks user Map.empty "dyuser --verbose get --name ") (Some [ "pod-a"; "pod-b"; "other" ]) "a flag's value"
+                      Expect.equal asked[2].Args [ "--verbose"; "get"; "--name"; "" ] "the words as typed"
+                      // static positions spawn nothing
+                      let n = asked.Count
+                      Expect.equal (tabIn hooks user Map.empty "dyuser g") (Some [ "get" ]) "a subcommand"
+                      Expect.equal (tabIn hooks user Map.empty "dyuser get --verb") (Some [ "--verbose" ]) "a flag name"
+                      let _ = tabIn hooks user Map.empty "dyuser get -"
+                      Expect.equal asked.Count n "nothing asked at static positions"
+                      Expect.equal notes.Count 0 "no hint for a trusted sig"
+
+                      // `--flag=`: cobra answers the values; offers replace the editor word
+                      let hooks, asked, _ = fakeHooks (answer [ "alpha"; "beta" ] false)
+                      Expect.equal (tabIn hooks user Map.empty "dyuser get --name=a") (Some [ "alpha" ]) "the value part"
+                      Expect.equal asked[0].Args [ "get"; "--name=a" ] "the whole word is the partial"
+
+                      // none fits: NoFileComp offers nothing, else layer 1
+                      let hooks, _, _ = fakeHooks (answer [ "zz" ] true)
+                      Expect.equal (tabIn hooks user Map.empty "dyuser get q") (Some []) "NoFileComp, no path fallback"
+                      let hooks, _, _ = fakeHooks (answer [ "zz" ] false)
+                      Expect.isNone (tabIn hooks user Map.empty "dyuser get q") "default: paths"
+                      Expect.equal (tabIn hooks user Map.empty "dyuser get --name q") (Some []) "default: layer 1's nothing"
+                      let hooks, _, _ = fakeHooks Weir.DynComplete.Fallback
+                      Expect.isNone (tabIn hooks user Map.empty "dyuser get ") "a failure: paths"
+                      Expect.equal (tabIn hooks user Map.empty "dyuser get --name ") (Some []) "a failure: nothing"
+                      let hooks, _, _ = fakeHooks Weir.DynComplete.Interrupted
+                      Expect.equal (tabIn hooks user Map.empty "dyuser get ") (Some []) "a key arrived: nothing"
+                      // a file value keeps layer 1's paths when the tool has none
+                      let hooks, asked, _ = fakeHooks Weir.DynComplete.Fallback
+                      Expect.isNone (tabIn hooks user Map.empty "dyuser --config ") "a path value"
+                      Expect.equal asked.Count 1 "asked first"
+                      // a word weir would not pass as typed asks nothing
+                      let hooks, asked, _ = fakeHooks (answer [ "a" ] false)
+                      let _ = tabIn hooks user Map.empty "dyuser get \"x y\" "
+                      let _ = tabIn hooks user Map.empty "dyuser get $x "
+                      Expect.equal asked.Count 0 "quoted or spliced words: no ask"
+                      // a `/` word asks too (pod/web), a `~` word never
+                      let hooks, asked, _ = fakeHooks (answer [ "pod/web"; "svc/db" ] false)
+                      Expect.equal (tabIn hooks user Map.empty "dyuser get pod/") (Some [ "pod/web" ]) "a slash word"
+                      let _ = tabIn hooks user Map.empty "dyuser get ~/"
+                      Expect.equal asked.Count 1 "never a ~ word"
+                      // no hooks (the LSP's and layer 1's path): nothing asked
+                      Expect.isNone (Weir.Script.sigArgvCompleteWith None user Map.empty env "dyuser get " 11) "no hooks"))
+          }
+          test "Tab: git from any sig, through an alias — co <TAB> lists branches" {
+              withTempDir "weir-dygit" (fun root ->
+                  let proj = Path.Combine(root, "proj")
+                  Directory.CreateDirectory(Path.Combine(proj, ".git")) |> ignore
+                  Directory.CreateDirectory(Path.Combine(proj, ".weir", "sigs")) |> ignore
+
+                  File.WriteAllLines(
+                      Path.Combine(proj, ".weir", "sigs", "git.weir"),
+                      [ "module Git"
+                        "let dynamic = \"git\""
+                        "type Globals = {"
+                        "    [<Wire \"-C\">] dir: string"
+                        "}"
+                        "type CheckoutFlags = {"
+                        "    [<Wire \"-b\">] branch: string"
+                        "    force: bool"
+                        "}"
+                        "type Cmd ="
+                        "    | Checkout of CheckoutFlags"
+                        "    | Commit"
+                        "    | Push"
+                        "    | Remote"
+                        "    | RemoteRemove" ]
+                  )
+
+                  inCwd proj (fun () ->
+                      let user = Path.Combine(root, "nouser")
+                      let aliases = Map [ "co", ("git", [ "checkout" ]) ]
+                      let hooks, asked, notes = fakeHooks (answer [ "main"; "feature/x"; "fix-1" ] false)
+                      Expect.equal (tabIn hooks user aliases "co ") (Some [ "main"; "feature/x"; "fix-1" ]) "co <TAB>"
+                      Expect.equal (asked |> Seq.map (fun r -> r.Mechanism, r.Exe) |> List.ofSeq) [ "git", "git" ] "weir's own git"
+                      Expect.equal asked[0].Args (Weir.DynComplete.gitArgs Weir.DynComplete.Refs) "the fixed listing, no typed text"
+                      Expect.equal (tabIn hooks user aliases "co f") (Some [ "feature/x"; "fix-1" ]) "filtered"
+                      Expect.equal (tabIn hooks user aliases "co feature/") (Some [ "feature/x" ]) "a slash word"
+                      Expect.equal (tabIn hooks user Map.empty "git checkout m") (Some [ "main" ]) "unaliased"
+                      Expect.equal (tabIn hooks user Map.empty "git push ") (Some [ "main"; "feature/x"; "fix-1" ]) "push: a remote, asked"
+                      Expect.equal asked[asked.Count - 1].Args [ "remote" ] "git remote"
+                      let n = asked.Count
+                      Expect.isNone (tabIn hooks user Map.empty "git commit ") "commit: no ref operand"
+                      Expect.equal (tabIn hooks user aliases "co -b ") (Some []) "a flag's value: git asks nothing"
+                      Expect.equal (tabIn hooks user aliases "co --fo") (Some [ "--force" ]) "flags stay static"
+                      Expect.equal asked.Count n "nothing asked off the table"
+                      Expect.equal notes.Count 0 "git needs no hint"))
+          }
+          test "the bounded child: answer, timeout, cap, a key, and no child left" {
+              if not (System.OperatingSystem.IsWindows()) then
+                  withTempDir "weir-dyrun" (fun d ->
+                      let never () = false
+                      let r = Weir.DynComplete.run "sh" [ "-c"; "printf 'a\\tdoc\\nb\\n:4\\n'" ] 2000 never
+                      Expect.equal r (Weir.DynComplete.Done "a\tdoc\nb\n:4\n") "an answer"
+                      Expect.equal (Weir.DynComplete.run "weir-no-such-tool-dy" [] 300 never) Weir.DynComplete.Failed "not found"
+
+                      let pidFile = Path.Combine(d, "pids")
+
+                      // gone or a zombie awaiting its reaper, within a second
+                      let gone () =
+                          let alive (pid: string) =
+                              try
+                                  let stat = File.ReadAllText $"/proc/{pid.Trim()}/stat"
+                                  stat.Substring(stat.LastIndexOf ')' + 2, 1) <> "Z"
+                              with _ ->
+                                  false
+
+                          let pids =
+                              File.ReadAllLines pidFile |> Array.filter (fun l -> l.Trim() <> "")
+
+                          Expect.isNonEmpty pids "the child wrote its pid"
+                          let clock = System.Diagnostics.Stopwatch.StartNew()
+
+                          while Array.exists alive pids && clock.ElapsedMilliseconds < 1000L do
+                              System.Threading.Thread.Sleep 20
+
+                          not (Array.exists alive pids)
+
+                      let hung = $"echo $$ >> '{pidFile}'; sleep 30 & echo $! >> '{pidFile}'; wait"
+                      let clock = System.Diagnostics.Stopwatch.StartNew()
+                      Expect.equal (Weir.DynComplete.run "sh" [ "-c"; hung ] 300 never) Weir.DynComplete.Failed "the timeout"
+                      Expect.isLessThan clock.ElapsedMilliseconds 1500L "returns at the bound"
+                      Expect.isTrue (gone ()) "the child and its grandchild are gone"
+
+                      File.Delete pidFile
+                      let flood = $"echo $$ >> '{pidFile}'; while :; do echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; done"
+                      Expect.equal (Weir.DynComplete.run "sh" [ "-c"; flood ] 5000 never) Weir.DynComplete.Failed "the cap"
+                      Expect.isTrue (gone ()) "the flooder is gone"
+
+                      File.Delete pidFile
+                      let mutable polls = 0
+
+                      let soon () =
+                          polls <- polls + 1
+                          polls > 40
+
+                      Expect.equal (Weir.DynComplete.run "sh" [ "-c"; hung ] 5000 soon) Weir.DynComplete.Aborted "a key"
+                      Expect.isTrue (gone ()) "killed on the key"
+
+                      // the cache: one run per question per edit; an
+                      // interrupted ask stays uncached
+                      Weir.DynComplete.clearCache ()
+                      let mutable runs = 0
+
+                      let runner result =
+                          fun (_: string) (_: string list) ->
+                              runs <- runs + 1
+                              result
+
+                      let req: Weir.DynComplete.Request = { Mechanism = "cobra"; Exe = "t"; Args = [ "x" ] }
+                      Expect.equal (Weir.DynComplete.askWith (runner Weir.DynComplete.Aborted) req) Weir.DynComplete.Interrupted "interrupted"
+                      Expect.equal (Weir.DynComplete.askWith (runner (Weir.DynComplete.Done "a\n:0")) req) (answer [ "a" ] false) "asked again"
+                      Expect.equal (Weir.DynComplete.askWith (runner Weir.DynComplete.Failed) req) (answer [ "a" ] false) "cached"
+                      Expect.equal runs 2 "two runs"
+                      Weir.DynComplete.clearCache ()
+                      Expect.equal (Weir.DynComplete.askWith (runner Weir.DynComplete.Failed) req) Weir.DynComplete.Fallback "cleared"
+                      Weir.DynComplete.clearCache ())
+          }
+          test "add sig writes `let dynamic` for cobra and git sources, nothing for others" {
+              if not (System.OperatingSystem.IsWindows()) then
+                  withTempDir "weir-dyadd" (fun d ->
+                      let gen sample =
+                          let tool = Path.Combine(sampleDir, sample, "exe", sample)
+
+                          match Weir.Script.SigGen.generateTo (Some d) (Path.Combine(d, ".weir")) tool with
+                          | Ok _ -> File.ReadAllLines(Path.Combine(d, Weir.Script.sigFileName tool)) |> List.ofArray
+                          | Error e -> failtest $"{sample}: {e}"
+
+                      let cobra = gen "cobrafx"
+                      Expect.contains cobra "let dynamic = \"cobra\"" "a cobra source"
+                      let git = gen "gitfx"
+                      Expect.contains git "let dynamic = \"git\"" "git's helper source"
+                      let fish = gen "fishfx"
+                      Expect.isFalse (fish |> List.exists (fun l -> l.StartsWith "let dynamic")) "a fish source: none")
           } ]
 
 [<Tests>]
@@ -31635,6 +31992,7 @@ let allTests =
           retryPollTests
           sigTests
           sigCompleteTests
+          sigDynamicTests
           sizeTests
           windowsFindingsTests
           sizedFindingsTests
