@@ -72,7 +72,7 @@ let stampGate =
 
          match
              repoRoot
-             |> Option.bind (fun root -> git [ "-C"; root; "rev-parse"; "--short"; "HEAD" ])
+             |> Option.bind (fun root -> git [ "-C"; root; "rev-parse"; "HEAD" ])
          with
          | None -> () // no git — the e2e gate skips too
          | Some head ->
@@ -84,7 +84,14 @@ let stampGate =
                  | -1 -> stamp
                  | i -> stamp.Substring(i + 1)
 
-             if not (hash.StartsWith head) then
+             // a prefix of HEAD's full hash, whatever abbreviation length
+             // the building checkout used (ci/check-fresh.sh's rule)
+             let core =
+                 match hash.IndexOf "-dirty" with
+                 | -1 -> hash
+                 | i -> hash.Substring(0, i)
+
+             if core.Length < 7 || not (head.StartsWith core) then
                  failwith
                      $"STALE BINARY: {binPath} stamps '{stamp}' (hash '{hash}'), HEAD is '{head}' — rebuild with ./publish.sh"
 

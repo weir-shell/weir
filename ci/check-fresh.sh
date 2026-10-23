@@ -37,11 +37,19 @@ fi
 # where the mtime gate below still applies)
 if command -v git >/dev/null 2>&1 && git -C "$repo_root" rev-parse --short HEAD >/dev/null 2>&1; then
     head_hash=$(git -C "$repo_root" rev-parse --short HEAD)
+    head_full=$(git -C "$repo_root" rev-parse HEAD)
     stamp=$("$BIN" --version 2>/dev/null || echo none)
     # the stamp is <tag>+<hash> [D:masking-mechanized]; the hash is the
     # part after the last '+' (a bare hash or 'none' has no '+' and passes
     # through unchanged, so the gate reads identically either way)
     hash=${stamp##*+}
+    # the abbreviation length is the building checkout's (git widens it as
+    # the repo grows, and clones differ), so the stamp's hash matches when
+    # it is a prefix of HEAD's full hash, never by equal-length compare
+    core=${hash%%-dirty*}
+    if [ "${#core}" -ge 7 ] && [ "${head_full#"$core"}" != "$head_full" ]; then
+        head_hash=$core
+    fi
     case "$hash" in
         "$head_hash"-dirty*)
             if [ -n "${WEIR_REQUIRE_CLEAN:-}" ]; then
