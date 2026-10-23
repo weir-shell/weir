@@ -469,6 +469,13 @@ PATH, and red if it would fail. A red command word lets you catch a
 typo before pressing Enter. `NO_COLOR` is honored, and piped sessions
 are always plain text.
 
+When an entry waits on weir itself for more than half a second (a
+`Duration.sleep`, an `Http.send`, a `retry` or `poll` delay), a
+spinner on stderr names what it is waiting for, and is erased before
+anything else prints. It never draws over a running command, and it is
+the REPL's alone: scripts and `weir -e` stay silent through the same
+waits.
+
 ## The init file
 
 `init.weir` beside the [config file](tooling.md#configuration)

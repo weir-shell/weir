@@ -1081,12 +1081,18 @@ module Waiting =
 
     let mutable private depth = 0
 
+    /// the REPL turns the indicator on at its start; a script, `-e` and
+    /// every other entry stay silent through every wait
+    /// [D:waiting-repl-only]
+    let mutable enabled = false
+
     /// the raw stderr under the tty sanitizer [D:tty-diag-sanitize] —
     /// the indicator's own line erase is terminal control, not data
     let mutable control: IO.TextWriter = null
 
     let private active () =
-        not Console.IsErrorRedirected
+        enabled
+        && not Console.IsErrorRedirected
         && Environment.GetEnvironmentVariable "TERM" <> "dumb"
 
     let private frames = [| "⠋"; "⠙"; "⠹"; "⠸"; "⠼"; "⠴"; "⠦"; "⠧"; "⠇"; "⠏" |]

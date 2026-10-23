@@ -52,6 +52,10 @@ Many of the changes and fixes below were found porting starship to weir.
 
 ### Changed
 
+- **The waiting spinner is the REPL's alone.** A script (or `weir -e`)
+  at a terminal no longer draws it while weir waits in
+  `Duration.sleep`, `Http.send` or a `retry`/`poll` delay, so its
+  stderr carries only what the script writes. The REPL still shows it.
 - **`def` is an ordinary name.** `let def = 1` and a field called `def`
   work. A line shaped like a definition, `def double x = …`, still gets
   "'def' is not a weir word — define with 'let f x = ...'".
