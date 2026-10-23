@@ -30584,7 +30584,14 @@ let private growsWithin (factor: float) (label: string) (small: unit -> unit) (b
     // the quadratic forms these guard against overshoot the floor 70x+
     let best (f: unit -> unit) = List.init 3 (fun _ -> time f) |> List.min
     let within (ts, tb) = tb <= factor * max ts 10.0
-    let ts, tb = best small, best big
+    // up to three rounds: a shared runner's stall can land on one big run,
+    // while a real cliff fails every round
+    let rec rounds n =
+        let ts, tb = best small, best big
+
+        if within (ts, tb) || n = 1 then (ts, tb) else rounds (n - 1)
+
+    let ts, tb = rounds 3
 
     Expect.isTrue (within (ts, tb)) $"{label}: {tb:F0}ms vs {ts:F0}ms for the small input — over {factor}x"
 
