@@ -1955,12 +1955,16 @@ let private readLineTty () : string option =
                 else
                 // the session entry: alias heads join the head-slot pool
                 // [D:command-head-alias]; the session values feed the
-                // map-key slot [D:value-key-complete]
+                // map-key slot [D:value-key-complete]; the whole entry up
+                // to the cursor is the context [D:entry-complete] —
+                // earlier statements' bindings join the env, and a
+                // `head.`/`_.` word repairs over its whole statement
                 let all =
-                    Complete.suggestSession
+                    Script.suggestEntry
                         currentAliasNames.Value
                         currentVals.Value
                         currentEnv.Value
+                        (dedentEntry (List.init row (fun i -> lines[i].ToString()) @ [ text.Substring(0, col) ]))
                         (text.Substring(0, col))
                         ws
 

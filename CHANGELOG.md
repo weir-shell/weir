@@ -22,6 +22,18 @@
 - **The REPL colours the code inside a `$"…{hole}…"` string as code,**
   not as part of the string, and a hole in a command's arguments is not
   dimmed like a literal argument.
+- **REPL Tab completes across the lines of an entry.** In a multi-line
+  entry, a name bound on an earlier line (`for p in … do`, `fun x ->`,
+  `let rows = ls`) now completes its fields on a later line, also inside
+  an interpolation hole: `print $"THIS: {p.<Tab>}"` offers `name`,
+  `kind`, `path` and the rest. The editor used to look at the current
+  line only.
+- **`_.<Tab>` as an argument offers the element's fields** when the pipe
+  follows a `for … in` header or a `let x =` (`for p in ls |> map _.<Tab>`),
+  and when the source is bound on an earlier line or the pipeline spans
+  lines (`|> Seq.map _.<Tab>`). A bare `|> _.` stage over a seq
+  (`ls |> _.<Tab>`) now offers nothing: it can never type-check. The
+  editor (LSP) does the same.
 
 ## v0.0.76
 

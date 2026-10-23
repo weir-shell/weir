@@ -172,11 +172,40 @@ let private withHoles (env: TypeEnv) (e: Weir.Ast.Expr) : TypeEnv =
 // record piped into `_.`/`r |> _.` must type to the record, not `None`.
 // The sole caller routes through `recordFields`, which returns `None`
 // for a non-record, so the catch-all offers nothing where nothing fits.
-let private pipelineElemTy (env: TypeEnv) (text: string) : Ty option =
+//
+// The pipe's left side may open with statement furniture the
+// expression parser refuses — a `for <pat> in` header or a `let x =`
+// binder (`for p in ls |> _.`): that lead is cut first, the rest is the
+// source [D:entry-complete]
+//
+// A bare shorthand stage (`ls |> _.`, the stage is nothing but `_.f`)
+// applies the record lambda to the whole value: over a seq that never
+// type-checks, so the seq does not unwrap there and nothing is offered
+// (user-ruled [D:entry-complete]); a record flowing in still offers its
+// fields, and an argument (`|> map _.`, `Seq.where _.`) unwraps as before
+// the `for` binder is whole words (`\S+\s+` units split a space run one
+// way only, so a long run never backtracks), and the match is time-bounded
+// besides: completion runs on the user's text
+let private pipeSourceLead =
+    System.Text.RegularExpressions.Regex(
+        @"^(?:for\s+(?:\S+\s+)+?in\s+|let\s+[A-Za-z_]\w*\s*=(?!=)\s*)",
+        System.Text.RegularExpressions.RegexOptions.Singleline,
+        System.TimeSpan.FromMilliseconds 100.0
+    )
+
+let private pipelineElemTy (env: TypeEnv) (bareStage: bool) (text: string) : Ty option =
     match text.LastIndexOf '|' with
     | -1 -> None
     | i ->
-        let prefix = text.Substring(0, i).Trim()
+        let prefix =
+            let p = text.Substring(0, i).Trim()
+            let m =
+                try
+                    pipeSourceLead.Match p
+                with :? System.Text.RegularExpressions.RegexMatchTimeoutException ->
+                    System.Text.RegularExpressions.Match.Empty
+
+            if m.Success then p.Substring m.Length else p
 
         match Weir.Parser.parseExpr prefix with
         | Error _ -> None
@@ -186,9 +215,13 @@ let private pipelineElemTy (env: TypeEnv) (text: string) : Ty option =
             match Weir.Check.typecheck envWithHoles e with
             | Ok te ->
                 match te.Ty with
-                | TSeq elem -> Some elem
+                | TSeq elem when not bareStage -> Some elem
                 | t -> Some t
             | Error _ -> None
+
+/// the word sits alone in a pipeline stage: the text before it ends with
+/// the pipe itself (`ls |> _.`, a `|> _.` continuation line)
+let bareStageBefore (before: string) : bool = before.TrimEnd().EndsWith "|>"
 
 /// text ends at the cursor (both callers truncate — the LSP's `upto`,
 /// the REPL's Substring): the word runs from wordStart to the end
@@ -781,7 +814,9 @@ let rec suggestScopedWith
     match interpHoleStart text with
     | Some off when wordStart >= off ->
         let inner = text.Substring off
-        suggestScopedWith aliasHeads env inner inner (wordStart - off)
+        // the outer text stays the binder scope: a hole's head is
+        // bound outside it (`for p in … do print $"{p.`) [D:entry-complete]
+        suggestScopedWith aliasHeads env binderScope inner (wordStart - off)
     | _ ->
 
     let word =
@@ -1179,7 +1214,11 @@ let rec suggestScopedWith
                 let headTy =
                     match Map.tryFind head env.Values with
                     | Some sch -> Some sch.Ty
-                    | None -> pipelineElemTy env (text.Substring(0, wordStart))
+                    | None ->
+                        pipelineElemTy
+                            env
+                            (head = "_" && bareStageBefore before)
+                            (text.Substring(0, wordStart))
 
                 let finalTy =
                     path
@@ -1501,12 +1540,57 @@ let suggestSession
     | Some candidates -> candidates
     | None -> suggestScopedWith aliasHeads env text text wordStart
 
-let fieldsAtRepaired
+// the type a binder SITE gives `head` [D:entry-complete]: a lambda /
+// for param (the `for` desugar is a lambda — its domain), a let, or a
+// match arm's pattern — for a head whose only occurrence was the
+// blanked cursor word (`for p in ls do print $"{p.`)
+let rec private patBinderTy (env: TypeEnv) (head: string) (pat: Weir.Ast.Pattern) (ty: Ty) : Ty option =
+    match pat.PKind, ty with
+    | Weir.Ast.PVar n, _ when n = head -> Some ty
+    | Weir.Ast.PTuple ps, TTuple ts when ps.Length = ts.Length ->
+        List.zip ps ts |> List.tryPick (fun (p, t) -> patBinderTy env head p t)
+    | Weir.Ast.PRecord fs, _ ->
+        recordFields env ty
+        |> Option.bind (fun fields ->
+            fs
+            |> List.tryPick (fun ((f, _), p) ->
+                fields |> List.tryFind (fst >> (=) f) |> Option.bind (fun (_, ft) -> patBinderTy env head p ft)))
+    | _ -> None
+
+let private binderSiteTy (env: TypeEnv) (head: string) (te: Weir.Check.TypedExpr) : Ty option =
+    let domain (t: Ty) =
+        match t with
+        | TFun(d, _) -> Some d
+        | _ -> None
+
+    // the last site in pre-order wins: the innermost, latest binder —
+    // the one in scope at the cursor in the common shapes
+    let rec find (best: Ty option) (node: Weir.Check.TypedExpr) =
+        let here =
+            match node.Kind with
+            | Weir.Check.TELambda(p, _, _) when p = head -> domain node.Ty
+            | Weir.Check.TELambdaPat(pat, _) -> domain node.Ty |> Option.bind (patBinderTy env head pat)
+            | Weir.Check.TELet(n, _, value, _) when n = head -> Some value.Ty
+            | Weir.Check.TELetPat(pat, value, _) -> patBinderTy env head pat value.Ty
+            | Weir.Check.TEMatch(scrut, arms) ->
+                arms |> List.tryPick (fun (pat, _, _) -> patBinderTy env head pat scrut.Ty)
+            | _ -> None
+
+        let best = if here.IsSome then here else best
+        Weir.Check.childExprs node |> List.fold find best
+
+    find None te
+
+/// the repaired statement's type for `head` [D:repair-completion]: any
+/// occurrence (a param's uses share one type, and the cursor's own
+/// occurrence was blanked away), else its binder site
+/// [D:entry-complete]
+let tyAtRepaired
     (parse: string -> Result<Weir.Ast.Stmt, string>)
     (env: TypeEnv)
     (repaired: string)
     (head: string)
-    : string list option =
+    : Ty option =
     match parse repaired with
     | Error _ -> None
     | Ok stmt ->
@@ -1528,8 +1612,6 @@ let fieldsAtRepaired
             match Weir.Check.typecheck envH e with
             | Error _ -> None
             | Ok te ->
-                // any occurrence serves: a param's uses share one type,
-                // and the cursor's own occurrence was blanked away
                 let rec find (best: Ty option) (node: Weir.Check.TypedExpr) =
                     let best =
                         match node.Kind with
@@ -1538,34 +1620,47 @@ let fieldsAtRepaired
 
                     Weir.Check.childExprs node |> List.fold find best
 
-                find None te)
-        |> Option.bind (fun ty ->
-            match ty with
-            | TRowVar(_, fields) ->
-                // an open row (the `..` tail) is compatible with any
-                // declared record it fits inside — offer those records'
-                // full field sets too, so editing the one line that
-                // demanded a field does not hide it [D:open-row-compat]
-                let known = fields |> List.map fst
+                match find None te with
+                | Some t -> Some t
+                | None -> binderSiteTy envH head te)
 
-                let compatible =
-                    env.Types
-                    |> Map.toList
-                    |> List.collect (fun (_, def) ->
-                        match def with
-                        | Record d ->
-                            let fits =
-                                fields
-                                |> List.forall (fun (f, ft) ->
-                                    match d.Fields |> List.tryFind (fst >> (=) f) with
-                                    | None -> false
-                                    | Some(_, rt) ->
-                                        (match ft with
-                                         | TVar _ -> true
-                                         | _ -> formatTy ft = formatTy rt))
+/// a resolved type's completable field names: a record's fields, an
+/// open row's plus the declared records it fits [D:open-row-compat]
+let fieldsOfTy (env: TypeEnv) (ty: Ty) : string list option =
+    match ty with
+    | TRowVar(_, fields) ->
+        // an open row (the `..` tail) is compatible with any
+        // declared record it fits inside — offer those records'
+        // full field sets too, so editing the one line that
+        // demanded a field does not hide it [D:open-row-compat]
+        let known = fields |> List.map fst
 
-                            if fits then d.Fields |> List.map fst else []
-                        | Union _ -> [])
+        let compatible =
+            env.Types
+            |> Map.toList
+            |> List.collect (fun (_, def) ->
+                match def with
+                | Record d ->
+                    let fits =
+                        fields
+                        |> List.forall (fun (f, ft) ->
+                            match d.Fields |> List.tryFind (fst >> (=) f) with
+                            | None -> false
+                            | Some(_, rt) ->
+                                (match ft with
+                                 | TVar _ -> true
+                                 | _ -> formatTy ft = formatTy rt))
 
-                Some(known @ compatible |> List.distinct)
-            | _ -> recordFields env ty |> Option.map (List.map fst))
+                    if fits then d.Fields |> List.map fst else []
+                | Union _ -> [])
+
+        Some(known @ compatible |> List.distinct)
+    | _ -> recordFields env ty |> Option.map (List.map fst)
+
+let fieldsAtRepaired
+    (parse: string -> Result<Weir.Ast.Stmt, string>)
+    (env: TypeEnv)
+    (repaired: string)
+    (head: string)
+    : string list option =
+    tyAtRepaired parse env repaired head |> Option.bind (fieldsOfTy env)

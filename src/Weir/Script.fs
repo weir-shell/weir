@@ -5277,6 +5277,147 @@ let scriptOnlyImport: ImportLoader =
               Message =
                 "import is script-only — it needs a file to resolve its path against (not available with -e or in the REPL)" }
 
+// ---- completion in context [D:entry-complete] ---------------------------
+// The REPL's multi-line entry and the LSP's document share one repair:
+// the cursor's whole logical statement (every physical line of it up to
+// the cursor) is repaired and typed [D:repair-completion], so a binder
+// on an earlier line of the statement — a for/fun/let/match binder —
+// types the head, and an earlier statement's bindings join the env.
+// Checked, never run (the never-executes law).
+let private completeParam = "weirCompleteParam"
+let private completeHole = "weirCompleteHole"
+
+/// `head.prefix` fields for the word ending `pre` (the statement text up
+/// to the cursor; `post` the rest of it, "" when cut at the cursor).
+/// A lowercase head the env does not bind repairs to a blank filler; the
+/// `_` shorthand repairs to a lambda whose param is the element — a seq
+/// flowing in unwraps to its element, the pipeline-elem rule — except
+/// in a bare `|> _.` stage, where a seq never type-checks and offers
+/// nothing. None when the word is no such head or no repair types to a
+/// record.
+let repairedFields (env: TypeEnv) (pre: string) (post: string) : string list option =
+    let ws = Complete.wordStartAt pre pre.Length
+    let word = pre.Substring ws
+    let dot = word.IndexOf '.'
+
+    if dot <= 0 || word.IndexOf('.', dot + 1) >= 0 then
+        None
+    else
+        let head = word.Substring(0, dot)
+        let prefix = word.Substring(dot + 1)
+        let shorthand = head = "_"
+
+        if not shorthand && not (Char.IsLower head[0] && not (Map.containsKey head env.Values)) then
+            None
+        else
+            let before = pre.Substring(0, ws)
+            let parse t = Parser.parseLine (assumeResolver env) t
+
+            // the neutral `""` first (a bare row-typed head left behind
+            // breaks positions with scalar rules — printerr); a hole
+            // (a fresh type var [D:hole-completion]) where a string
+            // cannot stand (a predicate's bool)
+            let fillers =
+                if shorthand then
+                    [ $"(fun {completeParam} -> {completeHole})" ]
+                else
+                    [ "\"\"" + String(' ', max 0 (word.Length - 2)); completeHole ]
+
+            let target = if shorthand then completeParam else head
+            let unwrap = shorthand && not (Complete.bareStageBefore before)
+
+            // two repair candidates per filler: close dangling delimiters
+            // at the cursor (mid-statement edits — the suffix stays
+            // outside the string), else at the end (last-line edits)
+            fillers
+            |> List.collect (fun filler ->
+                let prefixDone = before + filler
+                let blanked = before + filler + post
+                [ prefixDone + closers prefixDone + post; blanked + closers blanked ])
+            |> List.tryPick (fun cand ->
+                Complete.tyAtRepaired parse env cand target
+                |> Option.map (fun ty ->
+                    match ty with
+                    | TSeq elem when unwrap -> elem
+                    | t -> t)
+                |> Option.bind (Complete.fieldsOfTy env))
+            |> Option.map (fun fields ->
+                fields
+                |> List.filter (fun f -> f.StartsWith prefix)
+                |> List.distinct
+                |> List.sort
+                |> List.map (fun f -> head + "." + f))
+
+/// a multi-line entry's context at the cursor: `lines` is the entry up
+/// to the cursor (its last line cut there). The statements before the
+/// cursor's extend `env` (checked, never run; one that fails to check is
+/// skipped); returns that env and the cursor statement's text, None when
+/// the entry does not assemble (the caller falls back to the line)
+let entryContext (env: TypeEnv) (lines: string list) : TypeEnv * string option =
+    let numbered =
+        lines
+        |> List.mapi (fun i l -> i + 1, l)
+        |> List.filter (fun (_, raw) -> classifyLine raw <> LineKind.CommentOnly)
+        |> List.map (fun (n, raw) -> n, stripComment raw)
+
+    // a statement still open at the cursor (a lambda's `(` across lines)
+    // refuses to assemble: close it at the cursor, then cut the closers
+    // back off the statement's text
+    let assembled =
+        match assemble numbered with
+        | Ok lls -> Some(lls, "")
+        | Error _ ->
+            let suffix = closers (numbered |> List.map snd |> String.concat "\n")
+
+            match List.rev numbered with
+            | (n, last) :: earlierRev when suffix <> "" ->
+                match assemble (List.rev ((n, last + suffix) :: earlierRev)) with
+                | Ok lls -> Some(lls, suffix)
+                | Error _ -> None
+            | _ -> None
+
+    match assembled with
+    | None -> env, None
+    | Some(lls, suffix) ->
+        match List.rev lls with
+        | last :: earlier when
+            last.Segments |> List.exists (fun (_, phys, _) -> phys = lines.Length)
+            && last.Text.EndsWith suffix
+            ->
+            let env' =
+                earlier
+                |> List.rev
+                |> List.fold
+                    (fun te ll ->
+                        match checkStatement false None assumeResolver scriptOnlyImport te ll with
+                        // an anonymous record it minted completes at once
+                        // [D:anon-literals], as between REPL statements
+                        | Ok chk -> Check.withPendingAnonDefs chk.Env
+                        | Error _ -> te)
+                    env
+
+            env', Some(last.Text.Substring(0, last.Text.Length - suffix.Length))
+        | _ -> env, None
+
+/// the REPL's Tab over its entry [D:entry-complete]: `entry` is the
+/// entry up to the cursor (dedented, its last line cut there), `text`
+/// the cursor's own line up to the cursor and `wordStart` within it. A
+/// repaired `head.`/`_.` word answers first (the LSP's precedence), the
+/// line machinery under the entry's env otherwise
+let suggestEntry
+    (aliasHeads: Set<string>)
+    (values: Map<string, Eval.Value>)
+    (env: TypeEnv)
+    (entry: string list)
+    (text: string)
+    (wordStart: int)
+    : string list =
+    let ctxEnv, stmt = entryContext env entry
+
+    match stmt |> Option.bind (fun s -> repairedFields ctxEnv s "") with
+    | Some(_ :: _ as fields) -> fields
+    | _ -> Complete.suggestSession aliasHeads values ctxEnv text wordStart
+
 // ---------------------------------------------------------------------------
 // weir check [--json] [D:check-lsp-chain]. Check-everything, no
 // evaluation by construction (this function cannot reach Eval).

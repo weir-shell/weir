@@ -2586,66 +2586,46 @@ let run (debug: bool) : int =
                                         ))
 
                                 // error-recovery path: a single-dot word whose
-                                // head is unknown — repair the (possibly broken)
-                                // containing statement and read the head's
-                                // inferred type from the typed tree
+                                // head is unknown (or the `_` shorthand) —
+                                // repair the (possibly broken) containing
+                                // statement and read the head's type from the
+                                // typed tree; the REPL's entry shares the
+                                // repair [D:entry-complete]
                                 let repaired =
-                                    if word.Contains '.' && word.Split('.').Length = 2 then
-                                        let head = word.Substring(0, word.IndexOf '.')
-                                        let prefix = word.Substring(word.IndexOf '.' + 1)
+                                    if word.Contains '.' then
+                                        match logicalAt allLls line col with
+                                        | Some(ll, jcol) ->
+                                            let cut = min (max 0 (jcol - 1)) ll.Text.Length
+                                            let pre = ll.Text.Substring(0, cut)
 
-                                        if
-                                            head.Length > 0
-                                            && Char.IsLower head[0]
-                                            && not (Map.containsKey head env.Values)
-                                        then
-                                            logicalAt allLls line col
-                                            |> Option.bind (fun (ll, jcol) ->
-                                                let dotIdx = jcol - 1 - prefix.Length - 1
+                                            if pre.EndsWith word then
+                                                Script.repairedFields env pre (ll.Text.Substring cut)
+                                            else
+                                                None
+                                        | None when line - 1 < lines.Length ->
+                                            // the statement still open at the cursor
+                                            // broke assembly (a lambda's `(` across
+                                            // lines), so no logical line holds it:
+                                            // assemble its physical lines up to the
+                                            // cursor the REPL's way — from the nearest
+                                            // column-0 head above (a `|` line continues)
+                                            let isHead (l: string) =
+                                                l.Trim() <> ""
+                                                && not (Char.IsWhiteSpace l[0])
+                                                && not (l.StartsWith "|")
 
-                                                if
-                                                    dotIdx >= 0
-                                                    && dotIdx < ll.Text.Length
-                                                    && ll.Text[dotIdx] = '.'
-                                                    && dotIdx >= head.Length
-                                                    && ll.Text.Substring(dotIdx - head.Length, head.Length) = head
-                                                then
-                                                    // blank the whole head.prefix to a neutral
-                                                    // "" — a bare row-typed head left behind
-                                                    // breaks positions with scalar rules (printerr)
-                                                    let span = head.Length + 1 + prefix.Length
+                                            let mutable start = line - 1
 
-                                                    let before = ll.Text.Substring(0, dotIdx - head.Length)
-                                                    let after = ll.Text.Substring(dotIdx + 1 + prefix.Length)
-                                                    let filler = "\"\"" + String(' ', max 0 (span - 2))
+                                            while start > 0 && not (isHead lines[start]) do
+                                                start <- start - 1
 
-                                                    let parse t =
-                                                        Parser.parseLine (Script.assumeResolver env) t
+                                            let stmtLines =
+                                                [ for i in start .. line - 2 -> lines[i] ] @ [ upto ]
 
-                                                    // two repair candidates: close dangling
-                                                    // delimiters at the cursor (mid-statement
-                                                    // edits — the suffix stays outside the
-                                                    // string), else at the end (last-line edits)
-                                                    let candB =
-                                                        let prefixDone = before + filler
-                                                        prefixDone + Script.closers prefixDone + after
-
-                                                    let candA =
-                                                        let blanked = before + filler + after
-                                                        blanked + Script.closers blanked
-
-                                                    [ candB; candA ]
-                                                    |> List.tryPick (fun cand ->
-                                                        Complete.fieldsAtRepaired parse env cand head)
-                                                    |> Option.map (fun fields ->
-                                                        fields
-                                                        |> List.filter (fun f -> f.StartsWith prefix)
-                                                        |> List.sort
-                                                        |> List.map (fun f -> head + "." + f))
-                                                else
-                                                    None)
-                                        else
-                                            None
+                                            match Script.entryContext env stmtLines with
+                                            | ctxEnv, Some stmt -> Script.repairedFields ctxEnv stmt ""
+                                            | _, None -> None
+                                        | None -> None
                                     else
                                         None
 
