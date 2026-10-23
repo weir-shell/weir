@@ -88,15 +88,15 @@ See [Exit codes: from command to value](GUIDE.md#exit-codes-from-command-to-valu
 A function returns the value of its last line, and a command there is
 a `seq<string>` of its output. End the body with `()` to return
 `unit`; the commands above it still run in order and print as usual.
-In a module, sign it `let refresh : unit -> unit`.
+In a module, sign it `let status : unit -> unit`.
 
 ```weir
-let refresh () =
+let status () =
     git status --short
     git log --oneline -n 1
     ()
 
-refresh ()
+status ()
 ```
 
 See [The statement rule](reference/statements.md#the-statement-rule).
