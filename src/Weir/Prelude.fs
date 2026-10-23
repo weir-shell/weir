@@ -23,6 +23,9 @@ let source =
       // Poll.defaults) the resting values
       "type Retry = { attempts: int; delay: Duration; timeout: Option<Duration> }"
       "type Poll = { timeout: Duration; interval: Duration }"
+      // the stop-ended loop's options [D:repeat]: interval is required
+      // (no public defaults), timeout mirrors retry's
+      "type Repeat = { interval: Duration; timeout: Option<Duration> }"
       // the RFC 9562 namespace IDs [D:uuid] — Uuid.ns's type, so
       // `Uuid.ns.dns` is plain field access on a module value
       "type UuidNamespaces = { dns: Uuid; url: Uuid; oid: Uuid; x500: Uuid }"

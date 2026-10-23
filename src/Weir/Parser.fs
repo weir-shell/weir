@@ -15,6 +15,8 @@ let keywords =
           // the bounded-loop pair and their predicate segment [D:retry-poll]
           "retry"
           "poll"
+          // the loop a stop signal ends [D:repeat]
+          "repeat"
           "until"
           "let"
           "in"
@@ -2734,9 +2736,27 @@ let private planExprBody =
 let private planExpr = deepenAfter [ "plan" ] planExprBody // [D:depth-guard]
 
 let private retryExprBody =
-    getPosition .>>. ((keyword "retry" >>% false) <|> (keyword "poll" >>% true))
-    >>= fun (p, isPoll) ->
-        let famName = if isPoll then "Poll" else "Retry"
+    getPosition
+    .>>. ((keyword "retry" >>% LoopRetry)
+          <|> (keyword "poll" >>% LoopPoll)
+          <|> (keyword "repeat" >>% LoopRepeat))
+    >>= fun (p, kind) ->
+        let famName =
+            match kind with
+            | LoopRetry -> "Retry"
+            | LoopPoll -> "Poll"
+            | LoopRepeat -> "Repeat"
+
+        let headWord = loopHead kind
+
+        // an internal, un-shadowable key [D:desugar-capture] — the same
+        // value Retry.defaults/Poll.defaults name publicly; Repeat has no
+        // public defaults (interval is required) [D:repeat]
+        let defaultsKey =
+            match kind with
+            | LoopRetry -> "|retryDefaults"
+            | LoopPoll -> "|pollDefaults"
+            | LoopRepeat -> "|repeatDefaults"
 
         let kv =
             attempt (identSpanned .>> pchar '=')
@@ -2767,17 +2787,14 @@ let private retryExprBody =
                  | [] when watchE.IsSome ->
                      // watch alone: the defaults record, the bare-head form
                      preturn
-                         { Kind = EVar(if isPoll then "|pollDefaults" else "|retryDefaults")
+                         { Kind = EVar defaultsKey
                            Span = { Start = pos p; End = pos p } }
                  | [] ->
                      // the record form: one atom, exactly as within cd
-                     let headWord = if isPoll then "poll" else "retry"
                      postfixAtom <?> $"{headWord}'s options (key=value pairs or a {famName} record)"
                  | _ ->
                      let defaults =
-                         // an internal, un-shadowable key [D:desugar-capture]
-                         // — the same value Retry.defaults names publicly
-                         { Kind = EVar(if isPoll then "|pollDefaults" else "|retryDefaults")
+                         { Kind = EVar defaultsKey
                            Span = { Start = pos p; End = pos p } }
 
                      preturn
@@ -2804,10 +2821,10 @@ let private retryExprBody =
                                 | Some(_, pr) -> pr.Span.End
                                 | None -> body.Span.End
 
-                            { Kind = ERetry(isPoll, optsE, watchE, body, until)
+                            { Kind = ERetry(kind, optsE, watchE, body, until)
                               Span = { Start = pos p; End = endSpan } }
 
-let private retryExpr = deepenAfter [ "retry"; "poll" ] retryExprBody // [D:depth-guard]
+let private retryExpr = deepenAfter [ "retry"; "poll"; "repeat" ] retryExprBody // [D:depth-guard]
 
 let private matchExprBody =
     pipe3

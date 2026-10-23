@@ -190,6 +190,20 @@ type FromShape =
     // a non-record value type, only under FromMap [D:map-values]
     | FromTy of Ty
 
+/// the loop family's three heads [D:retry-poll] [D:repeat]
+type LoopKind =
+    | LoopRetry
+    | LoopPoll
+    /// ends on a stop signal, an `until` or a timeout
+    | LoopRepeat
+
+/// the head word a loop is written with
+let loopHead (k: LoopKind) =
+    match k with
+    | LoopRetry -> "retry"
+    | LoopPoll -> "poll"
+    | LoopRepeat -> "repeat"
+
 type Expr = { Kind: ExprKind; Span: Span }
 
 and ExprKind =
@@ -202,7 +216,7 @@ and ExprKind =
     // record, block body yielding 'a, optional `until` binder+predicate
     // block (absent = the body is the predicate, form yields unit)
     | ERetry of
-        poll: bool *
+        kind: LoopKind *
         opts: Expr *
         // poll's watched handle [D:scoped-procs]: a head key, never an
         // options field — a live handle is per-call, not configuration,
@@ -607,8 +621,8 @@ let rec sexpr (e: Expr) : string =
     | EDur n -> formatDuration n
     | EFloat f -> formatFloat f
     | ESize b -> formatSize b
-    | ERetry(isPoll, opts, watch, body, until) ->
-        let head = if isPoll then "poll" else "retry"
+    | ERetry(kind, opts, watch, body, until) ->
+        let head = loopHead kind
 
         let w =
             watch |> Option.map (fun e -> $" (watch {sexpr e})") |> Option.defaultValue ""

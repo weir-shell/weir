@@ -4783,6 +4783,9 @@ let completionTests =
                         "retry"
                         "poll"
                         "until"
+                        // the stop-ended loop starts statements like retry
+                        // [D:repeat]
+                        "repeat"
                         // the bare scope's teardown segment continues,
                         // as until does [D:within-always]
                         "always"
@@ -22114,6 +22117,101 @@ let stopRequestTests =
               m.Exit()
           } ]
 
+let repeatTests =
+    let sx (input: string) = show (parse input)
+
+    let stopCheck lines = diagsIn "rep.weir" lines |> List.filter (fun d -> d.Severity = "error") |> List.map _.Message
+
+    testList
+        "repeat [D:repeat]"
+        [ test "the key=value head desugars over the internal base; Repeat is the options record" {
+              Expect.equal
+                  (sx "repeat interval=1s (1 == 1)")
+                  "(repeat {|repeatDefaults with interval = 1s} (== 1 1))"
+                  "the sugar's form"
+
+              Expect.equal
+                  (sx "repeat interval=1s timeout=(Some 2m) (1 == 1)")
+                  "(repeat {|repeatDefaults with interval = 1s; timeout = (Some 2m)} (== 1 1))"
+                  "timeout rides the update"
+
+              match Map.tryFind "Repeat" preludeTypeEnv.Types with
+              | Some(Weir.Types.Record d) ->
+                  Expect.equal
+                      (d.Fields |> List.map (fun (f, t) -> $"{f}: {Weir.Types.formatTy t}"))
+                      [ "interval: Duration"; "timeout: Option<Duration>" ]
+                      "the record's keys"
+              | _ -> failtest "Repeat missing from the prelude"
+
+              Expect.isFalse (Weir.Effects.isCommandReifier "|repeatDefaults") "a library desugar, not a command"
+              Expect.isFalse (Weir.Effects.effectfulName "|repeatDefaults") "pure"
+          }
+          test "interval= is required, and a literal non-positive one refuses at check" {
+              let missing = stopCheck [ "repeat timeout=(Some 1s)"; "    print \"x\"" ]
+              Expect.exists missing (fun m -> m.Contains "a repeat needs interval=") $"missing: {missing}"
+
+              for lit in [ "0ms"; "-1s" ] do
+                  let errs = stopCheck [ $"repeat interval={lit}"; "    print \"x\"" ]
+                  Expect.exists errs (fun m -> m.Contains "interval must be positive") $"{lit}: {errs}"
+
+              let ok = stopCheck [ "repeat interval=1s"; "    print \"x\""; "print \"after\"" ]
+              Expect.isEmpty ok "a unit block checks"
+          }
+          test "the block is unit or a bool; a value needs until (poll's rule), and watch= is poll's" {
+              Expect.isEmpty (stopCheck [ "repeat interval=1s"; "    1 == 1" ]) "a bool block is its own end"
+
+              let v = stopCheck [ "repeat interval=1s"; "    5" ]
+              Expect.exists v (fun m -> m.Contains "add `until r`") $"value block: {v}"
+
+              Expect.isEmpty
+                  (stopCheck [ "let n = repeat interval=1s"; "    5"; "until n"; "    n > 1"; "print (show n)" ])
+                  "until binds the value and the form yields it"
+
+              let w =
+                  stopCheck
+                      [ "within proc p = sleep 1"
+                        "    repeat interval=1s watch=p"
+                        "        print \"x\"" ]
+
+              Expect.exists w (fun m -> m.Contains "watch= is poll's key") $"watch: {w}"
+          }
+          test "refused inside plan and pure; Self.waitForStop types unit -> unit and refuses in plan" {
+              let pl = stopCheck [ "let p ="; "    plan"; "        repeat interval=1s"; "            print \"x\""; "print (show p)" ]
+              Expect.exists pl (fun m -> m.Contains "'repeat' is refused inside 'plan'") $"plan: {pl}"
+
+              let pu = stopCheck [ "let n ="; "    pure"; "        repeat interval=1s"; "            1 == 1"; "        1"; "print (show n)" ]
+              Expect.exists pu (fun m -> m.Contains "'repeat' waits on the clock") $"pure: {pu}"
+
+              Expect.isEmpty (stopCheck [ "Self.waitForStop ()" ]) "waitForStop checks as a unit statement"
+
+              let wp = stopCheck [ "let p ="; "    plan"; "        Self.waitForStop ()"; "print (show p)" ]
+              Expect.exists wp (fun m -> m.Contains "'Self.waitForStop' is refused inside 'plan'") $"plan: {wp}"
+          }
+          test "eval: a bool block ends the loop, until yields the value, a timeout raises as poll's does" {
+              expectValue "repeat interval=1ms (1 == 1)" VUnit
+              expectValue "repeat interval=1ms (1 + 1) until r (r == 2)" (VInt 2L)
+
+              let ex =
+                  Expect.throwsC
+                      (fun () -> run "repeat interval=5ms timeout=(Some 30ms) (1 == 2)" |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "repeat: timed out after" "the timeout's message"
+          }
+          test "a computed non-positive interval refuses at run time" {
+              Expect.stringContains
+                  (msgOf "repeat (Repeat { interval = Duration.ms 0; timeout = None }) (1 == 1)")
+                  "repeat: interval must be positive"
+                  "run-time refusal"
+          }
+          test "repeat hovers its meaning + keys from the Repeat record" {
+              match Weir.Lsp.hoverType [ "repeat interval=10ms"; "    1 == 1" ] 1 3 with
+              | Some hv ->
+                  Expect.stringContains hv "the loop a stop signal ends" "repeat's meaning"
+                  Expect.stringContains hv "interval: Duration, timeout: Option<Duration>" "repeat's keys"
+              | None -> failtest "repeat must answer"
+          } ]
+
 let retryPollTests =
     let sx (input: string) = show (parse input)
 
@@ -32466,6 +32564,7 @@ let allTests =
           matchArmCommandTests
           retryPollTests
           stopRequestTests
+          repeatTests
           sigTests
           sigCompleteTests
           sigDynamicTests

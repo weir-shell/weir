@@ -434,6 +434,8 @@ let classifyPiece (piece: string) : PieceClass =
         // 6th members, still no stack
         || piece.StartsWith "retry "
         || piece.StartsWith "poll "
+        // and repeat [D:repeat]
+        || piece.StartsWith "repeat "
       ClosesBrace = piece.StartsWith "}"
       ClosesParen = piece.StartsWith ")"
       StartsField =
@@ -631,6 +633,9 @@ let dangleOpensBlock (piece: string) : bool =
     || t.StartsWith "retry "
     || t = "poll"
     || t.StartsWith "poll "
+    // repeat joins them [D:repeat]
+    || t = "repeat"
+    || t.StartsWith "repeat "
     || t.StartsWith "until "
     // the bare within's teardown segment dangles too [D:within-always]
     || t = "always"
@@ -3045,7 +3050,9 @@ let selfMembers: Map<string, Scheme> =
           "entryPath", generalize TStr
           // the interactive read [D:prompt] — static (Builtins holds the
           // value under the mangled key); grouped here, not bare
-          "prompt", generalize (TFun(TStr, TStr)) ]
+          "prompt", generalize (TFun(TStr, TStr))
+          // the explicit stop wait [D:wait-for-stop] — static, like prompt
+          "waitForStop", generalize (TFun(TUnit, TUnit)) ]
 
 // the #session prompt's status domain [D:prompt-status-arg]: records
 // are nominal and init.weir admits no signatures, so a provider's
