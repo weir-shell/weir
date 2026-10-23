@@ -1088,6 +1088,13 @@
           "summary": "Join a name onto base, normalize, and raise if the result ends up outside base. The check is by whole path segments, so uploads-evil is not inside uploads. Use combine for paths you control and under for paths you do not (such as user input). It works on the text only and never touches the disk or follows symlinks. An absolute or Windows-style name is rejected on every platform.",
           "example": "Path.under (Path.tempRoot ()) \u0022a/b\u0022",
           "pointer": null
+        },
+        {
+          "name": "which",
+          "signature": "Path.which (name: string) : Option\u003Cstring\u003E",
+          "summary": "The full path of the program a command name would run, as Some path, or None when there is none. It looks the name up the way weir does when it runs a command: on the PATH the command would run with, including one set by \u0060within env PATH=\u2026\u0060, and through PATHEXT on Windows. A name with a / in it is checked as a path.",
+          "example": "Path.which \u0022sh\u0022",
+          "pointer": null
         }
       ]
     },

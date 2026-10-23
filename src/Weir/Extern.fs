@@ -56,6 +56,10 @@ let private lastPair (pairs: (string * string) list) (name: string) : string opt
 
     pairs |> List.rev |> List.tryFind (fun (k, _) -> cmp.Equals(k, name)) |> Option.map snd
 
+let private isPathyName (prog: string) =
+    prog.Contains '/'
+    || (OperatingSystem.IsWindows() && (prog.Contains '\\' || prog.Contains ':'))
+
 /// the PATH a command's env sets, when it differs from weir's own — None
 /// means the child searches the PATH weir resolves on [D:overlay-path]
 let overlayPath (pairs: (string * string) list) : string option =
@@ -81,6 +85,32 @@ let resolveOn (pairs: (string * string) list) (pathValue: string) (prog: string)
         else
             exts
             |> List.tryPick (fun e -> if File.Exists(candidate + e) then Some(candidate + e) else None))
+
+/// the file a command head names [D:path-which]: a bare name on the
+/// PATH its env sets, else weir's own — the spawn's rule [D:overlay-path]
+/// — and a path-like name is itself when it exists; PATHEXT on Windows
+let which (pairs: (string * string) list) (prog: string) : string option =
+    if prog = "" || prog.Contains '\000' then
+        None
+    elif isPathyName prog then
+        let exts =
+            match lastPair pairs "PATHEXT" with
+            | Some v -> pathExtsOf (Some v)
+            | None -> pathExts ()
+
+        let r = Session.resolve prog
+
+        if File.Exists r then
+            Some r
+        else
+            exts |> List.tryPick (fun e -> if File.Exists(r + e) then Some(r + e) else None)
+    else
+        let pathValue =
+            match lastPair pairs "PATH" with
+            | Some v -> v
+            | None -> Environment.GetEnvironmentVariable "PATH" |> Option.ofObj |> Option.defaultValue ""
+
+        resolveOn pairs pathValue prog
 
 let names () : Set<string> =
     match cache with
@@ -108,9 +138,7 @@ let names () : Set<string> =
         cache <- Some s
         s
 
-let isPathy (prog: string) =
-    prog.Contains '/'
-    || (OperatingSystem.IsWindows() && (prog.Contains '\\' || prog.Contains ':'))
+let isPathy (prog: string) = isPathyName prog
 
 /// the spawn-side resolution [D:windows-s2]: CreateProcess appends only
 /// .exe to a bare name — a .bat/.cmd (any PATHEXT) implementation needs

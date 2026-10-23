@@ -159,6 +159,10 @@ Many of the changes and fixes below were found porting starship to weir.
   `sha256` members and with the same output as `sha1sum` (lowercase
   hex; `File.sha1` streams the file). For protocols that use SHA-1,
   such as git object ids; it is not safe as a security hash.
+- **`Path.which name`** gives the full path of the program a command
+  name would run (`Some "/usr/bin/git"`), or `None`. It looks the name
+  up the way running it would, so inside `within env PATH=…` it
+  searches that `PATH`, and on Windows it applies `PATHEXT`.
 
 ### Changed
 

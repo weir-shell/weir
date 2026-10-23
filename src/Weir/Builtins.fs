@@ -3535,6 +3535,18 @@ let private pathMembers: (string * Ty * Value) list =
       "toName", TFun(TStr, TStr), str1 "toName" pathToName
       "under", TFun(TStr, TFun(TStr, TStr)), pathUnderImpl
       "glob", TFun(TStr, TSeq TStr), globImpl
+      // the program a command head would run [D:path-which]: the spawn's
+      // own lookup, on the PATH the command runs with (the `within env`
+      // layers [D:overlay-path]), PATHEXT on Windows
+      "which",
+      TFun(TStr, TNamed("Option", [ TStr ])),
+      VBuiltin(fun v ->
+          match v with
+          | VStr prog ->
+              match Extern.which (Proc.spawnPairs None []) prog with
+              | Some full -> VUnion("Some", Some(VStr full))
+              | None -> VUnion("None", None)
+          | v -> unreachable $"the checker rejects 'Path.which' on {formatValue v}")
       // home + XDG dirs [D:path-home] — the typed replacement for `~`/`$HOME`
       // (weir expands nothing in argv): `cat $"{Path.home ()}/.bashrc"`
       "home", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(homeDir ()))
@@ -7564,6 +7576,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Path.glob \"*.nope123\" |> Seq.freeze")
               None
           |> named [ "pattern" ]
+          "Path.which",
+          bd
+              "The full path of the program a command name would run, as Some path, or None when there is none. It looks the name up the way weir does when it runs a command: on the PATH the command would run with, including one set by `within env PATH=…`, and through PATHEXT on Windows. A name with a / in it is checked as a path."
+              (Some "Path.which \"sh\"")
+              None
+          |> named [ "name" ]
           "Path.home",
           (bd
               "The user's home directory: `$HOME` as set (even if that directory is missing), the OS lookup when it is unset; raises when there is none (an empty `$HOME`). Has no side effects. In a command line, a typed `~` means this path; in an expression, build paths with `$\"{Path.home ()}/.bashrc\"`."

@@ -8967,6 +8967,7 @@ let pureRegionTests =
                     "pwd", "'pwd' reads the working directory"
                     "Path.home ()", "'Path.home' reads the environment"
                     "Path.configHome ()", "'Path.configHome' reads the environment"
+                    "Path.which \"sh\"", "'Path.which' reads PATH and the filesystem"
                     "Term.width ()", "'Term.width' reads the terminal"
                     "Term.title \"t\"", "'Term.title' writes to the terminal"
                     "Color.red \"x\"", "'Color.red' reads the terminal" ] do
@@ -29869,6 +29870,7 @@ let helpUxTests =
                         "MIME" // MIME wrap (base64)
                         "POSIX"
                         "PATH" // the environment variable
+                        "PATHEXT" // the Windows environment variable [D:path-which]
                         "REPL" // tool surfaces
                         "TRACE" // WEIR_LOG level names, as the lines print them
                         "DEBUG"
@@ -32151,6 +32153,34 @@ let portOverlayTests =
                   (runFile [ "within env PATH=\"/weir-no-such-dir\""; "    sh -c \"echo hi\"" ])
                   1
                   "the overlay PATH decides at run time"
+          }
+          test "Path.which finds what a command head would run, on the overlay PATH too [D:path-which]" {
+              skipOnWindows ()
+
+              withTempDir "weir-which" (fun dir ->
+                  let tool = Path.Combine(dir, "weirwhichtoolzz")
+                  File.WriteAllText(tool, "#!/bin/sh\necho hi\n")
+                  File.SetUnixFileMode(tool, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute)
+                  let p = System.Environment.GetEnvironmentVariable "PATH"
+                  let path = $"{weirPath dir}:{p}"
+                  let full = weirPath tool
+
+                  Expect.equal
+                      (runFile
+                          [ "if Path.which \"weirwhichtoolzz\" <> None then exit 3"
+                            $"within env PATH=\"{path}\""
+                            $"    if Path.which \"weirwhichtoolzz\" <> Some \"{full}\" then exit 4"
+                            "    if Path.which \"sh\" == None then exit 5"
+                            $"if Path.which \"{full}\" <> Some \"{full}\" then exit 6"
+                            "if Path.which \"weir-no-such-toolzz\" <> None then exit 7"
+                            "if Path.which \"\" <> None then exit 8"
+                            "within env PATH=\"/weir-no-such-dir\""
+                            "    if Path.which \"sh\" <> None then exit 9" ])
+                      0
+                      "the overlay PATH decides; weir's own PATH outside it; a path names itself")
+
+              // an ambient read: readonly admits it (pure refuses it, pinned with the home dirs)
+              Expect.equal (Weir.Effects.effectClass "Path.which") (Some Weir.Effects.Ambient) "ambient"
           } ]
 
 let docsBinaryTests =
