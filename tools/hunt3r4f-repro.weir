@@ -274,7 +274,8 @@ let ptyPy = <<<
 // the signal driver: DIR TIMEOUT MARK SPEC... -- argv. Spawns argv in a new
 // session (default dispositions, stdin /dev/null, stdout/stderr to DIR/out,
 // DIR/err) and sends each SPEC in turn to the child's pid alone: `SIG@ms`
-// (ms after spawn) or `SIG@log+ms` (ms after DIR/log holds "BODY DONE");
+// (ms after spawn), `SIG@log+ms` (ms after DIR/log holds "BODY DONE") or
+// `SIG@procsN` (once N `sleep MARK`s are live);
 // `ign:SIG` starts the child with SIG ignored (an inherited SIG_IGN). Waits
 // up to TIMEOUT s after the last (then HANG: SIGKILL the session), counts the
 // `sleep MARK`s left 300ms later and kills them. One line:
@@ -311,6 +312,9 @@ let sigPy = <<<
                 except OSError: pass
                 time.sleep(0.0005)
             base = time.monotonic(); delay = float(when[4:]) / 1000.0
+        elif when.startswith("procs"):
+            while time.monotonic() - t0 < 30 and len(marked()) < int(when[5:]) and p.poll() is None: time.sleep(0.005)
+            base = time.monotonic(); delay = 0.0
         else:
             base = t0; delay = float(when) / 1000.0
         while time.monotonic() < base + delay: time.sleep(0.0005)
@@ -728,7 +732,7 @@ let h3r4c15 d =
 
 // ---- H3R4-C1-6: an inherited SIG_IGN SIGINT without a tty resets lazily --------
 
-let c16Plain = ["Duration.sleep 3s"; "print \"after\""]
+let c16Plain = ["[\"BODY DONE\"] |> File.write \"log\""; "Duration.sleep 3s"; "print \"after\""]
 
 let c16Scoped mark = $$<<<
     within
@@ -738,11 +742,11 @@ let c16Scoped mark = $$<<<
 
 let ctlIgnScopedResets d =
     let mark = markOf 5 7
-    let run = sigRun d ["ign:INT"; "INT@500"] "10" mark [put d "c.weir" (c16Scoped mark)]
+    let run = sigRun d ["ign:INT"; "INT@procs1"] "10" mark [put d "c.weir" (c16Scoped mark)]
     sigExit run.rc 2 && Seq.equal run.out ["cleanup"]
 
 let h3r4c16 d =
-    let run = sigRun d ["ign:INT"; "INT@500"] "10" "0" [put d "c16.weir" c16Plain]
+    let run = sigRun d ["ign:INT"; "INT@log+0"] "10" "0" [put d "c16.weir" c16Plain]
     failing [
         ($"""SIGINT inherited ignored, no tty, no scope or child yet: a kill -INT must end weir within 1000ms ({run.summary}, out '{joined run.out}')""", sigExit run.rc 2 && run.ms <= 1000 && not (run.out |> Seq.contains "after"))
     ]

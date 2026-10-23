@@ -244,10 +244,11 @@ let ptyPy = <<<
 
 // the signal driver: SIG WHEN ARG TIMEOUT MARK DIR -- argv. Spawns argv in a
 // new session (default dispositions, stdin /dev/null, stdout/stderr to
-// DIR/out, DIR/err), waits for WHEN — `ms` (ARG ms) or `log` (DIR/log holds
-// "BODY DONE", then a random 0..ARG ms) — sends SIG to the child's pid
-// alone, waits up to TIMEOUT s (then HANG: SIGKILL the session), counts the
-// `sleep MARK`s left 300ms later and kills them. One line:
+// DIR/out, DIR/err), waits for WHEN — `ms` (ARG ms), `procs` (ARG live
+// `sleep MARK`s, then 300ms), `logs` (ARG lines of DIR/log start "BODY DONE")
+// or `log` (DIR/log holds "BODY DONE", then a random 0..ARG ms) — sends SIG
+// to the child's pid alone, waits up to TIMEOUT s (then HANG: SIGKILL the
+// session), counts the `sleep MARK`s left 300ms later and kills them. One line:
 //     rc=<code|HANG> ms=<signal-to-exit> left=<n> sig=<name>
 let sigPy = <<<
     import os, sys, time, signal, subprocess, random
@@ -272,6 +273,15 @@ let sigPy = <<<
     t0 = time.monotonic()
     if when == "ms":
         time.sleep(arg / 1000.0)
+    elif when == "procs":
+        while time.monotonic() - t0 < 30 and len(marked()) < arg and p.poll() is None: time.sleep(0.02)
+        time.sleep(0.3)
+    elif when == "logs":
+        while time.monotonic() - t0 < 30 and p.poll() is None:
+            try:
+                if sum(1 for l in open(log) if l.startswith("BODY DONE")) >= arg: break
+            except OSError: pass
+            time.sleep(0.0005)
     else:
         while time.monotonic() - t0 < 30 and p.poll() is None:
             try:
@@ -706,7 +716,7 @@ let h3r4p06 d =
 
 // ---- H3R4-09: an abandoned parked arm's always runs after its scopes ----------
 
-// SIGTERM at 1s: arms parked reading a pipe an orphaned grandchild holds (no
+// SIGTERM once both arms park: arms parked reading a pipe an orphaned grandchild holds (no
 // cut reaches it) are abandoned; their always must not land after the lock
 // they ran under is released and the outer always has run
 let p09Fixture mark = $$<<<
@@ -729,6 +739,7 @@ let p09Cut = <<<
         within lock "p09.lock"
             [1; 2] |> Seq.piter (fun i ->
                 within
+                    File.append log [$"BODY DONE {i}"]
                     Duration.sleep 30s
                     File.append log [$"LATE arm {i}"]
                 always
@@ -737,13 +748,13 @@ let p09Cut = <<<
         File.append log ["after lock released"]
 
 let ctlCutArmsJoined d =
-    let run = sigRun d "TERM" "ms" "1000" "10" "0" [put d "c.weir" p09Cut; $"{d}/log"]
-    let ls = linesOf $"{d}/log"
+    let run = sigRun d "TERM" "logs" "2" "10" "0" [put d "c.weir" p09Cut; $"{d}/log"]
+    let ls = linesOf $"{d}/log" |> Seq.where (fun l -> not (l |> Str.startsWith "BODY DONE")) |> Seq.freeze
     sigRc 15 run.rc && (ls |> Seq.length) == 3 && before ls "arm cleanup 1" "after lock released" && before ls "arm cleanup 2" "after lock released"
 
 let h3r4p09 d =
     let mark = markOf 20 5
-    let run = sigRun d "TERM" "ms" "1000" "10" mark [put d "p09.weir" (p09Fixture mark); $"{d}/log"]
+    let run = sigRun d "TERM" "procs" "2" "10" mark [put d "p09.weir" (p09Fixture mark); $"{d}/log"]
     reap mark
     let ls = linesOf $"{d}/log"
     let late = ls |> Seq.exists (Str.startsWith "LATE")
