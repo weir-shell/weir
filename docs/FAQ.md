@@ -26,7 +26,10 @@ See [How a line decides](GUIDE.md#how-a-line-decides).
 
 A command's output is a `seq<string>`, one element per line. End the
 command with `| line` when it prints exactly one line, or `| text`
-for the whole output as one string.
+for the whole output as one string. `| line` is a check as well as a
+conversion: no output, or more than one line, is an error ("expected
+exactly one line of output, got 2"), so a surprise never slips through
+as the wrong string.
 
 ```weir
 let branch = git branch --show-current | line
