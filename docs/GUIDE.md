@@ -2771,10 +2771,10 @@ or just not done yet, is listed in
 and checked against the real F# compiler. In short, weir has:
 
 - no mutation
-- no unbounded loops and no recursion. `retry` and `poll` are loops
-  with a limit, and `Graph.reach` and `Tree.walk` walk graphs and
-  trees safely even with cycles. A loop without a limit can't be
-  written.
+- no `while` and no recursion. `retry` and `poll` are loops with a
+  limit, `repeat` runs until the program is asked to stop, and
+  `Graph.reach` and `Tree.walk` walk graphs and trees safely even with
+  cycles.
 - no exceptions and no try/with; `fail` raises, `|> try` and
   `| complete` turn a failure into a value, and `within … always`
   does cleanup

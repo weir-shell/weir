@@ -4,7 +4,12 @@
 however the block exits: normal completion, an error, `exit n`,
 SIGINT or SIGTERM. This works both in a terminal and detached: a
 `kill -INT`/`kill -TERM` sent to a `setsid` or backgrounded weir
-cleans up the same way, then dies by the signal (`$?` 130/143). The
+cleans up the same way, then dies by the signal (`$?` 130/143). While
+a `repeat` or a `Self.waitForStop ()` runs, the first SIGINT, SIGTERM
+or SIGHUP is only a request to stop ([`repeat`](loops.md#repeat)):
+nothing is cut or killed, the loop finishes its iteration and the
+scopes close by their normal path; the second signal is the teardown
+described here. The
 cleanup runs on the flow's own thread (a script's, a REPL entry's),
 and no statement after the signal runs: a sleep
 or a wait on a scoped process is cut short, and the block unwinds from

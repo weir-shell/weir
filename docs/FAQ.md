@@ -81,6 +81,27 @@ for d in ["a"; "b"] do
 
 See [Exit codes: from command to value](GUIDE.md#exit-codes-from-command-to-value).
 
+### How do I write a loop that runs until I stop it?
+
+Use `repeat interval=…`. It runs the block, waits the interval and
+runs it again. The first Ctrl+C (or `kill -TERM`) lets the iteration
+in hand finish, then runs the code after the loop, and the script
+exits 0; a second one stops it at once. A `bool` block ends it when
+true:
+
+```weir
+repeat interval=10ms
+    print "tick"
+    true
+print "stopped"
+```
+
+A `for` over `Seq.initInfinite` runs forever too, but a signal cuts it
+mid-iteration. To keep a server running until it is stopped, end its
+`within serve` block with `Self.waitForStop ()`.
+
+See [`repeat`](reference/loops.md#repeat).
+
 ## Functions
 
 ### My function ends with a command; why does it return `seq<string>`?

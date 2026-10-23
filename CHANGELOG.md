@@ -47,6 +47,20 @@ Many of the changes and fixes below were found porting starship to weir.
   anything runs. Flags, quoted words, paths, `|` lines and commands
   that take a command (`sudo`, `env`, `xargs`, `ssh`, …) are not
   flagged.
+- **`repeat interval=1s` — a loop that runs until the program is
+  asked to stop.** It runs its block, waits the interval and runs it
+  again. The first Ctrl+C, `kill -TERM` or SIGHUP does not cut it: the
+  iteration in hand finishes, the code after the loop runs, and the
+  script exits 0. A second signal stops it at once, as before. A
+  command running in the iteration is left to finish on a `kill -TERM`;
+  one a terminal Ctrl+C kills ends the loop as the stop, not as a
+  failure. Every `repeat` in a `Seq.piter` arm stops the same way. A
+  `bool` block, `until` and `timeout=` work as in `poll`. At the
+  prompt, the first Ctrl+C stops a `repeat` and the prompt returns; a
+  second cuts it as before.
+- **`Self.waitForStop ()`** blocks until the first Ctrl+C or
+  `kill -TERM` and then returns, so a `within serve` block ending with
+  it closes normally: requests in flight get their answer.
 
 ### Changed
 
