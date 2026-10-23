@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`#help` shows the `///` doc of a module member imported by
+  init.weir.** `#help Git.refresh` printed only the signature; it now
+  prints the doc written above the member's signature, as it already
+  did for init.weir's own declarations.
+
 ## v0.0.77
 
 ### Added

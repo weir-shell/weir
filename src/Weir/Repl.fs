@@ -4459,6 +4459,10 @@ let private loadInit (baseState: State) : State =
                                     | None -> acc)
                                 venv
 
+                        docs <-
+                            lm.MemberDocs
+                            |> Map.fold (fun acc n d -> Map.add $"{lm.Alias}.{n}" d acc) docs
+
                         names <- names + List.length lm.Members
                     | _ -> ()
                 with ex ->
