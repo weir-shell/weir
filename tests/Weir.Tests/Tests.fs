@@ -5924,6 +5924,12 @@ let stringTests =
                   "Str.sha256 \"café\""
                   (VStr "850f7dc43910ff890f8879c0ed26fe697c93a067ad93a7d50f466a7028a9bf4e")
           }
+          test "sha1: exact digests, sha1sum parity, UTF-8 bytes [D:sha1]" {
+              expectValue "Str.sha1 \"hello\"" (VStr "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d")
+              expectValue "Str.sha1 \"café\"" (VStr "f424452a9673918c6f09b0cdd35b20be8e6ae7d7")
+              expectValue "Str.sha1 \"\"" (VStr "da39a3ee5e6b4b0d3255bfef95601890afd80709")
+              expectValue "Bytes.sha1 (Str.toUtf8 \"hello\")" (VStr "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d")
+          }
           test "base64: exact form, round-trip, liberal unpadded input [D:encoding-law]" {
               expectValue "Str.toBase64 \"café\"" (VStr "Y2Fmw6k=")
               expectValue "Str.toBase64 \"café\" |> Str.fromBase64" (VStr "café")
@@ -24814,6 +24820,11 @@ let bytesTests =
                   let viaFile = runReal $"File.sha256 \"{tmp.Replace('\\', '/')}\""
                   let viaBytes = runReal $"Bytes.sha256 (File.readBytes \"{tmp.Replace('\\', '/')}\")"
                   Expect.equal viaFile viaBytes "the streaming hash agrees with the value hash"
+
+                  Expect.equal
+                      (runReal $"File.sha1 \"{tmp.Replace('\\', '/')}\"")
+                      (runReal $"Bytes.sha1 (File.readBytes \"{tmp.Replace('\\', '/')}\")")
+                      "File.sha1 agrees with Bytes.sha1 [D:sha1]"
               finally
                   System.IO.File.Delete tmp
                   System.IO.File.Delete out

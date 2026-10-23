@@ -51,6 +51,13 @@
           "pointer": null
         },
         {
+          "name": "sha1",
+          "signature": "Bytes.sha1 (b: Bytes) : string",
+          "summary": "The SHA-1 digest of the bytes, as lowercase hex (same output as sha1sum). For protocols that name SHA-1; Bytes.sha256 otherwise.",
+          "example": null,
+          "pointer": null
+        },
+        {
           "name": "sha256",
           "signature": "Bytes.sha256 (b: Bytes) : string",
           "summary": "The SHA-256 digest of the bytes, as lowercase hex (same output as sha256sum).",
@@ -436,6 +443,13 @@
           "name": "readSecret",
           "signature": "File.readSecret (path: string) : Secret",
           "summary": "Read a file\u0027s whole content as a Secret, for example a secret mounted into a container. Trailing newlines are removed.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "sha1",
+          "signature": "File.sha1 (path: string) : string",
+          "summary": "The SHA-1 digest of a file\u0027s bytes, as lowercase hex (same output as sha1sum). The file is streamed, never loaded into memory whole. SHA-1 is broken for security; use it only where a protocol names it, and File.sha256 otherwise.",
           "example": null,
           "pointer": null
         },
@@ -1922,9 +1936,16 @@
           "pointer": null
         },
         {
+          "name": "sha1",
+          "signature": "Str.sha1 (s: string) : string",
+          "summary": "The SHA-1 digest of the string\u0027s UTF-8 bytes, as lowercase hex (same output as sha1sum). SHA-1 is broken for security; use it only where a protocol names it (git object ids, legacy checksums), and Str.sha256 otherwise.",
+          "example": "Str.sha1 \u0022hello\u0022",
+          "pointer": null
+        },
+        {
           "name": "sha256",
           "signature": "Str.sha256 (s: string) : string",
-          "summary": "The SHA-256 digest of the string\u0027s UTF-8 bytes, as lowercase hex (same output as sha256sum). Only SHA-256 is available for now.",
+          "summary": "The SHA-256 digest of the string\u0027s UTF-8 bytes, as lowercase hex (same output as sha256sum).",
           "example": "Str.sha256 \u0022hello\u0022",
           "pointer": null
         },
