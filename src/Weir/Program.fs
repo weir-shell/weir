@@ -527,14 +527,14 @@ let main argv =
                     | Error e ->
                         // the error names the source files, not the scratch copy
                         let e = e.Replace(scratch + string IO.Path.DirectorySeparatorChar, Http.redactUrl baseUrl)
-                        Console.Error.WriteLine $"weir add module: {e}; nothing was written"
+                        Console.Error.WriteLine $"weir add module: {lockText e}; nothing was written"
                         1
                     | Ok memberCount ->
                         let relFiles = files |> List.map (fun (p, b) -> rel p, b)
 
                         match Contracts.vendorClosure weirDir name baseUrl src.Sha (rel entryRepo) relFiles with
                         | Error e ->
-                            Console.Error.WriteLine $"weir add module: {e}"
+                            Console.Error.WriteLine $"weir add module: {lockText e}"
                             1
                         | Ok(hash, prior, changes) ->
                             let n = List.length files
@@ -548,9 +548,9 @@ let main argv =
 
                                  for p, o, nw in changes do
                                      match o, nw with
-                                     | Some a, Some b when a <> b -> Console.WriteLine $"  {p}: {shortSha a} → {shortSha b}"
-                                     | None, Some b -> Console.WriteLine $"  {p}: added ({shortSha b})"
-                                     | Some _, None -> Console.WriteLine $"  {p}: removed"
+                                     | Some a, Some b when a <> b -> Console.WriteLine $"  {quoteData p}: {shortSha a} → {shortSha b}"
+                                     | None, Some b -> Console.WriteLine $"  {quoteData p}: added ({shortSha b})"
+                                     | Some _, None -> Console.WriteLine $"  {quoteData p}: removed"
                                      | _ -> ()
                              | None ->
                                  Console.WriteLine
