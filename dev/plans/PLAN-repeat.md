@@ -1,6 +1,9 @@
 # PLAN: `repeat` — the loop a stop signal ends
 
-**Status: PROPOSED** — decisions D1–D8 below need rulings before any code.
+**Status: RULED** (user, 2026-10-23) — every decision took the recommendation:
+D1 graceful then cut in the REPL; D2 exit 0; D3 a stop-caused failure is the stop;
+D4 sticky; D5 mirror `poll`; D6 inner waits not ended; D7 `repeat interval=…`;
+D8 `Self.waitForStop ()`.
 
 ## The receipt
 
@@ -248,7 +251,7 @@ print "server stopped"
 
 ## Order
 
-1. Rulings on D1–D8.
+1. ~~Rulings on D1–D8.~~ Done.
 2. Runtime state + handler change behind a unit-tested state machine.
 3. The form (parser, checker, options record, plan refusal).
 4. e2e/pty battery, Windows cell.
