@@ -2586,13 +2586,107 @@ module Color = Weir.Types.Color
 let stripAnsi (s: string) : string =
     System.Text.RegularExpressions.Regex.Replace(s, "\x1b\[[0-9;]*m", "")
 
+// the string and hole masks of a line with `$"…{hole}…"` strings: a hole
+// is code inside a string, so the colorizer paints it as code
+// [D:interp-hole-complete]. The kinds mirror `closers`: plain and interp
+// strings (backslash escapes), verbatim @"…" (`""` stays inside), triple
+// """…""", single-quoted; `{{` in an interp string is a literal brace; a
+// string inside a hole is a string again; an unclosed one runs to the end
+let private interpMasks (line: string) : bool[] * bool[] =
+    let str = Array.create line.Length false
+    let hole = Array.create line.Length false
+    let mutable stack: char list = []
+    let mutable i = 0
+
+    let mark (from: int) (until: int) =
+        for j in from .. min until (line.Length - 1) do
+            str[j] <- true
+
+    while i < line.Length do
+        let c = line[i]
+
+        match stack with
+        | ('"' | '$') :: rest ->
+            str[i] <- true
+
+            if c = '\\' && i + 1 < line.Length then
+                mark i (i + 1)
+                i <- i + 1
+            elif c = '"' then
+                stack <- rest
+            elif c = '{' && List.head stack = '$' then
+                if i + 1 < line.Length && line[i + 1] = '{' then
+                    mark i (i + 1)
+                    i <- i + 1
+                else
+                    stack <- '}' :: stack
+        | 'V' :: rest ->
+            str[i] <- true
+
+            if c = '"' then
+                if i + 1 < line.Length && line[i + 1] = '"' then
+                    mark i (i + 1)
+                    i <- i + 1
+                else
+                    stack <- rest
+        | 'T' :: rest ->
+            str[i] <- true
+
+            if c = '"' && i + 2 < line.Length && line[i + 1] = '"' && line[i + 2] = '"' then
+                mark i (i + 2)
+                i <- i + 2
+                stack <- rest
+        | '\'' :: rest ->
+            str[i] <- true
+
+            if c = '\'' then
+                stack <- rest
+        | top ->
+            let inHole =
+                match top with
+                | '}' :: _ -> true
+                | _ -> false
+
+            if inHole && c = '}' then
+                // the hole's closing brace belongs to the string
+                str[i] <- true
+                stack <- List.tail stack
+            else
+                if inHole then
+                    hole[i] <- true
+
+                if c = '"' && i + 2 < line.Length && line[i + 1] = '"' && line[i + 2] = '"' then
+                    mark i (i + 2)
+                    stack <- 'T' :: stack
+                    i <- i + 2
+                elif c = '"' then
+                    str[i] <- true
+                    stack <- (if i > 0 && line[i - 1] = '@' then 'V'
+                              elif i > 0 && line[i - 1] = '$' then '$'
+                              else '"') :: stack
+                elif c = '\'' then
+                    str[i] <- true
+                    stack <- '\'' :: stack
+                elif c = '{' && inHole then
+                    stack <- '}' :: stack
+
+        i <- i + 1
+
+    (str, hole)
+
 let colorizeRepl (isKnown: string -> bool) (line: string) : string =
     if line = "" then
         ""
     else
         // per-char color codes; None = plain
         let codes: string option array = Array.create line.Length None
-        let mask = inStringMask line
+        // a line with an interp string takes the hole-aware masks; any
+        // other line keeps the shared scanner's
+        let mask, holes =
+            if line.Contains "$\"" then
+                interpMasks line
+            else
+                inStringMask line, Array.create line.Length false
 
         for i in 0 .. line.Length - 1 do
             if mask[i] then
@@ -2645,9 +2739,12 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                     // never a program — a case-insensitive filesystem would
                     // otherwise find `Seq` as seq on PATH [D:constructors-not-heads]
                     match
-                        (match Complete.headSlotAt (line.Substring(0, start)) with
-                         | Complete.HeadSlot.Stage when Char.IsUpper word[0] -> Complete.HeadSlot.No
-                         | s -> s)
+                        (if holes[start] then
+                             Complete.HeadSlot.No // a hole is an expression
+                         else
+                             match Complete.headSlotAt (line.Substring(0, start)) with
+                             | Complete.HeadSlot.Stage when Char.IsUpper word[0] -> Complete.HeadSlot.No
+                             | s -> s)
                     with
                     | Complete.HeadSlot.Forced ->
                         // ^head: PATH only — `^x` names a program,
@@ -2691,7 +2788,7 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                             Some "33"
                         elif slot = Complete.HeadSlot.LetRhs then
                             Some "31" // unresolved lowercase RHS head: red
-                        elif cmdMode then
+                        elif cmdMode && not holes[start] then
                             Some "2" // argv words: dim (inert data)
                         else
                             None
@@ -2721,7 +2818,7 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                         codes[i] <- Some "36"
                         i <- i + 1
             elif "|><=+-*/".Contains(line[i]) then
-                if line[i] = '|' then
+                if line[i] = '|' && not holes[i] then
                     // a stage boundary: what follows is expression land
                     cmdMode <- false
 
