@@ -5556,7 +5556,7 @@ let checkVendoredClosure (dir: string) (entryRel: string) : Result<int, string> 
     let entryAbs = IO.Path.GetFullPath(IO.Path.Combine(dir, entryRel))
     let cache = Collections.Generic.Dictionary()
 
-    match loadModuleCachedWith false cache [] (entryAbs + ".add") entryAbs None with
+    match loadModuleCachedWith false resolver cache [] (entryAbs + ".add") entryAbs None with
     | Ok lm -> Ok(List.length lm.Members)
     | Error e ->
         let where =
