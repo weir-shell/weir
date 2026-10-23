@@ -3984,6 +3984,11 @@ let completionTests =
               Expect.equal (ask "for p in ls |> _.") [] "the user's report: a bare stage after a for header"
               Expect.equal (ask "ls |> _.") [] "a bare stage over a seq"
               Expect.equal (ask "ls\n|> _.") [] "a bare stage on a continuation line"
+              // a long whitespace run after `for` with no ` in` answers at once
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+              ask ("for" + String.replicate 4000 " " + "x |> map zz.") |> ignore
+              Expect.isLessThan sw.ElapsedMilliseconds 2000L "the for-lead match is bounded"
+              Expect.equal (ask "for p   in   ls |> map _.na") [ "_.name" ] "spaced for header"
               // the repair sees the shorthand too (the LSP's path)
               Expect.equal
                   (Weir.Script.repairedFields env "ls |> where (fun f -> f.kind == Directory) |> Seq.map _." "")

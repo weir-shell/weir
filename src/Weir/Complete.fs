@@ -183,10 +183,14 @@ let private withHoles (env: TypeEnv) (e: Weir.Ast.Expr) : TypeEnv =
 // type-checks, so the seq does not unwrap there and nothing is offered
 // (user-ruled [D:entry-complete]); a record flowing in still offers its
 // fields, and an argument (`|> map _.`, `Seq.where _.`) unwraps as before
+// the `for` binder is whole words (`\S+\s+` units split a space run one
+// way only, so a long run never backtracks), and the match is time-bounded
+// besides: completion runs on the user's text
 let private pipeSourceLead =
     System.Text.RegularExpressions.Regex(
-        @"^(?:for\s+.+?\s+in\s+|let\s+[A-Za-z_]\w*\s*=(?!=)\s*)",
-        System.Text.RegularExpressions.RegexOptions.Singleline
+        @"^(?:for\s+(?:\S+\s+)+?in\s+|let\s+[A-Za-z_]\w*\s*=(?!=)\s*)",
+        System.Text.RegularExpressions.RegexOptions.Singleline,
+        System.TimeSpan.FromMilliseconds 100.0
     )
 
 let private pipelineElemTy (env: TypeEnv) (bareStage: bool) (text: string) : Ty option =
@@ -195,7 +199,12 @@ let private pipelineElemTy (env: TypeEnv) (bareStage: bool) (text: string) : Ty 
     | i ->
         let prefix =
             let p = text.Substring(0, i).Trim()
-            let m = pipeSourceLead.Match p
+            let m =
+                try
+                    pipeSourceLead.Match p
+                with :? System.Text.RegularExpressions.RegexMatchTimeoutException ->
+                    System.Text.RegularExpressions.Match.Empty
+
             if m.Success then p.Substring m.Length else p
 
         match Weir.Parser.parseExpr prefix with
