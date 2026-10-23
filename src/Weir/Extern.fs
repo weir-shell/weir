@@ -64,7 +64,8 @@ let overlayPath (pairs: (string * string) list) : string option =
     | _ -> None
 
 /// a bare program on the given PATH (and the env's PATHEXT on Windows):
-/// the name as-given first in each dir, then each extension
+/// the name as-given first in each dir, then each extension; a relative
+/// entry reads from weir's working directory, where the child starts
 let resolveOn (pairs: (string * string) list) (pathValue: string) (prog: string) : string option =
     let exts =
         match lastPair pairs "PATHEXT" with
@@ -73,7 +74,7 @@ let resolveOn (pairs: (string * string) list) (pathValue: string) (prog: string)
 
     pathDirsOf pathValue
     |> Seq.tryPick (fun dir ->
-        let candidate = Path.Combine(dir, prog)
+        let candidate = Session.resolve (Path.Combine(dir, prog))
 
         if File.Exists candidate then
             Some candidate
