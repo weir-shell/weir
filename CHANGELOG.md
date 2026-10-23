@@ -20,6 +20,10 @@ Many of the changes and fixes below were found porting starship to weir.
   or flag names. It gets 300 ms and 1 MiB, and pressing another key
   stops it (the key is kept); with no answer you get what the signature
   alone gives. REPL only; the editor is unchanged.
+- **`PromptStatus.duration`: how long the last entry took.** A
+  `PromptStatus -> string` prompt can show it the way starship's
+  `cmd_duration` does — `if st.duration > 2s then $"took
+  {st.duration} " else ""`. It is `0ms` before the first entry.
 
 ### Changed
 

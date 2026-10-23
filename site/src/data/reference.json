@@ -2883,6 +2883,10 @@
         {
           "name": "exit",
           "type": "Option\u003Cint\u003E"
+        },
+        {
+          "name": "duration",
+          "type": "Duration"
         }
       ]
     },

@@ -3066,6 +3066,7 @@ let promptStatusDomain (dom: Ty) : bool =
             match f, t with
             | "ok", (TBool | TVar _) -> true
             | "exit", (TNamed("Option", [ TInt ]) | TNamed("Option", [ TVar _ ]) | TVar _) -> true
+            | "duration", (TDur | TVar _) -> true
             | _ -> false)
     | _ -> false
 
@@ -9727,7 +9728,7 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                                         (valCol ll.Head "prompt")
                                         None
                                         "session-type"
-                                        $"prompt expects a string, a unit -> string, or a PromptStatus -> string function (ok + a bare command's exit code), got {formatTy ty}"
+                                        $"prompt expects a string, a unit -> string, or a PromptStatus -> string function (ok, a bare command's exit code, the entry's duration), got {formatTy ty}"
                                 )
                         | _ ->
                             diags.Add(

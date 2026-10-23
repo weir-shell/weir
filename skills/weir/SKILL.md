@@ -2934,7 +2934,7 @@ the checker's own environment [D:surface-gate] — same contract as above:
 - type `Op`: `WriteFile` `WriteFileAtomic` `DeleteFile` `Copy` `Move` `CopyDir` `MoveDir` `MakeDir` `DeleteDir` `DeleteTree` `HttpSend`
 - type `Option`: `Some` `None`
 - type `Poll`: { `timeout` `interval` }
-- type `PromptStatus`: { `ok` `exit` }
+- type `PromptStatus`: { `ok` `exit` `duration` }
 - type `Result`: `Ok` `Error`
 - type `Retry`: { `attempts` `delay` `timeout` }
 - type `ServerConfig`: { `port` `maxConcurrent` `bodyTimeout` `maxBody` }
