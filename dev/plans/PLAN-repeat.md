@@ -1,6 +1,6 @@
 # PLAN: `repeat` — the loop a stop signal ends
 
-**Status: PROPOSED** — decisions D1–D7 below need rulings before any code.
+**Status: PROPOSED** — decisions D1–D8 below need rulings before any code.
 
 ## The receipt
 
@@ -105,6 +105,39 @@ returns, because the request is still set when it checks.
   ended by the stop request — only `repeat`'s own `interval` wait is.
   (D6: should they be?)
 
+## `Self.waitForStop` — the explicit wait (servers, sidecars)
+
+`repeat` observes the stop request implicitly: its own interval wait is
+stop-aware. A scope that should simply be held until the operator stops
+the program — a `within serve`, a `within proc` sidecar — says so
+explicitly:
+
+```weir
+within serve srv = { port = 8080; maxConcurrent = 4 } handler
+    print $"listening on {Server.port srv}"
+    Self.waitForStop ()
+
+print "server stopped"
+```
+
+- `Self.waitForStop () : unit` blocks until the first stop signal and
+  returns normally. While it waits, the process is in stop-request mode
+  exactly as under a `repeat`: the first signal is the request, the
+  second is today's teardown.
+- Because it returns normally, `within serve` closes by its **normal**
+  path: handlers in flight get the normal close drain (2s together,
+  then the cut, cleanups joined whole — [D:serve-cut],
+  [D:serve-cut-joins-cleanup]), not the signal path's immediate cut
+  ([D:serve-drain-signal]).
+- `within serve` itself is unchanged: the server lives exactly as long as
+  the block. No blocking variant of `serve` — one scope rule, and the
+  same wait serves any scope.
+- Stop-request mode is active while any stop-aware construct runs: a
+  `repeat` or a `Self.waitForStop`. The handler's check becomes
+  `stopAwareDepth > 0` (one counter for both).
+- With the stop already requested (sticky, D4), `waitForStop` returns at
+  once.
+
 ## Checker and parser
 
 - New compound form `repeat`, parsed beside `retry`/`poll` (same
@@ -125,8 +158,9 @@ returns, because the request is still set when it checks.
 ## Runtime
 
 - One process-wide `Session.stopRequested` flag and a count of live
-  `repeat`s (`Session.repeatDepth`).
-- The signal handler: when `repeatDepth > 0` and no stop request is set,
+  stop-aware constructs, `repeat`s and `Self.waitForStop` calls
+  (`Session.stopAwareDepth`).
+- The signal handler: when `stopAwareDepth > 0` and no stop request is set,
   set it, wake every `repeat` wait (a shared `ManualResetEventSlim` or
   cancellation source the interval wait observes), and return without
   flagging the teardown or reaping. Otherwise the existing path.
@@ -163,6 +197,9 @@ returns, because the request is still set when it checks.
   - terminal ^C at a pty with a child running in the iteration;
   - the receipt's two-arm `Seq.piter`: both arms stop, both after-lines
     print, exit D2;
+  - `within serve` + `Self.waitForStop`: a request in flight when TERM
+    lands still gets its response (normal drain), the line after the
+    scope prints, exit D2; a second TERM cuts as today;
   - TERM with a `kill -TERM` to weir only while a `sleep 3` command runs
     in the iteration: the command is NOT killed, it completes;
   - Windows: Ctrl+C equivalent where the harness can drive it.
@@ -201,6 +238,9 @@ returns, because the request is still set when it checks.
   `Duration.sleep`/`poll`/`retry` wait inside the current iteration?
   *Recommend: no* — "finish the iteration" means the iteration's own
   waits are part of its work; the second signal is there for a stuck one.
+- **D8 — the explicit wait's name.** `Self.waitForStop ()`,
+  `Signal.wait ()`, `Self.awaitStop ()`. *Recommend: `Self.waitForStop`*
+  — `Self` holds the process facts; no new module for one member.
 - **D7 — the name.** `repeat`, `every 1s`, `serve`, `loop`. *Recommend:
   `repeat interval=…`* — fits the `retry`/`poll` key syntax; `serve` is
   taken (`within serve`), `loop` reads as unbounded, `every` breaks the
@@ -208,7 +248,7 @@ returns, because the request is still set when it checks.
 
 ## Order
 
-1. Rulings on D1–D7.
+1. Rulings on D1–D8.
 2. Runtime state + handler change behind a unit-tested state machine.
 3. The form (parser, checker, options record, plan refusal).
 4. e2e/pty battery, Windows cell.
