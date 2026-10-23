@@ -3169,6 +3169,8 @@ let private strMembers: (string * Ty * Value) list =
       "join", TFun(TStr, TFun(TSeq TStr, TStr)), joinImpl
       "replace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), replaceImpl
       "length", TFun(TStr, TInt), strLenImpl
+      // terminal columns [D:str-width]: the REPL prompt's own width table
+      "width", TFun(TStr, TInt), VBuiltin(function VStr s -> VInt(int64 (CellWidth.ofString s)) | v -> unreachable $"the checker rejects 'Str.width' on {formatValue v}")
       "sub", TFun(TInt, TFun(TInt, TFun(TStr, TStr))), substringImpl
       "replicate", TFun(TInt, TFun(TStr, TStr)), strReplicateImpl
       "padLeft", TFun(TInt, TFun(TStr, TStr)), padImpl "padLeft" CodePoints.padLeft
@@ -7419,6 +7421,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           bd "Replace every occurrence of a substring. The text is literal, not a regex (Str.rreplace takes a pattern)." (Some "Str.replace \"a\" \"b\" \"aba\"") None
           |> named [ "old"; "new"; "s" ]
           "Str.length", (bd "The number of characters (Unicode code points)." (Some "Str.length \"abc\"") None |> named [ "s" ])
+          "Str.width",
+          (bd
+              "The number of terminal columns the string takes when printed: two for a wide character (Chinese, Japanese, Korean, fullwidth forms, emoji), none for a combining mark, a zero-width or control character, or an escape sequence such as a colour, one for the rest. An emoji built from several code points (a family joined by zero-width joiners, a flag) counts once. Use it to pad or align text you print; Str.length counts code points instead."
+              (Some "Str.width \"日本\"")
+              None
+           |> named [ "s" ])
           "Str.sub",
           (bd "A substring by start index and length, both in characters (code points)." (Some "Str.sub 0 2 \"abc\"") None
            |> named [ "start"; "len"; "s" ])

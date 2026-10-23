@@ -161,6 +161,167 @@ module CodePoints =
         let n = length s
         if n >= w then s else s + System.String(' ', w - n)
 
+/// Terminal cell widths [D:str-width]: how many columns a string takes
+/// when printed. East Asian Wide/Fullwidth and emoji presentation take
+/// two, combining marks, format characters and controls none, the rest
+/// one; an escape sequence (CSI such as SGR colour, OSC) takes none.
+/// Emoji sequences count as one glyph: a ZWJ joins the next character
+/// into the one before, VS16 turns a narrow character into emoji
+/// presentation, a skin-tone modifier or a second regional indicator
+/// (a flag's) adds nothing. Terminals disagree at the edges (ambiguous
+/// width counts one).
+module CellWidth =
+    // East_Asian_Width W and F, Unicode 16.0, as inclusive (lo, hi) ranges
+    // (generated from the UCD; planes 2 and 3 are wide whole)
+    let private wide: (int * int)[] =
+        [|
+        0x1100, 0x115F; 0x231A, 0x231B; 0x2329, 0x232A; 0x23E9, 0x23EC; 0x23F0, 0x23F0;
+        0x23F3, 0x23F3; 0x25FD, 0x25FE; 0x2614, 0x2615; 0x2630, 0x2637; 0x2648, 0x2653;
+        0x267F, 0x267F; 0x268A, 0x268F; 0x2693, 0x2693; 0x26A1, 0x26A1; 0x26AA, 0x26AB;
+        0x26BD, 0x26BE; 0x26C4, 0x26C5; 0x26CE, 0x26CE; 0x26D4, 0x26D4; 0x26EA, 0x26EA;
+        0x26F2, 0x26F3; 0x26F5, 0x26F5; 0x26FA, 0x26FA; 0x26FD, 0x26FD; 0x2705, 0x2705;
+        0x270A, 0x270B; 0x2728, 0x2728; 0x274C, 0x274C; 0x274E, 0x274E; 0x2753, 0x2755;
+        0x2757, 0x2757; 0x2795, 0x2797; 0x27B0, 0x27B0; 0x27BF, 0x27BF; 0x2B1B, 0x2B1C;
+        0x2B50, 0x2B50; 0x2B55, 0x2B55; 0x2E80, 0x2E99; 0x2E9B, 0x2EF3; 0x2F00, 0x2FD5;
+        0x2FF0, 0x303E; 0x3041, 0x3096; 0x3099, 0x30FF; 0x3105, 0x312F; 0x3131, 0x318E;
+        0x3190, 0x31E5; 0x31EF, 0x321E; 0x3220, 0x3247; 0x3250, 0xA48C; 0xA490, 0xA4C6;
+        0xA960, 0xA97C; 0xAC00, 0xD7A3; 0xF900, 0xFAFF; 0xFE10, 0xFE19; 0xFE30, 0xFE52;
+        0xFE54, 0xFE66; 0xFE68, 0xFE6B; 0xFF01, 0xFF60; 0xFFE0, 0xFFE6; 0x16FE0, 0x16FE4;
+        0x16FF0, 0x16FF1; 0x17000, 0x187F7; 0x18800, 0x18CD5; 0x18CFF, 0x18D08; 0x1AFF0, 0x1AFF3;
+        0x1AFF5, 0x1AFFB; 0x1AFFD, 0x1AFFE; 0x1B000, 0x1B122; 0x1B132, 0x1B132; 0x1B150, 0x1B152;
+        0x1B155, 0x1B155; 0x1B164, 0x1B167; 0x1B170, 0x1B2FB; 0x1D300, 0x1D356; 0x1D360, 0x1D376;
+        0x1F004, 0x1F004; 0x1F0CF, 0x1F0CF; 0x1F18E, 0x1F18E; 0x1F191, 0x1F19A; 0x1F200, 0x1F202;
+        0x1F210, 0x1F23B; 0x1F240, 0x1F248; 0x1F250, 0x1F251; 0x1F260, 0x1F265; 0x1F300, 0x1F320;
+        0x1F32D, 0x1F335; 0x1F337, 0x1F37C; 0x1F37E, 0x1F393; 0x1F3A0, 0x1F3CA; 0x1F3CF, 0x1F3D3;
+        0x1F3E0, 0x1F3F0; 0x1F3F4, 0x1F3F4; 0x1F3F8, 0x1F43E; 0x1F440, 0x1F440; 0x1F442, 0x1F4FC;
+        0x1F4FF, 0x1F53D; 0x1F54B, 0x1F54E; 0x1F550, 0x1F567; 0x1F57A, 0x1F57A; 0x1F595, 0x1F596;
+        0x1F5A4, 0x1F5A4; 0x1F5FB, 0x1F64F; 0x1F680, 0x1F6C5; 0x1F6CC, 0x1F6CC; 0x1F6D0, 0x1F6D2;
+        0x1F6D5, 0x1F6D7; 0x1F6DC, 0x1F6DF; 0x1F6EB, 0x1F6EC; 0x1F6F4, 0x1F6FC; 0x1F7E0, 0x1F7EB;
+        0x1F7F0, 0x1F7F0; 0x1F90C, 0x1F93A; 0x1F93C, 0x1F945; 0x1F947, 0x1F9FF; 0x1FA70, 0x1FA7C;
+        0x1FA80, 0x1FA89; 0x1FA8F, 0x1FAC6; 0x1FACE, 0x1FADC; 0x1FADF, 0x1FAE9; 0x1FAF0, 0x1FAF8;
+        0x20000, 0x2FFFD; 0x30000, 0x3FFFD
+        |]
+
+    let private isWide (cp: int) =
+        // binary search over the ranges
+        let mutable lo = 0
+        let mutable hi = wide.Length - 1
+        let mutable found = false
+
+        while not found && lo <= hi do
+            let mid = (lo + hi) / 2
+            let a, b = wide[mid]
+
+            if cp < a then hi <- mid - 1
+            elif cp > b then lo <- mid + 1
+            else found <- true
+
+        found
+
+    let private isRegional (cp: int) = cp >= 0x1F1E6 && cp <= 0x1F1FF
+
+    /// one code point's cells, out of context
+    let ofRune (r: System.Text.Rune) : int =
+        let cp = r.Value
+
+        if cp = 0xAD then
+            1 // the soft hyphen prints, as wcwidth counts it
+        elif (cp >= 0x1160 && cp <= 0x11FF) || (cp >= 0xD7B0 && cp <= 0xD7FF) then
+            0 // Hangul medial vowels and final consonants join the syllable
+        else
+            match System.Text.Rune.GetUnicodeCategory r with
+            | System.Globalization.UnicodeCategory.NonSpacingMark
+            | System.Globalization.UnicodeCategory.EnclosingMark
+            | System.Globalization.UnicodeCategory.Format
+            | System.Globalization.UnicodeCategory.Control -> 0
+            | _ -> if isWide cp || isRegional cp then 2 else 1
+
+    // the length of the escape sequence at i (s[i] = ESC): CSI to its
+    // final byte, OSC/DCS/APC/PM/SOS to BEL or ST, else ESC and one char
+    let private escapeLen (s: string) (i: int) : int =
+        if i + 1 >= s.Length then
+            1
+        else
+            match s[i + 1] with
+            | '[' ->
+                let mutable j = i + 2
+
+                while j < s.Length && (s[j] < '@' || s[j] > '~') do
+                    j <- j + 1
+
+                min (j + 1) s.Length - i
+            | ']'
+            | 'P'
+            | '_'
+            | '^'
+            | 'X' ->
+                let mutable j = i + 2
+                let mutable stop = false
+
+                while not stop && j < s.Length do
+                    if s[j] = '\a' then
+                        stop <- true
+                        j <- j + 1
+                    elif s[j] = '\x1b' && j + 1 < s.Length && s[j + 1] = '\\' then
+                        stop <- true
+                        j <- j + 2
+                    else
+                        j <- j + 1
+
+                j - i
+            | _ -> 2
+
+    /// the columns `s` takes in a terminal
+    let ofString (s: string) : int =
+        let mutable w = 0
+        let mutable i = 0
+        // the previous glyph's own cells, for VS16; -1 after a ZWJ
+        let mutable prev = 0
+        let mutable prevRegional = false
+
+        while i < s.Length do
+            if s[i] = '\x1b' then
+                i <- i + escapeLen s i
+                prev <- 0
+                prevRegional <- false
+            else
+                let r =
+                    match System.Text.Rune.TryGetRuneAt(s, i) with
+                    | true, r -> r
+                    | _ -> System.Text.Rune.ReplacementChar
+
+                let step =
+                    if System.Char.IsSurrogatePair(s, i) then 2 else 1
+
+                let cp = r.Value
+
+                if prev = -1 then
+                    // joined into the glyph before the ZWJ
+                    prev <- 2
+                elif cp = 0x200D then
+                    prev <- -1
+                elif cp = 0xFE0F then
+                    // emoji presentation of a narrow glyph
+                    if prev = 1 then
+                        w <- w + 1
+                        prev <- 2
+                elif cp >= 0x1F3FB && cp <= 0x1F3FF && prev = 2 then
+                    () // a skin tone merges into its emoji
+                elif isRegional cp && prevRegional then
+                    prevRegional <- false // the flag's second half
+                else
+                    let c = ofRune r
+                    w <- w + c
+
+                    if c > 0 then
+                        prev <- c
+
+                    prevRegional <- isRegional cp
+
+                i <- i + step
+
+        w
+
 // hostile bytes from data must not reach a terminal [D:binary-echo]:
 // the length of an SGR sequence (`ESC [ [0-9;:]* m`) starting at i, or
 // 0 [D:tty-color]. SGR sets display attributes only — colour, bold,
