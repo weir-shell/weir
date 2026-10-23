@@ -16,6 +16,17 @@ greet "io"
 echo hi io
 ```
 
+`Path.which name` answers which file a command name would run: `Some`
+its full path, or `None` when nothing on PATH has that name. It looks
+the name up exactly as running it would, so inside `within env
+PATH=…` it searches that PATH (and PATHEXT on Windows):
+
+```weir
+match Path.which "git" with
+| Some p -> print $"git is {p}"
+| None -> print "git is not installed"
+```
+
 ## Argv
 
 On a command line every word is passed as written: nothing expands,
