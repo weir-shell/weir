@@ -78,12 +78,6 @@ let runEnv dir secs extra args =
 
 let runIn dir secs args = runEnv dir secs [] args
 
-// the same, sent `sig` after `after` seconds (timeout's own signal)
-let runSig dir sig after args =
-    within cd dir
-        let r = timeout 60 timeout -s $sig $after env $@noProxy $"TMPDIR={dir}" $cli.bin $@args | complete
-        r
-
 let outOf { stdout = s } = s |> Str.join "\n"
 let errOf { stderr = s } = s |> Str.join "\n"
 
@@ -104,6 +98,19 @@ let msOf f =
     (Duration.toMillis (Instant.now () - t0), r)
 
 let linesOf p = if File.exists p then File.read p |> Seq.freeze else []
+
+// the same, sent `sig` (`-TERM`) once the fixture has appended `n` lines to
+// `ready` from inside the scope under test, not after a fixed delay a slow
+// runner's startup can outlast; the child's exit code
+let sigWhenReady dir sig ready n args =
+    within cd dir
+        within proc w = env $@noProxy $"TMPDIR={dir}" $cli.bin $@args
+            poll timeout=30s interval=20ms watch=w
+                (linesOf ready |> Seq.length) >= n
+            kill $sig (Proc.pid w)
+            poll timeout=60s interval=50ms
+                not (Proc.running w)
+            Proc.wait w
 
 // terminal-driving bytes, built from hex so this file stays plain text
 let esc = Str.fromUtf8 (Bytes.fromHex "1b")
@@ -748,6 +755,7 @@ let h3r2c4 d =
 
 let c1Lock fanout = $$<<<
     let log = Self.args |> Seq.head
+    let ready = log + ".ready"
     within
         within lock "c1.lock"
             $fanout
@@ -757,15 +765,17 @@ let c1Lock fanout = $$<<<
         File.append log ["always end"]
 
 let c1Fanouts = [
-    ("piter", "[1..4] |> Seq.piterWith 4 (fun i -> Duration.sleep 3s; File.append log [$\"arm {i}\"])")
-    ("pmap", "let rs = [1..3] |> Seq.pmap (fun i -> Duration.sleep 3s; File.append log [$\"arm {i}\"]; i) |> Seq.freeze\n        print $\"{rs |> Seq.sum}\"")
-    ("pfirst", "let w = [1..3] |> Seq.pfirst (fun i -> Duration.sleep 3s; File.append log [$\"arm {i}\"]; i)\n        print $\"{w}\"")
+    ("piter", 4, "[1..4] |> Seq.piterWith 4 (fun i -> File.append ready [$\"{i}\"]; Duration.sleep 3s; File.append log [$\"arm {i}\"])")
+    ("pmap", 3, "let rs = [1..3] |> Seq.pmap (fun i -> File.append ready [$\"{i}\"]; Duration.sleep 3s; File.append log [$\"arm {i}\"]; i) |> Seq.freeze\n        print $\"{rs |> Seq.sum}\"")
+    ("pfirst", 3, "let w = [1..3] |> Seq.pfirst (fun i -> File.append ready [$\"{i}\"]; Duration.sleep 3s; File.append log [$\"arm {i}\"]; i)\n        print $\"{w}\"")
 ]
 
 let c1Tmp = <<<
+    let ready = Self.args |> Seq.head
     within
         within tmp d
             [1..4] |> Seq.piterWith 4 (fun i ->
+                File.append ready [$"{i}"]
                 Duration.sleep 3s
                 Dir.create $"{d}/arm{i}"
                 [$"arm {i}"] |> File.write $"{d}/arm{i}/f")
@@ -773,30 +783,30 @@ let c1Tmp = <<<
         Duration.sleep 1500ms
 
 let ctlTermAlways d =
-    let p = put d "c.weir" ["let log = Self.args |> Seq.head"; "within"; "    Duration.sleep 5s"; "always"; "    File.append log [\"always start\"]"; "    Duration.sleep 300ms"; "    File.append log [\"always end\"]"]
-    let r = runSig d "TERM" "0.5" [p; "c.log"]
-    codeOf r == 124 && Seq.equal (linesOf $"{d}/c.log") ["always start"; "always end"]
+    let p = put d "c.weir" ["let log = Self.args |> Seq.head"; "within"; "    File.append (log + \".ready\") [\"in\"]"; "    Duration.sleep 5s"; "always"; "    File.append log [\"always start\"]"; "    Duration.sleep 300ms"; "    File.append log [\"always end\"]"]
+    let code = sigWhenReady d "-TERM" $"{d}/c.log.ready" 1 [p; "c.log"]
+    code == 143 && Seq.equal (linesOf $"{d}/c.log") ["always start"; "always end"]
 
 let h3r2c1 d =
     let lockCases =
         c1Fanouts
-        |> Seq.map (fun (k, fan) ->
+        |> Seq.map (fun (k, arms, fan) ->
             let log = $"{d}/{k}.log"
             let src = c1Lock fan |> Seq.collect (Str.split "\n") |> Seq.freeze
-            let r = runSig d "TERM" "1.5" [put d $"c1-{k}.weir" src; log]
+            let code = sigWhenReady d "-TERM" $"{log}.ready" arms [put d $"c1-{k}.weir" src; log]
             Duration.sleep 500ms
             let ls = linesOf log
             let after = ls |> Seq.skipWhile (fun l -> l <> "always start") |> Seq.freeze
             let late = after |> Seq.where (Str.startsWith "arm") |> Seq.length
-            ($"""SIGTERM, {k} under within lock: {late} arm effect(s) after the lock released and always began (exit {codeOf r}, log '{ls |> Str.join " | "}')""", (ls |> Seq.contains "always end") && late == 0))
+            ($"""SIGTERM, {k} under within lock: {late} arm effect(s) after the lock released and always began (exit {code}, log '{ls |> Str.join " | "}')""", (ls |> Seq.contains "always end") && late == 0))
         |> Seq.freeze
     let tt = $"{d}/tt"
     Dir.create tt
     let p = put d "c1-tmp.weir" c1Tmp
-    let rT = runSig tt "TERM" "1.5" [p]
+    let codeT = sigWhenReady tt "-TERM" $"{d}/c1-tmp.ready" 4 [p; $"{d}/c1-tmp.ready"]
     Duration.sleep 1500ms
     let leaked = Dir.list tt |> Seq.length
-    failing (Seq.append lockCases [($"SIGTERM, piter under within tmp: {leaked} entr(ies) left in TMPDIR (exit {codeOf rT})", leaked == 0)])
+    failing (Seq.append lockCases [($"SIGTERM, piter under within tmp: {leaked} entr(ies) left in TMPDIR (exit {codeT})", leaked == 0)])
 
 // ---- H3R2-C3: a pfirst loser's always commands are killed (R4 law) ------------
 
@@ -861,11 +871,14 @@ let reap mark =
         ()
 
 let c5Once d p mark i =
-    let delay = 300 + (i * 373) % 1200
+    let delay = (i * 373) % 1200
     let sig = ["-INT"; "-TERM"; "-HUP"] |> Seq.item (i % 3)
     let stopped =
         within cd d
             within proc w = env $@noProxy $"TMPDIR={d}" $cli.bin $p
+                // the jitter counts from the first race's losers, not the spawn
+                poll timeout=30s interval=20ms watch=w
+                    not (Seq.isEmpty (sleepersOf mark))
                 Duration.sleep (Duration.ms delay)
                 kill $sig (Proc.pid w)
                 poll timeout=20s interval=50ms
