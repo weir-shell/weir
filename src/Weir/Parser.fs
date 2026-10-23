@@ -2305,17 +2305,13 @@ binderParamRef.Value <-
 
 binderPatRef.Value <- commaPats
 
-// a qualified type name in the adapter slot [D:qualified-name-teach]
-// teaches: an imported module's types resolve by their plain name
-// (types live flat across the module boundary; the alias qualifies
-// values, never this slot) — same law as module signatures
-let private bareAdapterName (w: string) : Parser<string, unit> =
-    choice
-        [ attempt (pchar '.' >>. identSpanned)
-          >>= fun (m, _) ->
-              failFatally
-                  $"the adapter slot takes a bare record name — write '{m}', not '{w}.{m}': imported types resolve by their plain name (they live flat; the module alias qualifies values, not types here)"
-          preturn w ]
+// a qualified type name in the adapter slot [D:qualified-type-names]:
+// `A.Config` names module A's type, the same spelling every type
+// position takes; the checker resolves it through the import
+let private adapterName (w: string) : Parser<string, unit> =
+    opt (attempt (pchar '.' >>. identSpanned)) |>> function
+        | Some(m, _) -> w + "." + m
+        | None -> w
 
 // a generic record's instantiation in the slot, `B<int>`
 // [D:wire-generics] — the args are the one type grammar (tySyn),
@@ -2349,21 +2345,6 @@ let private fromExpr =
             // generic name's args [D:wire-generics], and the Map< > wrap's
             // two slots [D:map-values])
             (anonShape |>> fun fs -> FromAnon fs, false)
-            // the qualified spelling is recognized whole first, so the
-            // fatal fires outside the slot's attempt (a fatal inside it
-            // demotes to a backtrack note) [D:qualified-name-teach]
-            <|> (attempt (
-                     identSpanned
-                     >>= fun (w, wspan) ->
-                         if Char.IsUpper w[0] && w <> "Map" then
-                             pchar '.' >>. identSpanned |>> fun (m, _) -> (w, wspan, m)
-                         else
-                             ifail "not a qualified slot name"
-                 )
-                 >>= fun (w, wspan, m) ->
-                     failFatallyAtCol
-                         wspan.Start.Col
-                         $"the adapter slot takes a bare record name — write '{m}', not '{w}.{m}': imported types resolve by their plain name (they live flat; the module alias qualifies values, not types here)")
             // `as` after the format word is the REPL directive's
             // spelling leaking into a file [D:infer-one-shot] —
             // recognized whole first so the fatal fires outside the
@@ -2394,19 +2375,7 @@ let private fromExpr =
                             (str_ws "<")
                             (str_ws ">")
                             (slotTy .>> str_ws ","
-                             .>>. ((anonShape |>> FromAnon)
-                                   <|> (attempt (
-                                            identSpanned
-                                            >>= fun (inner, _) ->
-                                                if Char.IsUpper inner[0] then
-                                                    pchar '.' >>. identSpanned |>> fun (m, _) -> (inner, m)
-                                                else
-                                                    ifail "not a qualified name"
-                                        )
-                                        >>= fun (inner, m) ->
-                                            failFatally
-                                                $"the adapter slot takes a bare record name — write '{m}', not '{inner}.{m}': imported types resolve by their plain name (they live flat; the module alias qualifies values, not types here)")
-                                   <|> (slotTy |>> FromTy)))
+                             .>>. ((anonShape |>> FromAnon) <|> (slotTy |>> FromTy)))
                         |>> fun (k, sh) -> FromMap(k, sh), false
                     elif w = "seq" then
                         between
@@ -2416,12 +2385,12 @@ let private fromExpr =
                              <|> (identSpanned
                                   >>= fun (inner, _) ->
                                       if Char.IsUpper inner[0] then
-                                          bareAdapterName inner >>= slotName
+                                          adapterName inner >>= slotName
                                       else
                                           fail "a record name inside seq< >"))
                         |>> fun sh -> sh, true
                     elif Char.IsUpper w[0] then
-                        slotName w |>> fun sh -> sh, false
+                        adapterName w >>= slotName |>> fun sh -> sh, false
                     else
                         fail "a record name"
             )
@@ -5324,20 +5293,18 @@ tySynRef.Value <-
                   | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
                   | w when keywords.Contains w -> fail $"'{w}' is a keyword"
                   | w ->
-                      // a qualified type name (`M.Spec`) dominates with the
-                      // law [D:modules-v1]: imported types resolve by plain
-                      // name (qualified type names are deferred), so the dot
-                      // teaches instead of dying as a bare parse error
-                      getPosition .>>. opt (attempt (pchar '.' >>. rawWord))
-                      >>= fun (dotAt, quald) ->
-                          match quald with
-                          | Some sub ->
-                              failFatallyAt
-                                  dotAt
-                                  $"a signature names types bare — an imported type resolves by its plain name; write '{sub}', not '{w}.{sub}'"
-                          | None ->
-                              ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
-                              |>> fun args -> TNamed(w, Option.defaultValue [] args) ]
+                      // a qualified type name (`M.Spec`) names module M's
+                      // type [D:qualified-type-names]; the checker resolves
+                      // it through the import
+                      opt (attempt (pchar '.' >>. rawWord))
+                      >>= fun quald ->
+                          let name =
+                              match quald with
+                              | Some sub -> w + "." + sub
+                              | None -> w
+
+                          ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
+                          |>> fun args -> TNamed(name, Option.defaultValue [] args) ]
         // t1 * t2 [* ...] is a tuple type [D:tuples-reversal]; `a -> b` is
         // a function type [D:function-types] — right-associative and looser
         // than `*` and generics (`int * string -> bool` is

@@ -828,7 +828,7 @@ let main argv =
                                                              $"import it:  import {quoteData importPath} as {gen.ModuleName}"
 
                                                          Console.WriteLine
-                                                             $"read with:  from json {gen.TopType} / from yaml {gen.TopType}  (type names resolve bare)"
+                                                             $"read with:  from json {gen.ModuleName}.{gen.TopType} / from yaml {gen.ModuleName}.{gen.TopType}  (or the bare name, while no other import declares it)"
 
                                                          0)
         | "gen" :: _ ->

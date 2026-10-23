@@ -70,13 +70,56 @@ use signatures; in a script, types are always inferred.
 
 ## Qualified access, and what never leaks
 
-Imported values are always qualified: `X.helper`. Imported types can
-be used by their plain name — `Ctx { field = v }`, `from json Ctx` —
-and a record can also be built with the qualified `X.Ctx { field = v }`.
+Imported values are always qualified: `X.helper`. An imported type has
+a qualified name too, `X.Ctx`, and it works in every place a type is
+written: a record field, a union case's payload, a signature, the
+`from json` slot (`from json X.Ctx`, `seq<X.Ctx>`, `Map<string, X.Ctx>`),
+`Env.load`/`Args.load`, and the record literal `X.Ctx { field = v }`.
+The plain name works too — `Ctx { field = v }`, `from json Ctx` — as long
+as only one import declares a type of that name.
+
+Two imports may declare the same type name. Then the plain name refers
+to neither: writing it is an error that lists the qualified names to
+choose from, and each type is reached as `A.Ctx` or `B.Ctx`. The two are
+different types even when their fields are the same, and error messages
+and hovers show the qualified name. A type you declare yourself keeps
+the plain name, and an import of the same name declared below it is
+reached qualified; a declaration below an import that already provides
+the name is an error.
+
 An imported union's cases are qualified when you construct a value
 (`X.Red`) but named bare in a pattern (`| Red ->`), and a local
 declaration always takes precedence over an imported name. A module exports only its own
 declarations, not what it imported.
+
+```weir
+let langA = <<<
+    module
+
+    type LangDefaults = { symbol: string }
+
+    let make : string -> LangDefaults
+
+    let make s = { symbol = s }
+
+let langB = <<<
+    module
+
+    type LangDefaults = { symbol: string; style: string }
+
+let root = <<<
+    import "./lang-a.weir" as A
+    import "./lang-b.weir" as B
+
+    let a = A.make "py"
+    let b = B.LangDefaults { symbol = "rs"; style = "bold" }
+    print $"{a.symbol} {b.style}"
+
+langA |> File.write "lang-a.weir"
+langB |> File.write "lang-b.weir"
+root |> File.write "use-langs.weir"
+weir use-langs.weir
+```
 
 ## The graph
 
