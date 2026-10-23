@@ -31099,6 +31099,30 @@ let sigCompleteTests =
                   isPaths si " --config "
                   isNothing si " --note ")
           }
+          test "an untrusted sig's spellings: only bare words are offered, and -= never throws [D:sig-arg-complete]" {
+              withTempDir "weir-sigsp" (fun d ->
+                  let p = Path.Combine(d, "sptool.weir")
+
+                  File.WriteAllLines(
+                      p,
+                      [ "module Sptool"
+                        "let dashWords = true"
+                        "type Cmd = {"
+                        "    [<Wire \"ok-flag\">] ok: bool"
+                        "    [<Wire \"x y\">] spaced: bool"
+                        "    [<Wire \"q\\\"uote\">] quoted: bool"
+                        "    [<Wire \"nl\\nprint 1\">] newline: bool"
+                        "}" ]
+                  )
+
+                  let si = loadAt p "sptool"
+                  let offered = words si " --"
+                  Expect.contains offered "--ok-flag" "a bare word is offered"
+                  Expect.isFalse (offered |> List.exists (fun w -> w |> Seq.exists (fun c -> System.Char.IsWhiteSpace c || System.Char.IsControl c || c = '"'))) $"no spaced/quoted/control spelling: {offered}"
+                  // a one-character flag name under dashWords
+                  at si " -=" |> ignore
+                  at si " -= " |> ignore)
+          }
           test "lookup: project sigs, then the user dir; mtime-keyed reload" {
               withTempDir "weir-siglk" (fun root ->
                   let proj = Path.Combine(root, "proj")

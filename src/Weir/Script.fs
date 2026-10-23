@@ -6770,7 +6770,7 @@ module SigComplete =
             match literal name with
             | Some hit -> Some hit
             | None when name.Length = 2 -> short (name.Substring 1)
-            | None when si.DashWords && not (sf.Shorts.ContainsKey(string name[1])) -> None
+            | None when name.Length > 1 && si.DashWords && not (sf.Shorts.ContainsKey(string name[1])) -> None
             | None when si.Bundles || not sf.Shorts.IsEmpty ->
                 // a bundle: a value-taking letter takes the rest of the
                 // word (attached: no value word follows) or, last, the next
@@ -6925,7 +6925,7 @@ module SigComplete =
     /// up to the cursor. `word` is the editor's word there (Complete.
     /// wordStartAt): offers come back as its replacements, so a value
     /// typed after `--flag=` completes alone
-    let complete (si: SigInfo) (argText: string) (word: string) : SigCompletion =
+    let private completeRaw (si: SigInfo) (argText: string) (word: string) : SigCompletion =
         let ts = tokens argText
 
         let before, cur =
@@ -6986,6 +6986,20 @@ module SigComplete =
                 | [] -> SigPaths
                 | subs -> asWord (SigWords subs)
             | InCase _ -> SigPaths
+
+    // an offer is inserted into the user's command line verbatim, and a
+    // signature (a project's, possibly untrusted) spells it: whitespace
+    // would split it into extra argv words, a control character (a
+    // newline) into another statement, a quote would reopen a string —
+    // such a spelling is never offered [D:sig-arg-complete]
+    let private spellable (w: string) =
+        w <> ""
+        && w |> Seq.forall (fun c -> not (Char.IsWhiteSpace c) && not (Char.IsControl c) && c <> '"' && c <> '\'' && c <> '`')
+
+    let complete (si: SigInfo) (argText: string) (word: string) : SigCompletion =
+        match completeRaw si argText word with
+        | SigWords cs -> SigWords(cs |> List.filter spellable)
+        | r -> r
 
 /// the sigs the REPL sees, by tool name at Tab time [D:sig-arg-complete]:
 /// the nearest project .weir/sigs/ (resolved as #sig resolves it), then

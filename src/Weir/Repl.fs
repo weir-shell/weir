@@ -1971,12 +1971,17 @@ let private readLineTty () : string option =
 
                 // a directive is only a whole entry's first line
                 // [D:repl-directives]: a continuation line offers none
+                // an offer is inserted verbatim: one carrying a control
+                // character (a newline submits a statement, an escape
+                // repaints) is never offered, whatever produced it
+                let offered = all |> List.filter (fun c -> not (c |> Seq.exists Char.IsControl))
+
                 if row = 0 then
-                    all
+                    offered
                 elif text.Substring(0, ws).Trim() = "#" then
                     []
                 else
-                    all |> List.filter (fun c -> not (c.StartsWith "#"))
+                    offered |> List.filter (fun c -> not (c.StartsWith "#"))
 
             (match suggestions with
              | [] -> ()
