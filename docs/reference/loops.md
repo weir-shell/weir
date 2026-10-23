@@ -2,7 +2,8 @@
 
 There is no `while`. The loops are:
 
-- `for` over a seq, and the parallel fan-outs over one. A seq is
+- `for` over a seq, `pfor` (its parallel twin) and the parallel
+  fan-outs over one. A seq is
   usually finite; over `Seq.initInfinite` the loop runs until a
   signal, and the signal ends it by teardown: the iteration is cut
   wherever it is.
@@ -139,6 +140,45 @@ value below 1 is an error:
 
 ```weir-error
 [1] |> Seq.pmapWith 0 (fun x -> x) |> Seq.freeze // degree must be >= 1
+```
+
+## `pfor`
+
+`pfor x in xs do body` is the parallel `for`: it is exactly
+`xs |> Seq.piter (fun x -> body)`, written like a `for` loop. The
+binder takes the same patterns, and the body is an indented block (or
+the rest of the line) whose statements, commands included, run once
+per item:
+
+```weir
+pfor n in [3; 1; 2] do
+    Duration.sleep (Duration.ms (n * 10))
+    print $"slept {n}"
+```
+
+Everything else is `Seq.piter`'s. The body must be unit, and the arms
+finish in no particular order. Every arm runs even if one fails, and
+the error from the earliest item (in input order) is raised once all
+have finished. At most 64 arms run at once (8 inside another fan-out's
+arm, one at a time deeper than that); there is no ceiling syntax, so
+write `xs |> Seq.piterWith n (fun x -> …)` to choose the limit
+yourself. Inside a `plan` it is refused, as `Seq.piter` is, and on
+Ctrl+C or SIGTERM its running arms stop and are cleaned up in the same
+way.
+
+Arms write straight to weir's stdout as they run: a command in an arm
+gets the terminal when weir has one, and its lines are passed through
+whole when weir's output is redirected. So output from different arms
+interleaves. For tidy output, capture each arm's output with
+`| complete` and print it in one go, or collect the results with
+`Seq.pmap` and print them at the end.
+
+`pfor` runs effects only. To collect a value per item, use
+`Seq.pmap`; `pfor x in xs -> e` and a `yield` body are refused with
+that pointer:
+
+```weir-error
+pfor x in [1; 2] -> x * 2 // collects nothing: use Seq.pmap
 ```
 
 There is no async/await, and there won't be: concurrency in weir

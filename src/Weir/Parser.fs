@@ -57,6 +57,8 @@ let keywords =
           // the general effect loop [D:for-do]
           "for"
           "do"
+          // its parallel twin over Seq.piter [D:pfor]
+          "pfor"
           // the implicit-match lambda [D:function-keyword]
           "function"
           // foreign control-flow words, reserved so they teach weir's
@@ -3054,7 +3056,16 @@ let private ifExpr = deepenAfter [ "if" ] ifExprBody // [D:depth-guard]
 let private seqSepAhead: Parser<unit, unit> =
     (attempt (pchar ';') |>> ignore) <|> (attempt (pstring sibSepStr) |>> ignore)
 
-let private forExprBody =
+// pfor [D:pfor]: the same loop over `Seq.piter` — `for`'s parser with
+// another keyword and target, so binder, body and arming cannot drift.
+// Effects only: the collecting spellings (`-> e`, a `yield` body)
+// refuse toward Seq.pmap
+let private pforCollectMsg =
+    "`pfor` runs effects only and collects nothing — gather parallel results with `xs |> Seq.pmap (fun x -> e)` (ordered results)"
+
+let private loopExprBody (kw: string) (iterKey: string) =
+    let isPfor = kw = "pfor"
+
     let cmdBody =
         attempt (
             // a multi-line body yields to seqExpr [D:interior-arming]:
@@ -3075,7 +3086,21 @@ let private forExprBody =
                           Span = span }
         )
 
-    getPosition .>> keyword "for"
+    let collectRefusal =
+        if isPfor then
+            (attempt (getPosition .>> pstring "->") >>= fun at -> failFatallyAt at pforCollectMsg)
+            <|> preturn ()
+        else
+            preturn ()
+
+    let yieldRefusal =
+        if isPfor then
+            (attempt (getPosition .>> keyword "yield") >>= fun at -> failFatallyAt at pforCollectMsg)
+            <|> preturn ()
+        else
+            preturn ()
+
+    getPosition .>> keyword kw
     >>= fun p ->
         binderPat .>> keyword "in"
         >>= fun binder ->
@@ -3083,9 +3108,11 @@ let private forExprBody =
             // a bare range `1..3` is F#'s for-loop shape; weir's range is a
             // list literal [D:left-to-right-ops]
             .>> ((attempt (getPosition .>> pstring "..")
-                  >>= fun at -> failFatallyAt at "a range is a list — wrap it in brackets: `for i in [a..b] do`")
+                  >>= fun at -> failFatallyAt at $"a range is a list — wrap it in brackets: `{kw} i in [a..b] do`")
                  <|> preturn ())
+            .>> collectRefusal
             .>> keyword "do"
+            .>> yieldRefusal
             >>= fun source ->
                 // the body knows its binder [D:interior-arming] — same
                 // bindings-beat-PATH extension as lambda params; for
@@ -3094,7 +3121,7 @@ let private forExprBody =
                 |>> fun body ->
                     let span = { Start = pos p; End = body.Span.End }
                     let mk k = { Kind = k; Span = span }
-                    let iter = mk (EVar "|seqIter")
+                    let iter = mk (EVar iterKey)
                     // the pipe shape, not plain application [D:for-binder]:
                     // EPipe infers the source first, so the binder's type
                     // is known when the body checks — a constructor match
@@ -3107,7 +3134,9 @@ let private forExprBody =
 // literal's eagerness contract. The desugar bypasses EList entirely, so
 // list-literal inference (the empty-list fresh var, element unification)
 // is untouched -- same path as the statement form.
-let private forExpr = deepenAfter [ "for" ] forExprBody // [D:depth-guard]
+let private forExpr = deepenAfter [ "for" ] (loopExprBody "for" "|seqIter") // [D:depth-guard]
+
+let private pforExpr = deepenAfter [ "pfor" ] (loopExprBody "pfor" "|seqPiter") // [D:depth-guard]
 
 comprehensionLitRef.Value <-
     spanned (
@@ -3808,6 +3837,7 @@ opp.TermParser <-
           ifExpr
           matchExpr
           forExpr
+          pforExpr
           withinExpr
           pureExpr
           readonlyExpr

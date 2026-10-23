@@ -56,7 +56,7 @@ A keyword can't be used as a name — `let let = 1` is refused with
 | kind | keywords |
 |---|---|
 | shared with F# | `do`, `elif`, `else`, `false`, `for`, `fun`, `function`, `if`, `in`, `let`, `match`, `module`, `of`, `then`, `true`, `type`, `when`, `with` |
-| weir's own | `always`, `from`, `import`, `orFail`, `plan`, `poll`, `pure`, `readonly`, `repeat`, `retry`, `to`, `try`, `until`, `within` |
+| weir's own | `always`, `from`, `import`, `orFail`, `pfor`, `plan`, `poll`, `pure`, `readonly`, `repeat`, `retry`, `to`, `try`, `until`, `within` |
 | reserved, unused | `mutable`, `rec` |
 | reserved for a helpful error | `return`, `while` |
 

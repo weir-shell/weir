@@ -38,6 +38,7 @@
     "mutable",
     "of",
     "orFail",
+    "pfor",
     "plan",
     "poll",
     "pure",

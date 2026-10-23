@@ -1518,6 +1518,78 @@ let boundaryTests =
                   Expect.stringContains ll.Text "print \"a\"" "body line 1 joins"
               | other -> failtest $"expected one logical line, got {other}"
           }
+          test "pfor desugars to Seq.piter — for's shape over another target [D:pfor]" {
+              expectParse "pfor x in [1; 2] do print (show x)" "([1; 2] |> (|seqPiter (funpat x (print (show x)))))"
+              expectParse "pfor (k, v) in pairs do print k" "(pairs |> (|seqPiter (funpat (k, v) (print k))))"
+
+              match Weir.Parser.parseLine cmdResolver "pfor f in xs do git add $f" with
+              | Ok(SExpr e | SCmd e) ->
+                  Expect.stringContains (show e) "(cmd git \"add\" f) |> |print" "a bare command body arms as for's does"
+              | other -> failtest $"unexpected: {other}"
+
+              Expect.equal (Weir.Effects.libraryDesugarTarget "|seqPiter") (Some "Seq.piter") "classified as Seq.piter"
+              Expect.equal (checkOk "pfor x in [1; 2] do print (show x)").Ty TUnit "a unit statement"
+          }
+          test "pfor's body must be unit, blamed at the body, not the desugar [D:pfor]" {
+              let terr = checkErr "pfor x in [1; 2] do x + 1"
+              Expect.stringContains terr.Message "expected unit" "the piter callback's unit law"
+              Expect.equal terr.Span.Start.Col 21 "the caret sits on the body"
+          }
+          test "pfor's binder types from its source — a constructor match resolves [D:pfor]" {
+              let e = env |> declare "type PB = PA of int | PBu"
+
+              match
+                  Weir.Check.typecheck
+                      e
+                      (parse "pfor d in [PA 1; PBu] do (match d with | PA n -> print $\"{n}\" | PBu -> print \"b\")")
+              with
+              | Ok _ -> ()
+              | Error terr -> failtest $"the binder must type from the source: {formatError terr}"
+          }
+          test "pfor collects nothing: -> e, a yield body and [pfor …] teach Seq.pmap, located [D:pfor]" {
+              for src, col in
+                  [ "pfor x in xs -> x", 14
+                    "pfor x in xs do yield x", 17
+                    "let ys = [pfor x in xs -> x]", 24 ] do
+                  match Weir.Parser.parseLine cmdResolver src with
+                  | Ok other -> failtest $"'{src}' must refuse, got {other}"
+                  | Error msg ->
+                      Expect.stringContains msg "Seq.pmap" $"'{src}' points at the collecting spelling"
+                      Expect.stringContains msg "effects only" $"'{src}' names the rule"
+                      Expect.stringContains msg $"Col: {col}\n" $"'{src}' is located at the collecting token"
+
+              expectParse "[for x in xs -> x]" "(|seqFreeze (xs |> (|seqMap (funpat x x))))"
+          }
+          test "pfor is reserved; its head opens a block; a bare range teaches the list [D:pfor]" {
+              Expect.isError (Weir.Parser.parseLine cmdResolver "let pfor = 1") "pfor reserved"
+              Expect.isTrue (Weir.Script.dangleOpensBlock "pfor x in xs do") "the head dangles"
+
+              match Weir.Parser.parseLine cmdResolver "pfor i in 1..3 do print i" with
+              | Error msg -> Expect.stringContains msg "pfor i in [a..b] do" "the teaching spells pfor"
+              | Ok other -> failtest $"a bare range must refuse, got {other}"
+
+              match
+                  Weir.Script.assemble
+                      [ 1, "pfor x in [1; 2] do"; 2, "    print \"a\""; 3, "    print (show x)"; 4, "print \"z\"" ]
+              with
+              | Ok [ ll; next ] ->
+                  Expect.stringContains ll.Text "print \"a\"" "body line 1 joins"
+                  Expect.stringContains next.Text "print \"z\"" "the dedented line is its own statement"
+              | other -> failtest $"expected two logical lines, got {other}"
+          }
+          test "pfor inside a plan refuses, naming pfor, before any arm runs [D:pfor] [D:plan-parallel-refusal]" {
+              Expect.throwsC
+                  (fun () ->
+                      run (
+                          "plan"
+                          + Weir.Parser.sibSepStr
+                          + "pfor n in [1; 2] do File.write \"/tmp/weir-pfor-never\" [\"x\"]"
+                      )
+                      |> ignore)
+                  (fun ex -> Expect.stringContains ex.Message "'pfor' is refused inside 'plan'" "names the spelling written")
+
+              Expect.isFalse (System.IO.File.Exists "/tmp/weir-pfor-never") "no arm ran"
+          }
           test "the named record literal constructs a specific type, no field-set inference [D:modules-v1]" {
               // Point { .. } resolves to Point directly (EApp(EVar Point, ERecord)
               // is intercepted since a record type name is never a value)
@@ -4778,6 +4850,9 @@ let completionTests =
                         // if/then (for starts, do continues)
                         "for"
                         "do"
+                        // the parallel twin starts statements as for does
+                        // [D:pfor]
+                        "pfor"
                         // the bounded-loop trio [D:retry-poll] — retry/poll
                         // start statements, until continues (the for/do shape)
                         "retry"
@@ -11195,6 +11270,14 @@ let hoverResidueTests =
                   Expect.stringContains hv "wall-clock twin" "poll's meaning"
                   Expect.stringContains hv "timeout: Duration, interval: Duration" "poll's keys"
               | None -> failtest "poll must answer"
+          }
+          test "pfor hovers as the parallel for, naming Seq.piter and the ceiling knob [D:pfor]" {
+              match Weir.Lsp.hoverType [ "pfor x in [1; 2] do print $\"{x}\"" ] 1 2 with
+              | Some hv ->
+                  Expect.stringContains hv "Seq.piter" "the desugar named"
+                  Expect.stringContains hv "Seq.piterWith n" "the explicit ceiling"
+                  Expect.stringContains hv "Seq.pmap" "where collecting lives"
+              | None -> failtest "pfor must answer"
           }
           test "until hovers the predicate segment's meaning" {
               let lines =

@@ -999,6 +999,69 @@ elapsed_ms=$(($(now_ms) - start))
 [ $((elapsed_ms - base_ms)) -lt 2500 ] || fail "piter must run workers in parallel (4x1s took ${elapsed_ms}ms over a ${base_ms}ms baseline)"
 echo "e2e ok: piter parallelism (4x1s in ${elapsed_ms}ms over a ${base_ms}ms baseline)"
 
+# --- pfor [D:pfor]: `pfor x in xs do body` is `xs |> Seq.piter (fun x ->
+# body)` — parallel arms (wall well under N x sleep, over the same
+# no-sleep baseline as piter's probe), statement output relayed exactly as
+# piter's arms relay it, the plan refusal located at the `pfor`, and a
+# SIGTERM teardown identical to piter's (arms' children reaped, always
+# runs, no statement after the signal, no arm failure)
+pfordir=$(mkweirtmp)
+start=$(now_ms)
+$BIN -e 'pfor n in [1..8] do if ($(sh -c "true" | complete)).exitCode > 99 then print "never"' >/dev/null 2>&1 || fail "pfor baseline probe failed"
+base_ms=$(($(now_ms) - start))
+start=$(now_ms)
+$BIN -e 'pfor n in [1..8] do Duration.sleep 1s' >/dev/null 2>&1 || fail "pfor probe failed"
+elapsed_ms=$(($(now_ms) - start))
+[ $((elapsed_ms - base_ms)) -lt 4000 ] || fail "pfor must run its arms in parallel (8x1s took ${elapsed_ms}ms over a ${base_ms}ms baseline)"
+echo "e2e ok: pfor parallelism (8x1s in ${elapsed_ms}ms over a ${base_ms}ms baseline)"
+printf 'pfor i in [1; 2; 3] do\n    print $"p{i}"\n    sh -c "echo c$0" $i\n' > "$pfordir/out.weir"
+printf '[1; 2; 3] |> Seq.piter (fun i ->\n    print $"p{i}"\n    sh -c "echo c$0" $i)\n' > "$pfordir/outp.weir"
+po=$($BIN "$pfordir/out.weir" | sort | tr '\n' ',') || fail "pfor output probe failed"
+pp=$($BIN "$pfordir/outp.weir" | sort | tr '\n' ',') || fail "piter output probe failed"
+[ "$po" = "c1,c2,c3,p1,p2,p3," ] || fail "pfor arms' print and command lines reach stdout: $po"
+[ "$po" = "$pp" ] || fail "pfor relays arm output exactly as piter does: pfor=$po piter=$pp"
+echo "e2e ok: pfor arms' prints and statement commands reach stdout, as piter's do"
+printf 'let p =\n    plan\n        pfor x in [1; 2] do\n            print $"{x}"\nprint (show (Plan.isEmpty p))\n' > "$pfordir/pl.weir"
+out=$(cd "$pfordir" && $BIN pl.weir 2>&1) && fail "pfor inside a plan must refuse: $out"
+echo "$out" | grep -qF "pl.weir:3:9: error: 'pfor' is refused inside 'plan'" || fail "the pfor plan refusal is located at the pfor and names it: $out"
+printf 'pfor x in [1; 2; 3] do\n    print "a"\n    if x == 2 then fail "arm boom"\n' > "$pfordir/arm.weir"
+out=$(cd "$pfordir" && $BIN arm.weir 2>&1) && fail "a failing pfor arm must fail the run: $out"
+echo "$out" | grep -qF "arm.weir:3:20: error: arm boom" || fail "a pfor arm's raise is located in the user's body: $out"
+echo "e2e ok: pfor's plan refusal names pfor at its line; an arm's raise is located in the body"
+if [ "$IS_WINDOWS" != "1" ] && command -v setsid >/dev/null 2>&1; then
+    sig_body='sh -c """echo $$ > "$0/pid-$1"; exec sleep 30""" $dir $i'
+    printf 'let dir = Self.args |> Seq.head\nwithin\n    pfor i in [1; 2; 3; 4] do\n        %s\n    print "after"\nalways\n    File.append $"{dir}/log" ["always"]\n' "$sig_body" > "$pfordir/sig.weir"
+    printf 'let dir = Self.args |> Seq.head\nwithin\n    [1; 2; 3; 4] |> Seq.piter (fun i ->\n        %s)\n    print "after"\nalways\n    File.append $"{dir}/log" ["always"]\n' "$sig_body" > "$pfordir/sigp.weir"
+    for probe in sig sigp; do
+        run="$pfordir/run-$probe"
+        mkdir -p "$run"
+        setsid "$BIN" "$pfordir/$probe.weir" "$run" </dev/null >"$run/out" 2>&1 &
+        wpid=$!
+        # every arm's child writes its pid once it runs — the ready marker
+        for _ in $(seq 1 100); do [ "$(find "$run" -name 'pid-*' -size +0 | wc -l)" = "4" ] && break; sleep 0.1; done
+        [ "$(find "$run" -name 'pid-*' -size +0 | wc -l)" = "4" ] || fail "$probe: the four arms never started: $(cat "$run/out")"
+        kill -TERM "$wpid" 2>/dev/null || true
+        code=0; wait "$wpid" 2>/dev/null || code=$?
+        [ "$code" = "143" ] || fail "$probe: SIGTERM during the fan-out must exit 143 (got $code): $(cat "$run/out")"
+        left=4
+        for _ in $(seq 1 30); do
+            left=0
+            for pf in "$run"/pid-*; do kill -0 "$(cat "$pf")" 2>/dev/null && left=$((left + 1)); done
+            [ "$left" = "0" ] && break
+            sleep 0.1
+        done
+        for pf in "$run"/pid-*; do kill -9 "$(cat "$pf")" 2>/dev/null || true; done
+        [ "$left" = "0" ] || fail "$probe: SIGTERM must reap every arm's child ($left left)"
+        [ "$(cat "$run/log" 2>/dev/null)" = "always" ] || fail "$probe: the always cleanup must run once: $(cat "$run/log" 2>/dev/null)"
+        ! grep -qF "after" "$run/out" || fail "$probe: a statement ran after the signal"
+        ! grep -qF "command failed" "$run/out" || fail "$probe: an arm the teardown killed reported a failure: $(cat "$run/out")"
+    done
+    echo "e2e ok: SIGTERM during a pfor tears down as piter's does — arms' children reaped, always once, nothing after"
+else
+    echo "e2e skip: pfor signal teardown (needs POSIX signals and setsid)"
+fi
+rm -rf "$pfordir"
+
 # temp-dir fixture, leaf pins: /tmp and /etc are POSIX-isms a native
 # weir resolves drive-relative on Windows (D:\tmp), and pwd's separator
 # is the platform's — assert the leaf, never the path

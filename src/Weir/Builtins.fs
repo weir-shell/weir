@@ -2014,15 +2014,21 @@ let private piterWithImpl: Value =
                     VUnit
                 | v, _ -> unreachable $"the checker rejects 'piterWith' on {formatValue v}")))
 
-let private piterImpl: Value =
+// one body for `Seq.piter` and its `pfor` sugar [D:pfor]; the label only
+// names the spelling the user wrote in a refusal or a log line
+let private piterAs (label: string) : Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
             | VSeq items ->
-                refuseParallelInPlan "piter"
-                runParallelWith (defaultParallelCeiling "piter") f items |> ignore
+                refuseParallelInPlan label
+                runParallelWith (defaultParallelCeiling label) f items |> ignore
                 VUnit
-            | v -> unreachable $"the checker rejects 'piter' on {formatValue v}"))
+            | v -> unreachable $"the checker rejects '{label}' on {formatValue v}"))
+
+let private piterImpl: Value = piterAs "piter"
+
+let private pforImpl: Value = piterAs "pfor"
 
 let private existsImpl: Value =
     VBuiltin(fun pred ->
@@ -8462,8 +8468,13 @@ let internalAliases: (string * Ty * Value) list =
                   TNamed("Repeat", []), VRecord("Repeat", [ "interval", VDur 0L; "timeout", VUnion("None", None) ])
               else
                   m modName field
-          // the one desugar whose value is not its classification target
-          let v = if key = "|seqItemFromEnd" then itemFromEndImpl else v
+          // the desugars whose value is not their classification target:
+          // the from-end twin, and pfor's refusal naming `pfor` [D:pfor]
+          let v =
+              match key with
+              | "|seqItemFromEnd" -> itemFromEndImpl
+              | "|seqPiter" -> pforImpl
+              | _ -> v
           key, ty, v ]
 
 let bareAliasHomesOf (table: (string * (string * Ty * Value) list) list) : Map<string, string> =
