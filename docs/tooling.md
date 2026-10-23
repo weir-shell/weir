@@ -23,6 +23,7 @@ usage: weir                                    the REPL
        weir add sig [--global] <tool>          generate a command signature from the installed binary
        weir add schema <url> --as <name>       fetch an external contract, lock it
        weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it
+       weir add module <url> [--path <file>] --as <name>  the raw-URL form (--path: the URL is the root)
        weir gen types --schema <name>          generate weir types from a locked schema
        weir restore                            re-materialize the lock's artifacts
        weir verify                             vendored contracts vs the lock
@@ -77,7 +78,10 @@ These maintain the [`.weir/` tree](#project-layout-weir):
   `.weir/schemas/` and record it in the lock ([schemas](#yaml-schemas)).
 - `weir add module <src>//<file>@<ref> --as <name>` — download a copy
   of a remote module, with the files it imports, into `.weir/modules/`
-  and record it in the lock ([modules](#remote-modules)).
+  and record it in the lock ([modules](#remote-modules)). From any
+  other host: `weir add module <url> --as <name>` for one file, or
+  `weir add module <root url> --path <file> --as <name>` for a file
+  and its imports.
 - `weir gen types --schema <name>` — generate weir `type` declarations
   from a locked schema into `.weir/types/<name>.weir`
   ([types from a schema](#types-from-a-schema)).
@@ -556,14 +560,20 @@ reported with the file and line:
 - an absolute path
 - a relative path that leads outside the repo
 
-A raw URL is one file and has no repo to fetch imports from, so a
-raw URL whose file imports is refused. To vendor imports from any
-host, mark the repo root in the raw URL with `//`, the same separator
-the short form uses:
+A raw URL is one file, fetched exactly as written (a `//` in it is
+part of the URL), and has no repo to fetch imports from, so a raw URL
+whose file imports is refused. To vendor imports from any host, give
+the repo root as the URL and the entry file, relative to it, with
+`--path`:
 
 ```text
-weir add module https://raw.githubusercontent.com/org/repo/<sha>//lib/retry.weir --as retry
+weir add module https://raw.githubusercontent.com/org/repo/<sha>/ --path lib/retry.weir --as retry
 ```
+
+The root gets a trailing `/` if it lacks one; a root with a `?` or
+`#` is refused. `--path` must be a relative path that stays inside
+the root (no leading `/`, no `..` that climbs out), and it only goes
+with a raw URL: the short form already carries the path after `//`.
 
 Before writing anything, `add` checks that every file:
 

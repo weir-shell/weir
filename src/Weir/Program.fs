@@ -429,7 +429,20 @@ let main argv =
         | "add" :: "sig" :: _ ->
             Console.Error.WriteLine "usage: weir add sig [--global] <tool>   generate a signature from the installed binary (--global: into the user dir, for the REPL's Tab everywhere)"
             2
-        | [ "add"; "module"; spec; "--as"; name ] ->
+        | "add" :: "module" :: spec :: flags when
+            (match flags with
+             | [ "--as"; _ ]
+             | [ "--as"; _; "--path"; _ ]
+             | [ "--path"; _; "--as"; _ ] -> true
+             | _ -> false)
+            ->
+            let name, entryPath =
+                match flags with
+                | [ "--as"; n ] -> n, None
+                | [ "--as"; n; "--path"; p ]
+                | [ "--path"; p; "--as"; n ] -> n, Some p
+                | _ -> "", None
+
             let weirDir =
                 match Contracts.findWeirDir "." with
                 | Ok d -> d
@@ -569,7 +582,7 @@ let main argv =
                     Console.Error.WriteLine $"weir add module: {e}; nothing was written"
                     1
 
-                (match Contracts.resolveModuleSpec spec with
+                (match Contracts.resolveModuleSpec spec entryPath with
                  | Error e ->
                      Console.Error.WriteLine $"weir add module: {e}"
                      1
@@ -581,7 +594,7 @@ let main argv =
                          | (l, _, p) :: _ ->
                              // one raw URL has no repo root to fetch an import from
                              Console.Error.WriteLine
-                                 $"weir add module: {quoteData (Http.redactUrl src.Url)} imports '{quoteData p}' (line {l}), and a single raw URL has no repo root to fetch it from — vendor it as <host>/<org>/<repo>//<file>@<ref>, or mark the root in the raw URL: <raw base>//<file>; nothing was written"
+                                 $"weir add module: {quoteData (Http.redactUrl src.Url)} imports '{quoteData p}' (line {l}), and a single raw URL has no repo root to fetch it from — name the root and the entry: weir add module <root url> --path <file> --as {name}, or vendor it as <host>/<org>/<repo>//<file>@<ref>; nothing was written"
 
                              1
                          | [] -> addLeaf src.Url bytes
@@ -595,12 +608,12 @@ let main argv =
                      | Ok files -> addClosure src rawBase files)
         | "add" :: "module" :: _ ->
             Console.Error.WriteLine
-                "usage: weir add module <host>/<org>/<repo>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       (an explicit @ref is required; the full raw URL is also accepted)"
+                "usage: weir add module <host>/<org>/<repo>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       weir add module <raw url> --as <name>                           one file, fetched verbatim\n       weir add module <raw root url> --path <file> --as <name>        the entry <file> under the root, with its imports\n       (an explicit @ref is required on the shorthand)"
 
             2
         | "add" :: _ ->
             Console.Error.WriteLine
-                "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig [--global] <tool>      generate a signature from the installed binary\n       weir add module <src>//<file>@<ref> --as <name>   vendor a remote module, lock it"
+                "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig [--global] <tool>      generate a signature from the installed binary\n       weir add module <src>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       weir add module <raw url> [--path <file>] --as <name>   the raw-URL form (--path: the URL is the root)"
 
             2
         | [ "restore" ] ->
@@ -856,6 +869,7 @@ let main argv =
                 + "       weir add sig [--global] <tool>          generate a command signature from the installed binary\n"
                 + "       weir add schema <url> --as <name>       fetch an external contract, lock it\n"
                 + "       weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it\n"
+                + "       weir add module <url> [--path <file>] --as <name>  the raw-URL form (--path: the URL is the root)\n"
                 + "       weir gen types --schema <name>          generate weir types from a locked schema\n"
                 + "       weir restore                            re-materialize the lock's artifacts\n"
                 + "       weir verify                             vendored contracts vs the lock\n"

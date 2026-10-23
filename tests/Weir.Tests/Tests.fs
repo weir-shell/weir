@@ -13670,6 +13670,40 @@ let vendorClosureTests =
                       "every relative spelling joins, each file once, entry first"
               | Error e -> failtest e
           }
+          test "--path: the raw URL is the root, the entry joins it; without --path a `//` URL stays verbatim" {
+              match Weir.Contracts.resolveModuleSpec "https://h/base" (Some "lib/x.weir") with
+              | Ok s ->
+                  Expect.equal s.Root (Some("https://h/base/", "lib/x.weir")) "the root gains its trailing /"
+                  Expect.equal s.Url "https://h/base/lib/x.weir" "the entry's URL"
+              | Error e -> failtest e
+
+              match Weir.Contracts.resolveModuleSpec "https://h/base/" (Some "a/../lib/x.weir") with
+              | Ok s -> Expect.equal s.Root (Some("https://h/base/", "a/../lib/x.weir")) "a `..` that stays inside is fine"
+              | Error e -> failtest e
+
+              match Weir.Contracts.resolveModuleSpec "https://s3.h/team//lib/retry.weir" None with
+              | Ok s ->
+                  Expect.equal s.Url "https://s3.h/team//lib/retry.weir" "fetched verbatim"
+                  Expect.isNone s.Root "never split"
+              | Error e -> failtest e
+          }
+          test "--path refuses the shorthand, empty, absolute, escaping, the root itself, and a root with ? or #" {
+              let cases =
+                  [ "github.com/o/r//x.weir@v1", "x.weir", "the shorthand already carries the path"
+                    "https://h/b/", "", "--path is empty"
+                    "https://h/b/", "/etc/x.weir", "is absolute"
+                    "https://h/b/", "C:/x.weir", "is absolute"
+                    "https://h/b/", "../x.weir", "climbs above the root URL"
+                    "https://h/b/", "lib/../../x.weir", "climbs above the root URL"
+                    "https://h/b/", "lib/..", "names the root itself"
+                    "https://h/b/?sig=1", "x.weir", "without a query or fragment"
+                    "https://h/b/#f", "x.weir", "without a query or fragment" ]
+
+              for spec, p, want in cases do
+                  match Weir.Contracts.resolveModuleSpec spec (Some p) with
+                  | Ok _ -> failtest $"{spec} --path {p} must refuse"
+                  | Error e -> Expect.stringContains e want $"{spec} --path {p}"
+          }
           test "a leaf walks to itself" {
               match Weir.Script.walkVendorClosure (fetchFrom [ "x.weir", modText "X" [] ]) "x.weir" with
               | Ok [ ("x.weir", _) ] -> ()

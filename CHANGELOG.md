@@ -32,9 +32,11 @@ Many of the changes and fixes below were found porting starship to weir.
   file and removes files the module no longer imports. A `weir:` import,
   an absolute path, or a path outside the repo inside a vendored file is
   refused, naming the file and line. A module without imports vendors
-  exactly as before, to `.weir/modules/<name>.weir`. A raw URL can mark
-  the repo root with `//` (`https://host/repo/<sha>//lib/x.weir`) to
-  vendor imports too. A lock with such a module is `schemaVersion` 2,
+  exactly as before, to `.weir/modules/<name>.weir`. From any other
+  host, `weir add module https://host/repo/<sha>/ --path lib/x.weir
+  --as x` vendors imports too: the URL is the repo root and `--path` the
+  entry file in it. A raw URL without `--path` is still one file,
+  fetched as written. A lock with such a module is `schemaVersion` 2,
   which older weir refuses to read rather than misread.
 
 ### Changed

@@ -949,7 +949,7 @@ type ResolvedModuleSource =
       Host: string option
       // the repo root the file sits in [D:add-module-closure]: (fetch
       // base ending '/', the file's repo path), so a relative import is
-      // fetched at the same commit. None = a single raw URL, no root
+      // fetched at the same commit. None = a raw URL without --path, no root
       Root: (string * string) option }
 
 let private uaHeader = [ "User-Agent", "weir/" + Version.current ]
@@ -961,7 +961,26 @@ let private shaFrom (field: string) (bytes: byte[]) : string option =
     with _ ->
         None
 
-let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
+/// a `--path` entry, relative to a raw root URL [D:add-module-closure]:
+/// confineUnder's lexical rule against a stand-in root — not empty, not
+/// absolute, no `..` past the root, and naming a file, not the root itself
+let private rootEntryPath (path: string) : Result<string, string> =
+    let stand = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "weir-root"))
+
+    if path.Trim() = "" then
+        Error "--path is empty — name the entry file relative to the root URL: --path lib/x.weir"
+    else
+        match confineUnder stand path with
+        | Error _ when absoluteShapedPath path ->
+            Error
+                $"--path '{quoteData path}' is absolute — it names the entry file relative to the root URL (--path lib/x.weir)"
+        | Error _ ->
+            Error $"--path '{quoteData path}' climbs above the root URL — the entry and its imports must stay inside it"
+        | Ok j when j = stand ->
+            Error $"--path '{quoteData path}' names the root itself — name the entry file relative to it"
+        | Ok _ -> Ok path
+
+let resolveModuleSpec (spec: string) (entryPath: string option) : Result<ResolvedModuleSource, string> =
     if spec.StartsWith "http://" || spec.StartsWith "https://" then
         // the explicit raw-URL form — any host, no expansion
         let host =
@@ -975,27 +994,29 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
             | Some t -> [ "Authorization", "token " + t ]
             | None -> []
 
-        // a `//` past the authority marks the repo root in a raw URL
-        // [D:add-module-closure] — `<raw base>//<path>`, the shorthand's
-        // separator — so the file's relative imports can be fetched
-        let afterScheme = spec.IndexOf "://" + 3
-
-        let root =
-            match spec.IndexOf("//", afterScheme) with
-            | -1 -> None
-            | _ when spec.IndexOfAny([| '?'; '#' |]) >= 0 -> None
-            | i when spec.Length > i + 2 -> Some(spec.Substring(0, i) + "/", spec.Substring(i + 2))
-            | _ -> None
-
-        Ok
-            { Url =
-                (match root with
-                 | Some(b, p) -> b + p
-                 | None -> spec)
+        let src root url =
+            { Url = url
               Sha = None
               FetchHeaders = uaHeader @ hdrs
               Host = (if host = "" then None else Some host)
               Root = root }
+
+        // without --path the URL is one file, fetched verbatim (a `//` in
+        // it is data); with --path the URL is the root and --path the
+        // entry inside it [D:add-module-closure]
+        match entryPath with
+        | None -> Ok(src None spec)
+        | Some _ when spec.IndexOfAny([| '?'; '#' |]) >= 0 ->
+            Error
+                $"--path takes a root URL without a query or fragment — '{quoteData (Http.redactUrl spec)}' has one; the entry is joined onto the root as a path"
+        | Some p ->
+            rootEntryPath p
+            |> Result.map (fun p ->
+                let rootUrl = if spec.EndsWith "/" then spec else spec + "/"
+                src (Some(rootUrl, p)) (rootUrl + p))
+    elif entryPath.IsSome then
+        Error
+            "--path goes with a raw root URL (weir add module https://host/base/ --path lib/x.weir --as <name>); the shorthand already carries the path after // — <host>/<org>/<repo>//<path>@<ref>"
     else
         match spec.IndexOf "//" with
         | -1 ->
@@ -2248,8 +2269,16 @@ let private restoreClosure (weirDir: string) (e: LockEntry) (c: ModuleClosure) :
                         let hash = sha256Hex bytes
 
                         if hash <> sha then
+                            // a raw root's lock entry is its own re-add: the
+                            // base url plus --path entry [D:add-module-closure]
+                            let readd =
+                                match c.Commit with
+                                | None ->
+                                    $"weir add module {quoteData (Http.redactUrl e.Url)} --path {quoteData c.Entry} --as {quoteData e.Name}"
+                                | Some _ -> $"weir add module <src>//<file>@<ref> --as {quoteData e.Name}"
+
                             Error
-                                $"{e.Kind} {e.Name}: {rel}: fetched bytes hash {hash.Substring(0, 12)}… but the lock records {sha.Substring(0, 12)}… — the source changed; if intended, re-add it: `weir add module <src>//<file>@<ref> --as {quoteData e.Name}`"
+                                $"{e.Kind} {e.Name}: {rel}: fetched bytes hash {hash.Substring(0, 12)}… but the lock records {sha.Substring(0, 12)}… — the source changed; if intended, re-add it: `{readd}`"
                         else
                             match writeConfined weirDir dest bytes with
                             | Error w -> Error $"{e.Kind} {e.Name}: {w}"
