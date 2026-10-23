@@ -2476,9 +2476,13 @@ conf |> Seq.iter print
   `|> Seq.freeze` or any function the command is passed to — wrap it
   in a function), or a missing
   file (the message shows the resolved absolute path). Resolution is
-  check-time — nothing loads at runtime. `import` needs a file: not
-  `-e` or the REPL prompt, but the REPL init file may import
-  [D:init-import]. A relative path resolves from the importing file's
+  check-time — nothing loads at runtime. The REPL prompt and `-e`
+  import too [D:repl-import]: a relative path resolves from the
+  session's cwd when the import runs (after a `cd`, from the new
+  directory; `-e` from the start cwd), the module rules unchanged,
+  and re-running a prompt import reloads the edited file; the init
+  file imports like a script [D:init-import]. In a file, a relative
+  path resolves from the importing file's
   REAL location (a symlinked script or init imports beside the
   original; `Self.scriptPath` keeps the link). Imports are transitive (a module may import); a
   shared module is checked once and its body RUNS once per program

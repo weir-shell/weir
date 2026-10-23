@@ -172,11 +172,15 @@ the path as written; nothing is looked up at runtime, and a missing
 file is an error at the import that shows the resolved absolute
 path.
 
-## Script-only
+## At the prompt and in `-e`
 
-`import` needs a file to resolve paths against, so it is not allowed
-in `-e` or at the REPL prompt; the error explains why. The REPL's
-[init file](../repl.md#the-init-file) is a file, so it can import.
+In a script or the REPL's [init file](../repl.md#the-init-file), a
+relative path resolves from the importing file. At the REPL prompt
+it resolves from the session's current directory when the import
+runs, and in `-e` from the directory weir was started in. The rules
+above all hold there too. At the prompt, running an import again
+reloads the file (see
+[Importing at the prompt](../repl.md#importing-at-the-prompt)).
 
 ## Capabilities travel
 

@@ -3027,7 +3027,10 @@ and LoadedModule =
       // name its own file:line:col like any diagnostic
       Body: (LogicalLine * CheckedStmt) list
       // each signed member's /// doc, read from its signature [D:module-signatures]
-      MemberDocs: Map<string, string list> }
+      MemberDocs: Map<string, string list>
+      // a prompt import may take an alias an earlier import holds — the
+      // session's reload [D:repl-import]; scripts and -e never set it
+      MayRebind: bool }
 
 // an import failure [D:modules-v1]. File=Some for a module-content error —
 // reported at the module's own site (Line/Col into that file) plus an
@@ -4287,7 +4290,21 @@ let rec private checkStatementCore
 
             match loadImport path pathSpan (aliasOpt |> Option.map fst) with
             | Error e -> Error(importDiag e)
-            | Ok lm when Map.containsKey lm.Alias tenv.Modules ->
+            | Ok lm ->
+            // a session re-import [D:repl-import]: the alias an earlier
+            // import holds is unbound first, then the import proceeds as
+            // fresh — its types, members and privates replace the old
+            let tenv =
+                if lm.MayRebind && tenv.ModuleTypes.ContainsKey lm.Alias then
+                    { tenv with
+                        Modules = Map.remove lm.Alias tenv.Modules
+                        ModuleTypes = Map.remove lm.Alias tenv.ModuleTypes
+                        ModulePrivate = Map.remove lm.Alias tenv.ModulePrivate }
+                else
+                    tenv
+
+            match lm with
+            | lm when Map.containsKey lm.Alias tenv.Modules ->
                 Error(
                     stmtErr
                         $"the name '{lm.Alias}' is already a module in scope; import it under a different name with 'as'"
@@ -4295,7 +4312,7 @@ let rec private checkStatementCore
             // an alias spelled like a union case in scope (`as Some`) would
             // read as the constructor at every use — refused, as a second
             // module of one name is
-            | Ok lm when
+            | lm when
                 tenv.Types
                 |> Map.exists (fun _ def ->
                     match def with
@@ -4306,7 +4323,7 @@ let rec private checkStatementCore
                     stmtErr
                         $"the name '{lm.Alias}' is a union case in scope; import the module under a different name with 'as'"
                 )
-            | Ok lm ->
+            | lm ->
                 // a type name another import or a local declaration holds is
                 // no clash: mergeModule keys it [D:qualified-type-names]
                 Ok
@@ -5409,7 +5426,8 @@ let rec loadModuleCachedWith
                                       @ (reachableDefs
                                          |> List.map (fun (n, _) ->
                                              n, Map.tryFind n finalTenv.TypeOrigins |> Option.defaultValue (ownOrigin n)))
-                                  Body = moduleBody }
+                                  Body = moduleBody
+                                  MayRebind = false }
 
                             cache[key] <- loaded
                             Ok loaded
@@ -5473,8 +5491,23 @@ and private replayModuleBody (procFacts: (string * Eval.Value) list) (lm: Loaded
 
     replay mBase lm.Body
 
-// the -e / REPL import loader [D:modules-v1]: there is no file to resolve
-// relative paths against, so import is script-only (decision 12)
+// a session import's values [D:repl-import]: replay the module with the
+// session's process facts and bind `Alias.member`, as the runner does
+let importInto (venv: Eval.Env) (lm: LoadedModule) : Eval.Env =
+    let procFacts =
+        [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
+        |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
+
+    let moduleVenv = replayModule procFacts lm
+
+    lm.Members
+    |> List.fold
+        (fun acc (n, _) ->
+            match Map.tryFind n moduleVenv with
+            | Some v -> Map.add $"{lm.Alias}.{n}" v acc
+            | None -> acc)
+        venv
+
 /// add-time validation for a single fetched module file [D:add-module]:
 /// the same loader imports use — is-a-module, the module purity rules, a
 /// full typecheck — with imports refused first: a single file vendors as
@@ -5668,14 +5701,25 @@ let fileImportLoader (mkR: TypeEnv -> Parser.Resolver) (importingAbsPath: string
     let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
     fun p _ alias -> loadModuleCachedWith false mkR cache [ importingAbsPath ] importingAbsPath p alias
 
+// the session import loader [D:repl-import]: the prompt and -e resolve an
+// import against the session cwd at the moment it runs — a phantom
+// importer in that directory (never a file, so the self-import guard stays
+// quiet). A fresh cache per import, so a re-import re-reads the file
+let sessionImportLoader: ImportLoader =
+    fun p _ alias ->
+        let phantom = IO.Path.Combine(Session.Cwd(), "(session)")
+        let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
+        loadModuleCachedWith false resolver cache [] phantom p alias
+
+// the no-import loader: a form with no place for an import statement (an
+// #infer source, a completion repair, a test harness) refuses it
 let scriptOnlyImport: ImportLoader =
     fun _ _ _ ->
         Error
             { File = None
               Line = 0
               Col = 0
-              Message =
-                "import is script-only — it needs a file to resolve its path against (not available with -e or in the REPL)" }
+              Message = "import is a statement of its own — not available here" }
 
 // ---- completion in context [D:entry-complete] ---------------------------
 // The REPL's multi-line entry and the LSP's document share one repair:

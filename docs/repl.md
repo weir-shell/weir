@@ -438,6 +438,8 @@ The file gets:
 - the named `let` bindings, with their original multi-line source (so
   a heredoc keeps its newlines). A name defined more than once is
   saved in its latest form.
+- the imports, with relative paths written out absolute (they meant
+  the session's directory, not the saved file's)
 
 Expressions that were only echoed are left out. Short unqualified
 names are replaced with qualified ones (`map` → `Seq.map`,
@@ -457,6 +459,39 @@ to the real command: `let pods = k get po` is saved as
 `kustomize build overlays/prod`. Only the command word itself is
 rewritten, so a `k` in a string or an argument is left alone. The
 saved script contains no aliases and passes `weir check`.
+
+## Importing at the prompt
+
+`import` works at the prompt as it does in a script:
+
+```text
+weir> import "./tools.weir" as X
+module X imported (2 members: hi, v)
+weir> X.hi ()
+"hi" : string
+```
+
+A relative path resolves against the session's current directory
+when the import runs, so `cd` first and then import. `weir:<name>`
+finds the nearest `.weir/` above that directory. A `~/` path is not
+expanded, as in scripts; write the absolute path.
+
+The module rules are a script's: only a file starting with `module`
+can be imported, nothing runs a command while it loads, the whole
+module is checked before anything is bound, and only members with a
+signature are visible. An import that fails binds nothing.
+
+Running an import again re-reads the file, so after editing a module,
+repeat the import to get the new types and values (the echo says
+`reloaded`). Importing under a different alias binds the new alias
+and keeps the old one, as a new `let` leaves earlier ones alone.
+`#help X.member` shows the member's `///` doc, and `X.` completes the
+members with Tab.
+
+The import lasts for the session. `#save` keeps it, with the path
+written out absolute, so the saved script imports the same file.
+To import a module in every session, put the import in the
+[init file](#the-init-file).
 
 ## The prompt and the colors
 
