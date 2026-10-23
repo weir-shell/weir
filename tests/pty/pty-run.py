@@ -9,6 +9,9 @@
 #   pty-run.py <total-timeout-s> <cmd> [args...] < scenario
 #
 # scenario lines (stdin):  SLEEP <ms>  |  SEND <text\n escaped: \n \t \x03>
+#   |  WAIT <text>  (until the output so far holds text, at most the total
+#      timeout — a ready marker, never a guessed delay; the text is matched
+#      after the output since the previous WAIT)
 # output: "<ms> <chunk-repr>" per read chunk, then "EXIT <code>"
 import os, pty, sys, time, select, signal, fcntl, termios, struct
 
@@ -20,6 +23,8 @@ for line in sys.stdin.read().splitlines():
         steps.append(("sleep", int(line[6:])))
     elif line.startswith("SEND "):
         steps.append(("send", line[5:].encode().decode("unicode_escape").encode()))
+    elif line.startswith("WAIT "):
+        steps.append(("wait", line[5:].encode()))
 
 pid, fd = pty.fork()
 if pid == 0:
@@ -57,11 +62,21 @@ def pump(until):
     return True
 
 alive = True
+seen = 0
 for kind, arg in steps:
     if not alive:
         break
     if kind == "sleep":
         alive = pump(time.monotonic() + arg / 1000.0)
+    elif kind == "wait":
+        limit = start + timeout
+        while alive and time.monotonic() < limit:
+            got = b"".join(c for _, c in out)
+            at = got.find(arg, seen)
+            if at >= 0:
+                seen = at + len(arg)
+                break
+            alive = pump(time.monotonic() + 0.02)
     else:
         os.write(fd, arg)
 
