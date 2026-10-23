@@ -532,6 +532,11 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
 "weir-7d9f   1/1   Running   0   12m" |> Str.fields |> Seq.item 1 |> print
 ```
 
+  `Str.rreplace pat rep s : string` rewrites every regex match
+  [D:str-rreplace] — in `rep`, `$1`/`${1}` is a group, `$0` the whole
+  match, `$$` a literal `$`; any other `$` and a group the pattern
+  lacks raise (no `${name}` — no named groups). `Str.replace` is
+  LITERAL text, never a regex.
   `Str.rsplit pat s : seq<string>` splits on every regex match —
   `Str.split`'s empties law (adjacent matches and edges yield `""`),
   capture groups never add pieces; a bad pattern raises like the
@@ -3222,7 +3227,7 @@ not the teaching.
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `initInfinite` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `fromHex` `hmacSha256` `length` `sha256` `sub` `toBase64` `toHex` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
-- `Str`: `contains` `endsWith` `fields` `fromBase64` `isEmpty` `isMatch` `join` `length` `nonEmpty` `padLeft` `padRight` `replace` `replicate` `rmatch` `rmatchAll` `rsplit` `rsplitOnce` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `tryRsplitOnce` `trySplitOnce` `tryToInt` `fromUtf8`
+- `Str`: `contains` `endsWith` `fields` `fromBase64` `isEmpty` `isMatch` `join` `length` `nonEmpty` `padLeft` `padRight` `replace` `replicate` `rmatch` `rmatchAll` `rreplace` `rsplit` `rsplitOnce` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `tryRsplitOnce` `trySplitOnce` `tryToInt` `fromUtf8`
 
 Bare builtins and the prelude types (a union lists its cases, the
 constructors; a record its fields), kept honest by a unit test against

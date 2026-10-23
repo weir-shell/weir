@@ -6091,6 +6091,26 @@ let stringTests =
               expectValue "Str.trySplitOnce \"=\" \"k=v\"" (VUnion("Some", Some(VTuple [ VStr "k"; VStr "v" ])))
               expectValue "Str.trySplitOnce \"=\" \"none\"" (VUnion("None", None))
           }
+          test "rreplace replaces every regex match, expanding $1 ${1} $0 $$ [D:str-rreplace]" {
+              expectValue "Str.rreplace @\"(\\w+)@(\\w+)\" \"$2 at $1\" \"me@host, you@box\"" (VStr "host at me, box at you")
+              expectValue "Str.rreplace @\"(\\d)\" \"${1}0\" \"a1b2\"" (VStr "a10b20")
+              expectValue "Str.rreplace @\"\\d+\" \"<$0>\" \"a12b3\"" (VStr "a<12>b<3>")
+              expectValue "Str.rreplace @\"\\.\" \"$$\" \"1.5\"" (VStr "1$5")
+              expectValue "Str.rreplace \"x\" \"y\" \"abc\"" (VStr "abc")
+              // an unmatched optional group is empty; empty matches advance
+              expectValue "Str.rreplace @\"a(b)?\" \"[$1]\" \"ab a\"" (VStr "[b] []")
+              expectValue "Str.rreplace \"x*\" \"-\" \"ab\"" (VStr "-a-b-")
+              // literal sibling stays literal
+              expectValue "Str.replace \"$1\" \"z\" \"a$1\"" (VStr "az")
+              Expect.stringContains (msgOf "Str.rreplace \"(a)\" \"$2\" \"a\"") "refers to $2, but the pattern has 1 group" "a missing group"
+              Expect.stringContains (msgOf "Str.rreplace \"a\" \"${1}\" \"b\"") "refers to ${1}, but the pattern has no groups" "checked before any match"
+              Expect.stringContains (msgOf "Str.rreplace \"a\" \"$\" \"a\"") "write $1 or ${1} for a group" "a lone $"
+              Expect.stringContains (msgOf "Str.rreplace \"a\" \"$&\" \"a\"") "$$ for a literal '$'" ".NET's $& is not weir's"
+              Expect.stringContains (msgOf "Str.rreplace \"(a)\" \"${x}\" \"a\"") "weir patterns have no named groups" "${name} teaches"
+              Expect.stringContains (msgOf "Str.rreplace \"(a)\" \"${1\" \"a\"") "needs its closing '}'" "an open ${"
+              Expect.stringStarts (msgOf "Str.rreplace \"(\" \"x\" \"a\"") "invalid regex:" "the r-family's error class"
+              Expect.stringContains (msgOf "Str.rreplace \"(?P<n>a)\" \"x\" \"a\"") "named" "the (?P<name>) teaching"
+          }
           test "rsplitOnce splits at the LAST separator [D:split-once]" {
               // the from-the-right receipt: user@host:port, [::1]:port
               expectValue "Str.rsplitOnce \":\" \"[::1]:8080\"" (VTuple [ VStr "[::1]"; VStr "8080" ])
