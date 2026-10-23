@@ -24,6 +24,7 @@ const RENDERED = new Set([
   "docs/METHOD.md",
   "docs/INSTALL.md",
   "docs/COMING-FROM.md",
+  "docs/FAQ.md",
   "docs/LEXICON.md",
   "docs/editors.md",
   "docs/repl.md",
