@@ -3976,6 +3976,44 @@ let shorthandTests =
               expectValue "\"tab\\there\"" (VStr "tab\there")
               expectValue "\"back\\\\slash\"" (VStr "back\\slash")
           }
+          test "\\e and \\u{…} escapes, every escaping string form [D:string-escapes]" {
+              expectValue "\"\\e[1m\"" (VStr "\u001b[1m")
+              expectValue "\"\\u{41}\\u{e9}\\u{1F600}\"" (VStr "A\u00e9\U0001F600")
+              expectValue "\"\\u{000041}\"" (VStr "A")
+              expectValue "Str.length \"\\u{1F600}\"" (VInt 1L)
+              // interpolation: the braces belong to the escape, never a hole
+              expectValue "$\"\\u{41}{1 + 1}\\e\"" (VStr "A2\u001b")
+              // a pattern literal decodes the same way
+              expectValue "match \"\\u{e9}\" with | \"\\u{e9}\" -> 1 | _ -> 0" (VInt 1L)
+              // raw kinds stay raw
+              expectValue "@\"\\u{41}\"" (VStr "\\u{41}")
+              expectValue "\"\"\"\\e\"\"\"" (VStr "\\e")
+          }
+          test "a bad \\u{…} teaches; an unknown escape lists the escapes [D:string-escapes]" {
+              let perr input =
+                  match Weir.Parser.parseLine realResolver input with
+                  | Error msg -> msg
+                  | Ok _ -> failtest $"expected a parse error: {input}"
+
+              Expect.stringContains (perr "let s = \"\\u{D800}\"") "is a UTF-16 surrogate, not a character" "a surrogate refuses"
+              Expect.stringContains (perr "let s = \"\\u{DFFF}\"") "surrogate" "the top of the surrogate range"
+              Expect.stringContains (perr "let s = \"\\u{110000}\"") "past the last Unicode code point, \\u{10FFFF}" "past 10FFFF refuses"
+              Expect.stringContains (perr "let s = \"\\u{}\"") "takes 1 to 6 hex digits" "no digits"
+              Expect.stringContains (perr "let s = \"\\u{1234567}\"") "takes 1 to 6 hex digits" "seven digits"
+              Expect.stringContains (perr "let s = \"\\u{12g}\"") "takes 1 to 6 hex digits" "a non-hex digit"
+              Expect.stringContains (perr "let s = \"\\u0041\"") "takes its code point in braces" "the brace-less form"
+              Expect.stringContains (perr "let s = $\"\\u{D83D}{1}\"") "surrogate" "interpolation refuses too"
+              let m = perr "let s = \"\\x41\""
+              Expect.stringContains m "'\\x' is not an escape" "an unknown escape"
+              Expect.stringContains m "\\e \\u{…}" "the list names the new escapes"
+              Expect.stringContains m "verbatim string" "the Windows repair stays"
+              Expect.stringContains (perr "let s = \"\\U0001F600\"") "'\\U' is not an escape" "uppercase U is unknown"
+          }
+          test "the scanners skip a \\u{…} whole — its braces open no hole [D:string-escapes]" {
+              let c = Weir.Script.colorizeRepl (fun _ -> false) "print $\"\\u{41}x\""
+              Expect.stringContains c "\u001b[32m\"\\u{41}x\"\u001b[0m" "the escape paints as string, not as a hole"
+              Expect.equal (Weir.Script.closers "print $\"\\u{41}") "\"" "only the quote is open"
+          }
           test "escaped strings survive a json roundtrip" {
               let src = VSeq [ VStr """{"name":"a\"b","bytes":1048576,"readOnly":false}""" ]
 

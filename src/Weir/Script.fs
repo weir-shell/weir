@@ -870,7 +870,7 @@ let closers (text: string) : string =
         match stack with
         | ('"' | '$') :: rest ->
             if c = '\\' && i + 1 < text.Length then
-                i <- i + 1
+                i <- Scan.escapeEnd text i
             elif c = '"' then
                 stack <- rest
             elif c = '{' && List.head stack = '$' then
@@ -2688,8 +2688,9 @@ let private interpMasks (line: string) : bool[] * bool[] =
             str[i] <- true
 
             if c = '\\' && i + 1 < line.Length then
-                mark i (i + 1)
-                i <- i + 1
+                let e = Scan.escapeEnd line i
+                mark i e
+                i <- e
             elif c = '"' then
                 stack <- rest
             elif c = '{' && List.head stack = '$' then

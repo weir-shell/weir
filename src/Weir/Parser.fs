@@ -813,21 +813,55 @@ let private intLit =
 // [D:windows-findings]: name the repair (the verbatim string), not just
 // the constraint — every Windows user hits this in their first hour.
 // Non-letter invalid escapes keep the bare expecting-list (a hint on an
-// ambiguous shape is worse than none).
-let private escapedChar =
-    pchar '\\'
-    >>. ((anyOf "\"\\nt"
-          |>> function
-              | 'n' -> '\n'
-              | 't' -> '\t'
-              | c -> c)
-         <|> (lookAhead (satisfy System.Char.IsLetter)
-              >>= fun c ->
-                  failFatally
-                      $"'\\{c}' is not an escape — for a Windows path use a verbatim string: @\"C:\\path\" (forward slashes also work)"))
+// ambiguous shape is worse than none). `\e` is ESC and `\u{…}` one
+// Unicode scalar value, 1–6 hex digits [D:string-escapes]; a surrogate
+// or a value past 10FFFF is no character, so it refuses here.
+let private escapeList = "\\\" \\\\ \\n \\t \\e \\u{…}"
+
+let private unicodeEscape (at: Position) : Parser<string, unit> =
+    let digitsMsg =
+        "'\\u{…}' takes 1 to 6 hex digits naming a code point, e.g. \\u{1F600} or \\u{e9}"
+
+    let scalar (digits: string) : Parser<string, unit> =
+        let v = System.Convert.ToInt32(digits, 16)
+
+        if v >= 0xD800 && v <= 0xDFFF then
+            failFatallyAt
+                at
+                $"'\\u{{{digits}}}' is a UTF-16 surrogate, not a character — write the code point itself (\\u{{1F600}}, not its two halves)"
+        elif v > 0x10FFFF then
+            failFatallyAt at $"'\\u{{{digits}}}' is past the last Unicode code point, \\u{{10FFFF}}"
+        else
+            preturn (System.Char.ConvertFromUtf32 v)
+
+    let body (digits: string) : Parser<string, unit> =
+        if digits = "" || digits.Length > 6 then
+            failFatallyAt at digitsMsg
+        else
+            (pchar '}' <|> failFatallyAt at digitsMsg) >>. scalar digits
+
+    pchar 'u'
+    >>. (pchar '{' <|> failFatallyAt at "'\\u' takes its code point in braces, e.g. \\u{1F600} or \\u{e9}")
+    >>. manyMinMaxSatisfy 0 7 isHex
+    >>= body
+
+let private escapedChar: Parser<string, unit> =
+    getPosition .>> pchar '\\'
+    >>= fun at ->
+        (anyOf "\"\\nte"
+         |>> function
+             | 'n' -> "\n"
+             | 't' -> "\t"
+             | 'e' -> "\u001b"
+             | c -> string c)
+        <|> unicodeEscape at
+        <|> (lookAhead (satisfy System.Char.IsLetter)
+             >>= fun c ->
+                 failFatally
+                     $"'\\{c}' is not an escape (the escapes are {escapeList}) — for a Windows path use a verbatim string: @\"C:\\path\" (forward slashes also work)")
 
 let private stringChar =
-    choice [ satisfy (fun c -> c <> '"' && c <> '\\'); escapedChar ]
+    choice [ many1Satisfy (fun c -> c <> '"' && c <> '\\'); escapedChar ]
 
 // a missing closer at end-of-input is the pasted-multi-line-literal
 // shape (PLAN-dx-review D8): the assembler split the paste, so the
@@ -854,7 +888,7 @@ let private strLit =
     followedBy (pchar '"') >>. getPosition
     >>= fun opener ->
         spanned (
-            pchar '"' >>. manyChars stringChar .>> (pchar '"' <|> unclosed opener "\"" "\"")
+            pchar '"' >>. manyStrings stringChar .>> (pchar '"' <|> unclosed opener "\"" "\"")
             |>> EStr
         )
         |>> mkExpr
@@ -1161,7 +1195,7 @@ let private listLit =
 
 let private interpChar =
     choice
-        [ satisfy (fun c -> c <> '"' && c <> '\\' && c <> '{' && c <> '}')
+        [ many1Satisfy (fun c -> c <> '"' && c <> '\\' && c <> '{' && c <> '}')
           escapedChar ]
 
 // inside an interpolation hole [D:anchor-before-read]: a stray '\' at
@@ -1185,7 +1219,7 @@ let private interpPart =
         [ pstring "{{" >>% IStr "{"
           pstring "}}" >>% IStr "}"
           pchar '{' >>. ws >>. holeExpr .>> pchar '}' |>> IExpr
-          many1Chars interpChar |>> IStr ]
+          many1Strings interpChar |>> IStr ]
 
 let private interpLit =
     followedBy (pstring "$\"") >>. getPosition
@@ -2146,7 +2180,7 @@ let private patLit =
           |>> fun (s, span) -> { PKind = PStr s; PSpan = span }
           spanned (pstring "@\"" >>. verbatimBody .>> pchar '"') .>> ws
           |>> fun (s, span) -> { PKind = PStr s; PSpan = span }
-          spanned (between (pchar '"') (pchar '"') (manyChars stringChar)) .>> ws
+          spanned (between (pchar '"') (pchar '"') (manyStrings stringChar)) .>> ws
           |>> fun (s, span) -> { PKind = PStr s; PSpan = span } ]
 
 // one-or-tuple over comma-separated patterns — shared by paren
@@ -2235,7 +2269,7 @@ let private regexPatternLit =
           |>> fun (p, sp) -> p, sp, true
           spanned (pstring "@\"" >>. verbatimBody .>> pchar '"')
           |>> fun (p, sp) -> p, sp, true
-          spanned (between (pchar '"') (pchar '"') (manyChars stringChar))
+          spanned (between (pchar '"') (pchar '"') (manyStrings stringChar))
           |>> fun (p, sp) -> p, sp, false ]
     .>> ws
 
@@ -5363,7 +5397,7 @@ tySynRef.Value <-
 // literal-only attribute arguments [D:attributes]
 let private attrArgLit =
     choice
-        [ between (pchar '"') (pchar '"') (manyChars stringChar) |>> AStr
+        [ between (pchar '"') (pchar '"') (manyStrings stringChar) |>> AStr
           getPosition
           .>>. many1Satisfy isDigit
           .>>. opt (
@@ -5731,7 +5765,7 @@ let private moduleDecl: Parser<Stmt, unit> =
 // (resolution is check-time); anything else gets the teaching error
 let private importDecl: Parser<Stmt, unit> =
     keyword "import"
-    >>. (spanned (between (pchar '"') (pchar '"') (manyChars stringChar)) .>> ws
+    >>. (spanned (between (pchar '"') (pchar '"') (manyStrings stringChar)) .>> ws
          <|> failFatally "import takes a literal string path, e.g. import \"./lib/paths.weir\"")
     .>>. (opt (keyword "as" >>. upperName "an import alias") .>> eof)
     |>> fun ((path, pathSpan), aliasOpt) -> SImport(path, pathSpan, aliasOpt)

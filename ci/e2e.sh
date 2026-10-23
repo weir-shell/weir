@@ -17033,5 +17033,21 @@ out=$($BIN check "$mkdir_/wire.weir" 2>&1) && fail "map-keys: to json of a Map<i
 echo "$out" | grep -qF "JSON object keys are strings — a Map<int, …> can't cross" || fail "map-keys: the wire teaching: $out"
 rm -rf "$mkdir_"
 echo "e2e ok: Map<FileKind, int> via countBy, union keys by case name then payload, the wire keeps string keys [D:map-keys]"
+# ---- batch B ------------------------------------------------------------------
+bbdir=$(mkweirtmp)
+# string escapes [D:string-escapes]: \e and \u{…} reach the bytes, the
+# interpolated form too; a surrogate is a located parse error that check
+# reports before anything runs
+printf 'print ("\\u{41}\\u{e9}\\u{1F600}" + $"\\e[{1}m")\n' > "$bbdir/esc.weir"
+out=$($BIN "$bbdir/esc.weir" | od -An -tx1 | tr -d ' \n')
+[ "$out" = "41c3a9f09f98801b5b316d0a" ] || fail "\\e and \\u{…} must decode to their bytes: $out"
+printf 'print "ok"\nprint "\\u{D800}"\n' > "$bbdir/sur.weir"
+out=$($BIN check "$bbdir/sur.weir" 2>&1) && fail "a surrogate escape must not check clean"
+echo "$out" | grep -qF "sur.weir:2:" || fail "the surrogate refusal is located: $out"
+echo "$out" | grep -qF "is a UTF-16 surrogate, not a character" || fail "the surrogate refusal teaches: $out"
+out=$($BIN "$bbdir/sur.weir" 2>&1) && fail "a surrogate escape must not run"
+echo "$out" | grep -qF "ok" && fail "a parse error runs nothing: $out"
+echo "e2e ok: \\e and \\u{…} escapes decode in plain and interpolated strings; a surrogate refuses at parse [D:string-escapes]"
+rm -rf "$bbdir"
 
 echo "e2e battery: all green"

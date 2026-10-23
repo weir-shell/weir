@@ -144,6 +144,12 @@ Many of the changes and fixes below were found porting starship to weir.
   `PromptStatus -> string` prompt can show it the way starship's
   `cmd_duration` does — `if st.duration > 2s then $"took
   {st.duration} " else ""`. It is `0ms` before the first entry.
+- **`\e` and `\u{…}` string escapes.** `"\e[1m"` is the ESC that starts
+  a terminal escape sequence, and `"\u{e9}"`/`"\u{1F600}"` write any
+  character by its code point (1 to 6 hex digits), in `$"…"` strings
+  too. A UTF-16 surrogate (`\u{D800}`) or a value past `\u{10FFFF}` is
+  a parse error that says so, and an unknown escape's error now lists
+  every escape.
 
 ### Changed
 

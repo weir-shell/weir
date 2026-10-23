@@ -150,7 +150,7 @@ rules:
         end: "\""
         skip: "\\\\."
         rules:
-            - constant.specialChar: "\\\\."
+            - constant.specialChar: "\\\\(u\\{[0-9A-Fa-f]{1,6}\\}|.)"
             # escaped braces MUST precede the hole region so {{ / }}
             # never open one
             - constant.specialChar: "\\{\\{|\\}\\}"
@@ -193,7 +193,7 @@ rules:
         end: "\""
         skip: "\\\\."
         rules:
-            - constant.specialChar: "\\\\."
+            - constant.specialChar: "\\\\(u\\{[0-9A-Fa-f]{1,6}\\}|.)"
 
     # ---- single-quoted strings (COMMAND-MODE; scanner-pinned:
     # `echo 'a // b'` keeps its comment marker inside the quotes).
