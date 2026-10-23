@@ -626,12 +626,22 @@ let sleepers mark =
     let r = pgrep -f $"^sleep {mark}$" | complete
     r.stdout |> Seq.length
 
+// TERM only once the fixture is inside its `within` (the ready file), as
+// the probe signals HUP: a fixed delay raced a slow runner's startup
 let ctlTermTeardown d =
     let mark = 3720000 + Self.pid % 10000
-    let r = runSig d "TERM" "2" [put d "c.weir" (e8Fixture mark)]
+    let p = put d "c.weir" (e8Fixture mark)
+    let code =
+        within cd d
+            within proc w = env $@noProxy $"TMPDIR={d}" $cli.bin $p
+                poll timeout=15s interval=50ms watch=w
+                    File.exists $"{d}/ready"
+                kill -TERM (Proc.pid w)
+                Proc.wait w
+    Duration.sleep 500ms
     let ok = File.exists $"{d}/always.marker" && sleepers mark == 0
     let _k = pkill -9 -f $"^sleep {mark}$" | complete
-    codeOf r == 124 && ok
+    code <> 0 && ok
 
 let h3e8 d =
     let mark = 3730000 + Self.pid % 10000
@@ -810,8 +820,17 @@ let c4bFixture mark = $$<<<
         within proc p = sleep $mark
             Duration.sleep 1ms)
 
+// TERM once an arm has logged (the fixture is inside its `within`): a
+// fixed delay raced a slow runner's startup, leaving no c4.res at all
 let h3c4 d =
-    let rA = runSig d "TERM" "1" [put d "c4a.weir" c4aFixture]
+    let pa = put d "c4a.weir" c4aFixture
+    let codeA =
+        within cd d
+            within proc w = env $@noProxy $"TMPDIR={d}" $cli.bin $pa
+                poll timeout=15s interval=20ms watch=w
+                    File.exists $"{d}/c4.log"
+                kill -TERM (Proc.pid w)
+                Proc.wait w
     let res = if File.exists $"{d}/c4.res" then File.read $"{d}/c4.res" |> Str.join "" else "missing"
     let grew =
         match res |> Str.fields |> Seq.freeze with
@@ -828,7 +847,7 @@ let h3c4 d =
     let left = sleepers mark
     let _k = pkill -9 -f $"^sleep {mark}$" | complete
     failing [
-        ($"piter took {grew} more arm(s) after SIGTERM (exit {codeOf rA})", grew <= 16)
+        ($"piter took {grew} more arm(s) after SIGTERM (exit {codeA})", grew <= 16)
         ($"{leaked} weir-proc dir(s) leaked, {left} orphan(s) (exit {codeOf rB})", leaked == 0 && left == 0)
     ]
 
