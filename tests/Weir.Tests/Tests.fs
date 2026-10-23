@@ -12605,6 +12605,60 @@ let multilineLambdaTests =
               | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let v = xs |> Seq.iter (fun r -> print r) ; 40") ""
               | other -> failtest $"unexpected: {other}"
           }
+          test "a literal's closer sharing the lambda's ')' line closes the lambda (starship port) [D:multiline-lambda]" {
+              // `])` / `})`: the closing line of the last open bracket
+              // moves the paren depth, so the lambda pops there exactly
+              // as on a lone `)` line
+              errorsCleanIn
+                  "w3.weir"
+                  [ "let ys ="
+                    "    [\"a\"; \"b\"]"
+                    "    |> Seq.map (fun r ->"
+                    "        Str.join \"\" ["
+                    "            r"
+                    "            \"z\""
+                    "        ])"
+                    "ys |> Seq.iter print" ]
+                  "list closer + lambda closer"
+
+              errorsCleanIn
+                  "w7.weir"
+                  [ "type P = { a: string; b: string }"
+                    "let ys ="
+                    "    [\"a\"; \"b\"]"
+                    "    |> Seq.map (fun r ->"
+                    "        let s = r + \"!\""
+                    "        {"
+                    "            a = s"
+                    "            b = \"z\""
+                    "        })"
+                    "ys |> Seq.iter (fun p -> print p.a)" ]
+                  "record closer + lambda closer after a body let"
+
+              errorsCleanIn
+                  "w9.weir"
+                  [ "[\"a\"; \"b\"]"
+                    "    |> Seq.iter (fun r ->"
+                    "        Seq.iter print ["
+                    "            r"
+                    "            \"z\""
+                    "        ])" ]
+                  "statement-level pipeline, EOF after the closer"
+
+              // the level restores: a sibling after `])` sequences
+              match
+                  Weir.Script.assemble
+                      [ 1, "let v ="
+                        2, "    xs |> Seq.iter (fun r ->"
+                        3, "        print ["
+                        4, "            r"
+                        5, "        ])"
+                        6, "    40" ]
+              with
+              | Ok [ ll ] ->
+                  Expect.stringContains ll.Text (asmSib "]) ; 40") "the sibling after the closer sequences"
+              | other -> failtest $"unexpected: {other}"
+          }
           test "nested multiline lambdas pop innermost-first" {
               match
                   Weir.Script.assemble

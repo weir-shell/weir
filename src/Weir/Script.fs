@@ -1757,14 +1757,76 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                             | Error e -> Error e
                                             | Ok anchored ->
                                                 bracketFold lineNo indent anchored piece
-                                                |> Result.map (fun brackets ->
-                                                    Some
+                                                |> Result.bind (fun brackets ->
+                                                    let joinedP =
                                                         { p with
                                                             Buf = applyJoin join p.Buf piece lineNo indent
                                                             LastIndent = indent
-                                                            Brackets = brackets },
-                                                    acc,
-                                                    blankSinceHead)
+                                                            Brackets = brackets }
+
+                                                    if not brackets.IsEmpty then
+                                                        Ok(Some joinedP, acc, blankSinceHead)
+                                                    else
+                                                        // the line closing the last bracket rejoins paren
+                                                        // tracking: its parens move the depth, so `])` /
+                                                        // `})` closes a multiline lambda exactly as a
+                                                        // `)` line does, and a dangling `(fun x ->` after
+                                                        // the closer opens one [D:multiline-lambda]
+                                                        let depth = p.ParenDepth + parenDelta piece
+
+                                                        let popped, kept =
+                                                            p.Lambdas
+                                                            |> List.partition (fun (_, _, d0, _) -> d0 >= depth)
+
+                                                        let innerLet =
+                                                            match List.tryLast popped with
+                                                            | Some(_, oindent, _, _) ->
+                                                                p.Lets |> List.tryFind (fun (k, _) -> k > oindent)
+                                                            | None -> None
+
+                                                        match innerLet with
+                                                        | Some(_, letLine) -> noBody letLine
+                                                        | None ->
+                                                            let backTo =
+                                                                match popped with
+                                                                | [] -> joinedP.LastIndent
+                                                                | ps ->
+                                                                    let (_, _, _, restore) = List.last ps
+                                                                    restore
+
+                                                            let stmtLevel =
+                                                                if popped.IsEmpty then p.StmtLevel else backTo
+
+                                                            let kept =
+                                                                if lambdaOpens piece then
+                                                                    (lineNo, indent, depth - 1, stmtLevel) :: kept
+                                                                else
+                                                                    kept
+
+                                                            Ok(
+                                                                Some
+                                                                    { joinedP with
+                                                                        LastIndent = backTo
+                                                                        StmtLevel = stmtLevel
+                                                                        ParenDepth = depth
+                                                                        Lambdas = kept
+                                                                        Compounds =
+                                                                            p.Compounds
+                                                                            |> List.filter (fun (_, _, d) -> d <= depth)
+                                                                        PipeGroups =
+                                                                            if popped.IsEmpty then
+                                                                                p.PipeGroups
+                                                                            else
+                                                                                p.PipeGroups
+                                                                                |> List.skipWhile (fun (g, _, _, _) ->
+                                                                                    g > backTo)
+                                                                                |> List.filter (fun (_, _, _, d) ->
+                                                                                    d <= depth)
+                                                                        LastWasPipe =
+                                                                            if popped.IsEmpty then p.LastWasPipe else false },
+                                                                acc,
+                                                                blankSinceHead
+                                                            ))
                                         | [] ->
                                             match p.District with
                                             | Some({ Active = None; Yaml = true } as dst) when
