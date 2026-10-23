@@ -837,6 +837,16 @@ let warningTests =
 
               Expect.stringContains m2 "named group '(?<y>'" "the quote spelling, same refusal"
           }
+          test "a Python (?P<name>) group gets the named-group teaching [D:no-named-groups]" {
+              let terr = checkErr "match \"a=1\" with | Regex @\"(?P<k>\\w+)=(\\d+)\" (k, v) -> k + v | _ -> \"\""
+              Expect.stringContains terr.Message "named group '(?P<k>'" "at check time"
+              Expect.stringContains terr.Message "names captures at the binder" "the teaching"
+              Expect.isFalse (terr.Message.Contains "Unrecognized grouping") "never .NET's raw message"
+
+              Expect.stringContains (msgOf "Str.isMatch @\"(?P<k>\\w+)\" \"abc\"") "named group '(?P<k>'" "expression side"
+              // an escaped paren is no group: a literal `(`, `?` on it
+              expectValue "Str.isMatch @\"\\(?P<k>\" \"P<k>\"" (VBool true)
+          }
           test "the detection's ONLY risk, pinned: lookbehinds and (?: still work [D:no-named-groups]" {
               // (?<= and (?<! share three characters with (?<name> — the
               // engine's own group table is the detector, so zero-width
@@ -4796,7 +4806,7 @@ let completionTests =
 
               Expect.equal
                   Weir.Complete.unsuggestedKeywords
-                  (Set [ "rec"; "mutable"; "function"; "while"; "return"; "def" ])
+                  (Set [ "rec"; "mutable"; "function"; "while"; "return" ])
                   "the exclusion set moved — its reasons live beside its definition"
 
               // behavioral, through suggest itself: the once-missing
@@ -12605,6 +12615,60 @@ let multilineLambdaTests =
               | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let v = xs |> Seq.iter (fun r -> print r) ; 40") ""
               | other -> failtest $"unexpected: {other}"
           }
+          test "a literal's closer sharing the lambda's ')' line closes the lambda (starship port) [D:multiline-lambda]" {
+              // `])` / `})`: the closing line of the last open bracket
+              // moves the paren depth, so the lambda pops there exactly
+              // as on a lone `)` line
+              errorsCleanIn
+                  "w3.weir"
+                  [ "let ys ="
+                    "    [\"a\"; \"b\"]"
+                    "    |> Seq.map (fun r ->"
+                    "        Str.join \"\" ["
+                    "            r"
+                    "            \"z\""
+                    "        ])"
+                    "ys |> Seq.iter print" ]
+                  "list closer + lambda closer"
+
+              errorsCleanIn
+                  "w7.weir"
+                  [ "type P = { a: string; b: string }"
+                    "let ys ="
+                    "    [\"a\"; \"b\"]"
+                    "    |> Seq.map (fun r ->"
+                    "        let s = r + \"!\""
+                    "        {"
+                    "            a = s"
+                    "            b = \"z\""
+                    "        })"
+                    "ys |> Seq.iter (fun p -> print p.a)" ]
+                  "record closer + lambda closer after a body let"
+
+              errorsCleanIn
+                  "w9.weir"
+                  [ "[\"a\"; \"b\"]"
+                    "    |> Seq.iter (fun r ->"
+                    "        Seq.iter print ["
+                    "            r"
+                    "            \"z\""
+                    "        ])" ]
+                  "statement-level pipeline, EOF after the closer"
+
+              // the level restores: a sibling after `])` sequences
+              match
+                  Weir.Script.assemble
+                      [ 1, "let v ="
+                        2, "    xs |> Seq.iter (fun r ->"
+                        3, "        print ["
+                        4, "            r"
+                        5, "        ])"
+                        6, "    40" ]
+              with
+              | Ok [ ll ] ->
+                  Expect.stringContains ll.Text (asmSib "]) ; 40") "the sibling after the closer sequences"
+              | other -> failtest $"unexpected: {other}"
+          }
           test "nested multiline lambdas pop innermost-first" {
               match
                   Weir.Script.assemble
@@ -16177,11 +16241,62 @@ let tupleTests =
               | Ok te -> Expect.equal (formatTy te.Ty) "int" ""
               | Error terr -> failtest (formatError terr)
           }
-          test "tuples x exhaustiveness: refutable tuple arm needs a catch-all (bounded rule)" {
+          test "tuples x exhaustiveness: int literal components never complete (per-component)" {
               let terr = checkErr "match (1, 2) with | (0, _) -> \"z\" | (1, _) -> \"o\""
-              Expect.stringContains (formatError terr) "catch-all" ""
+              Expect.stringContains (formatError terr) "missing: (_, _)" ""
 
               expectValue "match (1, 2) with | (0, _) -> \"z\" | _ -> \"other\"" (VStr "other")
+          }
+          test "tuple coverage composes per component (starship port) [D:exhaustiveness-hard-error]" {
+              // the matrix walk: every Option x Option / bool x bool case
+              // listed is total, no catch-all owed
+              errorsCleanIn
+                  "tup.weir"
+                  [ "let f a b ="
+                    "    match (a, b) with"
+                    "    | Some x, Some y -> x + y"
+                    "    | Some x, None -> x"
+                    "    | None, Some y -> y"
+                    "    | None, None -> 0"
+                    "print (show (f (Some 1) None))" ]
+                  "Option<int> * Option<int>"
+
+              errorsCleanIn
+                  "tup5.weir"
+                  [ "let a = true"
+                    "let b = false"
+                    "let r ="
+                    "    match (a, b) with"
+                    "    | (true, true) -> 1"
+                    "    | (true, false) -> 2"
+                    "    | (false, true) -> 3"
+                    "    | (false, false) -> 4"
+                    "print (show r)" ]
+                  "bool * bool"
+
+              expectValue "match (false, true) with | (true, _) -> 1 | (false, true) -> 2 | (false, false) -> 3" (VInt 2L)
+              // nested through a payload's tuple, and a wildcard column
+              expectValue
+                  "match (Some (1, true), 0) with | (Some (_, true), _) -> 1 | (Some (_, false), _) -> 2 | (None, _) -> 3"
+                  (VInt 1L)
+          }
+          test "a tuple gap names one missing tuple pattern" {
+              let msg (src: string) = (checkErr src).Message
+
+              Expect.stringContains
+                  (msg "match (Some 1, Some 2) with | (Some x, Some y) -> x | (None, None) -> 0 | (Some x, None) -> x")
+                  "missing: (None, Some _)"
+                  "the uncovered component pair"
+
+              Expect.stringContains
+                  (msg "match (true, Some (1, false)) with | (true, _) -> 1 | (false, Some (_, true)) -> 2 | (false, None) -> 3")
+                  "missing: (false, Some (_, false))"
+                  "the walk recurses through a payload's tuple"
+
+              Expect.stringContains
+                  (msg "match (true, false) with | (true, true) -> 1 | (false, _) -> 2 | (true, false) when false -> 3")
+                  "missing: (true, false)"
+                  "a guarded arm never covers"
           }
           test "tuple arity mismatch is located" {
               let terr = checkErr "match (1, 2) with | (a, b, c) -> a"
@@ -19202,7 +19317,39 @@ let yamlSeqTests =
     // document, the declared type names the top level, streams teach
     testList
         "from yaml seq<Name> [D:yaml-seq]"
-        [ test "reads a top-level sequence document — the acceptance" {
+        [ test "from yaml splits joined elements, line numbers through the joined document" {
+              let v =
+                  runUnder
+                      (env |> declare "type YJ = { a: int; b: string }")
+                      "[Str.join \"\\n\" [\"a: 1\"; \"b: x\"]] |> from yaml YJ |> fun r -> r.b"
+
+              Expect.equal v (VStr "x") "a joined element reads like two lines"
+
+              Expect.equal
+                  (Weir.Yaml.numberLines [ "a: 1\r\nb: x"; "c: 2" ])
+                  [ 1, "a: 1"; 2, "b: x"; 3, "c: 2" ]
+                  "CRLF splits too; numbering runs on"
+
+              let msg =
+                  (Expect.throwsC
+                      (fun () ->
+                          runUnder
+                              (env |> declare "type YJ = { a: int; b: string }")
+                              "[\"a: 1\\nb: x\"; \"b: y\"] |> from yaml YJ"
+                          |> ignore)
+                      id)
+                      .Message
+
+              Expect.stringContains msg "line 3: duplicate key 'b'" "the joined document's line"
+
+              let parsed = runLive "[\"a: 1\\nb: x\"] |> Yaml.parse |> show"
+              Expect.equal parsed (VStr "YMap ([(\"a\", YInt 1); (\"b\", YStr \"x\")])") "Yaml.parse too"
+              Expect.stringContains
+                  (Weir.Infer.inferShapeText Set.empty Set.empty Weir.Infer.Yaml "Root" [ "a: 1\nb: x" ])
+                  "b: string"
+                  "and inferShape"
+          }
+          test "reads a top-level sequence document — the acceptance" {
               let e2 = env |> declare "type YH = { host: string }"
 
               let src = "[\"- host: a\"; \"- host: b\"] |> from yaml seq<YH> |> Seq.map _.host"
@@ -24502,8 +24649,23 @@ let dxMessageTests =
           test "D4: foreign control-flow words teach weir's spelling" {
               mustSay [ "while true do"; "    print (show 1)" ] "'while' is not a weir word" "while"
               mustSay [ "let f n ="; "    return n"; "print (show (f 1))" ] "'return' is not a weir word" "return"
-              mustSay [ "def f():"; "    print (show 1)" ] "'def' is not a weir word" "def"
+              // the definition statement's shape [D:def-shape]
+              mustSay [ "def f x = x + 1" ] "'def' is not a weir word" "def"
               mustSay [ "let r = try (echo x)"; "print (show 1)" ] "'try' goes after a pipeline" "try"
+          }
+          test "def is an ordinary name; the teaching keys on `def <name> … =` [D:def-shape]" {
+              errorsCleanIn "def.weir" [ "let def = 1"; "print (show def)" ] "a binder"
+              errorsCleanIn "deff.weir" [ "type R = { def: int }"; "let r = { def = 3 }"; "print (show r.def)" ] "a field"
+              mustSayIn "d1.weir" [ "def f x = x + 1" ] "'def' is not a weir word" "top level"
+
+              mustSayIn
+                  "d2.weir"
+                  [ "let f () ="; "    def g x = x"; "    1"; "print (show (f ()))" ]
+                  "'def' is not a weir word"
+                  "a let body"
+
+              mustSayIn "d3.weir" [ "if true then"; "    def g x = x" ] "'def' is not a weir word" "an if body"
+              Expect.isFalse (Weir.Parser.isKeyword "def") "not a keyword"
           }
           test "D5: List/Array teach Seq; no cross-kind did-you-mean" {
               mustSay [ "let n = List.length [1]"; "print (show n)" ] "weir's sequences are 'Seq'" "List"
@@ -25744,7 +25906,7 @@ let moduleSignatureTests =
                   (fun td ->
                       let main = System.IO.Path.Combine(td, "main.weir")
 
-                      match Weir.Script.fileImportLoader main "./lib.weir" { Start = { Line = 1; Col = 1 }; End = { Line = 1; Col = 1 } } None with
+                      match Weir.Script.fileImportLoader Weir.Script.assumeResolver main "./lib.weir" { Start = { Line = 1; Col = 1 }; End = { Line = 1; Col = 1 } } None with
                       | Ok lm -> Expect.equal lm.MemberDocs (Map.ofList [ "double", [ "doubles" ] ]) "signed member doc only"
                       | Error e -> failtest e.Message)
           }
@@ -29219,6 +29381,73 @@ let sweepFindingTests =
               Expect.isFalse (m |> List.exists (fun s -> s.Contains "'!'")) "no '!' in the expectation list"
           } ]
 
+// the overlay findings run whole scripts: `within env` pushes the
+// session's root overlay, one stack every test thread shares
+let portOverlayTests =
+    let runFile (lines: string list) : int =
+        let path = tempPath "weir-port" + ".weir"
+        File.WriteAllLines(path, lines)
+
+        try
+            Weir.Script.run path []
+        finally
+            File.Delete path
+
+    testSequenced
+    <| testList
+        "starship port findings: the env overlay"
+        [ test "home and the XDG dirs read the within-env overlay [D:home-overlay]" {
+              skipOnWindows ()
+              let home = Weir.Builtins.homeDir ()
+
+              Expect.equal
+                  (runFile
+                      [ "within env HOME=\"/fake/home\" XDG_CONFIG_HOME=\"\" XDG_CACHE_HOME=\"/fake/cache\""
+                        "    if Path.home () <> \"/fake/home\" then exit 3"
+                        "    if Path.configHome () <> \"/fake/home/.config\" then exit 4"
+                        "    if Path.cacheHome () <> \"/fake/cache\" then exit 5"
+                        "    let typed = echo ~/x |> Seq.exactlyOne"
+                        "    if typed <> \"/fake/home/x\" then exit 6"
+                        $"if Path.home () <> \"{weirPath home}\" then exit 7" ])
+                  0
+                  "Path.home, configHome, cacheHome and a typed ~ follow the overlay; outside it, the process home"
+          }
+          test "a dynamic head resolves on the PATH the child runs with [D:overlay-path]" {
+              skipOnWindows ()
+
+              withTempDir "weir-port-path" (fun dir ->
+                  let tool = Path.Combine(dir, "weirporttoolzz")
+                  File.WriteAllText(tool, "#!/bin/sh\necho ran-from-overlay\n")
+                  File.SetUnixFileMode(tool, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute)
+                  let p = System.Environment.GetEnvironmentVariable "PATH"
+                  let path = $"{weirPath dir}:{p}"
+
+                  Expect.equal
+                      (runFile
+                          [ "let tool = \"weirporttoolzz\""
+                            $"within env PATH=\"{path}\""
+                            "    let r = ^$tool | line"
+                            "    if r <> \"ran-from-overlay\" then exit 3"
+                            $"let r2 = PATH=\"{path}\" ^$tool | line"
+                            "if r2 <> \"ran-from-overlay\" then exit 4" ])
+                      0
+                      "within env's PATH and a per-command PATH= prefix"
+
+                  // weir's own PATH lacks it: off the overlay it is not found
+                  Expect.equal
+                      (runFile [ "let tool = \"weirporttoolzz\""; "^$tool" ])
+                      1
+                      "not found off the overlay")
+          }
+          test "a literal head under an overlay PATH that lacks it is not found, as the child would see [D:overlay-path]" {
+              skipOnWindows ()
+
+              Expect.equal
+                  (runFile [ "within env PATH=\"/weir-no-such-dir\""; "    sh -c \"echo hi\"" ])
+                  1
+                  "the overlay PATH decides at run time"
+          } ]
+
 let docsBinaryTests =
     let stmtMsg (line: string) =
         let ll =
@@ -29808,6 +30037,51 @@ let hunt3BehaviorTests =
                   "the note names the cases"
 
               Expect.stringContains g "both: the schema allows array/object — drafted Yaml; a sequence reads as YSeq items, a mapping as YMap entries" "both containers"
+          }
+          test "schema drafting: an anyOf mixing a scalar with an array drafts Yaml (starship port) [D:schema-anyof-mixed]" {
+              // trimmed from starship's config-schema.json: custom.shell is
+              // string-or-array, python.python_binary nests it once more
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "$defs": {
+                             "VecOr_string": { "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+                             "VecOr_VecOr_string": { "anyOf": [{ "$ref": "#/$defs/VecOr_string" }, { "type": "array", "items": { "$ref": "#/$defs/VecOr_string" } }] },
+                             "Base": { "type": "object", "properties": { "x": { "type": "string" } }, "required": ["x"] },
+                             "Other": { "type": "object", "properties": { "y": { "type": "integer" } }, "required": ["y"] } },
+                           "properties": {
+                             "shell": { "$ref": "#/$defs/VecOr_string", "default": [] },
+                             "python_binary": { "$ref": "#/$defs/VecOr_VecOr_string" },
+                             "objs": { "anyOf": [{ "$ref": "#/$defs/Base" }, { "$ref": "#/$defs/Other" }] } } }"""
+
+              Expect.stringContains g "\n    shell: Option<Yaml>\n" "string-or-array drafts Yaml"
+              Expect.stringContains g "\n    python_binary: Option<Yaml>\n" "the nested anyOf through a $ref too"
+
+              Expect.stringContains
+                  g
+                  "// note: VecOr_string: anyOf allows array/string — drafted Yaml; a string reads as YStr s, a sequence as YSeq items"
+                  "the note names each kind's case"
+
+              Expect.stringContains g "// note: VecOr_VecOr_string: anyOf allows array/string — drafted Yaml" "the nested one"
+
+              Expect.stringContains g "objs: anyOf — drafted the FIRST variant only" "two objects keep the first-variant rule"
+          }
+          test "schema drafting: a diamond of $refs under anyOf costs its definitions, not 2^depth" {
+              // D0 is string-or-array; each Dk is anyOf [Dk-1; Dk-1] — 2^30
+              // reference paths in a ~2 KB schema
+              let defs =
+                  [ "\"D0\": { \"anyOf\": [{ \"type\": \"string\" }, { \"type\": \"array\", \"items\": { \"type\": \"string\" } }] }" ]
+                  @ [ for k in 1..30 ->
+                          $"\"D{k}\": {{ \"anyOf\": [{{ \"$ref\": \"#/$defs/D{k - 1}\" }}, {{ \"$ref\": \"#/$defs/D{k - 1}\" }}] }}" ]
+                  |> String.concat ", "
+
+              let sw = Stopwatch.StartNew()
+
+              let g =
+                  gen $"{{ \"type\": \"object\", \"$defs\": {{ {defs} }}, \"properties\": {{ \"top\": {{ \"$ref\": \"#/$defs/D30\" }} }} }}"
+
+              Expect.isLessThan sw.Elapsed.TotalSeconds 5.0 "bounded by the definition count"
+              Expect.stringContains g "\n    top: Option<Yaml>\n" "the mixed kinds still draft Yaml"
           }
           test "schema drafting: a typed enum drafts its type, a mixed enum Yaml [D:schema-enum-kind]" {
               let g =
@@ -31217,11 +31491,105 @@ let sigCompleteTests =
                       Expect.equal (tabWith aliases "ed comm") [ "commit-notes.txt" ] "an alias to a sig-less tool: paths"))
           } ]
 
+// the starship port's confirmed findings: each repro, pinned
+let portFindingsTests =
+    let stmtDiag (line: string) =
+        let ll =
+            match Weir.Script.assemble [ 1, line ] with
+            | Ok [ ll ] -> ll
+            | other -> failtest $"assembly: {other}"
+
+        match
+            Weir.Script.checkStatement
+                false
+                None
+                Weir.Script.resolver
+                Weir.Script.scriptOnlyImport
+                Weir.Builtins.typeEnvStrict
+                ll
+        with
+        | Error d -> d.Message
+        | Ok _ -> failtest $"expected {line} to fail"
+
+    testList
+        "starship port findings"
+        [ test "an importer checks a module under its own (assume) resolver [D:assume-resolver]" {
+              withTempDir "weir-port-imp" (fun dir ->
+                  File.WriteAllLines(
+                      Path.Combine(dir, "modmiss.weir"),
+                      [| "module"
+                         ""
+                         "let ver : unit -> seq<string>"
+                         "let ver () ="
+                         "    let r = $(weirnosuchtoolzz -Vv | complete)"
+                         "    r.stdout" |]
+                  )
+
+                  File.WriteAllLines(
+                      Path.Combine(dir, "modmiss2.weir"),
+                      [| "module"; ""; "let ver : unit -> seq<string>"; "let ver () = weirnosuchtoolzz -Vv" |]
+                  )
+
+                  for m in [ "modmiss.weir"; "modmiss2.weir" ] do
+                      let root = Path.Combine(dir, "root.weir")
+                      let lines = [ $"import \"{m}\" as M"; "M.ver () |> Seq.iter print" ]
+                      errorsCleanIn root lines $"importing {m} checks like the lone module")
+          }
+          test "a missing `$(cmd | complete)` head warns like a plain head [D:exit-reifiers]" {
+              let ds =
+                  diagsIn
+                      "fnmiss.weir"
+                      [ "let f () ="
+                        "    let r = $(weirnosuchtoolzz -Vv | complete)"
+                        "    r.stdout"
+                        "f () |> Seq.iter print" ]
+
+              Expect.exists
+                  ds
+                  (fun d -> d.Code = "cmd-not-found" && d.Message.Contains "weirnosuchtoolzz" && d.Line = 2)
+                  $"the reified head warns: {ds |> List.map _.Message}"
+
+              Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "a warning, never an error"
+          }
+          test "a bare member after a command chain's `|>` gets the bare-member teaching [D:bare-partition]" {
+              for line, name, home in
+                  [ "    git rev-parse --abbrev-ref origin/HEAD | line |> split \"/\" |> _[0]", "split", "Str"
+                    "    git log --oneline -3 | head -2 |> map (fun l -> l)", "map", "Seq"
+                    "    git log --oneline -3 | line |> where (fun l -> l <> \"\")", "where", "Seq" ] do
+                  let ds = diagsIn "sp.weir" [ "let b () ="; line; "print (show (b ()))" ]
+                  let want = $"'{name}' is a bare module member — spell it '{home}.{name}'"
+                  Expect.exists ds (fun d -> d.Message.Contains want) $"{name}: {ds |> List.map _.Message}"
+                  Expect.isFalse (ds |> List.exists (fun d -> d.Message.Contains "feed a program")) $"{name}: never the program reading"
+
+              // a real program after `|>` keeps the glyph teaching
+              mustSayIn "sp2.weir" [ "git log -1 | head -1 |> grep x" ] "'|>' applies functions; feed a program with '|'" "grep"
+          }
+          test "a two-home name after `|>` gets the runner's module-qualified teaching at check too [D:assume-resolver]" {
+              let line = "let ok = [\"a\"] |> contains \"a\""
+              let want = "'contains' is module-qualified here; use Seq.contains or Str.contains"
+              let ds = diagsIn "c1.weir" [ line; "print (show ok)" ]
+              Expect.exists ds (fun d -> d.Message = want) $"check: {ds |> List.map _.Message}"
+              Expect.isFalse (ds |> List.exists (fun d -> d.Message.Contains "feed a program")) "never the program reading"
+              Expect.equal (stmtDiag line) want "run says the same"
+          }
+          test "a missing head at run time gets the unknown-command teaching [D:missing-command-diagnosis]" {
+              for line in
+                  [ "let r = $(weirnosuchtoolzz -Vv | complete)"
+                    "let f () = weirnosuchtoolzz -Vv"
+                    "let (a, b) = (1, $(weirnosuchtoolzz -V | line))" ] do
+                  let m = stmtDiag line
+                  Expect.stringContains m "unknown command 'weirnosuchtoolzz'" line
+                  Expect.stringContains m "^$tool" $"{line}: the run-time spelling"
+                  Expect.isFalse (m.Contains "Expecting") $"{line}: no FParsec list"
+                  Expect.isFalse (m.Contains "unbound variable") $"{line}: no unbound reading"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
-        [ hardeningTests
+        [ portFindingsTests
+          hardeningTests
           teardownSeamTests
           hunt3BehaviourTests
           hunt3r2CancelTests
@@ -31440,4 +31808,5 @@ let allTests =
           indexerTests
           envLoadTests
           parallelTests
-          fileTests ]
+          fileTests
+          portOverlayTests ]

@@ -111,7 +111,7 @@ by the bespoke checker arm; there is no `<...>` syntax. [D:typed-argv]
 
 **Exhaustiveness.** A match must cover every case; a non-exhaustive
 match is a *hard error* (not a warning), coverage recurses through
-constructor payloads, and int/string literals never complete a match
+constructor payloads and composes per tuple component, and int/string literals never complete a match
 alone (add a `_`). [D:exhaustiveness-hard-error]
 
 **Refutability / irrefutable binder.** A pattern is refutable if it can

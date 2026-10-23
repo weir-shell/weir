@@ -529,7 +529,7 @@ let private completedWith (overlay: (string * string) list) : Value =
                 let argv = argStrings args
 
                 let code, stdout, stderr =
-                    Proc.completeWith overlay (Proc.resolveProg prog) argv None
+                    Proc.completeWith overlay (Proc.specProg prog) argv None
 
                 // lazy views over the capture buffer [D:capture-buffer]
                 // — decode per pull, stable on re-enumeration
@@ -550,7 +550,7 @@ let private succeededWith (overlay: (string * string) list) : Value =
             match progV, argsV with
             | VStr prog, VSeq args ->
                 let argv = argStrings args
-                let code, _, _ = Proc.completeWith overlay (Proc.resolveProg prog) argv None
+                let code, _, _ = Proc.completeWith overlay (Proc.specProg prog) argv None
                 VBool(code = 0)
             | _ -> unreachable "the checker rejects 'succeeded' on these arguments"))
 
@@ -561,7 +561,7 @@ let private orFailedWith (overlay: (string * string) list) : Value =
                 match msgV, progV, argsV with
                 | VStr msg, VStr prog, VSeq args ->
                     let argv = argStrings args
-                    let code = Proc.streamCode overlay (Proc.resolveProg prog) argv
+                    let code = Proc.streamCode overlay (Proc.specProg prog) argv
 
                     if code <> 0 then
                         failwith $"{msg} (exit {code})"
@@ -575,7 +575,7 @@ let private exitCodedWith (overlay: (string * string) list) : Value =
             match progV, argsV with
             | VStr prog, VSeq args ->
                 let argv = argStrings args
-                VInt(int64 (Proc.streamCode overlay (Proc.resolveProg prog) argv))
+                VInt(int64 (Proc.streamCode overlay (Proc.specProg prog) argv))
             | _ -> unreachable "the checker rejects 'exitCoded' on these arguments"))
 
 // process replacement [D:exec]: Proc.exec replaces the image (execve)
@@ -590,7 +590,7 @@ let private execedWith (overlay: (string * string) list) : Value =
             match progV, argsV with
             | VStr prog, VSeq args ->
                 Proc.exec
-                    { Prog = Proc.resolveProg prog
+                    { Prog = Proc.specProg prog
                       Args = argStrings args
                       Env = overlay
                       Input = None
@@ -620,7 +620,7 @@ let private linedWith (overlay: (string * string) list) : Value =
             match progV, argsV with
             | VStr prog, VSeq args ->
                 let argv = argStrings args
-                oneLine prog argv (Proc.linesWith overlay (Proc.resolveProg prog) argv None)
+                oneLine prog argv (Proc.linesWith overlay (Proc.specProg prog) argv None)
             | _ -> unreachable "the checker rejects 'line' on these arguments"))
 
 // the whole-output capture [D:reify-text]: `cmd | text` — stdout as one
@@ -635,7 +635,7 @@ let private textedWith (overlay: (string * string) list) : Value =
         VBuiltin(fun argsV ->
             match progV, argsV with
             | VStr prog, VSeq args ->
-                wholeText (Proc.linesWith overlay (Proc.resolveProg prog) (argStrings args) None)
+                wholeText (Proc.linesWith overlay (Proc.specProg prog) (argStrings args) None)
             | _ -> unreachable "the checker rejects 'text' on these arguments"))
 
 let private textedWithIn (overlay: (string * string) list) : Value =
@@ -645,7 +645,7 @@ let private textedWithIn (overlay: (string * string) list) : Value =
                 match progV, argsV, stdinV with
                 | VStr prog, VSeq args, VSeq stdin ->
                     let input = stdin |> Seq.map asString |> Eval.pinnedFeed
-                    wholeText (Proc.linesWith overlay (Proc.resolveProg prog) (argStrings args) (Some input))
+                    wholeText (Proc.linesWith overlay (Proc.specProg prog) (argStrings args) (Some input))
                 | _ -> unreachable "the checker rejects 'textIn' on these arguments")))
 
 let private linedWithIn (overlay: (string * string) list) : Value =
@@ -656,7 +656,7 @@ let private linedWithIn (overlay: (string * string) list) : Value =
                 | VStr prog, VSeq args, VSeq stdin ->
                     let argv = argStrings args
                     let input = stdin |> Seq.map asString |> Eval.pinnedFeed
-                    oneLine prog argv (Proc.linesWith overlay (Proc.resolveProg prog) argv (Some input))
+                    oneLine prog argv (Proc.linesWith overlay (Proc.specProg prog) argv (Some input))
                 | _ -> unreachable "the checker rejects 'lineIn' on these arguments")))
 
 // stdin-carrying reifier twins [D:value-headed-pipe]: `xs | grep foo |
@@ -676,7 +676,7 @@ let private completedWithIn (overlay: (string * string) list) : Value =
                     let input = stdin |> Seq.map asString |> Eval.pinnedFeed
 
                     let code, out, err =
-                        Proc.completeWith overlay (Proc.resolveProg prog) argv (Some input)
+                        Proc.completeWith overlay (Proc.specProg prog) argv (Some input)
 
                     recordOf completedDef [ VInt(int64 code); VSeq(out |> Seq.map VStr); VSeq(err |> Seq.map VStr) ]
                 | _ -> unreachable "the checker rejects 'completedIn' on these arguments")))
@@ -689,7 +689,7 @@ let private succeededWithIn (overlay: (string * string) list) : Value =
                 | VStr prog, VSeq args, VSeq stdin ->
                     let argv = argStrings args
                     let input = stdin |> Seq.map asString |> Eval.pinnedFeed
-                    let code, _, _ = Proc.completeWith overlay (Proc.resolveProg prog) argv (Some input)
+                    let code, _, _ = Proc.completeWith overlay (Proc.specProg prog) argv (Some input)
                     VBool(code = 0)
                 | _ -> unreachable "the checker rejects 'succeededIn' on these arguments")))
 
@@ -704,7 +704,7 @@ let private exitCodedWithIn (overlay: (string * string) list) : Value =
 
                     let code =
                         Proc.streamCodeOf
-                            { Prog = Proc.resolveProg prog
+                            { Prog = Proc.specProg prog
                               Args = argv
                               Env = overlay
                               Input = Some input
@@ -726,7 +726,7 @@ let private orFailedWithIn (overlay: (string * string) list) : Value =
 
                         let code =
                             Proc.streamCodeOf
-                                { Prog = Proc.resolveProg prog
+                                { Prog = Proc.specProg prog
                                   Args = argv
                                   Env = overlay
                                   Input = Some input
@@ -3135,12 +3135,14 @@ let private pathNormalize (p: string) : string =
 // [D:tilde]; `$HOME` never expands): injection-proof by construction.
 // `$HOME` verbatim when set, as bash reads it — even a missing dir;
 // the OS lookup only when unset; no home at all raises, never "" (an
-// empty home would turn `~/x` into `/x`) [D:home-verbatim]
+// empty home would turn `~/x` into `/x`) [D:home-verbatim]. HOME and
+// XDG_* are read through the `within env` overlay, as Env.get reads
+// them — the home a child would see [D:home-overlay]
 let homeDir () : string =
     let home =
-        match System.Environment.GetEnvironmentVariable "HOME" with
-        | null -> System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
-        | h -> h
+        match Session.getEnv "HOME" with
+        | None -> System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
+        | Some h -> h
 
     if home = "" then
         failwith "Path.home: no home directory — HOME is empty (or unset with no OS home); `~` and Path.home need one"
@@ -3148,10 +3150,10 @@ let homeDir () : string =
     home
 
 let xdgDir (var: string) (fallback: string) : string =
-    match System.Environment.GetEnvironmentVariable var with
-    | null
-    | "" -> System.IO.Path.Combine(homeDir (), fallback)
-    | v -> v
+    match Session.getEnv var with
+    | None
+    | Some "" -> System.IO.Path.Combine(homeDir (), fallback)
+    | Some v -> v
 
 let configDir () : string =
     if System.OperatingSystem.IsWindows() then
@@ -6057,11 +6059,11 @@ let private yamlParseImpl: Value =
         | VSeq lines ->
             let numbered =
                 lines
-                |> Seq.mapi (fun i l ->
+                |> Seq.map (fun l ->
                     match l with
-                    | VStr s -> (i + 1, s)
+                    | VStr s -> s
                     | v -> unreachable $"the checker rejects 'Yaml.parse' on non-string elements: {formatValue v}")
-                |> List.ofSeq
+                |> Yaml.numberLines
 
             match Yaml.parseDocs numbered with
             | Error msg -> failwith $"Yaml.parse: {msg}"
@@ -8020,7 +8022,7 @@ let private chainSpecs (stagesV: Value) (stdinV: Value) : Proc.Spec list =
         |> List.mapi (fun i st ->
             match st with
             | VTuple [ VStr prog; VSeq args; envV ] ->
-                { Proc.Spec.Prog = Proc.resolveProg prog
+                { Proc.Spec.Prog = Proc.specProg prog
                   Proc.Spec.Args = argStrings args
                   Proc.Spec.Env = envVarPairs envV
                   Proc.Spec.Input = (if i = 0 then input else None)

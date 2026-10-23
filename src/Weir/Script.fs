@@ -1757,14 +1757,76 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                             | Error e -> Error e
                                             | Ok anchored ->
                                                 bracketFold lineNo indent anchored piece
-                                                |> Result.map (fun brackets ->
-                                                    Some
+                                                |> Result.bind (fun brackets ->
+                                                    let joinedP =
                                                         { p with
                                                             Buf = applyJoin join p.Buf piece lineNo indent
                                                             LastIndent = indent
-                                                            Brackets = brackets },
-                                                    acc,
-                                                    blankSinceHead)
+                                                            Brackets = brackets }
+
+                                                    if not brackets.IsEmpty then
+                                                        Ok(Some joinedP, acc, blankSinceHead)
+                                                    else
+                                                        // the line closing the last bracket rejoins paren
+                                                        // tracking: its parens move the depth, so `])` /
+                                                        // `})` closes a multiline lambda exactly as a
+                                                        // `)` line does, and a dangling `(fun x ->` after
+                                                        // the closer opens one [D:multiline-lambda]
+                                                        let depth = p.ParenDepth + parenDelta piece
+
+                                                        let popped, kept =
+                                                            p.Lambdas
+                                                            |> List.partition (fun (_, _, d0, _) -> d0 >= depth)
+
+                                                        let innerLet =
+                                                            match List.tryLast popped with
+                                                            | Some(_, oindent, _, _) ->
+                                                                p.Lets |> List.tryFind (fun (k, _) -> k > oindent)
+                                                            | None -> None
+
+                                                        match innerLet with
+                                                        | Some(_, letLine) -> noBody letLine
+                                                        | None ->
+                                                            let backTo =
+                                                                match popped with
+                                                                | [] -> joinedP.LastIndent
+                                                                | ps ->
+                                                                    let (_, _, _, restore) = List.last ps
+                                                                    restore
+
+                                                            let stmtLevel =
+                                                                if popped.IsEmpty then p.StmtLevel else backTo
+
+                                                            let kept =
+                                                                if lambdaOpens piece then
+                                                                    (lineNo, indent, depth - 1, stmtLevel) :: kept
+                                                                else
+                                                                    kept
+
+                                                            Ok(
+                                                                Some
+                                                                    { joinedP with
+                                                                        LastIndent = backTo
+                                                                        StmtLevel = stmtLevel
+                                                                        ParenDepth = depth
+                                                                        Lambdas = kept
+                                                                        Compounds =
+                                                                            p.Compounds
+                                                                            |> List.filter (fun (_, _, d) -> d <= depth)
+                                                                        PipeGroups =
+                                                                            if popped.IsEmpty then
+                                                                                p.PipeGroups
+                                                                            else
+                                                                                p.PipeGroups
+                                                                                |> List.skipWhile (fun (g, _, _, _) ->
+                                                                                    g > backTo)
+                                                                                |> List.filter (fun (_, _, _, d) ->
+                                                                                    d <= depth)
+                                                                        LastWasPipe =
+                                                                            if popped.IsEmpty then p.LastWasPipe else false },
+                                                                acc,
+                                                                blankSinceHead
+                                                            ))
                                         | [] ->
                                             match p.District with
                                             | Some({ Active = None; Yaml = true } as dst) when
@@ -3573,7 +3635,7 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
                 (lm.PrivateMembers |> List.map (fun (n, s) -> n, renameScheme subst s) |> Map.ofList)
                 tenv.ModulePrivate }
 
-let private checkStatementCore
+let rec private checkStatementCore
     (gateExprs: bool)
     (sigCtx: SigContext option)
     (mkR: TypeEnv -> Parser.Resolver)
@@ -3618,7 +3680,7 @@ let private checkStatementCore
     // a command head not on PATH, named precisely: the parse path's dump
     // and the runner's "unbound variable" for an unknown statement head both
     // come down to a missing program [D:missing-command-diagnosis]
-    let missingCommandDiag (onlyName: (string * bool) option) : StmtDiag option =
+    let missingCommandDiagWith (exact: bool) (onlyName: (string * bool) option) : StmtDiag option =
         let missingHeads =
             match Parser.parseLineFull (assumeResolver tenv) ll.Text with
             | Error _ -> []
@@ -3639,6 +3701,7 @@ let private checkStatementCore
                      | ECmd(HeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
                      | _ -> [])
                     @ (chainStageHeads e |> List.filter (fst >> Extern.exists >> not))
+                    @ (reifiedHead e |> Option.filter (fst >> Extern.exists >> not) |> Option.toList)
                     @ (exprChildren e |> List.collect heads)
 
                 e |> Option.map heads |> Option.defaultValue []
@@ -3648,7 +3711,7 @@ let private checkStatementCore
         // a dash, so it is the program even past a near-miss suggestion
         // [D:missing-command-diagnosis]
         let namesHead (n: string, suggested: bool) (prog: string) =
-            (n = prog && not suggested) || prog.StartsWith(n + "-")
+            (n = prog && not suggested) || (not exact && prog.StartsWith(n + "-"))
 
         match missingHeads with
         | (prog, span) :: rest when (match onlyName with Some n -> namesHead n prog | None -> true) ->
@@ -3700,6 +3763,24 @@ let private checkStatementCore
                   Warnings = [] }
         | _ -> None
 
+    let missingCommandDiag = missingCommandDiagWith false
+
+    // an "unbound variable" that is really a missing program — a let's
+    // command body inside a function reads as an application under the
+    // runner's hard resolver — gets the unknown-command teaching; the
+    // name must be the whole head, so `let y = lenth-1` stays arithmetic
+    // [D:missing-command-diagnosis]
+    let typedOrMissing (tag: StmtTag) (terr: Check.TypeError) =
+        let unboundName =
+            if terr.Message.StartsWith "unbound variable '" then
+                Some(terr.Message.Substring(18).Split('\'').[0], terr.Message.Contains "Did you mean")
+            else
+                None
+
+        match unboundName |> Option.bind (fun n -> missingCommandDiagWith true (Some n)) with
+        | Some d -> Error d
+        | None -> Error(typed tag terr)
+
     try
         match Parser.parseLineFull r ll.Text with
         | Error f ->
@@ -3707,7 +3788,24 @@ let private checkStatementCore
             // is an unresolvable command head (the backtrack note buries it).
             // Retry under the assume-resolver: if that parses, the failure is
             // missing commands — name them precisely instead of the dump.
-            match missingCommandDiag None with
+            // check reads a word that is no program as a command head
+            // (assume-resolver); the runner reads it as an expression, so
+            // a `|>`-into-a-program refusal of it is check's alone — take
+            // the runner's verdict instead, so check and run agree
+            // (`xs |> contains x` is module-qualified, not a program)
+            // [D:assume-resolver]
+            let runnersVerdict =
+                if f.Message.StartsWith "'|>' applies functions" then
+                    match Parser.parseLineFull (resolver tenv) ll.Text with
+                    | Ok _ ->
+                        match checkStatementCore gateExprs sigCtx resolver loadImport tenv ll with
+                        | Error d -> Some d
+                        | Ok _ -> None
+                    | Error _ -> None
+                else
+                    None
+
+            match missingCommandDiag None |> Option.orElse runnersVerdict with
             | Some d -> Error d
             | None ->
                 let physLine, physCol, hasCol =
@@ -3828,7 +3926,7 @@ let private checkStatementCore
                 let tenv = Check.withAnonDefs tenv e
 
                 match Check.typecheckBinder tenv pat e with
-                | Error terr -> Error(typed StmtTag.LetPat terr)
+                | Error terr -> typedOrMissing StmtTag.LetPat terr
                 | Ok(te, schemes) ->
                     Ok
                         { Kind = KLetPat(pat, schemes, te)
@@ -3871,7 +3969,7 @@ let private checkStatementCore
                 | Error terr -> Error(typed StmtTag.Let terr)
                 | Ok() ->
                     match Check.typecheckAgainstSig tenv sd.Ty e with
-                    | Error(Check.SigBody terr) -> Error(typed StmtTag.Let terr)
+                    | Error(Check.SigBody terr) -> typedOrMissing StmtTag.Let terr
                     | Error(Check.SigShape(implTy, span)) ->
                         sigErrAt
                             span
@@ -3912,7 +4010,7 @@ let private checkStatementCore
                         Check.checkBinderName nameSpan name
                         |> Result.bind (fun () -> Check.typecheckWith tenv e)
                     with
-                    | Error terr -> Error(typed StmtTag.Let terr)
+                    | Error terr -> typedOrMissing StmtTag.Let terr
                     | Ok(te, cs, origins, holeDefaults) ->
                         let scheme = generalizeWithOrigins cs origins holeDefaults te.Ty
 
@@ -4797,6 +4895,7 @@ let private readImportSource (absPath: string) : ImportRead =
 // stays off for that one consumer
 let rec loadModuleCachedWith
     (sigContract: bool)
+    (mkR: TypeEnv -> Parser.Resolver)
     (cache: System.Collections.Generic.Dictionary<string, LoadedModule>)
     (chain: string list)
     (importingAbsPath: string)
@@ -4882,7 +4981,7 @@ let rec loadModuleCachedWith
         | Ok(first :: rest) ->
             let baseTenv, _ = moduleBaseEnvs absPath
 
-            match Parser.parseLineFull (resolver baseTenv) first.Text with
+            match Parser.parseLineFull (mkR baseTenv) first.Text with
             | Ok(SModule(declName, _)) ->
                 let natural = declName |> Option.orElseWith (fun () -> deriveModuleName absPath)
 
@@ -4894,7 +4993,7 @@ let rec loadModuleCachedWith
                     // transitive: a reached module's own imports resolve, sharing
                     // the cache, with this module pushed on the chain
                     let childLoader: ImportLoader =
-                        fun p _ a -> loadModuleCachedWith false cache (key :: chain) absPath p a
+                        fun p _ a -> loadModuleCachedWith false mkR cache (key :: chain) absPath p a
 
                     // a module-content error reports at the module's own site
                     let at line col msg : Result<_, ImportError> =
@@ -4918,7 +5017,7 @@ let rec loadModuleCachedWith
                         match stmts with
                         | [] -> Ok(tenv, sc, List.rev implLines, List.rev accBody)
                         | (ll: LogicalLine) :: tail ->
-                            match checkStatement true (Some sc) resolver childLoader tenv ll with
+                            match checkStatement true (Some sc) mkR childLoader tenv ll with
                             | Error d ->
                                 // a deeper module's error (File already set)
                                 // propagates unchanged; this module's own error
@@ -5252,7 +5351,7 @@ let checkVendoredModule (absPath: string) : Result<int, string> =
             // absPath, so the self-import guard stays quiet
             let phantom = absPath + ".add"
 
-            match loadModuleCachedWith false cache [] phantom absPath None with
+            match loadModuleCachedWith false resolver cache [] phantom absPath None with
             | Ok lm -> Ok(List.length lm.Members)
             | Error e ->
                 let where =
@@ -5278,9 +5377,12 @@ let importAnchor (path: string) : string =
 // a file's import loader [D:modules-v1]: imports resolve against the
 // importing file; one cache per loader dedups a diamond, the chain catches
 // a cycle. The REPL init file uses it too [D:init-import]
-let fileImportLoader (importingAbsPath: string) : ImportLoader =
+// mkR is the importer's own resolver: a check reads an imported module
+// under assumeResolver exactly as it reads the importing file, the runner
+// under the hard one [D:assume-resolver]
+let fileImportLoader (mkR: TypeEnv -> Parser.Resolver) (importingAbsPath: string) : ImportLoader =
     let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
-    fun p _ alias -> loadModuleCachedWith false cache [ importingAbsPath ] importingAbsPath p alias
+    fun p _ alias -> loadModuleCachedWith false mkR cache [ importingAbsPath ] importingAbsPath p alias
 
 let scriptOnlyImport: ImportLoader =
     fun _ _ _ ->
@@ -6062,7 +6164,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                 let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
                 let absScript = IO.Path.GetFullPath path
 
-                match loadModuleCachedWith true cache [ absScript ] absScript sigFile None with
+                match loadModuleCachedWith true resolver cache [ absScript ] absScript sigFile None with
                 | Error ie -> diags.Add(mk decl.Line $"#sig {quoteData decl.Tool}: {ie.Message}")
                 | Ok lm ->
                     let letStr name =
@@ -9125,7 +9227,7 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
         diags.Add(initError file 1 1 None "init-marker" "the init file declares itself — put #init on the first line")
 
     // imports resolve against the init file's real location [D:init-import]
-    let importer = fileImportLoader (importAnchor file)
+    let importer = fileImportLoader mkR (importAnchor file)
 
     let stmtDiag (d: StmtDiag) =
         { File = d.File |> Option.defaultValue file
@@ -9486,7 +9588,7 @@ let analyzeLinesAs
 
     // imports resolve relative to the file being checked [D:modules-v1];
     // one cache per check dedups a diamond, one chain catches a cycle
-    let analyzeImport: ImportLoader = fileImportLoader (importAnchor path)
+    let analyzeImport: ImportLoader = fileImportLoader assumeResolver (importAnchor path)
 
     Extern.refresh ()
 
@@ -9620,6 +9722,25 @@ let analyzeLinesAs
                      | Check.TETuple({ Kind = Check.TEStr prog; Span = sp } :: _) when not (Extern.exists prog) ->
                          Some(prog, sp)
                      | _ -> None)
+             // a single reified command (`$(cmd | complete)`): the program
+             // rides as the desugar's literal argument, warned like a
+             // plain head [D:exit-reifiers]
+             | Check.TEApp _ ->
+                 let rec spine (e: Check.TypedExpr) acc =
+                     match e.Kind with
+                     | Check.TEApp(g, a) -> spine g (a :: acc)
+                     | Check.TEVar v -> Some(v, acc)
+                     | _ -> None
+
+                 match spine te [] with
+                 | Some(v, args) ->
+                     match reifiedProgSlot v with
+                     | Some(idx, arity) when List.length args = arity ->
+                         match List.item idx args with
+                         | { Kind = Check.TEStr prog; Span = sp } when not (Extern.exists prog) -> [ prog, sp ]
+                         | _ -> []
+                     | _ -> []
+                 | None -> []
              | _ -> [])
             @ (Check.childExprs te |> List.collect cmdHeads)
 
@@ -9841,6 +9962,7 @@ let analyzeLinesAs
                           | ECmd(HeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
                           | _ -> [])
                          @ (chainStageHeads e |> List.filter (fst >> Extern.exists >> not))
+                         @ (reifiedHead e |> Option.filter (fst >> Extern.exists >> not) |> Option.toList)
                          @ (exprChildren e |> List.collect eheads)
 
                      let exprs =
@@ -10094,10 +10216,16 @@ let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
         // gate wants real diagnostics and not a human affordance. No
         // extension rule: this also covers shebang files, stdin and
         // extensionless fixtures, which an extension check cannot.
+        // a bare-member teaching is weir's own diagnosis of weir code —
+        // the file is weir, so no preamble [D:bare-partition]
         let notWeir =
             not parsedAny
             && diags
                |> List.exists (fun d -> d.Line = 1 && d.Code = "parse" && d.Severity = "error")
+            && not (
+                diags
+                |> List.exists (fun d -> d.Line = 1 && d.Message.Contains "is a bare module member")
+            )
 
         if notWeir then
             match diags with
@@ -10208,7 +10336,7 @@ let run (path: string) (scriptArgs: string list) : int =
 
                 // the entry's import loader, bound to its directory; one cache
                 // per run dedups a diamond, one chain catches a cycle
-                let entryImport: ImportLoader = fileImportLoader (importAnchor absScriptPath)
+                let entryImport: ImportLoader = fileImportLoader resolver (importAnchor absScriptPath)
 
                 // signatures load once, before the check fold; a load
                 // failure (missing/malformed sig) is a check error —

@@ -986,6 +986,24 @@ let private parseDocsRaw (numbered: (int * string) list) : Result<Node list, str
 
             build [] (docs |> Seq.map (fun d -> d.ToArray()) |> List.ofSeq)
 
+/// a document's elements as numbered physical lines: an element holding
+/// newlines (a joined string — json and toml read those too) is several
+/// lines, `\r\n` included, numbered on through the whole input so a
+/// message's line is the joined document's line
+let numberLines (elements: seq<string>) : (int * string) list =
+    elements
+    |> Seq.collect (fun (e: string) ->
+        if e.IndexOf '\n' < 0 then
+            Seq.singleton e
+        else
+            let parts = e.Split '\n'
+
+            parts
+            |> Seq.mapi (fun i (l: string) ->
+                if i < parts.Length - 1 && l.EndsWith "\r" then l.Substring(0, l.Length - 1) else l))
+    |> Seq.mapi (fun i l -> i + 1, l)
+    |> List.ofSeq
+
 /// the parse's messages quote the document's keys and scalars
 /// [D:error-data-escape]: they render visibly, never drive the terminal
 let parseDocs (numbered: (int * string) list) : Result<Node list, string> =

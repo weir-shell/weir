@@ -20,6 +20,17 @@ type Spec =
       Cwd: string option
       Ambient: (string * string) list option }
 
+/// the env pairs a spawn applies, in order [D:overlay-path]: the scope
+/// snapshot (else the live `within env` layers, outer-first), then the
+/// command's own pairs — what `spawn` itself applies
+let spawnPairs (ambient: (string * string) list option) (env: (string * string) list) =
+    let amb =
+        match ambient with
+        | Some snap -> snap
+        | None -> Session.envOverlay () |> List.rev |> List.collect id
+
+    List.append amb env
+
 /// the live-session ambient — the default for every eager spawn
 let liveAmbient () =
     { Prog = ""
@@ -145,6 +156,27 @@ let private spawn
         nulRefusal $"the env key '{k}'" k
         envKeyRefusal "a command's environment" k
         nulRefusal $"the env value for '{k}'" v
+
+    // a bare program resolves on the PATH the child runs with
+    // [D:overlay-path]: a `within env`/`PATH=` overlay's PATH is searched
+    // here — .NET would search weir's own — so the spawn and the child
+    // agree on what the name means; with no overlay PATH, weir's own
+    // (on Windows through PATHEXT, which CreateProcess does not apply)
+    let prog =
+        if Extern.isPathy prog then
+            prog
+        else
+            let pairs = List.append ambient env
+
+            match Extern.overlayPath pairs with
+            | Some pv ->
+                match Extern.resolveOn pairs pv prog with
+                | Some full -> full
+                | None ->
+                    failwith
+                        $"command not found: {Weir.Types.quoteData prog} — not on the PATH it runs with (set by a `within env` or a PATH= prefix)"
+            | None when System.OperatingSystem.IsWindows() -> Extern.resolveFile prog |> Option.defaultValue prog
+            | None -> prog
 
     Session.sigpipeForChildren.Force()
     Session.resetDetachedSigint.Force()
@@ -1218,6 +1250,14 @@ let startSpilled
 /// tree-kill then reap, idempotent — the scope-exit tail and Proc.stop
 /// share it (reap's own try/catch absorbs an already-dead child)
 let stopTree (p: Process) : unit = reap p
+
+/// the program a spec carries [D:overlay-path]: the NUL refusal and a
+/// path-like name's cwd resolution; a bare name stays bare and resolves
+/// at the spawn, against the PATH the child runs with
+let specProg (prog: string) : string =
+    nulRefusal "a dynamic command head" prog
+
+    if prog.Contains '/' then Session.resolve prog else prog
 
 let resolveProg (prog: string) : string =
     // the NUL refusal reaches the resolve too [D:spawn-nul-funnel]: a

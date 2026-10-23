@@ -10850,6 +10850,32 @@ wait $ctsrv $ctsrv2 2>/dev/null || true
 echo "e2e ok: a no-strict schema warns at add time, naming the variant"
 rm -rf "$ctdir"
 
+# ---- the starship port's env-overlay findings ------------------------------
+ovdir=$(mkweirtmp)
+# home and XDG follow within env [D:home-overlay]
+printf 'within env HOME="/fake/home" XDG_CONFIG_HOME=""\n    echo ~/x\n    print (Path.home ())\n    print (Path.configHome ())\n' > "$ovdir/home.weir"
+out=$(cd "$ovdir" && $BIN home.weir 2>&1) || fail "port: home.weir: $out"
+echo "$out" | grep -qxF "/fake/home/x" || fail "port: a typed ~ follows within env HOME: $out"
+echo "$out" | grep -qxF "/fake/home" || fail "port: Path.home follows within env HOME: $out"
+if [ "$IS_WINDOWS" = "0" ]; then
+    echo "$out" | grep -qxF "/fake/home/.config" || fail "port: Path.configHome follows the overlay: $out"
+fi
+echo "e2e ok: Path.home, a typed ~ and Path.configHome read the within env overlay [D:home-overlay]"
+# a head resolves on the PATH the child runs with [D:overlay-path]
+if [ "$IS_WINDOWS" = "0" ]; then
+    mkdir -p "$ovdir/bin"
+    printf '#!/bin/sh\necho fake-tool-ran\n' > "$ovdir/bin/weirportfaketool"
+    chmod +x "$ovdir/bin/weirportfaketool"
+    printf 'let tool = "weirportfaketool"\nlet dir = Path.combine (Path.dir Self.scriptPath) "bin"\nlet p = Env.need "PATH"\nwithin env PATH=$"{dir}:{p}"\n    ^$tool\nPATH=$"{dir}:{p}" ^$tool\nPATH=$"bin:{p}" ^$tool\n' > "$ovdir/path.weir"
+    out=$(cd "$ovdir" && $BIN path.weir 2>&1) || fail "port: ^\$tool must resolve on the overlay PATH: $out"
+    [ "$(echo "$out" | grep -c fake-tool-ran)" = 3 ] || fail "port: within env, a PATH= prefix and a relative entry all reach the tool: $out"
+    printf 'within env PATH="/weir-no-such-dir"\n    sh -c "echo hi"\n' > "$ovdir/litpath.weir"
+    out=$(cd "$ovdir" && $BIN litpath.weir 2>&1) && fail "port: a literal head the overlay PATH lacks must not run: $out"
+    echo "$out" | grep -qF "not on the PATH it runs with" || fail "port: the overlay-PATH miss is named: $out"
+    echo "e2e ok: ^\$tool and a literal head resolve on the overlay PATH at run time [D:overlay-path]"
+fi
+rm -rf "$ovdir"
+
 # ---- schema→types: weir gen types [D:schema-types] -------------------------
 # a locked schema becomes a user-owned decl-only module: required vs
 # optional by schema fact (the thing no #infer sample can carry), the
@@ -10884,6 +10910,12 @@ cat > "$gtdir/serve/r2.json" <<'JEOF'
 {"$id":"https://example.com/r2.json","type":"object","required":["on","ratio"],"properties":{"cpu":{"oneOf":[{"type":["string","null"]},{"type":["number","null"]}]},"port":{"type":"string","format":"int-or-string"},"on":{"type":"boolean","enum":[true]},"ratio":{"type":"number","enum":[0.5,1.5]},"mode":{"enum":["a",1]},"kind":{"type":"string","const":"Deployment"},"blob":{"type":"string","contentEncoding":"base64","format":"byte"}}}
 JEOF
 ( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/r2.json --as r2 ) >/dev/null || fail "add schema over \$id/const/contentEncoding"
+# [D:schema-anyof-mixed]: starship's config-schema.json, trimmed to its
+# string-or-array anyOfs (custom.shell; python_binary nests one more)
+cat > "$gtdir/serve/starship.json" <<'JEOF'
+{"type":"object","properties":{"custom":{"$ref":"#/$defs/CustomConfig"},"python":{"$ref":"#/$defs/PythonConfig"}},"$defs":{"VecOr_string":{"anyOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]},"VecOr_VecOr_string":{"anyOf":[{"$ref":"#/$defs/VecOr_string"},{"type":"array","items":{"$ref":"#/$defs/VecOr_string"}}]},"CustomConfig":{"type":"object","properties":{"command":{"type":"string","default":""},"shell":{"$ref":"#/$defs/VecOr_string","default":[]}},"additionalProperties":false},"PythonConfig":{"type":"object","properties":{"python_binary":{"$ref":"#/$defs/VecOr_VecOr_string","default":[["python"],["python3"],["python2"]]}},"additionalProperties":false}}}
+JEOF
+( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/starship.json --as starship ) >/dev/null || fail "add schema over starship's anyOfs"
 kill $gtsrv 2>/dev/null || true
 wait $gtsrv 2>/dev/null || true
 
@@ -10994,6 +11026,26 @@ WEOF
 out=$( cd "$gtdir/proj" && $BIN r2.weir 2>&1 ) || fail "the r2 types read the document's own values: $out"
 [ "$out" = '{"cpu":1.5,"mode":1,"on":true,"port":8080,"ratio":0.5}' ] || fail "the r2 round trip: $out"
 echo "e2e ok: gen types — number-or-string and format int-or-string as Yaml, typed and mixed enums, \$id/const/content keywords noted"
+( cd "$gtdir/proj" && $BIN gen types --schema starship ) >/dev/null || fail "gen types starship"
+ssmod="$gtdir/proj/.weir/types/starship.weir"
+for want in "shell: Option<Yaml>" "python_binary: Option<Yaml>" "command: Option<string>" \
+    "// note: VecOr_string: anyOf allows array/string — drafted Yaml; a string reads as YStr s, a sequence as YSeq items"; do
+    grep -qF "$want" "$ssmod" || fail "starship drafts '$want': $(cat "$ssmod")"
+done
+grep -qF "FIRST variant" "$ssmod" && fail "a string-or-array anyOf must not draft its first variant: $(cat "$ssmod")"
+cat > "$gtdir/proj/ss.weir" <<'WEOF'
+import "weir:starship" as S
+let one = ["{\"custom\": {\"shell\": \"bash\"}}"] |> from json Starship
+let many = ["{\"custom\": {\"shell\": [\"bash\", \"--norc\"]}, \"python\": {\"python_binary\": [\"python3\", [\"py\", \"-3\"]]}}"] |> from json Starship
+print $"{one.custom}"
+print $"{many.custom}"
+many |> to json |> Seq.iter print
+WEOF
+out=$( cd "$gtdir/proj" && $BIN ss.weir 2>&1 ) || fail "the starship types read a string and an array shell: $out"
+echo "$out" | grep -qF 'YStr "bash"' || fail "a string shell reads as YStr: $out"
+echo "$out" | grep -qF 'YSeq' || fail "an array shell reads as YSeq: $out"
+echo "$out" | grep -qF '"python_binary":["python3",["py","-3"]]' || fail "python_binary round-trips: $out"
+echo "e2e ok: gen types — a string-or-array anyOf drafts Yaml with a note, and reads both kinds (starship) [D:schema-anyof-mixed]"
 
 # --out -: stdout, nothing written; --as renames the top type
 ( cd "$gtdir/proj" && $BIN gen types --schema pod --as Manifest --out - ) | grep -qF "type Manifest = {" || fail "--as + --out - streams the renamed module"
@@ -15974,5 +16026,46 @@ WEOF
 out=$(cd "$w2dir" && "$BIN" lazy.weir 2>&1) || fail "GUIDE lazy-values example: $out"
 expect "GUIDE lazy values: read late, within cd/env keep their scope" '["b.txt"]|["b.txt"]|["hi"]' "$out"
 rm -rf "$w2dir"
+
+# ---- the starship port's CLI-level findings -------------------------------
+pfdir=$(mkweirtmp)
+# an importer checks a module as the module checks alone
+# [D:assume-resolver]; a reified head warns like a plain one
+printf 'module\n\nlet ver : unit -> seq<string>\nlet ver () =\n    let r = $(weirnosuchtoolzz -Vv | complete)\n    r.stdout\n' > "$pfdir/modmiss.weir"
+printf 'module\n\nlet ver : unit -> seq<string>\nlet ver () = weirnosuchtoolzz -Vv\n' > "$pfdir/modmiss2.weir"
+printf 'import "modmiss.weir" as M\nM.ver () |> Seq.iter print\n' > "$pfdir/root.weir"
+printf 'import "modmiss2.weir" as M\nM.ver () |> Seq.iter print\n' > "$pfdir/root2.weir"
+out=$(cd "$pfdir" && $BIN check modmiss.weir 2>&1) || fail "port: the lone module checks: $out"
+echo "$out" | grep -qF "warning [cmd-not-found]: command not found on PATH: weirnosuchtoolzz" || fail "port: a missing \$(cmd | complete) head warns: $out"
+for r in root.weir root2.weir; do
+    out=$(cd "$pfdir" && $BIN check $r 2>&1) || fail "port: $r must check as its module does alone: $out"
+done
+echo "e2e ok: an importer checks a module as the module checks alone; a reified missing head warns [D:assume-resolver]"
+# the run-time teaching for a missing head [D:missing-command-diagnosis]
+printf 'let f () =\n    weirnosuchtoolzz -Vv\nf () |> Seq.iter print\n' > "$pfdir/fn.weir"
+for r in root.weir root2.weir fn.weir; do
+    out=$(cd "$pfdir" && $BIN $r 2>&1) && fail "port: $r must fail at run time"
+    echo "$out" | grep -qF "unknown command 'weirnosuchtoolzz'" || fail "port: $r names the unknown command: $out"
+    echo "$out" | grep -qF '^$tool' || fail "port: $r teaches ^\$tool: $out"
+    echo "$out" | grep -qE "Expecting|unbound variable" && fail "port: $r must not dump or say unbound: $out"
+done
+echo "e2e ok: a missing \$(cmd | complete) or function-body head gets the unknown-command teaching at run time [D:missing-command-diagnosis]"
+# a bare member after a chain's |> teaches the qualified spelling; a
+# bare-member first line is weir, so no not-weir preamble [D:bare-partition]
+printf 'let b () =\n    git rev-parse --abbrev-ref HEAD | line |> split "/" |> _[0]\nprint (b ())\n' > "$pfdir/sp.weir"
+printf 'let x = "a/b" |> map Str.length\n' > "$pfdir/sp3.weir"
+for r in sp.weir sp3.weir; do
+    out=$(cd "$pfdir" && $BIN check $r 2>&1) && fail "port: $r must not check clean"
+    echo "$out" | grep -qE "'(split|map)' is a bare module member — spell it '(Str.split|Seq.map)'" || fail "port: $r teaches the qualified spelling: $out"
+    echo "$out" | grep -qE "feed a program|does not look like a weir script" && fail "port: $r must not read as a program or as not-weir: $out"
+done
+printf 'let ok = ["a"] |> contains "a"\nprint (show ok)\n' > "$pfdir/two.weir"
+chk=$(cd "$pfdir" && $BIN check two.weir 2>&1) && fail "port: contains must not check clean"
+run=$(cd "$pfdir" && $BIN two.weir 2>&1) && fail "port: contains must not run"
+for o in "$chk" "$run"; do
+    echo "$o" | grep -qF "'contains' is module-qualified here; use Seq.contains or Str.contains" || fail "port: check and run agree on contains: $o"
+done
+echo "e2e ok: a bare or two-home member after |> teaches its qualified spelling, check and run alike, no not-weir preamble [D:bare-partition]"
+rm -rf "$pfdir"
 
 echo "e2e battery: all green"

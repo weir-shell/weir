@@ -157,7 +157,7 @@ let rec private ofYamlNode (n: Yaml.Node) : INode =
 
 /// parse one yaml document into an INode
 let private yamlNode (lines: string seq) : Result<INode, string> =
-    let numbered = lines |> Seq.mapi (fun i l -> i + 1, l) |> List.ofSeq
+    let numbered = Yaml.numberLines lines
 
     match Yaml.parseDocs numbered with
     | Error msg -> Error $"#infer: the sample is not valid YAML: {msg}"

@@ -450,6 +450,40 @@ let reifierOfVar (v: string) : string option =
         else
             None)
 
+/// where a single reified command's program rides among its desugar
+/// variable's arguments [D:exit-reifiers]: `|<stem> prog argv`, the env
+/// twin's env first, orFail's message ahead of the program, the stdin
+/// twin's value last — (program index, full arity), or None for a
+/// non-reifier or a chain
+let reifiedProgSlot (v: string) : (int * int) option =
+    if v.StartsWith "|chain" || (reifierOfVar v).IsNone then
+        None
+    else
+        let idx = (if v.EndsWith "Env" then 1 else 0) + (if v.StartsWith "|orFailed" then 1 else 0)
+        Some(idx, idx + (if v.EndsWith "In" then 3 else 2))
+
+/// the literal program of a single reified command (`cmd | complete`),
+/// read off the saturated desugar application
+let reifiedHead (e: Expr) : (string * Span) option =
+    let rec spine (e: Expr) acc =
+        match e.Kind with
+        | EApp(g, a) -> spine g (a :: acc)
+        | EVar v -> Some(v, acc)
+        | _ -> None
+
+    match e.Kind with
+    | EApp _ ->
+        match spine e [] with
+        | Some(v, args) ->
+            match reifiedProgSlot v with
+            | Some(idx, arity) when List.length args = arity ->
+                match (List.item idx args).Kind with
+                | EStr prog -> Some(prog, (List.item idx args).Span)
+                | _ -> None
+            | _ -> None
+        | None -> None
+    | _ -> None
+
 /// the literal program names of a reified pipeline's stages: a reifier
 /// after a chain desugars to `|chain… [(prog, argv, env); …] stdin`, so
 /// the heads live in that list, not in command nodes [D:chain-reifiers]

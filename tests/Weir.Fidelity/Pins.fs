@@ -307,9 +307,9 @@ let pins =
           "let r = [(2, 1); (1, 2)] |> Seq.sortBy (fun x -> x)\n"
           (Diverges "no-tuple-ord")
       pin
-          "bool-component tuple arms: weir demands catch-all, F# products"
-          "let v =\n    match (true, 1) with\n    | (true, _) -> 1\n    | (false, _) -> 2\n"
-          (Diverges "tuple-exhaustiveness-bounded")
+          "bool-component tuple arms: both compilers check per component"
+          "let _v =\n    match (true, 1) with\n    | (true, _) -> 1\n    | (false, _) -> 2\n"
+          Same
       // the binder shapes are features — both pins Same
       pin "pattern params (row content moved to refutable binders)" "let _f = fun (a, b) -> a\n" Same
       pin "destructuring let (shipped; the row's arc completes)" "let p = (1, 2)\nlet _x, _y = p\n" Same

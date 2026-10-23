@@ -2,12 +2,68 @@
 
 ## Unreleased
 
+Many of the changes and fixes below were found porting starship to weir.
+
+### Changed
+
+- **`def` is an ordinary name.** `let def = 1` and a field called `def`
+  work. A line shaped like a definition, `def double x = …`, still gets
+  "'def' is not a weir word — define with 'let f x = ...'".
+- **`Path.home`, a typed `~` and `Path.configHome`/`stateHome`/
+  `cacheHome` follow `within env`.** Inside `within env HOME=/x` they
+  give `/x` (and the `XDG_*` variables the block sets), as `Env.get`
+  already did.
+- **A command runs from the `PATH` it is given.** Inside `within env
+  PATH=…`, or with a `PATH=… cmd` prefix, the program is looked up on
+  that `PATH`, as the child itself would look it up, so a wrapper put
+  first is the one that runs. This covers `^$tool` too, which used to
+  report "command not found" for a tool only the overlay's `PATH` had.
+  `weir check` still checks literal command names against your own
+  `PATH`.
+- **`weir gen types` drafts a string-or-list `anyOf` as `Yaml`.** A
+  schema field that takes a string or an array of strings (starship's
+  `custom.shell`, `python.python_binary`) used to draft as `string`
+  and reject every list. It is now `Yaml`, with a note saying how each
+  kind reads.
+
 ### Fixed
 
 - **`#help` shows the `///` doc of a module member imported by
   init.weir.** `#help Git.refresh` printed only the signature; it now
   prints the doc written above the member's signature, as it already
   did for init.weir's own declarations.
+- **A lambda closes when a list or record closes on the same line.**
+  `Seq.map (fun r ->` … `])` or `})` left the lambda open ("'(' is
+  still open"); the `)` after the closing bracket now closes it, as on
+  a line of its own.
+- **A tuple match that covers every case needs no catch-all.** Arms
+  for all four `Some`/`None` pairs, or all four `bool` pairs, now
+  complete a match on `(a, b)`. When a case is missing, the error
+  names one, such as `missing: (None, Some _)`.
+- **A module checks the same through an import as on its own.** A
+  module using a command that is not installed checked clean alone,
+  but failed when the importing script was checked.
+- **`weir check` warns about a missing command inside `$(cmd |
+  complete)`** (and the other reifiers), as it does for a plain
+  command.
+- **A missing command gets the usual "unknown command" message at run
+  time** inside `$(… | complete)` and in a function body, suggesting
+  `^$tool`, instead of a parser expecting-list or "unbound variable".
+- **`from yaml` reads a string that holds several lines,** as `from
+  json` and `from toml` do (`[Str.join "\n" lines] |> from yaml T`).
+  `Yaml.parse` and `Yaml.inferShape` too; error line numbers count the
+  lines of the joined text.
+- **A bare `split`, `map` or `where` after a command chain gets the
+  bare-name message.** In `git … | line |> split "/"` the error said
+  "'|>' applies functions; feed a program with '|'"; it now says
+  "'split' is a bare module member — spell it 'Str.split'", as it does
+  after a value. `weir check` and the run now agree on a two-module
+  name such as `xs |> contains x` ("'contains' is module-qualified"),
+  and a file whose first line is such a slip no longer opens with "this
+  does not look like a weir script".
+- **Python's `(?P<name>…)` named group gets weir's named-group
+  message** (name captures in the binder) instead of .NET's
+  "Unrecognized grouping construct".
 
 ## v0.0.77
 
@@ -1519,7 +1575,6 @@
      gate was red at the tag); its changes ship here under v0.0.61.
      Tags stay immutable — the v0.0.60 tag is burned, not re-pointed. -->
 
-
 ### Added
 
 - **`Http.expect` — the raising read.** Request in, body out:
@@ -2560,7 +2615,6 @@
   fun x -> v - x differ`) instead of the `(or …)` form. `+` takes
   the differ-form too: it concatenates strings by context, and the
   operand type is not known at the refusal site.
-
 
 - **A qualified case in pattern position teaches the bare law.**
   `| Core.System ->` errored with a bare expecting-list; it now names

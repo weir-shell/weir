@@ -100,6 +100,54 @@ let generate
     // into `Yaml` [D:json-yaml-field]
     let cyc = "\u0000cycle"
 
+    // defName -> its JSON kinds, computed once: a diamond of $refs costs
+    // its definitions, not 2^depth (`None` marks in-progress, so a
+    // re-entrant walk is a cycle and contributes nothing)
+    let kindMemo = Collections.Generic.Dictionary<string, Set<string> option>()
+
+    // a variant's JSON kinds, a $ref and a nested anyOf seen through
+    // (`seen` stops a reference cycle); a set, so a branch two paths
+    // reach counts once
+    let rec jsonKinds (seen: Set<string>) (s: Schema) : Set<string> =
+        match s with
+        | SScalar ks -> ks
+        | SEnum(_, kind, _) -> Set.singleton (if kind = "mixed" then "string" else kind)
+        | SIntOrStringFormat _ -> set [ "integer"; "string" ]
+        | SUint64Format _ -> Set.singleton "integer"
+        | SArray _ -> Set.singleton "array"
+        | SObject _
+        | SAllOf _ -> Set.singleton "object"
+        | SMixed(ks, _) -> ks
+        | SNullable inner -> jsonKinds seen inner
+        | SChoice xs -> xs |> List.map (jsonKinds seen) |> Set.unionMany
+        | SRef n when Set.contains n seen -> Set.empty
+        | SRef n ->
+            match kindMemo.TryGetValue n with
+            | true, Some ks -> ks
+            | true, None -> Set.empty
+            | _ ->
+                kindMemo[n] <- None
+
+                let ks =
+                    match Map.tryFind n doc.Defs with
+                    | Some t -> jsonKinds (Set.add n seen) t
+                    | None -> Set.empty
+
+                kindMemo[n] <- Some ks
+                ks
+        | SAny -> Set.empty
+
+    // the kind classes the anyOf rule reads: scalar / array / object
+    let choiceKinds (s: Schema) : Set<string> =
+        jsonKinds Set.empty s
+        |> Set.map (fun k ->
+            match k with
+            | "array" -> "array"
+            | "object" -> "object"
+            | "null" -> "null"
+            | _ -> "scalar")
+        |> Set.remove "null"
+
     let rec shape (desired: string) (srcKey: string) (parentStem: string) (path: string) (s: Schema) : string =
         let where = if path = "" then "the schema root" else path
 
@@ -157,6 +205,18 @@ let generate
 
                 shape desired srcKey parentStem path (List.head members)
         | SChoice [] -> shape desired srcKey parentStem path SAny
+        | SChoice alts when
+            (let ks = alts |> List.map choiceKinds |> Set.unionMany
+             ks.Contains "scalar" && (ks.Contains "array" || ks.Contains "object"))
+            ->
+            // a scalar beside a container (string-or-array) drafts the
+            // node whole, as a type array mixing them does: the first
+            // variant would refuse every value of the other kind
+            // [D:schema-anyof-mixed]
+            let kinds = alts |> List.map (jsonKinds Set.empty) |> Set.unionMany |> Set.remove "null"
+
+            reg.AddNote $"{where}: anyOf allows {kindsText kinds} — drafted Yaml; {yamlCasesText kinds}"
+            "Yaml"
         | SChoice(first :: _) ->
             // the #infer heterogeneous-array posture: first variant +
             // a verify note, never a silent guess (tagged unions are

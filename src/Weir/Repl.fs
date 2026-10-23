@@ -4385,7 +4385,7 @@ let private loadInit (baseState: State) : State =
         // binds them in its own env, where bare names stay available at the
         // prompt [D:init-check-one-home] — strict-clean means this re-check
         // passes
-        let importer = Script.fileImportLoader (Script.importAnchor path)
+        let importer = Script.fileImportLoader Script.resolver (Script.importAnchor path)
 
         let sessionDecls =
             ic.Decls
