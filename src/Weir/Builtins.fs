@@ -3175,14 +3175,21 @@ let private strMembers: (string * Ty * Value) list =
       "padRight", TFun(TInt, TFun(TStr, TStr)), padImpl "padRight" CodePoints.padRight
       "toInt", TFun(TStr, TInt), toIntImpl
       "tryToInt", TFun(TStr, TNamed("Option", [ TInt ])), tryToIntImpl
-      // sha256 only [D:encoding-law]: md5 is broken (offering it invites
-      // its use), sha1 deprecated, sha512 has no receipt — one member,
-      // one algorithm, more on receipt. Lowercase hex = sha256sum parity
-      // (the tool it replaces).
+      // sha256 and sha1 [D:encoding-law] [D:sha1]: md5 is broken
+      // (offering it invites its use), sha512 has no receipt; sha1 is
+      // here for the protocols that name it (git object ids, legacy
+      // checksums), never as a security hash. Lowercase hex =
+      // sha256sum/sha1sum parity (the tools they replace).
       "sha256",
       TFun(TStr, TStr),
       str1 "sha256" (fun s ->
           System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes s)
+          |> Array.map (fun b -> b.ToString "x2")
+          |> String.concat "")
+      "sha1",
+      TFun(TStr, TStr),
+      str1 "sha1" (fun s ->
+          System.Security.Cryptography.SHA1.HashData(System.Text.Encoding.UTF8.GetBytes s)
           |> Array.map (fun b -> b.ToString "x2")
           |> String.concat "")
       // unwrapped by construction — GNU base64 wraps at 76 cols (the -w0
@@ -4594,6 +4601,25 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                           |> String.concat ""))
               )
           | v -> unreachable $"the checker rejects 'File.sha256' on {formatValue v}")
+      "sha1",
+      // streamed like File.sha256 [D:sha1]
+      TFun(TStr, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolveFs p
+              PlanMode.checkRead "File.sha1" r
+              readGuard "File.sha1" r
+
+              VStr(
+                  ioGuarded "File.sha1" r (fun () ->
+                      // a FIFO is cut as File.read's is [D:fifo-ops-polled]
+                      withReadStream r (fun fs ->
+                          System.Security.Cryptography.SHA1.HashData fs
+                          |> Array.map (fun x -> x.ToString "x2")
+                          |> String.concat ""))
+              )
+          | v -> unreachable $"the checker rejects 'File.sha1' on {formatValue v}")
       "delete",
       TFun(TStr, TUnit),
       VBuiltin(fun v ->
@@ -4917,6 +4943,17 @@ let private bytesMembers: (string * Ty * Value) list =
                   |> String.concat ""
               )
           | v -> unreachable $"the checker rejects 'Bytes.sha256' on {formatValue v}")
+      "sha1",
+      TFun(TBytes, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VBytes b ->
+              VStr(
+                  System.Security.Cryptography.SHA1.HashData b
+                  |> Array.map (fun x -> x.ToString "x2")
+                  |> String.concat ""
+              )
+          | v -> unreachable $"the checker rejects 'Bytes.sha1' on {formatValue v}")
       "length",
       TFun(TBytes, TSize),
       VBuiltin(fun v ->
@@ -7398,8 +7435,14 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "s" ])
           "Str.sha256",
           (bd
-              "The SHA-256 digest of the string's UTF-8 bytes, as lowercase hex (same output as sha256sum). Only SHA-256 is available for now."
+              "The SHA-256 digest of the string's UTF-8 bytes, as lowercase hex (same output as sha256sum)."
               (Some "Str.sha256 \"hello\"")
+              None
+           |> named [ "s" ])
+          "Str.sha1",
+          (bd
+              "The SHA-1 digest of the string's UTF-8 bytes, as lowercase hex (same output as sha1sum). SHA-1 is broken for security; use it only where a protocol names it (git object ids, legacy checksums), and Str.sha256 otherwise."
+              (Some "Str.sha1 \"hello\"")
               None
            |> named [ "s" ])
           "Str.toBase64",
@@ -7652,6 +7695,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "File.sha256",
           (bd
               "The SHA-256 digest of a file's bytes, as lowercase hex (same output as sha256sum). The file is streamed, never loaded into memory whole."
+              None
+              None
+           |> named [ "path" ])
+          "File.sha1",
+          (bd
+              "The SHA-1 digest of a file's bytes, as lowercase hex (same output as sha1sum). The file is streamed, never loaded into memory whole. SHA-1 is broken for security; use it only where a protocol names it, and File.sha256 otherwise."
               None
               None
            |> named [ "path" ])
@@ -7935,6 +7984,9 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "b" ])
           "Bytes.sha256",
           (bd "The SHA-256 digest of the bytes, as lowercase hex (same output as sha256sum)." None None
+           |> named [ "b" ])
+          "Bytes.sha1",
+          (bd "The SHA-1 digest of the bytes, as lowercase hex (same output as sha1sum). For protocols that name SHA-1; Bytes.sha256 otherwise." None None
            |> named [ "b" ])
           "Bytes.length", (bd "The byte count as a Size." None None |> named [ "b" ])
           "Bytes.fromHex",

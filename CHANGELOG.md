@@ -155,6 +155,10 @@ Many of the changes and fixes below were found porting starship to weir.
   match and `$$` a literal `$`: `Str.rreplace @"(\w+)@(\w+)" "$2 at $1"`.
   Any other `$`, or a group the pattern doesn't have, is an error.
   `Str.replace` stays literal.
+- **SHA-1: `Str.sha1`, `Bytes.sha1` and `File.sha1`,** beside the
+  `sha256` members and with the same output as `sha1sum` (lowercase
+  hex; `File.sha1` streams the file). For protocols that use SHA-1,
+  such as git object ids; it is not safe as a security hash.
 
 ### Changed
 
