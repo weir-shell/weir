@@ -4949,7 +4949,7 @@ and argvOf (env: Env) (args: Check.TypedExpr list) : string list =
 // a dynamic head resolves at run time [D:dynamic-head] — like
 // `^literal`, on the runtime string: no glob, no word-split, no
 // re-lex. Not-found raises a located error naming the value.
-and private progOf (env: Env) (h: Check.TCmdHead) : string =
+and private progOf (env: Env) (h: Check.TCmdHead) (pairs: (string * string) list) : string =
     match h with
     | Check.THeadLit p -> p
     | Check.THeadDyn(display, he) ->
@@ -4962,7 +4962,8 @@ and private progOf (env: Env) (h: Check.TCmdHead) : string =
 
         if s = "" then
             failwith $"the dynamic head ^{quoteData display} is empty — nothing to run"
-        elif not (Extern.exists s) then
+        // on the PATH the child runs with [D:overlay-path]
+        elif not (Extern.existsUnder pairs s) then
             // a typed home path names its own spelling [D:tilde]
             if display.StartsWith "~/" then
                 failwith $"command not found: {quoteData s} (from {quoteData display})"
@@ -5226,10 +5227,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
         ->
         System.Console.Out.Flush()
 
+        let overlay = overlayOf env cenvO
+
         Proc.runInherited
-            { Prog = Proc.resolveProg (progOf env head)
+            { Prog = Proc.specProg (progOf env head (Proc.spawnPairs None overlay))
               Args = argvOf env args
-              Env = overlayOf env cenvO
+              Env = overlay
               Input = None
               Cwd = None
               Ambient = None }
@@ -5812,7 +5815,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             let prog, argv, overlay =
                 match (argOf "proc").Kind with
-                | TECmd(h, args, cenvO) -> progOf env h, argvOf env args, overlayOf env cenvO
+                | TECmd(h, args, cenvO) ->
+                    let overlay = overlayOf env cenvO
+                    progOf env h (Proc.spawnPairs None overlay), argvOf env args, overlay
                 | _ -> unreachable "the parser guarantees a command in the proc slot"
 
             let spill =
@@ -5827,7 +5832,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 try
                     Proc.startSpilled
                         overlay
-                        (Proc.resolveProg prog)
+                        (Proc.specProg prog)
                         argv
                         (System.IO.Path.Combine(spill, "out.log"))
                         (System.IO.Path.Combine(spill, "err.log"))
@@ -6461,20 +6466,24 @@ and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
     let rec collect (e: TypedExpr) (acc: Proc.Spec list) : TypedExpr option * Proc.Spec list =
         match e.Kind with
         | TECmd(h2, a2, e2) ->
+            let overlay = overlayOf env e2
+
             None,
-            { Proc.Prog = Proc.resolveProg (progOf env h2)
+            { Proc.Prog = Proc.specProg (progOf env h2 (Proc.spawnPairs snapAmb overlay))
               Proc.Args = argvOf env a2
-              Proc.Env = overlayOf env e2
+              Proc.Env = overlay
               Proc.Input = None
               Proc.Cwd = snapCwd
               Proc.Ambient = snapAmb }
             :: acc
         | TEPipe(l, { Kind = TECmd(h2, a2, e2) }) ->
+            let overlay = overlayOf env e2
+
             collect
                 l
-                ({ Proc.Prog = Proc.resolveProg (progOf env h2)
+                ({ Proc.Prog = Proc.specProg (progOf env h2 (Proc.spawnPairs snapAmb overlay))
                    Proc.Args = argvOf env a2
-                   Proc.Env = overlayOf env e2
+                   Proc.Env = overlay
                    Proc.Input = None
                    Proc.Cwd = snapCwd
                    Proc.Ambient = snapAmb }
@@ -6498,13 +6507,15 @@ and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
                 |> Some
             | v -> unreachable $"the checker rejects piping {formatValue v} into a command"
 
+    let tailOverlay = overlayOf env cenvO
+
     let specs =
         (match leftSpecs with
          | first :: rest -> { first with Proc.Input = stdin } :: rest
          | [] -> [])
-        @ [ { Proc.Prog = Proc.resolveProg (progOf env chead)
+        @ [ { Proc.Prog = Proc.specProg (progOf env chead (Proc.spawnPairs snapAmb tailOverlay))
               Proc.Args = argvOf env cargs
-              Proc.Env = overlayOf env cenvO
+              Proc.Env = tailOverlay
               Proc.Input = (if leftSpecs.IsEmpty then stdin else None)
               Proc.Cwd = snapCwd
               Proc.Ambient = snapAmb } ]
@@ -6553,13 +6564,16 @@ and private commandLines
 
     // only the enclosing `within` scopes are captured
     // [D:ambient-capture-within]
+    let overlay = overlayOf env cenvO
+    let ambient = Weir.Session.scopedAmbient ()
+
     let spec: Proc.Spec =
-        { Prog = Proc.resolveProg (progOf env head)
+        { Prog = Proc.specProg (progOf env head (Proc.spawnPairs ambient overlay))
           Args = argv
-          Env = overlayOf env cenvO
+          Env = overlay
           Input = None
           Cwd = Weir.Session.scopedCwd ()
-          Ambient = Weir.Session.scopedAmbient () }
+          Ambient = ambient }
 
     let lines =
         if statement then
@@ -6617,9 +6631,11 @@ and private inFunction (f: unit -> Value) : Value =
 let private commandStatementSpec (env: Env) (te: Check.TypedExpr) : Proc.Spec =
     match te.Kind with
     | Check.TECmd(head, args, cenvO) ->
-        { Prog = Proc.resolveProg (progOf env head)
+        let overlay = overlayOf env cenvO
+
+        { Prog = Proc.specProg (progOf env head (Proc.spawnPairs None overlay))
           Args = argvOf env args
-          Env = overlayOf env cenvO
+          Env = overlay
           Input = None
           Cwd = None
           Ambient = None }

@@ -23,21 +23,63 @@ let refresh () =
 // Windows resolves a bare `git` to `git.exe` via PATHEXT; the name
 // as-given always wins first. POSIX: the empty list — names resolve
 // as themselves only. [D:windows-v1]
-let private pathExts () : string list =
+let private pathExtsOf (value: string option) : string list =
     if OperatingSystem.IsWindows() then
-        (Environment.GetEnvironmentVariable "PATHEXT"
-         |> Option.ofObj
-         |> Option.defaultValue ".COM;.EXE;.BAT;.CMD")
+        (value |> Option.defaultValue ".COM;.EXE;.BAT;.CMD")
             .Split(';', StringSplitOptions.RemoveEmptyEntries)
         |> List.ofArray
     else
         []
 
+let private pathExts () : string list =
+    pathExtsOf (Environment.GetEnvironmentVariable "PATHEXT" |> Option.ofObj)
+
+let private pathDirsOf (value: string) =
+    value.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+
 let private pathDirs () =
-    (Environment.GetEnvironmentVariable "PATH"
-     |> Option.ofObj
-     |> Option.defaultValue "")
-        .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+    pathDirsOf (
+        Environment.GetEnvironmentVariable "PATH"
+        |> Option.ofObj
+        |> Option.defaultValue ""
+    )
+
+// the env a command runs with, as pairs applied in order (the `within env`
+// layers outer-first, then its own NAME=value prefix): the last pair for a
+// name wins, compared as the platform's env does
+let private lastPair (pairs: (string * string) list) (name: string) : string option =
+    let cmp =
+        if OperatingSystem.IsWindows() then
+            StringComparer.OrdinalIgnoreCase
+        else
+            StringComparer.Ordinal
+
+    pairs |> List.rev |> List.tryFind (fun (k, _) -> cmp.Equals(k, name)) |> Option.map snd
+
+/// the PATH a command's env sets, when it differs from weir's own — None
+/// means the child searches the PATH weir resolves on [D:overlay-path]
+let overlayPath (pairs: (string * string) list) : string option =
+    match lastPair pairs "PATH" with
+    | Some v when v <> (Environment.GetEnvironmentVariable "PATH" |> Option.ofObj |> Option.defaultValue "") -> Some v
+    | _ -> None
+
+/// a bare program on the given PATH (and the env's PATHEXT on Windows):
+/// the name as-given first in each dir, then each extension
+let resolveOn (pairs: (string * string) list) (pathValue: string) (prog: string) : string option =
+    let exts =
+        match lastPair pairs "PATHEXT" with
+        | Some v -> pathExtsOf (Some v)
+        | None -> pathExts ()
+
+    pathDirsOf pathValue
+    |> Seq.tryPick (fun dir ->
+        let candidate = Path.Combine(dir, prog)
+
+        if File.Exists candidate then
+            Some candidate
+        else
+            exts
+            |> List.tryPick (fun e -> if File.Exists(candidate + e) then Some(candidate + e) else None))
 
 let names () : Set<string> =
     match cache with
@@ -65,7 +107,7 @@ let names () : Set<string> =
         cache <- Some s
         s
 
-let private isPathy (prog: string) =
+let isPathy (prog: string) =
     prog.Contains '/'
     || (OperatingSystem.IsWindows() && (prog.Contains '\\' || prog.Contains ':'))
 
@@ -117,3 +159,13 @@ let exists (prog: string) : bool =
 
                     File.Exists candidate
                     || pathExts () |> List.exists (fun e -> File.Exists(candidate + e))))
+
+/// `exists` under a command's env [D:overlay-path]: a PATH the env sets
+/// is the one searched, else weir's own
+let existsUnder (pairs: (string * string) list) (prog: string) : bool =
+    if prog.Contains '\000' || isPathy prog then
+        exists prog
+    else
+        match overlayPath pairs with
+        | Some pv -> (resolveOn pairs pv prog).IsSome
+        | None -> exists prog

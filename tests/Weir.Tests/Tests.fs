@@ -29324,6 +29324,73 @@ let sweepFindingTests =
               Expect.isFalse (m |> List.exists (fun s -> s.Contains "'!'")) "no '!' in the expectation list"
           } ]
 
+// the overlay findings run whole scripts: `within env` pushes the
+// session's root overlay, one stack every test thread shares
+let portOverlayTests =
+    let runFile (lines: string list) : int =
+        let path = tempPath "weir-port" + ".weir"
+        File.WriteAllLines(path, lines)
+
+        try
+            Weir.Script.run path []
+        finally
+            File.Delete path
+
+    testSequenced
+    <| testList
+        "starship port findings: the env overlay"
+        [ test "home and the XDG dirs read the within-env overlay [D:home-overlay]" {
+              skipOnWindows ()
+              let home = Weir.Builtins.homeDir ()
+
+              Expect.equal
+                  (runFile
+                      [ "within env HOME=\"/fake/home\" XDG_CONFIG_HOME=\"\" XDG_CACHE_HOME=\"/fake/cache\""
+                        "    if Path.home () <> \"/fake/home\" then exit 3"
+                        "    if Path.configHome () <> \"/fake/home/.config\" then exit 4"
+                        "    if Path.cacheHome () <> \"/fake/cache\" then exit 5"
+                        "    let typed = echo ~/x |> Seq.exactlyOne"
+                        "    if typed <> \"/fake/home/x\" then exit 6"
+                        $"if Path.home () <> \"{weirPath home}\" then exit 7" ])
+                  0
+                  "Path.home, configHome, cacheHome and a typed ~ follow the overlay; outside it, the process home"
+          }
+          test "a dynamic head resolves on the PATH the child runs with [D:overlay-path]" {
+              skipOnWindows ()
+
+              withTempDir "weir-port-path" (fun dir ->
+                  let tool = Path.Combine(dir, "weirporttoolzz")
+                  File.WriteAllText(tool, "#!/bin/sh\necho ran-from-overlay\n")
+                  File.SetUnixFileMode(tool, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute)
+                  let p = System.Environment.GetEnvironmentVariable "PATH"
+                  let path = $"{weirPath dir}:{p}"
+
+                  Expect.equal
+                      (runFile
+                          [ "let tool = \"weirporttoolzz\""
+                            $"within env PATH=\"{path}\""
+                            "    let r = ^$tool | line"
+                            "    if r <> \"ran-from-overlay\" then exit 3"
+                            $"let r2 = PATH=\"{path}\" ^$tool | line"
+                            "if r2 <> \"ran-from-overlay\" then exit 4" ])
+                      0
+                      "within env's PATH and a per-command PATH= prefix"
+
+                  // weir's own PATH lacks it: off the overlay it is not found
+                  Expect.equal
+                      (runFile [ "let tool = \"weirporttoolzz\""; "^$tool" ])
+                      1
+                      "not found off the overlay")
+          }
+          test "a literal head under an overlay PATH that lacks it is not found, as the child would see [D:overlay-path]" {
+              skipOnWindows ()
+
+              Expect.equal
+                  (runFile [ "within env PATH=\"/weir-no-such-dir\""; "    sh -c \"echo hi\"" ])
+                  1
+                  "the overlay PATH decides at run time"
+          } ]
+
 let docsBinaryTests =
     let stmtMsg (line: string) =
         let ll =
@@ -31618,4 +31685,5 @@ let allTests =
           indexerTests
           envLoadTests
           parallelTests
-          fileTests ]
+          fileTests
+          portOverlayTests ]

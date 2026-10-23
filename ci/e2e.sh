@@ -10850,6 +10850,32 @@ wait $ctsrv $ctsrv2 2>/dev/null || true
 echo "e2e ok: a no-strict schema warns at add time, naming the variant"
 rm -rf "$ctdir"
 
+# ---- the starship port's env-overlay findings ------------------------------
+ovdir=$(mkweirtmp)
+# home and XDG follow within env [D:home-overlay]
+printf 'within env HOME="/fake/home" XDG_CONFIG_HOME=""\n    echo ~/x\n    print (Path.home ())\n    print (Path.configHome ())\n' > "$ovdir/home.weir"
+out=$(cd "$ovdir" && $BIN home.weir 2>&1) || fail "port: home.weir: $out"
+echo "$out" | grep -qxF "/fake/home/x" || fail "port: a typed ~ follows within env HOME: $out"
+echo "$out" | grep -qxF "/fake/home" || fail "port: Path.home follows within env HOME: $out"
+if [ "$IS_WINDOWS" = "0" ]; then
+    echo "$out" | grep -qxF "/fake/home/.config" || fail "port: Path.configHome follows the overlay: $out"
+fi
+echo "e2e ok: Path.home, a typed ~ and Path.configHome read the within env overlay [D:home-overlay]"
+# a head resolves on the PATH the child runs with [D:overlay-path]
+if [ "$IS_WINDOWS" = "0" ]; then
+    mkdir -p "$ovdir/bin"
+    printf '#!/bin/sh\necho fake-tool-ran\n' > "$ovdir/bin/weirportfaketool"
+    chmod +x "$ovdir/bin/weirportfaketool"
+    printf 'let tool = "weirportfaketool"\nlet dir = Path.combine (Path.dir Self.scriptPath) "bin"\nlet p = Env.need "PATH"\nwithin env PATH=$"{dir}:{p}"\n    ^$tool\nPATH=$"{dir}:{p}" ^$tool\n' > "$ovdir/path.weir"
+    out=$(cd "$ovdir" && $BIN path.weir 2>&1) || fail "port: ^\$tool must resolve on the overlay PATH: $out"
+    [ "$(echo "$out" | grep -c fake-tool-ran)" = 2 ] || fail "port: within env and a PATH= prefix both reach the tool: $out"
+    printf 'within env PATH="/weir-no-such-dir"\n    sh -c "echo hi"\n' > "$ovdir/litpath.weir"
+    out=$(cd "$ovdir" && $BIN litpath.weir 2>&1) && fail "port: a literal head the overlay PATH lacks must not run: $out"
+    echo "$out" | grep -qF "not on the PATH it runs with" || fail "port: the overlay-PATH miss is named: $out"
+    echo "e2e ok: ^\$tool and a literal head resolve on the overlay PATH at run time [D:overlay-path]"
+fi
+rm -rf "$ovdir"
+
 # ---- schema→types: weir gen types [D:schema-types] -------------------------
 # a locked schema becomes a user-owned decl-only module: required vs
 # optional by schema fact (the thing no #infer sample can carry), the

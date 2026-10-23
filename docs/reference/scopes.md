@@ -63,8 +63,11 @@ before the block runs, that shows the absolute path.
 
 Adds environment variables for every process started in the block.
 Inside the block, `Env.get`, `Env.vars` and `Env.load` see the overlay
-too, as `pwd` sees `within cd`; after it, they read the unchanged
-process environment. Nested overlays combine, with inner values winning, and an
+too, as `pwd` sees `within cd`, and so do `Path.home`, the XDG helpers
+(`Path.configHome` and the rest) and a typed `~`; after it, they read
+the unchanged process environment. A command started in the block is
+looked up on the overlay's `PATH` when it sets one, as the child would
+look it up — a `^$tool` head included. Nested overlays combine, with inner values winning, and an
 env given directly on a capture (`$e(...)`) wins over any enclosing
 `within env`:
 
@@ -75,6 +78,9 @@ within env vars
     sh -c "echo child sees $GREETING"
 
 print (Env.get "GREETING" |> Option.defaultValue "parent stays clean")
+
+within env HOME="/srv/app"
+    print (Path.home ())
 ```
 
 The variables can also be written right after `within env`, as you

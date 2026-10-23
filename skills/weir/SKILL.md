@@ -2666,7 +2666,9 @@ let env = Env.load {| [<Default 8080>] PORT: int |}
   time, OR a `^$`-spliced VALUE head [D:dynamic-head]: `^$tool arg`
   (or a field, `^$cli.bin arg`)
   runs the program the string `tool` names — `^`'s force-external law
-  on a runtime string, resolved at RUN (check draws no cmd-not-found
+  on a runtime string, resolved at RUN on the PATH the command runs
+  with — a `within env`/`PATH=` overlay's when one sets it, as for every
+  head at run time [D:overlay-path] (check draws no cmd-not-found
   there; a missing program is a located run error naming the value).
   The value is ONE program, never re-lexed — a spaced head value is
   one program, argv stays typed argv (no injection; the plugin/
@@ -2717,7 +2719,9 @@ print $"exit={r.exitCode}"
   `within env e` for a bound `seq<EnvVar>`); a body line's own
   `NAME=value cmd` prefix stays that one command's. Inside the block
   weir's own reads see the overlay too — `Env.get`/`Env.vars`/`Env.load`
-  [D:env-overlay-read], as `pwd` sees `within cd`; the process env
+  [D:env-overlay-read], `Path.home`/`configHome`/`stateHome`/`cacheHome`
+  and a typed `~` [D:home-overlay], and every command head resolves on
+  the overlay's `PATH` [D:overlay-path], as `pwd` sees `within cd`; the process env
   itself is never written. A key that is empty or holds `=` or NUL is
   refused where it is built — `Env.pair`, `Env.ofPairs`, `within env`,
   `$e(…)` — naming the key [D:env-key-refusal] (the child would read
@@ -2893,7 +2897,7 @@ not the teaching.
 - `Net`: `portOpen`
 - `Result`: `defaultValue` `isOk` `map` `toOption` — what `e |> try result` gives (`Ok v` / `Error msg`)
 - `Option`: `bind` `defaultValue` `defaultWith` `flatten` `iter` `map` `orElse` `orElseWith` — `bind` chains lookups that may each fail (`f` returns an Option; no nesting); `flatten` collapses `Option<Option<T>>`
-- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `normalize` `stateHome` `stem` `tempRoot` `under` — `normalize` resolves `.`/`..` in the path TEXT (no filesystem, no symlinks; use it where `under` refuses a path that leaves its base); `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`) — home is `$HOME` verbatim when set, the OS lookup when unset, and an empty HOME raises [D:home-verbatim]; in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to
+- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `normalize` `stateHome` `stem` `tempRoot` `under` — `normalize` resolves `.`/`..` in the path TEXT (no filesystem, no symlinks; use it where `under` refuses a path that leaves its base); `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`) — home is `$HOME` verbatim when set, the OS lookup when unset, and an empty HOME raises [D:home-verbatim]; HOME and `XDG_*` are read through a `within env` overlay [D:home-overlay]; in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to
 - `Poll`: `defaults`
 - `Plan`: `apply` `isEmpty` `ops` `preview` — the value a `plan` block yields: `ops` the recorded `Op`s, `preview` one line each, `apply` performs them in order
 - `Proc`: `pid` `running` `stop` `tail` `wait`
