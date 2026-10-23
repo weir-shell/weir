@@ -208,6 +208,10 @@ Many of the changes and fixes below were found porting starship to weir.
   'args.mode'? ('mode' is a field of 'Cli')" instead of suggesting
   `File.mode`; with no value of the record bound yet, it says to load
   it first.
+- **The waiting spinner is the REPL's alone.** A script (or `weir -e`)
+  at a terminal no longer draws it while weir waits in
+  `Duration.sleep`, `Http.send` or a `retry`/`poll` delay, so its
+  stderr carries only what the script writes. The REPL still shows it.
 - **`def` is an ordinary name.** `let def = 1` and a field called `def`
   work. A line shaped like a definition, `def double x = …`, still gets
   "'def' is not a weir word — define with 'let f x = ...'".

@@ -2,12 +2,15 @@
 # The waiting indicator [D:waiting-indicator]: draws on stderr at a tty
 # during weir's own blocking work (after a 500ms grace), is erased
 # before anything else prints, never appears for fast calls, and the
-# piped byte surface does not move. Asserts on the pty stream.
+# piped byte surface does not move. REPL only [D:waiting-repl-only]: a
+# script at the same tty stays silent through the same wait. Asserts on
+# the pty stream.
 import os
 import pty
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 WEIR = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/.local/bin/weir")
@@ -65,6 +68,42 @@ def run(lines, settle=0.4):
     return out.decode(errors="replace")
 
 
+def run_script(path):
+    import select
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execv(WEIR, ["weir", path])
+    out = b""
+    deadline = time.time() + 15
+    reaped = False
+    while time.time() < deadline:
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if r:
+            try:
+                out += os.read(fd, 65536)
+            except OSError:
+                pass
+        done, _st = os.waitpid(pid, os.WNOHANG)
+        if done:
+            reaped = True
+            break
+    try:
+        while True:
+            r, _, _ = select.select([fd], [], [], 0.1)
+            if not r:
+                break
+            out += os.read(fd, 65536)
+    except OSError:
+        pass
+    os.close(fd)
+    if not reaped:
+        os.kill(pid, 9)
+        os.waitpid(pid, 0)
+        print("waiting-indicator FAIL: the script did not exit")
+        sys.exit(1)
+    return out.decode(errors="replace")
+
+
 failures = []
 
 # a slow sleep: the spinner appears (grace passed) and is erased —
@@ -80,6 +119,20 @@ else:
     after = t[t.rindex(ERASE) + len(ERASE):]
     if SPINNER.search(after):
         failures.append(f"spinner bytes after the final erase: {after[-200:]!r}")
+
+# a script at the same tty: silent through the same wait — the
+# indicator is the REPL's [D:waiting-repl-only]
+sd = tempfile.mkdtemp(prefix="weir-waiting-")
+sp = os.path.join(sd, "wait.weir")
+with open(sp, "w") as f:
+    f.write("Duration.sleep 1300ms\nprint \"script-done\"\n")
+ts = run_script(sp)
+os.remove(sp)
+os.rmdir(sd)
+if SPINNER.search(ts) or "sleeping" in ts or ERASE in ts:
+    failures.append(f"a script must stay silent through a wait: {ts[-200:]!r}")
+if "script-done" not in ts:
+    failures.append(f"the script itself must run: {ts[-200:]!r}")
 
 # a fast call: the 500ms grace keeps it silent
 t2 = run(["Duration.sleep 120ms\r"], settle=0.7)
@@ -111,4 +164,4 @@ if failures:
         print("waiting-indicator FAIL:", f)
     sys.exit(1)
 
-print("waiting-indicator: draws after the grace, erases, silent when fast/piped/child-owned")
+print("waiting-indicator: the REPL draws after the grace, erases, silent when fast/piped/child-owned; a script stays silent")

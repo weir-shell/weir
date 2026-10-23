@@ -29164,6 +29164,10 @@ let aliasTests =
               Expect.isTrue (dom (TRowVar("r", [ "ok", TBool; "duration", TVar "a" ]))) "a forwarded duration is accepted"
               Expect.isFalse (dom (TRowVar("r", [ "duration", TInt ]))) "a duration pinned to int refuses"
               expectValue "let st = { ok = true; exit = None; duration = 2500ms } in st.duration > 2s" (VBool true)
+          }
+          test "(k4) the waiting indicator is off until the REPL turns it on [D:waiting-repl-only]" {
+              Expect.isFalse Weir.Types.Waiting.enabled "a script, -e or a test never draws it"
+              Expect.equal (Weir.Types.Waiting.during "sleeping" (fun () -> 7)) 7 "the work still runs, silently"
           } ]
 
 // ---- dynamic command heads [D:dynamic-head] --------------------------

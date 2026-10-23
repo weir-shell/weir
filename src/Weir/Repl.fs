@@ -4745,6 +4745,9 @@ let private loadInit (baseState: State) : State =
               Aliases = aliasMap }
 
 let run () =
+    // the waiting indicator draws in the REPL only [D:waiting-repl-only]
+    Waiting.enabled <- true
+
     if not Console.IsInputRedirected then
         setupLineEditor ()
 
