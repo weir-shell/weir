@@ -22053,6 +22053,67 @@ let matchArmCommandTests =
                   "the inner match's arms parse and arm independently"
           } ]
 
+let stopRequestTests =
+    testList
+        "the stop request's state machine [D:stop-request]"
+        [ test "no stop-aware construct live: every signal is the teardown" {
+              let m = Weir.Session.StopMachine()
+              Expect.equal (m.Signal()) Weir.Session.Teardown "first signal, nothing live"
+              Expect.equal (m.Signal()) Weir.Session.Teardown "second signal, nothing live"
+              Expect.isFalse m.Requested "no request recorded"
+              Expect.isFalse m.Token.IsCancellationRequested "no wait woken"
+          }
+          test "one live: the first signal is the request (waits woken), the second the teardown" {
+              let m = Weir.Session.StopMachine()
+              m.Enter()
+              let t = m.Token
+              Expect.equal (m.Signal()) Weir.Session.StopRequested "the first signal requests the stop"
+              Expect.isTrue m.Requested "the request is set"
+              Expect.isTrue t.IsCancellationRequested "the stop-aware waits wake"
+              Expect.equal (m.Signal()) Weir.Session.Teardown "a second signal is today's teardown"
+              Expect.equal (m.Signal()) Weir.Session.Teardown "and every one after"
+              m.Exit()
+          }
+          test "the request is sticky: after the construct ends it stays set, and a later one's signal tears down" {
+              let m = Weir.Session.StopMachine()
+              m.Enter()
+              m.Signal() |> ignore
+              m.Exit()
+              Expect.isTrue m.Requested "sticky past the construct [D:stop-request]"
+              Expect.equal m.Depth 0 "nothing live"
+              Expect.equal (m.Signal()) Weir.Session.Teardown "no construct live: the teardown"
+              m.Enter()
+              Expect.isTrue m.Token.IsCancellationRequested "a later construct sees the request at once"
+              Expect.equal (m.Signal()) Weir.Session.Teardown "already requested: the teardown"
+              m.Exit()
+          }
+          test "nested and parallel constructs share one request" {
+              let m = Weir.Session.StopMachine()
+              m.Enter()
+              m.Enter()
+              Expect.equal m.Depth 2 "two live"
+              Expect.equal (m.Signal()) Weir.Session.StopRequested "one request for both"
+              m.Exit()
+              Expect.equal (m.Signal()) Weir.Session.Teardown "the request stays one-shot while the outer runs"
+              m.Exit()
+              m.Exit()
+              Expect.equal m.Depth 0 "an extra exit never goes negative"
+          }
+          test "Clear (the REPL's entry end) forgets the request; the next construct gets a fresh token" {
+              let m = Weir.Session.StopMachine()
+              m.Enter()
+              let t1 = m.Token
+              m.Signal() |> ignore
+              m.Exit()
+              m.Clear()
+              Expect.isFalse m.Requested "cleared [D:repl-stop-request]"
+              Expect.isTrue t1.IsCancellationRequested "the old token stays cancelled"
+              Expect.isFalse m.Token.IsCancellationRequested "a fresh token"
+              m.Enter()
+              Expect.equal (m.Signal()) Weir.Session.StopRequested "a new construct's first signal is a request again"
+              m.Exit()
+          } ]
+
 let retryPollTests =
     let sx (input: string) = show (parse input)
 
@@ -32404,6 +32465,7 @@ let allTests =
           ifSucceedsTests
           matchArmCommandTests
           retryPollTests
+          stopRequestTests
           sigTests
           sigCompleteTests
           sigDynamicTests
