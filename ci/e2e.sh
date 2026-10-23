@@ -4335,7 +4335,7 @@ WEOF
 ptpid=$!
 ptpeak=0
 while kill -0 "$ptpid" 2>/dev/null; do
-    t=$(awk '/^Threads:/{print $2}' "/proc/$ptpid/status" 2>/dev/null)
+    t=$(awk '/^Threads:/{print $2}' "/proc/$ptpid/status" 2>/dev/null) || t=""
     [ -n "$t" ] && [ "$t" -gt "$ptpeak" ] && ptpeak=$t
     sleep 0.05
 done
