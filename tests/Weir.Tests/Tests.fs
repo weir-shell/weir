@@ -26034,6 +26034,27 @@ let moduleSignatureTests =
                       Expect.isEmpty (diagsOf td "k.weir") "the sig types the scrutinee"
                       Expect.isEmpty (diagsOf td "y.weir") "the sig pins the adapter's record")
           }
+          test "a unit signature over a body ending in a command teaches `()` [D:module-signatures]" {
+              withDir
+                  [ "c.weir", [ "module C"; "let tag : string -> unit"; "let tag v ="; "    git tag $v" ]
+                    "p.weir", [ "module P"; "let up : unit -> unit"; "let up () ="; "    let d = \"x\""; "    git log | head -1" ]
+                    "n.weir", [ "module N"; "let names : unit -> unit"; "let names () = [\"a\"]" ]
+                    "ok.weir", [ "module Ok"; "let tag : string -> unit"; "let tag v ="; "    git tag $v"; "    ()" ] ]
+                  (fun td ->
+                      for f in [ "c.weir"; "p.weir" ] do
+                          match diagsOf td f with
+                          | d :: _ ->
+                              Expect.stringContains d.Message "does not match its signature" f
+                              Expect.stringContains d.Message "its last line is a command" f
+                              Expect.stringContains d.Message "end the body with `()`" f
+                          | [] -> failtest $"{f}: the mismatch must refuse"
+
+                      (match diagsOf td "n.weir" with
+                       | d :: _ -> Expect.isFalse (d.Message.Contains "end the body with") "a list literal is not a command"
+                       | [] -> failtest "n.weir: the mismatch must refuse")
+
+                      Expect.isEmpty (diagsOf td "ok.weir") "the repaired body checks")
+          }
           test "generic sigs: general impls pass; pinned and merged type vars refuse as less-general" {
               withDir
                   [ "g.weir", [ "module G"; "let pick : 'a -> 'a -> 'a"; "let pick a b = a" ]

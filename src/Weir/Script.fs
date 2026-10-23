@@ -3973,10 +3973,35 @@ let rec private checkStatementCore
                     match Check.typecheckAgainstSig tenv sd.Ty e with
                     | Error(Check.SigBody terr) -> typedOrMissing StmtTag.Let terr
                     | Error(Check.SigShape(implTy, span)) ->
+                        // a body ending in a command returns its output
+                        // where the signature says unit [D:module-signatures]
+                        let rec result (t: Ty) =
+                            match t with
+                            | TFun(_, r) -> result r
+                            | t -> t
+
+                        let rec endsInCommand (x: Expr) =
+                            match x.Kind with
+                            | ELambda(_, _, b)
+                            | ELambdaPat(_, b)
+                            | ELet(_, _, _, b)
+                            | ELetPat(_, _, b)
+                            | ESeq(_, b) -> endsInCommand b
+                            | ECmd _ -> true
+                            | EPipe(_, stage) -> (match stage.Kind with ECmd _ -> true | _ -> false)
+                            | _ -> false
+
+                        let hint =
+                            match result sd.Ty, result implTy with
+                            | TUnit, TSeq TStr when endsInCommand e ->
+                                " — its last line is a command, so it returns the command's output (seq<string>); end the body with `()`"
+                            | _ -> ""
+
                         sigErrAt
                             span
                             ($"the implementation of '{name}' does not match its signature: "
-                             + $"the signature (line {sd.Line}) declares {formatTy sd.Ty}, but the implementation is {formatTy implTy}")
+                             + $"the signature (line {sd.Line}) declares {formatTy sd.Ty}, but the implementation is {formatTy implTy}"
+                             + hint)
                     | Error(Check.SigPinned(v, pinnedTy, span)) ->
                         sigErrAt
                             span

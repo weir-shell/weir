@@ -74,6 +74,10 @@ Many of the changes and fixes below were found porting starship to weir.
 
 ### Fixed
 
+- **A module function whose signature returns `unit` but whose body
+  ends in a command gets a hint.** The command's output is the
+  function's value, so the mismatch error now says "its last line is a
+  command … end the body with `()`".
 - **`#help` shows the `///` doc of a module member imported by
   init.weir.** `#help Git.refresh` printed only the signature; it now
   prints the doc written above the member's signature, as it already
