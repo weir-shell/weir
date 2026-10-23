@@ -6,8 +6,8 @@
 # through `#alias co = git checkout` from a project sig with `let dynamic
 # = "git"`; a hung `__complete` (Tab returns at the bound, no child left —
 # by pid) and a key pressed while waiting (it lands in the buffer); a
-# flooding `__complete` (capped, no child left). Waits on text, never
-# fixed sleeps.
+# flooding `__complete` (capped, no child left); the REPL killed while
+# waiting (no child left). Waits on text, never fixed sleeps.
 import os
 import shutil
 import subprocess
@@ -40,7 +40,8 @@ open(tool, "w").write(
     '[ "$1" = __complete ] || exit 0\n'
     'case "$2" in\n'
     "    get) printf 'pod-alpha\\tRunning\\npod-beta\\tPending\\n:4\\n' ;;\n"
-    '    hang) echo $$ >> "$DYFX_PIDS"; sleep 30 & echo $! >> "$DYFX_PIDS"; wait ;;\n'
+    # a hangup (the pty closing with weir) must not be what kills it
+    '    hang) trap "" HUP; echo $$ >> "$DYFX_PIDS"; sleep 30 & echo $! >> "$DYFX_PIDS"; wait ;;\n'
     '    flood) echo $$ >> "$DYFX_PIDS"; while :; do echo floodfloodfloodflood; done ;;\n'
     "esac\n")
 os.chmod(tool, 0o755)
@@ -196,6 +197,20 @@ try:
     if r.wait_for(r"flood Z", start, timeout=5) is None:
         failures.append(f"the editor responds after a flood: {r.out[-300:]!r}")
     abandon()
+
+    # the REPL ended (SIGTERM) while waiting: the child goes with it
+    os.remove(pids)
+    t0 = time.time()
+    r.send("dyfx hang \t")
+    got = []
+    while time.time() - t0 < 5 and not got:
+        got = read_pids(2)
+        r._read(0.01)
+    os.kill(r.pid, 15)
+    while time.time() - t0 < 5 and got and any(alive(p) for p in got):
+        r._read(0.01)
+    if not got or any(alive(p) for p in got):
+        failures.append(f"a SIGTERM mid-wait leaves no child: {got}")
 finally:
     r.close()
     shutil.rmtree(root, ignore_errors=True)
