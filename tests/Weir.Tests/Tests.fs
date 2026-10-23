@@ -30038,6 +30038,34 @@ let hunt3BehaviorTests =
 
               Expect.stringContains g "both: the schema allows array/object — drafted Yaml; a sequence reads as YSeq items, a mapping as YMap entries" "both containers"
           }
+          test "schema drafting: an anyOf mixing a scalar with an array drafts Yaml (starship port) [D:schema-anyof-mixed]" {
+              // trimmed from starship's config-schema.json: custom.shell is
+              // string-or-array, python.python_binary nests it once more
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "$defs": {
+                             "VecOr_string": { "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+                             "VecOr_VecOr_string": { "anyOf": [{ "$ref": "#/$defs/VecOr_string" }, { "type": "array", "items": { "$ref": "#/$defs/VecOr_string" } }] },
+                             "Base": { "type": "object", "properties": { "x": { "type": "string" } }, "required": ["x"] },
+                             "Other": { "type": "object", "properties": { "y": { "type": "integer" } }, "required": ["y"] } },
+                           "properties": {
+                             "shell": { "$ref": "#/$defs/VecOr_string", "default": [] },
+                             "python_binary": { "$ref": "#/$defs/VecOr_VecOr_string" },
+                             "objs": { "anyOf": [{ "$ref": "#/$defs/Base" }, { "$ref": "#/$defs/Other" }] } } }"""
+
+              Expect.stringContains g "\n    shell: Option<Yaml>\n" "string-or-array drafts Yaml"
+              Expect.stringContains g "\n    python_binary: Option<Yaml>\n" "the nested anyOf through a $ref too"
+
+              Expect.stringContains
+                  g
+                  "// note: VecOr_string: anyOf allows array/string — drafted Yaml; a string reads as YStr s, a sequence as YSeq items"
+                  "the note names each kind's case"
+
+              Expect.stringContains g "// note: VecOr_VecOr_string: anyOf allows array/string — drafted Yaml" "the nested one"
+
+              Expect.stringContains g "objs: anyOf — drafted the FIRST variant only" "two objects keep the first-variant rule"
+          }
           test "schema drafting: a typed enum drafts its type, a mixed enum Yaml [D:schema-enum-kind]" {
               let g =
                   gen

@@ -409,7 +409,10 @@ More of the mapping:
 - a `const` drafts its type (`type`, or the value's own kind)
 - each validation keyword the schema uses gets one
   `// note: not enforced: …` line naming where it appears
-- `anyOf` uses the first variant, with a note asking you to check it
+- an `anyOf` that mixes a scalar with an array or object (a string or
+  a list of strings, say) becomes `Yaml`, with a note naming how each
+  kind reads; any other `anyOf` uses the first variant, with a note
+  asking you to check it
 - a field that refers back to its own definition becomes `Yaml`, with
   a note — a weir record is a finite tree, so the subtree is read
   whole as an untyped node

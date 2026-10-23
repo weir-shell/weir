@@ -10910,6 +10910,12 @@ cat > "$gtdir/serve/r2.json" <<'JEOF'
 {"$id":"https://example.com/r2.json","type":"object","required":["on","ratio"],"properties":{"cpu":{"oneOf":[{"type":["string","null"]},{"type":["number","null"]}]},"port":{"type":"string","format":"int-or-string"},"on":{"type":"boolean","enum":[true]},"ratio":{"type":"number","enum":[0.5,1.5]},"mode":{"enum":["a",1]},"kind":{"type":"string","const":"Deployment"},"blob":{"type":"string","contentEncoding":"base64","format":"byte"}}}
 JEOF
 ( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/r2.json --as r2 ) >/dev/null || fail "add schema over \$id/const/contentEncoding"
+# [D:schema-anyof-mixed]: starship's config-schema.json, trimmed to its
+# string-or-array anyOfs (custom.shell; python_binary nests one more)
+cat > "$gtdir/serve/starship.json" <<'JEOF'
+{"type":"object","properties":{"custom":{"$ref":"#/$defs/CustomConfig"},"python":{"$ref":"#/$defs/PythonConfig"}},"$defs":{"VecOr_string":{"anyOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]},"VecOr_VecOr_string":{"anyOf":[{"$ref":"#/$defs/VecOr_string"},{"type":"array","items":{"$ref":"#/$defs/VecOr_string"}}]},"CustomConfig":{"type":"object","properties":{"command":{"type":"string","default":""},"shell":{"$ref":"#/$defs/VecOr_string","default":[]}},"additionalProperties":false},"PythonConfig":{"type":"object","properties":{"python_binary":{"$ref":"#/$defs/VecOr_VecOr_string","default":[["python"],["python3"],["python2"]]}},"additionalProperties":false}}}
+JEOF
+( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/starship.json --as starship ) >/dev/null || fail "add schema over starship's anyOfs"
 kill $gtsrv 2>/dev/null || true
 wait $gtsrv 2>/dev/null || true
 
@@ -11020,6 +11026,26 @@ WEOF
 out=$( cd "$gtdir/proj" && $BIN r2.weir 2>&1 ) || fail "the r2 types read the document's own values: $out"
 [ "$out" = '{"cpu":1.5,"mode":1,"on":true,"port":8080,"ratio":0.5}' ] || fail "the r2 round trip: $out"
 echo "e2e ok: gen types — number-or-string and format int-or-string as Yaml, typed and mixed enums, \$id/const/content keywords noted"
+( cd "$gtdir/proj" && $BIN gen types --schema starship ) >/dev/null || fail "gen types starship"
+ssmod="$gtdir/proj/.weir/types/starship.weir"
+for want in "shell: Option<Yaml>" "python_binary: Option<Yaml>" "command: Option<string>" \
+    "// note: VecOr_string: anyOf allows array/string — drafted Yaml; a string reads as YStr s, a sequence as YSeq items"; do
+    grep -qF "$want" "$ssmod" || fail "starship drafts '$want': $(cat "$ssmod")"
+done
+grep -qF "FIRST variant" "$ssmod" && fail "a string-or-array anyOf must not draft its first variant: $(cat "$ssmod")"
+cat > "$gtdir/proj/ss.weir" <<'WEOF'
+import "weir:starship" as S
+let one = ["{\"custom\": {\"shell\": \"bash\"}}"] |> from json Starship
+let many = ["{\"custom\": {\"shell\": [\"bash\", \"--norc\"]}, \"python\": {\"python_binary\": [\"python3\", [\"py\", \"-3\"]]}}"] |> from json Starship
+print $"{one.custom}"
+print $"{many.custom}"
+many |> to json |> Seq.iter print
+WEOF
+out=$( cd "$gtdir/proj" && $BIN ss.weir 2>&1 ) || fail "the starship types read a string and an array shell: $out"
+echo "$out" | grep -qF 'YStr "bash"' || fail "a string shell reads as YStr: $out"
+echo "$out" | grep -qF 'YSeq' || fail "an array shell reads as YSeq: $out"
+echo "$out" | grep -qF '"python_binary":["python3",["py","-3"]]' || fail "python_binary round-trips: $out"
+echo "e2e ok: gen types — a string-or-array anyOf drafts Yaml with a note, and reads both kinds (starship) [D:schema-anyof-mixed]"
 
 # --out -: stdout, nothing written; --as renames the top type
 ( cd "$gtdir/proj" && $BIN gen types --schema pod --as Manifest --out - ) | grep -qF "type Manifest = {" || fail "--as + --out - streams the renamed module"

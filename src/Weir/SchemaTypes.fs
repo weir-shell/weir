@@ -100,6 +100,38 @@ let generate
     // into `Yaml` [D:json-yaml-field]
     let cyc = "\u0000cycle"
 
+    // a variant's JSON kinds, a $ref and a nested anyOf seen through
+    // (`seen` stops a reference cycle)
+    let rec jsonKinds (seen: Set<string>) (s: Schema) : string list =
+        match s with
+        | SScalar ks -> Set.toList ks
+        | SEnum(_, kind, _) -> [ (if kind = "mixed" then "string" else kind) ]
+        | SIntOrStringFormat _ -> [ "integer"; "string" ]
+        | SUint64Format _ -> [ "integer" ]
+        | SArray _ -> [ "array" ]
+        | SObject _
+        | SAllOf _ -> [ "object" ]
+        | SMixed(ks, _) -> Set.toList ks
+        | SNullable inner -> jsonKinds seen inner
+        | SChoice xs -> xs |> List.collect (jsonKinds seen)
+        | SRef n when Set.contains n seen -> []
+        | SRef n ->
+            match Map.tryFind n doc.Defs with
+            | Some t -> jsonKinds (Set.add n seen) t
+            | None -> []
+        | SAny -> []
+
+    // the kind classes the anyOf rule reads: scalar / array / object
+    let choiceKinds (s: Schema) : Set<string> =
+        jsonKinds Set.empty s
+        |> List.choose (fun k ->
+            match k with
+            | "array" -> Some "array"
+            | "object" -> Some "object"
+            | "null" -> None
+            | _ -> Some "scalar")
+        |> Set.ofList
+
     let rec shape (desired: string) (srcKey: string) (parentStem: string) (path: string) (s: Schema) : string =
         let where = if path = "" then "the schema root" else path
 
@@ -157,6 +189,22 @@ let generate
 
                 shape desired srcKey parentStem path (List.head members)
         | SChoice [] -> shape desired srcKey parentStem path SAny
+        | SChoice alts when
+            (let ks = alts |> List.map choiceKinds |> Set.unionMany
+             ks.Contains "scalar" && (ks.Contains "array" || ks.Contains "object"))
+            ->
+            // a scalar beside a container (string-or-array) drafts the
+            // node whole, as a type array mixing them does: the first
+            // variant would refuse every value of the other kind
+            // [D:schema-anyof-mixed]
+            let kinds =
+                alts
+                |> List.collect (jsonKinds Set.empty)
+                |> Set.ofList
+                |> Set.remove "null"
+
+            reg.AddNote $"{where}: anyOf allows {kindsText kinds} — drafted Yaml; {yamlCasesText kinds}"
+            "Yaml"
         | SChoice(first :: _) ->
             // the #infer heterogeneous-array posture: first variant +
             // a verify note, never a silent guess (tagged unions are
