@@ -182,15 +182,50 @@ functions return them (`Seq.tryFind`, `Str.tryToInt`,
 
 ## `Map`
 
-`Map<string, T>` only allows string keys, matching JSON object keys.
+`Map<K, V>` takes any key type that supports equality: `int`,
+`string`, `bool`, `Duration`, `Size`, `Instant`, `Uuid`, `Bytes`,
+`Secret`, and unions, tuples and records built from those. A `float`
+key is an error, and so is a record that holds a float, because
+floats have no equality ([Constraints](#constraints)); seqs,
+functions and maps can't be keys either.
+
 The functions are `ofPairs` (the last duplicate key wins), `get`
-(raises an error naming a missing key), `tryGet`, `has`, and
+(raises an error naming a missing key, shown as `show` would show
+it), `tryGet`, `has`, `add`, `remove`, `count`, and
 `pairs`/`keys`/`values` (sorted by key). There is no `m[k]` indexing,
-and `==` is not defined:
+and `==` is not defined.
+
+Key order is always the same for the same keys. Scalars sort as
+`Seq.sort` sorts them, tuples compare element by element, records
+field by field in field-name order, and union cases by case name
+(ordinal string order), then by payload. `Bytes` and `Secret` keys
+compare by content.
+
+Union keys order by case name, unlike F#, which uses declaration
+order: a union value carries only its case name, and name order needs
+no hidden state. So `Large` sorts before `Small` below, and `Error`
+before `Ok` in a `Map<Result<int, string>, V>`.
+
+```weir
+type Tier = Small | Medium | Large
+
+let counts = [Large; Small; Large] |> Seq.countBy id |> Map.ofPairs
+counts |> Map.pairs |> Seq.iter (fun (s, n) -> print $"{s}: {n}")
+print (show (Map.ofPairs [((2, "b"), 1); ((1, "z"), 2)]))
+```
+
+JSON object keys are strings, so only a `Map<string, V>` crosses
+`to json` and `from json`; a `Map<int, V>` there is an error that
+shows the conversion, `Map.pairs |> Seq.map (fun (k, v) -> (show k,
+v)) |> Map.ofPairs`. YAML doesn't take a `Map` yet.
 
 ```weir-error
 let a = Map.ofPairs [("k", 1)]
 print (show (a == a)) // '==' is not defined for Map<string, int>
+```
+
+```weir-error
+let m = Map.ofPairs [(0.5, "half")] // a float key: floats have no equality
 ```
 
 ## `Bytes` and `Secret`

@@ -5385,11 +5385,12 @@ let private planMembers: (string * Ty * Value) list =
       "isEmpty", TFun(planTy, TBool), VBuiltin(fun v -> VBool(planOps v |> Seq.isEmpty)) ]
 
 
-// ---- Map<string, T> [D:map-string]: the ID-keyed object ------------
-// String keys only: every receipt has them (JSON object keys are
-// strings), and int keys would make Map the first Ord-constrained
-// container. Data-last throughout; get asserts, tryGet asks.
-let private mapTy (v: Ty) = TNamed("Map", [ TStr; v ])
+// ---- Map<K, V> [D:map-keys]: any equatable key ---------------------
+// The key var 'k carries Eq (the Map module's scheme override); the
+// order is Value's CompareTo. The wire takes string keys only
+// [D:map-string]. Data-last throughout; get asserts, tryGet asks.
+let private tK = TVar "k"
+let private mapTy (v: Ty) = TNamed("Map", [ tK; v ])
 
 let private asMap (name: string) =
     function
@@ -5728,7 +5729,7 @@ let private uuidMembers: (string * Ty * Value) list =
 
 let private mapMembers: (string * Ty * Value) list =
     [ "ofPairs",
-      TFun(TSeq(TTuple [ TStr; tA ]), mapTy tA),
+      TFun(TSeq(TTuple [ tK; tA ]), mapTy tA),
       VBuiltin(fun v ->
           match v with
           | VSeq items ->
@@ -5738,64 +5739,45 @@ let private mapMembers: (string * Ty * Value) list =
               |> Seq.fold
                   (fun m x ->
                       match x with
-                      | VTuple [ VStr k; value ] -> Map.add k value m
+                      | VTuple [ k; value ] -> Map.add k value m
                       | v -> unreachable $"the checker rejects a pair {formatValue v}")
                   Map.empty
               |> VMap
           | v -> unreachable $"the checker rejects 'Map.ofPairs' on {formatValue v}")
       "pairs",
-      TFun(mapTy tA, TSeq(TTuple [ TStr; tA ])),
-      VBuiltin(fun v ->
-          (asMap "Map.pairs" v)
-          |> Seq.map (fun kv -> VTuple [ VStr kv.Key; kv.Value ])
-          |> VSeq)
-      "keys",
-      TFun(mapTy tA, TSeq TStr),
-      VBuiltin(fun v -> (asMap "Map.keys" v) |> Seq.map (fun kv -> VStr kv.Key) |> VSeq)
+      TFun(mapTy tA, TSeq(TTuple [ tK; tA ])),
+      VBuiltin(fun v -> (asMap "Map.pairs" v) |> Seq.map (fun kv -> VTuple [ kv.Key; kv.Value ]) |> VSeq)
+      "keys", TFun(mapTy tA, TSeq tK), VBuiltin(fun v -> (asMap "Map.keys" v) |> Seq.map _.Key |> VSeq)
       "values", TFun(mapTy tA, TSeq tA), VBuiltin(fun v -> (asMap "Map.values" v) |> Seq.map _.Value |> VSeq)
       "get",
-      TFun(TStr, TFun(mapTy tA, tA)),
+      TFun(tK, TFun(mapTy tA, tA)),
       VBuiltin(fun k ->
           VBuiltin(fun mv ->
-              match k, mv with
-              | VStr key, VMap m ->
-                  match Map.tryFind key m with
-                  | Some v -> v
-                  | None -> failwith $"Map.get: no key \"{quoteData key}\""
-              | _ -> unreachable "the checker rejects 'Map.get' on these arguments"))
+              match Map.tryFind k (asMap "Map.get" mv) with
+              | Some v -> v
+              | None ->
+                  // a string key keeps its quotes; any other renders as
+                  // show does (a Secret masks) [D:map-keys]
+                  match k with
+                  | VStr key -> failwith $"Map.get: no key \"{quoteData key}\""
+                  | k -> failwith $"Map.get: no key {quoteData (formatValue k)}"))
       "tryGet",
-      TFun(TStr, TFun(mapTy tA, TNamed("Option", [ tA ]))),
+      TFun(tK, TFun(mapTy tA, TNamed("Option", [ tA ]))),
       VBuiltin(fun k ->
           VBuiltin(fun mv ->
-              match k, mv with
-              | VStr key, VMap m ->
-                  match Map.tryFind key m with
-                  | Some v -> VUnion("Some", Some v)
-                  | None -> VUnion("None", None)
-              | _ -> unreachable "the checker rejects 'Map.tryGet' on these arguments"))
+              match Map.tryFind k (asMap "Map.tryGet" mv) with
+              | Some v -> VUnion("Some", Some v)
+              | None -> VUnion("None", None)))
       "has",
-      TFun(TStr, TFun(mapTy tA, TBool)),
-      VBuiltin(fun k ->
-          VBuiltin(fun mv ->
-              match k, mv with
-              | VStr key, VMap m -> VBool(Map.containsKey key m)
-              | _ -> unreachable "the checker rejects 'Map.has' on these arguments"))
+      TFun(tK, TFun(mapTy tA, TBool)),
+      VBuiltin(fun k -> VBuiltin(fun mv -> VBool(Map.containsKey k (asMap "Map.has" mv))))
       "count", TFun(mapTy tA, TInt), VBuiltin(fun v -> VInt(int64 (asMap "Map.count" v).Count))
       "add",
-      TFun(TStr, TFun(tA, TFun(mapTy tA, mapTy tA))),
-      VBuiltin(fun k ->
-          VBuiltin(fun value ->
-              VBuiltin(fun mv ->
-                  match k, mv with
-                  | VStr key, VMap m -> VMap(Map.add key value m)
-                  | _ -> unreachable "the checker rejects 'Map.add' on these arguments")))
+      TFun(tK, TFun(tA, TFun(mapTy tA, mapTy tA))),
+      VBuiltin(fun k -> VBuiltin(fun value -> VBuiltin(fun mv -> VMap(Map.add k value (asMap "Map.add" mv)))))
       "remove",
-      TFun(TStr, TFun(mapTy tA, mapTy tA)),
-      VBuiltin(fun k ->
-          VBuiltin(fun mv ->
-              match k, mv with
-              | VStr key, VMap m -> VMap(Map.remove key m)
-              | _ -> unreachable "the checker rejects 'Map.remove' on these arguments")) ]
+      TFun(tK, TFun(mapTy tA, mapTy tA)),
+      VBuiltin(fun k -> VBuiltin(fun mv -> VMap(Map.remove k (asMap "Map.remove" mv)))) ]
 
 // ---- structural walks [D:structural-walk] --------------------------------
 // the frontier/visited worklist as a builtin: a graph or tree walk needs
@@ -6391,10 +6373,10 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Uuid.fromBytes",
           bd "The uuid of 16 big-endian bytes. Raises on any other length." (Some "Uuid.nil |> Uuid.toBytes |> Uuid.fromBytes") None
           |> named [ "b" ]
-          // ---- Map: the ID-keyed object [D:map-string] ----
+          // ---- Map: any equatable key [D:map-keys] ----
           "Map.ofPairs",
           bd
-              "Build a map from (key, value) pairs. If a key repeats, the last value wins, as when reading JSON."
+              "Build a map from (key, value) pairs. A key is any type with equality (not float). If a key repeats, the last value wins, as when reading JSON."
               (Some "Map.ofPairs [(\"a\", 1); (\"b\", 2)]")
               None
           |> named [ "pairs" ]
@@ -6415,7 +6397,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "m" ]
           "Map.get",
           bd
-              "The value for a key. Raises, naming the key, when it is missing; use tryGet to get an Option instead."
+              "The value for a key. Raises, naming the key (as show renders it), when it is missing; use tryGet to get an Option instead."
               (Some "Map.ofPairs [(\"aaa\", 1)] |> Map.get \"aaa\"")
               None
           |> named [ "key"; "m" ]
@@ -7914,7 +7896,7 @@ let moduleBlurbs: Map<string, string> =
           "Instant", "points on the UTC timeline: now, parse, compare"
           "Json", "JSON helpers: inferShape drafts type decls from a sample"
           "Log", "levelled diagnostics to stderr (WEIR_LOG selects)"
-          "Map", "immutable string-keyed maps: get, add, pairs"
+          "Map", "immutable maps keyed by any equatable type: get, add, pairs"
           "Net", "network probes: portOpen"
           "Option", "presence and absence: map, bind, defaults"
           "Result", "the value or the error message `|> try result` gives: map, defaults, toOption"
@@ -8369,6 +8351,17 @@ let typeEnv: TypeEnv =
         |> Map.change
             "Seq"
             (Option.map (fun ms -> seqSchemeOverrides |> List.fold (fun acc (n, sch) -> Map.add n sch acc) ms))
+        // every key slot demands equality [D:map-keys] — the class `==`
+        // uses, so a float key refuses as `==` on floats does
+        |> Map.change
+            "Map"
+            (Option.map (
+                Map.map (fun _ sch ->
+                    if sch.Forall.Contains "k" then
+                        { sch with Cs = Map [ "k", Set [ Cls.Eq ] ] }
+                    else
+                        sch)
+            ))
       Types =
         Map
             [ fileRow.Name, Record fileRow

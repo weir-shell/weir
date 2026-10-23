@@ -1729,10 +1729,13 @@ let docs = ["{\"aaa\": {\"id\": \"1\"}, \"bbb\": {\"id\": \"2\"}}"] |> from json
 docs |> Map.pairs |> Seq.iter (fun (k, d) -> print $"{k}={d.id}")
 ```
 
-Keys can only be strings, since JSON object keys are strings. A
-`Map<int, …>` field or `from json Map<int, …>` is an error that
-explains this. Pairs come out
-sorted by key, if a key appears twice the last one wins, and
+At the JSON boundary keys can only be strings, since JSON object keys
+are strings. A `Map<int, …>` field or `from json Map<int, …>` is an
+error that shows how to convert the keys with `show`. Inside a
+program a `Map` takes any key with equality — an `int`, a union, a
+tuple, a record — but not a `float`. Pairs come out
+sorted by key (union cases by case name, not declaration order), if
+a key appears twice the last one wins, and
 `to json` writes the object back. The `Map` functions:
 
 - `ofPairs` (last key wins), `pairs`, `keys`, `values` (sorted by

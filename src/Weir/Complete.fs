@@ -1506,7 +1506,14 @@ let private valueKeySlot (values: Map<string, Weir.Eval.Value>) (text: string) (
             let keys =
                 if System.Text.RegularExpressions.Regex.IsMatch(recv, @"^[A-Za-z_]\w*$") then
                     match Map.tryFind recv values with
-                    | Some(Weir.Eval.VMap entries) -> Map.keys entries |> List.ofSeq
+                    | Some(Weir.Eval.VMap entries) ->
+                        // only a string key is offered as a literal [D:map-keys]
+                        entries
+                        |> Seq.choose (fun kv ->
+                            match kv.Key with
+                            | Weir.Eval.VStr k -> Some k
+                            | _ -> None)
+                        |> List.ofSeq
                     | Some(Weir.Eval.VSeq items) ->
                         // the one materialization probe — forced offers,
                         // unforced offers nothing [D:value-key-complete]
