@@ -2946,7 +2946,9 @@ and LoadedModule =
       // each statement with its logical line [D:can-report]: the line
       // carries the segment table, so a capability inside a module can
       // name its own file:line:col like any diagnostic
-      Body: (LogicalLine * CheckedStmt) list }
+      Body: (LogicalLine * CheckedStmt) list
+      // each signed member's /// doc, read from its signature [D:module-signatures]
+      MemberDocs: Map<string, string list> }
 
 // an import failure [D:modules-v1]. File=Some for a module-content error —
 // reported at the module's own site (Line/Col into that file) plus an
@@ -3183,17 +3185,20 @@ type MemberSig =
 // None = script/REPL/-e, where the form refuses with the teaching.
 // Pending = declared, not yet implemented; Signed = every name ever
 // signed (re-implementation guard); Implemented = every module-own
-// binder so far (the sig-after-impl guard).
+// binder so far (the sig-after-impl guard); SigLines = each signature's
+// line, where its /// doc lives (one doc home).
 type SigContext =
     { Pending: Map<string, MemberSig>
       Signed: Set<string>
-      Implemented: Set<string> }
+      Implemented: Set<string>
+      SigLines: Map<string, int> }
 
 module SigContext =
     let empty =
         { Pending = Map.empty
           Signed = Set.empty
-          Implemented = Set.empty }
+          Implemented = Set.empty
+          SigLines = Map.empty }
 
 type CheckedKind =
     | KType of Decl
@@ -4956,7 +4961,8 @@ let rec loadModuleCachedWith
                                     let sc' =
                                         { sc with
                                             Pending = Map.add name sd sc.Pending
-                                            Signed = Set.add name sc.Signed }
+                                            Signed = Set.add name sc.Signed
+                                            SigLines = Map.add name sd.Line sc.SigLines }
 
                                     go chk.Env sc' implLines accBody tail
                                 | KLet _
@@ -5137,6 +5143,14 @@ let rec loadModuleCachedWith
                                   TypeDefs = typeDefs @ reachableDefs
                                   Members = members
                                   PrivateMembers = privateMembers
+                                  MemberDocs =
+                                      let byLine =
+                                          docAttachments rawLines |> List.map (fun d -> d.Line, d.Doc) |> Map.ofList
+
+                                      sc.SigLines
+                                      |> Map.toList
+                                      |> List.choose (fun (n, l) -> Map.tryFind l byLine |> Option.map (fun d -> n, d))
+                                      |> Map.ofList
                                   TypeNames = typeDefs |> List.map fst
                                   TypeOrigins =
                                       let ownOrigin n =

@@ -25738,6 +25738,16 @@ let moduleSignatureTests =
                       let lines = List.ofArray (System.IO.File.ReadAllLines libPath)
                       Expect.equal (Weir.Lsp.hoverAt libPath lines 6 6) (Some "double : int -> int\n\ndoubles") "sig hover")
           }
+          test "a loaded module carries each signed member's /// doc from its signature (the #help source)" {
+              withDir
+                  [ "lib.weir", lib; "main.weir", [ "import \"./lib.weir\"" ] ]
+                  (fun td ->
+                      let main = System.IO.Path.Combine(td, "main.weir")
+
+                      match Weir.Script.fileImportLoader main "./lib.weir" { Start = { Line = 1; Col = 1 }; End = { Line = 1; Col = 1 } } None with
+                      | Ok lm -> Expect.equal lm.MemberDocs (Map.ofList [ "double", [ "doubles" ] ]) "signed member doc only"
+                      | Error e -> failtest e.Message)
+          }
           test "check-against-sig retires the KSL shapes: ctor pattern on an own param; a sig-pinned to yaml" {
               withDir
                   [ "k.weir",

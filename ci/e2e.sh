@@ -9390,12 +9390,14 @@ fi
 if [ "$IS_WINDOWS" != "1" ]; then
     icfg=$(mkweirtmp)
     mkdir -p "$icfg/weir" "$icfg/dot" "$icfg/bin"
-    printf 'module Greet\n\nlet hi : unit -> string\n\nlet hi () = "hi-from-module"\n' > "$icfg/dot/greet.weir"
+    printf 'module Greet\n\n/// greets-from-the-module-doc\nlet hi : unit -> string\n\nlet hi () = "hi-from-module"\n' > "$icfg/dot/greet.weir"
     printf '#init\n\nimport "./greet.weir"\n\nlet shout () = Greet.hi ()\n' > "$icfg/dot/init.weir"
     ln -s "$icfg/dot/init.weir" "$icfg/weir/init.weir"
     out=$(printf 'print (shout ())\nprint (Greet.hi ())\n#quit\n' | XDG_CONFIG_HOME="$icfg" $BIN 2>&1)
     expect "an init file imports a module beside its real location" "hi-from-module" "$out"
     echo "$out" | grep -qF "not loaded" && fail "the importing init must load: $out"
+    out=$(printf '#help Greet.hi\n#quit\n' | XDG_CONFIG_HOME="$icfg" $BIN 2>&1)
+    expect "#help shows an init-imported member's /// doc" "greets-from-the-module-doc" "$out"
     ckout=$($BIN check "$icfg/weir/init.weir" 2>&1) || fail "check through the init symlink must resolve the import: $ckout"
 
     printf 'import "./greet.weir"\n\nprint (Greet.hi ())\nprint Self.scriptPath\n' > "$icfg/dot/tool.weir"
