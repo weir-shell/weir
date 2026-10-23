@@ -141,7 +141,7 @@ See [`Map`](reference/types.md#map).
 
 ## Modules and imports
 
-### Can a module have a top-level `let z = ls` or `let v = $(git --version)`?
+### Can a module have a top-level `let z = ls` or `let v = git --version`?
 
 Yes. Both are lazy: importing runs nothing, and each use runs them
 again in the current directory. What a module can't do is run a
@@ -155,7 +155,7 @@ let z : seq<FileRow>
 let z = ls
 
 let v : seq<string>
-let v = $(git --version)
+let v = git --version
 
 let branches : unit -> int
 let branches () = git branch |> Seq.length
