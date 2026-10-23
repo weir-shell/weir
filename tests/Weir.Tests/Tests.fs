@@ -31582,6 +31582,8 @@ let portFindingsTests =
                   Expect.stringContains m "^$tool" $"{line}: the run-time spelling"
                   Expect.isFalse (m.Contains "Expecting") $"{line}: no FParsec list"
                   Expect.isFalse (m.Contains "unbound variable") $"{line}: no unbound reading"
+          } ]
+
 // dynamic values from the tool itself [D:sig-dynamic-complete]: the cobra
 // answer parser, git's fixed position table, the trust rule, the
 // `let dynamic` setting, the composition over fake hooks, the bounded
