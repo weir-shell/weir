@@ -2377,7 +2377,9 @@ if clean then sh -c "echo acting"
 print (show (let r = sh -c "echo x" | complete in r.exitCode))
 ```
 - Tuples: `(a, b)` literals, `int * string` types, `| (x, y) ->`
-  patterns (arity 2+). `Seq.pairwise : seq<'a * 'a>`, `Seq.zip`.
+  patterns (arity 2+). Coverage composes per component: arms covering
+  every `(true, _)`/`(false, _)` or `Some`/`None` pair complete the
+  match with no catch-all. `Seq.pairwise : seq<'a * 'a>`, `Seq.zip`.
   Destructure ANYWHERE irrefutable: `let x, y = pair`,
   `let (k, _) = pair`, `fun (k, v) -> ...` (parens required on
   params). A SINGLE-case union's constructor is irrefutable too

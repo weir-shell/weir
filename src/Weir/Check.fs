@@ -2696,6 +2696,110 @@ let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
 let private generalizeBinding (ctx: Ctx) (env: TypeEnv) (name: string, ty: Ty) : string * Scheme =
     name, generalizeLet ctx env (finalTy ctx ty)
 
+// A column's constructor signature for the pattern-matrix walk: a closed
+// set (bool, a union, a tuple's one constructor, a seq's []/cons) or
+// Open — ints, strings, records and anything unresolved, where only an
+// irrefutable pattern covers.
+type private CtorSig =
+    | Closed of (string * Ty list) list
+    | Open
+
+let private ctorSig (env: TypeEnv) (ty: Ty) : CtorSig =
+    match ty with
+    | TBool -> Closed [ "true", []; "false", [] ]
+    | TTuple tys -> Closed [ "(,)", tys ]
+    // the flat seq rule [D:seq-patterns]: [] and an irrefutable cons
+    | TSeq _ -> Closed [ "[]", []; "_ :: _", [] ]
+    | TNamed(name, targs) ->
+        match typeDefFor env name with
+        | Some(Union def) ->
+            def.Cases
+            |> List.map (fun (case, payload) ->
+                case,
+                (match payload with
+                 | Some pt -> [ substParams def.Params targs pt ]
+                 | None -> []))
+            |> Closed
+        | _ -> Open
+    | _ -> Open
+
+// a pattern's sub-patterns under constructor `c`, or None when the
+// pattern cannot match it; an irrefutable pattern matches every
+// constructor with wildcard sub-patterns
+let private specializePat (c: string) (arity: int) (p: Pattern) : Pattern list option =
+    let wild = { p with PKind = PWildcard }
+
+    match p.PKind with
+    | PTuple ps when c = "(,)" -> Some ps
+    | _ when isIrrefutablePat p -> Some(List.replicate arity wild)
+    | PBool b when c = (if b then "true" else "false") -> Some []
+    | PCase(case, arg) when case = c ->
+        match arg, arity with
+        | Some a, 1 -> Some [ a ]
+        | None, 0 -> Some []
+        | _ -> None
+    | PSeqNil when c = "[]" -> Some []
+    | PCons(h, t) when c = "_ :: _" && isIrrefutablePat h && isIrrefutablePat t -> Some []
+    | _ -> None
+
+let private witnessText (c: string) (args: string list) =
+    match c, args with
+    | "(,)", parts -> "(" + String.concat ", " parts + ")"
+    | _, [] -> c
+    | _, [ a ] when a = "_" || not (a.Contains " ") || a.StartsWith "(" -> $"{c} {a}"
+    | _, [ a ] -> $"{c} ({a})"
+    | _, parts -> c + " (" + String.concat ", " parts + ")"
+
+// The pattern-matrix usefulness walk (Maranget's): is a row of
+// wildcards over `tys` useful against `rows`? Some witness (one rendered
+// pattern per column) names a value no row covers; None = covered.
+// Coverage composes per component — a tuple column expands into its
+// components, a union column into its payloads.
+let rec private uncoveredWitness (env: TypeEnv) (tys: Ty list) (rows: Pattern list list) : string list option =
+    match tys with
+    | [] -> if List.isEmpty rows then Some [] else None
+    | ty :: restTys ->
+        let defaultRows () =
+            rows
+            |> List.choose (fun r ->
+                match r with
+                | p :: rest when isIrrefutablePat p -> Some rest
+                | _ -> None)
+
+        match ctorSig env ty with
+        | Open -> uncoveredWitness env restTys (defaultRows ()) |> Option.map (fun w -> "_" :: w)
+        | Closed ctors ->
+            let used c arity =
+                rows
+                |> List.exists (fun r ->
+                    match r with
+                    | p :: _ when not (isIrrefutablePat p) -> (specializePat c arity p).IsSome
+                    | _ -> false)
+
+            let missing = ctors |> List.filter (fun (c, args) -> not (used c args.Length))
+
+            match missing with
+            | (c, args) :: _ ->
+                // an unused constructor: only the wildcard rows can cover it
+                uncoveredWitness env restTys (defaultRows ())
+                |> Option.map (fun w -> witnessText c (List.replicate args.Length "_") :: w)
+            | _ ->
+                ctors
+                |> List.tryPick (fun (c, args) ->
+                    let arity = args.Length
+
+                    let specialized =
+                        rows
+                        |> List.choose (fun r ->
+                            match r with
+                            | p :: rest -> specializePat c arity p |> Option.map (fun sub -> sub @ rest)
+                            | [] -> None)
+
+                    uncoveredWitness env (args @ restTys) specialized
+                    |> Option.map (fun w ->
+                        let sub, rest = List.splitAt arity w
+                        witnessText c sub :: rest))
+
 // Exhaustiveness [D:exhaustiveness-hard-error]. Only unguarded arms
 // count — a guarded arm can fail at runtime. Coverage is recursive
 // through union payloads (Some (Some x) / Some None / None is
@@ -2752,10 +2856,12 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
             // rule): a var or wildcard arm must close it
             [ "_" ]
         | TTuple _ ->
-            // bounded rule: only an all-irrefutable tuple arm (or _/var)
-            // completes; per-component product analysis is out of scope
-            // (tuple-exhaustiveness-bounded divergence row)
-            [ "_" ]
+            // per-component product coverage [D:exhaustiveness-hard-error]:
+            // the pattern-matrix walk names one uncovered tuple
+            match uncoveredWitness env [ ty ] (pats |> List.map (fun p -> [ p ])) with
+            | Some [ w ] -> [ w ]
+            | Some _ -> [ "_" ]
+            | None -> []
         | TSeq _ ->
             // [D:seq-patterns]: [] + irrefutable-cons complete (F#'s
             // list rule, flat v1 — chained-cons completeness wants a
@@ -2857,6 +2963,8 @@ let private exhaustive
             match scrutTy with
             | TNamed _
             | TBool
+            // per-component product coverage, the matrix walk
+            | TTuple _
             // [D:seq-patterns]: [] + irrefutable-cons is a complete
             // seq analysis (F#'s list rule)
             | TSeq _ ->

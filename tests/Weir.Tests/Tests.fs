@@ -16231,11 +16231,62 @@ let tupleTests =
               | Ok te -> Expect.equal (formatTy te.Ty) "int" ""
               | Error terr -> failtest (formatError terr)
           }
-          test "tuples x exhaustiveness: refutable tuple arm needs a catch-all (bounded rule)" {
+          test "tuples x exhaustiveness: int literal components never complete (per-component)" {
               let terr = checkErr "match (1, 2) with | (0, _) -> \"z\" | (1, _) -> \"o\""
-              Expect.stringContains (formatError terr) "catch-all" ""
+              Expect.stringContains (formatError terr) "missing: (_, _)" ""
 
               expectValue "match (1, 2) with | (0, _) -> \"z\" | _ -> \"other\"" (VStr "other")
+          }
+          test "tuple coverage composes per component (starship port) [D:exhaustiveness-hard-error]" {
+              // the matrix walk: every Option x Option / bool x bool case
+              // listed is total, no catch-all owed
+              errorsCleanIn
+                  "tup.weir"
+                  [ "let f a b ="
+                    "    match (a, b) with"
+                    "    | Some x, Some y -> x + y"
+                    "    | Some x, None -> x"
+                    "    | None, Some y -> y"
+                    "    | None, None -> 0"
+                    "print (show (f (Some 1) None))" ]
+                  "Option<int> * Option<int>"
+
+              errorsCleanIn
+                  "tup5.weir"
+                  [ "let a = true"
+                    "let b = false"
+                    "let r ="
+                    "    match (a, b) with"
+                    "    | (true, true) -> 1"
+                    "    | (true, false) -> 2"
+                    "    | (false, true) -> 3"
+                    "    | (false, false) -> 4"
+                    "print (show r)" ]
+                  "bool * bool"
+
+              expectValue "match (false, true) with | (true, _) -> 1 | (false, true) -> 2 | (false, false) -> 3" (VInt 2L)
+              // nested through a payload's tuple, and a wildcard column
+              expectValue
+                  "match (Some (1, true), 0) with | (Some (_, true), _) -> 1 | (Some (_, false), _) -> 2 | (None, _) -> 3"
+                  (VInt 1L)
+          }
+          test "a tuple gap names one missing tuple pattern" {
+              let msg (src: string) = (checkErr src).Message
+
+              Expect.stringContains
+                  (msg "match (Some 1, Some 2) with | (Some x, Some y) -> x | (None, None) -> 0 | (Some x, None) -> x")
+                  "missing: (None, Some _)"
+                  "the uncovered component pair"
+
+              Expect.stringContains
+                  (msg "match (true, Some (1, false)) with | (true, _) -> 1 | (false, Some (_, true)) -> 2 | (false, None) -> 3")
+                  "missing: (false, Some (_, false))"
+                  "the walk recurses through a payload's tuple"
+
+              Expect.stringContains
+                  (msg "match (true, false) with | (true, true) -> 1 | (false, _) -> 2 | (true, false) when false -> 3")
+                  "missing: (true, false)"
+                  "a guarded arm never covers"
           }
           test "tuple arity mismatch is located" {
               let terr = checkErr "match (1, 2) with | (a, b, c) -> a"

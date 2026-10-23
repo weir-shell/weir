@@ -207,4 +207,17 @@ A match that doesn't cover every case is an error, not a warning.
 Likewise, an arm that can never be reached because a catch-all comes
 before it is an error. When matching on a union, listing every case
 makes the match complete; literal arms and record arms that can fail
-never do.
+never do. A tuple is complete when its arms cover every combination of
+its components — `(true, _)` and `(false, _)`, or all four
+`Some`/`None` pairs — and the error names one combination that is
+missing (`missing: (None, Some _)`).
+
+```weir
+let both a b =
+    match (a, b) with
+    | Some x, Some y -> x + y
+    | Some x, None -> x
+    | None, Some y -> y
+    | None, None -> 0
+print (show (both (Some 1) None))
+```
