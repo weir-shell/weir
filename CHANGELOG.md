@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-The fixes below were found porting starship's scripts to weir.
+Many of the changes and fixes below were found porting starship to weir.
 
 ### Changed
 

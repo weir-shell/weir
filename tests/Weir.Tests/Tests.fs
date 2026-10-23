@@ -25906,7 +25906,7 @@ let moduleSignatureTests =
                   (fun td ->
                       let main = System.IO.Path.Combine(td, "main.weir")
 
-                      match Weir.Script.fileImportLoader main "./lib.weir" { Start = { Line = 1; Col = 1 }; End = { Line = 1; Col = 1 } } None with
+                      match Weir.Script.fileImportLoader Weir.Script.assumeResolver main "./lib.weir" { Start = { Line = 1; Col = 1 }; End = { Line = 1; Col = 1 } } None with
                       | Ok lm -> Expect.equal lm.MemberDocs (Map.ofList [ "double", [ "doubles" ] ]) "signed member doc only"
                       | Error e -> failtest e.Message)
           }
