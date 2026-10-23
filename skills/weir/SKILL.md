@@ -3242,6 +3242,7 @@ the checker's own environment [D:surface-gate] — same contract as above:
 - type `Poll`: { `timeout` `interval` }
 - type `Repeat`: { `interval` `timeout` }
 - type `PromptStatus`: { `ok` `exit` }
+- type `PromptStatus`: { `ok` `exit` `duration` }
 - type `Result`: `Ok` `Error`
 - type `Retry`: { `attempts` `delay` `timeout` }
 - type `ServerConfig`: { `port` `maxConcurrent` `bodyTimeout` `maxBody` }

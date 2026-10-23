@@ -4815,8 +4815,31 @@ WEOF
     echo "$spout" | grep -qF "SX3> " || fail "the provider must see the bare command's exit code: $spout"
     echo "$spout" | grep -qF "SXB> " || fail "a non-command error must carry exit = None: $spout"
     echo "$spout" | grep -qF "SOK> " || fail "a clean entry must paint ok: $spout"
+    # duration [D:prompt-duration]: the last entry's wall time, 0 before
+    # the first entry; a blank line keeps it
+    cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
+#init
+let prompt st =
+    if st.duration > 400ms then "DSLOW> " else "DQ> "
 
-    echo "e2e ok: #session prompt — an init provider paints at a tty (commands run when called), a raising one falls back with one note, only SGR passes, and a bool provider carries the status"
+#session {
+    prompt = prompt
+}
+WEOF
+    spout=$(printf 'SLEEP 900\nSEND Duration.sleep 700ms\\r\nSLEEP 1200\nSEND \\r\nSLEEP 400\nSEND 1 + 1\\r\nSLEEP 400\nSEND #quit\\r\n' \
+        | XDG_CONFIG_HOME="$spdir/cfg" XDG_STATE_HOME="$spdir/state" python3 "$ptyrun" 14 "$BIN")
+    # (pty chunks split anywhere: order is read off line numbers; an empty
+    # DSLOW prompt paints once after the sleep, then twice for the blank
+    # line — its own repaint and the next prompt)
+    firstQ=$(echo "$spout" | grep -nF 'DQ> ' | head -1 | cut -d: -f1)
+    firstSlow=$(echo "$spout" | grep -nF 'DSLOW> ' | head -1 | cut -d: -f1)
+    lastSlow=$(echo "$spout" | grep -nF 'DSLOW> ' | tail -1 | cut -d: -f1)
+    lastQ=$(echo "$spout" | grep -nF 'DQ> ' | tail -1 | cut -d: -f1)
+    [ -n "$firstQ" ] && [ -n "$firstSlow" ] && [ "$firstQ" -lt "$firstSlow" ] || fail "the duration is 0 before the first entry, then the slow entry's: $spout"
+    [ "$(echo "$spout" | grep -oF 'DSLOW> \r\x1b[7C' | wc -l)" -ge 3 ] || fail "a blank line keeps the last duration: $spout"
+    [ "$lastQ" -gt "$lastSlow" ] || fail "a fast entry's duration replaces the slow one: $spout"
+
+    echo "e2e ok: #session prompt — an init provider paints at a tty (commands run when called), a raising one falls back with one note, only SGR passes, and a bool provider carries the status and the entry's duration"
 
     # ---- Term.title [D:term-title] -------------------------------------------
     # one OSC 0 per call, its text sanitized (ESC/BEL dropped, so the

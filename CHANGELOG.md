@@ -140,6 +140,10 @@ Many of the changes and fixes below were found porting starship to weir.
   command or uses the network: it would still run on `--help` or a bad
   argument. Reads, printing, function definitions and a `within` that
   wraps the load are fine.
+- **`PromptStatus.duration`: how long the last entry took.** A
+  `PromptStatus -> string` prompt can show it the way starship's
+  `cmd_duration` does — `if st.duration > 2s then $"took
+  {st.duration} " else ""`. It is `0ms` before the first entry.
 
 ### Changed
 

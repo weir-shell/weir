@@ -29019,6 +29019,13 @@ let aliasTests =
               Expect.equal (Weir.Repl.visibleWidthForTest "🌿> ") 4 "an emoji counts two cells"
               Expect.equal (Weir.Repl.visibleWidthForTest "é> ") 3 "a combining mark counts none"
               Expect.equal (Weir.Repl.visibleWidthForTest " x> ") 5 "a private-use glyph counts one"
+          }
+          test "(k3) PromptStatus carries the entry's duration [D:prompt-duration]" {
+              let dom = Weir.Script.promptStatusDomain
+              Expect.isTrue (dom (TRowVar("r", [ "duration", TDur ]))) "a provider reading duration as a Duration is accepted"
+              Expect.isTrue (dom (TRowVar("r", [ "ok", TBool; "duration", TVar "a" ]))) "a forwarded duration is accepted"
+              Expect.isFalse (dom (TRowVar("r", [ "duration", TInt ]))) "a duration pinned to int refuses"
+              expectValue "let st = { ok = true; exit = None; duration = 2500ms } in st.duration > 2s" (VBool true)
           } ]
 
 // ---- dynamic command heads [D:dynamic-head] --------------------------

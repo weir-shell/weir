@@ -39,9 +39,10 @@ let source =
       "type Auth = NoAuth | Bearer of Secret | Basic of string * Secret"
       // the #session prompt provider's argument [D:prompt-status-arg]:
       // ok is the red-prompt tint; exit carries a bare command's nonzero
-      // code (None after a non-command error, and when ok). Consumers
-      // read fields, so the record grows without breaking a prompt.
-      "type PromptStatus = { ok: bool; exit: Option<int> }"
+      // code (None after a non-command error, and when ok); duration is
+      // the last entry's wall time. Consumers read fields, so the record
+      // grows without breaking a prompt.
+      "type PromptStatus = { ok: bool; exit: Option<int>; duration: Duration }"
       // File.readFrom's result [D:file-readfrom]: the complete lines and
       // the offset to pass next time, so a poll is one call
       "type FileChunk = { lines: seq<string>; next: Size }"

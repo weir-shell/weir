@@ -15,9 +15,10 @@ let private defaultPrompt = "weir> "
 // the declarations bind, so it can call the init's own functions.
 // The PromptStatus argument [D:red-prompt] [D:prompt-status-arg]:
 // ok is the tint (true when the last entry ran clean), exit a bare
-// command's nonzero code — a custom prompt owns its colors, so the
-// status arrives as data instead of a paint.
-let mutable private promptProvider: ((bool * int option) -> string) option = None
+// command's nonzero code, duration the last entry's wall time — a
+// custom prompt owns its colors, so the status arrives as data instead
+// of a paint.
+let mutable private promptProvider: ((bool * int option * int64) -> string) option = None
 
 // the prompt in effect for the entry being read; sanitized text (SGR
 // allowed), its visible width, and a same-width continuation prompt.
@@ -152,13 +153,20 @@ let mutable private lastErrored = false
 // tint is
 let mutable private lastExit: int option = None
 
+// the duration twin [D:prompt-duration]: the last entry's wall time in
+// ms, from submit to the next prompt (0 before the first entry). A
+// blank or comment-only entry starts no clock, so it leaves the last
+// duration in place, as it leaves the tint
+let mutable private lastDurationMs = 0L
+let mutable private entryStarted: int64 option = None
+
 let private computePrompt () =
     match promptProvider with
     | None -> defaultPrompt
     | Some _ when Console.IsInputRedirected -> defaultPrompt
     | Some f ->
         try
-            f (not lastErrored, lastExit) |> sanitizePromptForTest
+            f (not lastErrored, lastExit, lastDurationMs) |> sanitizePromptForTest
         with
         | Eval.ExitRequest _ -> reraise ()
         | :? Session.Interrupted -> defaultPrompt
@@ -4093,7 +4101,22 @@ let rec private loop (state: State) =
         fun n -> Map.tryFind n state.Aliases |> Option.map (fun a -> (a.Exe, a.Prefix))
     currentVals.Value <- state.Values
 
-    match readInput () with
+    match entryStarted with
+    | Some t ->
+        lastDurationMs <- int64 (Diagnostics.Stopwatch.GetElapsedTime t).TotalMilliseconds
+        entryStarted <- None
+    | None -> ()
+
+    let entry = readInput ()
+
+    if
+        not (isNull entry)
+        && entry.Split '\n'
+           |> Array.exists (fun l -> Script.classifyLine l = Script.LineKind.Code)
+    then
+        entryStarted <- Some(Diagnostics.Stopwatch.GetTimestamp())
+
+    match entry with
     | null -> ()
     | line when
         line.Split '\n'
@@ -4723,14 +4746,17 @@ let private loadInit (baseState: State) : State =
                         let f = Eval.eval venv te
 
                         promptProvider <-
-                            Some(fun (ok, exit) ->
+                            Some(fun (ok, exit, durationMs) ->
                                 let ex =
                                     match exit with
                                     | Some n -> Eval.VUnion("Some", Some(Eval.VInt(int64 n)))
                                     | None -> Eval.VUnion("None", None)
 
                                 let st =
-                                    Eval.VRecord("PromptStatus", [ "ok", Eval.VBool ok; "exit", ex ])
+                                    Eval.VRecord(
+                                        "PromptStatus",
+                                        [ "ok", Eval.VBool ok; "exit", ex; "duration", Eval.VDur durationMs ]
+                                    )
 
                                 match Eval.apply f st with
                                 | Eval.VStr s -> s
