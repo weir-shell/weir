@@ -20,6 +20,13 @@ Many of the changes and fixes below were found porting starship to weir.
   or flag names. It gets 300 ms and 1 MiB, and pressing another key
   stops it (the key is kept); with no answer you get what the signature
   alone gives. REPL only; the editor is unchanged.
+- **`import` works at the REPL prompt and in `weir -e`.** A relative
+  path resolves against the session's current directory when the
+  import runs (in `-e`, where weir was started), and `weir:<name>`
+  finds the nearest `.weir/` above it. The module rules are a script's.
+  Running the import again after editing the module reloads it.
+  `#help Alias.member` shows the member's `///` doc, and `#save` keeps
+  the import with its path written out absolute.
 
 ### Changed
 

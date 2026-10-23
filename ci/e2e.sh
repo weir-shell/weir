@@ -9193,9 +9193,10 @@ files=$(printf '%s' "$out" | grep -o '"file":"[^"]*tmp[^"]*"' | sed 's/.*tmp/tmp
 [ "$files" -le 1 ] || fail "check --json must spell every file's dir ONE way: $out"
 echo "e2e ok: check --json carries the module's file identity (one spelling per document)"
 
-# import is script-only (-e has no file to resolve against)
+# -e imports against the process cwd [D:repl-import]; a lone import is
+# refused like a lone let
 out=$($BIN -e 'import "./x.weir"' 2>&1 || true)
-expect "import is script-only (-e rejects it)" "import is script-only" "$out"
+expect "-e: a missing import names its path" "no file at" "$out"
 
 # module / import are reserved words
 out=$($BIN -e 'let import = 1' 2>&1 || true)
@@ -9408,6 +9409,44 @@ if [ "$IS_WINDOWS" != "1" ]; then
     expect "Self.scriptPath keeps the link" "$icfg/bin/tool.weir" "$out"
     rm -rf "$icfg"
 fi
+
+# ---- import at the prompt and in -e [D:repl-import]: a relative path
+# resolves against the session cwd when the import runs (cd moves it);
+# a re-import after an edit reloads; #help shows a member's /// doc;
+# #save carries the import, re-spelled absolute
+rdir=$(mkweirtmp)
+mkdir -p "$rdir/sub"
+printf 'module M\n\n/// doubles-from-the-module-doc\nlet twice : int -> int\nlet twice n = n * 2\nlet v : int\nlet v = 1\n' > "$rdir/m.weir"
+printf 'module M\n\n/// doubles-from-the-module-doc\nlet twice : int -> int\nlet twice n = n * 2\nlet v : int\nlet v = 42\n' > "$rdir/next.weir"
+printf 'module S\nlet w : string\nlet w = "from-sub"\n' > "$rdir/sub/s.weir"
+out=$(cd "$rdir" && printf '%s\n' 'import "./m.weir"' 'print $"v={M.v}"' 'let y = M.twice 5' 'cp next.weir m.weir' 'import "./m.weir"' 'print $"v={M.v}"' '#help M.twice' 'cd sub' 'import "./s.weir"' 'print S.w' "#save $rdir/saved.weir" '#quit' | $BIN 2>&1)
+expect "prompt import binds the members" "module M imported (2 members: twice, v)" "$out"
+expect "prompt import: the value" "v=1" "$out"
+expect "a re-import after an edit reloads" "module M reloaded" "$out"
+expect "the reloaded value" "v=42" "$out"
+expect "#help shows a prompt-imported member's /// doc" "doubles-from-the-module-doc" "$out"
+expect "a relative import after cd resolves from the new cwd" "from-sub" "$out"
+saved=$(cat "$rdir/saved.weir")
+if [ "$IS_WINDOWS" != "1" ]; then
+    expect "#save carries the import, absolute" "import \"$rdir/m.weir\" as M" "$saved"
+else
+    expect "#save carries the import" "m.weir\" as M" "$saved"
+fi
+ckout=$($BIN check "$rdir/saved.weir" 2>&1) || fail "the saved session must check: $ckout"
+# the module rules hold at the prompt: a non-module and a command at import refuse
+printf 'let x = 1\n' > "$rdir/plain.weir"
+printf 'module C\nlet x : string\nlet x = echo hi | line\n' > "$rdir/cmd.weir"
+out=$(cd "$rdir" && printf '%s\n' 'import "./plain.weir" as P' 'import "./cmd.weir"' '#quit' | $BIN 2>&1)
+expect "prompt import of a non-module refuses" "is not a module" "$out"
+expect "prompt import refuses a command at import" "cannot run a command at import" "$out"
+# -e: newline-separated statements, the import resolving from the process cwd
+out=$(cd "$rdir" && $BIN -e 'import "./m.weir" as K
+K.twice K.v' 2>&1) || fail "-e import: $out"
+expect "-e imports against the process cwd" "84 : int" "$out"
+out=$(cd "$rdir" && $BIN -e 'import "./m.weir" as K' 2>&1 || true)
+expect "-e refuses a lone import" "-e takes an expression, not an import" "$out"
+echo "e2e ok: import at the prompt and in -e (cwd-relative, reload, #help doc, #save, module rules)"
+rm -rf "$rdir"
 
 # ---- File.append under concurrent appenders [D:append-oappend] ------------
 # N weir processes append to one file at once; every call must land
