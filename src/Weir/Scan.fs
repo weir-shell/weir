@@ -26,6 +26,20 @@ type private ScanMode =
 // the scanner's state between chunks: the open modes, innermost first
 type StringState = private StringState of ScanMode list
 
+/// the last index of the escape whose backslash is at `i`: one char,
+/// or a whole `\u{…}` [D:string-escapes] — its braces are no hole
+/// opener in an interpolated string. Every string scanner skips by it.
+let escapeEnd (s: string) (i: int) : int =
+    if i + 2 < s.Length && s[i + 1] = 'u' && s[i + 2] = '{' then
+        let mutable j = i + 3
+
+        while j < s.Length && j < i + 10 && System.Uri.IsHexDigit s[j] do
+            j <- j + 1
+
+        if j < s.Length && s[j] = '}' then j else i + 1
+    else
+        min (i + 1) (s.Length - 1)
+
 let private stringScanFrom
     (modes0: ScanMode list)
     (f: 'a -> int -> char -> 'a)
@@ -79,7 +93,7 @@ let private stringScanFrom
         | (Plain
           | Interp as m) :: rest ->
             if c = '\\' && i + 1 < s.Length then
-                i <- i + 1
+                i <- escapeEnd s i
             elif c = '"' then
                 modes <- rest
             elif m = Interp && c = '{' then

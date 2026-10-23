@@ -357,6 +357,10 @@ echo --flag="quoted v" // the quoted part would be its own argument; quote the w
 - Literal patterns work (`| 0 ->`, `| "yes" ->`, `| () ->`, nested in
   constructors) but int/string literals NEVER complete a match alone —
   add a `_`/var arm or it is a hard error. Guards remain legal.
+- Ordinary and `$"…"` strings escape `\"` `\\` `\n` `\t`, `\e` (ESC,
+  for terminal sequences) and `\u{1F600}` (1–6 hex digits, one code
+  point; a surrogate or a value past 10FFFF is a parse error)
+  [D:string-escapes]; any other backslash is a parse error.
 - Raw strings, F#'s two kinds, both SINGLE-LINE: `@"..."` verbatim
   (backslashes literal; `""` = one embedded quote) and `"""..."""`
   (no escapes at all; bare `"` fine inside), and the RAW INTERPOLATED

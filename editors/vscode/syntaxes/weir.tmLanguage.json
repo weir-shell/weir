@@ -219,7 +219,7 @@
       "name": "string.interpolated.weir",
       "patterns": [
         {
-          "match": "\\\\.",
+          "match": "\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|.)",
           "name": "constant.character.escape.weir"
         },
         {
@@ -284,7 +284,7 @@
       "name": "string.quoted.double.weir",
       "patterns": [
         {
-          "match": "\\\\.",
+          "match": "\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|.)",
           "name": "constant.character.escape.weir"
         }
       ]
