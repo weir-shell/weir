@@ -30,6 +30,11 @@ Many of the changes and fixes below were found porting starship to weir.
   too. A UTF-16 surrogate (`\u{D800}`) or a value past `\u{10FFFF}` is
   a parse error that says so, and an unknown escape's error now lists
   every escape.
+- **`Str.rreplace pattern replacement s` replaces every regex match.**
+  In the replacement, `$1` or `${1}` is a capture group, `$0` the whole
+  match and `$$` a literal `$`: `Str.rreplace @"(\w+)@(\w+)" "$2 at $1"`.
+  Any other `$`, or a group the pattern doesn't have, is an error.
+  `Str.replace` stays literal.
 
 ### Changed
 

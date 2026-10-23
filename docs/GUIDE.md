@@ -1275,6 +1275,16 @@ Str.rmatchAll @"let (\w+) = (\d+)" src
 |> Seq.iter print
 ```
 
+To rewrite every match, use `Str.rreplace pattern replacement s`. In
+the replacement, `$1` (or `${1}`, when a digit follows) is a capture
+group, `$0` the whole match, and `$$` a literal `$`. A `$` followed by
+anything else is an error, and so is a group the pattern doesn't
+have. `Str.replace` is the literal version, with no regex:
+
+```weir
+"me@host, you@box" |> Str.rreplace @"(\w+)@(\w+)" "$2 at $1" |> print
+```
+
 If a command can print structured output, use that instead:
 `|> from json T` or `|> from yaml T` beats parsing text by hand.
 

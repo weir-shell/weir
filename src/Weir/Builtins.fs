@@ -818,6 +818,115 @@ let private rsplitImpl: Value =
                 )
             | _ -> unreachable "the checker rejects 'rsplit' on these arguments"))
 
+// rreplace [D:str-rreplace]: replace every regex match, the r-family's
+// pattern-first shape. The replacement is weir's own small language,
+// not .NET's: `$1`/`${1}` a group, `$0` the whole match, `$$` one `$`.
+// Anything else after a `$` raises — .NET's `$&`/`$_`/`$+` would be a
+// second dialect, and `${name}` has no group to name [D:no-named-groups]
+// — and a group past the pattern's count raises before any match runs.
+type private ReplPart =
+    | RLit of string
+    | RGroup of int
+
+let private parseReplacement (groups: int) (rep: string) : ReplPart list =
+    let parts = ResizeArray<ReplPart>()
+    let lit = System.Text.StringBuilder()
+
+    let group (g: int) (shown: string) =
+        if g > groups then
+            let has =
+                match groups with
+                | 0 -> "has no groups"
+                | 1 -> "has 1 group"
+                | n -> $"has {n} groups"
+
+            failwith $"rreplace: the replacement refers to {shown}, but the pattern {has}"
+
+        if lit.Length > 0 then
+            parts.Add(RLit(lit.ToString()))
+            lit.Clear() |> ignore
+
+        parts.Add(RGroup g)
+
+    let lone () =
+        failwith "rreplace: a '$' in the replacement starts a group — write $1 or ${1} for a group, $0 for the whole match, $$ for a literal '$'"
+
+    let mutable i = 0
+
+    while i < rep.Length do
+        let c = rep[i]
+
+        if c <> '$' then
+            lit.Append c |> ignore
+            i <- i + 1
+        elif i + 1 >= rep.Length then
+            lone ()
+        elif rep[i + 1] = '$' then
+            lit.Append '$' |> ignore
+            i <- i + 2
+        elif System.Char.IsAsciiDigit rep[i + 1] then
+            let mutable j = i + 1
+
+            while j < rep.Length && System.Char.IsAsciiDigit rep[j] do
+                j <- j + 1
+
+            let digits = rep.Substring(i + 1, j - i - 1)
+
+            match System.Int32.TryParse digits with
+            | true, g -> group g $"${digits}"
+            | _ -> group System.Int32.MaxValue $"${digits}"
+
+            i <- j
+        elif rep[i + 1] = '{' then
+            match rep.IndexOf('}', i + 2) with
+            | -1 -> failwith "rreplace: '${' in the replacement needs its closing '}', as in ${1}"
+            | close ->
+                let name = rep.Substring(i + 2, close - i - 2)
+
+                if name <> "" && name |> Seq.forall System.Char.IsAsciiDigit then
+                    match System.Int32.TryParse name with
+                    | true, g -> group g $"${{{name}}}"
+                    | _ -> group System.Int32.MaxValue $"${{{name}}}"
+                else
+                    failwith
+                        $"rreplace: '${{{quoteData name}}}' names a group, but weir patterns have no named groups — refer to it by position, ${{1}} for the first"
+
+                i <- close + 1
+        else
+            lone ()
+
+    if lit.Length > 0 then
+        parts.Add(RLit(lit.ToString()))
+
+    List.ofSeq parts
+
+let private rreplaceImpl: Value =
+    VBuiltin(fun patV ->
+        VBuiltin(fun repV ->
+            VBuiltin(fun subjectV ->
+                match patV, repV, subjectV with
+                | VStr pat, VStr rep, VStr s ->
+                    let re = compiledOrRaise pat
+                    let parts = parseReplacement (re.GetGroupNumbers().Length - 1) rep
+                    let sb = System.Text.StringBuilder()
+                    let mutable pos = 0
+                    let mutable m = Check.regexGuarded pat s (fun () -> re.Match s)
+
+                    while m.Success do
+                        sb.Append(s, pos, m.Index - pos) |> ignore
+
+                        for p in parts do
+                            match p with
+                            | RLit t -> sb.Append t |> ignore
+                            | RGroup g -> sb.Append m.Groups[g].Value |> ignore
+
+                        pos <- m.Index + m.Length
+                        m <- Check.regexGuarded pat s m.NextMatch
+
+                    sb.Append(s, pos, s.Length - pos) |> ignore
+                    VStr(sb.ToString())
+                | _ -> unreachable "the checker rejects 'rreplace' on these arguments")))
+
 // Path.glob [D:path-glob] — the standard subset (`*` within-segment,
 // `**` cross-segment, `?`, `[abc]`/`[!abc]`), bash's laws: `*` never
 // matches dotfiles (a `.`-leading segment does); sorted per level
@@ -3014,7 +3123,8 @@ let private strMembers: (string * Ty * Value) list =
       "isMatch", TFun(TStr, TFun(TStr, TBool)), isMatchImpl
       "rmatch", TFun(TStr, TFun(TStr, TNamed("Option", [ TSeq TStr ]))), rmatchImpl
       "rmatchAll", TFun(TStr, TFun(TStr, TSeq(TSeq TStr))), rmatchAllImpl
-      "rsplit", TFun(TStr, TFun(TStr, TSeq TStr)), rsplitImpl ]
+      "rsplit", TFun(TStr, TFun(TStr, TSeq TStr)), rsplitImpl
+      "rreplace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), rreplaceImpl ]
 
 // Path — string surgery over paths, System.IO.Path underneath.
 // extension keeps the dot and is "" when there is none; dir is "" at
@@ -7022,7 +7132,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "Join a sequence of strings with a separator." (Some "Str.join \",\" [\"a\"; \"b\"]") None
            |> named [ "sep"; "xs" ])
           "Str.replace",
-          bd "Replace every occurrence of a substring." (Some "Str.replace \"a\" \"b\" \"aba\"") None
+          bd "Replace every occurrence of a substring. The text is literal, not a regex (Str.rreplace takes a pattern)." (Some "Str.replace \"a\" \"b\" \"aba\"") None
           |> named [ "old"; "new"; "s" ]
           "Str.length", (bd "The number of characters (Unicode code points)." (Some "Str.length \"abc\"") None |> named [ "s" ])
           "Str.sub",
@@ -7111,6 +7221,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Str.rsplit @\"\\s*,\\s*\" \"a , b,c\" |> Seq.freeze")
               None
           |> named [ "pattern"; "s" ]
+          "Str.rreplace",
+          bd
+              "Replace every regex match. In the replacement, $1 (or ${1}) is a group, $0 the whole match, and $$ a literal $; any other $ raises, as does a group the pattern does not have. Str.replace is the literal form."
+              (Some "Str.rreplace @\"(\\w+)@(\\w+)\" \"$2 at $1\" \"me@host\"")
+              None
+          |> named [ "pattern"; "replacement"; "s" ]
 
           // ---- Path (pure string ops; glob touches the filesystem) ----
           "Path.dir",

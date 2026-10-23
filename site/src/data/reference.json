@@ -1875,7 +1875,7 @@
         {
           "name": "replace",
           "signature": "Str.replace (old: string) (new: string) (s: string) : string",
-          "summary": "Replace every occurrence of a substring.",
+          "summary": "Replace every occurrence of a substring. The text is literal, not a regex (Str.rreplace takes a pattern).",
           "example": "Str.replace \u0022a\u0022 \u0022b\u0022 \u0022aba\u0022",
           "pointer": null
         },
@@ -1898,6 +1898,13 @@
           "signature": "Str.rmatchAll (pattern: string) (s: string) : seq\u003Cseq\u003Cstring\u003E\u003E",
           "summary": "Every regex match\u0027s groups, as a sequence of sequences.",
           "example": "Str.rmatchAll \u0022[0-9]\u002B\u0022 \u0022a1b2\u0022 |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "rreplace",
+          "signature": "Str.rreplace (pattern: string) (replacement: string) (s: string) : string",
+          "summary": "Replace every regex match. In the replacement, $1 (or ${1}) is a group, $0 the whole match, and $$ a literal $; any other $ raises, as does a group the pattern does not have. Str.replace is the literal form.",
+          "example": "Str.rreplace @\u0022(\\w\u002B)@(\\w\u002B)\u0022 \u0022$2 at $1\u0022 \u0022me@host\u0022",
           "pointer": null
         },
         {
