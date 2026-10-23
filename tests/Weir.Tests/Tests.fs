@@ -19307,7 +19307,39 @@ let yamlSeqTests =
     // document, the declared type names the top level, streams teach
     testList
         "from yaml seq<Name> [D:yaml-seq]"
-        [ test "reads a top-level sequence document — the acceptance" {
+        [ test "from yaml splits joined elements, line numbers through the joined document" {
+              let v =
+                  runUnder
+                      (env |> declare "type YJ = { a: int; b: string }")
+                      "[Str.join \"\\n\" [\"a: 1\"; \"b: x\"]] |> from yaml YJ |> fun r -> r.b"
+
+              Expect.equal v (VStr "x") "a joined element reads like two lines"
+
+              Expect.equal
+                  (Weir.Yaml.numberLines [ "a: 1\r\nb: x"; "c: 2" ])
+                  [ 1, "a: 1"; 2, "b: x"; 3, "c: 2" ]
+                  "CRLF splits too; numbering runs on"
+
+              let msg =
+                  (Expect.throwsC
+                      (fun () ->
+                          runUnder
+                              (env |> declare "type YJ = { a: int; b: string }")
+                              "[\"a: 1\\nb: x\"; \"b: y\"] |> from yaml YJ"
+                          |> ignore)
+                      id)
+                      .Message
+
+              Expect.stringContains msg "line 3: duplicate key 'b'" "the joined document's line"
+
+              let parsed = runLive "[\"a: 1\\nb: x\"] |> Yaml.parse |> show"
+              Expect.equal parsed (VStr "YMap ([(\"a\", YInt 1); (\"b\", YStr \"x\")])") "Yaml.parse too"
+              Expect.stringContains
+                  (Weir.Infer.inferShapeText Set.empty Set.empty Weir.Infer.Yaml "Root" [ "a: 1\nb: x" ])
+                  "b: string"
+                  "and inferShape"
+          }
+          test "reads a top-level sequence document — the acceptance" {
               let e2 = env |> declare "type YH = { host: string }"
 
               let src = "[\"- host: a\"; \"- host: b\"] |> from yaml seq<YH> |> Seq.map _.host"

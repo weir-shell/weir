@@ -6059,11 +6059,11 @@ let private yamlParseImpl: Value =
         | VSeq lines ->
             let numbered =
                 lines
-                |> Seq.mapi (fun i l ->
+                |> Seq.map (fun l ->
                     match l with
-                    | VStr s -> (i + 1, s)
+                    | VStr s -> s
                     | v -> unreachable $"the checker rejects 'Yaml.parse' on non-string elements: {formatValue v}")
-                |> List.ofSeq
+                |> Yaml.numberLines
 
             match Yaml.parseDocs numbered with
             | Error msg -> failwith $"Yaml.parse: {msg}"

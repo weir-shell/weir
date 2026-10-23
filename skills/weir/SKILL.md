@@ -1884,7 +1884,8 @@ type Bad = C of int
   the roundtrip holds for nested shapes too. `Args.load`/`Env.load`
   stay FLAT — a CLI flag or env var is a string; nesting has no
   spelling there. YAML is the TREE boundary: `from yaml T` reads
-  ONE document (a mapping) -> `T`; `from yaml seq<T>` reads one
+  ONE document (a mapping) -> `T` (an element holding newlines is several
+  lines, as json and toml read it); `from yaml seq<T>` reads one
   top-level SEQUENCE document -> `seq<T>` (nested records, seqs,
   `seq<string * string>` for labels, `Option`; bool is EXACTLY
   true/false; plain `null`/`Null`/`NULL`/`~` and an empty value are
