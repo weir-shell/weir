@@ -78,7 +78,9 @@ let effectfulQualified =
           "Self.stdin"
           // Self.prompt is a static builtin under the Self name [D:prompt]:
           // reads stdin, writes stderr — ambient input like Self.stdin
-          "Self.prompt" ]
+          "Self.prompt"
+          // waits for a stop signal [D:wait-for-stop]: ambient, like a sleep
+          "Self.waitForStop" ]
 
 // `cd` writes the process's directory, `pwd` reads it [D:purity-ambient]
 let effectfulBare =
@@ -106,6 +108,10 @@ let libraryDesugars: (string * string * string) list =
       "|seqItemFromEnd", "Seq", "item"
       "|retryDefaults", "Retry", "defaults"
       "|pollDefaults", "Poll", "defaults"
+      // repeat's desugar base [D:repeat]: internal only (interval is
+      // required, so Repeat has no public defaults) — read as the record
+      // value it is
+      "|repeatDefaults", "Repeat", "defaults"
       // a typed `~` in a command word [D:tilde]
       "|home", "Path", "home"
       // `NAME=value cmd`'s overlay items [D:env-prefix]
@@ -206,6 +212,7 @@ let effectClass (n: string) : EffectClass option =
         | "Uuid.v7At" -> Some Ambient // draws randomness (v7 also the clock)
         | "Duration.sleep" -> Some Ambient // waits on the clock — no world change
         | "Self.stdin" -> Some Ambient // reads the process's input stream
+        | "Self.waitForStop" -> Some Ambient // waits for a signal — no world change
         // Http.send/expect: per-method, resolved at the request value (None here)
         | "Http.send"
         | "Http.expect" -> None

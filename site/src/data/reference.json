@@ -1256,6 +1256,13 @@
           "summary": "This process\u0027s standard input, as lazy lines. The same in every module.",
           "example": null,
           "pointer": null
+        },
+        {
+          "name": "waitForStop",
+          "signature": "Self.waitForStop : unit -\u003E unit",
+          "summary": "Block until the program is asked to stop \u2014 the first stop signal (\u0060SIGINT\u0060, \u0060SIGTERM\u0060, \u0060SIGHUP\u0060; Ctrl\u002BC on Windows) \u2014 then return normally, so the code after it runs and the scopes around it close by their normal path (a \u0060within serve\u0060 drains its handlers). While it waits, the first signal is only that request; a second one tears down as usual. Returns at once when a stop was already requested.",
+          "example": null,
+          "pointer": "Hold a scope open until the operator stops the program: \u0060within serve srv = \u2026 handler\u0060, then \u0060Self.waitForStop ()\u0060 as the block\u0027s last line."
         }
       ]
     },
@@ -2427,6 +2434,13 @@
       "pointer": null
     },
     {
+      "name": "repeat",
+      "signature": null,
+      "summary": "Run an indented block until the program is asked to stop: \u0060repeat interval=1s\u0060 followed by the block, which runs, then the interval passes, then it runs again. The first stop signal (\u0060SIGINT\u0060, \u0060SIGTERM\u0060, \u0060SIGHUP\u0060; Ctrl\u002BC on Windows) lets the iteration in hand finish and returns, so the code after the loop runs and the program exits 0; a second signal tears down as usual. A bool block ends the loop when true; \u0060until r\u0060 binds a value block\u0027s result and returns it once the predicate holds; \u0060timeout=(Some 5m)\u0060 raises when it passes, as poll\u0027s does. Waits inside the block are not ended by the request \u2014 only the interval is.",
+      "example": "repeat interval=1ms true",
+      "pointer": "A server or sidecar held until the operator stops it uses \u0060Self.waitForStop ()\u0060 instead."
+    },
+    {
       "name": "retry",
       "signature": null,
       "summary": "Re-run an indented body until it succeeds: \u0060retry attempts=5 delay=30s\u0060 followed by the body. If the body returns a bool, true means success. If it returns another value, add \u0060until r\u0060 and a predicate block; retry then returns the value that passed. Running out of attempts raises. An error raised inside the body is not retried, it propagates; to retry a failing command, turn its result into data with \u0060| succeeds\u0060 or \u0060| complete\u0060.",
@@ -2883,6 +2897,20 @@
         {
           "name": "exit",
           "type": "Option\u003Cint\u003E"
+        }
+      ]
+    },
+    {
+      "name": "Repeat",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "interval",
+          "type": "Duration"
+        },
+        {
+          "name": "timeout",
+          "type": "Option\u003CDuration\u003E"
         }
       ]
     },

@@ -2909,7 +2909,7 @@ not the teaching.
 - `Secret`: `map` `of` `reveal`
 - `Color`: `red` `green` `yellow` `blue` `magenta` `cyan` `gray` `bold` `dim` `underline` `sgr` — each `string -> string`, wrapping in a colour/attribute. Context-aware: emits the escape only at a terminal with colour on (no `NO_COLOR`) and returns the plain string when piped, so `print (Color.green x)` colours interactively and stays plain in a pipe. Nest to combine (`Color.bold (Color.red "!")`); `Color.sgr "38;5;208" s` is the raw-code escape hatch for 256-colour/truecolor. `print` keeps colour (SGR) at a tty but still neutralizes every terminal-driving escape a value carries (title, clipboard, cursor) and shows bidi controls as a visible `\uXXXX`; a bare CR passes.
 - `Term`: `width` `title` — `Term.width () : int`, the terminal columns queried live; falls back to 80 when there is no terminal (piped/redirected), so it never raises. The `tput cols` primitive. `Term.title : string -> unit` sets the window title (an OSC 0 to stdout, or stderr when only that is a terminal; `Console.Title` on Windows); controls, escapes and bidi controls in the text are dropped and it is capped at 256 code points; with no terminal it does nothing. A console write: `pure` and `readonly` refuse it. Call it from the init.weir `prompt` function to keep the title current.
-- `Self`: `prompt`, everywhere — writes its message to stderr and reads one stdin line (raises at end of input); and `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
+- `Self`: `prompt` and `waitForStop`, everywhere — `prompt` writes its message to stderr and reads one stdin line (raises at end of input); `waitForStop ()` blocks until the first stop signal and returns normally [D:wait-for-stop]; and `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `initInfinite` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `fromHex` `hmacSha256` `length` `sha256` `sub` `toBase64` `toHex` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
@@ -2934,6 +2934,7 @@ the checker's own environment [D:surface-gate] — same contract as above:
 - type `Op`: `WriteFile` `WriteFileAtomic` `DeleteFile` `Copy` `Move` `CopyDir` `MoveDir` `MakeDir` `DeleteDir` `DeleteTree` `HttpSend`
 - type `Option`: `Some` `None`
 - type `Poll`: { `timeout` `interval` }
+- type `Repeat`: { `interval` `timeout` }
 - type `PromptStatus`: { `ok` `exit` }
 - type `Result`: `Ok` `Error`
 - type `Retry`: { `attempts` `delay` `timeout` }

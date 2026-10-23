@@ -5013,8 +5013,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEDur n -> VDur n
     | TESize b -> VSize b
     | TEFloat f -> VFloat f
-    | TERetry(isPoll, optsE, watchE, body, until) ->
-        let head = if isPoll then "poll" else "retry"
+    | TERetry(LoopRepeat, optsE, _, body, until) -> evalRepeat env optsE body until
+    | TERetry(kind, optsE, watchE, body, until) ->
+        let isPoll = kind = LoopPoll
+        let head = loopHead kind
 
         let watched =
             watchE
@@ -6346,6 +6348,142 @@ and eval (env: Env) (te: TypedExpr) : Value =
 // body per element (binder = bindPattern, a lambda param's machinery),
 // and runtime duplicate keys (for-generated or key-spliced) are
 // errors — invalid YAML must not render silently.
+// the loop a stop signal ends [D:repeat]: run the block, wait the
+// interval, run it again — until the stop request [D:stop-request], the
+// `until`/bool predicate, or the timeout (which raises, as poll's does).
+// The request lets the iteration in hand finish; only the interval wait
+// wakes on it, never a wait inside the block. A command failure the
+// request caused ends the loop as the stop [D:stop-caused-failure]. With
+// `until` the form yields a value, so the stop is observed once an
+// iteration has produced one
+and private evalRepeat
+    (env: Env)
+    (optsE: TypedExpr)
+    (body: TypedExpr)
+    (until: (string * TypedExpr) option)
+    : Value =
+    if PlanMode.active () then
+        failwith
+            "'repeat' is refused inside 'plan' — a loop that only a stop signal ends cannot be dry-run; run the loop outside the plan"
+
+    let fields =
+        match eval env optsE with
+        | VRecord(_, fs) -> fs
+        | v -> unreachable $"the checker rejects 'repeat' options of {formatValue v}"
+
+    let intervalMs =
+        match recGet "interval" fields with
+        | VDur ms -> ms
+        | v -> unreachable $"the checker rejects an interval of {formatValue v}"
+
+    let timeoutMs =
+        match recGet "timeout" fields with
+        | VUnion("Some", Some(VDur t)) -> Some t
+        | _ -> None
+
+    if intervalMs <= 0L then
+        failwith
+            $"repeat: interval must be positive, got {formatDuration intervalMs} — it is the wait between iterations, and no wait is a busy loop"
+
+    match timeoutMs with
+    | Some t when t <= 0L -> failwith $"repeat: timeout must be positive, got {formatDuration t}"
+    | _ -> ()
+
+    Session.stopAware (fun () ->
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+        let maxSliceMs = int64 System.Int32.MaxValue - 1L
+
+        let pastDeadline () =
+            match timeoutMs with
+            | Some t -> sw.ElapsedMilliseconds >= t
+            | None -> false
+
+        let rec stopCaused (ex: exn) =
+            match ex with
+            | :? Weir.Proc.CommandFailure as cf -> cf.StopCaused
+            | :? System.AggregateException as a when a.InnerExceptions.Count = 1 -> stopCaused a.InnerException
+            | _ -> false
+
+        // the interval in timer-sized slices, each bounded by what is left
+        // of the timeout: Some true = the stop request woke it, Some false =
+        // the timeout ended it, None = it elapsed
+        let waitInterval () =
+            let token = Session.stopToken ()
+            let mutable left = intervalMs
+            let mutable ended = None
+
+            while left > 0L && ended.IsNone do
+                let budget =
+                    match timeoutMs with
+                    | Some t -> t - sw.ElapsedMilliseconds
+                    | None -> System.Int64.MaxValue
+
+                if budget <= 0L then
+                    ended <- Some false
+                else
+                    let slice = min left (min budget maxSliceMs)
+
+                    if
+                        Session.waitOrCancel (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond)) token
+                    then
+                        ended <- Some true
+
+                    left <- left - slice
+
+            match ended with
+            | None when pastDeadline () -> Some false
+            | e -> e
+
+        let predicate (v: Value) =
+            match until with
+            | Some(b, pred) ->
+                match eval (Map.add b v env) pred with
+                | VBool ok -> ok
+                | pv -> unreachable $"the checker rejects a predicate of {formatValue pv}"
+            | None ->
+                match v with
+                | VBool ok -> ok
+                | _ -> false
+
+        let finish (last: Value option) =
+            match until, last with
+            | Some _, Some v -> v
+            | _ -> VUnit
+
+        let timedOut (n: int) =
+            failwith $"repeat: timed out after {formatDuration sw.ElapsedMilliseconds} ({n} iteration(s))"
+
+        // the stop ends the loop once the form has its value
+        let stoppable (last: Value option) = until.IsNone || last.IsSome
+
+        let rec loop (n: int) (last: Value option) =
+            if Session.stopRequested () && stoppable last then
+                finish last
+            else
+                let v =
+                    try
+                        Some(eval env body)
+                    with ex when stopCaused ex && stoppable last ->
+                        None
+
+                match v with
+                | None -> finish last
+                | Some v when predicate v ->
+                    match until with
+                    | Some _ -> v
+                    | None -> VUnit
+                | Some v when Session.stopRequested () -> finish (Some v)
+                | Some _ when pastDeadline () -> timedOut n
+                | Some v ->
+                    // the indicator wraps only the wait between iterations
+                    // — the block may own the terminal [D:waiting-indicator]
+                    match Waiting.during $"repeat: waiting {formatDuration intervalMs}" waitInterval with
+                    | Some true -> finish (Some v)
+                    | Some false -> timedOut n
+                    | None -> loop (n + 1) (Some v)
+
+        loop 1 None)
+
 and private liftYaml (v: Value) : Value option =
     match v with
     | VStr s -> Some(VUnion("YStr", Some(VStr s)))
