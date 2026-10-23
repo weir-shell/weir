@@ -333,7 +333,7 @@ type private SpliceSite =
 type private Pending =
     { Cls: Cls
       Span: Span
-      Describe: Ty -> string }
+      Describe: TypeEnv -> Ty -> string }
 
 // == on floats compares representations, which weir does not vouch
 // for [D:floats]; the Eq exclusion's message names the idiom
@@ -662,15 +662,17 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                           Describe =
                             match cls with
                             | Cls.Eq ->
-                                fun t ->
+                                fun env t ->
                                     if tyHasFloat t then
                                         floatEqTeaching
+                                    elif floatInsideNamed env t then
+                                        $"this use requires equatable values, got {formatTy t} — it holds a float, and floats cannot be compared with '==' (0.1 + 0.2 is not 0.3)"
                                     elif (opaqueNominal t).IsSome then
                                         $"this use requires equatable values, got {formatTy t} — an opaque value cannot be compared with '=='"
                                     else
                                         $"this use requires equatable values, got {formatTy t} — sequences and functions cannot be compared with '=='"
                             | Cls.Show ->
-                                fun t ->
+                                fun _ t ->
                                     match t with
                                     // a patch is opaque by design [D:yaml-nodes]
                                     | TNamed("YamlPatch", _) ->
@@ -679,9 +681,9 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                                         $"show cannot render {formatTy t} — it is an opaque value"
                                     | _ -> $"show cannot render functions; this is {formatTy t}"
                             | Cls.Ord ->
-                                fun t ->
+                                fun _ t ->
                                     $"cannot sort by this key: {formatTy t} cannot be ordered — keys are int, float, string, bool, Duration, Size, Instant, or Uuid"
-                            | Cls.Render -> holeDescribe })
+                            | Cls.Render -> fun _ t -> holeDescribe t })
 
                 ctx.Cons <- Map.add v' (ps @ (Map.tryFind v' ctx.Cons |> Option.defaultValue [])) ctx.Cons
             | None -> ()
@@ -769,10 +771,10 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p0: Pending) (ty0: Ty) : Result<un
             | Cls.Show, TFun _ -> false
             | Cls.Show, TSeq elem -> ok seen elem
             | Cls.Show, TTuple ts -> ts |> List.forall (ok seen)
-            // Map renders (sorted) iff its values do [D:map-string];
-            // Eq stays excluded like seq (no conditional instances —
-            // the closed class system is untouched)
-            | Cls.Show, TNamed("Map", [ TStr; inner ]) -> ok seen inner
+            // Map renders (sorted) iff its keys and values do
+            // [D:map-keys]; Eq stays excluded like seq (no conditional
+            // instances — the closed class system is untouched)
+            | Cls.Show, TNamed("Map", [ k; inner ]) -> ok seen k && ok seen inner
             // a handle shows (pid + state) [D:scoped-procs]; Eq/Ord
             // stay excluded by construction (the decompose fall-through)
             | Cls.Show, TNamed("Proc", []) -> true
@@ -799,7 +801,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p0: Pending) (ty0: Ty) : Result<un
     if okAs p0 Set.empty ty0 then
         Ok()
     else
-        err p0.Span (p0.Describe(finalTy ctx ty0))
+        err p0.Span (p0.Describe env (finalTy ctx ty0))
 
 /// the scalar-exact list a `$x` command argument admits — spliceAdmit's
 /// CmdArg site, and the REPL's `$` completion pool [D:argv-splice-complete]
@@ -859,7 +861,7 @@ let private spliceAdmit (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (span: Span
                 env
                 { Cls = Cls.Render
                   Span = span
-                  Describe = holeDescribe }
+                  Describe = fun _ t -> holeDescribe t }
                 ty
         | CmdArg ->
             match ty with
@@ -1285,7 +1287,7 @@ let rec private typeBinOp
                 { Cls = Cls.Eq
                   Span = opSpan
                   Describe =
-                    fun t ->
+                    fun _ t ->
                         if tyHasFloat t then
                             floatEqTeaching
                         elif floatInsideNamed env t then
@@ -1548,10 +1550,34 @@ let private wireMono (ctx: Ctx) (env: TypeEnv) (ty: Ty) : Ty * TypeEnv =
     let ty' = go 0 ty
     ty', { env with Types = types }
 
-// one teaching for every route a non-string Map key arrives by
-// [D:map-string]: declaration, anonymous shape, the adapter slot
+// one teaching for every route a non-string Map key reaches the wire by
+// [D:map-keys]: a declared field, an anonymous shape, the adapter slot
 let private mapKeyTeach (k: Ty) =
-    $"Map keys are strings only (every receipt has them — JSON object keys ARE strings); got Map<{formatTy k}, …>"
+    $"JSON object keys are strings — a Map<{formatTy k}, …> can't cross; convert with Map.pairs |> Seq.map (fun (k, v) -> (show k, v)) |> Map.ofPairs"
+
+// a written Map key needs equality [D:map-keys] — the class `==` asks,
+// so a float key (or a record holding one) refuses as `==` would; a
+// type variable passes here and meets the class at the use site
+let private mapKeyEq (env: TypeEnv) (span: Span) (k: Ty) : Result<unit, TypeError> =
+    demand
+        (newCtx ())
+        env
+        { Cls = Cls.Eq
+          Span = span
+          Describe =
+            fun env t ->
+                let why =
+                    if t = TFloat then
+                        "floats cannot be compared with '==' (0.1 + 0.2 is not 0.3)"
+                    elif tyHasFloat t || floatInsideNamed env t then
+                        "it holds a float, and floats cannot be compared with '==' (0.1 + 0.2 is not 0.3)"
+                    elif (opaqueNominal t).IsSome then
+                        "an opaque value cannot be compared"
+                    else
+                        "sequences, functions and Maps cannot be compared"
+
+                $"a Map key needs equality, and {formatTy t} has none — {why}; key by an equatable form instead (a string, an int, a tuple of those)" }
+        k
 
 let private jsonAdmittedSet =
     "json fields are int, float, string, bool, Uuid, Option of an admitted type, a record of admitted fields, seq of an admitted type, a seq<string * T> mapping, Map<string, T> of one, or an opaque Yaml node"
@@ -1583,11 +1609,13 @@ let rec private jsonAdmitted
     // the ID-keyed object [D:map-string]: Map<string, T> is a JSON
     // object whose keys are data — admitted iff T is
     | TNamed("Map", [ TStr; inner ]) -> jsonAdmitted reading span env seen path inner
-    // a non-string key reaches here through an anonymous shape (declared
-    // types validate at declaration) — same teaching as validateTy
-    | TNamed("Map", [ k; _ ]) ->
-        err span (at + mapKeyTeach k)
-    | TNamed("Map", args) -> err span $"{at}Map takes two type arguments (Map<string, T>); got {args.Length}"
+    // a key still open where the value is written: the generic teaching
+    | TNamed("Map", [ TVar v; _ ]) when not reading && not (v.StartsWith "__hole") ->
+        err span (at + genericWireTeach "json" ty)
+    // any other key stays in the program [D:map-keys] — the slot's
+    // teaching, through declared fields and anonymous shapes alike
+    | TNamed("Map", [ k; _ ]) -> err span (at + mapKeyTeach k)
+    | TNamed("Map", args) -> err span $"{at}Map takes two type arguments (Map<K, V>); got {args.Length}"
     // an opaque `Yaml` node holds any JSON subtree whole — JSON is a
     // YAML subset [D:json-yaml-field]
     | TNamed("Yaml", []) -> Ok()
@@ -6910,12 +6938,13 @@ let rec private validateTy
     | TSecret -> Ok()
     | TSeq t -> validateTy env selfName selfArity allowed span t
     | TTuple ts -> allOk ts (validateTy env selfName selfArity allowed span)
-    // Map is structural, string-keyed only [D:map-string] — the key
-    // slot refuses anything else with the narrowing's reason
-    | TNamed("Map", [ TStr; v ]) -> validateTy env selfName selfArity allowed span v
-    | TNamed("Map", [ k; _ ]) ->
-        err span (mapKeyTeach k)
-    | TNamed("Map", args) -> err span $"Map takes two type arguments (Map<string, T>); got {List.length args}"
+    // Map is structural, keyed by any equatable type [D:map-keys]; the
+    // wire's string-only law is the boundary's own check [D:map-string]
+    | TNamed("Map", [ k; v ]) ->
+        validateTy env selfName selfArity allowed span k
+        |> Result.bind (fun () -> validateTy env selfName selfArity allowed span v)
+        |> Result.bind (fun () -> mapKeyEq env span k)
+    | TNamed("Map", args) -> err span $"Map takes two type arguments (Map<K, V>); got {List.length args}"
     | TFun(a, b) ->
         Result.bind
             (fun () -> validateTy env selfName selfArity allowed span b)

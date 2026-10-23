@@ -121,20 +121,27 @@ See [The REPL](GUIDE.md#the-repl).
 
 ## Types
 
-### Why does `Map` only take string keys?
+### Can a `Map` have keys that aren't strings?
 
-`Map` exists for JSON objects, whose keys are always strings, so
-`Map<int, T>` is refused. For other keys, keep pairs (`Seq.groupBy`
-already returns them) or turn the key into a string with `show`.
+Yes. In a program, `Map<K, V>` takes any key type that supports
+equality — `int`, a union, a tuple, a record — but not `float`, which
+has no equality. Only JSON is limited to string keys: `to json` and
+`from json` take a `Map<string, V>`, so turn other keys into strings
+with `show` first.
+
+Union keys sort by case name, then payload, unlike F#'s declaration
+order: a union value carries only its case name, and name order needs
+no hidden state. `Error` sorts before `Ok`.
 
 ```weir
 let byLength =
     ["a"; "bb"; "cc"]
     |> Seq.groupBy Str.length
-    |> Seq.map (fun (n, g) -> (show n, g |> Seq.length))
+    |> Seq.map (fun (n, g) -> (n, g |> Seq.length))
     |> Map.ofPairs
 
-print $"{Map.get "2" byLength}"
+print $"{Map.get 2 byLength}"
+byLength |> Map.pairs |> Seq.map (fun (k, v) -> (show k, v)) |> Map.ofPairs |> to json |> Seq.iter print
 ```
 
 See [`Map`](reference/types.md#map).

@@ -161,7 +161,9 @@ type ProcHandle =
 [<Literal>]
 let private hashDepth = 4
 
-[<CustomEquality; NoComparison>]
+// comparison exists for Map keys only [D:map-keys]: the checker admits
+// an equatable key, and CompareTo is the total order a VMap rides
+[<CustomEquality; CustomComparison>]
 type Value =
     | VInt of int64
     | VFloat of float
@@ -188,10 +190,9 @@ type Value =
     | VRecord of record: string * fields: (string * Value) list
     | VUnion of case: string * payload: Value option
     | VSeq of items: seq<Value>
-    // string-keyed only [D:map-string]: every receipt has string keys
-    // (JSON object keys are strings), and int keys would make Map the
-    // first Ord-constrained container — widened only on a receipt
-    | VMap of entries: Map<string, Value>
+    // any equatable key [D:map-keys], ordered by CompareTo below —
+    // the wire boundaries still take string keys only [D:map-string]
+    | VMap of entries: Map<Value, Value>
     | VTuple of items: Value list
     | VClosure of param: string * body: TypedExpr * env: Env
     | VClosurePat of binder: Pattern * body: TypedExpr * env: Env
@@ -276,7 +277,7 @@ type Value =
                                 go <- false
                 | VMap a, VMap b ->
                     // same key set; entry values queue (keys are
-                    // strings, compared by the Map itself) [D:map-string]
+                    // compared by the Map itself) [D:map-keys]
                     if a.Count = b.Count then
                         for kv in a do
                             match b.TryFind kv.Key with
@@ -339,6 +340,111 @@ type Value =
             | VServer h -> hash ("server", h.Port)
 
         go hashDepth this
+
+    // the Map key order [D:map-keys], total over the equatable values and
+    // zero exactly where Equals holds: scalars as Seq.sort orders them,
+    // Bytes and Secret by content, tuples and seqs element by element,
+    // records field by field in field-name order (field order is never
+    // semantic [D:record-order]), union cases by case name (ordinal),
+    // then payload. Iterative like Equals [D:eq-depth]: pairs queue in
+    // lexicographic order, the first nonzero answer ends the walk.
+    interface System.IComparable with
+        member this.CompareTo(other) =
+            match this, (other :?> Value) with
+            // the common keys skip the work-list
+            | VStr x, VStr y -> System.String.CompareOrdinal(x, y)
+            | VInt x, VInt y -> compare x y
+            | _ ->
+                let kind (v: Value) =
+                    match v with
+                    | VInt _ -> 0
+                    | VFloat _ -> 1
+                    | VDur _ -> 2
+                    | VInstant _ -> 3
+                    | VUuid _ -> 4
+                    | VSize _ -> 5
+                    | VBytes _ -> 6
+                    | VStr _ -> 7
+                    | VSecret _ -> 8
+                    | VBool _ -> 9
+                    | VUnit -> 10
+                    | VRecord _ -> 11
+                    | VUnion _ -> 12
+                    | VSeq _ -> 13
+                    | VMap _ -> 14
+                    | VTuple _ -> 15
+                    | VClosure _
+                    | VClosurePat _
+                    | VBuiltin _
+                    | VProc _
+                    | VServer _ -> 16
+
+                let pending = System.Collections.Generic.Stack<Value * Value>()
+                // children go on in reverse, so the first pops first
+                let queue (xs: Value list) (ys: Value list) =
+                    List.zip xs ys |> List.rev |> List.iter pending.Push
+
+                pending.Push(this, other :?> Value)
+                let mutable result = 0
+
+                while result = 0 && pending.Count > 0 do
+                    let a, b = pending.Pop()
+
+                    match a, b with
+                    | VInt x, VInt y -> result <- compare x y
+                    | VFloat x, VFloat y -> result <- compare x y
+                    | VDur x, VDur y -> result <- compare x y
+                    | VInstant x, VInstant y -> result <- compare x y
+                    | VUuid x, VUuid y -> result <- compare x y
+                    | VSize x, VSize y -> result <- compare x y
+                    | VBytes x, VBytes y -> result <- System.MemoryExtensions.SequenceCompareTo(System.ReadOnlySpan x, System.ReadOnlySpan y)
+                    | VStr x, VStr y
+                    | VSecret x, VSecret y -> result <- System.String.CompareOrdinal(x, y)
+                    | VBool x, VBool y -> result <- compare x y
+                    | VUnit, VUnit -> ()
+                    | VRecord(n1, f1), VRecord(n2, f2) ->
+                        let s1 = List.sortWith (fun (k1, _) (k2, _) -> System.String.CompareOrdinal(k1, k2)) f1
+                        let s2 = List.sortWith (fun (k1, _) (k2, _) -> System.String.CompareOrdinal(k1, k2)) f2
+                        result <- System.String.CompareOrdinal(n1, n2)
+
+                        if result = 0 then
+                            result <- compare (List.map fst s1) (List.map fst s2)
+
+                        if result = 0 then
+                            queue (List.map snd s1) (List.map snd s2)
+                    | VUnion(c1, p1), VUnion(c2, p2) ->
+                        result <- System.String.CompareOrdinal(c1, c2)
+
+                        if result = 0 then
+                            match p1, p2 with
+                            | Some x, Some y -> pending.Push(x, y)
+                            | None, None -> ()
+                            | None, Some _ -> result <- -1
+                            | Some _, None -> result <- 1
+                    | VTuple xs, VTuple ys ->
+                        result <- compare xs.Length ys.Length
+
+                        if result = 0 then
+                            queue xs ys
+                    | VSeq xs, VSeq ys ->
+                        let xs = List.ofSeq xs
+                        let ys = List.ofSeq ys
+                        let n = min xs.Length ys.Length
+                        // a shorter prefix sorts first, after its elements
+                        pending.Push(VInt(int64 xs.Length), VInt(int64 ys.Length))
+                        queue (List.truncate n xs) (List.truncate n ys)
+                    | VMap xs, VMap ys ->
+                        let flat (m: Map<Value, Value>) =
+                            m |> Seq.collect (fun kv -> [ kv.Key; kv.Value ]) |> List.ofSeq
+
+                        result <- compare xs.Count ys.Count
+
+                        if result = 0 then
+                            queue (flat xs) (flat ys)
+                    | a, b when kind a <> kind b -> result <- compare (kind a) (kind b)
+                    | a, _ -> unreachable $"Map keys are equatable; got {a.GetType().Name}"
+
+                result
 
 and Env = Map<string, Value>
 
@@ -447,15 +553,14 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
             | _ -> $"{case} ({inner})"
         | VMap entries ->
             // sorted by construction (F# Map iterates in key order), so
-            // output is deterministic; keys render through the string
-            // arm (escaped), values recurse (Map<string, Secret> masks
-            // for free) [D:map-string]
+            // output is deterministic; keys and values both recurse (a
+            // string key escapes, a Secret masks) [D:map-keys]
             let shown = entries |> Seq.truncate (lim.MaxItems + 1) |> List.ofSeq
 
             let body =
                 shown
                 |> List.truncate lim.MaxItems
-                |> List.map (fun kv -> $"({sub (VStr kv.Key)}, {sub kv.Value})")
+                |> List.map (fun kv -> $"({sub kv.Key}, {sub kv.Value})")
                 |> String.concat "; "
 
             let ellipsis = if shown.Length > lim.MaxItems then lim.Ellipsis else ""
@@ -2508,7 +2613,10 @@ let private jsonLine
             writer.WriteStartObject()
 
             for kv in entries do
-                writer.WritePropertyName kv.Key
+                match kv.Key with
+                | VStr k -> writer.WritePropertyName k
+                | k -> unreachable $"the checker admits only string Map keys at the wire, got {formatValue k}"
+
                 write kv.Value
 
             writer.WriteEndObject()
@@ -2723,7 +2831,7 @@ let private jsonDocRead
                     $"{who}: field '{name}' expected an object ({formatTy ty}), got {jsonKindName prop.ValueKind} in: {shown}"
 
             prop.EnumerateObject()
-            |> Seq.fold (fun m p -> Map.add p.Name (readValue $"{name}[\"{p.Name}\"]" inner p.Value) m) Map.empty
+            |> Seq.fold (fun m p -> Map.add (VStr p.Name) (readValue $"{name}[\"{p.Name}\"]" inner p.Value) m) Map.empty
             |> VMap
         | TNamed("Yaml", []) -> jsonYamlNode $"{who}: field '{name}'" prop
         | TNamed(n, []) when defs.ContainsKey n ->
@@ -2893,7 +3001,7 @@ let private jsonDocRead
         match root.ValueKind with
         | System.Text.Json.JsonValueKind.Object ->
             root.EnumerateObject()
-            |> Seq.fold (fun m p -> Map.add p.Name (readValue $"[\"{p.Name}\"]" ty p.Value) m) Map.empty
+            |> Seq.fold (fun m p -> Map.add (VStr p.Name) (readValue $"[\"{p.Name}\"]" ty p.Value) m) Map.empty
             |> VMap
         | k ->
             failwith
@@ -2913,7 +3021,7 @@ let private jsonDocRead
                         failwith
                             $"{who}: key \"{p.Name}\" expected an object ({topName}), got {jsonKindName p.Value.ValueKind} in: {shown}"
 
-                    Map.add p.Name (readTopEl $"[\"{p.Name}\"]." p.Value) m)
+                    Map.add (VStr p.Name) (readTopEl $"[\"{p.Name}\"]." p.Value) m)
                 Map.empty
             |> VMap
         | System.Text.Json.JsonValueKind.Array ->

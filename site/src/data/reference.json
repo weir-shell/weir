@@ -810,70 +810,70 @@
       "members": [
         {
           "name": "add",
-          "signature": "Map.add (key: string) (value: \u0027a) (m: Map\u003Cstring, \u0027a\u003E) : Map\u003Cstring, \u0027a\u003E",
+          "signature": "Map.add (key: \u0027k) (value: \u0027a) (m: Map\u003C\u0027k, \u0027a\u003E) : Map\u003C\u0027k, \u0027a\u003E",
           "summary": "A new map with the entry added, replacing any existing value for the key; the original is unchanged.",
           "example": "Map.ofPairs [(\u0022a\u0022, 1)] |\u003E Map.add \u0022k\u0022 5",
           "pointer": null
         },
         {
           "name": "count",
-          "signature": "Map.count (m: Map\u003Cstring, \u0027a\u003E) : int",
+          "signature": "Map.count (m: Map\u003C\u0027k, \u0027a\u003E) : int",
           "summary": "The number of entries.",
           "example": "Map.ofPairs [(\u0022aaa\u0022, 1)] |\u003E Map.count",
           "pointer": null
         },
         {
           "name": "get",
-          "signature": "Map.get (key: string) (m: Map\u003Cstring, \u0027a\u003E) : \u0027a",
-          "summary": "The value for a key. Raises, naming the key, when it is missing; use tryGet to get an Option instead.",
+          "signature": "Map.get (key: \u0027k) (m: Map\u003C\u0027k, \u0027a\u003E) : \u0027a",
+          "summary": "The value for a key. Raises, naming the key (as show renders it), when it is missing; use tryGet to get an Option instead.",
           "example": "Map.ofPairs [(\u0022aaa\u0022, 1)] |\u003E Map.get \u0022aaa\u0022",
           "pointer": null
         },
         {
           "name": "has",
-          "signature": "Map.has (key: string) (m: Map\u003Cstring, \u0027a\u003E) : bool",
+          "signature": "Map.has (key: \u0027k) (m: Map\u003C\u0027k, \u0027a\u003E) : bool",
           "summary": "True when a key is present.",
           "example": "Map.ofPairs [(\u0022aaa\u0022, 1)] |\u003E Map.has \u0022aaa\u0022",
           "pointer": null
         },
         {
           "name": "keys",
-          "signature": "Map.keys (m: Map\u003Cstring, \u0027a\u003E) : seq\u003Cstring\u003E",
+          "signature": "Map.keys (m: Map\u003C\u0027k, \u0027a\u003E) : seq\u003C\u0027k\u003E",
           "summary": "The keys, sorted.",
           "example": "Map.ofPairs [(\u0022b\u0022, 2); (\u0022a\u0022, 1)] |\u003E Map.keys |\u003E Seq.freeze",
           "pointer": null
         },
         {
           "name": "ofPairs",
-          "signature": "Map.ofPairs (pairs: seq\u003Cstring * \u0027a\u003E) : Map\u003Cstring, \u0027a\u003E",
-          "summary": "Build a map from (key, value) pairs. If a key repeats, the last value wins, as when reading JSON.",
+          "signature": "Map.ofPairs (pairs: seq\u003C\u0027k * \u0027a\u003E) : Map\u003C\u0027k, \u0027a\u003E",
+          "summary": "Build a map from (key, value) pairs. A key is any type with equality (not float). If a key repeats, the last value wins, as when reading JSON.",
           "example": "Map.ofPairs [(\u0022a\u0022, 1); (\u0022b\u0022, 2)]",
           "pointer": null
         },
         {
           "name": "pairs",
-          "signature": "Map.pairs (m: Map\u003Cstring, \u0027a\u003E) : seq\u003Cstring * \u0027a\u003E",
+          "signature": "Map.pairs (m: Map\u003C\u0027k, \u0027a\u003E) : seq\u003C\u0027k * \u0027a\u003E",
           "summary": "The entries as (key, value) pairs, key-sorted.",
           "example": "Map.ofPairs [(\u0022b\u0022, 2); (\u0022a\u0022, 1)] |\u003E Map.pairs |\u003E Seq.freeze",
           "pointer": null
         },
         {
           "name": "remove",
-          "signature": "Map.remove (key: string) (m: Map\u003Cstring, \u0027a\u003E) : Map\u003Cstring, \u0027a\u003E",
+          "signature": "Map.remove (key: \u0027k) (m: Map\u003C\u0027k, \u0027a\u003E) : Map\u003C\u0027k, \u0027a\u003E",
           "summary": "A new map without the key (a missing key is not an error); the original is unchanged.",
           "example": "Map.ofPairs [(\u0022a\u0022, 1); (\u0022k\u0022, 2)] |\u003E Map.remove \u0022k\u0022",
           "pointer": null
         },
         {
           "name": "tryGet",
-          "signature": "Map.tryGet (key: string) (m: Map\u003Cstring, \u0027a\u003E) : Option\u003C\u0027a\u003E",
+          "signature": "Map.tryGet (key: \u0027k) (m: Map\u003C\u0027k, \u0027a\u003E) : Option\u003C\u0027a\u003E",
           "summary": "Some value when the key is present, None when not.",
           "example": "Map.ofPairs [(\u0022aaa\u0022, 1)] |\u003E Map.tryGet \u0022zzz\u0022",
           "pointer": null
         },
         {
           "name": "values",
-          "signature": "Map.values (m: Map\u003Cstring, \u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "signature": "Map.values (m: Map\u003C\u0027k, \u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "The values, in key-sorted order.",
           "example": "Map.ofPairs [(\u0022b\u0022, 2); (\u0022a\u0022, 1)] |\u003E Map.values |\u003E Seq.freeze",
           "pointer": null
