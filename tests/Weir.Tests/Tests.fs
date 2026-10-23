@@ -30066,6 +30066,23 @@ let hunt3BehaviorTests =
 
               Expect.stringContains g "objs: anyOf — drafted the FIRST variant only" "two objects keep the first-variant rule"
           }
+          test "schema drafting: a diamond of $refs under anyOf costs its definitions, not 2^depth" {
+              // D0 is string-or-array; each Dk is anyOf [Dk-1; Dk-1] — 2^30
+              // reference paths in a ~2 KB schema
+              let defs =
+                  [ "\"D0\": { \"anyOf\": [{ \"type\": \"string\" }, { \"type\": \"array\", \"items\": { \"type\": \"string\" } }] }" ]
+                  @ [ for k in 1..30 ->
+                          $"\"D{k}\": {{ \"anyOf\": [{{ \"$ref\": \"#/$defs/D{k - 1}\" }}, {{ \"$ref\": \"#/$defs/D{k - 1}\" }}] }}" ]
+                  |> String.concat ", "
+
+              let sw = Stopwatch.StartNew()
+
+              let g =
+                  gen $"{{ \"type\": \"object\", \"$defs\": {{ {defs} }}, \"properties\": {{ \"top\": {{ \"$ref\": \"#/$defs/D30\" }} }} }}"
+
+              Expect.isLessThan sw.Elapsed.TotalSeconds 5.0 "bounded by the definition count"
+              Expect.stringContains g "\n    top: Option<Yaml>\n" "the mixed kinds still draft Yaml"
+          }
           test "schema drafting: a typed enum drafts its type, a mixed enum Yaml [D:schema-enum-kind]" {
               let g =
                   gen
