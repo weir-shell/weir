@@ -2081,6 +2081,13 @@
           "summary": "Parse an int as an Option, None when it is not a number.",
           "example": "Str.tryToInt \u002242\u0022",
           "pointer": null
+        },
+        {
+          "name": "width",
+          "signature": "Str.width (s: string) : int",
+          "summary": "The number of terminal columns the string takes when printed: two for a wide character (Chinese, Japanese, Korean, fullwidth forms, emoji), none for a combining mark, a zero-width or control character, or an escape sequence such as a colour, one for the rest. An emoji built from several code points (a family joined by zero-width joiners, a flag) counts once. Use it to pad or align text you print; Str.length counts code points instead.",
+          "example": "Str.width \u0022\u65E5\u672C\u0022",
+          "pointer": null
         }
       ]
     },

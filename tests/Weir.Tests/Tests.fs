@@ -5924,6 +5924,39 @@ let stringTests =
                   "Str.sha256 \"café\""
                   (VStr "850f7dc43910ff890f8879c0ed26fe697c93a067ad93a7d50f466a7028a9bf4e")
           }
+          test "Str.width counts terminal columns [D:str-width]" {
+              let cases =
+                  [ "", 0, "empty"
+                    "abc", 3, "ASCII"
+                    "日本語", 6, "CJK ideographs are wide"
+                    "한글", 4, "Hangul syllables are wide"
+                    "ｱｲ", 2, "halfwidth katakana is narrow"
+                    "ＡＢ", 4, "fullwidth forms are wide"
+                    "e\u0301", 1, "a combining acute adds nothing"
+                    "\u1100\u1161", 2, "a conjoining Hangul vowel joins the leading consonant"
+                    "a\u200Bb", 2, "a zero-width space"
+                    "a\tb", 2, "a control character takes no cell"
+                    "\u00AD", 1, "the soft hyphen prints"
+                    "😀", 2, "an emoji-presentation character"
+                    "⌚", 2, "a BMP emoji-presentation character"
+                    "❤", 1, "a text-presentation character"
+                    "❤\uFE0F", 2, "VS16 asks for emoji presentation"
+                    "👍\U0001F3FD", 2, "a skin-tone modifier merges"
+                    "👨\u200D👩\u200D👧", 2, "a ZWJ sequence is one glyph"
+                    "🇯🇵", 2, "a flag's two regional indicators"
+                    "🇯🇵🇺🇸", 4, "two flags"
+                    "\u001b[31mred\u001b[0m", 3, "SGR colour takes no cell"
+                    "\u001b]0;title\u0007x", 1, "an OSC takes no cell"
+                    "\uE000", 1, "private use is narrow"
+                    "a😀b", 4, "mixed" ]
+
+              for text, cells, why in cases do
+                  Expect.equal (CellWidth.ofString text) cells why
+
+              expectValue "Str.width \"日本\"" (VInt 4L)
+              expectValue "Str.width \"\\u{1F600}x\"" (VInt 3L)
+              expectValue "Str.length \"日本\"" (VInt 2L)
+          }
           test "sha1: exact digests, sha1sum parity, UTF-8 bytes [D:sha1]" {
               expectValue "Str.sha1 \"hello\"" (VStr "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d")
               expectValue "Str.sha1 \"café\"" (VStr "f424452a9673918c6f09b0cdd35b20be8e6ae7d7")

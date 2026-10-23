@@ -43,6 +43,12 @@ Many of the changes and fixes below were found porting starship to weir.
   name would run (`Some "/usr/bin/git"`), or `None`. It looks the name
   up the way running it would, so inside `within env PATH=…` it
   searches that `PATH`, and on Windows it applies `PATHEXT`.
+- **`Str.width s`** is the number of terminal columns `s` takes when
+  printed: 2 for a wide CJK or fullwidth character or an emoji, 0 for a
+  combining mark, a control character or a colour escape, and one per
+  emoji however many code points build it (a family, a flag). Use it to
+  line up text that `Str.length` (code points) would misalign. The REPL
+  measures a custom prompt with the same table.
 
 ### Changed
 

@@ -2544,7 +2544,11 @@ print (f 1)
   start len` takes one byte's window). String positions and widths —
   slices, `Str.length`/`sub`/`tryIndexOf`/`padLeft`/`padRight` — count
   Unicode code points [D:str-code-points]: `Str.length "a😀b"` is 3 and
-  no cut splits an emoji. FROM-THE-END is `^n` (F#'s
+  no cut splits an emoji. `Str.width s : int` is the TERMINAL COLUMNS
+  instead [D:str-width] — wide CJK/fullwidth/emoji 2, combining marks,
+  controls and escape sequences (SGR colour) 0, an emoji sequence (ZWJ,
+  VS16, flag) one glyph: `Str.width "a😀b"` is 4. Align printed text
+  with it (`Str.replicate (w - Str.width s) " "`), not `padLeft`. FROM-THE-END is `^n` (F#'s
   spelling, `^n` = length − n) — `xs[^1]` is the last element, and it
   works as a slice bound too: `xs[..^2]` is all-but-last, `xs[^2..]` the
   last two, `xs[^3..^1]` both ends from the end. A `^`-bound resolves
@@ -2925,7 +2929,7 @@ not the teaching.
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `initInfinite` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `fromHex` `hmacSha256` `length` `sha1` `sha256` `sub` `toBase64` `toHex` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
-- `Str`: `contains` `endsWith` `fields` `fromBase64` `isEmpty` `isMatch` `join` `length` `nonEmpty` `padLeft` `padRight` `replace` `replicate` `rmatch` `rmatchAll` `rreplace` `rsplit` `rsplitOnce` `sha1` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `tryRsplitOnce` `trySplitOnce` `tryToInt` `fromUtf8`
+- `Str`: `contains` `endsWith` `fields` `fromBase64` `isEmpty` `isMatch` `join` `length` `nonEmpty` `padLeft` `padRight` `replace` `replicate` `rmatch` `rmatchAll` `rreplace` `rsplit` `rsplitOnce` `sha1` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `tryRsplitOnce` `trySplitOnce` `tryToInt` `fromUtf8` `width`
 
 Bare builtins and the prelude types (a union lists its cases, the
 constructors; a record its fields), kept honest by a unit test against
