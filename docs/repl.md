@@ -608,6 +608,27 @@ the function raises an error, the REPL falls back to the default
 `weir> ` and says so once on stderr; later failures in the same
 session are silent.
 
+To put something in the terminal's window title, call `Term.title`
+from the function. It writes the title straight to the terminal as a
+side effect, before the prompt is drawn, so it is not part of the
+returned prompt and doesn't affect its width:
+
+```text
+let sigil () =
+    Term.title $"weir: {pwd}"
+    $"≋ {pwd |> Path.fileName}> "
+
+#session {
+    prompt = sigil
+}
+```
+
+The title then follows `cd` on every prompt. Control characters and
+escape sequences in the title text are dropped (so a directory name
+can't smuggle in another escape), and it is cut to 256 characters. With
+no terminal, `Term.title` does nothing; on Windows it sets the console
+title.
+
 Two limits:
 
 - A session with redirected input always uses the default prompt, so

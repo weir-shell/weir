@@ -44,7 +44,8 @@ type EffectClass =
 // not. This is the set the boolean purity judgement reads and the gate
 // effectClass reads (a name outside it is pure → no class).
 let effectfulModules =
-    // Term/Color read the terminal (width, tty-ness) — ambient
+    // Term/Color read the terminal (width, tty-ness) — ambient; Term.title
+    // writes it (a mutation, placed in effectClass) [D:term-title]
     // [D:purity-ambient]
     Set [ "File"; "Dir"; "Env"; "Args"; "Proc"; "Net"; "Log"; "Term"; "Color" ]
 
@@ -184,6 +185,7 @@ let effectClass (n: string) : EffectClass option =
         | "print"
         | "printerr" -> Some Mutation // a console write changes the world
         | "Self.prompt" -> Some Mutation // reads stdin and writes the prompt to stderr
+        | "Term.title" -> Some Mutation // writes the title escape to the terminal [D:term-title]
         | "exit" -> Some Mutation // takes the process down
         | "cd" -> Some Mutation // writes the process's directory [D:purity-ambient]
         | "pwd" -> Some Ambient // reads the process's directory

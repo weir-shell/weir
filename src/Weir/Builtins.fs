@@ -4750,6 +4750,64 @@ let private colorHelper (code: string) : Value =
 // (piped, redirected) or the query fails, it falls back to 80 rather than
 // raising — a pipe has no width, and a tool sizing its output should not
 // crash. The columns primitive the git-status/tput-cols shapes wanted.
+// Term.title's text [D:term-title]: the title rides inside an OSC 0, so
+// nothing in it may end or start another sequence — C0 (ESC/BEL among
+// them), DEL, C1 and the bidi controls are DROPPED (not shown as \xNN:
+// a title is display, not data to keep honest), then the result is
+// capped at 256 code points
+let sanitizeTermTitle (s: string) : string =
+    let sb = System.Text.StringBuilder()
+    let mutable n = 0
+
+    for r in s.EnumerateRunes() do
+        let c = r.Value
+
+        let dropped =
+            c < 0x20
+            || (c >= 0x7F && c <= 0x9F)
+            || (c >= 0x202A && c <= 0x202E)
+            || (c >= 0x2066 && c <= 0x2069)
+            || c = 0x200E
+            || c = 0x200F
+            || c = 0x061C
+
+        if not dropped && n < 256 then
+            sb.Append(r.ToString()) |> ignore
+            n <- n + 1
+
+    sb.ToString()
+
+// set the window title [D:term-title]: Windows sets Console.Title (also
+// honoured by Windows Terminal); elsewhere an OSC 0 goes to stdout when
+// it is a terminal, else stderr when that is — with neither, nothing
+// (a piped run has no window to title, and no error)
+let private setTermTitle (t: string) =
+    if System.OperatingSystem.IsWindows() then
+        if not (System.Console.IsOutputRedirected && System.Console.IsErrorRedirected) then
+            try
+                System.Console.Title <- t
+            with _ ->
+                ()
+    else
+        let w =
+            if not System.Console.IsOutputRedirected then Some System.Console.Out
+            // past the stderr diagnostic sanitizer [D:tty-diag-sanitize],
+            // which would defang the escape — the indicator's own channel
+            elif not System.Console.IsErrorRedirected then
+                Some(
+                    if isNull Types.Waiting.control then
+                        System.Console.Error
+                    else
+                        Types.Waiting.control
+                )
+            else None
+
+        match w with
+        | Some w ->
+            w.Write("\u001b]0;" + t + "\u0007")
+            w.Flush()
+        | None -> ()
+
 let private termMembers: (string * Ty * Value) list =
     [ "width",
       TFun(TUnit, TInt),
@@ -4760,7 +4818,15 @@ let private termMembers: (string * Ty * Value) list =
               with _ ->
                   0
 
-          VInt(int64 (if w > 0 then w else 80))) ]
+          VInt(int64 (if w > 0 then w else 80)))
+      "title",
+      TFun(TStr, TUnit),
+      VBuiltin(fun v ->
+          match v with
+          | VStr t ->
+              setTermTitle (sanitizeTermTitle t)
+              VUnit
+          | v -> unreachable $"the checker rejects 'Term.title' on {formatValue v}") ]
 
 let private colorMembers: (string * Ty * Value) list =
     [ "red", TFun(TStr, TStr), colorHelper "31"
@@ -7574,6 +7640,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "print (show (Term.width ()))")
               None
            |> named [ "()" ])
+          "Term.title",
+          (bd
+              "Set the terminal window title. Control characters, escape sequences and bidi controls in the text are dropped, and it is cut to 256 characters. Does nothing when there is no terminal (output piped or redirected). Call it from the init.weir prompt function to keep the title current."
+              (Some "Term.title $\"weir: {pwd |> Path.fileName}\"")
+              None
+           |> named [ "text" ])
           "Size.parse",
           (bd
               "Parse a size. Binary units are powers of 1024 (1.5MiB); SI units are powers of 10 (1MB is 10^6 bytes); B means bytes. Raises if the value is not a whole number of bytes."
@@ -7847,7 +7919,7 @@ let moduleBlurbs: Map<string, string> =
           "Retry", "retry's options record: defaults"
           "Secret", "rendering-masked values: of, map, reveal"
           "Color", "terminal colour: red/green/…, bold/dim/underline, sgr — auto-off when piped"
-          "Term", "terminal facts: width (columns; 80 when there is no terminal)"
+          "Term", "the terminal: width (columns; 80 when there is no terminal), title (set the window title)"
           "Self", "the process's own facts: args, stdin, pid, paths — and prompt"
           "Seq", "lazy sequence pipeline ops: map, where, fold, pmap"
           "Size", "byte sizes: binary-unit literals, arithmetic, parse"
