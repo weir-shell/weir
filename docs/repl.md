@@ -651,6 +651,40 @@ Two limits:
 - The default prompt's red error color ([above](#the-prompt-and-the-colors))
   doesn't apply to a custom prompt; it chooses its own colors.
 
+### A prompt from a vendored module
+
+A prompt someone else wrote, like the
+[starship port](https://github.com/weir-shell/ports/tree/main/starship),
+can be [vendored](tooling.md#remote-modules) next to the init file
+instead of cloned. Run `add` in the directory that holds `init.weir`:
+
+```text
+cd ~/.config/weir
+weir add module github.com/weir-shell/ports//starship/starship.weir@main --as starship
+```
+
+`add` uses the nearest `.weir/` above the current directory; when
+there is none, it creates `.weir/` right there, next to `init.weir`.
+A `weir:` import in the init file looks for `.weir/` the same way,
+starting from the init file's real location, so it finds the module:
+
+```text
+#init
+
+import "weir:starship" as Ship
+
+/// starship's prompt, rendered by the weir port
+let starship st = Ship.prompt st
+
+#session {
+    prompt = starship
+}
+```
+
+If `init.weir` is a symlink into a dotfiles repo, run `add` in the
+directory of the real file (or anywhere in that repo, if it already
+has a `.weir/`).
+
 ## `#alias`: command-head aliases
 
 A `#alias` maps a short name to a program plus some fixed leading

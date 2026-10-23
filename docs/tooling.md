@@ -76,8 +76,8 @@ These maintain the [`.weir/` tree](#project-layout-weir):
 - `weir add schema <url> --as <name>` — download a JSON schema into
   `.weir/schemas/` and record it in the lock ([schemas](#yaml-schemas)).
 - `weir add module <src>//<file>@<ref> --as <name>` — download a copy
-  of a remote module into `.weir/modules/` and record it in the lock
-  ([modules](#remote-modules)).
+  of a remote module, with the files it imports, into `.weir/modules/`
+  and record it in the lock ([modules](#remote-modules)).
 - `weir gen types --schema <name>` — generate weir `type` declarations
   from a locked schema into `.weir/types/<name>.weir`
   ([types from a schema](#types-from-a-schema)).
@@ -524,14 +524,56 @@ give the full raw URL:
 weir add module https://raw.githubusercontent.com/org/repo/<sha>/lib/retry.weir --as retry
 ```
 
-Before writing anything, `add` checks that the file:
+A module that imports other files of its repo by relative path
+(`./lib/config.weir`, `../fmt.weir`, `sib.weir`) is vendored together
+with them. `add` follows the imports and downloads every file at the
+same commit, then copies them into `.weir/modules/<name>/`, keeping
+their positions relative to each other, so the imports work without
+changes. For example, the starship port's entry imports eight files
+under `lib/`:
+
+```text
+weir add module github.com/weir-shell/ports//starship/starship.weir@main --as starship
+```
+
+```text
+.weir/modules/starship/
+  starship.weir
+  lib/config.weir
+  lib/mods/vcs.weir   # imports ../config.weir
+  ...
+```
+
+A module without imports is a single file, `.weir/modules/<name>.weir`,
+as before.
+
+Inside a vendored file, `add` refuses three kinds of import, each
+reported with the file and line:
+
+- a `weir:` import. Vendoring a module that depends on another
+  remote module isn't supported yet; vendor both and import each from
+  your own code.
+- an absolute path
+- a relative path that leads outside the repo
+
+A raw URL is one file and has no repo to fetch imports from, so a
+raw URL whose file imports is refused. To vendor imports from any
+host, mark the repo root in the raw URL with `//`, the same separator
+the short form uses:
+
+```text
+weir add module https://raw.githubusercontent.com/org/repo/<sha>//lib/retry.weir --as retry
+```
+
+Before writing anything, `add` checks that every file:
 
 - is a `module` (only declarations)
-- typechecks
-- doesn't `import` anything (for now, a vendored module can't import
-  other modules, though that may change)
+- typechecks (the entry file is loaded with its imports, the way an
+  import loads it)
 
-If any check fails, nothing is written to `.weir/`.
+If any check fails, nothing is written to `.weir/` and the lock is not
+changed. The report line names the number of files and the entry's
+members.
 
 Then import the module by name anywhere in the project. `weir:` finds
 it by searching upward for `.weir/`, the same way `#sig` does,
@@ -546,8 +588,18 @@ import "weir:retry" as Retry
 
 To update, run `add` again. It overwrites the file and prints the
 old and new sha, and you review the change in the vendored file's
-diff. If the vendored copy gets modified, `verify` reports it and
-`restore` downloads it again.
+diff. For a module with imports it prints the old and new sha of each
+file that changed, and deletes files the module no longer imports. If
+a vendored file gets modified or deleted, `verify` reports it and
+`restore` downloads it again, at the commit in the lock.
+
+The lock entry of a module with imports records the commit, the entry
+file and every file's sha256. A lock with such an entry has
+`"schemaVersion": 2`; older weir versions refuse to read it rather
+than misread it. `.weir/modules/<name>.weir` and
+`.weir/modules/<name>/` both existing is an error at the import, as is
+a `.weir/modules/<name>/` that the lock has no entry for (the lock
+names the entry file).
 
 `check --can` follows imports, so a vendored module's commands, file
 writes and network access appear in **your** report, each at the
@@ -576,6 +628,7 @@ one directory:
   sigs/<tool>.weir   # command signatures (weir add sig)
   schemas/<name>.json# JSON schemas (weir add schema)
   modules/<name>.weir# vendored modules (weir add module)
+  modules/<name>/    # a vendored module with the files it imports
   types/<name>.weir  # generated, user-owned type modules (weir gen types — not locked)
 ```
 

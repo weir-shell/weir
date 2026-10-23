@@ -13394,7 +13394,8 @@ let lockfileConfinementTests =
           Url = "http://x"
           Sha256 = "0"
           Path = path
-          Version = None }
+          Version = None
+          Closure = None }
 
     testList
         "lockfile path confinement [D:lockfile-confinement]"
@@ -13553,7 +13554,8 @@ let lockfileConfinementTests =
                           Url = url
                           Sha256 = System.String('a', 64)
                           Path = "modules/m.weir"
-                          Version = None } ]
+                          Version = None
+                          Closure = None } ]
 
                   match Weir.Contracts.restore dir with
                   | Ok lines -> failtest $"a hash mismatch must refuse: {lines}"
@@ -13621,6 +13623,229 @@ let lockfileConfinementTests =
           } ]
 
 
+let vendorClosureTests =
+    // [D:add-module-closure]: the closure walk, its refusals, the layout,
+    // the lock round-trip, per-file confinement and weir: resolution order
+    let fetchFrom (files: (string * string) list) =
+        let m = Map.ofList files
+
+        fun (p: string) ->
+            match Map.tryFind p m with
+            | Some t -> Ok(System.Text.Encoding.UTF8.GetBytes(t: string))
+            | None -> Error $"{p} answered 404"
+
+    let modText name (imports: string list) =
+        String.concat "\n" ([ $"module {name}"; "" ] @ imports @ [ ""; "/// x"; "let f : int -> int"; ""; "let f x = x" ])
+
+    let sha (c: char) = System.String(c, 64)
+
+    let closureEntry (files: (string * string) list) : Weir.Contracts.LockEntry =
+        { Kind = "module"
+          Name = "m"
+          Url = "http://h/r/"
+          Sha256 = Weir.Contracts.treeHash files
+          Path = "modules/m"
+          Version = None
+          Closure =
+            Some
+                { Commit = Some(System.String('c', 40))
+                  Entry = fst files.Head
+                  Files = files } }
+
+    testList
+        "vendor closure [D:add-module-closure]"
+        [ test "the walk follows relative imports at every spelling, dedups a diamond, entry first" {
+              let fetch =
+                  fetchFrom
+                      [ "s/entry.weir", modText "Entry" [ "import \"./lib/a.weir\" as A"; "import \"lib/sub/b.weir\" as B"; "import \"sibnoext\" as S" ]
+                        "s/lib/a.weir", modText "A" []
+                        "s/lib/sub/b.weir", modText "B" [ "import \"../a.weir\" as A"; "import \"./../../sibnoext\" as S" ]
+                        "s/sibnoext", modText "Sib" [] ]
+
+              match Weir.Script.walkVendorClosure fetch "s/entry.weir" with
+              | Ok files ->
+                  Expect.equal
+                      (files |> List.map fst)
+                      [ "s/entry.weir"; "s/lib/a.weir"; "s/lib/sub/b.weir"; "s/sibnoext" ]
+                      "every relative spelling joins, each file once, entry first"
+              | Error e -> failtest e
+          }
+          test "a leaf walks to itself" {
+              match Weir.Script.walkVendorClosure (fetchFrom [ "x.weir", modText "X" [] ]) "x.weir" with
+              | Ok [ ("x.weir", _) ] -> ()
+              | other -> failtest $"{other}"
+          }
+          test "a weir: import, an absolute path and a root escape refuse, located at file:line:col" {
+              let cases =
+                  [ "import \"weir:other\" as O", [ "lib/e.weir:3:8"; "a weir: import inside a vendored module"; "current boundary, not a refusal" ]
+                    "import \"/etc/x.weir\" as O", [ "lib/e.weir:3:8"; "imports the absolute path '/etc/x.weir'" ]
+                    "import \"C:/x.weir\" as O", [ "imports the absolute path" ]
+                    "import \"../../x.weir\" as O", [ "lib/e.weir:3:8"; "resolves outside the repo root" ] ]
+
+              for imp, wants in cases do
+                  match Weir.Script.walkVendorClosure (fetchFrom [ "lib/e.weir", modText "E" [ imp ] ]) "lib/e.weir" with
+                  | Ok _ -> failtest $"{imp} must refuse"
+                  | Error e ->
+                      for w in wants do
+                          Expect.stringContains e w imp
+          }
+          test "a missing import names the importing site; the entry spec cannot escape" {
+              match
+                  Weir.Script.walkVendorClosure (fetchFrom [ "e.weir", modText "E" [ "import \"./gone.weir\" as G" ] ]) "e.weir"
+              with
+              | Error e ->
+                  Expect.stringContains e "gone.weir (imported at e.weir:3:8)" e
+                  Expect.stringContains e "404" e
+              | Ok _ -> failtest "a missing import must refuse"
+
+              match Weir.Script.walkVendorClosure (fetchFrom []) "../x.weir" with
+              | Error e -> Expect.stringContains e "not a file inside the repo" e
+              | Ok _ -> failtest "an escaping entry must refuse"
+          }
+          test "a cycle walks once per file (the loader names it at validation)" {
+              let fetch =
+                  fetchFrom
+                      [ "a.weir", modText "A" [ "import \"./b.weir\" as B" ]
+                        "b.weir", modText "B" [ "import \"./a.weir\" as A" ] ]
+
+              match Weir.Script.walkVendorClosure fetch "a.weir" with
+              | Ok files -> Expect.equal (files |> List.map fst) [ "a.weir"; "b.weir" ] "each once"
+              | Error e -> failtest e
+          }
+          test "the layout mirrors the repo under the common ancestor directory" {
+              Expect.equal (Weir.Script.closureAncestor [ "starship/starship.weir"; "starship/lib/a.weir"; "starship/lib/mods/b.weir" ]) "starship/" "the port"
+              Expect.equal (Weir.Script.closureAncestor [ "lib/mods/x.weir"; "util.weir" ]) "" "an import above the entry"
+              Expect.equal (Weir.Script.closureAncestor [ "a/b/x.weir"; "a/b/c/y.weir" ]) "a/b/" "deep"
+          }
+          test "validation loads the closure: a module purity violation in a lib file names that file" {
+              withTempDir "weir-closure-check" (fun dir ->
+                  System.IO.Directory.CreateDirectory(System.IO.Path.Combine(dir, "lib")) |> ignore
+                  System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "e.weir"), modText "E" [ "import \"./lib/a.weir\" as A" ])
+                  System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "lib", "a.weir"), "module A\n\nlet now = ls\n\nprint \"x\"\n")
+
+                  match Weir.Script.checkVendoredClosure dir "e.weir" with
+                  | Ok n -> failtest $"a command in a lib must refuse ({n})"
+                  | Error e -> Expect.stringContains e "a.weir" e
+
+                  System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "lib", "a.weir"), modText "A" [])
+                  System.IO.File.WriteAllText(
+                      System.IO.Path.Combine(dir, "e.weir"),
+                      "module E\n\nimport \"./lib/a.weir\" as A\n\n/// y\nlet g : int -> int\n\nlet g x = A.f x\n"
+                  )
+
+                  match Weir.Script.checkVendoredClosure dir "e.weir" with
+                  | Ok n -> Expect.equal n 1 "the entry's member count"
+                  | Error e -> failtest e)
+          }
+          test "a closure entry round-trips through the lock at schemaVersion 2; leaf-only stays 1" {
+              withTempDir "weir-closure-lock" (fun dir ->
+                  let files = [ "entry.weir", sha 'a'; "lib/a.weir", sha 'b' ]
+
+                  let leaf: Weir.Contracts.LockEntry =
+                      { Kind = "module"
+                        Name = "l"
+                        Url = "http://h/l.weir"
+                        Sha256 = sha 'd'
+                        Path = "modules/l.weir"
+                        Version = None
+                        Closure = None }
+
+                  Weir.Contracts.writeLock dir [ leaf ]
+                  let text1 = System.IO.File.ReadAllText(System.IO.Path.Combine(dir, "lock.json"))
+                  Expect.stringContains text1 "\"schemaVersion\": 1" "leaf-only"
+                  Expect.isFalse (text1.Contains "files") "no closure keys on a leaf"
+
+                  Weir.Contracts.writeLock dir [ leaf; closureEntry files ]
+                  let text2 = System.IO.File.ReadAllText(System.IO.Path.Combine(dir, "lock.json"))
+                  Expect.stringContains text2 "\"schemaVersion\": 2" "a closure writes 2"
+
+                  match Weir.Contracts.readLock dir with
+                  | Ok [ l; c ] ->
+                      Expect.equal l leaf "the leaf reads back"
+                      Expect.equal c (closureEntry files) "the closure reads back"
+                  | other -> failtest $"{other}"
+
+                  System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "lock.json"), text2.Replace("\"schemaVersion\": 2", "\"schemaVersion\": 3"))
+
+                  match Weir.Contracts.readLock dir with
+                  | Error e -> Expect.stringContains e "newer than this weir understands" e
+                  | Ok _ -> failtest "3 must refuse"
+
+                  let bad =
+                      [ text2.Replace(sha 'b', "zz"), "\"sha256\" must be 64 hex digits"
+                        text2.Replace("\"entry\": \"entry.weir\"", "\"entry\": \"nope.weir\""), "is not one of its files"
+                        text2.Replace("\"path\": \"lib/a.weir\"", "\"path\": \"\""), "\"path\" must be a non-empty string" ]
+
+                  for t, want in bad do
+                      System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "lock.json"), t)
+
+                      match Weir.Contracts.readLock dir with
+                      | Error e -> Expect.stringContains e want want
+                      | Ok _ -> failtest $"{want} must refuse")
+          }
+          test "a closure file's dest is confined to its own modules/<name>/" {
+              withTempDir "weir-closure-confine" (fun wd ->
+                  let e = closureEntry [ "entry.weir", sha 'a' ]
+
+                  match Weir.Contracts.closureFileDest wd e "lib/a.weir" with
+                  | Ok d -> Expect.equal d (System.IO.Path.GetFullPath(System.IO.Path.Combine(wd, "modules", "m", "lib", "a.weir"))) "benign"
+                  | Error e -> failtest e
+
+                  for hostile in [ "../other/x.weir"; "../../lock.json"; "/etc/passwd"; "a/../../m.weir" ] do
+                      match Weir.Contracts.closureFileDest wd e hostile with
+                      | Ok d -> failtest $"{hostile} must refuse, got {d}"
+                      | Error msg -> Expect.stringContains msg "module m" hostile
+
+                  if not (System.OperatingSystem.IsWindows()) then
+                      let outside = System.IO.Path.Combine(wd, "..", System.IO.Path.GetFileName wd + "-out")
+                      System.IO.Directory.CreateDirectory outside |> ignore
+                      System.IO.Directory.CreateDirectory(System.IO.Path.Combine(wd, "modules", "m")) |> ignore
+
+                      try
+                          System.IO.Directory.CreateSymbolicLink(System.IO.Path.Combine(wd, "modules", "m", "lib"), outside) |> ignore
+
+                          match Weir.Contracts.closureFileDest wd e "lib/a.weir" with
+                          | Ok d -> failtest $"a symlinked dir out must refuse, got {d}"
+                          | Error msg -> Expect.stringContains msg "escapes .weir/" msg
+                      finally
+                          System.IO.Directory.Delete(outside, true))
+          }
+          test "weir:<name> resolves <name>.weir, then <name>/ by its lock entry, then types/; faults are named" {
+              withTempDir "weir-closure-resolve" (fun td ->
+                  System.IO.Directory.CreateDirectory(System.IO.Path.Combine(td, ".git")) |> ignore
+                  let wd = System.IO.Path.Combine(td, ".weir")
+                  let mdir = System.IO.Path.Combine(wd, "modules", "m")
+                  System.IO.Directory.CreateDirectory(System.IO.Path.Combine(mdir, "lib")) |> ignore
+                  System.IO.Directory.CreateDirectory(System.IO.Path.Combine(wd, "types")) |> ignore
+                  let main = System.IO.Path.Combine(td, "main.weir")
+                  let errs lines = errorsIn main lines |> List.map (fun d -> d.Message)
+
+                  System.IO.File.WriteAllText(System.IO.Path.Combine(mdir, "lib", "a.weir"), modText "A" [])
+                  System.IO.File.WriteAllText(
+                      System.IO.Path.Combine(mdir, "entry.weir"),
+                      "module Entry\n\nimport \"./lib/a.weir\" as A\n\n/// y\nlet g : int -> int\n\nlet g x = A.f x\n"
+                  )
+
+                  let usage = [ "import \"weir:m\" as M"; "print (show (M.g 1))" ]
+                  Expect.exists (errs usage) (fun m -> m.Contains "the lock has no entry for") "a directory with no lock entry"
+
+                  let files =
+                      [ "entry.weir", Weir.Contracts.sha256Hex (System.IO.File.ReadAllBytes(System.IO.Path.Combine(mdir, "entry.weir")))
+                        "lib/a.weir", Weir.Contracts.sha256Hex (System.IO.File.ReadAllBytes(System.IO.Path.Combine(mdir, "lib", "a.weir"))) ]
+
+                  Weir.Contracts.writeLock wd [ closureEntry files ]
+                  Expect.isEmpty (errs usage) "the directory resolves through the lock's entry"
+
+                  System.IO.File.WriteAllText(System.IO.Path.Combine(wd, "modules", "m.weir"), modText "M" [])
+                  Expect.exists (errs usage) (fun m -> m.Contains "names two vendored forms") "<name>.weir beside <name>/"
+                  System.IO.File.Delete(System.IO.Path.Combine(wd, "modules", "m.weir"))
+
+                  System.IO.File.WriteAllText(System.IO.Path.Combine(wd, "types", "m.weir"), "module M\ntype T = { a: int }\n")
+                  Expect.exists (errs usage) (fun m -> m.Contains "names two vendored files") "<name>/ beside types/<name>.weir"
+                  System.IO.Directory.Delete(mdir, true)
+                  Expect.isEmpty (errs [ "import \"weir:m\" as M"; "print (show { a = 1 })" ]) "types/ last")
+          } ]
+
 let lockfileSymlinkConfinementTests =
     // DA-04 [D:lockfile-symlink-confinement]: confineUnder is lexical, so a
     // lexically-clean path escapes through a symlinked component. entryDest
@@ -13632,7 +13857,8 @@ let lockfileSymlinkConfinementTests =
           Url = "http://x"
           Sha256 = "0"
           Path = path
-          Version = None }
+          Version = None
+          Closure = None }
 
     testList
         "lockfile symlink confinement [D:lockfile-symlink-confinement]"
@@ -32107,6 +32333,7 @@ let allTests =
           moduleTests
           lockfileConfinementTests
           lockfileSymlinkConfinementTests
+          vendorClosureTests
           moduleSignatureTests
           scriptTests
           multilineTests

@@ -531,7 +531,20 @@ type LockEntry =
       // sig entries only: the tool's verbatim --version output at
       // generation time — denormalized from the file (hash-protected,
       // so they cannot drift apart) so verify needs no weir parser
-      Version: string option }
+      Version: string option
+      // a module with relative imports [D:add-module-closure]: Path is
+      // the directory modules/<name>, Url the fetch base its files hang
+      // off, Sha256 the tree hash over Files. None = a single file
+      Closure: ModuleClosure option }
+
+/// a vendored module's closure [D:add-module-closure]: the entry and
+/// every file it reaches by relative import, fetched at one commit.
+/// Paths are '/'-separated, relative to the entry's modules/<name>/
+and ModuleClosure =
+    { Commit: string option
+      Entry: string
+      // (path, sha256), sorted by path (ordinal)
+      Files: (string * string) list }
 
 /// the confined dest for a lock entry [D:lockfile-confinement] — every
 /// consumer (restore/verify/gen types) resolves an entry's Path through
@@ -583,6 +596,32 @@ let sha256Hex (bytes: byte[]) : string =
     |> Array.map (fun b -> b.ToString "x2")
     |> String.concat ""
 
+/// a closure file's confined dest [D:add-module-closure]: lexically under
+/// the entry's own modules/<name>/ first (a file path never leaves its
+/// module's directory), then the entry's two gates, per file
+let closureFileDest (weirDir: string) (e: LockEntry) (rel: string) : Result<string, string> =
+    match confineUnder (Path.Combine(weirDir, e.Path)) rel with
+    | Error _ ->
+        Error
+            $"{e.Kind} {e.Name}: the lock records file '{rel}', which escapes .weir/{e.Path}/ — a lock entry must stay under the vendor directory; this lock was tampered with or hand-edited"
+    | Ok _ ->
+        entryDest
+            weirDir
+            { e with
+                Path = e.Path + "/" + rel
+                Closure = None }
+
+/// one hash for a whole closure [D:add-module-closure]: sha256 over
+/// `<sha256>  <path>` lines in path order (the sha256sum shape), so a
+/// re-add that changes nothing reads as unchanged
+let treeHash (files: (string * string) list) : string =
+    files
+    |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
+    |> List.map (fun (p, h) -> $"{h}  {p}\n")
+    |> String.concat ""
+    |> Text.Encoding.UTF8.GetBytes
+    |> sha256Hex
+
 let private lockPath (weirDir: string) = Path.Combine(weirDir, "lock.json")
 
 exception private LockShape of string
@@ -605,7 +644,8 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
                 | true, _ -> raise (LockShape "\"schemaVersion\" must be a number")
                 | _ -> 1 // pre-field locks are version 1
 
-            if ver > 1 then
+            // 2 = a module closure entry is present [D:add-module-closure]
+            if ver > 2 then
                 failwith $"lock schemaVersion {ver} is newer than this weir understands — upgrade weir"
 
             // every entry is validated at read, naming the entry and the
@@ -652,15 +692,60 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
                 let sha = need "sha256"
                 let path = need "path"
 
-                if sha.Length <> 64 || not (sha |> Seq.forall Uri.IsHexDigit) then
+                let hex64 (v: string) = v.Length = 64 && v |> Seq.forall Uri.IsHexDigit
+
+                if not (hex64 sha) then
                     bad $"{at}: \"sha256\" must be 64 hex digits, got '{sha}'"
+
+                let closure =
+                    match e.TryGetProperty "files" with
+                    | false, _ -> None
+                    | true, fs when fs.ValueKind = Text.Json.JsonValueKind.Array && kind = "module" ->
+                        let files =
+                            fs.EnumerateArray()
+                            |> Seq.mapi (fun j f ->
+                                let fat = $"{at}: files[{j}]"
+
+                                let fstr (field: string) =
+                                    match
+                                        (if f.ValueKind = Text.Json.JsonValueKind.Object then
+                                             f.TryGetProperty field
+                                         else
+                                             bad $"{fat} must be an object")
+                                    with
+                                    | true, v when v.ValueKind = Text.Json.JsonValueKind.String && v.GetString() <> "" ->
+                                        v.GetString()
+                                    | _ -> bad $"{fat}: \"{field}\" must be a non-empty string"
+
+                                let fp = fstr "path"
+                                let fh = fstr "sha256"
+
+                                if not (hex64 fh) then
+                                    bad $"{fat}: \"sha256\" must be 64 hex digits, got '{fh}'"
+
+                                fp, fh.ToLowerInvariant())
+                            |> List.ofSeq
+
+                        let entry =
+                            match str "entry" true with
+                            | Some v when files |> List.exists (fun (p, _) -> p = v) -> v
+                            | Some v -> bad $"{at}: \"entry\" '{v}' is not one of its files"
+                            | None -> ""
+
+                        Some
+                            { Commit = str "commit" false
+                              Entry = entry
+                              Files = files }
+                    | true, _ when kind <> "module" -> bad $"{at}: only a module entry carries \"files\""
+                    | true, _ -> bad $"{at}: \"files\" must be an array"
 
                 { Kind = kind
                   Name = name
                   Url = url
                   Sha256 = sha.ToLowerInvariant()
                   Path = path
-                  Version = str "version" false })
+                  Version = str "version" false
+                  Closure = closure })
             |> List.ofSeq
             |> Ok
         with
@@ -674,7 +759,10 @@ let writeLock (weirDir: string) (entries: LockEntry list) : unit =
         new Text.Json.Utf8JsonWriter(ms, Text.Json.JsonWriterOptions(Indented = true))
 
      w.WriteStartObject()
-     w.WriteNumber("schemaVersion", 1)
+     // a lock with no closure entry stays version 1, byte-identical; a
+     // closure entry is a shape version-1 weir would misread as a missing
+     // file, so it writes 2 and older weir refuses [D:add-module-closure]
+     w.WriteNumber("schemaVersion", (if entries |> List.exists (fun e -> e.Closure.IsSome) then 2 else 1))
      w.WriteStartArray "artifacts"
 
      for e in entries do
@@ -687,6 +775,21 @@ let writeLock (weirDir: string) (entries: LockEntry list) : unit =
 
          match e.Version with
          | Some v -> w.WriteString("version", v)
+         | None -> ()
+
+         match e.Closure with
+         | Some c ->
+             c.Commit |> Option.iter (fun v -> w.WriteString("commit", v))
+             w.WriteString("entry", c.Entry)
+             w.WriteStartArray "files"
+
+             for p, h in c.Files do
+                 w.WriteStartObject()
+                 w.WriteString("path", p)
+                 w.WriteString("sha256", h)
+                 w.WriteEndObject()
+
+             w.WriteEndArray()
          | None -> ()
 
          w.WriteEndObject()
@@ -843,7 +946,11 @@ type ResolvedModuleSource =
     { Url: string
       Sha: string option
       FetchHeaders: (string * string) list
-      Host: string option }
+      Host: string option
+      // the repo root the file sits in [D:add-module-closure]: (fetch
+      // base ending '/', the file's repo path), so a relative import is
+      // fetched at the same commit. None = a single raw URL, no root
+      Root: (string * string) option }
 
 let private uaHeader = [ "User-Agent", "weir/" + Version.current ]
 
@@ -868,11 +975,27 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
             | Some t -> [ "Authorization", "token " + t ]
             | None -> []
 
+        // a `//` past the authority marks the repo root in a raw URL
+        // [D:add-module-closure] — `<raw base>//<path>`, the shorthand's
+        // separator — so the file's relative imports can be fetched
+        let afterScheme = spec.IndexOf "://" + 3
+
+        let root =
+            match spec.IndexOf("//", afterScheme) with
+            | -1 -> None
+            | _ when spec.IndexOfAny([| '?'; '#' |]) >= 0 -> None
+            | i when spec.Length > i + 2 -> Some(spec.Substring(0, i) + "/", spec.Substring(i + 2))
+            | _ -> None
+
         Ok
-            { Url = spec
+            { Url =
+                (match root with
+                 | Some(b, p) -> b + p
+                 | None -> spec)
               Sha = None
               FetchHeaders = uaHeader @ hdrs
-              Host = (if host = "" then None else Some host) }
+              Host = (if host = "" then None else Some host)
+              Root = root }
     else
         match spec.IndexOf "//" with
         | -1 ->
@@ -925,7 +1048,8 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
                                          { Url = $"https://raw.githubusercontent.com/{repo}/{sha}/{path}"
                                            Sha = Some sha
                                            FetchHeaders = uaHeader @ rawAuth
-                                           Host = Some host })
+                                           Host = Some host
+                                           Root = Some($"https://raw.githubusercontent.com/{repo}/{sha}/", path) })
                         | "gitlab.com" ->
                             let auth =
                                 match hostToken host with
@@ -945,7 +1069,8 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
                                          { Url = $"https://gitlab.com/{repo}/-/raw/{sha}/{path}"
                                            Sha = Some sha
                                            FetchHeaders = uaHeader @ auth
-                                           Host = Some host })
+                                           Host = Some host
+                                           Root = Some($"https://gitlab.com/{repo}/-/raw/{sha}/", path) })
                         | h ->
                             Error
                                 $"unknown host '{quoteData h}' — the shorthand knows github.com and gitlab.com; any other host takes the full raw URL: weir add module https://… --as <name>"
@@ -976,6 +1101,40 @@ let moduleFetchHeaders (url: string) : (string * string) list * string option =
 
     uaHeader @ auth, (if tokenHost = "" then None else Some tokenHost)
 
+/// delete a module's closure files the new form no longer has
+/// [D:add-module-closure] — each through its confined dest, then every
+/// directory left empty under modules/<name>/, the directory itself too
+let private removeClosureFiles (weirDir: string) (e: LockEntry) (keep: Set<string>) : unit =
+    match e.Closure with
+    | None -> ()
+    | Some c ->
+        let dirs = Collections.Generic.HashSet<string>()
+
+        for rel, _ in c.Files do
+            if not (keep.Contains rel) then
+                match closureFileDest weirDir e rel with
+                | Ok dest ->
+                    (try
+                        if File.Exists dest then
+                            File.Delete dest
+                     with _ ->
+                         ())
+
+                    let mutable d = Path.GetDirectoryName dest
+                    let top = Path.GetFullPath(Path.Combine(weirDir, e.Path))
+
+                    while d.Length >= top.Length && d.StartsWith top do
+                        dirs.Add d |> ignore
+                        d <- Path.GetDirectoryName d
+                | Error _ -> ()
+
+        for d in dirs |> Seq.sortByDescending (fun d -> d.Length) do
+            try
+                if Directory.Exists d && Seq.isEmpty (Directory.EnumerateFileSystemEntries d) then
+                    Directory.Delete d
+            with _ ->
+                ()
+
 /// the shared vendoring tail: write the artifact and upsert its lock
 /// entry together, or neither. Returns (sha256, prior entry's sha) so
 /// the caller can render added/updated — a re-add is the update path,
@@ -992,10 +1151,8 @@ let vendorFile
         match readLock weirDir with
         | Error e -> Error e
         | Ok entries ->
-            let prior =
-                entries
-                |> List.tryFind (fun e -> e.Kind = kind && e.Name = name)
-                |> Option.map (fun e -> e.Sha256)
+            let priorEntry = entries |> List.tryFind (fun e -> e.Kind = kind && e.Name = name)
+            let prior = priorEntry |> Option.map (fun e -> e.Sha256)
 
             let dest = Path.Combine(weirDir, rel)
             let hash = sha256Hex bytes
@@ -1006,7 +1163,8 @@ let vendorFile
                   Url = Http.stripUserinfo url
                   Sha256 = hash
                   Path = rel
-                  Version = None }
+                  Version = None
+                  Closure = None }
 
             let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
 
@@ -1018,6 +1176,9 @@ let vendorFile
             | Ok() ->
                 try
                     writeLock weirDir (others @ [ entry ])
+                    // a closure re-added as one file leaves no directory
+                    // behind [D:add-module-closure]
+                    priorEntry |> Option.iter (fun pe -> removeClosureFiles weirDir pe Set.empty)
                     Ok(hash, prior)
                 with ex ->
                     (try
@@ -1026,6 +1187,95 @@ let vendorFile
                          ())
 
                     Error $"write failed: {quoteData ex.Message} — the partial file was removed")
+
+/// one closure file's change on a re-add [D:add-module-closure]: the
+/// path, the old sha (None = new to the closure), the new sha (None =
+/// it left the closure and was removed)
+type ClosureChange = string * string option * string option
+
+/// the closure vendoring tail [D:add-module-closure]: every file under
+/// modules/<name>/ (confined, as vendorFile writes one), the files that
+/// left the closure removed, a prior single-file form removed, the lock
+/// entry upserted last. Returns the tree hash, the prior entry's hash,
+/// and the per-file changes in path order.
+let vendorClosure
+    (weirDir: string)
+    (name: string)
+    (url: string)
+    (commit: string option)
+    (entryRel: string)
+    (files: (string * byte[]) list)
+    : Result<string * string option * ClosureChange list, string> =
+    AtomicFile.withWeirDirLock weirDir (fun () ->
+        match readLock weirDir with
+        | Error e -> Error e
+        | Ok entries ->
+            let priorEntry =
+                entries |> List.tryFind (fun e -> e.Kind = "module" && e.Name = name)
+
+            let hashed =
+                files
+                |> List.map (fun (p, b) -> p, sha256Hex b)
+                |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
+
+            let entry =
+                { Kind = "module"
+                  Name = name
+                  Url = Http.stripUserinfo url
+                  Sha256 = treeHash hashed
+                  Path = "modules/" + name
+                  Version = None
+                  Closure =
+                    Some
+                        { Commit = commit
+                          Entry = entryRel
+                          Files = hashed } }
+
+            let priorFiles =
+                match priorEntry with
+                | Some { Closure = Some c } -> Map.ofList c.Files
+                | _ -> Map.empty
+
+            let newFiles = Map.ofList hashed
+
+            let changes: ClosureChange list =
+                Set.union (Set.ofSeq priorFiles.Keys) (Set.ofSeq newFiles.Keys)
+                |> Seq.sortWith (fun a b -> String.CompareOrdinal(a, b))
+                |> Seq.map (fun p -> p, Map.tryFind p priorFiles, Map.tryFind p newFiles)
+                |> List.ofSeq
+
+            let rec writeAll (fs: (string * byte[]) list) =
+                match fs with
+                | [] -> Ok()
+                | (rel, bytes) :: rest ->
+                    match closureFileDest weirDir entry rel with
+                    | Error e -> Error e
+                    | Ok dest ->
+                        match writeConfined weirDir dest bytes with
+                        | Error e -> Error e
+                        | Ok() -> writeAll rest
+
+            match writeAll files with
+            | Error e -> Error e
+            | Ok() ->
+                try
+                    let others =
+                        entries |> List.filter (fun e -> not (e.Kind = "module" && e.Name = name))
+
+                    writeLock weirDir (others @ [ entry ])
+
+                    match priorEntry with
+                    | Some({ Closure = Some _ } as pe) -> removeClosureFiles weirDir pe (Set.ofSeq newFiles.Keys)
+                    | Some pe ->
+                        // the single-file form gives way to the directory
+                        match entryDest weirDir pe with
+                        | Ok leaf when File.Exists leaf -> File.Delete leaf
+                        | _ -> ()
+                    | None -> ()
+
+                    Ok(entry.Sha256, priorEntry |> Option.map (fun e -> e.Sha256), changes)
+                with ex ->
+                    Error $"write failed: {quoteData ex.Message}")
 
 // ---- the JSON Schema subset [D:yaml-schemas] -------------------------------
 
@@ -1943,7 +2193,8 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                                   Url = Http.stripUserinfo url
                                   Sha256 = hash
                                   Path = rel
-                                  Version = None }
+                                  Version = None
+                                  Closure = None }
 
                             let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
 
@@ -1964,6 +2215,57 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
 
                                     Error $"write failed: {quoteData ex.Message} — the partial file was removed")
 
+/// restore one closure entry [D:add-module-closure]: every file present
+/// and true is left alone; an absent or drifted one is refetched at the
+/// pinned commit (the locked base + its path) and hash-checked against
+/// its own lock line before the confined write
+let private restoreClosure (weirDir: string) (e: LockEntry) (c: ModuleClosure) : Result<string list, string> =
+    let headers, tokenHost = moduleFetchHeaders e.Url
+
+    let rec go (acc: string list) (files: (string * string) list) =
+        match files with
+        | [] -> Ok(List.rev acc)
+        | (rel, sha) :: rest ->
+            match closureFileDest weirDir e rel with
+            | Error refusal -> Error refusal
+            | Ok dest ->
+                let present = File.Exists dest
+
+                if present && sha256Hex (File.ReadAllBytes dest) = sha then
+                    go acc rest
+                else
+                    let url = e.Url + rel
+
+                    match fetchBytesWith headers url with
+                    | Error err ->
+                        let err =
+                            match tokenHost with
+                            | Some h -> hintPrivate h err
+                            | None -> err
+
+                        Error $"{e.Kind} {e.Name}: {rel}: {err}"
+                    | Ok(bytes, _) ->
+                        let hash = sha256Hex bytes
+
+                        if hash <> sha then
+                            Error
+                                $"{e.Kind} {e.Name}: {rel}: fetched bytes hash {hash.Substring(0, 12)}… but the lock records {sha.Substring(0, 12)}… — the source changed; if intended, re-add it: `weir add module <src>//<file>@<ref> --as {quoteData e.Name}`"
+                        else
+                            match writeConfined weirDir dest bytes with
+                            | Error w -> Error $"{e.Kind} {e.Name}: {w}"
+                            | Ok() ->
+                                let line =
+                                    if present then
+                                        $"{e.Kind} {e.Name}: {rel}: repaired — refetched over a modified copy"
+                                    else
+                                        $"{e.Kind} {e.Name}: {rel}: restored from {quoteData (Http.redactUrl url)}"
+
+                                go (line :: acc) rest
+
+    match go [] c.Files with
+    | Ok [] -> Ok [ $"{e.Kind} {e.Name}: present ({List.length c.Files} files)" ]
+    | other -> other
+
 let restore (weirDir: string) : Result<string list, string> =
     match readLock weirDir with
     | Error e -> Error e
@@ -1972,6 +2274,9 @@ let restore (weirDir: string) : Result<string list, string> =
         let results =
             entries
             |> List.map (fun e ->
+                match e.Closure with
+                | Some c -> restoreClosure weirDir e c
+                | None ->
                 // confine per entry [D:lockfile-confinement]: a hostile
                 // path refuses here (located, naming the entry) and writes
                 // nothing; a benign sibling still restores. restore
@@ -1991,7 +2296,7 @@ let restore (weirDir: string) : Result<string list, string> =
                     && (e.Url.StartsWith "generated:" || sha256Hex (File.ReadAllBytes dest) = e.Sha256)
 
                 if presentAndTrue then
-                    Ok $"{e.Kind} {e.Name}: present"
+                    Ok [ $"{e.Kind} {e.Name}: present" ]
                 elif e.Url.StartsWith "generated:" then
                     // the ruled restore behaviour for a generated entry
                     // [D:command-signatures]: never regenerate (that would
@@ -2039,12 +2344,11 @@ let restore (weirDir: string) : Result<string list, string> =
                             | Error w -> Error $"{e.Kind} {e.Name}: {w}"
                             | Ok() ->
 
-                            Ok(
-                                if repaired then
-                                    $"{e.Kind} {e.Name}: repaired — refetched over a modified copy"
-                                else
-                                    $"{e.Kind} {e.Name}: restored from {quoteData (Http.redactUrl e.Url)}"
-                            ))
+                            Ok
+                                [ (if repaired then
+                                       $"{e.Kind} {e.Name}: repaired — refetched over a modified copy"
+                                   else
+                                       $"{e.Kind} {e.Name}: restored from {quoteData (Http.redactUrl e.Url)}") ])
 
         match
             results
@@ -2056,9 +2360,9 @@ let restore (weirDir: string) : Result<string list, string> =
         | None ->
             Ok(
                 results
-                |> List.map (function
+                |> List.collect (function
                     | Ok s -> s
-                    | Error _ -> "")
+                    | Error _ -> [])
             )
 
 /// the version probe's three honest answers [D:sig-version-probe]:
@@ -2653,6 +2957,32 @@ let verify (resolve: string -> string) (weirDir: string) : Result<string list * 
         let findings = ResizeArray<VerifyFinding>()
 
         for e in entries do
+            match e.Closure with
+            | Some c ->
+                // every file of a closure, each against its own lock line
+                // [D:add-module-closure]
+                let before = findings.Count
+
+                for rel, sha in c.Files do
+                    match closureFileDest weirDir e rel with
+                    | Error refusal ->
+                        findings.Add(Modified(e, "escapes .weir/"))
+                        lines.Add refusal
+                    | Ok dest when not (File.Exists dest) ->
+                        findings.Add(Absent e)
+                        lines.Add $"{e.Kind} {e.Name}: {rel} ABSENT — run `weir restore`"
+                    | Ok dest ->
+                        let actual = sha256Hex (File.ReadAllBytes dest)
+
+                        if actual <> sha then
+                            findings.Add(Modified(e, actual))
+
+                            lines.Add
+                                $"{e.Kind} {e.Name}: {rel} MODIFIED — sha256 {actual.Substring(0, 12)}…, lock records {sha.Substring(0, 12)}…"
+
+                if findings.Count = before then
+                    lines.Add $"{e.Kind} {e.Name}: ok ({List.length c.Files} files)"
+            | None ->
             // confine per entry [D:lockfile-confinement]: verify must not
             // read outside .weir/ either — a hostile path is a Modified-class
             // finding naming the escape, never a read of the escaped file

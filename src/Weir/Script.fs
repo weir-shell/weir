@@ -4645,6 +4645,48 @@ let private moduleBaseEnvs (absPath: string) : TypeEnv * Eval.Env =
         Modules = te.Modules |> Map.add "Self" selfMembers },
     ve |> Map.add "Self.scriptPath" (Eval.VStr absPath)
 
+// the lock as `weir:` resolution reads it [D:add-module-closure]: a
+// closure module's entry file is recorded there, so the checker and the
+// LSP read lock.json — once per (path, mtime, length), not per import
+let private lockReads =
+    System.Collections.Concurrent.ConcurrentDictionary<string, DateTime * int64 * Result<Contracts.LockEntry list, string>>()
+
+let private readLockCached (weirDir: string) : Result<Contracts.LockEntry list, string> =
+    let p = IO.Path.Combine(weirDir, "lock.json")
+
+    let stamp =
+        try
+            let fi = IO.FileInfo p
+            if fi.Exists then fi.LastWriteTimeUtc, fi.Length else DateTime.MinValue, -1L
+        with _ ->
+            DateTime.MinValue, -1L
+
+    match lockReads.TryGetValue p with
+    | true, (t, n, r) when (t, n) = stamp -> r
+    | _ ->
+        let r = Contracts.readLock weirDir
+        lockReads[p] <- (fst stamp, snd stamp, r)
+        r
+
+// a closure module's entry file [D:add-module-closure]: the lock entry
+// for a .weir/modules/<name>/ directory names it, confined like every
+// lock path; a directory the lock does not record is an error, never a
+// guessed entry
+let private vendoredDirEntry (weirDir: string) (name: string) : Result<string, string> =
+    let dir = IO.Path.Combine(weirDir, "modules", name)
+
+    match readLockCached weirDir with
+    | Error e -> Error $"'{quoteData dir}' is a vendored module directory, and the lock cannot be read: {e}"
+    | Ok entries ->
+        match entries |> List.tryFind (fun e -> e.Kind = "module" && e.Name = name) with
+        | Some({ Closure = Some c } as e) -> Contracts.closureFileDest weirDir e c.Entry
+        | Some _ ->
+            Error
+                $"'{quoteData dir}' is a vendored module directory, but the lock records module '{quoteData name}' as a single file — re-add it: weir add module <host>/<org>/<repo>//<file>@<ref> --as {quoteData name}"
+        | None ->
+            Error
+                $"'{quoteData dir}' is a vendored module directory the lock has no entry for, so its entry file is unknown — re-add it (weir add module <host>/<org>/<repo>//<file>@<ref> --as {quoteData name}) or remove the directory"
+
 let private resolveImportPathRaw (importingAbsPath: string) (path: string) : string =
     let dir = IO.Path.GetDirectoryName importingAbsPath
 
@@ -4660,8 +4702,16 @@ let private resolveImportPathRaw (importingAbsPath: string) (path: string) : str
         | Ok wd ->
             let modPath = IO.Path.GetFullPath(IO.Path.Combine(wd, "modules", name + ".weir"))
 
+            let modDir = IO.Path.GetFullPath(IO.Path.Combine(wd, "modules", name))
+
             if IO.File.Exists modPath then
                 modPath
+            elif IO.Directory.Exists modDir then
+                // a closure module [D:add-module-closure]: its entry per
+                // the lock (a fault is vendoredFault's error)
+                match vendoredDirEntry wd name with
+                | Ok entry -> entry
+                | Error _ -> modPath
             else
                 // one namespace, two homes [D:schema-types]: vendored
                 // modules first, then generated types (.weir/types/ —
@@ -4695,16 +4745,34 @@ let rec private realPath (full: string) : string =
 
 // one `weir:` name, two vendored homes: a module under .weir/modules and a
 // generated types module under .weir/types both named <name> — an error,
-// never a silent precedence (the modules file would shadow the types one)
-let private vendoredCollision (importingAbsPath: string) (path: string) : (string * string) option =
+// never a silent precedence (the modules file would shadow the types one).
+// A module's two forms, <name>.weir and <name>/, are the same error
+// [D:add-module-closure], and so is a <name>/ the lock does not record
+let private vendoredFault (importingAbsPath: string) (path: string) : string option =
     if path.StartsWith "weir:" then
         let name = path.Substring 5
 
         match Contracts.findWeirDir (IO.Path.GetDirectoryName importingAbsPath) with
         | Ok wd ->
             let m = IO.Path.GetFullPath(IO.Path.Combine(wd, "modules", name + ".weir"))
+            let md = IO.Path.GetFullPath(IO.Path.Combine(wd, "modules", name))
             let t = IO.Path.GetFullPath(IO.Path.Combine(wd, "types", name + ".weir"))
-            if IO.File.Exists m && IO.File.Exists t then Some(m, t) else None
+            let hasDir = IO.Directory.Exists md
+
+            if IO.File.Exists m && hasDir then
+                Some
+                    $"'{quoteData path}' names two vendored forms, {quoteData m} and {quoteData md} — a module is one file or one directory; re-add it (weir add module … --as {quoteData name}) to settle the form, or remove the stale one"
+            elif (IO.File.Exists m || hasDir) && IO.File.Exists t then
+                let m = if hasDir then md else m
+
+                Some
+                    $"'{quoteData path}' names two vendored files, {quoteData m} and {quoteData t} — a vendored module and a generated types module cannot share a name; regenerate the types under another name (weir gen types --schema <schema> --out .weir/types/<other>.weir) or re-add the module with another --as"
+            elif hasDir then
+                match vendoredDirEntry wd name with
+                | Error e -> Some e
+                | Ok _ -> None
+            else
+                None
         | Error _ -> None
     else
         None
@@ -4924,11 +4992,8 @@ let rec loadModuleCachedWith
         && (let n = path.Substring 5 in n = "" || n.Contains "/" || n.Contains "\\" || n.Contains "..")
     then
         stmt "a weir: import names a vendored module, never a path — weir:<name>, no separators"
-    elif (vendoredCollision importingAbsPath path).IsSome then
-        let m, t = (vendoredCollision importingAbsPath path).Value
-
-        stmt
-            $"'{quoteData path}' names two vendored files, {quoteData m} and {quoteData t} — a vendored module and a generated types module cannot share a name; regenerate the types under another name (weir gen types --schema <schema> --out .weir/types/<other>.weir) or re-add the module with another --as"
+    elif (vendoredFault importingAbsPath path).IsSome then
+        stmt (vendoredFault importingAbsPath path).Value
     elif key = realPath importingAbsPath then
         stmt "a file cannot import itself"
     elif List.contains key chain then
@@ -5331,11 +5396,11 @@ and private replayModuleBody (procFacts: (string * Eval.Value) list) (lm: Loaded
 
 // the -e / REPL import loader [D:modules-v1]: there is no file to resolve
 // relative paths against, so import is script-only (decision 12)
-/// add-time validation for a fetched module file [D:add-module]: the
-/// same loader imports use — is-a-module, the module purity rules, a
-/// full typecheck — with imports refused first: vendored modules are
-/// leaves for now (a current boundary, not a permanent one). Returns
-/// the member count for the add's report line.
+/// add-time validation for a single fetched module file [D:add-module]:
+/// the same loader imports use — is-a-module, the module purity rules, a
+/// full typecheck — with imports refused first: a single file vendors as
+/// a leaf (a file with imports vendors its closure, [D:add-module-closure]).
+/// Returns the member count for the add's report line.
 let checkVendoredModule (absPath: string) : Result<int, string> =
     match readImportSource absPath with
     | IAbsent -> Error $"cannot read {absPath}"
@@ -5344,7 +5409,7 @@ let checkVendoredModule (absPath: string) : Result<int, string> =
     | ISource raws ->
         if raws |> List.exists (fun l -> l.StartsWith "import ") then
             Error
-                "the module imports — vendored modules are leaves for now (transitive vendoring is a current boundary, not a refusal of the idea): inline the dependency, or vendor both and import each"
+                "the module imports — a single file vendors as a leaf; vendor a module with imports by its repo path, <host>/<org>/<repo>//<file>@<ref>, so its imports are fetched with it"
         else
             let cache = Collections.Generic.Dictionary()
             // a phantom importer in the same directory: never equal to
@@ -5360,6 +5425,146 @@ let checkVendoredModule (absPath: string) : Result<int, string> =
                     | None -> ""
 
                 Error $"{where}{e.Message}"
+
+// ---- vendoring a module's closure [D:add-module-closure] ------------------
+
+/// the import statements of a module source, located (line, col, path),
+/// read by the real assembler and parser; a source that does not decode
+/// or assemble yields none here, and validation reports it located
+let importsOfSource (bytes: byte[]) : (int * int * string) list =
+    try
+        let body, off, _ = scriptBody (decodeSourceLines bytes)
+        let numbered = body |> List.mapi (fun i l -> off + i + 1, l)
+
+        match assemble numbered with
+        | Error _ -> []
+        | Ok lls ->
+            let r = resolver (fst (moduleBaseEnvs "/vendored.weir"))
+
+            lls
+            |> List.choose (fun ll ->
+                if ll.Text.TrimStart().StartsWith "import" then
+                    match Parser.parseLineFull r ll.Text with
+                    | Ok(SImport(p, span, _)) ->
+                        let l, c = translate ll span.Start.Col
+                        Some(l, c, p)
+                    | _ -> None
+                else
+                    None)
+    with _ ->
+        []
+
+let private repoSegments (p: string) = p.Split '/' |> List.ofArray
+
+// '.'/'..'/empty segments folded; None when `..` climbs past the root
+let private normRepoPath (segs: string list) : string list option =
+    (Some [], segs)
+    ||> List.fold (fun acc seg ->
+        match acc, seg with
+        | None, _ -> None
+        | Some st, ("" | ".") -> Some st
+        | Some [], ".." -> None
+        | Some(_ :: t), ".." -> Some t
+        | Some st, s -> Some(s :: st))
+    |> Option.map List.rev
+
+/// walk a module's imports from its repo path, fetching each file at the
+/// same commit: relative imports (every spelling that resolves relative
+/// today) join the closure; a `weir:` import, an absolute path and a path
+/// escaping the repo root refuse, located at file:line:col. A file is
+/// fetched once (a cycle is the loader's error at validation). Returns
+/// (repo path, bytes) in discovery order, the entry first.
+let walkVendorClosure (fetch: string -> Result<byte[], string>) (entry: string) : Result<(string * byte[]) list, string> =
+    match normRepoPath (repoSegments entry) with
+    | None
+    | Some [] -> Error $"'{quoteData entry}' is not a file inside the repo"
+    | Some entrySegs ->
+        let entryPath = String.concat "/" entrySegs
+        let seen = Collections.Generic.HashSet<string>([ entryPath ])
+
+        let rec go (acc: (string * byte[]) list) (queue: (string * string option) list) =
+            match queue with
+            | [] -> Ok(List.rev acc)
+            | (file, from) :: rest ->
+                match fetch file with
+                | Error e ->
+                    match from with
+                    | Some at -> Error $"{quoteData file} (imported at {quoteData at}): {e}"
+                    | None -> Error e
+                | Ok bytes ->
+                    let dirSegs = repoSegments file |> List.take (List.length (repoSegments file) - 1)
+
+                    let rec classify (found: (string * string) list) imports =
+                        match imports with
+                        | [] -> Ok(List.rev found)
+                        | (l, c, p: string) :: t ->
+                            let at = $"{file}:{l}:{c}"
+
+                            if p.StartsWith "weir:" then
+                                Error
+                                    $"{quoteData at}: imports '{quoteData p}' — a weir: import inside a vendored module is not vendored with it (cross-remote vendoring is a current boundary, not a refusal of the idea): inline the dependency, or vendor both and import each from your own code"
+                            elif
+                                p.StartsWith "/"
+                                || p.StartsWith "\\"
+                                || (p.Length >= 2 && Char.IsLetter p[0] && p[1] = ':')
+                            then
+                                Error
+                                    $"{quoteData at}: imports the absolute path '{quoteData p}' — a vendored module reaches only files of its own repo, by relative path"
+                            else
+                                match normRepoPath (dirSegs @ repoSegments p) with
+                                | None
+                                | Some [] ->
+                                    Error
+                                        $"{quoteData at}: imports '{quoteData p}', which resolves outside the repo root — a vendored module reaches only files inside its repo"
+                                | Some segs -> classify ((String.concat "/" segs, at) :: found) t
+
+                    match classify [] (importsOfSource bytes) with
+                    | Error e -> Error e
+                    | Ok targets ->
+                        let fresh = targets |> List.filter (fun (t, _) -> seen.Add t)
+                        go ((file, bytes) :: acc) (rest @ (fresh |> List.map (fun (t, at) -> t, Some at)))
+
+        go [] [ entryPath, None ]
+
+/// the closure's layout [D:add-module-closure]: the common ancestor
+/// directory of every file ("" or "a/b/"), so files keep their relative
+/// positions under modules/<name>/ and imports need no rewriting
+let closureAncestor (paths: string list) : string =
+    let dirs =
+        paths
+        |> List.map (fun p ->
+            let segs = repoSegments p
+            List.take (List.length segs - 1) segs)
+
+    let rec common (a: string list) (b: string list) =
+        match a, b with
+        | x :: xs, y :: ys when x = y -> x :: common xs ys
+        | _ -> []
+
+    match dirs with
+    | [] -> ""
+    | d :: ds ->
+        match List.fold common d ds with
+        | [] -> ""
+        | segs -> String.concat "/" segs + "/"
+
+/// add-time validation for a closure written under `dir` [D:add-module-closure]:
+/// the entry loads through the normal loader, which checks every file it
+/// reaches transitively with the module purity rules (a cycle is its
+/// cycle error). Returns the entry's member count.
+let checkVendoredClosure (dir: string) (entryRel: string) : Result<int, string> =
+    let entryAbs = IO.Path.GetFullPath(IO.Path.Combine(dir, entryRel))
+    let cache = Collections.Generic.Dictionary()
+
+    match loadModuleCachedWith false cache [] (entryAbs + ".add") entryAbs None with
+    | Ok lm -> Ok(List.length lm.Members)
+    | Error e ->
+        let where =
+            match e.File with
+            | Some f -> $"{quoteData f}:{e.Line}:{e.Col}: "
+            | None -> ""
+
+        Error $"{where}{e.Message}"
 
 // where a file's imports resolve from: its real location, through a
 // symlink [D:init-import] — a linked dotfile or ~/bin script finds its
@@ -9189,7 +9394,8 @@ module SigGen =
                                       Url = "generated:" + source + (if nodes.IsEmpty then "" else "+subs")
                                       Sha256 = Contracts.sha256Hex bytes
                                       Path = IO.Path.Combine("sigs", sigFileName tool)
-                                      Version = version }
+                                      Version = version
+                                      Closure = None }
 
                                 let others = entries |> List.filter (fun e -> not (e.Kind = "sig" && e.Name = tool))
 
