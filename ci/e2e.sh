@@ -12177,7 +12177,16 @@ grep -qF '"version": "sigtool 3.1.4"' .weir/lock.json || fail "lock carries the 
 cp .weir/lock.json "$sgdir/lock.before"
 out=$(SIGTOOL_MARK="$sgdir/gen-mark-g" XDG_CONFIG_HOME="$sgdir/cfg" APPDATA="$sgdir/cfg" PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig --global sigtool 2>&1) || fail "add sig --global: $out"
 echo "$out" | grep -qF "no lock entry" || fail "add sig --global says it locks nothing: $out"
-test -f "$sgdir/cfg/weir/sigs/sigtool.weir" || fail "add sig --global writes the user dir: $out"
+if [ "$IS_WINDOWS" = "1" ]; then
+    # Windows: the user dir is the APPDATA known folder (no env override) —
+    # check the path add reported, then remove it
+    gsig=$(echo "$out" | sed -n 's/^added sig sigtool to \(.*sigtool\.weir\) .*/\1/p')
+    [ -n "$gsig" ] && test -f "$(cygpath -u "$gsig")" || fail "add sig --global writes the user dir: $out"
+    case "$gsig" in *[/\\]weir[/\\]sigs[/\\]sigtool.weir) ;; *) fail "add sig --global writes <APPDATA>/weir/sigs: $out" ;; esac
+    rm -f "$(cygpath -u "$gsig")"
+else
+    test -f "$sgdir/cfg/weir/sigs/sigtool.weir" || fail "add sig --global writes the user dir: $out"
+fi
 cmp -s .weir/lock.json "$sgdir/lock.before" || fail "add sig --global must not touch the lock"
 echo "e2e ok: add sig --global writes \$XDG_CONFIG_HOME/weir/sigs, no lock entry [D:sig-arg-complete]"
 # checking: typo caught, and check spawns nothing (the marker pin)
