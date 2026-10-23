@@ -8,7 +8,8 @@ an entry runs it stops what the entry is waiting on — a command, a
 sleep, a `poll` or `retry` wait, a lock, an Http request, a
 `Self.prompt` (it takes no input), the rest of a `pmap` or
 `piter` — and returns to the prompt; `Ctrl+D` or `#quit` exits. For a tour, see the [guide](GUIDE.md#the-repl); this
-page covers the details.
+page covers the details, and the [FAQ](FAQ.md) answers the common
+questions about init.weir, the prompt and completion.
 
 A line starting with `#` is an instruction to the tooling, not part
 of the language. The file directive (`#sig`) is read at

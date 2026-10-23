@@ -2794,3 +2794,4 @@ Where to next:
   file written for AI agents, covering every member and every rule
 - [COMING-FROM.md](COMING-FROM.md): translation tables for people
   coming from bash, PowerShell, Python, or Make
+- [FAQ.md](FAQ.md): short answers to common how-do-I questions
