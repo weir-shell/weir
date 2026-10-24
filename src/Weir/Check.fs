@@ -2337,7 +2337,7 @@ let casingError (span: Span) (name: string) : Result<'a, TypeError> =
     err
         span
         ($"binding names start lowercase; uppercase names are types, modules, and constructors"
-         + $" — bind '{name.ToLowerInvariant()}' (a record field keeps its name: let region = cfg.AWS_REGION)")
+         + $" — bind '{name.ToLowerInvariant()}' (a record field keeps its name: let level = cfg.LOG_LEVEL)")
 
 // builtins without a qualified spelling are reserved as binder names
 // [D:reserve-builtins]: shadowing one removes the capability for the

@@ -1411,7 +1411,7 @@ echo "e2e ok: bodyless block let rejected"
 # runner and check agree, and the message drops its "line N:" lead
 expect "the runner locates an assembly error line:col" "blockbad.weir:2:5: this let needs a body" "$errout"
 errout=$($BIN check "$scriptdir/blockbad.weir" 2>&1) && fail "check must refuse the bodyless block let"
-expect "check locates the same assembly error" "blockbad.weir:2:5: error [assembly]: this let needs a body" "$errout"
+expect "check locates the same assembly error" "blockbad.weir:2:5: error [layout]: this let needs a body" "$errout"
 
 rm -rf "$scriptdir"
 
@@ -2104,12 +2104,12 @@ let Foo = 1
 Seq.initInfinite id == Seq.initInfinite id
 WEOF
 out=$($BIN check "$ckdir/multi.weir") && fail "check must exit 1 on errors" || true
-echo "$out" | grep -qF "[casing-law]" || fail "casing code missing: $out"
-echo "$out" | grep -qF "[eq]" || fail "second independent error missing (recovery): $out"
+echo "$out" | grep -qF "[lowercase-binding]" || fail "casing code missing: $out"
+echo "$out" | grep -qF "[not-equatable]" || fail "second independent error missing (recovery): $out"
 echo "e2e ok: weir check reports ALL errors, located and coded"
 
 out=$($BIN check --json "$ckdir/multi.weir" || true)
-echo "$out" | grep -qF '"code":"casing-law"' || fail "json code field: $out"
+echo "$out" | grep -qF '"code":"lowercase-binding"' || fail "json code field: $out"
 echo "$out" | grep -qF '"line":1' || fail "json line field: $out"
 echo "e2e ok: weir check --json carries file/line/col/code"
 
@@ -9364,7 +9364,7 @@ out=$($BIN check "$mdir/sig_script.weir" 2>&1 || true)
 expect "a script refuses the signature form" "signatures belong to module APIs — scripts infer" "$out"
 printf 'module Orph\nlet f : int -> int\n' > "$mdir/sig_orph.weir"
 out=$($BIN check "$mdir/sig_orph.weir" 2>&1 || true)
-expect "a signature without implementation errors at the sig" "sig_orph.weir:2:5: error [sig-orphan]: signature without implementation" "$out"
+expect "a signature without implementation errors at the sig" "sig_orph.weir:2:5: error [missing-implementation]: signature without implementation" "$out"
 printf 'module Mm\nlet f : int -> int\nlet f x = "s"\n' > "$mdir/sig_mis.weir"
 out=$($BIN check "$mdir/sig_mis.weir" 2>&1 || true)
 expect "a sig/impl mismatch names both sites and both types" "the signature (line 2) declares int -> int, but the implementation is int -> string" "$out"
@@ -10306,7 +10306,7 @@ echo "e2e ok: the hostile-byte fixture is byte-exact through check and run"
 # is the indentation error, with its column
 printf 'let t = <<<\n    abc\n    \tdef\nprint t\n' > "$hbdir/tablead.weir"
 out=$($BIN check "$hbdir/tablead.weir" 2>&1) && fail "a leading tab in block content must be refused"
-expect "a leading tab in block content is the indentation error" "tablead.weir:3:5: error [assembly]: tabs are not allowed in indentation (a tab at column 5)" "$out"
+expect "a leading tab in block content is the indentation error" "tablead.weir:3:5: error [layout]: tabs are not allowed in indentation (a tab at column 5)" "$out"
 
 # CRLF [D:content-bytes]: a source file's line ending is not data —
 # normalized at read, so a CRLF-saved file behaves identically

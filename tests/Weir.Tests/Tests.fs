@@ -727,7 +727,7 @@ let warningTests =
 
               Expect.equal
                   (codes [ "let name = \"h\""; "#session {"; "    env = ["; "        \"X\", name"; "    ]"; "}" ])
-                  [ "session-decl-ref", 6, 14 ]
+                  [ "session-names-declaration", 6, 14 ]
                   "a value naming a declaration — anchored on the name"
 
               Expect.equal
@@ -16161,8 +16161,8 @@ let assemblyRecoveryTests =
               // the bare marker with no block is the assembly error; the
               // == error after it must still be found, and earlier
               // statements survive
-              Expect.exists diags (fun d -> d.Code = "assembly") "assembly diag present"
-              Expect.exists diags (fun d -> d.Code = "eq") "later statement still checked"
+              Expect.exists diags (fun d -> d.Code = "layout") "assembly diag present"
+              Expect.exists diags (fun d -> d.Code = "not-equatable") "later statement still checked"
               Expect.isTrue (stmts |> List.exists (fun (_, c) -> c.Env.Types.ContainsKey "T")) "types survive"
           }
           test "a misaligned field is one located diag — re-indented, its closer still closes [D:field-alignment]" {
@@ -16177,7 +16177,7 @@ let assemblyRecoveryTests =
 
               match diags |> List.filter (fun d -> d.Severity = "error") with
               | [ d ] ->
-                  Expect.equal d.Code "assembly" "the alignment error"
+                  Expect.equal d.Code "layout" "the alignment error"
                   Expect.equal (d.Line, d.Col) (4, 11) "located at the field"
               | other -> failtest $"expected exactly one error: {other |> List.map (fun d -> d.Message)}"
           }
@@ -16198,7 +16198,7 @@ let assemblyRecoveryTests =
                       "t.weir:2:3: this let needs a body"
                       "the runner's spelling"
 
-              match diagsIn "t.weir" [ "let x = 1"; "  let y = 2" ] |> List.filter (fun d -> d.Code = "assembly") with
+              match diagsIn "t.weir" [ "let x = 1"; "  let y = 2" ] |> List.filter (fun d -> d.Code = "layout") with
               | [ d ] ->
                   Expect.equal (d.Line, d.Col) (2, 3) "check/LSP agree"
                   Expect.stringStarts d.Message "this let needs a body" "no doubled line lead"
@@ -16449,6 +16449,27 @@ let casingTests =
               match Weir.Check.typecheck e2 bad with
               | Ok _ -> failtest "uppercase binding must reject"
               | Error terr -> Expect.stringContains terr.Message "binding names start lowercase" ""
+          }
+          test "diagnostic codes say what they are [D:diagnostic-code-names]" {
+              let cases =
+                  [ [ "let Total = 1"; "print (show Total)" ], "lowercase-binding"
+                    [ "let f () ="; "    1"; "    print \"x\""; "f ()" ], "non-unit-statement"
+                    [ "let xs = [(1, 2)] |> Seq.sortBy (fun x -> x)"; "print (show xs)" ], "unsortable-key"
+                    [ "let render x = show x"; "print (render print)" ], "unrenderable-function"
+                    [ "print (show (fail \"x\"))" ], "undetermined-type"
+                    [ "let x = match \"a\" with | Regex @\"(\\d+)-(\\d+)\" a -> a | _ -> \"\""; "print x" ], "regex-binder-count"
+                    [ "let _x = 1"; "  let y = 2" ], "layout"
+                    [ "module M"; "let f : int -> int" ], "missing-implementation"
+                    [ "module M"; "let f : int -> int"; "/// doc"; "let f n = n" ], "doc-on-implementation"
+                    [ "module M"; "echo hi" ], "module-declares-only" ]
+
+              for lines, code in cases do
+                  Expect.equal (firstErrorIn "codes.weir" lines).Code code (String.concat " / " lines)
+
+              Expect.stringContains
+                  (firstErrorIn "codes.weir" [ "let Total = 1"; "print (show Total)" ]).Message
+                  "(a record field keeps its name: let level = cfg.LOG_LEVEL)"
+                  "the casing example"
           }
           test "match patterns untouched: uppercase is still a constructor" {
               expectValue "match Running 1 with | Running n -> n | Stopped -> 0" (VInt 1L)
@@ -21196,7 +21217,7 @@ let walkCohortTests =
               let diags = diagsIn "cap.weir" lines
 
               let assemblyCount =
-                  diags |> List.filter (fun d -> d.Code = "assembly") |> List.length
+                  diags |> List.filter (fun d -> d.Code = "layout") |> List.length
 
               Expect.isTrue (assemblyCount <= 10) $"the cap: got {assemblyCount} assembly diags"
               Expect.isTrue (assemblyCount >= 9) $"the recovery ran to the cap: got {assemblyCount}"
@@ -23160,7 +23181,7 @@ let floatTests =
                   let e = firstErrorIn "feq.weir" [ "type Q = { y: float }"; decl; $"let a = {lit}"; "print $\"{a == a}\"" ]
                   Expect.stringContains e.Message "Float.near" decl
                   Expect.isFalse (e.Message.Contains "sequences and functions") decl
-                  Expect.equal e.Code "eq" "the eq diagnostic code"
+                  Expect.equal e.Code "not-equatable" "the eq diagnostic code"
           }
           test "Ord admitted: total because finite" {
               Expect.equal (run "[3.5; 1.5; 2.5] |> Seq.sortBy (fun x -> x) |> Seq.head") (VFloat 1.5) ""

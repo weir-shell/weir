@@ -2702,7 +2702,7 @@ print $"{fixed} {Path.isName fixed}"
   Stranded-script reports should cite the error codes.
 - Casing law: binding names start LOWERCASE (`let foo`, `fun x ->`);
   uppercase is types/modules/constructors. Record fields keep their
-  names: `let region = cfg.AWS_REGION`.
+  names: `let level = cfg.LOG_LEVEL`.
   No tuple ordering (sortBy/sortByDescending keys stay scalar).
   Records remain the spelling for anything with NAMES. Prefix minus
   follows F#'s adjacency rule: `-n`, `2 * -3`, and `f -1` (passes -1
