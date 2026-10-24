@@ -469,6 +469,13 @@ PATH, and red if it would fail. A red command word lets you catch a
 typo before pressing Enter. `NO_COLOR` is honored, and piped sessions
 are always plain text.
 
+When an entry waits on weir itself for more than half a second (a
+`Duration.sleep`, an `Http.send`, a `retry` or `poll` delay), a
+spinner on stderr names what it is waiting for, and is erased before
+anything else prints. It never draws over a running command, and it is
+the REPL's alone: scripts and `weir -e` stay silent through the same
+waits.
+
 ## The init file
 
 `init.weir` beside the [config file](tooling.md#configuration)
@@ -572,12 +579,23 @@ file shows its `///` doc.
   `| exitCode` or `| complete`, is not an error and counts as success.
 - `exit` is that bare command's exit code (`Option<int>`; `None` in
   every other case).
+- `duration` is how long the last entry took to run (a `Duration`,
+  from pressing Enter until it finished; `0ms` before the first entry).
+  A blank or comment-only line leaves it as it was.
 
 So a custom prompt can color itself red or green where the default
-prompt would turn red, and can show the code the way `↳ exit N` does.
+prompt would turn red, show the code the way `↳ exit N` does, and show
+how long a slow command took. This one adds the time when it is over
+two seconds:
+
+```text
+let prompt st =
+    let took = if st.duration > 2s then $"took {st.duration} " else ""
+    $"{took}weir> "
+```
 
 Write the parameter without a type and read its fields (`st.ok`,
-`st.exit`). The init file has no signatures, so the function's type
+`st.exit`, `st.duration`). The init file has no signatures, so the function's type
 is inferred from the fields it uses, and it is accepted as long as
 `PromptStatus` has every field it reads. One thing to watch for:
 `match st.exit with` doesn't type-check here, because the type of

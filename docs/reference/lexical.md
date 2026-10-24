@@ -110,10 +110,21 @@ print (show (def * 2))
 Strings come in five literal forms, each written on one line. For text
 that spans several lines, use a text block (below).
 
-**Ordinary** — `"..."` with escapes `\"`, `\\`, `\n`, `\t`:
+**Ordinary** — `"..."` with escapes `\"`, `\\`, `\n`, `\t`, `\e` (ESC,
+U+001B, which starts a terminal escape sequence) and `\u{…}` (one
+Unicode code point in 1 to 6 hex digits: `\u{e9}` is `é`, `\u{1F600}`
+is 😀). Interpolated strings take the same escapes. Any other
+backslash is a parse error that lists them, and so is a `\u{…}` that
+names no character: a UTF-16 surrogate (`\u{D800}`–`\u{DFFF}`) or a
+value past `\u{10FFFF}`.
 
 ```weir
 print "a\tb"
+print "caf\u{e9} \u{1F600}"
+```
+
+```weir-error
+print "\u{D83D}" // a surrogate is not a character — write \u{1F600}
 ```
 
 A line break inside an ordinary string is a parse error:

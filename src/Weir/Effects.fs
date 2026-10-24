@@ -55,6 +55,8 @@ let effectfulQualified =
           "Http.expect"
           "Http.query"
           "Path.glob"
+          // reads PATH and the filesystem [D:path-which]
+          "Path.which"
           "Path.tempRoot"
           "Path.newTempDir"
           // the home/XDG dirs read the environment [D:purity-ambient]
@@ -192,6 +194,7 @@ let effectClass (n: string) : EffectClass option =
         | "ls"
         | "glob"
         | "Path.glob" -> Some Ambient // reads the filesystem
+        | "Path.which" -> Some Ambient // reads PATH and the filesystem [D:path-which]
         // Path.tempRoot is a pure query (the tmp root path); Path.newTempDir
         // creates a directory — a filesystem write, external mutation
         | "Path.tempRoot" -> Some Ambient

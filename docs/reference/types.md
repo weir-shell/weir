@@ -8,7 +8,10 @@
 - `float` — always finite: an operation that would produce `NaN` or
   `Infinity` raises an error, and `==` on floats is a check error that
   suggests `Float.near`
-- `string`
+- `string` — positions and lengths (`Str.length`, `Str.sub`, slices,
+  `Str.padLeft`) count Unicode code points; `Str.width` counts the
+  terminal columns the text takes when printed (two for a wide CJK
+  character or an emoji, none for a combining mark or a colour escape)
 - `bool`
 - `unit` — the value an effect returns, written `()`
 

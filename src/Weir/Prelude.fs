@@ -36,9 +36,10 @@ let source =
       "type Auth = NoAuth | Bearer of Secret | Basic of string * Secret"
       // the #session prompt provider's argument [D:prompt-status-arg]:
       // ok is the red-prompt tint; exit carries a bare command's nonzero
-      // code (None after a non-command error, and when ok). Consumers
-      // read fields, so the record grows without breaking a prompt.
-      "type PromptStatus = { ok: bool; exit: Option<int> }"
+      // code (None after a non-command error, and when ok); duration is
+      // the last entry's wall time. Consumers read fields, so the record
+      // grows without breaking a prompt.
+      "type PromptStatus = { ok: bool; exit: Option<int>; duration: Duration }"
       // the shared body union [D:http] [D:http-serve]: NoBody/Json/Text
       // are the client-and-server cases; Stream is the server response's
       // lazy line source — pulled and written chunked as produced

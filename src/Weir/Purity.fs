@@ -157,6 +157,7 @@ let rec private effectPhrase (n: string) : string =
         | "ls"
         | "glob"
         | "Path.glob" -> $"'{n}' reads the filesystem"
+        | "Path.which" -> "'Path.which' reads PATH and the filesystem"
         | "Path.tempRoot"
         | "Path.newTempDir" -> $"'{n}' touches the filesystem"
         | "Instant.now" -> "'Instant.now' reads the clock"

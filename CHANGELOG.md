@@ -20,9 +20,42 @@ Many of the changes and fixes below were found porting starship to weir.
   or flag names. It gets 300 ms and 1 MiB, and pressing another key
   stops it (the key is kept); with no answer you get what the signature
   alone gives. REPL only; the editor is unchanged.
+- **`PromptStatus.duration`: how long the last entry took.** A
+  `PromptStatus -> string` prompt can show it the way starship's
+  `cmd_duration` does — `if st.duration > 2s then $"took
+  {st.duration} " else ""`. It is `0ms` before the first entry.
+- **`\e` and `\u{…}` string escapes.** `"\e[1m"` is the ESC that starts
+  a terminal escape sequence, and `"\u{e9}"`/`"\u{1F600}"` write any
+  character by its code point (1 to 6 hex digits), in `$"…"` strings
+  too. A UTF-16 surrogate (`\u{D800}`) or a value past `\u{10FFFF}` is
+  a parse error that says so, and an unknown escape's error now lists
+  every escape.
+- **`Str.rreplace pattern replacement s` replaces every regex match.**
+  In the replacement, `$1` or `${1}` is a capture group, `$0` the whole
+  match and `$$` a literal `$`: `Str.rreplace @"(\w+)@(\w+)" "$2 at $1"`.
+  Any other `$`, or a group the pattern doesn't have, is an error.
+  `Str.replace` stays literal.
+- **SHA-1: `Str.sha1`, `Bytes.sha1` and `File.sha1`,** beside the
+  `sha256` members and with the same output as `sha1sum` (lowercase
+  hex; `File.sha1` streams the file). For protocols that use SHA-1,
+  such as git object ids; it is not safe as a security hash.
+- **`Path.which name`** gives the full path of the program a command
+  name would run (`Some "/usr/bin/git"`), or `None`. It looks the name
+  up the way running it would, so inside `within env PATH=…` it
+  searches that `PATH`, and on Windows it applies `PATHEXT`.
+- **`Str.width s`** is the number of terminal columns `s` takes when
+  printed: 2 for a wide CJK or fullwidth character or an emoji, 0 for a
+  combining mark, a control character or a colour escape, and one per
+  emoji however many code points build it (a family, a flag). Use it to
+  line up text that `Str.length` (code points) would misalign. The REPL
+  measures a custom prompt with the same table.
 
 ### Changed
 
+- **The waiting spinner is the REPL's alone.** A script (or `weir -e`)
+  at a terminal no longer draws it while weir waits in
+  `Duration.sleep`, `Http.send` or a `retry`/`poll` delay, so its
+  stderr carries only what the script writes. The REPL still shows it.
 - **`def` is an ordinary name.** `let def = 1` and a field called `def`
   work. A line shaped like a definition, `def double x = …`, still gets
   "'def' is not a weir word — define with 'let f x = ...'".
@@ -45,6 +78,14 @@ Many of the changes and fixes below were found porting starship to weir.
 
 ### Fixed
 
+- **`| line`'s error shows a newline in the command line as `\x0a`.**
+  `printf "a\nb\n" | line` used to print the argument's raw newlines
+  inside the quoted command; it now escapes them, as every other error
+  that quotes data does.
+- **A module function whose signature returns `unit` but whose body
+  ends in a command gets a hint.** The command's output is the
+  function's value, so the mismatch error now says "its last line is a
+  command … end the body with `()`".
 - **`#help` shows the `///` doc of a module member imported by
   init.weir.** `#help Git.refresh` printed only the signature; it now
   prints the doc written above the member's signature, as it already

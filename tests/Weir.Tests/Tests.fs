@@ -3904,6 +3904,44 @@ let shorthandTests =
               expectValue "\"tab\\there\"" (VStr "tab\there")
               expectValue "\"back\\\\slash\"" (VStr "back\\slash")
           }
+          test "\\e and \\u{…} escapes, every escaping string form [D:string-escapes]" {
+              expectValue "\"\\e[1m\"" (VStr "\u001b[1m")
+              expectValue "\"\\u{41}\\u{e9}\\u{1F600}\"" (VStr "A\u00e9\U0001F600")
+              expectValue "\"\\u{000041}\"" (VStr "A")
+              expectValue "Str.length \"\\u{1F600}\"" (VInt 1L)
+              // interpolation: the braces belong to the escape, never a hole
+              expectValue "$\"\\u{41}{1 + 1}\\e\"" (VStr "A2\u001b")
+              // a pattern literal decodes the same way
+              expectValue "match \"\\u{e9}\" with | \"\\u{e9}\" -> 1 | _ -> 0" (VInt 1L)
+              // raw kinds stay raw
+              expectValue "@\"\\u{41}\"" (VStr "\\u{41}")
+              expectValue "\"\"\"\\e\"\"\"" (VStr "\\e")
+          }
+          test "a bad \\u{…} teaches; an unknown escape lists the escapes [D:string-escapes]" {
+              let perr input =
+                  match Weir.Parser.parseLine realResolver input with
+                  | Error msg -> msg
+                  | Ok _ -> failtest $"expected a parse error: {input}"
+
+              Expect.stringContains (perr "let s = \"\\u{D800}\"") "is a UTF-16 surrogate, not a character" "a surrogate refuses"
+              Expect.stringContains (perr "let s = \"\\u{DFFF}\"") "surrogate" "the top of the surrogate range"
+              Expect.stringContains (perr "let s = \"\\u{110000}\"") "past the last Unicode code point, \\u{10FFFF}" "past 10FFFF refuses"
+              Expect.stringContains (perr "let s = \"\\u{}\"") "takes 1 to 6 hex digits" "no digits"
+              Expect.stringContains (perr "let s = \"\\u{1234567}\"") "takes 1 to 6 hex digits" "seven digits"
+              Expect.stringContains (perr "let s = \"\\u{12g}\"") "takes 1 to 6 hex digits" "a non-hex digit"
+              Expect.stringContains (perr "let s = \"\\u0041\"") "takes its code point in braces" "the brace-less form"
+              Expect.stringContains (perr "let s = $\"\\u{D83D}{1}\"") "surrogate" "interpolation refuses too"
+              let m = perr "let s = \"\\x41\""
+              Expect.stringContains m "'\\x' is not an escape" "an unknown escape"
+              Expect.stringContains m "\\e \\u{…}" "the list names the new escapes"
+              Expect.stringContains m "verbatim string" "the Windows repair stays"
+              Expect.stringContains (perr "let s = \"\\U0001F600\"") "'\\U' is not an escape" "uppercase U is unknown"
+          }
+          test "the scanners skip a \\u{…} whole — its braces open no hole [D:string-escapes]" {
+              let c = Weir.Script.colorizeRepl (fun _ -> false) "print $\"\\u{41}x\""
+              Expect.stringContains c "\u001b[32m\"\\u{41}x\"\u001b[0m" "the escape paints as string, not as a hole"
+              Expect.equal (Weir.Script.closers "print $\"\\u{41}") "\"" "only the quote is open"
+          }
           test "escaped strings survive a json roundtrip" {
               let src = VSeq [ VStr """{"name":"a\"b","bytes":1048576,"readOnly":false}""" ]
 
@@ -5886,6 +5924,45 @@ let stringTests =
                   "Str.sha256 \"café\""
                   (VStr "850f7dc43910ff890f8879c0ed26fe697c93a067ad93a7d50f466a7028a9bf4e")
           }
+          test "Str.width counts terminal columns [D:str-width]" {
+              let cases =
+                  [ "", 0, "empty"
+                    "abc", 3, "ASCII"
+                    "日本語", 6, "CJK ideographs are wide"
+                    "한글", 4, "Hangul syllables are wide"
+                    "ｱｲ", 2, "halfwidth katakana is narrow"
+                    "ＡＢ", 4, "fullwidth forms are wide"
+                    "e\u0301", 1, "a combining acute adds nothing"
+                    "\u1100\u1161", 2, "a conjoining Hangul vowel joins the leading consonant"
+                    "a\u200Bb", 2, "a zero-width space"
+                    "a\tb", 2, "a control character takes no cell"
+                    "\u00AD", 1, "the soft hyphen prints"
+                    "😀", 2, "an emoji-presentation character"
+                    "⌚", 2, "a BMP emoji-presentation character"
+                    "❤", 1, "a text-presentation character"
+                    "❤\uFE0F", 2, "VS16 asks for emoji presentation"
+                    "👍\U0001F3FD", 2, "a skin-tone modifier merges"
+                    "👨\u200D👩\u200D👧", 2, "a ZWJ sequence is one glyph"
+                    "🇯🇵", 2, "a flag's two regional indicators"
+                    "🇯🇵🇺🇸", 4, "two flags"
+                    "\u001b[31mred\u001b[0m", 3, "SGR colour takes no cell"
+                    "\u001b]0;title\u0007x", 1, "an OSC takes no cell"
+                    "\uE000", 1, "private use is narrow"
+                    "a😀b", 4, "mixed" ]
+
+              for text, cells, why in cases do
+                  Expect.equal (CellWidth.ofString text) cells why
+
+              expectValue "Str.width \"日本\"" (VInt 4L)
+              expectValue "Str.width \"\\u{1F600}x\"" (VInt 3L)
+              expectValue "Str.length \"日本\"" (VInt 2L)
+          }
+          test "sha1: exact digests, sha1sum parity, UTF-8 bytes [D:sha1]" {
+              expectValue "Str.sha1 \"hello\"" (VStr "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d")
+              expectValue "Str.sha1 \"café\"" (VStr "f424452a9673918c6f09b0cdd35b20be8e6ae7d7")
+              expectValue "Str.sha1 \"\"" (VStr "da39a3ee5e6b4b0d3255bfef95601890afd80709")
+              expectValue "Bytes.sha1 (Str.toUtf8 \"hello\")" (VStr "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d")
+          }
           test "base64: exact form, round-trip, liberal unpadded input [D:encoding-law]" {
               expectValue "Str.toBase64 \"café\"" (VStr "Y2Fmw6k=")
               expectValue "Str.toBase64 \"café\" |> Str.fromBase64" (VStr "café")
@@ -5972,6 +6049,26 @@ let stringTests =
               // the Option twin, and absence as None
               expectValue "Str.trySplitOnce \"=\" \"k=v\"" (VUnion("Some", Some(VTuple [ VStr "k"; VStr "v" ])))
               expectValue "Str.trySplitOnce \"=\" \"none\"" (VUnion("None", None))
+          }
+          test "rreplace replaces every regex match, expanding $1 ${1} $0 $$ [D:str-rreplace]" {
+              expectValue "Str.rreplace @\"(\\w+)@(\\w+)\" \"$2 at $1\" \"me@host, you@box\"" (VStr "host at me, box at you")
+              expectValue "Str.rreplace @\"(\\d)\" \"${1}0\" \"a1b2\"" (VStr "a10b20")
+              expectValue "Str.rreplace @\"\\d+\" \"<$0>\" \"a12b3\"" (VStr "a<12>b<3>")
+              expectValue "Str.rreplace @\"\\.\" \"$$\" \"1.5\"" (VStr "1$5")
+              expectValue "Str.rreplace \"x\" \"y\" \"abc\"" (VStr "abc")
+              // an unmatched optional group is empty; empty matches advance
+              expectValue "Str.rreplace @\"a(b)?\" \"[$1]\" \"ab a\"" (VStr "[b] []")
+              expectValue "Str.rreplace \"x*\" \"-\" \"ab\"" (VStr "-a-b-")
+              // literal sibling stays literal
+              expectValue "Str.replace \"$1\" \"z\" \"a$1\"" (VStr "az")
+              Expect.stringContains (msgOf "Str.rreplace \"(a)\" \"$2\" \"a\"") "refers to $2, but the pattern has 1 group" "a missing group"
+              Expect.stringContains (msgOf "Str.rreplace \"a\" \"${1}\" \"b\"") "refers to ${1}, but the pattern has no groups" "checked before any match"
+              Expect.stringContains (msgOf "Str.rreplace \"a\" \"$\" \"a\"") "write $1 or ${1} for a group" "a lone $"
+              Expect.stringContains (msgOf "Str.rreplace \"a\" \"$&\" \"a\"") "$$ for a literal '$'" ".NET's $& is not weir's"
+              Expect.stringContains (msgOf "Str.rreplace \"(a)\" \"${x}\" \"a\"") "weir patterns have no named groups" "${name} teaches"
+              Expect.stringContains (msgOf "Str.rreplace \"(a)\" \"${1\" \"a\"") "needs its closing '}'" "an open ${"
+              Expect.stringStarts (msgOf "Str.rreplace \"(\" \"x\" \"a\"") "invalid regex:" "the r-family's error class"
+              Expect.stringContains (msgOf "Str.rreplace \"(?P<n>a)\" \"x\" \"a\"") "named" "the (?P<name>) teaching"
           }
           test "rsplitOnce splits at the LAST separator [D:split-once]" {
               // the from-the-right receipt: user@host:port, [::1]:port
@@ -8823,6 +8920,7 @@ let pureRegionTests =
                     "pwd", "'pwd' reads the working directory"
                     "Path.home ()", "'Path.home' reads the environment"
                     "Path.configHome ()", "'Path.configHome' reads the environment"
+                    "Path.which \"sh\"", "'Path.which' reads PATH and the filesystem"
                     "Term.width ()", "'Term.width' reads the terminal"
                     "Term.title \"t\"", "'Term.title' writes to the terminal"
                     "Color.red \"x\"", "'Color.red' reads the terminal" ] do
@@ -14961,6 +15059,20 @@ let agentFindingsTests =
               clean [ "let scope = printf \"x\" | line"; "print (Str.length scope |> show)" ] "binds a string"
               clean [ "let e = [Env.pair \"X\" \"1\"]"; "let v = $e(printenv X | line)"; "print v" ] "env twin binds a string"
               clean [ "let m = [\"a\"; \"b\"] | grep a | line"; "print m" ] "value-headed | line binds a string"
+          }
+          test "a | line count error escapes the argv it echoes [D:error-data-escape]" {
+              skipOnWindows ()
+              let msg (src: string) = (Expect.throwsC (fun () -> runReal src |> ignore) id).Message
+
+              Expect.equal
+                  (msg "printf \"a\\nb\\n\" | line")
+                  "'printf a\\x0ab\\x0a | line' expected exactly one line of output, got 2"
+                  "a newline in the argv renders escaped"
+
+              Expect.equal
+                  (msg "printf \"a\\nb\\n\" | cat | line")
+                  "'printf a\\x0ab\\x0a | cat | line' expected exactly one line of output, got 2"
+                  "the chain form too"
           }
           test "text desugars to the texted application and types as string [D:reify-text]" {
               match Weir.Parser.parseLine cmdResolver "echo hi | text" with
@@ -24756,6 +24868,11 @@ let bytesTests =
                   let viaFile = runReal $"File.sha256 \"{tmp.Replace('\\', '/')}\""
                   let viaBytes = runReal $"Bytes.sha256 (File.readBytes \"{tmp.Replace('\\', '/')}\")"
                   Expect.equal viaFile viaBytes "the streaming hash agrees with the value hash"
+
+                  Expect.equal
+                      (runReal $"File.sha1 \"{tmp.Replace('\\', '/')}\"")
+                      (runReal $"Bytes.sha1 (File.readBytes \"{tmp.Replace('\\', '/')}\")")
+                      "File.sha1 agrees with Bytes.sha1 [D:sha1]"
               finally
                   System.IO.File.Delete tmp
                   System.IO.File.Delete out
@@ -25931,6 +26048,27 @@ let moduleSignatureTests =
                       Expect.isEmpty (diagsOf td "k.weir") "the sig types the scrutinee"
                       Expect.isEmpty (diagsOf td "y.weir") "the sig pins the adapter's record")
           }
+          test "a unit signature over a body ending in a command teaches `()` [D:module-signatures]" {
+              withDir
+                  [ "c.weir", [ "module C"; "let tag : string -> unit"; "let tag v ="; "    git tag $v" ]
+                    "p.weir", [ "module P"; "let up : unit -> unit"; "let up () ="; "    let d = \"x\""; "    git log | head -1" ]
+                    "n.weir", [ "module N"; "let names : unit -> unit"; "let names () = [\"a\"]" ]
+                    "ok.weir", [ "module Ok"; "let tag : string -> unit"; "let tag v ="; "    git tag $v"; "    ()" ] ]
+                  (fun td ->
+                      for f in [ "c.weir"; "p.weir" ] do
+                          match diagsOf td f with
+                          | d :: _ ->
+                              Expect.stringContains d.Message "does not match its signature" f
+                              Expect.stringContains d.Message "its last line is a command" f
+                              Expect.stringContains d.Message "end the body with `()`" f
+                          | [] -> failtest $"{f}: the mismatch must refuse"
+
+                      (match diagsOf td "n.weir" with
+                       | d :: _ -> Expect.isFalse (d.Message.Contains "end the body with") "a list literal is not a command"
+                       | [] -> failtest "n.weir: the mismatch must refuse")
+
+                      Expect.isEmpty (diagsOf td "ok.weir") "the repaired body checks")
+          }
           test "generic sigs: general impls pass; pinned and merged type vars refuse as less-general" {
               withDir
                   [ "g.weir", [ "module G"; "let pick : 'a -> 'a -> 'a"; "let pick a b = a" ]
@@ -26895,6 +27033,17 @@ let aliasTests =
               Expect.equal (Weir.Repl.visibleWidthForTest "🌿> ") 4 "an emoji counts two cells"
               Expect.equal (Weir.Repl.visibleWidthForTest "é> ") 3 "a combining mark counts none"
               Expect.equal (Weir.Repl.visibleWidthForTest " x> ") 5 "a private-use glyph counts one"
+          }
+          test "(k3) PromptStatus carries the entry's duration [D:prompt-duration]" {
+              let dom = Weir.Script.promptStatusDomain
+              Expect.isTrue (dom (TRowVar("r", [ "duration", TDur ]))) "a provider reading duration as a Duration is accepted"
+              Expect.isTrue (dom (TRowVar("r", [ "ok", TBool; "duration", TVar "a" ]))) "a forwarded duration is accepted"
+              Expect.isFalse (dom (TRowVar("r", [ "duration", TInt ]))) "a duration pinned to int refuses"
+              expectValue "let st = { ok = true; exit = None; duration = 2500ms } in st.duration > 2s" (VBool true)
+          }
+          test "(k4) the waiting indicator is off until the REPL turns it on [D:waiting-repl-only]" {
+              Expect.isFalse Weir.Types.Waiting.enabled "a script, -e or a test never draws it"
+              Expect.equal (Weir.Types.Waiting.during "sleeping" (fun () -> 7)) 7 "the work still runs, silently"
           } ]
 
 // ---- dynamic command heads [D:dynamic-head] --------------------------
@@ -27669,6 +27818,7 @@ let helpUxTests =
                         "MIME" // MIME wrap (base64)
                         "POSIX"
                         "PATH" // the environment variable
+                        "PATHEXT" // the Windows environment variable [D:path-which]
                         "REPL" // tool surfaces
                         "TRACE" // WEIR_LOG level names, as the lines print them
                         "DEBUG"
@@ -29446,6 +29596,34 @@ let portOverlayTests =
                   (runFile [ "within env PATH=\"/weir-no-such-dir\""; "    sh -c \"echo hi\"" ])
                   1
                   "the overlay PATH decides at run time"
+          }
+          test "Path.which finds what a command head would run, on the overlay PATH too [D:path-which]" {
+              skipOnWindows ()
+
+              withTempDir "weir-which" (fun dir ->
+                  let tool = Path.Combine(dir, "weirwhichtoolzz")
+                  File.WriteAllText(tool, "#!/bin/sh\necho hi\n")
+                  File.SetUnixFileMode(tool, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute)
+                  let p = System.Environment.GetEnvironmentVariable "PATH"
+                  let path = $"{weirPath dir}:{p}"
+                  let full = weirPath tool
+
+                  Expect.equal
+                      (runFile
+                          [ "if Path.which \"weirwhichtoolzz\" <> None then exit 3"
+                            $"within env PATH=\"{path}\""
+                            $"    if Path.which \"weirwhichtoolzz\" <> Some \"{full}\" then exit 4"
+                            "    if Path.which \"sh\" == None then exit 5"
+                            $"if Path.which \"{full}\" <> Some \"{full}\" then exit 6"
+                            "if Path.which \"weir-no-such-toolzz\" <> None then exit 7"
+                            "if Path.which \"\" <> None then exit 8"
+                            "within env PATH=\"/weir-no-such-dir\""
+                            "    if Path.which \"sh\" <> None then exit 9" ])
+                      0
+                      "the overlay PATH decides; weir's own PATH outside it; a path names itself")
+
+              // an ambient read: readonly admits it (pure refuses it, pinned with the home dirs)
+              Expect.equal (Weir.Effects.effectClass "Path.which") (Some Weir.Effects.Ambient) "ambient"
           } ]
 
 let docsBinaryTests =
