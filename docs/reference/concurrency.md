@@ -271,7 +271,8 @@ beside the cut, so the cut closes the fd ([D:fifo-read-polled],
 `openPolled`, `PolledFd`); a FIFO that `File.write`/`append`/`writeBytes`
 opens waits for its reader and for room the same way
 ([D:fifo-ops-polled], `openPolledWrite`, `PolledWriteFd`);
-`File.writeAtomic` refuses a FIFO; `Dir.copy` recreates one and never
+`File.writeAtomic` and `File.readFrom` (it seeks, [D:file-readfrom])
+refuse a FIFO; `Dir.copy` recreates one and never
 opens it ([D:dircopy-special]). On macOS a
 FIFO's open and read run off the flow (`cutBlocking`), and an abandoned
 read may take one later write; a FIFO write there is not cut. A child's pipe is polled before each fill on

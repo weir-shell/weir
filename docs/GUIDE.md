@@ -1406,6 +1406,31 @@ guess, and the error tells you what to write. `Size.parse`, which
 reads text from elsewhere, does accept SI units as powers of ten,
 since whoever wrote that text chose the unit.
 
+### Following a growing file
+
+A file that other processes append to (a log, a JSONL queue) is read
+in steps with `File.readFrom path offset`. It returns a `FileChunk`:
+`lines`, the complete lines from that byte offset, and `next`, the
+offset to pass the next time. Only the bytes after the offset are
+read, and a last line still missing its newline is left for the next
+call, so each line comes back once and whole even while writers are
+appending:
+
+```weir
+["a"; "b"] |> File.append "guide-follow.log"
+let first = File.readFrom "guide-follow.log" 0B
+first.lines |> Seq.iter print
+["c"] |> File.append "guide-follow.log"
+let more = File.readFrom "guide-follow.log" first.next
+more.lines |> Seq.iter print
+File.delete "guide-follow.log"
+```
+
+Keep `next` between polls (in a file, with `Size.toBytes`). An offset
+past the end of the file means it was truncated or replaced, and
+raises with both numbers; so does an offset that is not at the start
+of a line.
+
 ### Rates and percentages: floats, finite-only
 
 A weir float is always a finite number. A result that would be `NaN`

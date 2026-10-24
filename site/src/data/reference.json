@@ -433,6 +433,13 @@
           "pointer": null
         },
         {
+          "name": "readFrom",
+          "signature": "File.readFrom (path: string) (offset: Size) : FileChunk",
+          "summary": "Read the complete lines of a file from a byte offset, for polling a file that is being appended to. Returns a FileChunk: lines, and next, the offset to pass on the next call. Only the bytes from the offset to the file\u0027s size when the read starts are read, and a last line without its newline yet is left for the next call, so every line is returned once and whole. Lines decode as File.read\u0027s do (a BOM is skipped only at offset 0, and a \\r\\n line ending counts as two bytes). Raises when the offset is past the end (the file was truncated or replaced) or is not at the start of a line; pass 0 or a next this function returned.",
+          "example": "let d = Path.newTempDir ()\nlet f = $\u0022{d}/log.txt\u0022\n[\u0022a\u0022; \u0022b\u0022] |\u003E File.append f\nlet c = File.readFrom f 0B\nc.lines |\u003E Seq.iter print\n[\u0022c\u0022] |\u003E File.append f\n(File.readFrom f c.next).lines |\u003E Seq.iter print\nDir.deleteAll d",
+          "pointer": null
+        },
+        {
           "name": "readSecret",
           "signature": "File.readSecret (path: string) : Secret",
           "summary": "Read a file\u0027s whole content as a Secret, for example a secret mounted into a container. Trailing newlines are removed.",
@@ -2259,6 +2266,13 @@
       "pointer": null
     },
     {
+      "name": "FileChunk",
+      "signature": null,
+      "summary": "What File.readFrom returns: lines, the complete lines read, and next, the byte offset just past the last one (the offset you started from when there were none). Pass next to the following File.readFrom.",
+      "example": null,
+      "pointer": null
+    },
+    {
       "name": "FileRow",
       "signature": null,
       "summary": "A directory entry, as returned by \u0060ls\u0060. Fields: name; kind (Regular, Directory or Symlink); target (Some link target for a symlink, None otherwise; no File.* function gives you this); bytes (0 B for a directory); modified (the last-write time as an Instant, which does not change after you read it; tables show it as relative time, show prints ISO); hidden; and path. \u0060ls\u0060 lists files and subdirectories sorted by name, case-sensitively with uppercase first, regardless of locale. Use name for matching and display and path when calling File.* functions. Less common details are separate functions rather than fields, such as File.mode for permissions.",
@@ -2592,6 +2606,20 @@
         {
           "name": "value",
           "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "FileChunk",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "lines",
+          "type": "seq\u003Cstring\u003E"
+        },
+        {
+          "name": "next",
+          "type": "Size"
         }
       ]
     },
