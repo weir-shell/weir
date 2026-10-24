@@ -33,14 +33,17 @@ type Domain = Domain of string
 - **`validate` implies the constructor is not available for
   construction** — no `private` keyword. A constructor returns `T`, not
   a `Result`, so it cannot report failure; the only way to make a value
-  is the derived `parse`. This holds inside the declaring module too:
+  is the derived `create`. This holds inside the declaring module too:
   the invariant has exactly one gate.
-- **Weir derives `T.parse : payload -> Result<T, string>`** in the
-  type's own namespace — the built-ins' shape (`Duration.parse`,
-  `Uuid.parse`, `Size.parse`). Two types in one module get `Email.parse`
-  and `Domain.parse`; from another module `Mail.Email.parse`, or bare
-  `Email.parse` when unambiguous ([D:qualified-type-names]).
-- **No `T.create`** (raising). Code that knows a value is good says so
+- **Weir derives `T.create : payload -> Result<T, string>`** in the
+  type's own namespace. Not `parse`: the payload can be any type
+  (`type Small = Small of int` with `validate x = if x < 10 then Ok x
+  else Error "…"`), and `parse` means "from text" (`Uuid.parse`). A
+  `create` that returns a `Result` is the F# "designing with types"
+  idiom (user ruling, D1). Two types in one module get `Email.create`
+  and `Domain.create`; from another module `Mail.Email.create`, or bare
+  `Email.create` when unambiguous ([D:qualified-type-names]).
+- **No raising variant.** Code that knows a value is good says so
   visibly, with a `match` on the `Result`.
 - **Reading is public**: `match e with | Email raw -> …`,
   `let (Email raw) = e`, `let f (Email raw) = …` work anywhere
@@ -76,7 +79,7 @@ guarantee cannot leak:
 - `validate`'s binder has the payload type; its body must be
   `Result<payload, string>` — a mismatch names both.
 - Using the case as a constructor (`Email "x"`) anywhere is an error:
-  "Email is validated — build it with Email.parse (it returns a Result)".
+  "Email is validated — build it with Email.create (it returns a Result)".
 - `validate` must be PURE (the `pure` rules: no reads, commands, writes
   or network). A type promises a fact about the value, not about the
   world: existence can change a moment later, a well-formed shape cannot.
@@ -85,15 +88,15 @@ guarantee cannot leak:
   (editor, completion, a future check-time fold). Existence checks belong
   where the value is used (`Dir.exists`, or the failing `File.read`).
 - A recursive or mutually validated payload (a validated type whose
-  payload is another validated type) runs the inner `parse` first.
+  payload is another validated type) runs the inner `create` first.
 
 ## Open items (to rule)
 
-- **D1 — the validator's name.** `validate` (recommended) vs `check` /
-  `where`.
+- **D1 — names.** RULED (user, 2026-10-24): the block is `validate`,
+  the derived function `T.create : payload -> Result<T, string>`.
 - **D2 — purity.** RULED (user, 2026-10-24): `validate` is pure; an
   existence check is the caller's, at use.
-- **D3 — literal folding.** Should `Email.parse "a@b.c"` on a literal be
+- **D3 — literal folding.** Should `Email.create "a@b.c"` on a literal be
   checked at `weir check` time (a pure validator over a constant)?
   *Recommend: not in v1.*
 - **D4 — hover and `--help`.** Hover shows the validator's first doc
