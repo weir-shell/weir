@@ -96,6 +96,8 @@ let effectfulBare =
 // triple to its Value from the same list.
 let libraryDesugars: (string * string * string) list =
     [ "|seqIter", "Seq", "iter"
+      // `pfor` [D:pfor]
+      "|seqPiter", "Seq", "piter"
       "|seqMap", "Seq", "map"
       "|seqFreeze", "Seq", "freeze"
       "|seqAppend", "Seq", "append"

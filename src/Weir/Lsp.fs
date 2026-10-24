@@ -1470,8 +1470,20 @@ let private streamFormHover (text: string) (jcol: int) : string option =
             else
                 None)
 
+// `pfor` answers as a form [D:pfor]: the parallel `for` — the meaning
+// plus what it inherits from Seq.piter and where the ceiling knob lives
+let private pforFormHover (text: string) (jcol: int) : string option =
+    wordAt text jcol
+    |> Option.bind (fun w ->
+        match w with
+        | "pfor" ->
+            Some
+                "pfor <pattern> in <seq> do <body> — the parallel for: exactly `xs |> Seq.piter (fun x -> body)`. The body must be unit and arms finish in any order (their output interleaves); every arm runs even if one fails, then the first error by input order raises. The default ceiling is 64 arms (8 when nested in a fan-out, 1 deeper); `Seq.piterWith n` sets one. Effects only — collect results with `Seq.pmap`"
+        | _ -> None)
+
 let private formWordHover (env: TypeEnv) (text: string) (jcol: int) : string option =
     withinFormHover text jcol
+    |> Option.orElse (pforFormHover text jcol)
     |> Option.orElse (adapterFormHover text jcol)
     |> Option.orElse (retryPollFormHover env text jcol)
     |> Option.orElse (functionFormHover text jcol)
