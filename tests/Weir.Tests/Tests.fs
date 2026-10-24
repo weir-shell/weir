@@ -31069,7 +31069,8 @@ let argsHelpTests =
 
         try
             let code = Weir.Script.run path args
-            code, out.ToString()
+            // line-ending-neutral: Console.Out writes CRLF on Windows
+            code, out.ToString().Replace("\r\n", "\n")
         finally
             System.Console.SetOut prior
             System.IO.File.Delete path
