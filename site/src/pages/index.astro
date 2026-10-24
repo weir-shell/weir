@@ -282,7 +282,8 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     </li>
     <li>
       <a href="/docs/guide/#retrying-and-polling"><code>retry</code> and <code>poll</code></a> —
-      bounded loops; an unbounded loop is unrepresentable, and
+      bounded loops (the one that runs until stopped is
+      <code>repeat</code>, which finishes its iteration on Ctrl+C), and
       <code>watch=</code> fails the wait the moment the child dies,
       with its last output.
     </li>

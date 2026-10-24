@@ -168,14 +168,20 @@ let sigExit rc n = rc == $"{128 + n}" || rc == $"-{n}"
 // `EXIT <code|timeout>` (a death by a signal is -n), `EXITMS <ms from spawn
 // to exit, -1 on timeout>`, `SENT <ms of each HEX write>`, `STATUS <status
 // line|closed|error>` per GET
+// `WAIT <text>` / `WAITRE <regex>` hold the scenario until the output since
+// the previous WAIT holds a match — a readiness marker, never a guessed
+// delay; after 20s the driver kills the session and exits 3 naming the
+// wait, and ptyRun fails the probe (a harness failure keeps the gate shut)
 let ptyPy = <<<
-    import os, pty, sys, time, select, signal, fcntl, termios, struct, threading, socket
+    import os, pty, sys, time, select, signal, fcntl, termios, struct, threading, socket, re
     timeout = float(sys.argv[1]); cmd = sys.argv[2:]
     steps = []
     for line in sys.stdin.read().splitlines():
         if line.startswith("SLEEP "): steps.append(("sleep", int(line[6:])))
         elif line.startswith("HEX "): steps.append(("send", bytes.fromhex(line[4:].strip())))
         elif line.startswith("GET "): steps.append(("get", int(line[4:])))
+        elif line.startswith("WAIT "): steps.append(("wait", (re.compile(re.escape(line[5:].encode())), line[5:])))
+        elif line.startswith("WAITRE "): steps.append(("wait", (re.compile(line[7:].encode()), line[7:])))
         elif line.strip() == "HANGUP": steps.append(("hangup", 0))
         elif line.startswith("SIG "): steps.append(("sig", line[4:].strip()))
         elif line.startswith("GSIG "): steps.append(("gsig", line[5:].strip()))
@@ -219,8 +225,20 @@ let ptyPy = <<<
                 d += x
             gets.append(d.split(b"\r\n")[0].decode("latin-1") or "closed")
         except Exception as e: gets.append("error " + type(e).__name__)
+    seen = 0
     for kind, arg in steps:
-        if code is not None: break
+        if kind == "wait":
+            rx, text = arg; lim = time.monotonic() + 20; m = rx.search(out, seen)
+            while m is None and time.monotonic() < lim:
+                ended = code is not None
+                pump(time.monotonic() + (0.3 if ended else 0.02)); m = rx.search(out, seen)
+                if ended: break
+            if m is None:
+                if code is None: os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
+                sys.stderr.write("WAIT timed out for '%s'%s\n" % (text, "" if code is None else " (the session ended first)"))
+                sys.exit(3)
+            seen = m.end(); continue
+        if code is not None: continue
         if kind == "sleep": pump(time.monotonic() + arg / 1000.0)
         elif kind == "send":
             try: os.write(fd, arg); sent.append(ms())
@@ -363,6 +381,7 @@ let ptyRun d secs args steps =
     let py = put d "ptydrive.py" ptyPy
     within cd d
         let r = steps | timeout 120 python3 -I $py $secs env $@noProxy $"TMPDIR={d}" $@args | complete
+        if codeOf r <> 0 then fail $"the pty driver failed (exit {codeOf r}): {errOf r}"
         let ls = r.stdout |> Seq.freeze
         let ints s = s |> Str.fields |> Seq.map Str.toInt |> Seq.freeze
         {
@@ -382,6 +401,9 @@ let typedLine s = $"HEX {hx s}0d"
 let pastedEntry ls = $"""HEX {ls |> Seq.map hx |> Str.join "1b0d"}0d"""
 
 let ctrlC = "HEX 03"
+
+// the REPL's empty prompt: drawn when the line editor is reading
+let promptReady = @"WAITRE weir> \r"
 
 // a REPL's HOME and every XDG dir pinned to the probe dir, as env words
 let replEnv d =
@@ -505,13 +527,13 @@ let c11Argv d =
 
 // a hangup at the idle prompt: death by SIGHUP, nothing on stderr
 let ctlCReplHangupIdle d =
-    let run = ptyRun d "8" (c11Argv d) ["SLEEP 2500"; "HANGUP"; "SLEEP 2000"]
+    let run = ptyRun d "8" (c11Argv d) [promptReady; "HANGUP"; "SLEEP 2000"]
     let err = linesOf $"{d}/err" |> Str.join "\n"
     sigExit run.code 1 && not (err |> Str.contains "internal error")
 
 let h3r5c11 d =
     let mark = markOf 20 11
-    let run = ptyRun d "8" (c11Argv d) ["SLEEP 2500"; typedLine $"sleep {mark}"; "SLEEP 800"; "HANGUP"; "SLEEP 3000"]
+    let run = ptyRun d "8" (c11Argv d) [promptReady; typedLine $"sh -c \"echo armed | tr a-z A-Z; exec sleep {mark}\""; "WAIT ARMED"; "HANGUP"; "SLEEP 3000"]
     reap mark
     let err = linesOf $"{d}/err" |> Str.join "\n"
     failing [
@@ -526,19 +548,19 @@ let c12Fixture = <<<
         print "body"
     always
         print "cleanup start"
-        sh -c "read k; echo stdin-got-[$k]"
-        sh -c "read k < /dev/tty; echo tty-got-[$k]"
+        sh -c "echo stdin-reading; read k; echo stdin-got-[$k]"
+        sh -c "echo tty-reading; read k < /dev/tty; echo tty-got-[$k]"
         print "cleanup end"
 
 // the neighbours: a cleanup command's output shows at a tty; a body command
 // reads the terminal
 let ctlCCleanupOutput d =
-    let p = put d "c.weir" ["within"; "    sh -c \"read k; echo body-got-[$k]\""; "always"; "    sh -c \"echo cleanup-out\""; "    print \"cleanup end\""]
-    let run = ptyRun d "8" [cli.bin; p] ["SLEEP 1200"; "HEX 620d"; "SLEEP 1500"]
+    let p = put d "c.weir" ["within"; "    sh -c \"echo body-reading; read k; echo body-got-[$k]\""; "always"; "    sh -c \"echo cleanup-out\""; "    print \"cleanup end\""]
+    let run = ptyRun d "8" [cli.bin; p] ["WAIT body-reading"; "HEX 620d"; "SLEEP 1500"]
     run.code == "0" && (run.text |> Str.contains "body-got-[b]") && (run.text |> Str.contains "cleanup-out") && (run.text |> Str.contains "cleanup end")
 
 let h3r5c12 d =
-    let run = ptyRun d "8" [cli.bin; put d "c12.weir" c12Fixture] ["SLEEP 1200"; "HEX 710d"; "SLEEP 600"; "HEX 770d"; "SLEEP 2000"]
+    let run = ptyRun d "8" [cli.bin; put d "c12.weir" c12Fixture] ["WAIT stdin-reading"; "HEX 710d"; "WAIT tty-reading"; "HEX 770d"; "SLEEP 2000"]
     let t = run.text
     let shown = $"EXIT {run.code} at {run.exitMs}ms, session '{t |> oneLine}'"
     failing [
@@ -573,7 +595,7 @@ let c13Fixture mark = $$<<<
                 sleep 1
             always
                 ev "cleanup start"
-                sh -c "sleep $mark; echo cleanup-cmd-done"
+                sh -c "echo cleanup-armed; sleep $mark; echo cleanup-cmd-done"
                 ev "cleanup end"
     always
         ev "outer cleanup"
@@ -601,7 +623,8 @@ let h3r5c13 d =
     let py = put td "ptyq.py" c13Py
     let r =
         within cd td
-            let x = ["SLEEP 1800"; "HEX 1c"; "SLEEP 3500"] | timeout 60 python3 -I $py "15" env $@noProxy $"TMPDIR={td}" $cli.bin (put td "q.weir" (c13Fixture mark)) $"{td}/log" | complete
+            let x = ["WAIT cleanup-armed"; "HEX 1c"; "SLEEP 3500"] | timeout 60 python3 -I $py "15" env $@noProxy $"TMPDIR={td}" $cli.bin (put td "q.weir" (c13Fixture mark)) $"{td}/log" | complete
+            if codeOf x <> 0 then fail $"the pty driver failed (exit {codeOf x}): {errOf x}"
             x
     let ls0 = r.stdout |> Seq.freeze
     let code = fieldOf ls0 "EXIT" |> Option.defaultValue "none"
@@ -631,7 +654,7 @@ let c14Mode = "icanon=1 echo=1 isig=1"
 
 // ^D at the prompt: exit 0, the terminal restored
 let ctlCReplEofRestores d =
-    let run = ptyRun d "8" (replArgv d) ["SLEEP 2500"; "HEX 04"; "SLEEP 1500"]
+    let run = ptyRun d "8" (replArgv d) [promptReady; "HEX 04"; "SLEEP 1500"]
     run.code == "0" && run.ttyMode == c14Mode
 
 let h3r5c14 d =
@@ -639,7 +662,7 @@ let h3r5c14 d =
     |> Seq.map (fun (s, n) ->
         let sd = $"{d}/{s}"
         Dir.create sd
-        let run = ptyRun sd "8" (replArgv sd) ["SLEEP 2500"; $"SIG {s}"; "SLEEP 1500"]
+        let run = ptyRun sd "8" (replArgv sd) [promptReady; $"SIG {s}"; "SLEEP 1500"]
         ($"a tty REPL killed by SIG{s} at its prompt: the terminal must be restored (EXIT {run.code}, {run.ttyMode})", sigExit run.code n && run.ttyMode == c14Mode))
     |> failing
 
@@ -875,24 +898,24 @@ let h3r5c18 d =
 
 // ---- H3R5-C21: a REPL ^C with no wait ahead in the entry is dropped (R6) --------
 
-// one REPL entry in one write (pastedEntry), a ^C `at` ms after it, then
-// a probe line `after` ms later proving the session survived (long enough
-// for a pure-compute statement to finish). Late work prints in uppercase
-// (Str.toUpper) so the typed echo never matches
-let c21Session d entry at after =
+// one REPL entry in one write (pastedEntry), a ^C once it prints ARMED
+// (where the ^C must land), then a probe line `after` ms later proving the
+// session survived (long enough for a pure-compute statement to finish).
+// Late work prints in uppercase (Str.toUpper) so the typed echo never matches
+let c21Session d entry after =
     let typed = [pastedEntry entry]
-    let steps = Seq.concat [["SLEEP 2500"]; typed; [$"SLEEP {at}"; ctrlC; $"SLEEP {after}"; typedLine "print (Str.toUpper \"still-here\")"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]] |> Seq.freeze
+    let steps = Seq.concat [[promptReady]; typed; ["WAIT ARMED"; ctrlC; $"SLEEP {after}"; typedLine "print (Str.toUpper \"still-here\")"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]] |> Seq.freeze
     ptyRun d "15" (replArgv d) steps
 
 let c21Cases d = [
-    ("during an always cleanup", 3000, ["within"; "    print \"body\""; "always"; "    Duration.sleep 1500ms"; $"File.write \"{d}/late.txt\" [\"late\"]"; "print (Str.toUpper \"late-cleanup\")"], "LATE-CLEANUP")
-    ("during pure compute", 10000, ["let n = [1..16000000] |> Seq.map (fun i -> i % 7) |> Seq.length"; "print (Str.toUpper $\"late-compute {n}\")"], "LATE-COMPUTE")
-    ("killing a | exitCode child", 3000, ["let c = sh -c \"sleep 5\" | exitCode"; "print (Str.toUpper $\"late-exitcode {c}\")"], "LATE-EXITCODE")
+    ("during an always cleanup", 3000, ["within"; "    print \"body\""; "always"; "    print (Str.toUpper \"armed\")"; "    Duration.sleep 1500ms"; $"File.write \"{d}/late.txt\" [\"late\"]"; "print (Str.toUpper \"late-cleanup\")"], "LATE-CLEANUP")
+    ("during pure compute", 10000, ["print (Str.toUpper \"armed\")"; "let n = [1..16000000] |> Seq.map (fun i -> i % 7) |> Seq.length"; "print (Str.toUpper $\"late-compute {n}\")"], "LATE-COMPUTE")
+    ("killing a | exitCode child", 3000, ["let c = sh -c \"echo armed | tr a-z A-Z; sleep 5\" | exitCode"; "print (Str.toUpper $\"late-exitcode {c}\")"], "LATE-EXITCODE")
 ]
 
 // a ^C during an entry's command ends the entry (C23, fixed)
 let ctlDReplCommandCut d =
-    let run = c21Session d ["sh -c \"sleep 3\""; "print (Str.toUpper \"late-command\")"] 800 3000
+    let run = c21Session d ["sh -c \"echo armed | tr a-z A-Z; sleep 3\""; "print (Str.toUpper \"late-command\")"] 3000
     let t = run.text
     (t |> Str.contains "exit 130") && not (t |> Str.contains "LATE-COMMAND") && (t |> Str.contains "STILL-HERE")
 
@@ -902,7 +925,7 @@ let h3r5c21 d =
     |> Seq.map (fun (k, (label, after, entry, late)) ->
         let sd = $"{d}/r{k}"
         Dir.create sd
-        let run = c21Session sd (entry |> Seq.map (Str.replace $"{d}/" $"{sd}/") |> Seq.freeze) 800 after
+        let run = c21Session sd (entry |> Seq.map (Str.replace $"{d}/" $"{sd}/") |> Seq.freeze) after
         let t = run.text
         let wrote = File.exists $"{sd}/late.txt"
         ($"a REPL ^C {label}: the entry must end with exit 130, the rest unrun, the session alive (exit 130: {t |> Str.contains "exit 130"}, {late}: {t |> Str.contains late}, late write: {wrote}, STILL-HERE: {t |> Str.contains "STILL-HERE"})", (t |> Str.contains "exit 130") && not (t |> Str.contains late) && not wrote && (t |> Str.contains "STILL-HERE")))

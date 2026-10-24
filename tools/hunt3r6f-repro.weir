@@ -165,14 +165,20 @@ let sigExit rc n = rc == $"{128 + n}" || rc == $"-{n}"
 // `EXIT <code|timeout>` (a death by a signal is -n), `EXITMS <ms from spawn
 // to exit, -1 on timeout>`, `SENT <ms of each HEX write>`, `STATUS <status
 // line|closed|error>` per GET
+// `WAIT <text>` / `WAITRE <regex>` hold the scenario until the output since
+// the previous WAIT holds a match — a readiness marker, never a guessed
+// delay; after 20s the driver kills the session and exits 3 naming the
+// wait, and ptyRun fails the probe (a harness failure keeps the gate shut)
 let ptyPy = <<<
-    import os, pty, sys, time, select, signal, fcntl, termios, struct, threading, socket
+    import os, pty, sys, time, select, signal, fcntl, termios, struct, threading, socket, re
     timeout = float(sys.argv[1]); cmd = sys.argv[2:]
     steps = []
     for line in sys.stdin.read().splitlines():
         if line.startswith("SLEEP "): steps.append(("sleep", int(line[6:])))
         elif line.startswith("HEX "): steps.append(("send", bytes.fromhex(line[4:].strip())))
         elif line.startswith("GET "): steps.append(("get", int(line[4:])))
+        elif line.startswith("WAIT "): steps.append(("wait", (re.compile(re.escape(line[5:].encode())), line[5:])))
+        elif line.startswith("WAITRE "): steps.append(("wait", (re.compile(line[7:].encode()), line[7:])))
         elif line.strip() == "HANGUP": steps.append(("hangup", 0))
         elif line.startswith("SIG "): steps.append(("sig", line[4:].strip()))
         elif line.startswith("GSIG "): steps.append(("gsig", line[5:].strip()))
@@ -216,8 +222,20 @@ let ptyPy = <<<
                 d += x
             gets.append(d.split(b"\r\n")[0].decode("latin-1") or "closed")
         except Exception as e: gets.append("error " + type(e).__name__)
+    seen = 0
     for kind, arg in steps:
-        if code is not None: break
+        if kind == "wait":
+            rx, text = arg; lim = time.monotonic() + 20; m = rx.search(out, seen)
+            while m is None and time.monotonic() < lim:
+                ended = code is not None
+                pump(time.monotonic() + (0.3 if ended else 0.02)); m = rx.search(out, seen)
+                if ended: break
+            if m is None:
+                if code is None: os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
+                sys.stderr.write("WAIT timed out for '%s'%s\n" % (text, "" if code is None else " (the session ended first)"))
+                sys.exit(3)
+            seen = m.end(); continue
+        if code is not None: continue
         if kind == "sleep": pump(time.monotonic() + arg / 1000.0)
         elif kind == "send":
             try: os.write(fd, arg); sent.append(ms())
@@ -345,6 +363,7 @@ let ptyRun d secs args steps =
     let py = put d "ptydrive.py" ptyPy
     within cd d
         let r = steps | timeout 120 python3 -I $py $secs env $@noProxy $"TMPDIR={d}" $@args | complete
+        if codeOf r <> 0 then fail $"the pty driver failed (exit {codeOf r}): {errOf r}"
         let ls = r.stdout |> Seq.freeze
         let ints s = s |> Str.fields |> Seq.map Str.toInt |> Seq.freeze
         {
@@ -362,6 +381,11 @@ let typedLine s = $"HEX {hx s}0d"
 let contLine s = $"HEX {hx s}1b0d"
 
 let ctrlC = "HEX 03"
+
+// the REPL's empty prompt (the line editor is reading) and its empty
+// continuation line (an Alt-Enter has been taken)
+let promptReady = @"WAITRE weir> \r"
+let contReady = @"WAITRE … \r"
 
 // a REPL's HOME and every XDG dir pinned to the probe dir, as env words
 let replEnv d =
@@ -444,6 +468,7 @@ let ownFixture mark code = $$<<<
     within
         within
             ev "BODY DONE"
+            print "body-armed"
             sleep $mark
         always
             ev "cleanup start"
@@ -481,7 +506,7 @@ let h3r6c11 d =
     let td = $"{d}/tty"
     Dir.create td
     let mark = markOf 20 49
-    let run = ptyRun td "15" [cli.bin; put td "own.weir" (ownFixture mark 130); $"{td}/log"] ["SLEEP 1500"; ctrlC; "SLEEP 3000"]
+    let run = ptyRun td "15" [cli.bin; put td "own.weir" (ownFixture mark 130); $"{td}/log"] ["WAIT body-armed"; ctrlC; "SLEEP 3000"]
     reap mark
     let ls = linesOf $"{td}/log"
     let tty = ($"""a terminal ^C, the cleanup command (started after it) exiting 130 on its own: a failure, the rest of that cleanup cut (EXIT {run.code}, log '{joined ls}')""", sigExit run.code 2 && not (ls |> Seq.contains "cleanup after own exit") && (ls |> Seq.contains "outer cleanup"))
@@ -566,20 +591,20 @@ let h3r6c13 d =
 
 let c23Entry code tag = [
     contLine "let t0 = Instant.now ()"
-    "SLEEP 150"
+    contReady
     contLine $"let xs = [1..20] |> Seq.map (fun _ -> sh -c \"exit {code}\" | exitCode) |> Seq.freeze"
-    "SLEEP 150"
+    contReady
     typedLine $"print $\"{tag}={{Duration.toMillis (Instant.now () - t0)}} n={{Seq.length xs}}\""
 ]
 
 // a ^C during a REPL entry's command still ends the entry
 let ctlAReplCommandCut d =
-    let steps = Seq.concat [["SLEEP 2500"; typedLine "sh -c \"sleep 3\""; "SLEEP 800"; ctrlC; "SLEEP 3000"; typedLine "print (Str.toUpper \"still-here\")"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]] |> Seq.freeze
+    let steps = Seq.concat [[promptReady; typedLine "sh -c \"echo armed | tr a-z A-Z; sleep 3\""; "WAIT ARMED"; ctrlC; "SLEEP 3000"; typedLine "print (Str.toUpper \"still-here\")"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]] |> Seq.freeze
     let run = ptyRun d "20" (replArgv d) steps
     (run.text |> Str.contains "exit 130") && (run.text |> Str.contains "STILL-HERE")
 
 let h3r6c23 d =
-    let steps = Seq.concat [["SLEEP 2500"]; c23Entry 1 "ONE"; ["SLEEP 4000"]; c23Entry 130 "SIG"; ["SLEEP 9000"; "HEX 04"; "SLEEP 500"]] |> Seq.freeze
+    let steps = Seq.concat [[promptReady]; c23Entry 1 "ONE"; [promptReady]; c23Entry 130 "SIG"; ["SLEEP 9000"; "HEX 04"; "SLEEP 500"]] |> Seq.freeze
     let run = ptyRun d "40" (replArgv d) steps
     let num tag =
         match Str.rmatch (tag + @"=(\d+) n=20") run.text with
@@ -633,8 +658,10 @@ let h3r6c14 d =
 
 // ---- H3R6-C1-5: a weir foregrounded after its cleanup command spawned ----------
 
-// an interactive bash on a pty: `T text` (typed + CR) / `H hex` / `S ms`
-// steps on stdin; prints the transcript
+// an interactive bash on a pty: `T text` (typed + CR) / `H hex` / `S ms` /
+// `W text` (until the output since the previous W holds text; after 20s the
+// driver exits 3 naming it, a harness failure) steps on stdin; prints the
+// transcript
 let jcPy = <<<
     import os, pty, sys, time, select, signal
     steps = [l for l in sys.stdin.read().splitlines() if l.strip()]
@@ -651,10 +678,19 @@ let jcPy = <<<
             if r:
                 try: out += os.read(fd, 65536)
                 except OSError: return
-    pump(0.5)
+    pump(0.5); seen = 0
     for s in steps:
         k, _, v = s.partition(" ")
-        if k == "S": pump(int(v) / 1000)
+        if k == "W":
+            lim = time.monotonic() + 20
+            while out.find(v.encode(), seen) < 0 and time.monotonic() < lim: pump(0.02)
+            at = out.find(v.encode(), seen)
+            if at < 0:
+                try: os.kill(pid, signal.SIGKILL)
+                except OSError: pass
+                sys.stderr.write("WAIT timed out for '%s'\n" % v); sys.exit(3)
+            seen = at + len(v.encode())
+        elif k == "S": pump(int(v) / 1000)
         elif k == "T": os.write(fd, v.encode() + b"\r")
         elif k == "H": os.write(fd, bytes.fromhex(v))
     pump(0.3)
@@ -670,13 +706,14 @@ let c15Fixture mark = $$<<<
     always
         printerr "cleanup start"
         sh -c "sleep 1"
-        sh -c "sleep $mark; echo cmd-done"
+        sh -c "echo cmd-armed; sleep $mark; echo cmd-done"
         printerr "cleanup end"
 
 let jcRun d steps =
     let py = put d "jc.py" jcPy
     within cd d
         let r = steps | timeout 60 python3 -I $py | complete
+        if codeOf r <> 0 then fail $"the pty driver failed (exit {codeOf r}): {errOf r}"
         outOf r
 
 // the typed command line weir runs from, env words included
@@ -688,20 +725,21 @@ let jcLine d file tail =
 let ctlAFgCleanup d =
     let mark = markOf 2 51
     let f = put d "c.weir" (c15Fixture mark)
-    let t = jcRun d [$"T {jcLine d f ""}"; "S 2500"; "H 03"; "S 3500"]
+    let t = jcRun d [$"T {jcLine d f ""}"; "W cmd-armed"; "H 03"; "S 3500"]
     reap mark
     (t |> Str.contains "cmd-done") && (t |> Str.contains "cleanup end")
 
 let h3r6c15 d =
     let mark = markOf 2 52
     let f = put d "bg.weir" (c15Fixture mark)
-    let bgfg = jcRun d [$"T {jcLine d f " &"}"; "S 2300"; "T fg"; "S 500"; "H 03"; "S 3500"]
+    // fg prints the job's command line before it hands over the terminal
+    let bgfg = jcRun d [$"T {jcLine d f " &"}"; "W cmd-armed"; "T fg"; "W bg.weir"; "S 500"; "H 03"; "S 3500"]
     reap mark
     let zd = $"{d}/z"
     Dir.create zd
     let zmark = markOf 2 53
     let fz = put zd "z.weir" (c15Fixture zmark)
-    let zbg = jcRun zd [$"T {jcLine zd fz ""}"; "S 1500"; "H 1a"; "S 300"; "T bg"; "S 1500"; "T fg"; "S 500"; "H 03"; "S 3500"]
+    let zbg = jcRun zd [$"T {jcLine zd fz ""}"; "W cleanup start"; "H 1a"; "W Stopped"; "T bg"; "W cmd-armed"; "T fg"; "W z.weir"; "S 500"; "H 03"; "S 3500"]
     reap zmark
     let shown t = t |> Str.split "\n" |> Seq.where (fun l -> (l |> Str.contains "cleanup") || (l |> Str.contains "cmd-done") || (l |> Str.contains "error")) |> joined
     failing [
@@ -795,7 +833,7 @@ let c24Json d = ["{\"a\": 1}"] |> File.write $"{d}/j.json"
 // a quick #infer let binds and types
 let ctlAReplInfer d =
     c24Json d
-    let steps = ["SLEEP 2500"; typedLine $"#infer let po = sh -c \"cat {d}/j.json\" |> from json as _"; "SLEEP 1500"; typedLine "print $\"A={po.a}\""; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]
+    let steps = [promptReady; typedLine $"#infer let po = sh -c \"cat {d}/j.json\" |> from json as _"; promptReady; typedLine "print $\"A={po.a}\""; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]
     let run = ptyRun d "20" (replArgv d) steps
     run.text |> Str.contains "A=1"
 
@@ -803,7 +841,7 @@ let c24Init flag = $$<<<
     #init
 
     let sigil () =
-        let s = sh -c "if [ -e $flag ]; then sleep 20; fi; echo P" | line
+        let s = sh -c "if [ -e $flag ]; then echo hung | tr a-z A-Z >&2; sleep 20; fi; echo P" | line
         $"{s}> "
 
     #session {
@@ -814,7 +852,7 @@ let h3r6c24 d =
     let id = $"{d}/infer"
     Dir.create id
     c24Json id
-    let isteps = ["SLEEP 2500"; typedLine $"#infer let po = sh -c \"sleep 6; cat {id}/j.json\" |> from json as _"; "SLEEP 1000"; ctrlC; "SLEEP 800"; typedLine "print (Str.toUpper \"next-line\")"; "SLEEP 1500"; "HEX 04"; "SLEEP 500"]
+    let isteps = [promptReady; typedLine $"#infer let po = sh -c \"echo armed | tr a-z A-Z >&2; sleep 6; cat {id}/j.json\" |> from json as _"; "WAIT ARMED"; ctrlC; "SLEEP 800"; typedLine "print (Str.toUpper \"next-line\")"; "SLEEP 1500"; "HEX 04"; "SLEEP 500"]
     let irun = ptyRun id "12" (replArgv id) isteps
     let pd = $"{d}/prompt"
     Dir.create pd
@@ -822,7 +860,7 @@ let h3r6c24 d =
     let env = replEnv pd
     Dir.create $"{pd}/home/.config/weir"
     c24Init flag |> File.write $"{pd}/home/.config/weir/init.weir"
-    let psteps = ["SLEEP 2500"; typedLine $"File.write \"{flag}\" [\"x\"]"; "SLEEP 1000"; ctrlC; "SLEEP 800"; typedLine "print (Str.toUpper \"responsive\")"; "SLEEP 1500"; "HEX 04"; "SLEEP 500"]
+    let psteps = ["WAIT P>"; typedLine $"File.write \"{flag}\" [\"x\"]"; "WAIT HUNG"; ctrlC; "SLEEP 800"; typedLine "print (Str.toUpper \"responsive\")"; "SLEEP 1500"; "HEX 04"; "SLEEP 500"]
     let prun = ptyRun pd "12" (Seq.append ["env"] (Seq.append env [cli.bin]) |> Seq.freeze) psteps
     failing [
         ($"a ^C during #infer's source command must stop it, and the next line runs (NEXT-LINE: {irun.text |> Str.contains "NEXT-LINE"}, EXIT {irun.code})", irun.text |> Str.contains "NEXT-LINE")
@@ -1149,7 +1187,7 @@ let c26Typed s = $"HEX {hx s}"
 
 // ESC CR in one write (a real Alt+Enter, a paste) continues the entry
 let ctlPAltEnter d =
-    let steps = ["SLEEP 2500"; contLine "let w = Str.toUpper \"joined\""; "SLEEP 300"; typedLine "print w"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]
+    let steps = [promptReady; contLine "let w = Str.toUpper \"joined\""; contReady; typedLine "print w"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]
     let run = ptyRun d "15" (replArgv d) steps
     run.text |> Str.contains "JOINED"
 
@@ -1158,7 +1196,7 @@ let h3r6c26 d =
     |> Seq.map (fun gap ->
         let sd = $"{d}/g{gap}"
         Dir.create sd
-        let steps = ["SLEEP 2500"; c26Typed "print (Str.toUpper \"danger\")"; "SLEEP 300"; "HEX 1b"; $"SLEEP {gap}"; "HEX 0d"; "SLEEP 500"; typedLine "print (Str.toUpper \"next-up\")"; "SLEEP 1200"; "HEX 04"; "SLEEP 500"]
+        let steps = [promptReady; c26Typed "print (Str.toUpper \"danger\")"; "WAIT \"danger\")"; "HEX 1b"; $"SLEEP {gap}"; "HEX 0d"; "SLEEP 500"; typedLine "print (Str.toUpper \"next-up\")"; "SLEEP 1200"; "HEX 04"; "SLEEP 500"]
         let run = ptyRun sd "15" (replArgv sd) steps
         ($"""a human's Esc, then Enter {gap}ms later, must abandon the line (DANGER ran: {run.text |> Str.contains "DANGER"}, NEXT-UP ran: {run.text |> Str.contains "NEXT-UP"})""", not (run.text |> Str.contains "DANGER") && (run.text |> Str.contains "NEXT-UP")))
     |> failing
@@ -2115,7 +2153,7 @@ let e2Tool log mark = [
     "#!/bin/sh"
     "case \"$1\" in"
     "  --version) echo \"hng 1.0\";;"
-    $"  --help) printf 'Usage: hng [opts]\\n\\nOptions:\\n  --aa   aa\\n'; echo 'BODY DONE' >> '{log}'; exec sleep {mark};;"
+    $"  --help) printf 'Usage: hng [opts]\\n\\nOptions:\\n  --aa   aa\\n'; echo 'BODY DONE' >> '{log}'; {{ echo probe-armed > /dev/tty; }} 2>/dev/null; exec sleep {mark};;"
     "  *) exit 1;;"
     "esac"
 ]
@@ -2139,7 +2177,7 @@ let h3r6e2 d =
     let tp = sProj d "tty"
     let tmark = markOf 60 82
     sChmod (put tp "bin/hng" (e2Tool $"{tp}/log" tmark))
-    let trun = ptyRun tp "15" [sPathOf tp; cli.bin; "add"; "sig"; "hng"] ["SLEEP 2500"; ctrlC; "SLEEP 2000"]
+    let trun = ptyRun tp "15" [sPathOf tp; cli.bin; "add"; "sig"; "hng"] ["WAIT probe-armed"; ctrlC; "SLEEP 2000"]
     Duration.sleep 300ms
     let ttyOrphans = sleepersOf tmark |> Seq.length
     reap tmark

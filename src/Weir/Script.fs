@@ -434,6 +434,8 @@ let classifyPiece (piece: string) : PieceClass =
         // 6th members, still no stack
         || piece.StartsWith "retry "
         || piece.StartsWith "poll "
+        // and repeat [D:repeat]
+        || piece.StartsWith "repeat "
       ClosesBrace = piece.StartsWith "}"
       ClosesParen = piece.StartsWith ")"
       StartsField =
@@ -631,6 +633,9 @@ let dangleOpensBlock (piece: string) : bool =
     || t.StartsWith "retry "
     || t = "poll"
     || t.StartsWith "poll "
+    // repeat joins them [D:repeat]
+    || t = "repeat"
+    || t.StartsWith "repeat "
     || t.StartsWith "until "
     // the bare within's teardown segment dangles too [D:within-always]
     || t = "always"
@@ -659,7 +664,17 @@ let opensIndentedBody (before: string) : bool =
 
         let fieldEq = t.EndsWith "=" && braceDelta t > 0
 
-        t <> "" && dangleOpensBlock (t.TrimStart()) && not gluedWord && not comparison && not fieldEq
+        // a within's `until stopped` takes no block: it dangles for the
+        // assembler only so a deeper line reaches the parser's teaching
+        // [D:held-scope]
+        let held = t.TrimStart() = "until stopped"
+
+        t <> ""
+        && dangleOpensBlock (t.TrimStart())
+        && not gluedWord
+        && not comparison
+        && not fieldEq
+        && not held
 
 /// A line-end district marker of any kind — the mask below and the
 /// REPL share classifyPiece's marker rules through these predicates.

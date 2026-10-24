@@ -4783,6 +4783,9 @@ let completionTests =
                         "retry"
                         "poll"
                         "until"
+                        // the stop-ended loop starts statements like retry
+                        // [D:repeat]
+                        "repeat"
                         // the bare scope's teardown segment continues,
                         // as until does [D:within-always]
                         "always"
@@ -21793,6 +21796,249 @@ let matchArmCommandTests =
                   "the inner match's arms parse and arm independently"
           } ]
 
+let stopRequestTests =
+    testList
+        "the stop request's state machine [D:stop-request]"
+        [ test "no stop-aware construct live: every signal is the teardown" {
+              let m = Weir.Session.StopMachine()
+              Expect.equal (m.Signal()) Weir.Session.Teardown "first signal, nothing live"
+              Expect.equal (m.Signal()) Weir.Session.Teardown "second signal, nothing live"
+              Expect.isFalse m.Requested "no request recorded"
+              Expect.isFalse m.Token.IsCancellationRequested "no wait woken"
+          }
+          test "one live: the first signal is the request (waits woken), the second the teardown" {
+              let m = Weir.Session.StopMachine()
+              m.Enter()
+              let t = m.Token
+              Expect.equal (m.Signal()) Weir.Session.StopRequested "the first signal requests the stop"
+              Expect.isTrue m.Requested "the request is set"
+              Expect.isTrue t.IsCancellationRequested "the stop-aware waits wake"
+              Expect.equal (m.Signal()) Weir.Session.Teardown "a second signal is today's teardown"
+              Expect.equal (m.Signal()) Weir.Session.Teardown "and every one after"
+              m.Exit()
+          }
+          test "the request is sticky: after the construct ends it stays set, and a later one's signal tears down" {
+              let m = Weir.Session.StopMachine()
+              m.Enter()
+              m.Signal() |> ignore
+              m.Exit()
+              Expect.isTrue m.Requested "sticky past the construct [D:stop-request]"
+              Expect.equal m.Depth 0 "nothing live"
+              Expect.equal (m.Signal()) Weir.Session.Teardown "no construct live: the teardown"
+              m.Enter()
+              Expect.isTrue m.Token.IsCancellationRequested "a later construct sees the request at once"
+              Expect.equal (m.Signal()) Weir.Session.Teardown "already requested: the teardown"
+              m.Exit()
+          }
+          test "nested and parallel constructs share one request" {
+              let m = Weir.Session.StopMachine()
+              m.Enter()
+              m.Enter()
+              Expect.equal m.Depth 2 "two live"
+              Expect.equal (m.Signal()) Weir.Session.StopRequested "one request for both"
+              m.Exit()
+              Expect.equal (m.Signal()) Weir.Session.Teardown "the request stays one-shot while the outer runs"
+              m.Exit()
+              m.Exit()
+              Expect.equal m.Depth 0 "an extra exit never goes negative"
+          }
+          test "Clear (the REPL's entry end) forgets the request; the next construct gets a fresh token" {
+              let m = Weir.Session.StopMachine()
+              m.Enter()
+              let t1 = m.Token
+              m.Signal() |> ignore
+              m.Exit()
+              m.Clear()
+              Expect.isFalse m.Requested "cleared [D:repl-stop-request]"
+              Expect.isTrue t1.IsCancellationRequested "the old token stays cancelled"
+              Expect.isFalse m.Token.IsCancellationRequested "a fresh token"
+              m.Enter()
+              Expect.equal (m.Signal()) Weir.Session.StopRequested "a new construct's first signal is a request again"
+              m.Exit()
+          } ]
+
+let repeatTests =
+    let sx (input: string) = show (parse input)
+
+    let stopCheck lines = diagsIn "rep.weir" lines |> List.filter (fun d -> d.Severity = "error") |> List.map _.Message
+
+    testList
+        "repeat [D:repeat]"
+        [ test "the key=value head desugars over the internal base; Repeat is the options record" {
+              Expect.equal
+                  (sx "repeat interval=1s (1 == 1)")
+                  "(repeat {|repeatDefaults with interval = 1s} (== 1 1))"
+                  "the sugar's form"
+
+              Expect.equal
+                  (sx "repeat interval=1s timeout=(Some 2m) (1 == 1)")
+                  "(repeat {|repeatDefaults with interval = 1s; timeout = (Some 2m)} (== 1 1))"
+                  "timeout rides the update"
+
+              match Map.tryFind "Repeat" preludeTypeEnv.Types with
+              | Some(Weir.Types.Record d) ->
+                  Expect.equal
+                      (d.Fields |> List.map (fun (f, t) -> $"{f}: {Weir.Types.formatTy t}"))
+                      [ "interval: Duration"; "timeout: Option<Duration>" ]
+                      "the record's keys"
+              | _ -> failtest "Repeat missing from the prelude"
+
+              Expect.isFalse (Weir.Effects.isCommandReifier "|repeatDefaults") "a library desugar, not a command"
+              Expect.isFalse (Weir.Effects.effectfulName "|repeatDefaults") "pure"
+          }
+          test "interval= is required, and a literal non-positive one refuses at check" {
+              let missing = stopCheck [ "repeat timeout=(Some 1s)"; "    print \"x\"" ]
+              Expect.exists missing (fun m -> m.Contains "a repeat needs interval=") $"missing: {missing}"
+
+              for lit in [ "0ms"; "-1s" ] do
+                  let errs = stopCheck [ $"repeat interval={lit}"; "    print \"x\"" ]
+                  Expect.exists errs (fun m -> m.Contains "interval must be positive") $"{lit}: {errs}"
+
+              let ok = stopCheck [ "repeat interval=1s"; "    print \"x\""; "print \"after\"" ]
+              Expect.isEmpty ok "a unit block checks"
+          }
+          test "the block is unit or a bool; a value needs until (poll's rule), and watch= is poll's" {
+              Expect.isEmpty (stopCheck [ "repeat interval=1s"; "    1 == 1" ]) "a bool block is its own end"
+
+              let v = stopCheck [ "repeat interval=1s"; "    5" ]
+              Expect.exists v (fun m -> m.Contains "add `until r`") $"value block: {v}"
+
+              Expect.isEmpty
+                  (stopCheck [ "let n = repeat interval=1s"; "    5"; "until n"; "    n > 1"; "print (show n)" ])
+                  "until binds the value and the form yields it"
+
+              let w =
+                  stopCheck
+                      [ "within proc p = sleep 1"
+                        "    repeat interval=1s watch=p"
+                        "        print \"x\"" ]
+
+              Expect.exists w (fun m -> m.Contains "watch= is poll's key") $"watch: {w}"
+          }
+          test "refused inside plan and pure" {
+              let pl = stopCheck [ "let p ="; "    plan"; "        repeat interval=1s"; "            print \"x\""; "print (show p)" ]
+              Expect.exists pl (fun m -> m.Contains "'repeat' is refused inside 'plan'") $"plan: {pl}"
+
+              let pu = stopCheck [ "let n ="; "    pure"; "        repeat interval=1s"; "            1 == 1"; "        1"; "print (show n)" ]
+              Expect.exists pu (fun m -> m.Contains "'repeat' waits on the clock") $"pure: {pu}"
+          }
+          test "eval: a bool block ends the loop, until yields the value, a timeout raises as poll's does" {
+              expectValue "repeat interval=1ms (1 == 1)" VUnit
+              expectValue "repeat interval=1ms (1 + 1) until r (r == 2)" (VInt 2L)
+
+              let ex =
+                  Expect.throwsC
+                      (fun () -> run "repeat interval=5ms timeout=(Some 30ms) (1 == 2)" |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "repeat: timed out after" "the timeout's message"
+          }
+          test "a computed non-positive interval refuses at run time" {
+              Expect.stringContains
+                  (msgOf "repeat (Repeat { interval = Duration.ms 0; timeout = None }) (1 == 1)")
+                  "repeat: interval must be positive"
+                  "run-time refusal"
+          }
+          test "repeat hovers its meaning + keys from the Repeat record" {
+              match Weir.Lsp.hoverType [ "repeat interval=10ms"; "    1 == 1" ] 1 3 with
+              | Some hv ->
+                  Expect.stringContains hv "the loop a stop signal ends" "repeat's meaning"
+                  Expect.stringContains hv "interval: Duration, timeout: Option<Duration>" "repeat's keys"
+              | None -> failtest "repeat must answer"
+          } ]
+
+let heldScopeTests =
+    // a within's `until stopped` [D:held-scope]: the body, the hold, then
+    // the normal close; before `always`, on every kind
+    let errs lines = errorMsgsIn "held.weir" lines
+
+    let shape (lines: string list) =
+        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        | Ok [ ll ] ->
+            match Weir.Parser.parseLineFull cmdResolver ll.Text with
+            | Ok s -> Weir.Ast.sexprStmt s
+            | Error f -> failtest f.Message
+        | other -> failtest $"unexpected assembly: {other}"
+
+    let says (needle: string) (lines: string list) =
+        let ms = errs lines
+        Expect.exists ms (fun m -> m.Contains needle) $"{needle}: {ms}"
+
+    testList
+        "within … until stopped [D:held-scope]"
+        [ test "every kind, and the bare scope, takes until stopped, with or without always" {
+              for head in
+                  [ "within tmp d"
+                    "within cd \".\""
+                    "within env [Env.pair \"A\" \"1\"]"
+                    "within lock \"/tmp/held.lock\""
+                    "within proc p = sleep 1"
+                    "within serve srv = { port = 8599; maxConcurrent = 1 } (fun r -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" })"
+                    "within" ] do
+                  Expect.isEmpty (errs [ head; "    print \"b\""; "until stopped"; "print \"after\"" ]) head
+
+                  Expect.isEmpty
+                      (errs [ head; "    print \"b\""; "until stopped"; "always"; "    print \"c\""; "print \"after\"" ])
+                      $"{head} + always"
+          }
+          test "the hold sits inside the scope, the always outside the hold" {
+              let sx = shape [ "within tmp d"; "    print \"b\""; "until stopped"; "always"; "    print \"c\"" ]
+              let w = sx.IndexOf "within tmp"
+              let h = sx.IndexOf "(held"
+              let a = sx.IndexOf "(always"
+              Expect.isTrue (w >= 0 && h > w && a > h) $"within, then held, then always: {sx}"
+
+              let bare = shape [ "within"; "    print \"b\""; "until stopped" ]
+              Expect.stringContains bare "(held" $"the bare held scope: {bare}"
+              Expect.isFalse (bare.Contains "(always") $"no always without one: {bare}"
+          }
+          test "the scope's value is the body's, and the binder reaches the body" {
+              Expect.isEmpty
+                  (errs [ "let v ="; "    within tmp d"; "        d + \"/x\""; "    until stopped"; "print v" ])
+                  "value position"
+          }
+          test "until stopped after always teaches the order" {
+              says
+                  "`until stopped` goes before `always`"
+                  [ "within tmp d"; "    print \"b\""; "always"; "    print \"c\""; "until stopped" ]
+
+              says "`until stopped` goes before `always`" [ "within"; "    print \"b\""; "always"; "    print \"c\""; "until stopped" ]
+          }
+          test "a within's until takes only stopped, and no block" {
+              says "a within's until section is `until stopped`" [ "within tmp d"; "    print \"b\""; "until done" ]
+              says "`until stopped` takes no block" [ "within tmp d"; "    print \"b\""; "until stopped"; "    print \"x\"" ]
+          }
+          test "a repeat refuses until stopped; retry/poll's until binder is unchanged" {
+              says "a repeat already ends when stopped" [ "repeat interval=1s"; "    print \"x\""; "until stopped" ]
+              says "`until stopped` holds a within scope" [ "let r ="; "    poll timeout=1s interval=10ms"; "        true"; "    until stopped" ]
+
+              Expect.isEmpty
+                  (errs [ "let r ="; "    retry attempts=2"; "        3"; "    until stopped"; "        stopped > 2"; "print (show r)" ])
+                  "a binder named stopped with its predicate block is the until form"
+
+              Expect.isEmpty
+                  (errs [ "let r ="; "    retry attempts=2"; "        within tmp d"; "            1"; "    until r"; "        r > 0"; "print (show r)" ])
+                  "a retry's until after a within body stays the retry's"
+          }
+          test "refused inside plan and pure; readonly admits the wait" {
+              says
+                  "'until stopped' is refused inside 'plan'"
+                  [ "let p ="; "    plan"; "        within"; "            print \"x\""; "        until stopped"; "print (show p)" ]
+
+              says
+                  "'until stopped' waits for a stop signal"
+                  [ "let pure f () ="; "    within"; "        1"; "    until stopped"; "print (show (f ()))" ]
+
+              Expect.isEmpty (errs [ "readonly"; "    within"; "        ()"; "    until stopped" ]) "readonly admits a hold"
+          }
+          test "the REPL's smart indent opens no body after until stopped" {
+              Expect.isFalse (Weir.Script.opensIndentedBody "until stopped") "until stopped takes no block"
+              Expect.isTrue (Weir.Script.opensIndentedBody "    until r") "a loop's until binder opens its predicate"
+          }
+          test "Self has no waitForStop member: the hold is the section" {
+              Expect.isNonEmpty (errs [ "Self.waitForStop ()" ]) "no Self.waitForStop"
+          } ]
+
 let retryPollTests =
     let sx (input: string) = show (parse input)
 
@@ -31992,6 +32238,9 @@ let allTests =
           ifSucceedsTests
           matchArmCommandTests
           retryPollTests
+          stopRequestTests
+          repeatTests
+          heldScopeTests
           sigTests
           sigCompleteTests
           sigDynamicTests

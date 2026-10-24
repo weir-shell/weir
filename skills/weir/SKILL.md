@@ -867,6 +867,22 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   dir present, cd/env in force, lock held, proc/serve alive), the
   release follows, the binder is in scope — exactly a bare within
   nested as the body.
+- `until stopped` after ANY `within`'s block (bare included, where it
+  replaces the required `always`) HOLDS the scope [D:held-scope]: the
+  block runs, then the scope waits for the stop request, then it
+  closes by its NORMAL path — `serve` drains its in-flight handlers
+  (2s, not the signal path's cut), `proc` tree-kills, `always` runs
+  whole — the statements after it run, exit 0. Order is block,
+  `until stopped`, `always` (held, then cleaned up); `until stopped`
+  after `always` is a parse error. While held, the first INT/TERM/HUP
+  is the request and the second the teardown [D:stop-request]; a
+  signal during the block itself is the teardown; with a stop already
+  requested (sticky) the hold returns at once. `stopped` is a word
+  after a within's `until`, not a value (any other word errors); the
+  scope's value is the block's. Refused in `plan` and `pure`;
+  `readonly` admits it. The server/sidecar spelling:
+  `within serve srv = … handler` + body, then `until stopped` at the
+  `within`'s column.
 - `within lock "path"` holds an ADVISORY file lock for the block
   [D:within-lock]: created if missing, nothing bound (there is
   nothing to ask a lock). Blocking by default; `timeout=30s` bounds
@@ -901,7 +917,10 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   signal, scoped or not (`$?` 130/143/129; a calling bash loop stops at
   one ^C) [D:die-by-signal]. A second signal hard-exits at once, the
   double-Ctrl+C escape: no cleanup runs or runs on, every child dies,
-  and weir dies by the FIRST signal [D:hard-exit]. `nohup weir …`
+  and weir dies by the FIRST signal [D:hard-exit]. While a `repeat`
+  runs or a scope is held (`until stopped`), the first INT/TERM/HUP is
+  only a stop REQUEST — no unwind, no kill, exit 0 after the loop or
+  scope — and the second is this teardown [D:stop-request]. `nohup weir …`
   keeps SIGHUP ignored. A hung-up terminal never aborts weir: console
   writes after the hangup are dropped, so the cleanups still run whole
   and weir dies by the SIGHUP [D:console-hangup] (a command's own write
@@ -1108,7 +1127,13 @@ let p =
   is the implicit-match lambda (`fun x -> match x with …` exactly;
   first `|` optional, guards work) — the usual spelling for
   `Seq.choose` over lines.
-- Bounded loops are `retry`/`poll` compound forms (no `while`):
+- No `while`. The loops: `for` over a seq (endless over
+  `Seq.initInfinite`, which a signal TEARS DOWN mid-iteration),
+  `retry` (attempts), `poll` (time), and `repeat` (until stopped,
+  gracefully — below); a scope held with no loop is
+  `within … until stopped` (the scopes section). For a long-running
+  loop use `repeat`, not `for` over `Seq.initInfinite`. The bounded
+  ones, `retry`/`poll`, are compound forms:
   `retry attempts=5 delay=30s` + an indented body block (optional
   total-time ceiling `timeout=(Some 2m)` — an `Option<Duration>`,
   default `None`; it cancels a pending delay), then
@@ -1124,6 +1149,39 @@ let p =
   not on exceptions — use `| succeeds`/`| complete` to make failure
   data). Key values are atoms: parenthesize compounds
   (`delay=(d * 2)`).
+- The loop a STOP SIGNAL ends is `repeat interval=1s` + a block
+  [D:repeat] — the watcher/publisher/subscriber loop: run the block,
+  wait the interval, run it again. While a `repeat` (or a held scope,
+  `within … until stopped`) runs, the FIRST SIGINT/SIGTERM/SIGHUP (Ctrl+C
+  on Windows) is only a REQUEST [D:stop-request]: nothing is cut or
+  killed, the iteration in hand finishes (its own sleeps/polls/retries
+  included — only the interval wait ends at once), `repeat` returns,
+  the code after runs, and weir exits 0. A SECOND signal is the usual
+  teardown (`always` runs, 130/143/129). The request is process-wide
+  and STICKY: every `repeat` in a fan-out arm stops (the fan-out then
+  completes), and a `repeat` starting afterwards returns without
+  running its block. A `kill -TERM` of weir leaves the iteration's
+  running command to finish; a terminal ^C reaches it too (as in
+  bash), and a command started before the request that fails after it
+  is the stop, not an error — the loop ends there
+  [D:stop-caused-failure]. `interval=` is required and positive (a
+  missing or literal-zero one is a check error). The rest mirrors
+  `poll`: a bool block ends it when true, `until r` returns the value
+  that passed, `timeout=(Some 5m)` raises. Refused inside `plan`. A
+  `for` over `Seq.initInfinite` also runs until a signal, but the
+  signal TEARS IT DOWN mid-iteration — `repeat` is the graceful one.
+  `repeat … until stopped` is a parse error (a repeat already ends
+  when stopped); the loop-free hold is a within's `until stopped`.
+
+```weir
+let n = repeat interval=10ms
+    1 + 1
+until r
+    r == 2
+repeat interval=10ms
+    print $"got {n}"
+    true
+```
 - No `let rec`, no mutation. Iteration: pipelines TRANSFORM
   (`|> Seq.map/where/fold`); `for x in xs do body` EFFECTS (it IS
   `Seq.iter` — desugared to the piped shape, eager, body must be
@@ -1490,6 +1548,12 @@ print x
   and an arm whose command died of the `^C` is the interrupt, not a
   failure [D:repl-interrupt-fanout]. An entry of several statements
   is one evaluation: a `^C` or a failure ends all of it [D:scope-tree].
+  The exception is a `repeat` or a held scope (`until stopped`) at the
+  prompt: the first `^C` is its stop request (the loop finishes its
+  iteration, the scope closes normally, and the prompt returns, no
+  `↳ exit 130`), a second `^C` cuts as above,
+  and the request ends with the entry, so the next `repeat` runs
+  [D:repl-stop-request].
   `within`'s scopes close as on any raise; an `always` block
   runs as written unless `^C` is pressed again. At an idle prompt
   `^C` clears the line. Pure computation is not interrupted: it runs
@@ -2934,6 +2998,7 @@ the checker's own environment [D:surface-gate] — same contract as above:
 - type `Op`: `WriteFile` `WriteFileAtomic` `DeleteFile` `Copy` `Move` `CopyDir` `MoveDir` `MakeDir` `DeleteDir` `DeleteTree` `HttpSend`
 - type `Option`: `Some` `None`
 - type `Poll`: { `timeout` `interval` }
+- type `Repeat`: { `interval` `timeout` }
 - type `PromptStatus`: { `ok` `exit` }
 - type `Result`: `Ok` `Error`
 - type `Retry`: { `attempts` `delay` `timeout` }

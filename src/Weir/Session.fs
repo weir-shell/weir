@@ -856,6 +856,73 @@ let private adoptMain () =
     next ()
 
 
+// ---- the stop request [D:stop-request] ----------------------------------
+// While a stop-aware construct runs (a `repeat`, a held scope), the
+// first stop signal only asks the program to stop: it sets the sticky
+// request, wakes the stop-aware waits and returns — no teardown, no cut, no
+// kill. A second signal, or any signal with none live, is the teardown.
+
+/// what a stop signal does
+type StopVerdict =
+    /// set the request and wake the stop-aware waits; nothing else
+    | StopRequested
+    /// the existing signal path
+    | Teardown
+
+/// the stop request's state: the live stop-aware constructs and the sticky
+/// request, with the token its waits wake on
+type StopMachine() =
+    let gate = obj ()
+    let mutable depth = 0
+    let mutable requested = false
+    let mutable cts = new System.Threading.CancellationTokenSource()
+
+    /// a stop-aware construct starts
+    member _.Enter() = lock gate (fun () -> depth <- depth + 1)
+
+    /// a stop-aware construct ends
+    member _.Exit() = lock gate (fun () -> depth <- max 0 (depth - 1))
+
+    member _.Depth = lock gate (fun () -> depth)
+
+    member _.Requested = lock gate (fun () -> requested)
+
+    /// the token the stop-aware waits wake on (cancelled once requested)
+    member _.Token = lock gate (fun () -> cts.Token)
+
+    /// a stop signal arrived: the first while a stop-aware construct is
+    /// live is the request, any other the teardown
+    member _.Signal() : StopVerdict =
+        let wake =
+            lock gate (fun () ->
+                if depth > 0 && not requested then
+                    requested <- true
+                    Some cts
+                else
+                    None)
+
+        match wake with
+        | Some c ->
+            c.Cancel()
+            StopRequested
+        | None -> Teardown
+
+    /// forget the request (the REPL, at an entry's end) [D:repl-stop-request]
+    member _.Clear() =
+        lock gate (fun () ->
+            if requested then
+                requested <- false
+                cts <- new System.Threading.CancellationTokenSource())
+
+let private stop = StopMachine()
+
+/// has a stop been requested? (sticky [D:stop-request])
+let stopRequested () : bool = stop.Requested
+
+/// the token a stop-aware wait wakes on
+let stopToken () : System.Threading.CancellationToken = stop.Token
+
+
 // ---- the main-thread teardown [D:signal-main-unwind] [D:stdout-epipe] --
 // A signal or a closed stdout ends the script, but the teardown — every
 // `always`, every scope's release — runs on the MAIN thread, never in the
@@ -945,6 +1012,11 @@ let checkCancelled () : unit =
         if n.Cut > 0 && cancelledBy n then
             raise (Cancelled())
 
+/// the REPL survives SIGINT (set once by Repl.run) [D:repl-isig]: the
+/// exit-hook sweep must not fire for a signal the session outlives —
+/// it deletes live within-tmp dirs, which is correct only when dying
+let replSurvivesSigint = ref false
+
 // the REPL's interrupt, one evaluation at a time: the first ^C cuts the
 // evaluation's node (every wait outside an `always` cleanup), a further ^C
 // cuts through the cleanups too — a cleanup runs as written unless ^C is
@@ -972,6 +1044,11 @@ let private endReplEvalNode () =
         replFlow <- false
         current.Value <- null
         closeNode n
+
+        // the interactive session outlives its entry's stop request: the
+        // next `repeat` at the prompt runs [D:repl-stop-request]
+        if replSurvivesSigint.Value then
+            stop.Clear()
 
 /// arm a fresh interrupt for one REPL evaluation (an entry, or a statement
 /// outside one): its own node [D:scope-tree]
@@ -1130,11 +1207,6 @@ let private sweepDirs () =
             System.IO.Directory.Delete(kv.Key, true)
         with _ ->
             ()
-
-/// the REPL survives SIGINT (set once by Repl.run) [D:repl-isig]: the
-/// exit-hook sweep must not fire for a signal the session outlives —
-/// it deletes live within-tmp dirs, which is correct only when dying
-let replSurvivesSigint = ref false
 
 // libc, for the detached-SIGINT reset [D:signal-teardown]. `signal`
 // returns the previous disposition; we peek-and-restore to convert an
@@ -3078,10 +3150,23 @@ let private dispatchSignal (ctx: System.Runtime.InteropServices.PosixSignalConte
     let code = signalExitCode ctx.Signal
 
     // a SIGINT the REPL survives is not a death [D:repl-isig]: it cuts the
-    // evaluation's waits [D:repl-interrupt]
+    // evaluation's waits [D:repl-interrupt] — the first while a stop-aware
+    // construct runs is its stop request [D:repl-stop-request]
     if replSurvivesSigint.Value && sigint then
         ctx.Cancel <- true
-        interruptRepl ()
+
+        if stop.Signal() = Teardown then
+            interruptRepl ()
+    // the first stop signal while a stop-aware construct runs asks it to
+    // stop: no cut, no kill, no backstop [D:stop-request]. SIGQUIT is
+    // always the teardown, and so is TERM/HUP at the interactive REPL
+    elif
+        ctx.Signal <> System.Runtime.InteropServices.PosixSignal.SIGQUIT
+        && not replSurvivesSigint.Value
+        && System.Threading.Volatile.Read &tearingDown.contents = 0
+        && stop.Signal() = StopRequested
+    then
+        ctx.Cancel <- true
     elif System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
         ctx.Cancel <- true
         hardExit code
@@ -3141,7 +3226,14 @@ let private installExitHook () =
         System.Console.CancelKeyPress.Add(fun e ->
             e.Cancel <- true
 
-            if System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
+            // the first Ctrl+C while a stop-aware construct runs is its
+            // stop request [D:stop-request]
+            if
+                System.Threading.Volatile.Read &tearingDown.contents = 0
+                && stop.Signal() = StopRequested
+            then
+                ()
+            elif System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
                 hardExit 130
             elif System.Threading.Volatile.Read &mainThreadId = 0 then
                 System.Threading.Interlocked.CompareExchange(&teardownCode, 130, 0) |> ignore
@@ -3160,6 +3252,17 @@ let private ensureHook () =
 /// the signal hook now, not at the first spawn: the tty REPL's prompt
 /// restores the terminal on a TERM/HUP/QUIT death [D:die-by-signal]
 let installSignalHook () : unit = ensureHook ()
+
+/// run a stop-aware construct: while it runs, the first stop signal is a
+/// request [D:stop-request] — the hook first, or a signal kills weir outright
+let stopAware (f: unit -> 'a) : 'a =
+    ensureHook ()
+    stop.Enter()
+
+    try
+        f ()
+    finally
+        stop.Exit()
 
 let registerTmpDir (dir: string) : unit =
     ensureHook ()
