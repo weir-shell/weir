@@ -98,7 +98,8 @@ print "stopped"
 
 A `for` over `Seq.initInfinite` runs forever too, but a signal cuts it
 mid-iteration. To keep a server running until it is stopped, end its
-`within serve` block with `Self.waitForStop ()`.
+`within serve` with `until stopped` after the block
+([scopes](reference/scopes.md#until-stopped)).
 
 See [`repeat`](reference/loops.md#repeat).
 

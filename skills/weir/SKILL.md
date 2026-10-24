@@ -870,6 +870,22 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   dir present, cd/env in force, lock held, proc/serve alive), the
   release follows, the binder is in scope — exactly a bare within
   nested as the body.
+- `until stopped` after ANY `within`'s block (bare included, where it
+  replaces the required `always`) HOLDS the scope [D:held-scope]: the
+  block runs, then the scope waits for the stop request, then it
+  closes by its NORMAL path — `serve` drains its in-flight handlers
+  (2s, not the signal path's cut), `proc` tree-kills, `always` runs
+  whole — the statements after it run, exit 0. Order is block,
+  `until stopped`, `always` (held, then cleaned up); `until stopped`
+  after `always` is a parse error. While held, the first INT/TERM/HUP
+  is the request and the second the teardown [D:stop-request]; a
+  signal during the block itself is the teardown; with a stop already
+  requested (sticky) the hold returns at once. `stopped` is a word
+  after a within's `until`, not a value (any other word errors); the
+  scope's value is the block's. Refused in `plan` and `pure`;
+  `readonly` admits it. The server/sidecar spelling:
+  `within serve srv = … handler` + body, then `until stopped` at the
+  `within`'s column.
 - `within lock "path"` holds an ADVISORY file lock for the block
   [D:within-lock]: created if missing, nothing bound (there is
   nothing to ask a lock). Blocking by default; `timeout=30s` bounds
@@ -904,10 +920,10 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   signal, scoped or not (`$?` 130/143/129; a calling bash loop stops at
   one ^C) [D:die-by-signal]. A second signal hard-exits at once, the
   double-Ctrl+C escape: no cleanup runs or runs on, every child dies,
-  and weir dies by the FIRST signal [D:hard-exit]. While a `repeat` or
-  `Self.waitForStop` runs, the first INT/TERM/HUP is only a stop
-  REQUEST — no unwind, no kill, exit 0 after the loop — and the second
-  is this teardown [D:stop-request]. `nohup weir …`
+  and weir dies by the FIRST signal [D:hard-exit]. While a `repeat`
+  runs or a scope is held (`until stopped`), the first INT/TERM/HUP is
+  only a stop REQUEST — no unwind, no kill, exit 0 after the loop or
+  scope — and the second is this teardown [D:stop-request]. `nohup weir …`
   keeps SIGHUP ignored. A hung-up terminal never aborts weir: console
   writes after the hangup are dropped, so the cleanups still run whole
   and weir dies by the SIGHUP [D:console-hangup] (a command's own write
@@ -1114,8 +1130,13 @@ let p =
   is the implicit-match lambda (`fun x -> match x with …` exactly;
   first `|` optional, guards work) — the usual spelling for
   `Seq.choose` over lines.
-- Bounded loops are `retry`/`poll` compound forms (no `while`; the
-  stop-ended loop is `repeat`, below):
+- No `while`. The loops: `for` over a seq (endless over
+  `Seq.initInfinite`, which a signal TEARS DOWN mid-iteration),
+  `retry` (attempts), `poll` (time), and `repeat` (until stopped,
+  gracefully — below); a scope held with no loop is
+  `within … until stopped` (the scopes section). For a long-running
+  loop use `repeat`, not `for` over `Seq.initInfinite`. The bounded
+  ones, `retry`/`poll`, are compound forms:
   `retry attempts=5 delay=30s` + an indented body block (optional
   total-time ceiling `timeout=(Some 2m)` — an `Option<Duration>`,
   default `None`; it cancels a pending delay), then
@@ -1133,8 +1154,8 @@ let p =
   (`delay=(d * 2)`).
 - The loop a STOP SIGNAL ends is `repeat interval=1s` + a block
   [D:repeat] — the watcher/publisher/subscriber loop: run the block,
-  wait the interval, run it again. While a `repeat` (or a
-  `Self.waitForStop ()`) runs, the FIRST SIGINT/SIGTERM/SIGHUP (Ctrl+C
+  wait the interval, run it again. While a `repeat` (or a held scope,
+  `within … until stopped`) runs, the FIRST SIGINT/SIGTERM/SIGHUP (Ctrl+C
   on Windows) is only a REQUEST [D:stop-request]: nothing is cut or
   killed, the iteration in hand finishes (its own sleeps/polls/retries
   included — only the interval wait ends at once), `repeat` returns,
@@ -1152,10 +1173,8 @@ let p =
   that passed, `timeout=(Some 5m)` raises. Refused inside `plan`. A
   `for` over `Seq.initInfinite` also runs until a signal, but the
   signal TEARS IT DOWN mid-iteration — `repeat` is the graceful one.
-  `Self.waitForStop ()` [D:wait-for-stop] is the loop-free wait: it
-  blocks until the first stop signal and returns normally, so the
-  scope around it closes by its NORMAL path (a `within serve` drains
-  its in-flight handlers).
+  `repeat … until stopped` is a parse error (a repeat already ends
+  when stopped); the loop-free hold is a within's `until stopped`.
 
 ```weir
 let n = repeat interval=10ms
@@ -1532,9 +1551,10 @@ print x
   and an arm whose command died of the `^C` is the interrupt, not a
   failure [D:repl-interrupt-fanout]. An entry of several statements
   is one evaluation: a `^C` or a failure ends all of it [D:scope-tree].
-  The exception is a `repeat` or `Self.waitForStop` at the prompt: the
-  first `^C` is its stop request (the loop finishes its iteration and
-  the prompt returns, no `↳ exit 130`), a second `^C` cuts as above,
+  The exception is a `repeat` or a held scope (`until stopped`) at the
+  prompt: the first `^C` is its stop request (the loop finishes its
+  iteration, the scope closes normally, and the prompt returns, no
+  `↳ exit 130`), a second `^C` cuts as above,
   and the request ends with the entry, so the next `repeat` runs
   [D:repl-stop-request].
   `within`'s scopes close as on any raise; an `always` block
@@ -2956,7 +2976,7 @@ not the teaching.
 - `Secret`: `map` `of` `reveal`
 - `Color`: `red` `green` `yellow` `blue` `magenta` `cyan` `gray` `bold` `dim` `underline` `sgr` — each `string -> string`, wrapping in a colour/attribute. Context-aware: emits the escape only at a terminal with colour on (no `NO_COLOR`) and returns the plain string when piped, so `print (Color.green x)` colours interactively and stays plain in a pipe. Nest to combine (`Color.bold (Color.red "!")`); `Color.sgr "38;5;208" s` is the raw-code escape hatch for 256-colour/truecolor. `print` keeps colour (SGR) at a tty but still neutralizes every terminal-driving escape a value carries (title, clipboard, cursor) and shows bidi controls as a visible `\uXXXX`; a bare CR passes.
 - `Term`: `width` `title` — `Term.width () : int`, the terminal columns queried live; falls back to 80 when there is no terminal (piped/redirected), so it never raises. The `tput cols` primitive. `Term.title : string -> unit` sets the window title (an OSC 0 to stdout, or stderr when only that is a terminal; `Console.Title` on Windows); controls, escapes and bidi controls in the text are dropped and it is capped at 256 code points; with no terminal it does nothing. A console write: `pure` and `readonly` refuse it. Call it from the init.weir `prompt` function to keep the title current.
-- `Self`: `prompt` and `waitForStop`, everywhere — `prompt` writes its message to stderr and reads one stdin line (raises at end of input); `waitForStop ()` blocks until the first stop signal and returns normally [D:wait-for-stop]; and `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
+- `Self`: `prompt`, everywhere — writes its message to stderr and reads one stdin line (raises at end of input); and `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `initInfinite` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `fromHex` `hmacSha256` `length` `sha256` `sub` `toBase64` `toHex` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`

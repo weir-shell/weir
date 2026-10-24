@@ -58,9 +58,13 @@ Many of the changes and fixes below were found porting starship to weir.
   `bool` block, `until` and `timeout=` work as in `poll`. At the
   prompt, the first Ctrl+C stops a `repeat` and the prompt returns; a
   second cuts it as before.
-- **`Self.waitForStop ()`** blocks until the first Ctrl+C or
-  `kill -TERM` and then returns, so a `within serve` block ending with
-  it closes normally: requests in flight get their answer.
+- **`until stopped` holds a `within` scope until the program is asked
+  to stop.** Written after the block of any `within` (`serve`, `proc`,
+  `tmp`, the bare one…), it keeps the scope open once the block is
+  done; the first Ctrl+C, `kill -TERM` or SIGHUP closes it the normal
+  way (a server answers the requests in flight, `always` runs whole),
+  the code after it runs, and the script exits 0. An `always` cleanup
+  goes after `until stopped`.
 
 ### Changed
 

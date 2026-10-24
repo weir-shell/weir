@@ -62,8 +62,9 @@ A keyword can't be used as a name — `let let = 1` is refused with
 
 After `within` comes the kind of scope: `cd`, `env`, `lock`, `proc`, `serve`, `tmp`.
 Data is read with `from` (`json`, `jsonl`, `table`, `toml`, `xml`, `yaml`) and written with `to`
-(`json`, `jsonl`, `yaml`). These words are special only in those positions;
-anywhere else they are ordinary names.
+(`json`, `jsonl`, `yaml`). A `within`'s block may end with `until stopped`.
+These words are special only in those positions; anywhere else they are
+ordinary names.
 
 `pure`, `readonly` and `plan` each start their own indented block. Code in a
 `pure` block may have no effects at all; code in a `readonly` block may

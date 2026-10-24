@@ -1,8 +1,23 @@
 # Loops and parallelism
 
-There is no `while`. Every loop has a limit: `retry` (a number of
-attempts), `poll` (a time limit), `for` (a seq), the parallel
-fan-outs, and `repeat` (a stop signal).
+There is no `while`. The loops are:
+
+- `for` over a seq, and the parallel fan-outs over one. A seq is
+  usually finite; over `Seq.initInfinite` the loop runs until a
+  signal, and the signal ends it by teardown: the iteration is cut
+  wherever it is.
+- `retry`, limited by a number of attempts.
+- `poll`, limited by time.
+- `repeat`, which runs until the program is asked to stop, and stops
+  gracefully: the iteration in hand finishes and the code after the
+  loop runs.
+- With no loop at all, a held scope: `within … until stopped` keeps a
+  server or a sidecar up until the program is asked to stop
+  ([scopes](scopes.md#until-stopped)).
+
+For a long-running loop (a watcher, a publisher, a subscriber), use
+`repeat`, not `for` over `Seq.initInfinite`. For a scope that only
+has to stay open, such as a server, use `until stopped`.
 
 ## `retry` and `poll`
 
@@ -101,18 +116,9 @@ signal, but a signal stops it by teardown, cutting the iteration;
 `repeat` is the loop that stops gracefully.
 
 To hold a scope open until the operator stops the program, with no
-loop, call `Self.waitForStop ()`. It blocks until the first stop
-signal and returns normally, so the scope around it closes by its
-normal path: a `within serve` gives its handlers in flight their usual
-drain.
-
-```weir-demo
-within serve srv = { port = 8080; maxConcurrent = 4 } handler
-    print $"listening on {Server.port srv}"
-    Self.waitForStop ()
-
-print "server stopped"
-```
+loop, end the `within` with `until stopped`
+([scopes](scopes.md#until-stopped)). `repeat` takes no
+`until stopped`: it already ends when stopped.
 
 ## `Seq.pmap` / `Seq.piter`
 
