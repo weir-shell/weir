@@ -100,23 +100,6 @@ let inStringMask (s: string) : bool[] =
 
     mask
 
-/// the record types a file hands to `Args.load`/`Env.load` (type ->
-/// loader), read off the code text outside strings and comments — an
-/// unbound field name's hint teaches loading the record first
-let loadTargetsOf (lines: string list) : Map<string, string> =
-    let re =
-        System.Text.RegularExpressions.Regex(@"(?<![\w.])(Args|Env)\.load\s+([A-Z]\w*)")
-
-    lines
-    |> List.collect (fun raw ->
-        let code = stripComment raw
-        let mask = inStringMask code
-        let blanked = System.String(code |> Seq.mapi (fun i c -> if mask[i] then ' ' else c) |> Array.ofSeq)
-
-        [ for m in re.Matches blanked -> m.Groups[2].Value, m.Groups[1].Value + ".load" ])
-    |> List.distinctBy fst
-    |> Map.ofList
-
 // Canonical intra-line spacing [D:fmt-respace], bounded: collapse
 // space runs, pad record braces, tidy `;`, and pad the unambiguous
 // binary operators (`=`, `==`, `<>`, `<=`, `>=`, `&&`, `||`, `|>`,
@@ -9791,6 +9774,31 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
       Prompt = prompt
       Aliases = parsedAliases }
 
+/// the record types a file hands to `Args.load`/`Env.load` (type ->
+/// loader), read off its parsed statements — an unbound field name's
+/// hint teaches loading the record first. A line that does not parse
+/// contributes nothing (its own error is reported where it is checked).
+let loadTargetsOf (tenv: TypeEnv) (lines: LogicalLine list) : Map<string, string> =
+    let rec walk (e: Expr) : (string * string) list =
+        (match e.Kind with
+         | EApp({ Kind = EField({ Kind = EVar(("Args" | "Env") as m) }, "load", _) }, { Kind = EVar t }) when
+             t.Length > 0 && System.Char.IsUpper t[0]
+             ->
+             [ t, m + ".load" ]
+         | _ -> [])
+        @ (exprChildren e |> List.collect walk)
+
+    lines
+    |> List.collect (fun ll ->
+        match Parser.parseLine (assumeResolver tenv) ll.Text with
+        | Ok(SLet(_, e))
+        | Ok(SLetPat(_, e))
+        | Ok(SExpr e)
+        | Ok(SCmd e) -> walk e
+        | _ -> [])
+    |> List.distinctBy fst
+    |> Map.ofList
+
 // ---- effects before the CLI parse [D:effect-before-args] ------------------
 // A top-level statement BEFORE the entry script's first top-level
 // `Args.load`/`Env.load` that writes the filesystem, spawns or touches the
@@ -10000,8 +10008,7 @@ let analyzeLinesAs
 
     let typeEnv0 =
         { typeEnv0 with
-            Modules = typeEnv0.Modules |> Map.add "Self" selfMembers
-            LoadTargets = loadTargetsOf body }
+            Modules = typeEnv0.Modules |> Map.add "Self" selfMembers }
 
     // imports resolve relative to the file being checked [D:modules-v1];
     // one cache per check dedups a diamond, one chain catches a cycle
@@ -10100,7 +10107,9 @@ let analyzeLinesAs
                   Code = "warning"
                   Message = wm }
 
-        let mutable tenv = typeEnv0
+        let mutable tenv =
+            { typeEnv0 with
+                LoadTargets = loadTargetsOf typeEnv0 logicalLines }
 
         // a module file [D:modules-v1] is checkable in isolation: direct
         // `weir check` enforces the same decl-only + weak-purity rules an
@@ -10739,10 +10748,6 @@ let run (path: string) (scriptArgs: string list) : int =
             let absScriptPath = IO.Path.GetFullPath path
 
             let typeEnv0, valueEnv0 = baseEnvs scriptArgs absScriptPath
-
-            let typeEnv0 =
-                { typeEnv0 with
-                    LoadTargets = loadTargetsOf body }
             Extern.refresh ()
 
             let rawByLine = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> Map.ofList
@@ -10997,7 +11002,11 @@ let run (path: string) (scriptArgs: string list) : int =
                                             | _ -> ()
 
                                             Ok(env', (ll.Head, stmt) :: acc))
-                        (Ok(typeEnv0, []))
+                        (Ok(
+                            { typeEnv0 with
+                                LoadTargets = loadTargetsOf typeEnv0 logicalLines },
+                            []
+                        ))
 
                 match
                     (match moduleMarker with
