@@ -330,15 +330,16 @@ let resolveTypeName (env: TypeEnv) (written: string) : TypeNameRes =
         else
             TypeUnresolved
 
-let private ambiguousTypeMsg (name: string) (spellings: string list) : string =
+// 'A.T', 'B.T' or 'C.T'
+let private quotedOrList (spellings: string list) : string =
     let quoted = spellings |> List.map (fun q -> $"'{q}'")
 
-    let listed =
-        match List.rev quoted with
-        | last :: rest when not rest.IsEmpty -> (List.rev rest |> String.concat ", ") + " or " + last
-        | _ -> String.concat ", " quoted
+    match List.rev quoted with
+    | last :: rest when not rest.IsEmpty -> (List.rev rest |> String.concat ", ") + " or " + last
+    | _ -> String.concat ", " quoted
 
-    $"type '{name}' is ambiguous — more than one import declares it; write the qualified name: {listed}"
+let private ambiguousTypeMsg (name: string) (spellings: string list) : string =
+    $"type '{name}' is ambiguous — more than one import declares it; write the qualified name: {quotedOrList spellings}"
 
 let private notInModuleMsg (m: string) (t: string) (owned: string list) : string =
     $"module '{m}' declares no type '{t}'{didYouMean t owned}"
@@ -2436,6 +2437,81 @@ let private importedCtorOwners (env: TypeEnv) (name: string) : string list =
         | Union u when imported.Contains tn && u.Cases |> List.exists (fun (c, _) -> c = name) -> Some tn
         | _ -> None)
 
+// the unions a bare case pattern can name with nothing typing the value:
+// the in-scope owners, else — their cases being not in scope bare — the
+// imported unions declaring it, as construction reaches them qualified
+// [D:match-scrutinee-infer] [D:qualified-case-patterns]
+let private caseOwners (env: TypeEnv) (ctor: string) : string list =
+    match ctorOwners env ctor with
+    | [] -> importedCtorOwners env ctor
+    | local -> local
+
+// the qualifier a module-qualified name needs is an import's alias
+// [D:module-qualifier]; a type name used as one says it is a type
+let private noModuleMsg (env: TypeEnv) (m: string) : string =
+    if Map.containsKey m env.Types then
+        $"'{m}' is a type, not a value — read a field from a value of it, like `x.field`"
+    else
+        let hint = didYouMean m (Map.keys env.Modules)
+        $"no module named '{m}'{hint} — a module comes from `import \"./file.weir\" as {m}` (or `weir:name` for a vendored one)"
+
+// a type's written spelling: `A.T` for an imported type, so a message
+// naming two same-named unions tells them apart [D:qualified-case-patterns]
+let private typeSpelling (env: TypeEnv) (ty: Ty) : string =
+    match ty with
+    | TNamed(key, _) ->
+        env.ModuleTypes
+        |> Map.toList
+        |> List.tryPick (fun (alias, owned) ->
+            owned |> Map.tryPick (fun name k -> if k = key then Some(alias + "." + name) else None))
+        |> Option.defaultValue (formatTy ty)
+    | ty -> formatTy ty
+
+// the unions import `m` declares with case `ctor` — a qualified case
+// pattern's candidates [D:qualified-case-patterns]; Error is the message
+let private qualifiedCaseOwners (env: TypeEnv) (m: string) (ctor: string) : Result<string list, string> =
+    match Map.tryFind m env.ModuleTypes with
+    | Some owned ->
+        let unions =
+            owned
+            |> Map.values
+            |> Seq.distinct
+            |> Seq.choose (fun key ->
+                match typeDefFor env key with
+                | Some(Union u) -> Some(key, u)
+                | _ -> None)
+            |> List.ofSeq
+
+        match unions |> List.filter (fun (_, u) -> u.Cases |> List.exists (fun (c, _) -> c = ctor)) with
+        | [] ->
+            let cases = unions |> List.collect (fun (_, u) -> List.map fst u.Cases)
+            Error $"module '{m}' declares no case '{ctor}'{didYouMean ctor cases}"
+        | hits -> Ok(hits |> List.map fst |> List.sort)
+    | None when Map.containsKey m env.Modules -> Error $"module '{m}' declares no case '{ctor}'"
+    | None when Map.containsKey m env.Types ->
+        Error $"'{m}' is a type, not a module — a case is qualified by its import's name; a case of a union declared here is written bare: '{ctor}'"
+    | None -> Error(noModuleMsg env m)
+
+// a qualified case whose union is not the value's type
+let private wrongQualifierMsg (env: TypeEnv) (m: string) (ctor: string) (owners: string list) (ty: Ty) : string =
+    let named = owners |> List.map (fun o -> typeSpelling env (TNamed(o, []))) |> String.concat "/"
+    $"'{m}.{ctor}' is a case of {named}, but this value has type {typeSpelling env ty}"
+
+// a bare case two imports declare, with nothing typing the value: the
+// qualified spellings settle it [D:qualified-case-patterns]
+let private ambiguousCaseMsg (env: TypeEnv) (ctor: string) (owners: string list) : string =
+    let spellings =
+        env.ModuleTypes
+        |> Map.toList
+        |> List.choose (fun (alias, owned) ->
+            if owned |> Map.exists (fun _ key -> List.contains key owners) then
+                Some(alias + "." + ctor)
+            else
+                None)
+        |> List.sort
+
+    $"case '{ctor}' is ambiguous — more than one import declares it; write the qualified case: {quotedOrList spellings}"
+
 let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(string * Ty) list, TypeError> =
     // a pattern whose shape determines a type binds an unresolved
     // scrutinee instead of demanding one [D:record-pattern-rows] — the
@@ -2675,9 +2751,22 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                     | _ -> ""
 
                 err p.PSpan $"tuple patterns need a tuple value; this one has type {formatTy ty}{hint}"
-        | PCase(ctor, argPat) ->
-            match ty with
-            | TNamed(typeName, targs) ->
+        | PCase(ctor, argPat, qual) ->
+            // a qualifier names the import whose union declares the case
+            // [D:qualified-case-patterns]: it admits that import's owners
+            let admitted =
+                match qual with
+                | Some(m, mspan) ->
+                    match qualifiedCaseOwners env m ctor with
+                    | Ok os -> Ok(Some os)
+                    | Error msg -> err mspan msg
+                | None -> Ok None
+
+            match admitted, ty with
+            | Error e, _ -> Error e
+            | Ok(Some os), TNamed(typeName, _) when not (List.contains typeName os) ->
+                err p.PSpan (wrongQualifierMsg env (fst qual.Value) ctor os ty)
+            | Ok _, TNamed(typeName, targs) ->
                 match typeDefFor env typeName with
                 | Some(Union def) ->
                     match def.Cases |> List.tryFind (fun (c, _) -> c = ctor) with
@@ -2707,21 +2796,14 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
             // nested payloads too (`Some (Ok n)` resolves Option's param to
             // the owner of Ok). A mixed/ambiguous owner stays unresolved and
             // falls to the teaching: params are not typed from patterns.
-            | TVar v ->
+            | Ok admitted, TVar v ->
                 let teach () =
                     err
                         p.PSpan
                         ("constructor patterns need a scrutinee whose type is already known — params are not typed from patterns. "
                          + "Two repairs: inline the lambda at its use site (a typed pipe position types the binder there), or match on already-typed data")
 
-                // an imported union's case types it too, as it does at a
-                // typed scrutinee — when no in-scope union declares the name
-                let owners =
-                    match ctorOwners env ctor with
-                    | [] -> importedCtorOwners env ctor
-                    | local -> local
-
-                match owners with
+                match admitted |> Option.defaultWith (fun () -> caseOwners env ctor) with
                 | [ owner ] ->
                     match typeDefFor env owner with
                     | Some(Union def) ->
@@ -2730,8 +2812,10 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                         bind ctx env p.PSpan (TNamed(owner, targs)) (TVar v)
                         |> Result.bind (fun () -> checkPattern ctx env (resolve ctx (TVar v)) p)
                     | _ -> teach ()
+                | _ :: _ :: _ as owners when admitted.IsNone && (ctorOwners env ctor).IsEmpty ->
+                    err p.PSpan (ambiguousCaseMsg env ctor owners)
                 | _ -> teach ()
-            | ty -> err p.PSpan $"constructor patterns need a union value; this one has type {formatTy ty}"
+            | Ok _, ty -> err p.PSpan $"constructor patterns need a union value; this one has type {formatTy ty}"
 
 // A binder pattern's shape: fresh vars at the leaves, TUnit at (),
 // tuples composed — bound against the RHS type, so components resolve
@@ -2740,7 +2824,18 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
 // The casing law [D:lowercase-binds] applies at every binder
 // position; fields and match patterns are deliberately untouched.
 
-let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty * (string * Ty) list, TypeError> =
+// `hint` is the value's type where the binder site already knows it (a
+// pushed lambda domain, a `for` element, a let's value when a case needs
+// it): a case resolves against it first, as a match arm resolves against
+// its scrutinee [D:qualified-case-patterns]
+let rec private binderShapeAt
+    (ctx: Ctx)
+    (env: TypeEnv)
+    (hint: Ty option)
+    (p: Pattern)
+    : Result<Ty * (string * Ty) list, TypeError> =
+    let hint = hint |> Option.map (resolve ctx)
+
     match p.PKind with
     | PVar n ->
         checkBinderName p.PSpan n
@@ -2750,11 +2845,17 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
     | PWildcard -> Ok(TVar(freshName ctx "a"), [])
     | PUnit -> Ok(TUnit, [])
     | PTuple ps ->
-        ps
+        let hints =
+            match hint with
+            | Some(TTuple ts) when List.length ts = List.length ps -> List.map Some ts
+            | _ -> List.map (fun _ -> None) ps
+
+        List.zip ps hints
         |> List.fold
-            (fun acc sub ->
+            (fun acc (sub, h) ->
                 acc
-                |> Result.bind (fun (ts, bs) -> binderShape ctx env sub |> Result.map (fun (t, b) -> t :: ts, bs @ b)))
+                |> Result.bind (fun (ts, bs) ->
+                    binderShapeAt ctx env h sub |> Result.map (fun (t, b) -> t :: ts, bs @ b)))
             (Ok([], []))
         |> Result.map (fun (ts, bs) -> TTuple(List.rev ts), bs)
     | PRecord fields ->
@@ -2783,46 +2884,87 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
 
             return TRowVar(r, []), shaped |> List.collect snd
         }
-    | PCase(ctor, _) when not (Map.containsKey ctor env.Values) ->
+    | PCase(ctor, argPat, qual) ->
+        // resolved exactly as a match arm resolves it: the qualifier's
+        // import, else the value's type, else the owners in scope and then
+        // the imported unions [D:qualified-case-patterns]
+        let hinted =
+            match hint with
+            | Some(TNamed(k, targs)) ->
+                match typeDefFor env k with
+                | Some(Union u) when u.Cases |> List.exists (fun (c, _) -> c = ctor) -> Some(k, targs)
+                | _ -> None
+            | _ -> None
+
+        let owners =
+            match qual with
+            | Some(m, mspan) ->
+                match qualifiedCaseOwners env m ctor, hint with
+                | Error msg, _ -> err mspan msg
+                | Ok os, Some(TNamed(k, _) as ty) when not (List.contains k os) && (typeDefFor env k).IsSome ->
+                    err p.PSpan (wrongQualifierMsg env m ctor os ty)
+                | Ok os, _ -> Ok os
+            | None ->
+                match hinted with
+                | Some(k, _) -> Ok [ k ]
+                | None -> Ok(caseOwners env ctor)
+
+        match owners with
+        | Error e -> Error e
         // an unknown uppercase name in a binder is the casing law's
         // case (a function/name spelled uppercase), not refutability
-        casingError p.PSpan ctor
-    // a single-case union's constructor cannot fail — `let un (W x) = x`
-    // destructures as F#'s does
-    | PCase(ctor, argPat) when
-        (match ctorOwners env ctor with
-         | [ owner ] ->
-             match typeDefFor env owner with
-             | Some(Union u) -> u.Cases.Length = 1
-             | _ -> false
-         | _ -> false)
-        ->
-        let owner = (ctorOwners env ctor).Head
+        | Ok [] when qual.IsNone && not (Map.containsKey ctor env.Values) -> casingError p.PSpan ctor
+        // a single-case union's constructor cannot fail — `let un (W x) = x`
+        // destructures as F#'s does
+        | Ok [ owner ] ->
+            match typeDefFor env owner with
+            | Some(Union u) when u.Cases.Length = 1 ->
+                let targs =
+                    match hinted with
+                    | Some(k, ta) when k = owner -> ta
+                    | _ -> u.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
 
-        match typeDefFor env owner with
-        | Some(Union u) ->
-            let targs = u.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
-            let ty = TNamed(owner, targs)
+                let ty = TNamed(owner, targs)
 
-            match snd u.Cases.Head, argPat with
-            | None, None -> Ok(ty, [])
-            | None, Some ap -> err ap.PSpan $"'{ctor}' has no payload"
-            | Some payload, Some ap ->
-                result {
-                    let! t, binds = binderShape ctx env ap
-                    do! bind ctx env ap.PSpan (substParams u.Params targs payload) t
-                    return ty, binds
-                }
-            | Some payload, None -> err p.PSpan $"'{ctor}' carries {formatTy (substParams u.Params targs payload)}; add a pattern for it"
-        | _ -> err p.PSpan "this pattern can fail; use match"
+                match snd u.Cases.Head, argPat with
+                | None, None -> Ok(ty, [])
+                | None, Some ap -> err ap.PSpan $"'{ctor}' has no payload"
+                | Some payload, Some ap ->
+                    let payloadTy = substParams u.Params targs payload
+
+                    result {
+                        let! t, binds = binderShapeAt ctx env (Some payloadTy) ap
+                        do! bind ctx env ap.PSpan payloadTy t
+                        return ty, binds
+                    }
+                | Some payload, None -> err p.PSpan $"'{ctor}' carries {formatTy (substParams u.Params targs payload)}; add a pattern for it"
+            | _ -> err p.PSpan "this pattern can fail; use match"
+        | Ok(_ :: _ :: _ as owners) when qual.IsNone && (ctorOwners env ctor).IsEmpty ->
+            err p.PSpan (ambiguousCaseMsg env ctor owners)
+        | Ok _ -> err p.PSpan "this pattern can fail; use match"
     | PBool _
     | PInt _
     | PStr _
     | PRegex _
     | PSeqNil
     | PCons _
-    | PSeqList _
-    | PCase _ -> err p.PSpan "this pattern can fail; use match"
+    | PSeqList _ -> err p.PSpan "this pattern can fail; use match"
+
+and private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty * (string * Ty) list, TypeError> =
+    binderShapeAt ctx env None p
+
+// a binder whose case only the value's type can settle — a qualified case
+// (its import is checked against the value) or a bare one two imports
+// declare: the let checks its value first [D:qualified-case-patterns]
+let rec private binderNeedsValueType (env: TypeEnv) (p: Pattern) : bool =
+    match p.PKind with
+    | PCase(_, _, Some _) -> true
+    | PCase(ctor, arg, None) ->
+        ((ctorOwners env ctor).IsEmpty && (importedCtorOwners env ctor).Length > 1)
+        || (arg |> Option.exists (binderNeedsValueType env))
+    | PTuple ps -> ps |> List.exists (binderNeedsValueType env)
+    | PRecord fields -> fields |> List.exists (snd >> binderNeedsValueType env)
+    | _ -> false
 
 // row provenance [D:row-provenance]: field-access positions for the
 // given row vars, physical — logical spans cannot cross the statement
@@ -2918,7 +3060,7 @@ let private specializePat (c: string) (arity: int) (p: Pattern) : Pattern list o
     | PTuple ps when c = "(,)" -> Some ps
     | _ when isIrrefutablePat p -> Some(List.replicate arity wild)
     | PBool b when c = (if b then "true" else "false") -> Some []
-    | PCase(case, arg) when case = c ->
+    | PCase(case, arg, _) when case = c ->
         match arg, arity with
         | Some a, 1 -> Some [ a ]
         | None, 0 -> Some []
@@ -3005,7 +3147,7 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
                             pats
                             |> List.exists (fun p ->
                                 match p.PKind with
-                                | PCase(c, None) -> c = case
+                                | PCase(c, None, _) -> c = case
                                 | _ -> false)
                             |> not
                         | Some payloadTy ->
@@ -3013,7 +3155,7 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
                                 pats
                                 |> List.choose (fun p ->
                                     match p.PKind with
-                                    | PCase(c, Some arg) when c = case -> Some arg
+                                    | PCase(c, Some arg, _) when c = case -> Some arg
                                     | _ -> None)
 
                             payloadPats.IsEmpty
@@ -3560,9 +3702,22 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | ELetPat(pat, value, body) ->
         result {
             // binder judged first: casing/refutability errors beat any
-            // error inside the value (the binder is what the user wrote)
-            let! shape, binds = binderShape ctx env pat
-            let! tvalue = infer ctx env value
+            // error inside the value (the binder is what the user wrote) —
+            // unless a case in it needs the value's type to resolve
+            let! shape, binds, tvalue =
+                if binderNeedsValueType env pat then
+                    result {
+                        let! tvalue = infer ctx env value
+                        let! shape, binds = binderShapeAt ctx env (Some tvalue.Ty) pat
+                        return shape, binds, tvalue
+                    }
+                else
+                    result {
+                        let! shape, binds = binderShape ctx env pat
+                        let! tvalue = infer ctx env value
+                        return shape, binds, tvalue
+                    }
+
             do! bind ctx env pat.PSpan shape tvalue.Ty
 
             let schemes = binds |> List.map (generalizeBinding ctx env)
@@ -4530,14 +4685,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                  List.isEmpty (ctorOwners env suggested)))
             ->
             Error e
-        | _ when Map.containsKey m env.Types ->
-            err target.Span $"'{m}' is a type, not a value — read a field from a value of it, like `x.field`"
-        | _ ->
-            let hint = didYouMean m (Map.keys env.Modules)
-
-            err
-                target.Span
-                $"no module named '{m}'{hint} — a module comes from `import \"./file.weir\" as {m}` (or `weir:name` for a vendored one)"
+        | _ -> err target.Span (noModuleMsg env m)
     | EField(target, field, fieldSpan) ->
         result {
             let! ttarget = infer ctx env target
@@ -5462,12 +5610,24 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         arms
                         |> List.choose (fun (p, _, _) ->
                             match p.PKind with
-                            | PCase(c, _) -> Some(c, p.PSpan)
+                            | PCase(c, _, None) -> Some(c, p.PSpan)
                             | _ -> None)
 
                     let names = ctors |> List.map fst |> List.distinct
 
-                    if names.Length < 2 || names |> List.exists (fun c -> (ctorOwnersAll env c).IsEmpty) then
+                    // a qualified arm names its union itself [D:qualified-case-patterns]
+                    let qualified =
+                        arms
+                        |> List.exists (fun (p, _, _) ->
+                            match p.PKind with
+                            | PCase(_, _, Some _) -> true
+                            | _ -> false)
+
+                    if
+                        qualified
+                        || names.Length < 2
+                        || names |> List.exists (fun c -> (ctorOwnersAll env c).IsEmpty)
+                    then
                         // one constructor (or an unknown one): checkPattern's
                         // per-pattern bind and its messages decide
                         Ok()
@@ -6130,7 +6290,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
         // domain before the body runs, so piped element types reach
         // the components ahead of any hole defaulting
         result {
-            let! shape, binds = binderShape ctx env pat
+            let! shape, binds = binderShapeAt ctx env (Some dom) pat
             do! bind ctx env pat.PSpan shape dom
             return! lambdaCore env expr.Span (fun tb -> TELambdaPat(pat, tb)) dom binds (fun e -> check ctx e body cod)
         }
@@ -6297,7 +6457,7 @@ and private checkYamlEntry (ctx: Ctx) (env: TypeEnv) (entry: YamlTplEntry) : Res
             let! tsrc = infer ctx env source
             let elem = TVar(freshName ctx "a")
             do! bind ctx env source.Span (TSeq elem) tsrc.Ty
-            let! shape, binds = binderShape ctx env binder
+            let! shape, binds = binderShapeAt ctx env (Some elem) binder
             do! bind ctx env binder.PSpan shape elem
             let env' = bindParams env binds
 
@@ -6321,7 +6481,7 @@ and private checkYamlItem (ctx: Ctx) (env: TypeEnv) (item: YamlTplItem) : Result
             let! tsrc = infer ctx env source
             let elem = TVar(freshName ctx "a")
             do! bind ctx env source.Span (TSeq elem) tsrc.Ty
-            let! shape, binds = binderShape ctx env binder
+            let! shape, binds = binderShapeAt ctx env (Some elem) binder
             do! bind ctx env binder.PSpan shape elem
             let env' = bindParams env binds
 
@@ -6574,10 +6734,21 @@ let typecheckBinderCore
 
     let ctx = newCtx ()
 
-    match binderShape ctx env pat with
+    // binder first, unless a case in it needs the value's type
+    // [D:qualified-case-patterns] — ELetPat's order
+    let shaped =
+        if binderNeedsValueType env pat then
+            infer ctx env expr
+            |> Result.bind (fun te -> binderShapeAt ctx env (Some te.Ty) pat |> Result.map (fun sb -> sb, Some te))
+        else
+            binderShape ctx env pat |> Result.map (fun sb -> sb, None)
+
+    match shaped with
     | Error e -> Error e
-    | Ok(shape, binds) ->
-        match infer ctx env expr with
+    | Ok((shape, binds), inferred) ->
+        match (match inferred with
+               | Some te -> Ok te
+               | None -> infer ctx env expr) with
         | Error e -> Error e
         | Ok te ->
             match bind ctx env pat.PSpan shape te.Ty with
@@ -6986,7 +7157,7 @@ let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Re
                       Ty = TFun(dom, tb.Ty)
                       Span = e.Span })
         | ELambdaPat(pat, body), TFun(dom, cod) ->
-            match binderShape ctx env pat with
+            match binderShapeAt ctx env (Some dom) pat with
             | Error terr -> Error(SigBody terr)
             | Ok(shape, binds) ->
                 match bind ctx env pat.PSpan dom shape with

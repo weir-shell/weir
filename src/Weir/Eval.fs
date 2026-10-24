@@ -4175,8 +4175,8 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
             (fun acc (subP, subV) -> acc |> Option.bind (fun bs -> tryBind subP subV |> Option.map (fun b -> bs @ b)))
             (Some [])
     | PTuple _, v -> unreachable $"the checker rejects tuple patterns on {formatValue v}"
-    | PCase(ctor, None), VUnion(case, None) -> if ctor = case then Some [] else None
-    | PCase(ctor, Some argPat), VUnion(case, Some payload) -> if ctor = case then tryBind argPat payload else None
+    | PCase(ctor, None, _), VUnion(case, None) -> if ctor = case then Some [] else None
+    | PCase(ctor, Some argPat, _), VUnion(case, Some payload) -> if ctor = case then tryBind argPat payload else None
     | PCase _, VUnion _ -> None
     | PCase _, v -> unreachable $"the checker rejects constructor patterns on {formatValue v}"
     | PRegex(pat, _, _, binder), VStr s ->
@@ -5446,7 +5446,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             | Weir.Ast.PSeqList _ -> true
             | Weir.Ast.PTuple ps -> ps |> List.exists hasSeqPat
             | Weir.Ast.PRecord fields -> fields |> List.exists (snd >> hasSeqPat)
-            | Weir.Ast.PCase(_, Some a) -> hasSeqPat a
+            | Weir.Ast.PCase(_, Some a, _) -> hasSeqPat a
             | _ -> false
 
         let v =

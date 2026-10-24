@@ -88,9 +88,18 @@ reached qualified; a declaration below an import that already provides
 the name is an error.
 
 An imported union's cases are qualified when you construct a value
-(`X.Red`) but named bare in a pattern (`| Red ->`), and a local
-declaration always takes precedence over an imported name. A module exports only its own
-declarations, not what it imported.
+(`X.Red`). In a pattern you may name them bare (`| Red ->`) or
+qualified (`| X.Red ->`). That holds in every pattern position: match
+arms, `let` patterns, parameters, lambdas and nested patterns. A bare
+case resolves against the value's type, as a match arm does, so
+`let (Red r) = paint` works for an imported single-case union and a
+multi-case one is refused in a `let` as a pattern that can fail. A
+qualified case names its import, and the import is checked against the
+value: `Y.Red` on an `X` value is a type error naming both types. When
+two imports declare unions with the same case name and nothing types
+the value, a bare case is an error that lists the qualified spellings.
+A local declaration always takes precedence over an imported name. A
+module exports only its own declarations, not what it imported.
 
 ```weir
 let langA = <<<
@@ -119,6 +128,32 @@ langA |> File.write "lang-a.weir"
 langB |> File.write "lang-b.weir"
 root |> File.write "use-langs.weir"
 weir use-langs.weir
+```
+
+```weir
+let paintA = <<<
+    module
+
+    type Paint = Paint of string
+
+let paintB = <<<
+    module
+
+    type Paint = Paint of int
+
+let walls = <<<
+    import "./paint-a.weir" as A
+    import "./paint-b.weir" as B
+
+    let (A.Paint colour) = A.Paint "red"
+    let coats (B.Paint n) = n
+    let label = match A.Paint "blue" with | Paint c -> c
+    print $"{colour} {coats (B.Paint 2)} {label}"
+
+paintA |> File.write "paint-a.weir"
+paintB |> File.write "paint-b.weir"
+walls |> File.write "walls.weir"
+weir walls.weir
 ```
 
 ## The graph

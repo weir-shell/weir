@@ -685,7 +685,7 @@ let rec private patScope (p: Ast.Pattern) (scope: Map<string, Span>) : Map<strin
     | Ast.PVar n -> Map.add n p.PSpan scope
     | Ast.PTuple ps -> ps |> List.fold (fun s q -> patScope q s) scope
     | Ast.PRecord fields -> fields |> List.fold (fun s (_, q) -> patScope q s) scope
-    | Ast.PCase(_, Some inner) -> patScope inner scope
+    | Ast.PCase(_, Some inner, _) -> patScope inner scope
     | _ -> scope
 
 // lexical resolution for local binders [PLAN-diagnostics-arc C]: find
@@ -1124,10 +1124,12 @@ let definitionTarget
 
     // a PCase whose ctor word contains the column (a payload binder is
     // a local binder — the binder-span park, not this)
-    let rec patCaseAt (jcol: int) (p: Ast.Pattern) : string option =
+    // a qualified case's qualifier word answers `Choice1Of2 alias`, its case
+    // word `Choice2Of2 (Some alias, ctor)` [D:qualified-case-patterns]
+    let rec patCaseAt (jcol: int) (p: Ast.Pattern) : Choice<string, string option * string> option =
         let deeper =
             match p.PKind with
-            | Ast.PCase(_, Some inner) -> patCaseAt jcol inner
+            | Ast.PCase(_, Some inner, _) -> patCaseAt jcol inner
             | Ast.PTuple ps -> ps |> List.tryPick (patCaseAt jcol)
             | Ast.PRecord fields -> fields |> List.tryPick (snd >> patCaseAt jcol)
             | _ -> None
@@ -1136,10 +1138,17 @@ let definitionTarget
         | Some d -> Some d
         | None ->
             match p.PKind with
-            | Ast.PCase(ctor, _) when p.PSpan.Start.Col <= jcol && jcol < p.PSpan.Start.Col + ctor.Length -> Some ctor
+            | Ast.PCase(ctor, _, None) when p.PSpan.Start.Col <= jcol && jcol < p.PSpan.Start.Col + ctor.Length ->
+                Some(Choice2Of2(None, ctor))
+            | Ast.PCase(ctor, _, Some(m, mspan)) ->
+                let caseCol = mspan.End.Col + 1
+
+                if mspan.Start.Col <= jcol && jcol < mspan.End.Col then Some(Choice1Of2 m)
+                elif caseCol <= jcol && jcol < caseCol + ctor.Length then Some(Choice2Of2(Some m, ctor))
+                else None
             | _ -> None
 
-    let rec matchCaseAt (jcol: int) (te: Check.TypedExpr) : string option =
+    let rec matchCaseAt (jcol: int) (te: Check.TypedExpr) : Choice<string, string option * string> option =
         let here =
             match te.Kind with
             | Check.TEMatch(_, arms) -> arms |> List.tryPick (fun (p, _, _) -> patCaseAt jcol p)
@@ -1207,7 +1216,22 @@ let definitionTarget
             let fromPattern =
                 teOf chk
                 |> Option.bind (matchCaseAt jcol)
-                |> Option.bind (fun ctor -> unionOf env ctor |> Option.bind (fun tn -> typeSite tn (Some ctor)))
+                |> Option.bind (function
+                    | Choice1Of2 alias ->
+                        imports
+                        |> List.tryFind (fun lm -> lm.Alias = alias)
+                        |> Option.map (fun lm -> Some lm.AbsPath, 1, 1, 0)
+                    | Choice2Of2(Some alias, ctor) ->
+                        env.ModuleTypes
+                        |> Map.tryFind alias
+                        |> Option.bind (
+                            Map.tryPick (fun _ key ->
+                                match Map.tryFind key env.Types with
+                                | Some(Union d) when d.Cases |> List.exists (fun (c, _) -> c = ctor) -> Some key
+                                | _ -> None)
+                        )
+                        |> Option.bind (fun tn -> typeSite tn (Some ctor))
+                    | Choice2Of2(None, ctor) -> unionOf env ctor |> Option.bind (fun tn -> typeSite tn (Some ctor)))
 
             match fromPattern with
             | Some r -> Some r
