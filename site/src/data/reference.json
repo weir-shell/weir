@@ -2387,9 +2387,9 @@
     {
       "name": "orFail",
       "signature": null,
-      "summary": "Run the command with its output streaming to the terminal; if it exits nonzero, raise with your message and the exit code.",
-      "example": null,
-      "pointer": "Use it to stop the script when a command fails: \u0060make test | orFail \u0022tests failed\u0022\u0060."
+      "summary": "Stop with a message if it didn\u0027t work. After a command, \u0060\u003Ccommand\u003E | orFail \u0022msg\u0022\u0060 runs it with its output streaming to the terminal; if it exits nonzero, it raises with your message and the exit code. After an expression, \u0060\u003Cexpr\u003E |\u003E orFail\u0060 is the inverse of \u0060|\u003E try\u0060: \u0060Ok v\u0060 and \u0060Some v\u0060 give \u0060v\u0060, \u0060Error msg\u0060 raises \u0060msg\u0060, and \u0060None\u0060 raises \u0060orFail: no value (None)\u0060. With a message, \u0060|\u003E orFail \u0022msg\u0022\u0060 raises \u0060msg: \u003Cerror\u003E\u0060 for an Error and \u0060msg\u0060 for None.",
+      "example": "Map.tryGet \u0022port\u0022 (Map.ofPairs [(\u0022port\u0022, \u00228080\u0022)]) |\u003E orFail \u0022no port\u0022",
+      "pointer": "Use it to stop the script when a command fails: \u0060make test | orFail \u0022tests failed\u0022\u0060. The raise is an ordinary one: \u0060|\u003E try\u0060 catches it."
     },
     {
       "name": "poll",

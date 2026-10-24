@@ -63,7 +63,10 @@ let keywords =
           // teaching keys on the statement shape [D:def-shape]
           "while"
           "return"
-          "try" ]
+          "try"
+          // the inverse of try [D:orfail-form]: `e |> orFail` turns a
+          // failed Result/Option back into a raise; reserved like try
+          "orFail" ]
 
 // the keyword set, exposed for tooling resolvers (weir check's
 // assume-command rule must never claim a keyword head)
@@ -489,7 +492,14 @@ let private failChain (m: string) (sp: Span) : Parser<'a, unit> =
 // the fifth refusal cell's teaching [D:reifier-family-complete] — one
 // text, two firing sites (the piped-stage guard and the bare-pipe hint)
 let private reifierHereMsg (name: string) =
-    $"'{name}' is a reifier, not a PATH program — it goes right after a command, as in `let r = <command> | {name}`; to run a program called '{name}', write ^{name}"
+    // orFail also has an expression position [D:orfail-form]
+    let exprHint =
+        if name = "orFail" then
+            "; after a Result or an Option, write `<expr> |> orFail`"
+        else
+            ""
+
+    $"'{name}' is a reifier, not a PATH program — it goes right after a command, as in `let r = <command> | {name}`{exprHint}; to run a program called '{name}', write ^{name}"
 
 let private reifierWordEnd: Parser<unit, unit> =
     notFollowedBy (
@@ -1483,6 +1493,15 @@ let private tryAtomTeaching: Parser<Expr, unit> =
             at
             "'try' goes after a pipeline: `<expr> |> try` gives an Option (None if it failed), `<expr> |> try result` a Result with the error message"
 
+// `orFail` after `|>` is a form (a term, tried before atoms) and after
+// a command's `|` a reifier; as an argument it is misplaced [D:orfail-form]
+let private orFailAtomTeaching: Parser<Expr, unit> =
+    attempt (getPosition .>> pstring "orFail" .>> notFollowedBy (satisfy isIdentCont))
+    >>= fun at ->
+        failFatallyAt
+            at
+            "'orFail' goes after a pipeline: `<expr> |> orFail` unwraps a Result or an Option and raises on Error/None (`|> orFail \"msg\"` adds your message); after a command, `<command> | orFail \"msg\"`"
+
 let private atom =
     deepen (
         choice
@@ -1508,6 +1527,7 @@ let private atom =
               attempt comprehensionLit
               listLit
               tryAtomTeaching
+              orFailAtomTeaching
               wordAtom ]
     )
 
@@ -2039,6 +2059,10 @@ let private pipeOp l r =
     | ETryForm asResult ->
         { Kind = ETry(l, asResult)
           Span = Span.union l.Span r.Span }
+    // and its inverse [D:orfail-form]: the form's own span is the raise site
+    | EOrFailForm msg ->
+        { Kind = EOrFail(l, msg, r.Span)
+          Span = Span.union l.Span r.Span }
     | _ ->
         { Kind = EPipe(l, r)
           Span = Span.union l.Span r.Span }
@@ -2418,6 +2442,13 @@ let private tryForm =
         >>. opt (attempt (pstring "result" .>> notFollowedBy (satisfy isIdentCont) .>> ws))
     )
     |>> fun (r, span) -> { Kind = ETryForm r.IsSome; Span = span }
+
+// the `orFail` form [D:orfail-form]: `orFail` with an optional message
+// atom (the `| orFail "msg"` reifier's message shape), only meaningful
+// after `|>` (pipeOp folds it)
+let private orFailForm =
+    spanned (keyword "orFail" >>. opt (attempt postfixAtom))
+    |>> fun (msg, span) -> { Kind = EOrFailForm msg; Span = span }
 
 let private toExpr =
     spanned (
@@ -3693,6 +3724,7 @@ opp.TermParser <-
           fromExpr
           toExpr
           tryForm
+          orFailForm
           appChain ]
 
 updateSourceRef.Value <-
@@ -5027,22 +5059,30 @@ let private armBoundaryAhead: Parser<unit, unit> =
 // teaches the reifier, so no let-spine attempt can swallow the lesson)
 let private tryCmdStage: Parser<Seg, unit> = tryForm |>> Stage
 
+// `cmd |> orFail` [D:orfail-form]: the form after a command chain's `|>`
+// parses as a stage so the checker can teach the reifier `| orFail "msg"`
+let private orFailCmdStage: Parser<Seg, unit> = orFailForm |>> Stage
+
 let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEnv: Expr option) (r: Resolver) =
     many (
         notFollowedBy armBoundaryAhead >>. pipeSepSpanned
-        .>>. (doublePipeGuard
-              <|> completeMarker
-              <|> succeedsMarker
-              <|> exitCodeMarker
-              <|> orFailMarker
-              <|> execMarker
-              <|> lineMarker
-              <|> textMarker
-              <|> andMarker builtinHeads argP sigilEnv r
-              <|> orMarker builtinHeads argP sigilEnv r
-              <|> reifierStageGuard
-              <|> tryCmdStage
-              <|> (segment builtinHeads argP sigilEnv r |>> Stage))
+        >>= fun ((op, _) as sep) ->
+            // after `|>`, `orFail` is the form, never the reifier [D:orfail-form]
+            ((if op = "|>" then orFailCmdStage else pzero)
+             <|> doublePipeGuard
+             <|> completeMarker
+             <|> succeedsMarker
+             <|> exitCodeMarker
+             <|> orFailMarker
+             <|> execMarker
+             <|> lineMarker
+             <|> textMarker
+             <|> andMarker builtinHeads argP sigilEnv r
+             <|> orMarker builtinHeads argP sigilEnv r
+             <|> reifierStageGuard
+             <|> tryCmdStage
+             <|> (segment builtinHeads argP sigilEnv r |>> Stage))
+            |>> fun seg -> sep, seg
     )
 
 let private cmdLineWith

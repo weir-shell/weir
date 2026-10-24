@@ -4797,7 +4797,9 @@ let completionTests =
                         "plan"
                         // the failure-as-value form, after `|>` like from/to
                         // [D:try-form]
-                        "try" ]
+                        "try"
+                        // and its inverse, after `|>` like try [D:orfail-form]
+                        "orFail" ]
 
               Expect.equal
                   (Weir.Parser.keywords - Weir.Complete.unsuggestedKeywords)
@@ -28541,6 +28543,105 @@ let tryTests =
               Expect.equal (run "3 |> try result |> Result.isOk") (VBool true) "isOk"
           } ]
 
+// `e |> orFail [msg]` [D:orfail-form] — the inverse of try
+let orFailTests =
+    let raisesWith (src: string) =
+        try
+            run src |> ignore
+            failtest $"expected a raise: {src}"
+        with
+        | Failure m when not (m.StartsWith "expected a raise") -> m
+
+    testList
+        "|> orFail [D:orfail-form]"
+        [ test "the form folds everything to its left into one node" {
+              expectParse "x |> orFail" "(orFail x)"
+              expectParse "x |> orFail \"m\"" "(orFail x \"m\")"
+              expectParse "x |> orFail m" "(orFail x m)"
+              expectParse "x |> f |> orFail" "(orFail (x |> f))"
+              expectParse "x |> orFail \"m\" |> g" "((orFail x \"m\") |> g)"
+              expectParse "x |> orFail $\"{n} bad\" |> g" "((orFail x (interp {n}\" bad\")) |> g)"
+          }
+          test "the form types as the payload of a Result<'T, string> or an Option<'T>" {
+              Expect.equal (formatTy (checkOk "Some 3 |> orFail").Ty) "int" "Option"
+              Expect.equal (formatTy (checkOk "Str.tryToInt \"3\" |> orFail \"m\"").Ty) "int" "Option, with a message"
+              Expect.equal (formatTy (checkOk "3 |> try result |> orFail").Ty) "int" "Result"
+              Expect.equal (formatTy (checkOk "Ok \"a\" |> orFail").Ty) "string" "an open error type becomes string"
+          }
+          test "anything else is refused, naming both accepted shapes" {
+              for src in [ "3 |> orFail"; "[1] |> orFail \"m\""; "\"a\" |> orFail" ] do
+                  let m = (checkErr src).Message
+                  Expect.stringContains m "orFail takes a Result<'T, string> or an Option<'T>" src
+
+              Expect.stringContains (checkErr "Some 1 |> orFail 5").Message "orFail's message is a string" "a non-string message"
+              Expect.stringContains (checkErr "let f r = r |> orFail in f").Message "not known yet" "an undetermined left side"
+          }
+          test "a Result whose Error is not a string is refused" {
+              let diags =
+                  diagsIn "re.weir" [ "type R = { n: int }"; "let r = (if 1 > 0 then Error { n = 1 } else Ok 2) |> orFail"; "print (show r)" ]
+                  |> List.map (fun d -> d.Message)
+
+              Expect.exists diags (fun m -> m.Contains "its Error must carry a string") "Result<int, R>"
+          }
+          test "Ok and Some unwrap" {
+              Expect.equal (run "Some 3 |> orFail") (VInt 3L) "Some"
+              Expect.equal (run "3 |> try result |> orFail \"m\"") (VInt 3L) "Ok"
+          }
+          test "each message shape" {
+              let err = "(if 1 == 1 then Error \"bad\" else Ok 1)"
+              Expect.equal (raisesWith $"{err} |> orFail") "bad" "Error, no message"
+              Expect.equal (raisesWith $"{err} |> orFail \"small\"") "small: bad" "Error, a message"
+              Expect.equal (raisesWith "Str.tryToInt \"x\" |> orFail") "orFail: no value (None)" "None, no message"
+              Expect.equal (raisesWith "Str.tryToInt \"x\" |> orFail \"no port\"") "no port" "None, a message"
+              Expect.equal (raisesWith "Str.tryToInt \"x\" |> orFail $\"no {1 + 1}\"") "no 2" "a computed message"
+          }
+          test "an Error's text is data: controls render visibly [D:error-data-escape]" {
+              Expect.equal
+                  (raisesWith "(if 1 == 1 then Error \"a\\nb\" else Ok 1) |> orFail \"m\"")
+                  "m: a\\x0ab"
+                  "LF escaped"
+          }
+          test "the raise points at the orFail site" {
+              let src = "Some 1 |> Option.bind (fun _ -> Str.tryToInt \"x\") |> orFail \"gone\""
+              Expect.equal (raisesWith src) "gone" "raises"
+              Expect.isTrue RunPos.Exact "an exact column"
+
+              match RunPos.Current with
+              | :? TypedExpr as n -> Expect.equal n.Span.Start.Col (src.IndexOf "orFail" + 1) "the form's column"
+              | other -> failtest $"expected the site node, got {other}"
+          }
+          test "|> try catches it like any raise" {
+              Expect.equal (run "(Str.tryToInt \"x\" |> orFail \"m\") |> try") (VUnion("None", None)) "try"
+              Expect.equal (run "Str.tryToInt \"x\" |> orFail \"m\" |> try result") (VUnion("Error", Some(VStr "m"))) "try result, left-grouped"
+              Expect.equal (run "(if 1 == 1 then fail \"boom\" else 3) |> try result |> orFail \"step\" |> try result") (VUnion("Error", Some(VStr "step: boom"))) "the round trip"
+          }
+          test "composition: the unwrapped value pipes on" {
+              Expect.equal (run "Str.tryToInt \"41\" |> orFail |> (fun n -> n + 1)") (VInt 42L) "pipes on"
+              Expect.equal (run "[Some 1; Some 2] |> Seq.map (fun o -> o |> orFail) |> Seq.sum") (VInt 3L) "inside a lambda"
+              Expect.equal (run "Some (3 |> try result) |> orFail |> orFail") (VInt 3L) "nested unwraps chain"
+          }
+          test "pure admits it — raising is not an effect" {
+              errorsCleanIn "pure.weir" [ "let pure port s = Str.tryToInt s |> orFail \"not a port\""; "print (show (port \"80\"))" ] "pure"
+          }
+          test "orFail is reserved, and misplaced it teaches the form" {
+              for src in [ "let x = orFail"; "let y = [ Some 1 ] |> Seq.map orFail" ] do
+                  let msgs = diagsIn "stray.weir" [ src ] |> List.map (fun d -> d.Message)
+                  Expect.exists msgs (fun m -> m.Contains "'orFail' goes after a pipeline") src
+
+              Expect.isTrue (Weir.Parser.isKeyword "orFail") "reserved"
+          }
+          test "a command chain's |> orFail teaches the reifier; the reifier is untouched" {
+              for src in [ "echo a |> orFail \"m\""; "echo a |> orFail"; "let r = echo a |> orFail" ] do
+                  let msgs = diagsIn "cmd.weir" [ src; "print \"x\"" ] |> List.map (fun d -> d.Message)
+                  Expect.exists msgs (fun m -> m.Contains "use the reifier: `<command> | orFail \"msg\"`") src
+                  Expect.isFalse (msgs |> List.exists (fun m -> m.Contains "Expecting")) src
+
+              errorsCleanIn "reifier.weir" [ "echo a | orFail \"m\"" ] "the reifier still parses"
+
+              let msgs = diagsIn "val.weir" [ "let x = Some 1 | orFail \"m\"" ] |> List.map (fun d -> d.Message)
+              Expect.exists msgs (fun m -> m.Contains "after a Result or an Option") "a value before the single pipe"
+          } ]
+
 // hover text for doc comments [D:hover-reflow]
 let hoverReflowTests =
     testList
@@ -31973,6 +32074,7 @@ let allTests =
           hoverReflowTests
           tomlTests
           tryTests
+          orFailTests
           versionStampTests
           portMembersTests
           serveTests

@@ -20,6 +20,15 @@ Many of the changes and fixes below were found porting starship to weir.
   or flag names. It gets 300 ms and 1 MiB, and pressing another key
   stops it (the key is kept); with no answer you get what the signature
   alone gives. REPL only; the editor is unchanged.
+- **`|> orFail`, the inverse of `|> try`.** `Map.tryGet "port" cfg |>
+  orFail "no port"` gives the value inside an `Ok` or a `Some`, and
+  stops on `Error msg` (with `no port: msg`) or `None` (with `no
+  port`). Without a message, `Error msg` stops with `msg` and `None`
+  with `orFail: no value (None)`. Anything other than a
+  `Result<'T, string>` or an `Option<'T>` is a check error. The error
+  points at the `orFail`, and `|> try` catches it like any other.
+  After a command the same word is still the reifier, `cmd | orFail
+  "msg"`. `orFail` is now a keyword, so it can't be used as a name.
 
 ### Changed
 
