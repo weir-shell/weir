@@ -9173,7 +9173,7 @@ expect "A.T and B.T are different types" "expected A.LangDefaults, got B.LangDef
 mkdir -p "$mdir/qcfg/weir"
 cp "$mdir/qa.weir" "$mdir/qb.weir" "$mdir/qcfg/weir/"
 printf '#init\nimport "./qa.weir" as A\nimport "./qb.weir" as B\n' > "$mdir/qcfg/weir/init.weir"
-out=$(printf 'let x = A.make "a"\nx\ntype LangDefaults = { mine: bool }\nlet m = { mine = true }\nm\nA.LangDefaults { symbol = "q" }\n' | XDG_CONFIG_HOME="$mdir/qcfg" $BIN 2>&1)
+out=$(printf 'let x = A.make "a"\nx\ntype LangDefaults = { mine: bool }\nlet m = { mine = true }\nm\nA.LangDefaults { symbol = "q" }\n' | XDG_CONFIG_HOME="$mdir/qcfg" APPDATA="$mdir/qcfg" $BIN 2>&1)
 expect "the REPL: an init import's type echoes qualified" '{ symbol = "a" } : A.LangDefaults' "$out"
 expect "the REPL: a session type keeps the bare name" '{ mine = true } : LangDefaults' "$out"
 expect "the REPL: the import's type stays reachable qualified" '{ symbol = "q" } : A.LangDefaults' "$out"
