@@ -66,11 +66,18 @@ let runEnv dir secs extra args =
 
 let runIn dir secs args = runEnv dir secs [] args
 
-// the same, sent `sig` after `after` seconds (timeout's own signal)
-let runSig dir sig after args =
+// the same, sent `sig` (`-TERM`) once the fixture has created `ready` from
+// inside the scope under test, not after a fixed delay a slow runner's
+// startup can outlast; the child's exit code
+let sigWhenReady dir sig ready args =
     within cd dir
-        let r = timeout 60 timeout -s $sig $after env $@noProxy $"TMPDIR={dir}" $cli.bin $@args | complete
-        r
+        within proc w = env $@noProxy $"TMPDIR={dir}" $cli.bin $@args
+            poll timeout=30s interval=20ms watch=w
+                File.exists ready
+            kill $sig (Proc.pid w)
+            poll timeout=60s interval=50ms
+                not (Proc.running w)
+            Proc.wait w
 
 let outOf { stdout = s } = s |> Str.join "\n"
 let errOf { stderr = s } = s |> Str.join "\n"
@@ -777,9 +784,9 @@ let h3c1 d =
     |> Seq.map (fun s ->
         let m = $"{d}/m.txt"
         if File.exists m then File.delete m
-        let r = runSig d s "1" [put d "c1.weir" c1Fixture]
+        let code = sigWhenReady d $"-{s}" m [put d "c1.weir" c1Fixture]
         let ran = File.exists m && (File.read m |> Seq.contains "cleanup-cmd")
-        ($"SIG{s}: the always block's command (exit {codeOf r})", ran))
+        ($"SIG{s}: the always block's command (exit {code})", ran))
     |> failing
 
 // ---- H3-C2: pfirst losers keep running and land effects after the race ---------
@@ -838,17 +845,25 @@ let h3c4 d =
         | _ -> 999999
     let mark = 3740000 + Self.pid % 10000
     Dir.create $"{d}/tb"
-    let rB =
+    let pb = put d "c4b.weir" (c4bFixture mark)
+    let codeB =
         within cd d
-            let x = timeout 90 timeout -s TERM 1 env $@noProxy $"TMPDIR={d}/tb" $cli.bin (put d "c4b.weir" (c4bFixture mark)) | complete
-            x
+            within proc w = env $@noProxy $"TMPDIR={d}/tb" $cli.bin $pb
+                // TERM once an arm's proc scope has made its spill dir
+                poll timeout=15s interval=20ms watch=w
+                    not (Seq.isEmpty (Dir.list $"{d}/tb"))
+                kill -TERM (Proc.pid w)
+                poll timeout=90s interval=50ms
+                    not (Proc.running w)
+                Proc.wait w
     Duration.sleep 500ms
-    let leaked = Dir.list $"{d}/tb" |> Seq.length
+    let leftovers = Dir.list $"{d}/tb" |> Seq.map Path.fileName |> Seq.freeze
+    let leaked = Seq.length leftovers
     let left = sleepers mark
     let _k = pkill -9 -f $"^sleep {mark}$" | complete
     failing [
         ($"piter took {grew} more arm(s) after SIGTERM (exit {codeA})", grew <= 16)
-        ($"{leaked} weir-proc dir(s) leaked, {left} orphan(s) (exit {codeOf rB})", leaked == 0 && left == 0)
+        ($"""{leaked} TMPDIR entr(ies) leaked [{leftovers |> Str.join ", "}], {left} orphan(s) (exit {codeB})""", leaked == 0 && left == 0)
     ]
 
 // ---- H3-C5: `exit n` inside a pfirst arm is swallowed ------------------------

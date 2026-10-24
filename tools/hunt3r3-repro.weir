@@ -680,9 +680,9 @@ let c1Serve port = $$<<<
         File.append log ["END"]
 
 let ctlTermAlways d =
-    let p = put d "c.weir" ["let log = Self.args |> Seq.head"; "within"; "    Duration.sleep 5s"; "always"; "    File.append log [\"always start\"]"; "    Duration.sleep 300ms"; "    File.append log [\"always end\"]"]
-    let run = sigRun d "TERM" "ms" "800" "10" "0" [p; $"{d}/log"]
-    sigRc 15 run.rc && Seq.equal (linesOf $"{d}/log") ["always start"; "always end"]
+    let p = put d "c.weir" ["let log = Self.args |> Seq.head"; "within"; "    File.append log [\"BODY DONE\"]"; "    Duration.sleep 5s"; "always"; "    File.append log [\"always start\"]"; "    Duration.sleep 300ms"; "    File.append log [\"always end\"]"]
+    let run = sigRun d "TERM" "log" "0" "10" "0" [p; $"{d}/log"]
+    sigRc 15 run.rc && Seq.equal (linesOf $"{d}/log") ["BODY DONE"; "always start"; "always end"]
 
 // one signalled run of a closing scope; Some why when the always was skipped
 let c1Once d script mark maxDelay i =
@@ -722,6 +722,7 @@ let c2Fifo = <<<
     let fifo = Self.args |> Seq.item 1
     within
         [1; 2] |> Seq.piter (fun i ->
+            File.append log [$"BODY DONE {i}"]
             let xs = File.read fifo |> Seq.freeze
             File.append log [$"LATE arm {i} {Seq.length xs}"])
     always
@@ -736,7 +737,7 @@ let c2Orphan mark = $$<<<
     always
         File.append log ["END"]
 
-// SIGTERM at 1s; Some why when the teardown hung or let an arm effect land
+// SIGTERM once the arms park; Some why when the teardown hung or let an arm effect land
 let c2Judge d label run =
     let ls = linesOf $"{d}/log"
     let late = ls |> Seq.exists (Str.startsWith "LATE")
@@ -755,12 +756,12 @@ let h3r3c2 d =
         mkfifo ff | orFail "mkfifo"
     let wmark = markOf 41 1
     let omark = markOf 41 2
-    let rOpen = sigRun od "TERM" "ms" "1000" "6" "0" [put od "c2.weir" c2Fifo; $"{od}/log"; $"{od}/ff"]
+    let rOpen = sigRun od "TERM" "log" "200" "6" "0" [put od "c2.weir" c2Fifo; $"{od}/log"; $"{od}/ff"]
     let rRead =
         within cd rd
             within proc wr = sh -c $"exec sleep {wmark} > ff"
-                sigRun rd "TERM" "ms" "1000" "6" "0" [put rd "c2.weir" c2Fifo; $"{rd}/log"; $"{rd}/ff"]
-    let rPipe = sigRun pd "TERM" "ms" "1000" "6" omark [put pd "c2.weir" (c2Orphan omark); $"{pd}/log"]
+                sigRun rd "TERM" "log" "200" "6" "0" [put rd "c2.weir" c2Fifo; $"{rd}/log"; $"{rd}/ff"]
+    let rPipe = sigRun pd "TERM" "procs" "2" "6" omark [put pd "c2.weir" (c2Orphan omark); $"{pd}/log"]
     reap wmark
     reap omark
     failing [
