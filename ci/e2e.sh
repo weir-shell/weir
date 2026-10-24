@@ -7624,7 +7624,7 @@ print cli.target
 WEOF
 # the error is the script user's usage error [D:args-usage-error]: one
 # line per problem in that order, the named flags' help lines, exit 2
-got=$($BIN "$odir/rec.weir" --bogus --retries x 2>&1); rc=$?
+got=$($BIN "$odir/rec.weir" --bogus --retries x 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 2 ] || fail "a usage error exits 2 (got $rc)"
 want=$(printf '%s\n' \
     "rec.weir: unknown flag '--bogus'" \
@@ -8272,7 +8272,7 @@ want=$(printf '%s\n' "usage: j3.weir <command>" "commands:" "  pub   publishes a
 [ "$out" = "$want" ] || fail "j3 --help: case docs, no empty section: $out"
 out=$(cd "$jdir" && XDG_STATE_HOME="$jdir/state" $BIN j3.weir pub --help 2>/dev/null)
 [ "$out" = "$(printf '%s\n' "usage: j3.weir pub" "" "publishes a single message from prompt")" ] || fail "j3 pub --help: the case doc describes: $out"
-errout=$(cd "$jdir" && XDG_STATE_HOME="$jdir/state" $BIN j3.weir 2>&1 >/dev/null); rc=$?
+errout=$(cd "$jdir" && XDG_STATE_HOME="$jdir/state" $BIN j3.weir 2>&1 >/dev/null) && rc=0 || rc=$?
 [ "$rc" -eq 2 ] || fail "j3 with no command exits 2 (got $rc)"
 want=$(printf '%s\n' \
     "j3.weir:15:1: warning: 'Dir.create' runs before 'Args.load Cli' (line 18) — on --help or a bad argument it still runs; load the arguments first" \
@@ -8281,7 +8281,7 @@ want=$(printf '%s\n' \
     "  sub   subcribes with a handler" \
     "run 'j3.weir --help' for usage")
 [ "$errout" = "$want" ] || fail "j3 usage error (and the run's warning): $errout"
-errout=$(cd "$jdir" && XDG_STATE_HOME="$jdir/state" $BIN j3.weir pbu 2>&1 >/dev/null | tail -2)
+errout=$(cd "$jdir" && XDG_STATE_HOME="$jdir/state" $BIN j3.weir pbu 2>&1 >/dev/null | tail -2 || true)
 [ "$errout" = "$(printf '%s\n' "j3.weir: unknown command 'pbu'. Did you mean 'pub'?" "run 'j3.weir --help' for usage")" ] || fail "j3 did-you-mean: $errout"
 out=$(cd "$jdir" && $BIN check j3.weir 2>&1)
 [ "$out" = "j3.weir:15:1: warning [effect-before-args]: 'Dir.create' runs before 'Args.load Cli' (line 18) — on --help or a bad argument it still runs; load the arguments first" ] \
