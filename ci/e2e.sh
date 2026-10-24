@@ -9251,14 +9251,18 @@ printf 'import "./qa.weir" as A\nimport "./qb.weir" as B\nlet same = A.make "x" 
 out=$($BIN check "$mdir/qid.weir" 2>&1 || true)
 expect "A.T and B.T are different types" "expected A.LangDefaults, got B.LangDefaults" "$out"
 # the REPL: init imports follow the rule; a session type keeps the bare
-# name and the import's type stays reachable qualified
+# name and the import's type stays reachable qualified. POSIX only: on
+# Windows the config dir is the ApplicationData known folder, which no
+# environment variable redirects
+if [ "$IS_WINDOWS" != "1" ]; then
 mkdir -p "$mdir/qcfg/weir"
 cp "$mdir/qa.weir" "$mdir/qb.weir" "$mdir/qcfg/weir/"
 printf '#init\nimport "./qa.weir" as A\nimport "./qb.weir" as B\n' > "$mdir/qcfg/weir/init.weir"
-out=$(printf 'let x = A.make "a"\nx\ntype LangDefaults = { mine: bool }\nlet m = { mine = true }\nm\nA.LangDefaults { symbol = "q" }\n' | XDG_CONFIG_HOME="$mdir/qcfg" APPDATA="$mdir/qcfg" $BIN 2>&1)
+out=$(printf 'let x = A.make "a"\nx\ntype LangDefaults = { mine: bool }\nlet m = { mine = true }\nm\nA.LangDefaults { symbol = "q" }\n' | XDG_CONFIG_HOME="$mdir/qcfg" $BIN 2>&1)
 expect "the REPL: an init import's type echoes qualified" '{ symbol = "a" } : A.LangDefaults' "$out"
 expect "the REPL: a session type keeps the bare name" '{ mine = true } : LangDefaults' "$out"
 expect "the REPL: the import's type stays reachable qualified" '{ symbol = "q" } : A.LangDefaults' "$out"
+fi
 
 # an import cycle is a check error naming the loop, at its closing edge
 printf 'module CA\nimport "./cb.weir"\nlet a = 1\n' > "$mdir/ca.weir"
