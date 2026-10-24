@@ -2561,7 +2561,11 @@ print (f 1)
   token. A flag name declared in both tiers is a check error
   (shared flags are declared once); a short contested across tiers
   derives for neither in that case's scope. `--help` prints the
-  two-tier usage; `tool <case> --help` scopes it. Field names
+  two-tier usage (an empty section is left out); `tool <case> --help`
+  scopes it. A case's `///` first line shows beside its subcommand
+  and is that case's description (else its payload record's doc); the
+  `Args.load` type's own `///` first paragraph is the program's
+  description [D:help-case-docs]. Field names
   derive kebab flags (`dryRun` → `--dry-run`) and unambiguous
   first-letter shorts (contested letters derive for nobody;
   `[<Short "C">]` overrides, `[<NoShort>]` suppresses, `-h` is
@@ -2574,7 +2578,13 @@ print (f 1)
   arguments, repeats, missing requireds — all collected into ONE
   boundary error. A value is the NEXT argument (`--out x`; `--out=x`
   is refused, teaching the spaced form; the message never repeats the
-  value of a `Secret` field or of an unknown flag). `--help` prints derived usage (short truth +
+  value of a `Secret` field or of an unknown flag). That error is the
+  script USER's usage error [D:args-usage-error]: `tool.weir: <problem>`
+  lines, the involved flags' help lines, `run 'tool.weir --help' for
+  usage`, exit 2, no weir location (`try` still captures it). A file
+  write, command or network call in a top-level statement above the
+  first top-level `Args.load`/`Env.load` is a check warning
+  [D:effect-before-args] — it would run on `--help` too; load first. `--help` prints derived usage (short truth +
   the `///` doc's first line), exit 0, even on invalid invocations; a
   field deriving `--help` is a check error (reserved). No
   positionals — spell operands as flags. The untyped floor:

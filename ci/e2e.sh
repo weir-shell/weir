@@ -7622,9 +7622,18 @@ type Cli = { retries: int; target: string }
 let cli = Args.load Cli
 print cli.target
 WEOF
-got=$($BIN "$odir/rec.weir" --bogus --retries x 2>&1 | tail -1 | sed 's/^.*error: //' || true)
-[ "$got" = "Args.load Cli: unknown flag '--bogus'; --retries is not an int ('x'); missing required flag '--retries'; missing required flag '--target'" ] \
-    || fail "record-twin order oracle: $got"
+# the error is the script user's usage error [D:args-usage-error]: one
+# line per problem in that order, the named flags' help lines, exit 2
+got=$($BIN "$odir/rec.weir" --bogus --retries x 2>&1); rc=$?
+[ "$rc" -eq 2 ] || fail "a usage error exits 2 (got $rc)"
+want=$(printf '%s\n' \
+    "rec.weir: unknown flag '--bogus'" \
+    "rec.weir: --retries is not an int ('x')" \
+    "rec.weir: missing required flag '--target'" \
+    "  -r, --retries <int>         required" \
+    "  -t, --target <string>       required" \
+    "run 'rec.weir --help' for usage")
+[ "$got" = "$want" ] || fail "record-twin order oracle: $got"
 echo "e2e ok: record twin: scan order then declaration-order fills (exact)"
 
 cat > "$odir/pol.weir" <<'WEOF'
@@ -7632,8 +7641,8 @@ type Cli = { [<Default true>] color: bool; name: string }
 let cli = Args.load Cli
 print cli.name
 WEOF
-got=$($BIN "$odir/pol.weir" --color --no-color --name n 2>&1 | tail -1 | sed 's/^.*error: //' || true)
-[ "$got" = "Args.load Cli: '--color' and '--no-color' are both given" ] || fail "polarity oracle: $got"
+got=$($BIN "$odir/pol.weir" --color --no-color --name n 2>&1 || true)
+[ "$got" = "$(printf '%s\n' "pol.weir: '--color' and '--no-color' are both given" "run 'pol.weir --help' for usage")" ] || fail "polarity oracle: $got"
 echo "e2e ok: polarity conflict names both spellings (exact)"
 
 cat > "$odir/sh.weir" <<'WEOF'
@@ -7643,12 +7652,26 @@ type Cli = { level: int; cmd: Verb }
 let _cli = Args.load Cli
 print "ok"
 WEOF
-got=$($BIN "$odir/sh.weir" --level x push --depth y 2>&1 | tail -1 | sed 's/^.*error: //' || true)
-[ "$got" = "Args.load Cli: --level is not an int ('x'); --depth is not an int ('y'); missing required flag '--level'; missing required flag '--remote'; missing required flag '--depth'" ] \
-    || fail "shared-twin two-tier order oracle: $got"
-got=$($BIN "$odir/sh.weir" push 2>&1 | tail -1 | sed 's/^.*error: //' || true)
-[ "$got" = "Args.load Cli: missing required flag '--level'; missing required flag '--remote'; missing required flag '--depth'" ] \
-    || fail "shared-twin fill order oracle: $got"
+got=$($BIN "$odir/sh.weir" --level x push --depth y 2>&1 || true)
+want=$(printf '%s\n' \
+    "sh.weir: --level is not an int ('x')" \
+    "sh.weir: --depth is not an int ('y')" \
+    "sh.weir: missing required flag '--remote'" \
+    "  -l, --level <int>           required" \
+    "  -r, --remote <string>       required" \
+    "  -d, --depth <int>           required" \
+    "run 'sh.weir push --help' for usage")
+[ "$got" = "$want" ] || fail "shared-twin two-tier order oracle: $got"
+got=$($BIN "$odir/sh.weir" push 2>&1 || true)
+want=$(printf '%s\n' \
+    "sh.weir: missing required flag '--level'" \
+    "sh.weir: missing required flag '--remote'" \
+    "sh.weir: missing required flag '--depth'" \
+    "  -l, --level <int>           required" \
+    "  -r, --remote <string>       required" \
+    "  -d, --depth <int>           required" \
+    "run 'sh.weir push --help' for usage")
+[ "$got" = "$want" ] || fail "shared-twin fill order oracle: $got"
 echo "e2e ok: shared twin: token-order scan crosses tiers; fills shared-then-payload (exact)"
 # `--name=value` teaches the separate-argument spelling, both twins; a
 # presence flag says it takes no value
@@ -7657,12 +7680,21 @@ type Cli = { verbose: bool; target: string }
 let cli = Args.load Cli
 print cli.target
 WEOF
-got=$($BIN "$odir/eq.weir" --target=prod --verbose=yes 2>&1 | tail -1 | sed 's/^.*error: //' || true)
-[ "$got" = "Args.load Cli: unknown flag '--target=prod' — a flag's value is the next argument: write '--target prod'; unknown flag '--verbose=yes' — '--verbose' is a presence flag and takes no value; missing required flag '--target'" ] \
-    || fail "--name=value teaching (record): $got"
-got=$($BIN "$odir/sh.weir" --level 1 push --remote=o --depth 2 2>&1 | tail -1 | sed 's/^.*error: //' || true)
-[ "$got" = "Args.load Cli: unknown flag '--remote=o' — a flag's value is the next argument: write '--remote o'; missing required flag '--remote'" ] \
-    || fail "--name=value teaching (shared twin): $got"
+got=$($BIN "$odir/eq.weir" --target=prod --verbose=yes 2>&1 || true)
+want=$(printf '%s\n' \
+    "eq.weir: unknown flag '--target=prod' — a flag's value is the next argument: write '--target prod'" \
+    "eq.weir: unknown flag '--verbose=yes' — '--verbose' is a presence flag and takes no value" \
+    "eq.weir: missing required flag '--target'" \
+    "  -t, --target <string>       required" \
+    "run 'eq.weir --help' for usage")
+[ "$got" = "$want" ] || fail "--name=value teaching (record): $got"
+got=$($BIN "$odir/sh.weir" --level 1 push --remote=o --depth 2 2>&1 || true)
+want=$(printf '%s\n' \
+    "sh.weir: unknown flag '--remote=o' — a flag's value is the next argument: write '--remote o'" \
+    "sh.weir: missing required flag '--remote'" \
+    "  -r, --remote <string>       required" \
+    "run 'sh.weir push --help' for usage")
+[ "$got" = "$want" ] || fail "--name=value teaching (shared twin): $got"
 # a Secret field's value is never echoed, nor an unknown flag's
 # [D:args-secret-echo]
 cat > "$odir/sec.weir" <<'WEOF'
@@ -7670,9 +7702,14 @@ type Cli = { token: Secret; port: int }
 let cli = Args.load Cli
 print (show cli)
 WEOF
-got=$($BIN "$odir/sec.weir" --token=e2e-hunter2 --tokn=e2e-hunter3 --port 1 2>&1 | tail -1 | sed 's/^.*error: //' || true)
-[ "$got" = "Args.load Cli: unknown flag '--token=***' — a flag's value is the next argument: write '--token <value>'; unknown flag '--tokn=…'. Did you mean '--token'?; missing required flag '--token'" ] \
-    || fail "--secret=value must not echo the value: $got"
+got=$($BIN "$odir/sec.weir" --token=e2e-hunter2 --tokn=e2e-hunter3 --port 1 2>&1 || true)
+want=$(printf '%s\n' \
+    "sec.weir: unknown flag '--token=***' — a flag's value is the next argument: write '--token <value>'" \
+    "sec.weir: unknown flag '--tokn=…'. Did you mean '--token'?" \
+    "sec.weir: missing required flag '--token'" \
+    "  -t, --token <secret>        required" \
+    "run 'sec.weir --help' for usage")
+[ "$got" = "$want" ] || fail "--secret=value must not echo the value: $got"
 echo "e2e ok: --name=value teaches '--name value'; a presence flag takes no value; a Secret's or unknown flag's value is never echoed"
 rm -rf "$odir"
 
@@ -7741,9 +7778,10 @@ expect "union subcommand with payload flags" "clone http://x true" "$out"
 out=$($BIN "$tadir/sub.weir" status)
 expect "bare-word case" "status" "$out"
 errout=$($BIN "$tadir/sub.weir" clne 2>&1) && fail "unknown subcommand must reject"
-echo "$errout" | grep -qF "unknown subcommand 'clne'. Did you mean 'clone'?" || fail "subcommand did-you-mean: $errout"
+echo "$errout" | grep -qF "sub.weir: unknown command 'clne'. Did you mean 'clone'?" || fail "subcommand did-you-mean: $errout"
 errout=$($BIN "$tadir/sub.weir" 2>&1) && fail "missing subcommand must reject"
-echo "$errout" | grep -qF "missing subcommand; one of: clone, status" || fail "missing subcommand lists cases: $errout"
+want=$(printf '%s\n' "sub.weir: missing command — one of:" "  clone" "  status" "run 'sub.weir --help' for usage")
+[ "$errout" = "$want" ] || fail "missing subcommand lists cases: $errout"
 echo "e2e ok: the union front door dispatches, hints, and lists"
 
 errout=$($BIN "$tadir/cli.weir" --env a --env b 2>&1) && fail "repeated flag must reject"
@@ -8194,6 +8232,76 @@ echo "$out" | grep -qF "clean" && fail "union-only scoped help lists other cases
 out=$($BIN "$sfdir/uo.weir" --help)
 echo "$out" | grep -qF "commands:" || fail "union-only top help lists the commands: $out"
 echo "e2e ok: union-only case-scoped help"
+
+# the j3 repro [D:help-case-docs] [D:args-usage-error] [D:effect-before-args]:
+# a union-only Cli with case docs, an effect before the load, then the
+# bare field. Help lists the case docs with no empty section; a bad line
+# is a usage error (exit 2, no location); check warns at the Dir.create
+# and the warning goes once the load moves up; `mode` names `args.mode`
+jdir=$(mkweirtmp)
+printf 'module Contract\ntype Journal = { name: string }\n' > "$jdir/contract.weir"
+printf 'module\nimport "contract.weir"\nlet pub : Journal -> string -> unit\nlet pub j msg = [msg] |> File.append j.name\n' > "$jdir/pub.weir"
+printf 'module\nimport "contract.weir"\nlet sub : Journal -> (string -> unit) -> unit\nlet sub j f = File.read j.name |> Seq.iter f\n' > "$jdir/sub.weir"
+cat > "$jdir/j3.weir" <<'WEOF'
+import "pub.weir" as Publish
+import "sub.weir" as Subscribe
+
+type Mode = 
+  /// publishes a single message from prompt
+  | Pub 
+  /// subcribes with a handler
+  | Sub
+type Cli = {
+    /// publish/subscribe
+    mode: Mode
+}
+
+let dataDir = ".flume" |> Path.under (Path.stateHome())
+Dir.create dataDir
+let journal = { name = "journal.jsonl" |> Path.under dataDir }
+
+let args = Args.load Cli
+
+match args.mode with
+| Pub -> Self.prompt "TYPE: " |> Publish.pub journal
+| Sub ->
+  Subscribe.sub journal (fun m -> print $"{m}")
+WEOF
+out=$(cd "$jdir" && XDG_STATE_HOME="$jdir/state" $BIN j3.weir --help 2>/dev/null)
+want=$(printf '%s\n' "usage: j3.weir <command>" "commands:" "  pub   publishes a single message from prompt" "  sub   subcribes with a handler")
+[ "$out" = "$want" ] || fail "j3 --help: case docs, no empty section: $out"
+out=$(cd "$jdir" && XDG_STATE_HOME="$jdir/state" $BIN j3.weir pub --help 2>/dev/null)
+[ "$out" = "$(printf '%s\n' "usage: j3.weir pub" "" "publishes a single message from prompt")" ] || fail "j3 pub --help: the case doc describes: $out"
+errout=$(cd "$jdir" && XDG_STATE_HOME="$jdir/state" $BIN j3.weir 2>&1 >/dev/null); rc=$?
+[ "$rc" -eq 2 ] || fail "j3 with no command exits 2 (got $rc)"
+want=$(printf '%s\n' \
+    "j3.weir:15:1: warning: 'Dir.create' runs before 'Args.load Cli' (line 18) — on --help or a bad argument it still runs; load the arguments first" \
+    "j3.weir: missing command — one of:" \
+    "  pub   publishes a single message from prompt" \
+    "  sub   subcribes with a handler" \
+    "run 'j3.weir --help' for usage")
+[ "$errout" = "$want" ] || fail "j3 usage error (and the run's warning): $errout"
+errout=$(cd "$jdir" && XDG_STATE_HOME="$jdir/state" $BIN j3.weir pbu 2>&1 >/dev/null | tail -2)
+[ "$errout" = "$(printf '%s\n' "j3.weir: unknown command 'pbu'. Did you mean 'pub'?" "run 'j3.weir --help' for usage")" ] || fail "j3 did-you-mean: $errout"
+out=$(cd "$jdir" && $BIN check j3.weir 2>&1)
+[ "$out" = "j3.weir:15:1: warning [effect-before-args]: 'Dir.create' runs before 'Args.load Cli' (line 18) — on --help or a bad argument it still runs; load the arguments first" ] \
+    || fail "j3 check warns at the effect: $out"
+# the load moved to the top: silent
+grep -v '^let args = Args.load Cli$' "$jdir/j3.weir" | sed 's/^let dataDir = /let args = Args.load Cli\nlet dataDir = /' > "$jdir/j3-first.weir"
+out=$(cd "$jdir" && $BIN check j3-first.weir 2>&1)
+[ -z "$out" ] || fail "loading first silences effect-before-args: $out"
+# the bare field names the bound record value
+sed 's/^match args.mode with$/match mode with/' "$jdir/j3.weir" > "$jdir/j3-bare.weir"
+errout=$(cd "$jdir" && $BIN check j3-bare.weir 2>&1) && fail "a bare field must refuse"
+echo "$errout" | grep -qF "j3-bare.weir:20:7: error [check]: unbound 'mode' — did you mean 'args.mode'? ('mode' is a field of 'Cli')" \
+    || fail "the bare field points at args.mode: $errout"
+# a doc on the Args type is the program description
+sed 's|^type Cli = {$|/// Publish to or subscribe on a journal.\ntype Cli = {|' "$jdir/j3.weir" > "$jdir/j3-doc.weir"
+out=$(cd "$jdir" && XDG_STATE_HOME="$jdir/state" $BIN j3-doc.weir --help 2>/dev/null)
+want=$(printf '%s\n' "usage: j3-doc.weir <command>" "" "Publish to or subscribe on a journal." "" "commands:" "  pub   publishes a single message from prompt" "  sub   subcribes with a handler")
+[ "$out" = "$want" ] || fail "the Args type's doc is the description: $out"
+rm -rf "$jdir"
+echo "e2e ok: j3 — case docs in --help, a usage error (exit 2), effect-before-args, the bare-field hint, the type doc"
 
 # declaration collisions reject at check (both routes)
 errout=$(printf 'type CA = { quiet: bool }\ntype Cmd = Go of CA | Stop\ntype Cli = { quiet: bool; cmd: Cmd }\nlet c = Args.load Cli\nprint "x"\n' | checkPiped 2>&1) && fail "kebab collision must reject"
