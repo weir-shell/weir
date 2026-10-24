@@ -11,9 +11,14 @@ BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 # failure the gate exists to prevent
 "$(dirname "$0")/check-fresh.sh" "$BIN"
 
-# child weir in doc blocks resolves through the binary's own dir — the
-# e2e blocks' rule applied once at harness level (CI has no weir on PATH)
-export PATH="$(dirname "$BIN"):$PATH"
+# child weir in doc blocks resolves to the binary under test — the e2e
+# blocks' rule applied once at harness level (CI has no weir on PATH). A
+# `weir` link in a private dir, not the binary's own dir: a publish names
+# it `Weir`, which a block's `weir` would miss for an older one on PATH
+bindir=$(mktemp -d "${TMPDIR:-/tmp}/weir-skilldoc-bin.XXXXXX")
+trap 'rm -rf "$bindir"' EXIT
+ln -s "$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")" "$bindir/weir"
+export PATH="$bindir:$PATH"
 DOCS=("$(dirname "$0")/../skills/weir/SKILL.md" "$(dirname "$0")/../docs/GUIDE.md" "$(dirname "$0")/../docs/COMING-FROM.md" "$(dirname "$0")/../docs/FAQ.md")
 # the written reference pages [D:reference]: every behaviour claim is a fence
 for refdoc in "$(dirname "$0")"/../docs/reference/*.md; do
@@ -21,7 +26,7 @@ for refdoc in "$(dirname "$0")"/../docs/reference/*.md; do
 done
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap 'rm -rf "$work" "$bindir"' EXIT
 (
     cd "$work"
     git init -q
