@@ -22115,6 +22115,15 @@ let stopRequestTests =
               m.Enter()
               Expect.equal (m.Signal()) Weir.Session.StopRequested "a new construct's first signal is a request again"
               m.Exit()
+          }
+          test "the REPL's stop-request ^C goes only to a child the terminal's did not reach [D:repl-stop-request]" {
+              let target = Weir.Session.interruptTarget
+              Expect.equal (target 200 100 100 (Some 100)) None "in the terminal's foreground group: never sent twice"
+              Expect.equal (target 200 200 100 (Some 100)) (Some -200) "a setsid child leads its own group: the group"
+              Expect.equal (target 200 300 100 (Some 100)) (Some 200) "in a group it does not lead: the child alone"
+              Expect.equal (target 200 100 100 (Some 50)) (Some 200) "in weir's group, not the foreground: the child, never weir's group"
+              Expect.equal (target 200 200 100 None) (Some -200) "no foreground group to compare: its own group"
+              Expect.equal (target 200 -1 100 (Some 100)) (Some 200) "a pgid weir cannot read: the child alone"
           } ]
 
 let repeatTests =

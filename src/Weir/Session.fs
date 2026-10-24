@@ -1245,6 +1245,12 @@ module private Libc =
     extern int getpgrp()
 
     [<DllImport("libc", SetLastError = true)>]
+    extern int getpgid(int pid)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int kill(int pid, int signal)
+
+    [<DllImport("libc", SetLastError = true)>]
     extern int flock(int fd, int operation)
 
     [<DllImport("libc", SetLastError = true)>]
@@ -1351,20 +1357,28 @@ module private Libc =
         else
             false
 
+    /// the controlling terminal's foreground process group, when weir
+    /// has a controlling terminal that names one
+    let terminalForegroundGroup () : int option =
+        let fd = ``open`` ("/dev/tty", O_RDWR)
+
+        if fd < 0 then
+            None
+        else
+            try
+                match tcgetpgrp fd with
+                | fg when fg > 0 -> Some fg
+                | _ -> None
+            finally
+                close fd |> ignore
+
     /// true when weir's process group is its controlling terminal's
     /// foreground group — a SIGINT then is the terminal's ^C, delivered
     /// to the whole group [D:sigint-terminal-group]
     let terminalForeground () : bool =
-        let fd = ``open`` ("/dev/tty", O_RDWR)
-
-        if fd < 0 then
-            false
-        else
-            try
-                let fg = tcgetpgrp fd
-                fg > 0 && fg = getpgrp ()
-            finally
-                close fd |> ignore
+        match terminalForegroundGroup () with
+        | Some fg -> fg = getpgrp ()
+        | None -> false
 
     /// convert an inherited SIG_IGN on SIGINT to SIG_DFL, leaving every
     /// other disposition untouched (peek by setting SIG_DFL, restore if
@@ -3152,6 +3166,36 @@ let private terminalInterrupt () =
 
     startBackstop 100 100 ready 130
 
+/// where the REPL's stop-request ^C is sent for a live child
+/// [D:repl-stop-request]: nowhere when the child is in the terminal's
+/// foreground group (the terminal's SIGINT reached it); otherwise, the
+/// child's own group when it leads one that weir is not in, as a terminal
+/// signals a group, else the child alone. A pgid weir could not read is
+/// one it cannot tell: the child alone
+let interruptTarget (childPid: int) (childPgid: int) (selfPgid: int) (ttyForeground: int option) : int option =
+    match ttyForeground with
+    | Some fg when childPgid > 0 && childPgid = fg -> None
+    | _ when childPgid > 0 && childPgid = childPid && childPgid <> selfPgid -> Some(-childPgid)
+    | _ -> Some childPid
+
+// the stop request's ^C, for each live child the terminal's did not reach
+// [D:repl-stop-request]: a plain SIGINT, no tree kill — its death is the
+// stop [D:stop-caused-failure]
+let private forwardStopInterrupt () =
+    let fg = Libc.terminalForegroundGroup ()
+    let self = Libc.getpgrp ()
+
+    for kv in liveProcs do
+        let p = kv.Value.P
+
+        try
+            if not p.HasExited then
+                match interruptTarget p.Id (Libc.getpgid p.Id) self fg with
+                | Some target -> Libc.kill (target, Libc.SIGINT) |> ignore
+                | None -> ()
+        with _ ->
+            ()
+
 // one signal dispatch [D:scope-tree]: the REPL's own ^C, the hard exit, the
 // terminal's unscoped ^C, the teardown — or, with no flow to unwind (the
 // REPL between entries, a subcommand), the exit's sweep and the signal's
@@ -3166,8 +3210,9 @@ let private dispatchSignal (ctx: System.Runtime.InteropServices.PosixSignalConte
     if replSurvivesSigint.Value && sigint then
         ctx.Cancel <- true
 
-        if stop.Signal() = Teardown then
-            interruptRepl ()
+        match stop.Signal() with
+        | Teardown -> interruptRepl ()
+        | StopRequested -> forwardStopInterrupt ()
     // the first stop signal while a stop-aware construct runs asks it to
     // stop: no cut, no kill, no backstop [D:stop-request]. SIGQUIT is
     // always the teardown, and so is TERM/HUP at the interactive REPL

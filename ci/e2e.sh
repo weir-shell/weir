@@ -16508,6 +16508,18 @@ WEOF
     [ "$(echo "$tout" | grep -c 'exit 130')" = "1" ] || fail "repeat at the REPL: only the second ^C reports the interrupt: $tout"
     echo "e2e ok: repeat at the REPL — the first ^C stops it gracefully, the next repeat runs, a second ^C cuts the entry; a held scope ends at its first ^C"
 
+    # a child the terminal's ^C does not reach (its own session, by setsid):
+    # the REPL's stop request sends it the SIGINT itself, and its death is the
+    # stop [D:repl-stop-request]
+    if command -v setsid >/dev/null 2>&1; then
+        tout=$(printf '%s\n' 'WAIT weir>' 'SEND repeat interval=100ms\n    setsid sh -c "echo sid-a | tr a-z A-Z; sleep 3; echo sid-z | tr a-z A-Z"\r' 'WAIT SID-A' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "sid-after")\r' 'WAIT SID-AFTER' 'SEND \x04' 'SLEEP 500' | env HOME="$rph" XDG_CONFIG_HOME="$rph/c" XDG_DATA_HOME="$rph/d" XDG_STATE_HOME="$rph/s" XDG_CACHE_HOME="$rph/k" NO_COLOR=1 python3 "$ptyrun" 15 "$BIN")
+        for want in "SID-AFTER" "EXIT 0"; do
+            echo "$tout" | grep -qF "$want" || fail "repeat at the REPL, a child outside the terminal's group: '$want' expected: $tout"
+        done
+        echo "$tout" | grep -qE "SID-Z|command failed|exit 130" && fail "repeat at the REPL: the stop request's ^C reaches a setsid child and its death is the stop: $tout"
+        echo "e2e ok: repeat at the REPL — the first ^C reaches a child outside the terminal's group (setsid) too, and its death ends the loop cleanly"
+    fi
+
     # the plan refusal and the missing interval are check errors (nothing runs)
     printf '%s\n' 'let p =' '    plan' '        repeat interval=1s' '            print "x"' 'print (show p)' > "$rpdir/plan.weir"
     out=$("$BIN" "$rpdir/plan.weir" 2>&1) && fail "repeat inside plan must be refused"
