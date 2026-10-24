@@ -17532,6 +17532,99 @@ let fileTests =
           }
           test "read of a missing file raises" {
               Expect.throws (fun () -> run "File.read \"/weir-definitely-not\"" |> forceSeq |> ignore) ""
+          }
+          // File.readFrom [D:file-readfrom]: complete lines from a byte
+          // offset up to the size at the read's start, plus the next offset
+          test "File.readFrom: offsets 0 and mid-file, next, partial tail, CRLF, UTF-8, BOM, edges" {
+              let path = weirPath (tempPath "weir-readfrom" + ".txt")
+
+              let chunk (off: int) =
+                  match run $"File.readFrom \"{path}\" (Size.bytes {off})" with
+                  | VRecord("FileChunk", [ "lines", VSeq ls; "next", VSize n ]) ->
+                      (ls |> Seq.map (fun v -> match v with | VStr s -> s | v -> failtest $"{v}") |> List.ofSeq), n
+                  | v -> failtest $"unexpected {v}"
+
+              let raises (off: int) (frag: string) =
+                  let ex =
+                      Expect.throwsC (fun () -> run $"File.readFrom \"{path}\" (Size.bytes {off})" |> ignore) id
+
+                  Expect.stringContains ex.Message frag $"offset {off}"
+
+              let put (b: byte[]) = File.WriteAllBytes(path, b)
+              let utf8 (s: string) = System.Text.Encoding.UTF8.GetBytes s
+
+              try
+                  put (utf8 "one\ntwo\nthree\n")
+                  Expect.equal (chunk 0) ([ "one"; "two"; "three" ], 14L) "offset 0 reads all; next = size"
+                  Expect.equal (chunk 4) ([ "two"; "three" ], 14L) "mid-file on a boundary"
+                  Expect.equal (chunk 14) ([], 14L) "offset = size: empty, next unchanged"
+                  raises 15 "the offset 15 is past the end"
+                  raises 15 "(14 bytes)"
+                  raises 5 "the offset 5 is not at a line start"
+                  raises (-1) "negative"
+
+                  // the snapshot ends mid-line: the partial line waits
+                  put (utf8 "a\nhalf")
+                  Expect.equal (chunk 0) ([ "a" ], 2L) "a partial trailing line is not returned"
+                  Expect.equal (chunk 2) ([], 2L) "only a partial line: empty, next unchanged"
+                  File.AppendAllText(path, "-done\nb\n")
+                  Expect.equal (chunk 2) ([ "half-done"; "b" ], 14L) "completed on the next poll, once"
+
+                  // CRLF counts in the offsets; a CR alone at the end waits for its LF
+                  put (utf8 "a\r\nbb\r\nc\r")
+                  Expect.equal (chunk 0) ([ "a"; "bb" ], 7L) "CRLF lines, next past the LF"
+                  Expect.equal (chunk 3) ([ "bb" ], 7L) "from after the first CRLF"
+
+                  // multibyte UTF-8: next counts bytes, not chars
+                  put (utf8 "\u00E9\uD83D\uDE00\nx\n")
+                  Expect.equal (chunk 0) ([ "\u00E9\uD83D\uDE00"; "x" ], 9L) "2 + 4 + 1 + 2 bytes"
+                  Expect.equal (chunk 7) ([ "x" ], 9L) "from the second line"
+                  raises 1 "not at a line start"
+
+                  // a BOM is skipped at offset 0 only, and counted in next
+                  put (Array.append [| 0xEFuy; 0xBBuy; 0xBFuy |] (utf8 "x\ny\n"))
+                  Expect.equal (chunk 0) ([ "x"; "y" ], 7L) "the BOM is not part of the first line"
+                  Expect.equal (chunk 5) ([ "y" ], 7L) "mid-file"
+
+                  put (Array.concat [ utf8 "x\n"; [| 0xEFuy; 0xBBuy; 0xBFuy |]; utf8 "y\n" ])
+                  Expect.equal (chunk 2) ([ "\uFEFFy" ], 7L) "a BOM past offset 0 is content, as File.read keeps it"
+                  Expect.equal (run $"File.read \"{path}\" |> Seq.item 1") (VStr "\uFEFFy") "File.read agrees"
+
+                  put (Array.append [| 0xFFuy; 0xFEuy |] (System.Text.Encoding.Unicode.GetBytes "x\n"))
+                  raises 0 "UTF-16/32 byte order mark"
+              finally
+                  if File.Exists path then
+                      File.Delete path
+          }
+          test "File.readFrom is eager: lines appended after the call are not in its result [D:file-readfrom]" {
+              let path = weirPath (tempPath "weir-readfrom-eager" + ".txt")
+
+              try
+                  File.WriteAllText(path, "a\nb\n")
+                  let v = run $"File.readFrom \"{path}\" 0B"
+                  File.AppendAllText(path, "c\nd\n")
+
+                  match v with
+                  | VRecord(_, [ "lines", VSeq ls; "next", VSize n ]) ->
+                      Expect.equal (forceSeq (VSeq ls) |> List.length) 2 "the snapshot at the call"
+                      Expect.equal n 4L "next matches the snapshot"
+                  | v -> failtest $"unexpected {v}"
+
+                  Expect.equal (run $"(File.readFrom \"{path}\" (Size.bytes 4)).lines |> Seq.length") (VInt 2L) "the rest"
+              finally
+                  if File.Exists path then
+                      File.Delete path
+          }
+          test "File.readFrom: a missing file raises as File.read does; readonly admits it, pure refuses it" {
+              let ex = Expect.throwsC (fun () -> run "File.readFrom \"/weir-definitely-not\" 0B" |> ignore) id
+              Expect.stringContains ex.Message "File.readFrom: no such file:" "File.read's shape"
+
+              Expect.isEmpty
+                  (errorsIn "ro.weir" [ "let x ="; "    readonly"; "        (File.readFrom \"f\" 0B).next"; "print $\"{x}\"" ])
+                  "a read"
+
+              let e = firstErrorIn "pure.weir" [ "let pure f p = File.readFrom p 0B" ]
+              Expect.stringContains e.Message "'File.readFrom' reads the filesystem" "pure refuses a read"
           } ]
 
 let operatorTests =
