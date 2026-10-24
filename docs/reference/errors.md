@@ -73,6 +73,36 @@ expression twin of `| complete`:
   Effects that happened before the failure are not undone.
 - `try` is only valid after `|>`.
 
+`|> orFail` is the inverse: it turns a failed value back into an
+error. Fail fast inside your helpers with `|> orFail`, and decide at
+the boundary with `|> try result`:
+
+- `e |> orFail` takes a `Result<'T, string>` or an `Option<'T>` and
+  gives the `'T`: `Ok v` and `Some v` become `v`. Anything else is a
+  check error that names both shapes.
+- `Error msg` raises `msg`; `None` raises `orFail: no value (None)`.
+- With a message, `e |> orFail "no port"` (any string expression in the
+  same atom position `| orFail "msg"` takes), `Error msg` raises
+  `no port: msg` and `None` raises `no port`. Control characters in an
+  `Error`'s text are shown escaped, like any data in an error message.
+- The error points at the `orFail`, and it is an ordinary one: `|> try`
+  catches it, and a `pure` block allows it.
+- It captures everything to its left, like `try`, and `orFail` is a
+  keyword. After a command the same word is the reifier,
+  `<command> | orFail "msg"` (one `|`); `<command> |> orFail` is an
+  error that points at it.
+
+```weir
+let cfg = Map.ofPairs [("port", "8080")]
+let port = Map.tryGet "port" cfg |> orFail "no port"
+let host = Map.tryGet "host" cfg |> orFail "no host" |> try result
+print $"{port} {host}"
+```
+
+```weir-error
+let n = 3 |> orFail // orFail takes a Result<'T, string> or an Option<'T>
+```
+
 A script's own union cases take precedence over the prelude's: a
 `type Status = Ok | Error` declared in the script keeps constructing
 its own `Ok`, while a match on a `try result` value still sees

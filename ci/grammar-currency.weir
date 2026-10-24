@@ -48,7 +48,7 @@ let words pattern label =
 
     let body = hits |> Seq.head |> Seq.head
 
-    Str.rmatchAll "([a-z]+)" body
+    Str.rmatchAll "([A-Za-z]+)" body
     |> Seq.map Seq.head
     |> Seq.distinct
     |> Seq.sort

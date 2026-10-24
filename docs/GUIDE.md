@@ -2715,6 +2715,22 @@ the rest of a lazy sequence, so a failure can't escape later. `exit`
 still exits, and anything that already happened (a file written, a
 command run) isn't undone.
 
+`|> orFail` goes the other way: it takes a `Result` or an `Option` and
+gives you the value inside, or stops with an error on `Error` or
+`None`. Add a message to say what was missing:
+
+```weir
+let cfg = Map.ofPairs [("port", "8080")]
+let port = Map.tryGet "port" cfg |> orFail "no port in the config"
+print port
+```
+
+`Error msg` stops with `msg` (`no port in the config: msg` with a
+message), and `None` with your message or `orFail: no value (None)`.
+It's an ordinary error, so `|> try` around it turns it back into a
+value. After a command, the same word is the reifier you met above,
+`<command> | orFail "msg"`.
+
 `Log.info $"starting {n}"` (and `trace`, `debug`, `warn`) writes log
 messages with a level to stderr. `WEIR_LOG=debug weir script.weir`
 shows more detail for one run without editing anything, and

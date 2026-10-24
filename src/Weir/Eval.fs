@@ -5009,6 +5009,30 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 VUnion("Error", Some(VStr ex.Message))
             else
                 VUnion("None", None)
+    // the inverse of try [D:orfail-form]: the raise points at the form;
+    // an Error's text is data spliced into the message [D:error-data-escape]
+    | TEOrFail(body, msg, site) ->
+        let v = eval env body
+
+        let label =
+            msg
+            |> Option.map (fun m ->
+                match eval env m with
+                | VStr s -> s
+                | other -> unreachable $"the checker types orFail's message as a string, got {formatValue other}")
+
+        let raiseAtSite (text: string) : Value =
+            RunPos.Current <- box site
+            RunPos.Exact <- true
+            failwith text
+
+        match v, label with
+        | VUnion(("Ok" | "Some"), Some x), _ -> x
+        | VUnion("Error", Some(VStr e)), Some l -> raiseAtSite $"{l}: {quoteData e}"
+        | VUnion("Error", Some(VStr e)), None -> raiseAtSite (quoteData e)
+        | VUnion("None", None), Some l -> raiseAtSite l
+        | VUnion("None", None), None -> raiseAtSite "orFail: no value (None)"
+        | other, _ -> unreachable $"the checker types orFail's left side as a Result or an Option, got {formatValue other}"
     | TEInt n -> VInt(int64 n)
     | TEDur n -> VDur n
     | TESize b -> VSize b
