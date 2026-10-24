@@ -1015,7 +1015,7 @@
         {
           "name": "isName",
           "signature": "Path.isName (name: string) : bool",
-          "summary": "True when the string is one file name that is valid on Linux, macOS and Windows alike: not empty, \u0027.\u0027 or \u0027..\u0027; no \u0027/\u0027, \u0027\\\u0027, control character (U\u002B0000 to U\u002B001F) or any of \u003C \u003E : \u0022 | ? *; no trailing space or dot; not a Windows device name (\u0060CON\u0060, \u0060PRN\u0060, \u0060AUX\u0060, \u0060NUL\u0060, \u0060COM0\u0060-\u0060COM9\u0060, \u0060LPT0\u0060-\u0060LPT9\u0060, \u0060COM\u00B9\u0060-\u0060COM\u00B3\u0060, \u0060LPT\u00B9\u0060-\u0060LPT\u00B3\u0060) in any case, with or without an extension; at most 255 bytes in UTF-8. Use toName to turn arbitrary text into such a name.",
+          "summary": "True when the string is one file name that is valid on Linux, macOS and Windows alike: not empty, \u0027.\u0027 or \u0027..\u0027; no \u0027/\u0027, \u0027\\\u0027, control character (U\u002B0000 to U\u002B001F) or any of \u003C \u003E : \u0022 | ? *; no trailing space or dot; not a Windows device name (\u0060CON\u0060, \u0060PRN\u0060, \u0060AUX\u0060, \u0060NUL\u0060, \u0060CONIN$\u0060, \u0060CONOUT$\u0060, \u0060COM0\u0060-\u0060COM9\u0060, \u0060LPT0\u0060-\u0060LPT9\u0060, \u0060COM\u00B9\u0060-\u0060COM\u00B3\u0060, \u0060LPT\u00B9\u0060-\u0060LPT\u00B3\u0060) in any case, with or without an extension; at most 255 bytes in UTF-8. Use toName to turn arbitrary text into such a name.",
           "example": "Path.isName \u0022report-2026.txt\u0022",
           "pointer": null
         },
