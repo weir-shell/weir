@@ -2537,7 +2537,21 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
         // scripts error instead; the note exists because the confusing
         // half is real: an old value still echoes with its fields
         // while field access resolves against the new shape
-        if Map.containsKey decl.Name state.TypeEnv.Types then
+        // an import's own type gave the name up and stays reachable
+        // qualified [D:qualified-type-names]
+        let movedImport =
+            if state.TypeEnv.TypeOrigins.ContainsKey decl.Name then
+                chk.Env.ModuleTypes
+                |> Map.tryPick (fun _ owned ->
+                    match Map.tryFind decl.Name owned with
+                    | Some key when key <> decl.Name -> Some key
+                    | _ -> None)
+            else
+                None
+
+        if movedImport.IsSome then
+            Console.WriteLine $"type {decl.Name} declared; the imported {decl.Name} is now {movedImport.Value}"
+        elif Map.containsKey decl.Name state.TypeEnv.Types then
             Console.WriteLine $"type {decl.Name} redeclared; earlier values keep the old shape"
         else
             Console.WriteLine $"type {decl.Name} declared"

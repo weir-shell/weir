@@ -1080,11 +1080,24 @@ let definitionTarget
             | Script.KImport lm -> Some lm
             | _ -> None)
 
-    // local KType first; else the import that declared the type (imported
-    // types merge in unqualified, so the name alone picks the module)
+    // local KType first; else the import that declared the type — a
+    // qualified key ("A.T") names its import's alias, a plain one is
+    // unambiguous, so the name alone picks the module [D:qualified-type-names]
     let typeSite (tyName: string) (member_: string option) =
+        let viaAlias =
+            match tyName.Split '.' with
+            | [| alias; plain |] ->
+                imports
+                |> List.tryFind (fun lm -> lm.Alias = alias && List.contains plain lm.TypeNames)
+                |> Option.bind (fun lm ->
+                    targetStmts lm.AbsPath
+                    |> Option.bind (fun (_, mstmts) -> typeSiteIn mstmts plain member_)
+                    |> Option.map (fun (pl, pc, len) -> Some lm.AbsPath, pl, pc, len))
+            | _ -> None
+
         match typeSiteIn stmts tyName member_ with
         | Some(pl, pc, len) -> Some(None, pl, pc, len)
+        | None when viaAlias.IsSome -> viaAlias
         | None ->
             imports
             |> List.tryPick (fun lm ->
@@ -1239,13 +1252,19 @@ let definitionTarget
                          | TNamed(tn, _) -> typeSite tn (Some field)
                          | _ -> None)
                     | Check.TERecord(recName, _) ->
-                        // the literal's own words: the record name or a field
+                        // the literal's own words: the record name or a field;
+                        // the type's env key picks the declaration
+                        let key =
+                            match node.Ty with
+                            | TNamed(k, _) -> k
+                            | _ -> recName
+
                         wordAt useLl.Text jcol
                         |> Option.bind (fun w ->
                             if w = recName then
-                                typeSite recName None
-                            elif recordHasField env recName w then
-                                typeSite recName (Some w)
+                                typeSite key None
+                            elif recordHasField env key w then
+                                typeSite key (Some w)
                             else
                                 None)
                     // `from json T`: the adapter's type name jumps to its
@@ -1257,8 +1276,16 @@ let definitionTarget
                             | Check.TopUnion u -> u.Name
                             | Check.TopValue _ -> ""
 
+                        // the slot's env key, peeled from the node's type
+                        let rec keyOf (ty: Ty) =
+                            match ty with
+                            | TSeq t
+                            | TNamed("Map", [ _; t ]) -> keyOf t
+                            | TNamed(k, _) when k.EndsWith("." + topName) -> k
+                            | _ -> topName
+
                         wordAt useLl.Text jcol
-                        |> Option.bind (fun w -> if w = topName then typeSite topName None else None)
+                        |> Option.bind (fun w -> if w = topName then typeSite (keyOf node.Ty) None else None)
                     | Check.TEFromYaml(tyName, _, _)
                     | Check.TEFromToml(tyName, _) ->
                         wordAt useLl.Text jcol
@@ -1633,10 +1660,15 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         // as the field's type, not the record's (nodeAt sees only TERecord)
         let fieldInLiteral =
             match node with
-            | Some { Kind = Check.TERecord(recName, _) } ->
+            | Some { Kind = Check.TERecord(recName, _); Ty = recTy } ->
+                let key =
+                    match recTy with
+                    | TNamed(k, _) -> k
+                    | _ -> recName
+
                 wordAt ll.Text jcol
                 |> Option.bind (fun w ->
-                    match Map.tryFind recName chk.Env.Types with
+                    match Map.tryFind key chk.Env.Types with
                     | Some(Record def) ->
                         def.Fields
                         |> List.tryPick (fun (f, fty) -> if f = w then Some(formatTy fty) else None)
