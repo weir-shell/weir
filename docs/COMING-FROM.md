@@ -450,10 +450,11 @@ within tmp d
 - Exceptions and `try/except`. `fail` stops the script. Turn an
   expression that may fail into data with `|> try` (an Option) or
   `|> try result` (`Ok`/`Error`), and a command with `| complete`.
-- Dicts. `Map<string, T>` is for keys that are data (JSON objects keyed
-  by ID, counters): `Map.ofPairs`/`get`/`tryGet`/`pairs`, string keys
-  only, and `from json Map<string, T>` to read one. When you know the
-  keys while writing the script, declare a record instead.
+- Dicts. `Map<K, V>` is for keys that are data (JSON objects keyed
+  by ID, counters): `Map.ofPairs`/`get`/`tryGet`/`pairs`, any key with
+  equality (not `float`), and `from json Map<string, T>` to read one —
+  JSON keys are strings. When you know the keys while writing the
+  script, declare a record instead.
 - `os.path`/`pathlib`. `Path.*` functions work on plain strings, using
   the platform's own path rules (`Path.combine`, `Path.stem`,
   `Path.glob`).

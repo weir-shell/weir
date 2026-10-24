@@ -4535,7 +4535,7 @@ let completionTests =
               // table is peeking, never evaluating
               let vals: Map<string, Value> =
                   Map.ofList
-                      [ "d", VMap(Map.ofList [ "CoreCount", VStr "4"; "Corge", VStr "g"; "Zone", VStr "b" ])
+                      [ "d", VMap(Map.ofList [ VStr "CoreCount", VStr "4"; VStr "Corge", VStr "g"; VStr "Zone", VStr "b" ])
                         "ps", VSeq([ VTuple [ VStr "CoreCount"; VStr "4" ]; VTuple [ VStr "Zone"; VStr "b" ] ]: Value list)
                         "lazyPs",
                         VSeq(Seq.init 2 (fun i -> VTuple [ VStr $"K{i}"; VStr "v" ]))
@@ -4587,7 +4587,7 @@ let completionTests =
               // a path literal still path-completes — the slot only claims
               // the lookup shape
               let vals: Map<string, Value> =
-                  Map.ofList [ "d", VMap(Map.ofList [ "etc", VStr "x" ]) ]
+                  Map.ofList [ "d", VMap(Map.ofList [ VStr "etc", VStr "x" ]) ]
 
               let line = "File.read \"/etc/hos"
 
@@ -23805,21 +23805,21 @@ let mapStringTests =
                   "Map<string, FileRow> for an ID-keyed object"
                   ""
           }
-          test "string keys ONLY: the anonymous path teaches the same law as a declaration" {
+          test "string keys ONLY at the wire: the anonymous path teaches the slot's law [D:map-keys]" {
               Expect.stringContains
                   (checkErr "[\"\"] |> from json {| m: Map<int, string> |}").Message
-                  "Map keys are strings only"
-                  "jsonAdmitted mirrors validateTy"
+                  "field 'm': JSON object keys are strings — a Map<int, …> can't cross"
+                  "one helper"
           }
-          test "the slot's key teaches like a declaration [D:map-values]" {
+          test "the slot's key teaches like a field [D:map-values] [D:map-keys]" {
               Expect.stringContains
                   (checkErr "[\"\"] |> from json Map<int, JRow>").Message
-                  "Map keys are strings only (every receipt has them — JSON object keys ARE strings); got Map<int, …>"
+                  "JSON object keys are strings — a Map<int, …> can't cross; convert with Map.pairs |> Seq.map (fun (k, v) -> (show k, v)) |> Map.ofPairs"
                   "a record value"
 
               Expect.stringContains
                   (checkErr "[\"\"] |> from json Map<int, int>").Message
-                  "Map keys are strings only"
+                  "JSON object keys are strings"
                   "a scalar value"
           }
           test "a whole document reads as Map<string, V> for any field-admitted V [D:map-values]" {
@@ -23936,6 +23936,180 @@ let mapStringTests =
                   (run "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.values" |> forceSeq)
                   [ VInt 1L; VInt 2L ]
                   "key-sorted order"
+          } ]
+
+let mapKeysTests =
+    // Map<K, V> [D:map-keys]: any equatable key inside a program, a total
+    // deterministic order, string keys only at the wire
+    let ctorsOf (decl: string) =
+        match (parseDecl decl).Body with
+        | DUnion cases -> constructorValues cases
+        | DRecord _ -> []
+
+    let within (decls: string list) =
+        let te = decls |> List.fold (fun e d -> declare d e) env
+
+        let ve =
+            decls
+            |> List.collect ctorsOf
+            |> List.fold (fun vs (n, v) -> Map.add n v vs) valueEnv
+
+        te, ve
+
+    let runIn (te, ve) input =
+        match typecheck te (parse input) with
+        | Ok t -> eval ve t
+        | Error terr -> failtest (formatError terr)
+
+    let errIn (te, _) input =
+        match typecheck te (parse input) with
+        | Ok t -> failtest $"expected a type error, got {formatTy t.Ty}"
+        | Error terr -> terr
+
+    let showOf scope input =
+        match runIn scope $"show ({input})" with
+        | VStr s -> s
+        | v -> failtest $"expected a string, got {formatValue v}"
+
+    let raised scope input =
+        try
+            runIn scope input |> ignore
+            "no error"
+        with e ->
+            e.Message
+
+    let tiers =
+        within
+            [ "type MkTier = MkZinc | MkMid of int | MkAlpha"
+              "type MkPt = { mx: int; my: string }"
+              "type MkFl = { mf: float }" ]
+
+    testList
+        "Map<K, V> [D:map-keys]"
+        [ test "each equatable key kind builds, looks up and walks in order" {
+              Expect.equal (showOf tiers "Map.ofPairs [(3, \"c\"); (1, \"a\")]") "map [(1, \"a\"); (3, \"c\")]" "int"
+              Expect.equal (showOf tiers "Map.ofPairs [(\"b\", 1); (\"a\", 2)]") "map [(\"a\", 2); (\"b\", 1)]" "string"
+              Expect.equal (showOf tiers "Map.ofPairs [(true, 1); (false, 0)]") "map [(false, 0); (true, 1)]" "bool"
+              Expect.equal (showOf tiers "Map.ofPairs [(2s, 1); (500ms, 0)]") "map [(500ms, 0); (2s, 1)]" "Duration"
+
+              Expect.equal
+                  (showOf tiers "Map.ofPairs [(Instant.parse \"2026-01-02\", 1); (Instant.parse \"2026-01-01\", 0)]")
+                  "map [(2026-01-01T00:00:00Z, 0); (2026-01-02T00:00:00Z, 1)]"
+                  "Instant"
+
+              Expect.equal
+                  (showOf tiers "Map.ofPairs [(Uuid.max, 1); (Uuid.nil, 0)] |> Map.values")
+                  "[0; 1]"
+                  "Uuid, byte order"
+
+              Expect.equal (showOf tiers "Map.ofPairs [(2KiB, 1); (1KiB, 0)] |> Map.values") "[0; 1]" "Size"
+
+              Expect.equal
+                  (showOf tiers "Map.ofPairs [((2, \"a\"), 1); ((1, \"z\"), 2); ((1, \"b\"), 3)] |> Map.values")
+                  "[3; 2; 1]"
+                  "tuple, element by element"
+
+              Expect.equal
+                  (showOf tiers "Map.ofPairs [({ mx = 2; my = \"a\" }, 1); ({ mx = 1; my = \"z\" }, 2)] |> Map.get { mx = 1; my = \"z\" }")
+                  "2"
+                  "record"
+
+              Expect.equal (showOf tiers "Map.ofPairs [(Some 2, 1); (None, 0)] |> Map.tryGet None") "Some 0" "Option"
+          }
+          test "union keys order by case NAME, then payload" {
+              Expect.equal
+                  (showOf tiers "Map.ofPairs [(MkAlpha, 1); (MkMid 9, 2); (MkZinc, 3); (MkMid 2, 4)] |> Map.keys")
+                  "[MkAlpha; MkMid 2; MkMid 9; MkZinc]"
+                  "name order, not declaration order"
+
+              Expect.equal
+                  (showOf tiers "Map.ofPairs [(Ok 1, 1); (Error \"e\", 2); (Ok 0, 3)] |> Map.keys")
+                  "[Error \"e\"; Ok 0; Ok 1]"
+                  "Result"
+          }
+          test "the whole surface takes any key: last-win, has, add, remove, count, pairs" {
+              Expect.equal (runIn tiers "Map.ofPairs [(MkZinc, 1); (MkZinc, 9)] |> Map.get MkZinc") (VInt 9L) "last wins"
+              Expect.equal (runIn tiers "Map.ofPairs [(1, 1)] |> Map.has 1") (VBool true) ""
+              Expect.equal (runIn tiers "Map.ofPairs [(1, 1)] |> Map.add 2 5 |> Map.count") (VInt 2L) ""
+              Expect.equal (runIn tiers "Map.ofPairs [(1, 1)] |> Map.remove 1 |> Map.count") (VInt 0L) ""
+
+              Expect.equal
+                  (runIn tiers "Map.ofPairs [(2, \"b\"); (1, \"a\")] |> Map.pairs" |> forceSeq)
+                  [ VTuple [ VInt 1L; VStr "a" ]; VTuple [ VInt 2L; VStr "b" ] ]
+                  "pairs, key-sorted"
+
+              Expect.equal
+                  (showOf tiers "[\"a.md\"; \"b.txt\"; \"c.md\"] |> Seq.countBy Path.extension |> Map.ofPairs")
+                  "map [(\".md\", 2); (\".txt\", 1)]"
+                  "countBy feeds ofPairs"
+          }
+          test "Map.get raises naming a non-string key as show renders it" {
+              Expect.stringContains (raised tiers "Map.ofPairs [(1, 1)] |> Map.get 7") "Map.get: no key 7" "int"
+              Expect.stringContains (raised tiers "Map.ofPairs [(MkZinc, 1)] |> Map.get (MkMid 3)") "Map.get: no key MkMid 3" "union"
+
+              Expect.stringContains
+                  (raised tiers "Map.ofPairs [(Secret.of \"a\", 1)] |> Map.get (Secret.of \"b\")")
+                  "Map.get: no key ***"
+                  "a Secret masks"
+
+              Expect.stringContains (raised tiers "Map.ofPairs [(\"k\", 1)] |> Map.get \"zz\"") "Map.get: no key \"zz\"" "string keeps quotes"
+          }
+          test "a float key refuses — floats have no equality [D:floats]" {
+              Expect.stringContains (errIn tiers "Map.ofPairs [(1.5, 1)]").Message "floats do not join '=='" "use site"
+
+              Expect.stringContains
+                  (declErr "type MkBad = { m: Map<float, int> }" env).Message
+                  "a Map key needs equality, and float has none"
+                  "declaration"
+          }
+          test "a record holding a float refuses as a key, at the use and the declaration" {
+              Expect.stringContains
+                  (errIn tiers "Map.ofPairs [({ mf = 1.0 }, 1)]").Message
+                  "got MkFl — it holds a float"
+                  "use site"
+
+              Expect.stringContains
+                  (declErr "type MkBad = { m: Map<MkFl, int> }" (fst tiers)).Message
+                  "a Map key needs equality, and MkFl has none — it holds a float"
+                  "declaration"
+          }
+          test "seq, function and Map keys refuse; a generic key meets the class at the call" {
+              Expect.stringContains (errIn tiers "Map.ofPairs [([1], 1)]").Message "equatable" "seq"
+              Expect.stringContains (errIn tiers "Map.ofPairs [(Map.ofPairs [(1, 1)], 1)]").Message "equatable" "Map"
+
+              Expect.stringContains
+                  (errIn tiers "let idx xs = xs |> Seq.map (fun x -> (x, 1)) |> Map.ofPairs in idx [1.5]").Message
+                  "floats do not join '=='"
+                  "generic helper"
+          }
+          test "a declared Map field takes a non-string key inside the program" {
+              let scope = within [ "type MkIdx = { byId: Map<int, string> }" ]
+              Expect.equal (runIn scope "{ byId = Map.ofPairs [(1, \"a\")] }.byId |> Map.get 1") (VStr "a") ""
+          }
+          test "every wire boundary refuses a non-string key with the one teaching" {
+              let teach = "JSON object keys are strings — a Map<int, …> can't cross"
+              let scope = within [ "type MkW = { m: Map<int, int> }" ]
+
+              Expect.stringContains (errIn scope "Map.ofPairs [(1, 2)] |> to json").Message teach "to json"
+              Expect.stringContains (errIn scope "{ m = Map.ofPairs [(1, 2)] } |> to json").Message $"field 'm': {teach}" "to json, field"
+              Expect.stringContains (errIn scope "[\"{}\"] |> from json MkW").Message $"field 'm': {teach}" "from json, field"
+              Expect.stringContains (errIn scope "[\"{}\"] |> from json Map<int, int>").Message teach "from json, slot"
+              Expect.stringContains (errIn scope "[\"{}\"] |> from jsonl Map<int, int>").Message teach "from jsonl, slot"
+              Expect.stringContains (errIn scope "[\"{}\"] |> from json {| m: Map<int, int> |}").Message teach "anonymous shape"
+
+              Expect.stringContains
+                  (errIn scope "Http.send { Http.post \"http://127.0.0.1:1/\" with body = Json (Map.ofPairs [(1, 2)]) }").Message
+                  teach
+                  "an Http Json body"
+
+              Expect.stringContains (errIn scope "Map.ofPairs [(1, 2)] |> to yaml").Message "cannot cross the yaml boundary" "to yaml"
+              Expect.stringContains (errIn scope "[\"{}\"] |> from yaml MkW").Message "cannot cross the yaml boundary" "from yaml"
+          }
+          test "argv refuses a Map splice, any key" {
+              Expect.stringContains
+                  (errorMsgsIn "m.weir" [ "let m = Map.ofPairs [(1, 2)]"; "echo $m" ] |> String.concat "\n")
+                  "command arguments must be strings, ints or bools"
+                  ""
           } ]
 
 let operatorValueTests =
@@ -24436,7 +24610,7 @@ let echoBinaryTests =
                   (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VUnion("Some", Some(Weir.Eval.VStr nul))))
                   "union"
 
-              Expect.isTrue (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VMap(Map [ "k", Weir.Eval.VStr nul ]))) "map"
+              Expect.isTrue (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VMap(Map [ Weir.Eval.VStr "k", Weir.Eval.VStr nul ]))) "map"
           }
           test "a 200k-deep value drains to the depth bound, never overflows the probe [D:eq-depth]" {
               // the tty binary-echo probe was the last unbounded value walk:
@@ -30926,9 +31100,9 @@ let hunt3PerfTests =
           VUnion("Some", Some(VInt 1L))
           VUnion("Some", Some(VInt 1L))
           VUnion("None", None)
-          VMap(Map [ "k", VInt 1L; "j", VInt 2L ])
-          VMap(Map [ "j", VInt 2L; "k", VInt 1L ])
-          VMap(Map [ "k", VInt 1L ])
+          VMap(Map [ VStr "k", VInt 1L; VStr "j", VInt 2L ])
+          VMap(Map [ VStr "j", VInt 2L; VStr "k", VInt 1L ])
+          VMap(Map [ VStr "k", VInt 1L ])
           nest 7 (VInt 1L)
           nest 7 (VInt 1L)
           nest 7 (VInt 2L) ]
@@ -32024,6 +32198,7 @@ let allTests =
           anonRecordTests
           anonLiteralTests
           mapStringTests
+          mapKeysTests
           instantTests
           uuidTests
           wireTableTests

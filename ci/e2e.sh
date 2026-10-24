@@ -5154,7 +5154,7 @@ expect "the value-type Map round-trips" '{"a":1,"b":2}' "$out"
 expect "a nested value-type Map reads" "2" "$out"
 printf 'let m = File.read "m.json" |> from json Map<int, int>\n' > "$mvdir/mk.weir"
 out=$( cd "$mvdir" && $BIN check mk.weir 2>&1 ) && fail "Map<int, …> in the slot must refuse: $out"
-expect "the slot's int key teaches" "Map keys are strings only" "$out"
+expect "the slot's int key teaches" "JSON object keys are strings — a Map<int, …> can't cross" "$out"
 rm -rf "$mvdir"
 
 # ---- `..` after a symlink is physical [D:fs-dotdot-physical] -----------------
@@ -16068,5 +16068,38 @@ for o in "$chk" "$run"; do
 done
 echo "e2e ok: a bare or two-home member after |> teaches its qualified spelling, check and run alike, no not-weir preamble [D:bare-partition]"
 rm -rf "$pfdir"
+
+# ---- Map keys beyond strings [D:map-keys] ----------------------------------
+# a Map<FileKind, int> from countBy walks in case-name order; a
+# script's `Error | Ok` and the prelude's Result (`Ok | Error`) key the
+# same way, by name then payload; the wire still refuses a non-string key
+mkdir_=$(mkweirtmp)
+mkdir "$mkdir_/sub"
+: > "$mkdir_/a.md"; : > "$mkdir_/b.md"; : > "$mkdir_/c.txt"
+cat > "$mkdir_/kinds.weir" <<'WEIR'
+type Verdict = Error | Ok
+let byKind = ls |> Seq.countBy _.kind |> Map.ofPairs
+byKind |> Map.pairs |> Seq.iter (fun (k, n) -> print $"{k}={n}")
+print $"{Map.get Directory byKind} {Map.has Symlink byKind}"
+print $"{Map.ofPairs [(Ok, 1); (Error, 2)] |> Map.keys}"
+WEIR
+out=$(cd "$mkdir_" && $BIN kinds.weir 2>&1) || fail "map-keys: the script must run: $out"
+[ "$out" = "Directory=1
+Regular=4
+1 false
+[Error; Ok]" ] || fail "map-keys: Map<FileKind, int> and Verdict keys in case-name order: $out"
+cat > "$mkdir_/result.weir" <<'WEIR'
+let m = Map.ofPairs [(Ok 2, "c"); (Error "b", "b"); (Ok 1, "d"); (Error "a", "a")]
+print $"{Map.keys m}"
+WEIR
+out=$($BIN "$mkdir_/result.weir" 2>&1) || fail "map-keys: the Result script must run: $out"
+[ "$out" = '[Error "a"; Error "b"; Ok 1; Ok 2]' ] || fail "map-keys: Result keys by case name then payload, as Verdict's: $out"
+printf 'let m = Map.ofPairs [(1, "a")]
+m |> to json |> Seq.iter print
+' > "$mkdir_/wire.weir"
+out=$($BIN check "$mkdir_/wire.weir" 2>&1) && fail "map-keys: to json of a Map<int, _> must not check"
+echo "$out" | grep -qF "JSON object keys are strings — a Map<int, …> can't cross" || fail "map-keys: the wire teaching: $out"
+rm -rf "$mkdir_"
+echo "e2e ok: Map<FileKind, int> via countBy, union keys by case name then payload, the wire keeps string keys [D:map-keys]"
 
 echo "e2e battery: all green"

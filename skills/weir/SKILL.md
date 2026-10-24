@@ -1249,8 +1249,8 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   `average`s) own the other types — `Seq.average` alone crosses types
   (the mean of ints is a float). `Seq.filter` teaches `where`.
   `Seq.groupBy` yields `(key, items)` PAIRS — F#'s own shape, the same
-  tuples `countBy`/`zip`/`pairwise` speak; string keys feed
-  `Map.ofPairs` directly [D:groupby-pairs]:
+  tuples `countBy`/`zip`/`pairwise` speak; the pairs feed
+  `Map.ofPairs` directly, any equatable key [D:groupby-pairs]:
 
 ```weir
 ["aa"; "ab"; "b"]
@@ -1864,18 +1864,49 @@ type Bad = C of int
   order, a repeated key last-wins, `null` -> `YNull`) and written back as the JSON it denotes
   [D:json-yaml-field] — so `{ entityids: Entity }`,
   `{ items: seq<Item> }`, `{ labels: seq<string * string> }`, and an
-  ID-keyed `{ documents: Map<string, Doc> }` all read. A `Map`'s keys are DATA, not schema, and strings
-  ONLY (JSON object keys ARE strings; `Map<int, …>` teaches). The
+  ID-keyed `{ documents: Map<string, Doc> }` all read. A `Map`'s keys are DATA, not schema, and AT THE
+  WIRE strings ONLY (JSON object keys ARE strings; a `Map<int, …>`
+  field, slot or `to json` teaches the conversion, `Map.pairs |>
+  Seq.map (fun (k, v) -> (show k, v)) |> Map.ofPairs`). The
   whole document can be the map: `from json Map<string, T>` (the
   adapter slot's third form; `T` is anything a `Map` field's value
   may be — a record, `{| … |}`, `int`, `seq<string>`, `Option<…>`,
   another `Map` [D:map-values]; `Map<int, …>` teaches here too;
-  `jsonl` refuses — a map is ONE object; `yaml` does not take it
-  yet). Duplicate keys last-win. `Map` surface: `ofPairs`
+  `jsonl` refuses — a map is ONE object; `yaml` does not take a
+  `Map` at all yet). INSIDE a program `Map<K, V>` takes any key with
+  equality [D:map-keys] — int, string, bool, Duration, Size, Instant,
+  Uuid, Bytes, Secret, and unions, tuples and records of those; a
+  `float` key (or a record holding one) refuses as `==` does, and so
+  do seq, function and `Map` keys. The ORDER is deterministic: scalars
+  as `Seq.sort` orders them, tuples element by element, records field
+  by field in field-name order, union cases by case NAME (ordinal) then
+  payload (Bytes and Secret by content) — NOT F#'s declaration order:
+  a union value carries only its case name, and name order needs no
+  hidden state (`Error` sorts before `Ok`). Duplicate keys last-win.
+  `Map` surface: `ofPairs`
   (last-wins) / `pairs` / `keys` / `values` (key-sorted) / `get`
-  (raises, naming the key) / `tryGet` / `has` / `add` / `remove` /
+  (raises, naming the key — a non-string key as `show` renders it) /
+  `tryGet` / `has` / `add` / `remove` /
   `count`; no `m[k]` indexing — `Map.get` is the spelling; `==` is
-  not defined for maps. A self-referential record
+  not defined for maps.
+
+```weir
+type Level = Error | Warn | Info
+let hits = [Warn; Info; Warn; Error] |> Seq.countBy id |> Map.ofPairs
+hits |> Map.pairs |> Seq.iter (fun (l, n) -> print $"{l}={n}")
+print (show (Map.ofPairs [((2, "b"), 1); ((1, "z"), 2)] |> Map.keys))
+```
+
+```weir-error
+let m = Map.ofPairs [(0.5, "half")] // a Map key needs equality; floats have none
+```
+
+```weir-error
+let m = Map.ofPairs [(1, "one")]
+m |> to json |> Seq.iter print // JSON object keys are strings — show the key first
+```
+
+  A self-referential record
   refuses at check, naming its cycle. An `Option` field reads a
   missing key OR an explicit `null` as `None` — at EVERY depth (a
   `null` element under `seq<Option<int>>` is `None`); a required
