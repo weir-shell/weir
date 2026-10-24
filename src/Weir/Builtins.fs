@@ -3133,33 +3133,35 @@ let private pathNormalize (p: string) : string =
 let private nameMaxBytes = 255
 
 // the Windows device names; COM0/LPT0 and the superscript digits are on
-// Microsoft's reserved list too
+// Microsoft's reserved list too, and since Windows 8 the console names
+// CONIN$/CONOUT$ are DOS devices in every directory
 let private reservedDeviceNames =
     set
-        [ yield! [ "CON"; "PRN"; "AUX"; "NUL" ]
+        [ yield! [ "CON"; "PRN"; "AUX"; "NUL"; "CONIN$"; "CONOUT$" ]
           for d in [ "0"; "1"; "2"; "3"; "4"; "5"; "6"; "7"; "8"; "9"; "¹"; "²"; "³" ] do
               yield "COM" + d
               yield "LPT" + d ]
 
-// the code points of a string, a lone surrogate as None (no UTF-8 form)
-let private namePoints (s: string) : (string * int option) list =
-    let out = ResizeArray()
-    let mutable i = 0
+// the code points of a string, a lone surrogate as None (no UTF-8 form) —
+// one at a time, never as a list: a name is at most 255 bytes, so the
+// walks below stop there and bulk text costs a name's work
+let private namePoints (s: string) : seq<string * int option> =
+    seq {
+        let mutable i = 0
 
-    while i < s.Length do
-        let c = s[i]
+        while i < s.Length do
+            let c = s[i]
 
-        if System.Char.IsHighSurrogate c && i + 1 < s.Length && System.Char.IsLowSurrogate s[i + 1] then
-            out.Add(s.Substring(i, 2), Some(System.Char.ConvertToUtf32(c, s[i + 1])))
-            i <- i + 2
-        elif System.Char.IsSurrogate c then
-            out.Add(string c, None)
-            i <- i + 1
-        else
-            out.Add(string c, Some(int c))
-            i <- i + 1
-
-    List.ofSeq out
+            if System.Char.IsHighSurrogate c && i + 1 < s.Length && System.Char.IsLowSurrogate s[i + 1] then
+                yield s.Substring(i, 2), Some(System.Char.ConvertToUtf32(c, s[i + 1]))
+                i <- i + 2
+            elif System.Char.IsSurrogate c then
+                yield string c, None
+                i <- i + 1
+            else
+                yield string c, Some(int c)
+                i <- i + 1
+    }
 
 let private utf8Len (cp: int) : int =
     if cp < 0x80 then 1
@@ -3183,50 +3185,56 @@ let private nameReserved (s: string) : bool =
     reservedDeviceNames.Contains(stem.TrimEnd(' ').ToUpperInvariant())
 
 let private nameBytes (s: string) : int =
-    namePoints s |> List.sumBy (snd >> Option.map utf8Len >> Option.defaultValue 3)
+    namePoints s |> Seq.sumBy (snd >> Option.map utf8Len >> Option.defaultValue 3)
 
 let pathIsName (s: string) : bool =
-    s <> ""
+    // no code point is shorter than one UTF-8 byte, so more UTF-16 units
+    // than the byte limit is never a name: refused before any walk
+    s.Length <= nameMaxBytes
+    && s <> ""
     && s <> "."
     && s <> ".."
-    && not (namePoints s |> List.exists (snd >> nameForbidden))
+    && not (namePoints s |> Seq.exists (snd >> nameForbidden))
     && not (s.EndsWith ' ' || s.EndsWith '.')
     && not (nameReserved s)
     && nameBytes s <= nameMaxBytes
 
 // truncate to the byte limit at a code-point boundary — never inside a
-// surrogate pair or a UTF-8 sequence
-let private nameTruncate (s: string) : string =
+// surrogate pair or a UTF-8 sequence — replacing a forbidden code point
+// with '_' when asked; the walk stops at the limit
+let private nameTruncate (replaceForbidden: bool) (s: string) : string =
     let sb = System.Text.StringBuilder()
     let mutable bytes = 0
-    let mutable full = false
+    use points = (namePoints s).GetEnumerator()
+    let mutable more = true
 
-    for (text, cp) in namePoints s do
-        let n = cp |> Option.map utf8Len |> Option.defaultValue 3
+    while more && points.MoveNext() do
+        let text, cp = points.Current
 
-        if not full && bytes + n <= nameMaxBytes then
+        let text, n =
+            if replaceForbidden && nameForbidden cp then
+                "_", 1
+            else
+                text, cp |> Option.map utf8Len |> Option.defaultValue 3
+
+        if bytes + n <= nameMaxBytes then
             sb.Append text |> ignore
             bytes <- bytes + n
         else
-            full <- true
+            more <- false
 
     sb.ToString()
 
 let pathToName (s: string) : string =
-    let replaced =
-        namePoints s
-        |> List.map (fun (text, cp) -> if nameForbidden cp then "_" else text)
-        |> String.concat ""
-
     let trim (t: string) = t.TrimEnd(' ', '.')
 
     let named =
-        match trim (nameTruncate replaced) with
+        match trim (nameTruncate true s) with
         | "" -> "_"
         | t -> t
 
     if nameReserved named then
-        trim (nameTruncate ("_" + named))
+        trim (nameTruncate false ("_" + named))
     else
         named
 
@@ -7239,7 +7247,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path" ])
           "Path.isName",
           (bd
-              "True when the string is one file name that is valid on Linux, macOS and Windows alike: not empty, '.' or '..'; no '/', '\\', control character (U+0000 to U+001F) or any of < > : \" | ? *; no trailing space or dot; not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, `COM¹`-`COM³`, `LPT¹`-`LPT³`) in any case, with or without an extension; at most 255 bytes in UTF-8. Use toName to turn arbitrary text into such a name."
+              "True when the string is one file name that is valid on Linux, macOS and Windows alike: not empty, '.' or '..'; no '/', '\\', control character (U+0000 to U+001F) or any of < > : \" | ? *; no trailing space or dot; not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0`-`COM9`, `LPT0`-`LPT9`, `COM¹`-`COM³`, `LPT¹`-`LPT³`) in any case, with or without an extension; at most 255 bytes in UTF-8. Use toName to turn arbitrary text into such a name."
               (Some "Path.isName \"report-2026.txt\"")
               None
            |> named [ "name" ])

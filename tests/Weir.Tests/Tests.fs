@@ -15448,6 +15448,9 @@ let agentFindingsTests =
                     "..", false
                     "x:y", false
                     "CON.txt", false
+                    "CONIN$", false
+                    "conout$.txt", false
+                    "CoNiN$.log", false
                     "trail.", false
                     "", false
                     ".", false
@@ -15512,6 +15515,8 @@ let agentFindingsTests =
                     "..", "_"
                     " . ", "_"
                     "CON.txt", "_CON.txt"
+                    "CONOUT$", "_CONOUT$"
+                    "conin$.log", "_conin$.log"
                     "con", "_con"
                     "com¹.log", "_com¹.log"
                     "CON .txt", "_CON .txt"
@@ -15551,6 +15556,15 @@ let agentFindingsTests =
 
               expectValue "Path.toName \"CON.txt\"" (VStr "_CON.txt")
               expectValue "Path.toName \"..\"" (VStr "_")
+          }
+          test "Path.isName and Path.toName on bulk text cost a name's work, not the text's [D:path-name]" {
+              let big = String.replicate 20_000_000 "a/"
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+              Expect.isFalse (Weir.Builtins.pathIsName big) "far over the limit"
+              let n = Weir.Builtins.pathToName big
+              Expect.isTrue (System.Text.Encoding.UTF8.GetByteCount n <= 255) "capped at the limit"
+              Expect.isTrue (Weir.Builtins.pathIsName n) "a name"
+              Expect.isLessThan sw.Elapsed.TotalSeconds 2.0 "bounded by the limit, not the input"
           }
           test "Path.isName and Path.toName are pure [D:path-name]" {
               Expect.isEmpty

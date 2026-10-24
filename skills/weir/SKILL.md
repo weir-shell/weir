@@ -2588,7 +2588,7 @@ print (f 1)
   make one; under to confine a join.** `Path.isName s` is true iff `s`
   is a single name valid on Linux, macOS AND Windows — not `""`/`.`/`..`,
   no `/` `\` control char or `< > : " | ? *`, no trailing space or dot,
-  not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`,
+  not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0`–`COM9`,
   `LPT0`–`LPT9`, `COM¹`–`COM³`, `LPT¹`–`LPT³`, any case, any extension),
   at most 255 UTF-8 bytes. `Path.toName s` makes one from any text:
   forbidden chars become `_`, trailing spaces/dots go, a device name
