@@ -5825,17 +5825,20 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             // created and registered inside the spawn gate, so no spill dir
             // appears after the teardown kill; removed when the start
-            // refuses [D:teardown-stops-arms]
-            Session.gatedSpawn (fun () -> Session.createRegisteredDir spill)
+            // refuses [D:teardown-stops-arms]. Its files too: the pumps only
+            // open them, so a hard exit's sweep deletes a tree nothing adds
+            // to [D:hard-exit]
+            let outPath = System.IO.Path.Combine(spill, "out.log")
+            let errPath = System.IO.Path.Combine(spill, "err.log")
+
+            Session.gatedSpawn (fun () ->
+                Session.createRegisteredDir spill
+                Session.createPrivateFile outPath
+                Session.createPrivateFile errPath)
 
             let p, drain =
                 try
-                    Proc.startSpilled
-                        overlay
-                        (Proc.specProg prog)
-                        argv
-                        (System.IO.Path.Combine(spill, "out.log"))
-                        (System.IO.Path.Combine(spill, "err.log"))
+                    Proc.startSpilled overlay (Proc.specProg prog) argv outPath errPath
                 with _ ->
                     (try
                         System.IO.Directory.Delete(spill, true)
@@ -5849,8 +5852,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             let handle =
                 { Proc = p
-                  OutPath = System.IO.Path.Combine(spill, "out.log")
-                  ErrPath = System.IO.Path.Combine(spill, "err.log")
+                  OutPath = outPath
+                  ErrPath = errPath
                   SpillDir = spill
                   Drain = drain }
 
