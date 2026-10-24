@@ -36,7 +36,33 @@ together:
 - unparseable values
 
 `--help` prints the usage even when the rest of the command line is
-invalid.
+invalid. A `///` doc on the record type itself is the program's
+description: its first paragraph shows under the usage line. A
+section with nothing in it is left out, and `[flags]` appears in the
+usage line only when there are flags.
+
+A bad command line is the script user's mistake, not the script's, so
+the error reads like any tool's usage error: the script's name, one
+line per problem, the help lines of the flags involved, and a pointer
+to `--help`. It carries no weir source location, and the exit code
+is 2. `deploy.weir --trget prod` gives:
+
+```text
+deploy.weir: unknown flag '--trget'. Did you mean '--target'?
+deploy.weir: unexpected argument 'prod'
+deploy.weir: missing required flag '--target'
+  -t, --target <string>       required — the environment to deploy to
+run 'deploy.weir --help' for usage
+```
+
+`try` still captures it, with this text as the message.
+
+Load the arguments before the script does anything: `weir check`
+warns (`effect-before-args`) about a top-level statement above the
+first top-level `Args.load` or `Env.load` that writes files, runs a
+command or uses the network, since it would still run on `--help` or
+a bad argument. Reads, printing and function definitions don't count,
+and neither does a `within` whose body holds the load.
 
 There are no positional arguments; pass operands as flags. To parse
 arguments by hand, `Args.flag` and `Args.value` scan the raw
@@ -53,9 +79,46 @@ appear before or after the subcommand name:
 ```weir-error
 type CloneArgs = { remote: string; force: bool }
 type Cmd = Clone of CloneArgs | Status
-match Args.load Cmd with // no argv here: "missing subcommand; one of: clone, status"
+match Args.load Cmd with // no argv here: "missing command — one of:" and the commands
 | Clone a -> print a.remote
 | Status -> print "status"
+```
+
+A case's `///` doc (its first line) is shown beside the subcommand in
+`--help`, and `tool clone --help` shows it as the subcommand's
+description. A case without a doc falls back to its payload record's
+doc:
+
+```weir
+let src = <<<
+    type CloneArgs = { remote: string }
+
+    /// A tiny git front end.
+    type Cmd =
+        /// copy a repository
+        | Clone of CloneArgs
+        /// show the working tree state
+        | Status
+
+    let cmd = Args.load Cmd
+    print $"{cmd}"
+
+src |> File.write "ref-help.weir"
+weir ref-help.weir --help
+```
+
+prints
+
+```text
+usage: ref-help.weir <command> [flags]
+
+A tiny git front end.
+
+commands:
+  clone    copy a repository
+  status   show the working tree state
+clone flags:
+  -r, --remote <string>       required
 ```
 
 ## `Defaults`

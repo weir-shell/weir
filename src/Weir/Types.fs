@@ -614,7 +614,8 @@ type RecordDef =
       // field -> the `///` doc's first line, the derived --help text
       // [D:doc-help]. `--help` reads this instead of the retired
       // [<Doc>] attribute; hover still reads the full doc out-of-band.
-      // Same check-time-erased nature as Attrs.
+      // Same check-time-erased nature as Attrs. The key "" holds the
+      // type's own doc, its first paragraph [D:help-case-docs].
       Docs: Map<string, string> }
 
 /// The wire-key attribute's single reader [D:wire-keys]: a field
@@ -704,7 +705,11 @@ type UnionDef =
       // Tag is None.
       Tag: string option
       CaseWires: Map<string, string>
-      OtherCase: string option }
+      OtherCase: string option
+      // case -> the `///` doc's first line, a subcommand's --help text,
+      // and "" -> the type's own doc [D:help-case-docs]; check-time-erased
+      // like RecordDef.Docs
+      Docs: Map<string, string> }
 
 /// A tagged case's tag value — the [<Wire>] override or the case name
 let caseWire (def: UnionDef) (case: string) : string =
@@ -739,6 +744,10 @@ type TypeEnv =
       PlanRefused: Map<string, string>
       Modules: Map<string, Map<string, Scheme>>
       Types: Map<string, TypeDef>
+      // the record types the file passes to a typed boundary — type name
+      // -> "Args.load"/"Env.load" — so an unbound field name can teach
+      // loading it. Empty outside a file check/run.
+      LoadTargets: Map<string, string>
       // imported modules [D:modules-v1]: alias -> the type names that
       // module exported. Types themselves live flat in `Types` (plain
       // name, so signatures/field-access/bare literals resolve); this

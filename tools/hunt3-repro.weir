@@ -573,7 +573,7 @@ let ctlArgsSecretSpaced d =
 
 let h3e2 d =
     let r = runIn d "30" [put d "e2.weir" e2Script; "--token=h3-hunter2"; "--port"; "1"]
-    failing [ ($"--token=VALUE echoed (exit {codeOf r})", codeOf r == 1 && not (diagOf r |> Str.contains "h3-hunter2")) ]
+    failing [ ($"--token=VALUE echoed (exit {codeOf r})", codeOf r == 2 && not (diagOf r |> Str.contains "h3-hunter2")) ]
 
 // ---- H3-E3: an env key containing `=` becomes another variable ----------------
 

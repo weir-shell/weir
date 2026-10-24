@@ -42,7 +42,8 @@ let fileKind: UnionDef =
       Cases = [ "Regular", None; "Directory", None; "Symlink", None ]
       Tag = None
       CaseWires = Map.empty
-      OtherCase = None }
+      OtherCase = None
+      Docs = Map.empty }
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
@@ -8364,6 +8365,7 @@ let typeEnv: TypeEnv =
               fileKind.Name, Union fileKind
               completedDef.Name, Record completedDef
               envVarDef.Name, Record envVarDef ]
+      LoadTargets = Map.empty
       ModuleTypes = Map.empty
       TypeOrigins = Map.empty
       ModulePrivate = Map.empty

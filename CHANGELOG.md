@@ -20,9 +20,37 @@ Many of the changes and fixes below were found porting starship to weir.
   or flag names. It gets 300 ms and 1 MiB, and pressing another key
   stops it (the key is kept); with no answer you get what the signature
   alone gives. REPL only; the editor is unchanged.
+- **`--help` shows what each subcommand does.** A `///` doc on a union
+  case is printed beside its subcommand, aligned, and `tool.weir pub
+  --help` shows it as the description (a case with no doc uses its
+  payload record's doc). A `///` doc on the `Args.load` type itself is
+  the program's description, shown under the usage line (its first
+  paragraph).
+- **A warning when a script acts before reading its arguments.** `weir
+  check` (and the editor, and a run) warns about a top-level statement
+  above the first `Args.load` or `Env.load` that writes files, runs a
+  command or uses the network: it would still run on `--help` or a bad
+  argument. Reads, printing, function definitions and a `within` that
+  wraps the load are fine.
 
 ### Changed
 
+- **A bad command line is a usage error for whoever runs the script.**
+  `Args.load`'s errors no longer look like a crash in the script: no
+  `journal.weir:14:1: error: Args.load Cli:` prefix, but the script's
+  name, one line per problem, the list of commands or the help lines
+  of the flags involved, and `run 'journal.weir --help' for usage`.
+  The exit code is 2 (it was 1). A bad value is reported once, no
+  longer also as a missing flag, and `--mode pub` for the subcommand
+  says to write the command bare.
+- **`--help` leaves out empty sections.** A script with subcommands but
+  no shared flags prints `usage: j3.weir <command>`, with no empty
+  `global options:` and no `[global flags]`.
+- **A record field written bare points at the field.** `mode` where
+  `args.mode` was meant now says "unbound 'mode' — did you mean
+  'args.mode'? ('mode' is a field of 'Cli')" instead of suggesting
+  `File.mode`; with no value of the record bound yet, it says to load
+  it first.
 - **`def` is an ordinary name.** `let def = 1` and a field called `def`
   work. A line shaped like a definition, `def double x = …`, still gets
   "'def' is not a weir word — define with 'let f x = ...'".
