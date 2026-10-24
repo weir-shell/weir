@@ -64,6 +64,17 @@ Many of the changes and fixes below were found porting starship to weir.
   declare unions with the same case name, the qualifier says which one
   you mean; a bare case there, with nothing typing the value, is an
   error that lists both qualified spellings.
+- **Error codes say what they mean.** The code in `error [code]:` and
+  in `weir check --json` is renamed where it was weir's internal
+  vocabulary: `casing-law` is now `lowercase-binding`, `seq-unit`
+  `non-unit-statement`, `ord-key` `unsortable-key`, `eq`
+  `not-equatable`, `show-fn` `unrenderable-function`,
+  `ambiguous-constraint` `undetermined-type`, `regex-arity`
+  `regex-binder-count`, `assembly` `layout`, `sig-orphan`
+  `missing-implementation`, `sig-doc` `doc-on-implementation`,
+  `session-decl-ref` `session-names-declaration` and `module-rule`
+  `module-declares-only`. If a script or editor setup matches on a code,
+  update it.
 
 ### Fixed
 
