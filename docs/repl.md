@@ -801,6 +801,12 @@ as an empty last line does in the editor: the error is shown and the
 lines after it still run. Input with one statement per line works as
 usual, and a directive is always a single line.
 
+An entry whose indented line continues a command with what looks like
+a second command (`echo a` above `    echo b`) is refused before any of
+it runs, with the message `weir check` gives as a warning (see
+[Statements](reference/statements.md)): dedent the line, or quote the
+word if it is meant as an argument.
+
 ## weir and fzf
 
 fzf is always optional: everything that uses it has a built-in

@@ -38,6 +38,15 @@ Many of the changes and fixes below were found porting starship to weir.
   entry file in it. A raw URL without `--path` is still one file,
   fetched as written. A lock with such a module is `schemaVersion` 2,
   which older weir refuses to read rather than misread.
+- **An indented line that starts with a command is flagged.** In
+  `git push origin a` followed by an indented `git push origin b`, the
+  second line's words are more arguments of the first `git push`: one
+  command ran, and failed only when it ran. `weir check` and the editor
+  now warn (`continued-command`) at the second `git`, a script prints
+  the warning and runs as before, and the REPL refuses the entry before
+  anything runs. Flags, quoted words, paths, `|` lines and commands
+  that take a command (`sudo`, `env`, `xargs`, `ssh`, …) are not
+  flagged.
 
 ### Changed
 
