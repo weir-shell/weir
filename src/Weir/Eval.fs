@@ -4472,7 +4472,7 @@ let private wrapOpt (ty: Ty) (v: Value) : Value =
 /// An `Option<T>` field validates inside Some; None is the absent field,
 /// never an absent payload (the checker refuses an optional payload).
 let private validateFlat
-    (problems: ResizeArray<string>)
+    (report: string -> string -> unit)
     (label: string -> string)
     (def: RecordDef)
     (fields: (string * Value) list)
@@ -4489,7 +4489,7 @@ let private validateFlat
         |> function
             | Ok built -> built
             | Error msg ->
-                problems.Add $"{label f}: {msg}"
+                report f $"{label f}: {msg}"
                 VUnit
 
     fields
@@ -4632,18 +4632,63 @@ let private usageProg () : string =
     | "" -> ""
     | p -> System.IO.Path.GetFileName p + " "
 
-let private argvUsage (target: ArgsTarget) (argv: string list) : string =
+// a type's own doc, the program (or subcommand) description
+// [D:help-case-docs]: its first paragraph, kept in Docs under ""
+let private typeDesc (docs: Map<string, string>) : string option = Map.tryFind "" docs
+
+// a case's description: its own doc's first line, else its payload
+// record's doc (the case doc wins)
+let private caseDesc (udef: UnionDef) (payloads: Map<string, RecordDef>) (c: string) : string option =
+    match Map.tryFind c udef.Docs with
+    | Some d -> Some d
+    | None -> Map.tryFind c payloads |> Option.bind (fun rd -> typeDesc rd.Docs)
+
+// the commands list [D:help-case-docs]: each case's description (first
+// line) beside its token, aligned; a case with none shows the bare token
+let private argvCaseLines (udef: UnionDef) (payloads: Map<string, RecordDef>) : string list =
+    let names = udef.Cases |> List.map (fun (c, _) -> c, c.ToLowerInvariant())
+    let width = (names |> List.map (snd >> String.length) |> List.max) + 3
+
+    names
+    |> List.map (fun (c, name) ->
+        match caseDesc udef payloads c with
+        | Some d -> "  " + name.PadRight width + (d.Split '\n').[0]
+        | None -> "  " + name)
+
+// the description block under the usage line, set off by blank lines;
+// an empty section is never printed [D:help-case-docs]
+let private descBlock (desc: string option) (rest: string list) : string list =
+    match desc with
+    | Some d ->
+        "" :: List.ofArray (d.Split '\n')
+        @ (if rest.IsEmpty then [] else "" :: rest)
+    | None -> rest
+
+// a usage slot appears only when something fills it [D:help-case-docs]
+let private flagsSlot (any: bool) = if any then " [flags]" else ""
+
+let argvUsage (target: ArgsTarget) (argv: string list) : string =
     match target with
-    | ArgsRecord def -> String.concat "\n" ($"usage: {usageProg ()}[flags]" :: argvUsageLines def)
+    | ArgsRecord def ->
+        let head =
+            if def.Fields.IsEmpty then
+                $"usage: {usageProg ()}".TrimEnd()
+            else
+                $"usage: {usageProg ()}[flags]"
+
+        String.concat "\n" (head :: descBlock (typeDesc def.Docs) (argvUsageLines def))
     | ArgsUnion(udef, payloads) ->
-        let caseLines = udef.Cases |> List.map (fun (c, _) -> "  " + c.ToLowerInvariant())
+        let payloadOf c =
+            match Map.tryFind c payloads with
+            | Some rdef when not rdef.Fields.IsEmpty -> Some rdef
+            | _ -> None
 
         let blocks =
             udef.Cases
             |> List.collect (fun (c, _) ->
-                match Map.tryFind c payloads with
-                | Some rdef when not rdef.Fields.IsEmpty -> $"{c.ToLowerInvariant()} flags:" :: argvUsageLines rdef
-                | _ -> [])
+                match payloadOf c with
+                | Some rdef -> $"{c.ToLowerInvariant()} flags:" :: argvUsageLines rdef
+                | None -> [])
 
         // case-scoped help when the case token leads [D:shared-flags],
         // as the shared-flags twin scopes it — no global flags precede it
@@ -4656,23 +4701,34 @@ let private argvUsage (target: ArgsTarget) (argv: string list) : string =
         match scoped with
         | Some(c, _) ->
             let name = c.ToLowerInvariant()
+            let desc = caseDesc udef payloads c
 
-            match Map.tryFind c payloads with
-            | Some rdef when not rdef.Fields.IsEmpty ->
+            match payloadOf c with
+            | Some rdef ->
                 String.concat
                     "\n"
-                    ([ $"usage: {usageProg ()}{name} [flags]"; $"{name} flags:" ] @ argvUsageLines rdef)
-            | _ -> $"usage: {usageProg ()}{name}"
+                    ($"usage: {usageProg ()}{name} [flags]"
+                     :: descBlock desc ($"{name} flags:" :: argvUsageLines rdef))
+            | None -> String.concat "\n" ($"usage: {usageProg ()}{name}" :: descBlock desc [])
         | None ->
-            String.concat "\n" ([ $"usage: {usageProg ()}<command> [flags]"; "commands:" ] @ caseLines @ blocks)
+            let anyFlags = udef.Cases |> List.exists (fun (c, _) -> (payloadOf c).IsSome)
+
+            String.concat
+                "\n"
+                ($"usage: {usageProg ()}<command>{flagsSlot anyFlags}"
+                 :: descBlock (typeDesc udef.Docs) ("commands:" :: argvCaseLines udef payloads @ blocks))
     | ArgsShared(outer, uf, udef, payloads) ->
         let sharedDef = Argv.sharedOf outer uf
+        let hasGlobals = not sharedDef.Fields.IsEmpty
 
         let payloadOf c (p: Ty option) =
             if p.IsSome then Map.tryFind c payloads else None
 
         let scopeShortsFor c p =
             fst (Argv.shortTables (scopeDef sharedDef (payloadOf c p)))
+
+        let hasCaseFlags c p =
+            payloadOf c p |> Option.exists (fun rdef -> not rdef.Fields.IsEmpty)
 
         let caseBlock c p =
             match payloadOf c p with
@@ -4687,11 +4743,16 @@ let private argvUsage (target: ArgsTarget) (argv: string list) : string =
 
         match scoped with
         | Some(c, p) ->
+            let globals =
+                if hasGlobals then
+                    "global options:" :: argvUsageLinesWith (scopeShortsFor c p) sharedDef
+                else
+                    []
+
             String.concat
                 "\n"
-                ([ $"usage: {usageProg ()}{c.ToLowerInvariant()} [flags]"; "global options:" ]
-                 @ argvUsageLinesWith (scopeShortsFor c p) sharedDef
-                 @ caseBlock c p)
+                ($"usage: {usageProg ()}{c.ToLowerInvariant()}{flagsSlot (hasGlobals || hasCaseFlags c p)}"
+                 :: descBlock (caseDesc udef payloads c) (globals @ caseBlock c p))
         | None ->
             // the global section shows a derived short only when it holds
             // in every case scope (explicit shorts always hold)
@@ -4708,17 +4769,85 @@ let private argvUsage (target: ArgsTarget) (argv: string list) : string =
                         | Some(ShortOf f) -> f = flag
                         | _ -> false))
 
-            let caseLines = udef.Cases |> List.map (fun (c, _) -> "  " + c.ToLowerInvariant())
-
             let blocks = udef.Cases |> List.collect (fun (c, p) -> caseBlock c p)
+            let anyCaseFlags = udef.Cases |> List.exists (fun (c, p) -> hasCaseFlags c p)
+
+            let globals =
+                if hasGlobals then
+                    "global options:" :: argvUsageLinesWith stable sharedDef
+                else
+                    []
 
             String.concat
                 "\n"
-                ([ $"usage: {usageProg ()}[global flags] <command> [flags]"; "global options:" ]
-                 @ argvUsageLinesWith stable sharedDef
-                 @ [ "commands:" ]
-                 @ caseLines
-                 @ blocks)
+                ($"""usage: {usageProg ()}{(if hasGlobals then "[global flags] " else "")}<command>{flagsSlot anyCaseFlags}"""
+                 :: descBlock (typeDesc outer.Docs) (globals @ [ "commands:" ] @ argvCaseLines udef payloads @ blocks))
+
+// an Args.load parse failure is the script USER's usage error
+// [D:args-usage-error]: no weir location, exit 2. A plain exception
+// otherwise, so `try` still captures it with its text.
+type ArgsUsageError(message: string) =
+    inherit System.Exception(message)
+
+// the collected problems [D:argv-rules], plus what the error shows from
+// the help: the flags a problem names (their help lines) and whether the
+// command list helps
+type private ArgvProblems() =
+    // (message, the commands list follows it)
+    let msgs = ResizeArray<string * bool>()
+    let flags = ResizeArray<string>()
+    member _.Add(m: string) = msgs.Add(m, false)
+    member _.AddCommands(m: string) = msgs.Add(m, true)
+
+    member _.AddFor(field: string, m: string) =
+        msgs.Add(m, false)
+        if not (flags.Contains field) then flags.Add field
+
+    member _.Names(field: string) = flags.Contains field
+    member _.Count = msgs.Count
+    member _.Msgs = List.ofSeq msgs
+    member _.Flags = List.ofSeq flags
+
+// the program name as `--help` shows it [D:argv-help-slots]
+let private usageName () : string =
+    match usageProg () with
+    | "" -> "weir"
+    | p -> p.TrimEnd()
+
+// one line per problem, each led by the program name; a command problem
+// carries the commands list, the flag lines of the flags the problems
+// name follow (declaration order), then the way to the full help
+let private argvUsageFail
+    (problems: ArgvProblems)
+    (caseLines: string list)
+    (flagLines: string list -> string list)
+    (helpScope: string)
+    : 'a =
+    let prog = usageName ()
+
+    let lines =
+        problems.Msgs
+        |> List.collect (fun (m, withCommands) ->
+            if withCommands then
+                $"{prog}: {m}" :: caseLines
+            else
+                [ $"{prog}: {m}" ])
+
+    raise (
+        ArgsUsageError(
+            String.concat
+                "\n"
+                (lines @ flagLines problems.Flags @ [ $"run '{prog} {helpScope}--help' for usage" ])
+        )
+    )
+
+// the help lines of the named fields, in declaration order, with the
+// scope's shorts
+let private argvFlagLinesOf (shorts: Map<string, string>) (def: RecordDef) (fields: string list) : string list =
+    argvUsageLinesWith
+        shorts
+        { def with
+            Fields = def.Fields |> List.filter (fun (f, _) -> List.contains f fields) }
 
 // the three argv-boundary rules — one implementation each, shared by
 // the record and shared-flags twins [D:argv-rules]. The accumulators
@@ -4731,7 +4860,7 @@ let private argvUsage (target: ArgsTarget) (argv: string list) : string =
 // is check-time schema, shared in Argv.fs beside the Args/Env flip —
 // the check/run split is unchanged by the unification
 let private argvFill
-    (problems: ResizeArray<string>)
+    (problems: ArgvProblems)
     (def: RecordDef)
     (values: System.Collections.Generic.Dictionary<string, Value>)
     : (string * Value) list =
@@ -4751,14 +4880,17 @@ let private argvFill
                 match ty with
                 | TBool -> f, VBool false
                 | TNamed("Option", _) -> f, VUnion("None", None)
+                // a flag whose value was refused is already named — one
+                // problem per flag [D:args-usage-error]
+                | _ when problems.Names f -> f, VUnit
                 | _ ->
-                    problems.Add $"missing required flag '--{Argv.kebabFlag f}'"
+                    problems.AddFor(f, $"missing required flag '--{Argv.kebabFlag f}'")
                     f, VUnit)
 
 // repeats of one spelling stay the given-twice error; opposite
 // polarities name both spellings
 let private argvDup
-    (problems: ResizeArray<string>)
+    (problems: ArgvProblems)
     (seen: System.Collections.Generic.HashSet<string>)
     (polarity: System.Collections.Generic.Dictionary<string, bool>)
     (f: string)
@@ -4779,7 +4911,7 @@ let private argvDup
     polarity[f] <- neg
 
 let private argvParseValue
-    (problems: ResizeArray<string>)
+    (problems: ArgvProblems)
     (values: System.Collections.Generic.Dictionary<string, Value>)
     (f: string)
     (ty: Ty)
@@ -4791,27 +4923,27 @@ let private argvParseValue
     | TNamed("Option", [ TInt ]) ->
         match System.Int64.TryParse raw with
         | true, n -> values[f] <- wrapOpt ty (VInt n)
-        | _ -> problems.Add $"{flagTok} is not an int ('{quoteData raw}')"
+        | _ -> problems.AddFor(f, $"{flagTok} is not an int ('{quoteData raw}')")
     | TDur
     | TNamed("Option", [ TDur ]) ->
         match parseDurationMs raw with
         | Ok n -> values[f] <- wrapOpt ty (VDur n)
-        | Error e -> problems.Add $"{flagTok}: {e}"
+        | Error e -> problems.AddFor(f, $"{flagTok}: {e}")
     | TInstant
     | TNamed("Option", [ TInstant ]) ->
         match parseInstantMs raw with
         | Ok n -> values[f] <- wrapOpt ty (VInstant n)
-        | Error e -> problems.Add $"{flagTok}: {e}"
+        | Error e -> problems.AddFor(f, $"{flagTok}: {e}")
     | TSize
     | TNamed("Option", [ TSize ]) ->
         match parseSize raw with
         | Ok b -> values[f] <- wrapOpt ty (VSize b)
-        | Error e -> problems.Add $"{flagTok}: {e}"
+        | Error e -> problems.AddFor(f, $"{flagTok}: {e}")
     | TFloat
     | TNamed("Option", [ TFloat ]) ->
         match parseFloat raw with
         | Ok fl -> values[f] <- wrapOpt ty (VFloat fl)
-        | Error e -> problems.Add $"{flagTok}: {e}"
+        | Error e -> problems.AddFor(f, $"{flagTok}: {e}")
     | TSecret
     | TNamed("Option", [ TSecret ]) ->
         // the boundary wraps [D:secret]: a Secret field's token is secret
@@ -4878,7 +5010,7 @@ let private attachedShortMessage
     | Some(AmbiguousShort _)
     | None -> $"unexpected argument '{quoteData short}…'"
 
-let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
+let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string list) : Value =
     // minted --no-X twins ride the index as negative entries
     // [D:default-attr]; they join did-you-mean via the same list
     let flagged =
@@ -4886,8 +5018,8 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
         @ (Argv.mintedFlags def |> List.map (fun (f, m) -> "--" + m, (f, TBool, true)))
 
     let longIndex = Map.ofList flagged
-    let _, shortIndex = Argv.shortTables def
-    let problems = ResizeArray<string>()
+    let shortOf, shortIndex = Argv.shortTables def
+    let problems = ArgvProblems()
     let values = System.Collections.Generic.Dictionary<string, Value>()
     let seen = System.Collections.Generic.HashSet<string>()
     let polarity = System.Collections.Generic.Dictionary<string, bool>()
@@ -4943,16 +5075,16 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
             | raw :: rest' ->
                 parseValue f ty flagTok raw
                 go rest'
-            | [] -> problems.Add $"flag '{flagTok}' needs a value"
+            | [] -> problems.AddFor(f, $"flag '{flagTok}' needs a value")
 
     go tokens
 
     let fields =
         argvFill problems def values
-        |> validateFlat problems (fun f -> "--" + Argv.kebabFlag f) def
+        |> validateFlat (fun f m -> problems.AddFor(f, m)) (fun f -> "--" + Argv.kebabFlag f) def
 
     if problems.Count > 0 then
-        failwith ($"{label}: " + String.concat "; " problems)
+        argvUsageFail problems [] (argvFlagLinesOf shortOf def) helpScope
 
     VRecord(def.Name, fields)
 
@@ -4967,7 +5099,6 @@ let private argvLoadShared
     (payloads: Map<string, RecordDef>)
     (argv: string list)
     : Value =
-    let label = $"Args.load {outer.Name}"
     let sharedDef = Argv.sharedOf outer unionField
 
     let sharedLong =
@@ -5010,7 +5141,7 @@ let private argvLoadShared
         (sharedLong |> Map.toList |> List.map fst)
         @ (payloadLong |> Map.toList |> List.map fst)
 
-    let problems = ResizeArray<string>()
+    let problems = ArgvProblems()
     let sharedValues = System.Collections.Generic.Dictionary<string, Value>()
     let payloadValues = System.Collections.Generic.Dictionary<string, Value>()
     let seen = System.Collections.Generic.HashSet<string>()
@@ -5072,7 +5203,7 @@ let private argvLoadShared
                      | raw :: rest' ->
                          parseValue values f ty t raw
                          go (i + 2) rest'
-                     | [] -> problems.Add $"flag '{t}' needs a value")
+                     | [] -> problems.AddFor(f, $"flag '{t}' needs a value"))
             | Choice2Of3() ->
                 let cands = if i < caseIdx then beforeCandidates else afterCandidates
                 let tyOf n =
@@ -5081,20 +5212,40 @@ let private argvLoadShared
                     | None, Some(_, ty, _) -> Some ty
                     | _ -> None
 
-                problems.Add(unknownFlagMessage t cands tyOf)
+                // the command slot derives no flag [D:shared-flags]: a
+                // `--mode pub` reader meant the bare command
+                let slot = "--" + Argv.kebabFlag unionField
+
+                if t = slot || t.StartsWith(slot + "=") then
+                    let example =
+                        match selected with
+                        | Some(c, _) -> c.ToLowerInvariant()
+                        | None -> "<command>"
+
+                    // an attached value is not echoed [D:args-secret-echo]
+                    let shown = if t = slot then t else slot + "=…"
+
+                    problems.Add
+                        $"unknown flag '{shown}' — the command is written bare, without a flag: '{usageName ()} {example}'"
+                else
+                    problems.Add(unknownFlagMessage t cands tyOf)
+
                 go (i + 1) rest
             | Choice3Of3() -> go (i + 1) rest
 
     go 0 argv
 
     (match caseAt, selected with
-     | None, _ -> problems.Add("missing subcommand; one of: " + String.concat ", " (caseTable |> List.map fst))
-     | Some(_, tok), None -> problems.Add $"unknown subcommand '{quoteData tok}'{didYouMean tok (caseTable |> List.map fst)}"
+     | None, _ -> problems.AddCommands "missing command — one of:"
+     | Some(_, tok), None ->
+         match didYouMean tok (caseTable |> List.map fst) with
+         | "" -> problems.AddCommands $"unknown command '{quoteData tok}' — one of:"
+         | hint -> problems.Add $"unknown command '{quoteData tok}'{hint}"
      | Some _, Some _ -> ())
 
     let collectFields def values =
         argvFill problems def values
-        |> validateFlat problems (fun f -> "--" + Argv.kebabFlag f) def
+        |> validateFlat (fun f m -> problems.AddFor(f, m)) (fun f -> "--" + Argv.kebabFlag f) def
 
     let sharedFields = collectFields sharedDef sharedValues
 
@@ -5107,52 +5258,66 @@ let private argvLoadShared
         | None -> None
 
     if problems.Count > 0 then
-        failwith ($"{label}: " + String.concat "; " problems)
+        let scope = scopeDef sharedDef payloadDef
+        let shorts = fst (Argv.shortTables scope)
+
+        let helpScope =
+            match selected with
+            | Some(c, _) -> c.ToLowerInvariant() + " "
+            | None -> ""
+
+        argvUsageFail problems (argvCaseLines udef payloads) (argvFlagLinesOf shorts scope) helpScope
 
     let case, payload =
         match payloadValue with
         | Some(c, p) -> c, p
-        | None -> failwith $"{label}: internal — no case after validation"
+        | None -> unreachable "Args.load: no case after validation"
 
     VRecord(outer.Name, (unionField, VUnion(case, payload)) :: sharedFields)
 
-let private argvLoad (target: ArgsTarget) : Value =
-    let argv = Session.ScriptArgs
-
+// the argv boundary over a given argv [D:typed-argv] (Args.load reads
+// Session.ScriptArgs through it)
+let argvLoadWith (target: ArgsTarget) (argv: string list) : Value =
     if List.contains "--help" argv || List.contains "-h" argv then
         // the `///` doc text is the script's data [D:tty-help-sanitize]
         printfn "%s" (argvUsage target argv |> sanitizeIfTty System.Console.IsOutputRedirected)
         raise (ExitRequest 0)
 
     match target with
-    | ArgsRecord def -> argvParseRecord $"Args.load {def.Name}" def argv
+    | ArgsRecord def -> argvParseRecord "" def argv
     | ArgsShared(outer, uf, udef, payloads) -> argvLoadShared outer uf udef payloads argv
     | ArgsUnion(udef, payloads) ->
         let table = udef.Cases |> List.map (fun (c, p) -> c.ToLowerInvariant(), (c, p))
+        let problems = ArgvProblems()
+
+        let fail scope =
+            argvUsageFail problems (argvCaseLines udef payloads) (fun _ -> []) scope
 
         match argv with
         | [] ->
-            failwith (
-                $"Args.load {udef.Name}: missing subcommand; one of: "
-                + String.concat ", " (table |> List.map fst)
-            )
+            problems.AddCommands "missing command — one of:"
+            fail ""
         | tok :: rest ->
             match table |> List.tryFind (fun (w, _) -> w = tok) with
             | Some(_, (c, None)) ->
                 match rest with
                 | [] -> VUnion(c, None)
                 | extra ->
-                    failwith (
-                        $"Args.load {udef.Name} {quoteData tok}: "
-                        + String.concat "; " (extra |> List.map (fun t -> $"unexpected argument '{quoteData t}'"))
-                    )
-            | Some(_, (c, Some _)) ->
-                let payload =
-                    argvParseRecord $"Args.load {udef.Name} {tok}" (Map.find c payloads) rest
+                    for t in extra do
+                        problems.Add $"unexpected argument '{quoteData t}' — '{quoteData tok}' takes nothing after it"
 
+                    fail (tok + " ")
+            | Some(_, (c, Some _)) ->
+                let payload = argvParseRecord (tok + " ") (Map.find c payloads) rest
                 VUnion(c, Some payload)
             | None ->
-                failwith $"Args.load {udef.Name}: unknown subcommand '{quoteData tok}'{didYouMean tok (table |> List.map fst)}"
+                match didYouMean tok (table |> List.map fst) with
+                | "" -> problems.AddCommands $"unknown command '{quoteData tok}' — one of:"
+                | hint -> problems.Add $"unknown command '{quoteData tok}'{hint}"
+
+                fail ""
+
+let private argvLoad (target: ArgsTarget) : Value = argvLoadWith target Session.ScriptArgs
 
 // the sigil env slot evaluated to overlay pairs — inside the stream's
 // delay, so Env.fromFile boundary errors keep raise-at-force semantics
@@ -5896,7 +6061,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 field, value) // the RECORD field keeps its weir name
             // validated fields run `create`, naming the variable
             // [D:validated-types]
-            |> validateFlat problems (Types.wireName def) def
+            |> validateFlat (fun _ m -> problems.Add m) (Types.wireName def) def
 
         if problems.Count > 0 then
             failwith ($"Env.load {def.Name}: " + String.concat "; " problems)

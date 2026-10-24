@@ -2437,6 +2437,50 @@ let private importedTypeKeys (env: TypeEnv) : Set<string> =
     |> List.collect (snd >> Map.values >> List.ofSeq)
     |> List.fold (fun acc k -> Set.add k acc) (env.TypeOrigins |> Map.keys |> Set.ofSeq)
 
+// an unbound name that is a field of a declared (or imported) record:
+// the repair it most likely needs, and whether it is confident (a value
+// of the record is bound — `args.mode`). The prelude's records are not
+// the script's vocabulary, so they never answer.
+let fieldHint (env: TypeEnv) (name: string) : (string * bool) option =
+    let owners =
+        env.Types
+        |> Map.toList
+        |> List.choose (fun (n, d) ->
+            match d with
+            | Record rd when
+                isUserName n
+                && not (builtinTypeNames.ContainsKey n)
+                && rd.Params.IsEmpty
+                && rd.Fields |> List.exists (fun (f, _) -> f = name)
+                ->
+                Some n
+            | _ -> None)
+
+    let boundOf (owner: string) =
+        env.Values
+        |> Map.toList
+        |> List.tryPick (fun (v, sch) ->
+            match sch.Ty with
+            | TNamed(n, []) when n = owner && isUserName v && not (v.Contains '.') -> Some v
+            | _ -> None)
+
+    match owners |> List.tryPick (fun o -> boundOf o |> Option.map (fun v -> o, v)) with
+    | Some(owner, v) -> Some($"did you mean '{v}.{name}'? ('{name}' is a field of '{owner}')", true)
+    | None ->
+        match owners |> List.tryFind (fun o -> Map.containsKey o env.LoadTargets) with
+        | Some owner ->
+            let loader = env.LoadTargets[owner]
+            let binder = if loader = "Env.load" then "env" else "cli"
+
+            Some(
+                $"it is a field of '{owner}': load it first ('let {binder} = {loader} {owner}') and write '{binder}.{name}'",
+                false
+            )
+        | None ->
+            match owners with
+            | owner :: _ -> Some($"it is a field of '{owner}' — write 'x.{name}' on a '{owner}' value", false)
+            | [] -> None
+
 /// constructor is already overwritten; ownership must be asked of the
 /// type table, not the value table.
 let rec ctorOwners (env: TypeEnv) (name: string) : string list =
@@ -3910,58 +3954,71 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         else
                             None)
 
-                match homes with
-                // no history claim [D:bare-rule]: most of these were
-                // never bare — the wording matches the multi-home arm's
-                | [ one ] ->
-                    // `dir` is DOS/cmd muscle memory for a listing, and
-                    // Path.dir is the parent-of-a-path function — the
-                    // qualified redirect alone sends the reader somewhere
-                    // semantically unrelated [D:dir-teach]
-                    let hint =
-                        if name = "dir" then
-                            " (the parent directory of a path) — for a directory listing, use ls"
-                        else
-                            ""
+                match fieldHint env name with
+                // a declared record's field written bare (`mode` for
+                // `args.mode`): the field leads, a module member follows
+                // as the alternative — dropped when a bound value fits
+                | Some(hint, confident) ->
+                    let alt =
+                        match homes with
+                        | _ when confident -> ""
+                        | [] -> ""
+                        | hs -> "; or did you mean " + (hs |> List.map (fun h -> $"'{h}'") |> String.concat " or ") + "?"
 
-                    err expr.Span $"'{name}' is module-qualified; use '{one}'{hint}"
-                | _ :: _ ->
-                    let all = String.concat " or " homes
-                    err expr.Span $"'{name}' is module-qualified here; use {all}"
-                | [] ->
-                    match retiredBare name with
-                    | Some teach -> err expr.Span $"'{name}' is retired: {teach}"
-                    | None when name = "scriptPath" ->
-                        // script-only, the args/stdin family [D:script-path]
-                        err
-                            expr.Span
-                            "scriptPath is script-only (the running script's absolute path; absent in the REPL and -e)"
-                    | None when name = "List" || name = "Array" ->
-                        // the commonest .NET prior (PLAN-dx-review D5): a
-                        // confident wrong suggestion ('Post') is worse
-                        // than none — answer from the registry instead
-                        err
-                            expr.Span
-                            $"'{name}' is not a weir module — weir's sequences are 'Seq' (Seq.length, Seq.map, ...; one sequence type)"
-                    // F#'s String module, the same prior [D:fs-reflexes]
-                    | None when name = "String" ->
-                        err
-                            expr.Span
-                            "'String' is not a weir module — weir's string functions are 'Str' (Str.trim, Str.split, Str.contains, ...)"
-                    | None ->
-                        // same-kind candidates only (PLAN-dx-review D5): a
-                        // lowercase name never suggests a constructor and
-                        // an uppercase one never suggests a binding — but a
-                        // candidate differing only by case stays (Exit ->
-                        // exit is the rename teaching [D:exit-rename])
-                        let sameCase (c: string) =
-                            (c.Length > 0 && System.Char.IsUpper c[0] = System.Char.IsUpper name[0])
-                            || System.String.Equals(c, name, System.StringComparison.OrdinalIgnoreCase)
-
+                    err expr.Span $"unbound '{name}' — {hint}{alt}"
+                | None ->
+                    match homes with
+                    // no history claim [D:bare-rule]: most of these were
+                    // never bare — the wording matches the multi-home arm's
+                    | [ one ] ->
+                        // `dir` is DOS/cmd muscle memory for a listing, and
+                        // Path.dir is the parent-of-a-path function — the
+                        // qualified redirect alone sends the reader somewhere
+                        // semantically unrelated [D:dir-teach]
                         let hint =
-                            didYouMean name (Map.keys env.Values |> Seq.filter Types.isUserName |> Seq.filter sameCase)
+                            if name = "dir" then
+                                " (the parent directory of a path) — for a directory listing, use ls"
+                            else
+                                ""
 
-                        err expr.Span $"unbound variable '{name}'{hint}"
+                        err expr.Span $"'{name}' is module-qualified; use '{one}'{hint}"
+                    | _ :: _ ->
+                        let all = String.concat " or " homes
+                        err expr.Span $"'{name}' is module-qualified here; use {all}"
+                    | [] ->
+                        match retiredBare name with
+                        | Some teach -> err expr.Span $"'{name}' is retired: {teach}"
+                        | None when name = "scriptPath" ->
+                            // script-only, the args/stdin family [D:script-path]
+                            err
+                                expr.Span
+                                "scriptPath is script-only (the running script's absolute path; absent in the REPL and -e)"
+                        | None when name = "List" || name = "Array" ->
+                            // the commonest .NET prior (PLAN-dx-review D5): a
+                            // confident wrong suggestion ('Post') is worse
+                            // than none — answer from the registry instead
+                            err
+                                expr.Span
+                                $"'{name}' is not a weir module — weir's sequences are 'Seq' (Seq.length, Seq.map, ...; one sequence type)"
+                        // F#'s String module, the same prior [D:fs-reflexes]
+                        | None when name = "String" ->
+                            err
+                                expr.Span
+                                "'String' is not a weir module — weir's string functions are 'Str' (Str.trim, Str.split, Str.contains, ...)"
+                        | None ->
+                            // same-kind candidates only (PLAN-dx-review D5): a
+                            // lowercase name never suggests a constructor and
+                            // an uppercase one never suggests a binding — but a
+                            // candidate differing only by case stays (Exit ->
+                            // exit is the rename teaching [D:exit-rename])
+                            let sameCase (c: string) =
+                                (c.Length > 0 && System.Char.IsUpper c[0] = System.Char.IsUpper name[0])
+                                || System.String.Equals(c, name, System.StringComparison.OrdinalIgnoreCase)
+
+                            let hint =
+                                didYouMean name (Map.keys env.Values |> Seq.filter Types.isUserName |> Seq.filter sameCase)
+
+                            err expr.Span $"unbound variable '{name}'{hint}"
     | ELet(name, nameSpan, value, body) ->
         result {
             do! checkBinderName expr.Span name
@@ -8292,7 +8349,8 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                                   Validated =
                                     decl.Validate
                                     |> Option.map (fun _ ->
-                                        $"{decl.Name}#{System.Threading.Interlocked.Increment &validatorSeq}") }
+                                        $"{decl.Name}#{System.Threading.Interlocked.Increment &validatorSeq}")
+                                  Docs = Map.empty }
 
                         let ctorTy payload =
                             match payload with

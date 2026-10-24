@@ -138,6 +138,9 @@ A few details:
 
 On a field read by `Args.load`, the first line of the doc also
 becomes that flag's `--help` text (hover still shows the whole doc).
+On a subcommand's union case it is shown beside the subcommand, and
+on the `Args.load` type itself the doc's first paragraph is the
+program's description.
 You write it once, so the help and the hover text always agree. Here
 the `///` lines come back out as help:
 
@@ -2084,6 +2087,14 @@ before the script does anything:
 - missing required flags
 - values that can't be parsed
 
+That error is meant for whoever runs your script, so it looks like
+any tool's usage error: the script's name, one line per problem, the
+help lines of the flags involved, `run 'tool.weir --help' for usage`,
+and exit code 2, with no weir source location. Load the arguments
+first thing: `weir check` warns about a file write, a command or a
+network call above the first `Args.load`, because it would still run
+on `--help`.
+
 For subcommands, declare a union whose cases hold records. The first
 argument picks the case, and the rest are parsed as that case's
 flags. Your `match` on the result has to cover every case, so when
@@ -2093,7 +2104,7 @@ need to update. No `die "unknown command"` at runtime:
 ```weir-error
 type CloneArgs = { remote: string; force: bool }
 type Cmd = Clone of CloneArgs | Status
-match Args.load Cmd with // no argv here: "missing subcommand; one of: clone, status"
+match Args.load Cmd with // no argv here: "missing command — one of:" and the commands
 | Clone a -> print a.remote
 | Status -> print "status"
 ```

@@ -100,6 +100,23 @@ let inStringMask (s: string) : bool[] =
 
     mask
 
+/// the record types a file hands to `Args.load`/`Env.load` (type ->
+/// loader), read off the code text outside strings and comments — an
+/// unbound field name's hint teaches loading the record first
+let loadTargetsOf (lines: string list) : Map<string, string> =
+    let re =
+        System.Text.RegularExpressions.Regex(@"(?<![\w.])(Args|Env)\.load\s+([A-Z]\w*)")
+
+    lines
+    |> List.collect (fun raw ->
+        let code = stripComment raw
+        let mask = inStringMask code
+        let blanked = System.String(code |> Seq.mapi (fun i c -> if mask[i] then ' ' else c) |> Array.ofSeq)
+
+        [ for m in re.Matches blanked -> m.Groups[2].Value, m.Groups[1].Value + ".load" ])
+    |> List.distinctBy fst
+    |> Map.ofList
+
 // Canonical intra-line spacing [D:fmt-respace], bounded: collapse
 // space runs, pad record braces, tidy `;`, and pad the unambiguous
 // binary operators (`=`, `==`, `<>`, `<=`, `>=`, `&&`, `||`, `|>`,
@@ -6444,6 +6461,8 @@ let resolveSigFile (scriptDir: string) (decl: SigDecl) : Result<string, string> 
                         $"#sig {decl.Tool}: sigs/{sigFileName decl.Tool} is the signature of '{Eval.sanitizeTtyEcho other}' (the lock records it under its legacy name) — regenerate that one, which moves it to its own name: weir add sig '{Eval.sanitizeTtyEcho other}'"
                 | None -> Ok current
 
+// the decl's head line carries the TYPE's doc, never a field's or a
+// case's (a doc above it attaches to the type name), so it is skipped
 let private fieldDocsFor (rawLines: string list) (ll: LogicalLine) : Map<string, string> =
     let physLines = ll.Segments |> List.map (fun (_, p, _) -> p) |> Set.ofList
     let arr = List.toArray rawLines
@@ -6453,6 +6472,7 @@ let private fieldDocsFor (rawLines: string list) (ll: LogicalLine) : Map<string,
         match d.Doc with
         | first :: _ when
             first <> ""
+            && d.Line <> ll.Head
             && Set.contains d.Line physLines
             && d.Line - 1 < arr.Length
             && d.Col - 1 + d.Len <= arr[d.Line - 1].Length
@@ -6460,6 +6480,17 @@ let private fieldDocsFor (rawLines: string list) (ll: LogicalLine) : Map<string,
             Some(arr[d.Line - 1].Substring(d.Col - 1, d.Len), first)
         | _ -> None)
     |> Map.ofList
+
+// the type's own `///` doc, its first paragraph — an Args target's
+// program description in --help [D:help-case-docs]. Stored in the
+// decl's Docs under the key "", which no field or case can spell.
+let private typeDocFor (rawLines: string list) (ll: LogicalLine) : Map<string, string> =
+    docAttachments rawLines
+    |> List.tryFind (fun d -> d.Line = ll.Head)
+    |> Option.map (fun d -> d.Doc |> List.takeWhile (fun l -> l.Trim() <> "") |> String.concat "\n")
+    |> Option.filter (fun p -> p <> "")
+    |> Option.map (fun p -> Map.ofList [ "", p ])
+    |> Option.defaultValue Map.empty
 
 /// load the signatures a file declared; errors become diagnostics at
 /// the declaring line. The sig file is an ordinary weir module
@@ -10328,6 +10359,176 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
       Prompt = prompt
       Aliases = parsedAliases }
 
+// ---- effects before the CLI parse [D:effect-before-args] ------------------
+// A top-level statement BEFORE the entry script's first top-level
+// `Args.load`/`Env.load` that writes the filesystem, spawns or touches the
+// network still runs on `--help` or a bad argument. Advisory (a warning).
+// The classification is Effects.effectClass's mutation side — console,
+// exit and cd excluded — plus the network members; a function body is a
+// definition (it does not run here), and the statement holding the load
+// is never judged (a `within` wrapping the load is deliberate). A load
+// only inside a function or a branch is a runtime fact: no judgement.
+
+/// the effect a statement runs, as the message names it, and its span
+let private firstRunEffect (isLetRhs: bool) (te: Check.TypedExpr) : (string * Span) option =
+    let quiet =
+        Set [ "print"; "printerr"; "Self.prompt"; "Term.title"; "exit"; "cd"; "|print" ]
+
+    let memberEffect (n: string) =
+        match n with
+        | "Http.send"
+        | "Http.expect"
+        | "Net.portOpen" -> Some $"'{n}'"
+        | _ when quiet.Contains n || n.StartsWith "Log." -> None
+        | _ when Effects.isCommandReifier n -> None // the command is named at its program slot
+        | _ ->
+            match Effects.effectClass n with
+            | Some Effects.Mutation -> Some $"'{n}'"
+            | _ -> None
+
+    let rec headOf (e: Check.TypedExpr) =
+        match e.Kind with
+        | Check.TEApp(g, _) -> headOf g
+        | k -> k
+
+    let rec argsOf (e: Check.TypedExpr) =
+        match e.Kind with
+        | Check.TEApp(g, a) -> argsOf g @ [ a ]
+        | _ -> []
+
+    let rec go (top: bool) (e: Check.TypedExpr) : (string * Span) option =
+        match e.Kind with
+        // a binding's lazy command spawns nothing until read
+        // [D:lazy-command-lets]
+        | Check.TECmd _ when top && isLetRhs -> None
+        | Check.TECmd(Check.THeadLit prog, _, _) -> Some($"the command '{prog}'", e.Span)
+        | Check.TECmd(Check.THeadDyn(d, _), _, _) -> Some($"the command '^{d}'", e.Span)
+        // a reified command: the program rides the desugar's arguments
+        | Check.TEApp _ when
+            (match headOf e with
+             | Check.TEVar h -> Effects.isCommandReifier h && h <> "|print"
+             | _ -> false)
+            ->
+            // the program's slot in the desugar, as --can reads it
+            let h =
+                match headOf e with
+                | Check.TEVar h -> h
+                | _ -> ""
+
+            let progArg =
+                if h.StartsWith "|chain" then
+                    match argsOf e |> List.tryItem (if h = "|chainOrFailed" then 1 else 0) with
+                    | Some { Kind = Check.TEList({ Kind = Check.TETuple(p :: _) } :: _) } -> Some p
+                    | _ -> None
+                else
+                    let slot =
+                        if h.StartsWith "|orFailedEnv" then 2
+                        elif h.StartsWith "|orFailed" then 1
+                        elif h.EndsWith "Env" then 1
+                        else 0
+
+                    argsOf e |> List.tryItem slot
+
+            let prog =
+                progArg
+                |> Option.bind (fun a ->
+                    match a.Kind with
+                    | Check.TEStr s -> Some(s, a.Span)
+                    | _ -> None)
+
+            match prog with
+            | Some(p, span) -> Some($"the command '{p}'", span)
+            | None -> Some("a command", e.Span)
+        | Check.TEVar n -> memberEffect n |> Option.map (fun m -> m, e.Span)
+        | Check.TELambda _
+        | Check.TELambdaPat _ -> None
+        | Check.TEWithin(kind, _, _, _, body) ->
+            match kind with
+            | WithinTmp -> Some("'within tmp'", e.Span)
+            | WithinLock -> Some("'within lock'", e.Span)
+            | WithinProc -> Some("'within proc'", e.Span)
+            | WithinServe -> Some("'within serve'", e.Span)
+            // a plan captures its mutations instead of running them
+            | WithinPlan -> None
+            | WithinCd
+            | WithinEnv
+            | WithinPure
+            | WithinReadonly -> go false body
+        | _ -> Check.childExprs e |> List.tryPick (go false)
+
+    go true te
+
+/// does a top-level statement run a typed boundary load unconditionally
+/// (outside a function body or a branch)? Its message name if so.
+let private topLevelLoad (te: Check.TypedExpr) : (string * Span) option =
+    let named (prefix: string) (name: string) =
+        if name.StartsWith "{" then prefix else $"{prefix} {name}"
+
+    let rec go (e: Check.TypedExpr) =
+        match e.Kind with
+        | Check.TEArgsLoad target ->
+            let name =
+                match target with
+                | Check.ArgsRecord d -> d.Name
+                | Check.ArgsUnion(u, _) -> u.Name
+                | Check.ArgsShared(o, _, _, _) -> o.Name
+
+            Some(named "Args.load" name, e.Span)
+        | Check.TEEnvLoad(def, _) -> Some(named "Env.load" def.Name, e.Span)
+        | Check.TELambda _
+        | Check.TELambdaPat _ -> None
+        | Check.TEIf(cond, _, _) -> go cond
+        | Check.TEMatch(scrut, _) -> go scrut
+        | _ -> Check.childExprs e |> List.tryPick go
+
+    go te
+
+/// the warnings over a script's checked statements, in file order
+let effectBeforeArgs (path: string) (stmts: (LogicalLine * CheckedKind) list) : Diagnostic list =
+    let teOf (k: CheckedKind) =
+        match k with
+        | KLet(_, _, te) -> Some(true, te)
+        | KLetPat(_, _, te) -> Some(true, te)
+        | KCmd te
+        | KExpr te -> Some(false, te)
+        | _ -> None
+
+    let indexed = stmts |> List.indexed
+
+    let load =
+        indexed
+        |> List.tryPick (fun (i, (ll, k)) ->
+            teOf k
+            |> Option.bind (fun (_, te) -> topLevelLoad te)
+            |> Option.map (fun (name, span) -> i, name, fst (translate ll span.Start.Col)))
+
+    match load with
+    | None -> []
+    | Some(at, loadName, loadLine) ->
+        let consequence =
+            if loadName.StartsWith "Env.load" then
+                "on a missing or bad variable it has already run; load the environment first"
+            else
+                "on --help or a bad argument it still runs; load the arguments first"
+
+        indexed
+        |> List.takeWhile (fun (i, _) -> i < at)
+        |> List.choose (fun (_, (ll, k)) ->
+            teOf k
+            |> Option.bind (fun (isLet, te) -> firstRunEffect isLet te)
+            |> Option.map (fun (what, span) ->
+                let l, c = translate ll span.Start.Col
+                let el, ec = translate ll span.End.Col
+
+                { File = path
+                  Line = l
+                  Col = c
+                  EndLine = Some el
+                  EndCol = Some(if el = l then max (c + 1) ec else ec)
+                  Severity = "warning"
+                  Code = "effect-before-args"
+                  Message = $"{what} runs before '{loadName}' (line {loadLine}) — {consequence}" }))
+
 /// analyzeLines, with `asInit` forcing the init-file reading (the LSP's
 /// canonical init path, marked or not [D:init-marker])
 let analyzeLinesAs
@@ -10367,7 +10568,8 @@ let analyzeLinesAs
 
     let typeEnv0 =
         { typeEnv0 with
-            Modules = typeEnv0.Modules |> Map.add "Self" selfMembers }
+            Modules = typeEnv0.Modules |> Map.add "Self" selfMembers
+            LoadTargets = loadTargetsOf body }
 
     // imports resolve relative to the file being checked [D:modules-v1];
     // one cache per check dedups a diamond, one chain catches a cycle
@@ -10944,6 +11146,17 @@ let analyzeLinesAs
                   Code = "temp-dir-cleanup"
                   Message = f.TMessage })
 
+        // effects before the CLI parse [D:effect-before-args]: the entry
+        // script only (a module or init file has no Args.load), silent
+        // when a statement errored — one real error beats advice
+        (if
+            not isModule
+            && not initMarked
+            && not (diags |> Seq.exists (fun d -> d.Severity = "error"))
+         then
+             for d in effectBeforeArgs path (stmts |> Seq.map (fun (ll, chk) -> ll, chk.Kind) |> List.ofSeq) do
+                 diags.Add d)
+
         (let sigLoadDiags, sigInfos = loadSigs path sigDecls
 
          // position order, not accumulation order (rider D1): assembly
@@ -11095,6 +11308,10 @@ let run (path: string) (scriptArgs: string list) : int =
             let absScriptPath = IO.Path.GetFullPath path
 
             let typeEnv0, valueEnv0 = baseEnvs scriptArgs absScriptPath
+
+            let typeEnv0 =
+                { typeEnv0 with
+                    LoadTargets = loadTargetsOf body }
             Extern.refresh ()
 
             let rawByLine = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> Map.ofList
@@ -11148,6 +11365,10 @@ let run (path: string) (scriptArgs: string list) : int =
                         | CCmd te -> recordPositions lm.AbsPath ll.Head ll te runPositions
                         | CImport nested -> recordModule nested
                         | _ -> ()
+
+                // the checked kinds, for the whole-file effect-before-args
+                // warning [D:effect-before-args]
+                let runKinds = ResizeArray<LogicalLine * CheckedKind>()
 
                 let checkedProgram =
                     logicalLines
@@ -11225,6 +11446,8 @@ let run (path: string) (scriptArgs: string list) : int =
                                         Console.Error.WriteLine(
                                             $"{quoteData path}:{wl}:{wc}: " + Color.yellow c "warning" + $": {wm}"
                                         )
+
+                                    runKinds.Add(ll, chk.Kind)
 
                                     // signature warnings print, signature errors
                                     // gate exactly as schemas do
@@ -11311,14 +11534,19 @@ let run (path: string) (scriptArgs: string list) : int =
                                                 | KModule _
                                                 | KSig _ -> CNoop
 
-                                            // enrich a record's Docs from the `///`
-                                            // field docs, so --help reads them
-                                            // [D:doc-help]; the Args.load arm (checked
+                                            // enrich a record's (or union's) Docs from
+                                            // the `///` field (case) docs, so --help
+                                            // reads them [D:doc-help]
+                                            // [D:help-case-docs]; the Args.load arm (checked
                                             // later, the type comes first) captures it
                                             let env' =
                                                 match chk.Kind with
                                                 | KType(decl, _) ->
-                                                    let docs = fieldDocsFor rawLines ll
+                                                    let docs =
+                                                        Map.fold
+                                                            (fun m k v -> Map.add k v m)
+                                                            (fieldDocsFor rawLines ll)
+                                                            (typeDocFor rawLines ll)
 
                                                     if Map.isEmpty docs then
                                                         chk.Env
@@ -11330,7 +11558,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                                                     decl.Name
                                                                     (Option.map (function
                                                                         | Record rd -> Record { rd with Docs = docs }
-                                                                        | u -> u)) }
+                                                                        | Union ud -> Union { ud with Docs = docs })) }
                                                 | _ -> chk.Env
 
                                             match stmt with
@@ -11401,6 +11629,14 @@ let run (path: string) (scriptArgs: string list) : int =
                     1
                 | Ok(_, revStmts) ->
                     let stmts = List.rev revStmts
+
+                    // advisory, before any line runs [D:effect-before-args]
+                    (let c = Color.onStderr.Value
+
+                     for d in effectBeforeArgs path (List.ofSeq runKinds) do
+                         Console.Error.WriteLine(
+                             $"{quoteData path}:{d.Line}:{d.Col}: " + Color.yellow c "warning" + $": {d.Message}"
+                         ))
 
                     // a runtime error's position [D:runtime-position]: the
                     // blamed node (a command at its own column, any other
@@ -11485,6 +11721,11 @@ let run (path: string) (scriptArgs: string list) : int =
                     let fail (lineNo: int) (ex: exn) : Result<Eval.Env, int> =
                         match ex with
                         | Eval.ExitRequest code -> Error code
+                        // the script user's usage error: no weir location,
+                        // exit 2 [D:args-usage-error]
+                        | :? Eval.ArgsUsageError ->
+                            Console.Error.WriteLine(Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message)
+                            Error 2
                         | ex ->
                             // a command death the signal owns ends silently
                             // [D:settle-pending]
