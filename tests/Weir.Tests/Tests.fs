@@ -31941,6 +31941,8 @@ let sigDynamicTests =
                       Expect.contains git "let dynamic = \"git\"" "git's helper source"
                       let fish = gen "fishfx"
                       Expect.isFalse (fish |> List.exists (fun l -> l.StartsWith "let dynamic")) "a fish source: none")
+          } ]
+
 // importing at the prompt [D:repl-import]: the session cwd anchors a
 // relative path; the module rules are a script import's; a re-import
 // reloads. Sequenced: the session cwd and Console.Out are process-wide
