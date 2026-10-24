@@ -2427,6 +2427,13 @@
       "pointer": null
     },
     {
+      "name": "repeat",
+      "signature": null,
+      "summary": "Run an indented block until the program is asked to stop: \u0060repeat interval=1s\u0060 followed by the block, which runs, then the interval passes, then it runs again. The first stop signal (\u0060SIGINT\u0060, \u0060SIGTERM\u0060, \u0060SIGHUP\u0060; Ctrl\u002BC on Windows) lets the iteration in hand finish and returns, so the code after the loop runs and the program exits 0; a second signal tears down as usual. A bool block ends the loop when true; \u0060until r\u0060 binds a value block\u0027s result and returns it once the predicate holds; \u0060timeout=(Some 5m)\u0060 raises when it passes, as poll\u0027s does. Waits inside the block are not ended by the request \u2014 only the interval is.",
+      "example": "repeat interval=1ms true",
+      "pointer": "A server or sidecar held until the operator stops it is a \u0060within\u0060 scope with \u0060until stopped\u0060 after its block instead."
+    },
+    {
       "name": "retry",
       "signature": null,
       "summary": "Re-run an indented body until it succeeds: \u0060retry attempts=5 delay=30s\u0060 followed by the body. If the body returns a bool, true means success. If it returns another value, add \u0060until r\u0060 and a predicate block; retry then returns the value that passed. Running out of attempts raises. An error raised inside the body is not retried, it propagates; to retry a failing command, turn its result into data with \u0060| succeeds\u0060 or \u0060| complete\u0060.",
@@ -2492,7 +2499,7 @@
     {
       "name": "within",
       "signature": null,
-      "summary": "Open a resource for an indented block. It is released however the block exits, normally or by an error. The kinds: \u0060tmp\u0060 \u2014 a fresh directory, removed when the block exits; \u0060cd\u0060 \u2014 the working directory for the block, restored after; \u0060env\u0060 \u2014 environment variables set for the commands the block runs; \u0060proc\u0060 \u2014 a background process, stopped together with anything it started when the block exits; \u0060serve\u0060 \u2014 an HTTP server that runs until the block exits; its port is freed however the block ends; \u0060lock\u0060 \u2014 an advisory file lock, held for the block and released however it ends, even on kill -9.",
+      "summary": "Open a resource for an indented block. It is released however the block exits, normally or by an error. The kinds: \u0060tmp\u0060 \u2014 a fresh directory, removed when the block exits; \u0060cd\u0060 \u2014 the working directory for the block, restored after; \u0060env\u0060 \u2014 environment variables set for the commands the block runs; \u0060proc\u0060 \u2014 a background process, stopped together with anything it started when the block exits; \u0060serve\u0060 \u2014 an HTTP server that runs until the block exits; its port is freed however the block ends; \u0060lock\u0060 \u2014 an advisory file lock, held for the block and released however it ends, even on kill -9. After the block, \u0060until stopped\u0060 holds the scope until the first stop signal (\u0060SIGINT\u0060, \u0060SIGTERM\u0060, \u0060SIGHUP\u0060), then it closes by its normal path and the program exits 0; an \u0060always\u0060 cleanup comes after it.",
       "example": "within tmp d\n    print d",
       "pointer": "\u0060within proc srv = \u003Ccommand\u003E\u0060 binds a Proc handle; the process and its children are killed and reaped when the block exits.",
       "kinds": [
@@ -2883,6 +2890,20 @@
         {
           "name": "exit",
           "type": "Option\u003Cint\u003E"
+        }
+      ]
+    },
+    {
+      "name": "Repeat",
+      "kind": "record",
+      "fields": [
+        {
+          "name": "interval",
+          "type": "Duration"
+        },
+        {
+          "name": "timeout",
+          "type": "Option\u003CDuration\u003E"
         }
       ]
     },

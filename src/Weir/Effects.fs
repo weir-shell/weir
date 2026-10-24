@@ -106,6 +106,10 @@ let libraryDesugars: (string * string * string) list =
       "|seqItemFromEnd", "Seq", "item"
       "|retryDefaults", "Retry", "defaults"
       "|pollDefaults", "Poll", "defaults"
+      // repeat's desugar base [D:repeat]: internal only (interval is
+      // required, so Repeat has no public defaults) — read as the record
+      // value it is
+      "|repeatDefaults", "Repeat", "defaults"
       // a typed `~` in a command word [D:tilde]
       "|home", "Path", "home"
       // `NAME=value cmd`'s overlay items [D:env-prefix]

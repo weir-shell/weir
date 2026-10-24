@@ -136,7 +136,7 @@ and TypedKind =
     | TEDur of ms: int64
     | TEFloat of value: float
     | TERetry of
-        poll: bool *
+        kind: LoopKind *
         opts: TypedExpr *
         watch: TypedExpr option *
         body: TypedExpr *
@@ -150,6 +150,7 @@ and TypedKind =
         opts: TypedExpr option *
         body: TypedExpr
     | TEAlways of body: TypedExpr * cleanup: TypedExpr
+    | TEHold of body: TypedExpr
     | TEEnvLoad of def: RecordDef * enums: Map<string, string list>
     | TEArgsLoad of target: ArgsTarget
     | TEFrom of
@@ -1106,6 +1107,7 @@ let rec divergesTo (x: Expr) : bool =
     | ELetPat(_, _, b)
     | EWithin(_, _, _, _, b)
     | EAlways(b, _)
+    | EHold b
     | ECapture b -> divergesTo b
     | EIf(_, t, Some e) -> divergesTo t && divergesTo e
     | EMatch(_, arms) -> arms |> List.forall (fun (_, _, b) -> divergesTo b)
@@ -3085,10 +3087,18 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             { Kind = TESize b
               Ty = TSize
               Span = expr.Span }
-    | ERetry(isPoll, opts, watch, body, until) ->
+    | ERetry(kind, opts, watch, body, until) ->
         result {
-            let famTy = TNamed((if isPoll then "Poll" else "Retry"), [])
-            let head = if isPoll then "poll" else "retry"
+            let famTy =
+                TNamed(
+                    (match kind with
+                     | LoopRetry -> "Retry"
+                     | LoopPoll -> "Poll"
+                     | LoopRepeat -> "Repeat"),
+                    []
+                )
+
+            let head = loopHead kind
             let! topts = check ctx env opts famTy
 
             // watch= is poll's key [D:scoped-procs]: poll waits for
@@ -3096,8 +3106,45 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             // retries failures — a dead process is not a transient one
             do!
                 match watch with
-                | Some w when not isPoll ->
+                | Some w when kind = LoopRetry ->
                     err w.Span "watch= is poll's key (wait-for-ready); retry retries failures — run the wait under poll"
+                | Some w when kind = LoopRepeat ->
+                    err w.Span "watch= is poll's key (wait-for-ready); a repeat runs until it is stopped — check the process in the block (Proc.running)"
+                | _ -> Ok()
+
+            // interval= is required [D:repeat]: the key=value head's base
+            // has none worth running
+            do!
+                match kind, opts.Kind with
+                | LoopRepeat, EVar "|repeatDefaults" ->
+                    err opts.Span "a repeat needs interval= — the wait between iterations (repeat interval=1s)"
+                | LoopRepeat, EUpdate({ Kind = EVar "|repeatDefaults" }, ups) when
+                    not (ups |> List.exists (fun (path, _) -> List.map fst path = [ "interval" ]))
+                    ->
+                    err opts.Span "a repeat needs interval= — the wait between iterations (repeat interval=1s)"
+                | _ -> Ok()
+
+            // a literal interval that is not positive is a hot loop by
+            // accident [D:repeat]; a computed one refuses at run time
+            do!
+                match kind, opts.Kind with
+                | LoopRepeat, EUpdate(_, ups) ->
+                    let literalMs (e: Expr) =
+                        match e.Kind with
+                        | EDur ms -> Some ms
+                        | EBinOp("-", { Kind = EInt 0L }, { Kind = EDur ms }) -> Some(-ms)
+                        | _ -> None
+
+                    match
+                        ups
+                        |> List.tryPick (fun (path, v) ->
+                            match path with
+                            | [ ("interval", _) ] -> literalMs v |> Option.filter (fun ms -> ms <= 0L) |> Option.map (fun ms -> v, ms)
+                            | _ -> None)
+                    with
+                    | Some(v, ms) ->
+                        err v.Span $"a repeat's interval must be positive, got {formatDuration ms} — it is the wait between iterations, and no wait is a busy loop"
+                    | None -> Ok()
                 | _ -> Ok()
 
             let! twatch =
@@ -3105,7 +3152,16 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | Some w -> check ctx env w (TNamed("Proc", [])) |> Result.map Some
                 | None -> Ok None
 
-            let! tbody = infer ctx env body
+            // a repeat block with no until is statement position: its
+            // command tail streams, as an if body's [D:interior-arming]
+            let! tbody =
+                infer
+                    ctx
+                    env
+                    (if kind = LoopRepeat && until.IsNone then
+                         armTail body
+                     else
+                         body)
 
             match until with
             | Some((b, _), pred) ->
@@ -3128,20 +3184,39 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     let! tpred = check ctx env' pred TBool
 
                     return
-                        { Kind = TERetry(isPoll, topts, twatch, tbody, Some(b, tpred))
+                        { Kind = TERetry(kind, topts, twatch, tbody, Some(b, tpred))
                           Ty = bodyTy
                           Span = expr.Span }
             | None ->
-                match resolve ctx tbody.Ty with
-                | TBool
-                | TVar _ ->
+                match kind, resolve ctx tbody.Ty with
+                // a repeat's block is work: unit, or a bool that ends it
+                // like poll's predicate [D:repeat]
+                | LoopRepeat, TBool ->
+                    return
+                        { Kind = TERetry(kind, topts, twatch, tbody, None)
+                          Ty = TUnit
+                          Span = expr.Span }
+                | LoopRepeat, (TUnit | TVar _) ->
+                    do! bind ctx env body.Span TUnit tbody.Ty
+
+                    return
+                        { Kind = TERetry(kind, topts, twatch, tbody, None)
+                          Ty = TUnit
+                          Span = expr.Span }
+                | LoopRepeat, bodyTy ->
+                    return!
+                        err
+                            body.Span
+                            $"a repeat block is unit (the work of one iteration) or a bool that ends the loop when true; this one yields {formatTy bodyTy} — add `until r` to bind the value, or end the block with a unit statement"
+                | _, TBool
+                | _, TVar _ ->
                     do! bind ctx env body.Span TBool tbody.Ty
 
                     return
-                        { Kind = TERetry(isPoll, topts, twatch, tbody, None)
+                        { Kind = TERetry(kind, topts, twatch, tbody, None)
                           Ty = TUnit
                           Span = expr.Span }
-                | bodyTy ->
+                | _, bodyTy ->
                     return!
                         err
                             body.Span
@@ -3195,6 +3270,16 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
             return
                 { Kind = TEAlways(tbody, tcleanup)
+                  Ty = tbody.Ty
+                  Span = expr.Span }
+        }
+    | EHold body ->
+        // the held scope's type is the body's [D:held-scope]
+        result {
+            let! tbody = infer ctx env body
+
+            return
+                { Kind = TEHold tbody
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
@@ -5661,6 +5746,9 @@ and armTail (e: Expr) : Expr =
         | EAlways(b, c) ->
             { Kind = EAlways(armTail b, c)
               Span = e.Span }
+        | EHold b ->
+            { Kind = EHold(armTail b)
+              Span = e.Span }
         | ELet(n, ns, v, b) ->
             { Kind = ELet(n, ns, v, armTail b)
               Span = e.Span }
@@ -5866,6 +5954,15 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
 
             return
                 { Kind = TEAlways(tbody, tcleanup)
+                  Ty = tbody.Ty
+                  Span = expr.Span }
+        }
+    | EHold body, _ ->
+        result {
+            let! tbody = check ctx env body expected
+
+            return
+                { Kind = TEHold tbody
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
@@ -6241,6 +6338,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TEWithin(k, n, a, o, b) ->
             TEWithin(k, n, a |> Option.map (finalizeExpr ctx), o |> Option.map (finalizeExpr ctx), finalizeExpr ctx b)
         | TEAlways(b, c) -> TEAlways(finalizeExpr ctx b, finalizeExpr ctx c)
+        | TEHold b -> TEHold(finalizeExpr ctx b)
         | TEEnvLoad _
         | TEArgsLoad _ -> te.Kind
         | leaf -> leaf
@@ -6535,6 +6633,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TESeq(a, b) -> [ a; b ]
     | TEWithin(_, _, a, o, b) -> Option.toList a @ Option.toList o @ [ b ]
     | TEAlways(b, c) -> [ b; c ]
+    | TEHold b -> [ b ]
     | TEList items -> items
     | TETuple items -> items
     | TECmd(h, args, envO) ->

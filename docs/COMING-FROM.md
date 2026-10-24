@@ -98,11 +98,16 @@ print "unreached"
 - `$VAR` expansion. Use `Env.get "VAR"` (an `Option<string>`) and
   splice the result. To set a variable for one command,
   `NAME=value cmd` works as in bash.
-- `while`. weir's loops are bounded:
-  [`retry` and `poll`](GUIDE.md#retrying-and-polling)
-  (for example `retry attempts=5 delay=30s` followed by a block).
-  Running out of attempts raises an error, and there is no way to
-  write an unbounded loop.
+- `while`. weir has none.
+  [`retry` and `poll`](GUIDE.md#retrying-and-polling) are bounded by
+  attempts and by time (for example `retry attempts=5 delay=30s`
+  followed by a block); running out raises an error. The loop that
+  runs until you stop it is [`repeat interval=…`](reference/loops.md#repeat):
+  on Ctrl+C or SIGTERM it finishes the iteration in hand and the
+  script carries on after it. A `for` over `Seq.initInfinite` runs
+  forever too, but a signal cuts it mid-iteration. To keep a server up
+  until stopped, end its `within` with
+  [`until stopped`](reference/scopes.md#until-stopped).
 - Anything else from bash. `sh -c "the bash line"` is an ordinary
   command. Inside that quoted line, `$w` is sh's variable, not weir's,
   so interpolate first: `sh -c $"echo got-{w}"`.
@@ -213,7 +218,8 @@ The longer story behind some of those rows:
   normally, by error, by `exit`, or on a signal. For resources, use a
   `within` kind instead (`within tmp`, `within proc`, `within lock`).
 - Instead of `while` and recursion: `retry`/`poll` for loops that wait
-  on a condition (always bounded), pipelines and `Seq.fold` to
+  on a condition (always bounded), `repeat interval=…` for a loop that
+  runs until the program is stopped, pipelines and `Seq.fold` to
   transform or accumulate, and `for … do` (the same as `Seq.iter`) for
   effects.
 - The signature line is also what exports a function: members without
@@ -443,8 +449,9 @@ within tmp d
 **Not here, and what to write instead:**
 
 - `while`. `retry attempts=… delay=…` and `poll timeout=… interval=…`
-  are the bounded loops, `for x in xs do` runs an effect per item, and
-  transformations are pipelines.
+  are the bounded loops, `repeat interval=…` is the `while True:` that
+  stops cleanly on Ctrl+C or SIGTERM, `for x in xs do` runs an effect
+  per item, and transformations are pipelines.
 - Classes. Use records and functions, and `{ r with F = v }` instead of
   changing attributes.
 - Exceptions and `try/except`. `fail` stops the script. Turn an

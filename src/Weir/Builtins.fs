@@ -6262,6 +6262,11 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "poll timeout=1s interval=1ms true")
               (Some
                   "To wait for a server to come up, start it with `within proc srv = …`, then `poll timeout=10s watch=srv` with `Net.portOpen <port>` as the body.")
+          "repeat",
+          bd
+              "Run an indented block until the program is asked to stop: `repeat interval=1s` followed by the block, which runs, then the interval passes, then it runs again. The first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`; Ctrl+C on Windows) lets the iteration in hand finish and returns, so the code after the loop runs and the program exits 0; a second signal tears down as usual. A bool block ends the loop when true; `until r` binds a value block's result and returns it once the predicate holds; `timeout=(Some 5m)` raises when it passes, as poll's does. Waits inside the block are not ended by the request — only the interval is."
+              (Some "repeat interval=1ms true")
+              (Some "A server or sidecar held until the operator stops it is a `within` scope with `until stopped` after its block instead.")
           "within",
           bd
               ("Open a resource for an indented block. It is released however the block exits, normally or by an error. The kinds: "
@@ -6269,7 +6274,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
                   |> List.filter (fun k -> not k.Standalone)
                   |> List.map (fun k -> $"`{k.Name}` — {k.Doc}")
                   |> String.concat "; ")
-               + ".")
+               + ". After the block, `until stopped` holds the scope until the first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`), then it closes by its normal path and the program exits 0; an `always` cleanup comes after it.")
               (Some "within tmp d\n    print d")
               (Some "`within proc srv = <command>` binds a Proc handle; the process and its children are killed and reaped when the block exits.")
           // the purity assertion's two spellings [D:pure-stage1] — its
@@ -8203,7 +8208,13 @@ let internalAliases: (string * Ty * Value) list =
     // and by the Purity/Can/Effects classifiers to read a library key as
     // its target member
     [ for key, modName, field in Weir.Effects.libraryDesugars do
-          let ty, v = m modName field
+          let ty, v =
+              if key = "|repeatDefaults" then
+                  // the base the key=value head updates; the parser demands
+                  // interval=, so the 0ms never runs [D:repeat]
+                  TNamed("Repeat", []), VRecord("Repeat", [ "interval", VDur 0L; "timeout", VUnion("None", None) ])
+              else
+                  m modName field
           // the one desugar whose value is not its classification target
           let v = if key = "|seqItemFromEnd" then itemFromEndImpl else v
           key, ty, v ]

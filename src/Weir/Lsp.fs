@@ -1413,9 +1413,14 @@ let private retryPollFormHover (env: TypeEnv) (text: string) (jcol: int) : strin
                 "poll key=value … — retry's wall-clock twin: rerun until true or the timeout elapses; timing out raises\nkeys: "
                 + keysOf "Poll"
             )
+        | "repeat" ->
+            Some(
+                "repeat interval=… — the loop a stop signal ends: run the block, wait the interval, run it again; the first SIGINT/SIGTERM/SIGHUP lets the iteration in hand finish and returns (a second one tears down). An `until` segment or a bool block ends it too; a timeout raises\nkeys: "
+                + keysOf "Repeat"
+            )
         | "until" ->
             Some
-                "until <name> — the predicate segment of a retry/poll VALUE body: names the body's binding and decides when the loop stops"
+                "until <name> — the predicate segment of a retry/poll/repeat VALUE body: names the body's binding and decides when the loop stops. After a within's block, `until stopped` holds the scope until the first stop signal, then it closes normally"
         | _ -> None)
 
 /// a form-word hover: within/from/to/retry/poll/until and their
