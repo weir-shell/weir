@@ -120,13 +120,19 @@ let runOnFreePort off run =
 
 // a pseudo-terminal: `HEX <bytes>` / `SLEEP <ms>` lines on stdin, the whole
 // session (CR stripped, ESC shown as <ESC>) on stdout, then `EXIT <code>`
+// `WAIT <text>` / `WAITRE <regex>` hold the scenario until the output since
+// the previous WAIT holds a match — a readiness marker, never a guessed
+// delay; after 20s the driver kills the session and exits 3 naming the
+// wait, and ptyRun fails the probe (a harness failure keeps the gate shut)
 let ptyPy = <<<
-    import os, pty, sys, time, select, signal, fcntl, termios, struct
+    import os, pty, sys, time, select, signal, fcntl, termios, struct, re
     timeout = float(sys.argv[1]); cmd = sys.argv[2:]
     steps = []
     for line in sys.stdin.read().splitlines():
         if line.startswith("SLEEP "): steps.append(("sleep", int(line[6:])))
         elif line.startswith("HEX "): steps.append(("send", bytes.fromhex(line[4:].strip())))
+        elif line.startswith("WAIT "): steps.append(("wait", (re.compile(re.escape(line[5:].encode())), line[5:])))
+        elif line.startswith("WAITRE "): steps.append(("wait", (re.compile(line[7:].encode()), line[7:])))
     pid, fd = pty.fork()
     if pid == 0:
         for sig in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM):
@@ -144,9 +150,19 @@ let ptyPy = <<<
                 if not c: return False
                 out += c
         return True
-    alive = True
+    alive = True; seen = 0
     for kind, arg in steps:
-        if not alive: break
+        if kind == "wait":
+            rx, text = arg; lim = time.monotonic() + 20; m = rx.search(out, seen)
+            while m is None and alive and time.monotonic() < lim:
+                alive = pump(time.monotonic() + 0.02); m = rx.search(out, seen)
+            if m is None:
+                try: os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
+                except OSError: pass
+                sys.stderr.write("WAIT timed out for '%s'%s\n" % (text, "" if alive else " (the session ended first)"))
+                sys.exit(3)
+            seen = m.end(); continue
+        if not alive: continue
         if kind == "sleep": alive = pump(time.monotonic() + arg / 1000.0)
         else: os.write(fd, arg)
     deadline = time.monotonic() + timeout
@@ -279,6 +295,7 @@ let ptyRun dir secs args scenario =
     let py = put dir "ptydrive.py" ptyPy
     within cd dir
         let r = scenario | timeout 60 python3 -I $py $secs $@args | complete
+        if codeOf r <> 0 then fail $"the pty driver failed (exit {codeOf r}): {errOf r}"
         outOf r
 
 // ---- H3-B1: plan dry-run SENDS an Other-method Http request -------------------
@@ -880,19 +897,22 @@ let h3c5 d =
 
 let typedLine s = $"HEX {hx s}0d"
 
+// the REPL's empty prompt: drawn when the line editor is reading
+let promptReady = @"WAITRE weir> \r"
+
 let replCtrlC d waitLine =
     Dir.create $"{d}/home"
     let h = $"{d}/home"
     within env HOME=$h XDG_CONFIG_HOME=$"{h}/.config" XDG_STATE_HOME=$"{h}/.state" XDG_DATA_HOME=$"{h}/.data" XDG_CACHE_HOME=$"{h}/.cache" NO_COLOR=1
         ptyRun d "2" [cli.bin] [
-            "SLEEP 2500"; typedLine waitLine; "SLEEP 1500"; "HEX 03"; "SLEEP 1500"
+            promptReady; typedLine waitLine; "WAIT ARMED"; "HEX 03"; "SLEEP 1500"
             typedLine "print (Str.toUpper \"h3probe\")"; "SLEEP 2500"; "HEX 04"; "SLEEP 500"
         ]
 
-let ctlReplCtrlCChild d = replCtrlC d "sleep 20" |> Str.contains "H3PROBE"
+let ctlReplCtrlCChild d = replCtrlC d "sh -c \"echo armed | tr a-z A-Z; sleep 20\"" |> Str.contains "H3PROBE"
 
 let h3c6 d =
-    failing [ ("^C during Duration.sleep 20s returns to the prompt", replCtrlC d "Duration.sleep 20s" |> Str.contains "H3PROBE") ]
+    failing [ ("^C during Duration.sleep 20s returns to the prompt", replCtrlC d "print (Str.toUpper \"armed\") ; Duration.sleep 20s" |> Str.contains "H3PROBE") ]
 
 // ---- H3-D1..D3: quadratic cliffs (growth at 10x input, linear is ~10x) ---------
 
