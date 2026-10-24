@@ -1013,6 +1013,13 @@
           "pointer": null
         },
         {
+          "name": "isName",
+          "signature": "Path.isName (name: string) : bool",
+          "summary": "True when the string is one file name that is valid on Linux, macOS and Windows alike: not empty, \u0027.\u0027 or \u0027..\u0027; no \u0027/\u0027, \u0027\\\u0027, control character (U\u002B0000 to U\u002B001F) or any of \u003C \u003E : \u0022 | ? *; no trailing space or dot; not a Windows device name (\u0060CON\u0060, \u0060PRN\u0060, \u0060AUX\u0060, \u0060NUL\u0060, \u0060COM0\u0060-\u0060COM9\u0060, \u0060LPT0\u0060-\u0060LPT9\u0060, \u0060COM\u00B9\u0060-\u0060COM\u00B3\u0060, \u0060LPT\u00B9\u0060-\u0060LPT\u00B3\u0060) in any case, with or without an extension; at most 255 bytes in UTF-8. Use toName to turn arbitrary text into such a name.",
+          "example": "Path.isName \u0022report-2026.txt\u0022",
+          "pointer": null
+        },
+        {
           "name": "newTempDir",
           "signature": "Path.newTempDir () : string",
           "summary": "Create a new, uniquely named directory under the temp root and return its path (named the same way as \u0060within tmp\u0060, and like it readable only by you). It is never removed automatically; deleting it is up to you or the OS. For a directory that is removed when a block exits (also on Ctrl\u002BC or kill), use \u0060within tmp dir\u0060.",
@@ -1045,6 +1052,13 @@
           "signature": "Path.tempRoot () : string",
           "summary": "The system temp directory, in the platform\u0027s native form and without a trailing separator. Has no side effects.",
           "example": "Path.tempRoot ()",
+          "pointer": null
+        },
+        {
+          "name": "toName",
+          "signature": "Path.toName (text: string) : string",
+          "summary": "Turn arbitrary text into a file name for which isName is true: each forbidden character becomes \u0027_\u0027, trailing spaces and dots are dropped, a device name gets a \u0027_\u0027 prefix (\u0060CON.txt\u0060 becomes \u0060_CON.txt\u0060), the result is cut to 255 UTF-8 bytes without splitting a character, and an empty result becomes \u0027_\u0027. Everything else is kept as it is, and a name that is already valid comes back unchanged.",
+          "example": "Path.toName \u0022Q3: draft/final?.txt\u0022",
           "pointer": null
         },
         {

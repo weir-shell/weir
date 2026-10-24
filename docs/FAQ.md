@@ -103,6 +103,26 @@ mid-iteration. To keep a server running until it is stopped, end its
 
 See [`repeat`](reference/loops.md#repeat).
 
+### How do I check that a string is a valid file name?
+
+`Path.isName` checks it and `Path.toName` makes one from any text. A
+valid name is one file name that works on Linux, macOS and Windows
+alike: not empty, `.` or `..`, no `/`, `\`, control character or
+`< > : " | ? *`, no trailing space or dot, not a Windows device name
+such as `CON` or `nul.txt`, and at most 255 bytes in UTF-8.
+
+```weir
+let title = "Q3: draft/final?"
+let file = if Path.isName title then title else Path.toName title
+print file
+```
+
+`toName` replaces each forbidden character with `_`, drops trailing
+spaces and dots, prefixes a device name with `_` and cuts at 255 bytes
+without splitting a character; a name that is already valid comes back
+unchanged. To join a name you did not choose onto a directory, use
+`Path.under`. See `#help Path.toName` at the prompt.
+
 ## Functions
 
 ### My function ends with a command; why does it return `seq<string>`?
