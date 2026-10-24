@@ -1556,7 +1556,7 @@ let boundaryTests =
                   | Error msg ->
                       Expect.stringContains msg "Seq.pmap" $"'{src}' points at the collecting spelling"
                       Expect.stringContains msg "effects only" $"'{src}' names the rule"
-                      Expect.stringContains msg $"Col: {col}\n" $"'{src}' is located at the collecting token"
+                      Expect.stringContains (msg.Replace("\r\n", "\n")) $"Col: {col}\n" $"'{src}' is located at the collecting token"
 
               expectParse "[for x in xs -> x]" "(|seqFreeze (xs |> (|seqMap (funpat x x))))"
           }
