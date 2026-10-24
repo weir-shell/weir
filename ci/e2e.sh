@@ -9193,6 +9193,30 @@ printf 'import "./pc-contract.weir"\nimport "./pc-b.weir"\nlet (PcB.Ghost n) = C
 out=$($BIN check "$mdir/pc-wrong.weir" 2>&1 || true)
 expect "a wrong qualifier names both types" "'PcB.Ghost' is a case of PcB.Ghost, but this value has type Contract.Ghost" "$out"
 
+# validated types [D:validated-types]: the case never constructs, T.create
+# is the one gate, and every boundary runs validate — an Args flag and a
+# JSON field refuse a bad value naming the flag / the field path; the REPL
+printf 'module Mail\ntype Email = Email of string\n    validate s = if Str.contains "@" s then Ok (Str.toLower s) else Error $"not an email: {s}"\ntype User = { name: string; email: Email }\n' > "$mdir/vt-mail.weir"
+printf 'import "./vt-mail.weir"\ntype Cli = { recipient: Email }\nlet c = Args.load Cli\nlet (Email r) = c.recipient\nprint r\n' > "$mdir/vt-args.weir"
+out=$($BIN "$mdir/vt-args.weir" --recipient A@B 2>&1)
+expect "a validated flag parses, validates and normalises" "a@b" "$out"
+rc=0; out=$($BIN "$mdir/vt-args.weir" --recipient nope 2>&1) || rc=$?
+expect "a validated flag refuses a bad value, naming the flag" "Args.load Cli: --recipient: not an email: nope" "$out"
+[ "$rc" = 1 ] || fail "a validated flag's refusal exits as the Args error path does (1), got $rc"
+out=$($BIN "$mdir/vt-args.weir" --help 2>&1)
+expect "--help shows a validated flag's type name" "--recipient <Email>" "$out"
+printf 'import "./vt-mail.weir"\nlet u = ["{\\"users\\": [{\\"name\\": \\"a\\", \\"email\\": \\"x\\"}]}"] |> from json {| users: seq<Mail.User> |}\nprint $"{u.users |> Seq.length}"\n' > "$mdir/vt-json.weir"
+rc=0; out=$($BIN "$mdir/vt-json.weir" 2>&1) || rc=$?
+expect "a JSON field refuses a bad value, naming its path" "from json: users[0].email: not an email: x" "$out"
+[ "$rc" = 1 ] || fail "a JSON validation refusal exits 1, got $rc"
+printf 'import "./vt-mail.weir"\nlet e = Mail.Email "a@b"\n' > "$mdir/vt-ctor.weir"
+out=$($BIN check "$mdir/vt-ctor.weir" 2>&1 || true)
+expect "a validated case never constructs" "'Mail.Email' is validated — build it with Mail.Email.create (it returns a Result)" "$out"
+out=$(printf 'type Port = Port of int\n    validate p = if p > 0 then Ok p else Error $"{p} is no port"\nPort.create 8080\nPort.create 0\nPort 1\n' | $BIN 2>&1)
+expect "the REPL: T.create builds" "Ok (Port 8080) : Result<Port, string>" "$out"
+expect "the REPL: T.create refuses with the validator's message" 'Error "0 is no port"' "$out"
+expect "the REPL: the case refuses to construct" "'Port' is validated — build it with Port.create" "$out"
+
 # an import cycle is a check error naming the loop, at its closing edge
 printf 'module CA\nimport "./cb.weir"\nlet a = 1\n' > "$mdir/ca.weir"
 printf 'module CB\nimport "./ca.weir"\nlet b = 2\n' > "$mdir/cb.weir"

@@ -2979,7 +2979,9 @@ type CheckedStmt =
     | CLetPat of binder: Weir.Ast.Pattern * te: Check.TypedExpr
     | CExpr of te: Check.TypedExpr
     | CCmd of te: Check.TypedExpr
-    | CType of decl: Decl
+    // validator: a validated type's id and typed `validate` function
+    // [D:validated-types] — the run registers its `create` from them
+    | CType of decl: Decl * validator: (string * Check.TypedExpr) option
     | CNoop
     // an imported module's replayable body [D:modules-v1] — evaluated once
     // at exec into the module's own venv, exposed as `alias.member`
@@ -3263,7 +3265,7 @@ module SigContext =
           SigLines = Map.empty }
 
 type CheckedKind =
-    | KType of Decl
+    | KType of decl: Decl * validator: (string * Check.TypedExpr) option
     | KLet of name: string * scheme: Scheme * te: Check.TypedExpr
     | KLetPat of binder: Pattern * schemes: (string * Scheme) list * te: Check.TypedExpr
     | KCmd of te: Check.TypedExpr
@@ -3894,10 +3896,21 @@ let rec private checkStatementCore
             match Check.checkDecl (yieldImported decl.Name tenv) decl with
             | Error terr -> Error(typed StmtTag.Type terr)
             | Ok tenv' ->
-                Ok
-                    { Kind = KType decl
-                      Env = tenv'
-                      Warnings = [] }
+                // the `validate` block types against the declared type
+                // [D:validated-types] — its purity is the post-check layer's
+                let validator =
+                    match decl.Validate, Types.typeDefFor tenv' decl.Name with
+                    | Some v, Some(Union { Validated = Some id }) ->
+                        Check.typecheckValidator tenv' decl.Name v |> Result.map (fun te -> Some(id, te))
+                    | _ -> Ok None
+
+                match validator with
+                | Error terr -> Error(typed StmtTag.Type terr)
+                | Ok validator ->
+                    Ok
+                        { Kind = KType(decl, validator)
+                          Env = tenv'
+                          Warnings = [] }
         | Ok(SSig(name, ty, nameSpan)) ->
             let sigErr msg =
                 Error(
@@ -4312,6 +4325,7 @@ let checkStatement
             | KLetPat(_, _, te) -> Some(te, StmtTag.LetPat)
             | KCmd te -> Some(te, StmtTag.Cmd)
             | KExpr te -> Some(te, StmtTag.Expr)
+            | KType(_, Some(_, te)) -> Some(te, StmtTag.Type)
             | KType _
             | KSig _
             | KModule _
@@ -4322,8 +4336,14 @@ let checkStatement
         | Some(te, tag) ->
             // pureViolation returns the complete located message
             // (pure's "…forbids effects, but…" or readonly's
-            // "…forbids external mutation, but…") [D:pure-stage2]
-            match Purity.pureViolation tenv.PlanRefused tenv.PureBindings te with
+            // "…forbids external mutation, but…") [D:pure-stage2]; a
+            // validator is a pure region of its own [D:validated-types]
+            let violation =
+                match st.Kind with
+                | KType _ -> Purity.validatorViolation tenv.PureBindings te
+                | _ -> Purity.pureViolation tenv.PlanRefused tenv.PureBindings te
+
+            match violation with
             | Some(span, message) ->
                 let physLine, physCol = translate ll span.Start.Col
 
@@ -4436,6 +4456,11 @@ type UnusedTracker() =
     /// no `let rec` exists)
     member this.Feed (ll: LogicalLine) (chk: CheckedStatement) =
         match chk.Kind with
+        // a validator reads like a function body [D:validated-types]
+        | KType(_, Some(_, te)) ->
+            let free, locals = Check.bindingUsage te
+            this.Uses free
+            this.Locals ll locals
         | KType _
         | KSig _
         | KModule _
@@ -5097,7 +5122,7 @@ let rec loadModuleCachedWith
                                     | _ -> None
 
                                 match chk.Kind with
-                                | KType decl -> go chk.Env sc implLines ((ll, CType decl) :: accBody) tail
+                                | KType(decl, validator) -> go chk.Env sc implLines ((ll, CType(decl, validator)) :: accBody) tail
                                 | KImport lm -> go chk.Env sc implLines ((ll, CImport lm) :: accBody) tail
                                 | KSig(name, sd) ->
                                     // the sig binds nothing yet [D:module-signatures];
@@ -5196,7 +5221,7 @@ let rec loadModuleCachedWith
                             let typeDefs =
                                 moduleBody
                                 |> List.choose (function
-                                    | _, CType decl ->
+                                    | _, CType(decl, _) ->
                                         Map.tryFind decl.Name finalTenv.Types |> Option.map (fun d -> decl.Name, d)
                                     | _ -> None)
 
@@ -5356,13 +5381,7 @@ and private replayModuleBody (procFacts: (string * Eval.Value) list) (lm: Loaded
     let rec replay (mv: Eval.Env) body =
         match body with
         | [] -> mv
-        | (_, CType decl) :: t ->
-            let mv' =
-                match decl.Body with
-                | DUnion cases -> Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) mv
-                | DRecord _ -> mv
-
-            replay mv' t
+        | (_, CType(decl, validator)) :: t -> replay (Eval.declare mv decl validator) t
         | (_, CLet(name, te)) :: t -> replay (Map.add name (Eval.eval mv te) mv) t
         | (_, CLetPat(pat, te)) :: t ->
             let bs = Eval.bindPattern pat (Eval.eval mv te)
@@ -5977,12 +5996,23 @@ let private sigSurface (choicesOf: string -> string list option) (def: RecordDef
                     | TNamed(n, []) -> choicesOf n
                     | _ -> None
 
+                // the field's TYPE name counts too, split at its word
+                // parts (`ExistingDir`, `ConfigFile`) — a validated type
+                // names what it holds [D:validated-types]
+                let rec typeName t =
+                    match t with
+                    | TNamed("Option", [ inner ])
+                    | TSeq inner -> typeName inner
+                    | TNamed(n, []) -> [ Weir.Argv.kebabFlag n ]
+                    | _ -> []
+
                 if a = ANone then
                     None
                 else
                     match named ty with
                     | Some cs -> Some(VChoices cs)
-                    | None when pathish (Weir.Argv.kebabFlag f :: wires) (Weir.Argv.docOf def f) -> Some VPath
+                    | None when pathish (Weir.Argv.kebabFlag f :: wires @ typeName ty) (Weir.Argv.docOf def f) ->
+                        Some VPath
                     | None -> None
 
             match value with
@@ -10099,7 +10129,7 @@ let analyzeLinesAs
                 // against the winner). Scripts only; the REPL replaces
                 // by design.
                 (match chk.Kind with
-                 | KType decl ->
+                 | KType(decl, _) ->
                      match declaredTypes.TryGetValue decl.Name with
                      | true, (firstLine, viaImport) ->
                          diags.Add
@@ -10741,7 +10771,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                         // run too [D:dup-type-decl]
                                         let dupError =
                                             match chk.Kind with
-                                            | KType decl ->
+                                            | KType(decl, _) ->
                                                 match runDeclaredTypes.TryGetValue decl.Name with
                                                 | true, (firstLine, viaImport) ->
                                                     Some(
@@ -10771,7 +10801,7 @@ let run (path: string) (scriptArgs: string list) : int =
 
                                             let stmt =
                                                 match chk.Kind with
-                                                | KType decl -> CType decl
+                                                | KType(decl, validator) -> CType(decl, validator)
                                                 | KLet(name, _, te) -> CLet(name, te)
                                                 | KLetPat(pat, _, te) -> CLetPat(pat, te)
                                                 | KCmd te -> CCmd te
@@ -10789,7 +10819,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                             // later, the type comes first) captures it
                                             let env' =
                                                 match chk.Kind with
-                                                | KType decl ->
+                                                | KType(decl, _) ->
                                                     let docs = fieldDocsFor rawLines ll
 
                                                     if Map.isEmpty docs then
@@ -11011,12 +11041,11 @@ let run (path: string) (scriptArgs: string list) : int =
                                 |> Ok
                             with ex ->
                                 fail lineNo ex
-                        | CType decl ->
-                            match decl.Body with
-                            | DUnion cases ->
-                                Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) venv
-                            | DRecord _ -> venv
-                            |> Ok
+                        | CType(decl, validator) ->
+                            try
+                                Ok(Eval.declare venv decl validator)
+                            with ex ->
+                                fail lineNo ex
                         | CLetPat(pat, te) ->
                             try
                                 let bindings = Eval.bindPattern pat (Eval.eval venv te)

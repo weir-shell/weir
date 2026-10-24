@@ -98,6 +98,13 @@ qualified case names its import, and the import is checked against the
 value: `Y.Red` on an `X` value is a type error naming both types. When
 two imports declare unions with the same case name and nothing types
 the value, a bare case is an error that lists the qualified spellings.
+
+A [validated type](types.md#validated-types) exports with its
+`create`: whenever the type is exported (always — types export with
+their cases), `X.Email.create` is reachable, or bare `Email.create`
+while one import declares `Email` (two imports name both spellings).
+Its case still exports for patterns (`| X.Email raw ->`), but not for
+construction: `X.Email "a@b"` refuses, naming `X.Email.create`.
 A local declaration always takes precedence over an imported name. A
 module exports only its own declarations, not what it imported.
 

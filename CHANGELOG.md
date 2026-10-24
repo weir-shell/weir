@@ -6,6 +6,18 @@ Many of the changes and fixes below were found porting starship to weir.
 
 ### Added
 
+- **Validated types: a type that only holds valid values.** Give a
+  single-case union an indented `validate s = …` block returning
+  `Result<payload, string>` (it may normalise, e.g. lowercase), and weir
+  derives `Email.create : string -> Result<Email, string>` — the only way
+  to build a value, inside the declaring module too (`Email "x"` is an
+  error naming `Email.create`). Patterns still read the value anywhere.
+  Every boundary runs the check: `from json`/`jsonl`/`yaml`/`toml` fail
+  with the field path (`from json: users[0].email: not an email: x`),
+  `Args.load`/`Env.load` name the flag or variable, and `to json`/`to
+  yaml` write the payload. The block must be pure. Hover shows its `///`
+  doc, `--help` shows `--to <Email>`, and a signature field whose type
+  name says path, file or dir (`ConfigFile`) completes paths.
 - **Tab asks the tool for values: branches, pods, remotes.** A
   signature with `let dynamic = "git"` lists refs and remotes where git
   takes them (`git checkout <Tab>`, `git push <Tab>`, and with `#alias

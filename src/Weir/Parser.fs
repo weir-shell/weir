@@ -5322,6 +5322,34 @@ let private typeParams =
     opt (between (str_ws "<") (str_ws ">") (sepBy1 (pchar '\'' >>. rawWord .>> ws) (str_ws ",")))
     |>> Option.defaultValue []
 
+// `validate <binder> = <expr>` [D:validated-types]: a contextual word —
+// only after a declaration body, so `validate` stays an ordinary name
+// everywhere else. The binder's names shadow PATH in the body, the
+// param-ful let's rule [D:paramful-rhs]. Any declaration takes the
+// clause here; the checker teaches where it belongs.
+let private validateClause: Parser<Validator, unit> =
+    attempt (spanned (pstring "validate" .>> notFollowedBy (satisfy isIdentCont)) .>> ws)
+    .>>. binderParam
+    .>> str_ws "="
+    >>= fun ((_, kwSpan), binder) ->
+        let rec leafNames (p: Pattern) =
+            match p.PKind with
+            | PVar n -> [ n ]
+            | PTuple ps -> ps |> List.collect leafNames
+            | PRecord fields -> fields |> List.map snd |> List.collect leafNames
+            | PCase(_, Some inner, _) -> leafNames inner
+            | _ -> []
+
+        let body =
+            leafNames binder
+            |> List.fold (fun (p: Parser<Expr, unit>) n -> withAmbientName n p) seqExpr
+
+        body
+        |>> fun b ->
+            { Binder = binder
+              Body = b
+              Span = kwSpan }
+
 let private typeDecl =
     // a declaration-level attribute list precedes `type`
     // [D:attr-positions] ([<Tag "kind">] type K = …); once attrs are
@@ -5330,16 +5358,18 @@ let private typeDecl =
     getPosition .>>. opt attrList
     >>= fun (p, attrs) ->
         let core =
-            pipe3
+            pipe4
                 (keyword "type" >>. ident .>>. typeParams .>> str_ws "=")
                 (recordBody <|> unionBody)
+                (opt validateClause)
                 getPosition
-                (fun (name, tps) body e ->
+                (fun (name, tps) body validate e ->
                     SType
                         { Name = name
                           Params = tps
                           Body = body
                           Attrs = defaultArg attrs []
+                          Validate = validate
                           Span = { Start = pos p; End = pos e } })
 
         match attrs with

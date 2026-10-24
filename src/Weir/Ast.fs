@@ -332,6 +332,13 @@ type DeclBody =
     | DRecord of fields: (string * Ty * AttrSpec list) list
     | DUnion of cases: (string * Ty option * AttrSpec list) list
 
+// `validate <binder> = <expr>` under a single-case union
+// [D:validated-types]: the type's one gate — Span is the keyword's
+type Validator =
+    { Binder: Pattern
+      Body: Expr
+      Span: Span }
+
 type Decl =
     { Name: string
       Params: string list
@@ -339,6 +346,7 @@ type Decl =
       // declaration-level attributes [D:attr-positions] — union decls
       // host [<Tag>]; validated at checkDecl, bound at consumption
       Attrs: AttrSpec list
+      Validate: Validator option
       Span: Span }
 
 // every Expr embedded in a yaml template — splices, key splices, and
@@ -816,6 +824,9 @@ let sexprStmt (s: Stmt) : string =
     | SLetPat(p, e) -> $"(sletpat {sexprPat p} {sexpr e})"
     | SExpr e -> $"(sexpr {sexpr e})"
     | SCmd e -> $"(scmd {sexpr e})"
+    | SType({ Validate = Some v } as d) ->
+        // the validator body is code fmt respaces [D:validated-types]
+        $"(stype {d.Name} (validate {sexprPat v.Binder} {sexpr v.Body}))"
     | SType d -> $"(stype {d.Name})"
     | SSig(n, ty, _) -> $"(ssig {n} {formatTy ty})"
     | SModule(None, _) -> "(module)"

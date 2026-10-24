@@ -1760,6 +1760,9 @@ let rec private jsonAdmitted
                 | Some pty when Some c <> udef.OtherCase ->
                     jsonAdmitted reading span env (n :: seen) (if path = "" then c else $"{path}.{c}") pty
                 | _ -> Ok())
+        // a validated type crosses as its payload [D:validated-types]
+        | Some(Union({ Cases = [ (_, Some pty) ] } as udef)) when udef.Validated.IsSome ->
+            jsonAdmitted reading span env (n :: seen) path pty
         | Some(Union _) ->
             err
                 span
@@ -1955,7 +1958,7 @@ and private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty
         // the closure walks through a tagged union [D:wire-unions]: its
         // payload records ride so the reader/renames reach them (payloads
         // cannot reference the union back — declaration order forbids it)
-        | Some(Union udef) when udef.Tag.IsSome ->
+        | Some(Union udef) when udef.Tag.IsSome || udef.Validated.IsSome ->
             udef.Cases
             |> List.fold
                 (fun a (_, payload) ->
@@ -1978,7 +1981,9 @@ let rec private jsonUnionsClosure (env: TypeEnv) (acc: Map<string, UnionDef>) (t
     | TNamed(n, []) when not (acc.ContainsKey n) ->
         match typeDefFor env n with
         | Some(Record def) -> def.Fields |> List.fold (fun a (_, fty) -> jsonUnionsClosure env a fty) acc
-        | Some(Union udef) when udef.Tag.IsSome ->
+        // a validated type rides too: its reader runs `create`, its
+        // writer drops the case [D:validated-types]
+        | Some(Union udef) when udef.Tag.IsSome || udef.Validated.IsSome ->
             udef.Cases
             |> List.fold
                 (fun a (_, payload) ->
@@ -2007,21 +2012,30 @@ let private unionWriteTable
         udefs
         |> Map.toList
         |> List.collect (fun (key, udef) ->
-            let tagField = udef.Tag |> Option.defaultValue ""
+            let tagField =
+                if udef.Validated.IsSome then
+                    validatedWireTag
+                else
+                    udef.Tag |> Option.defaultValue ""
 
             udef.Cases
             |> List.map (fun (c, _) -> c, (key, tagField, caseWire udef c, Some c = udef.OtherCase)))
 
-    let rec go (seen: Map<string, string>) acc entries =
+    let rec go (seen: Map<string, string * string>) acc entries =
         match entries with
         | [] -> Ok acc
         | (c, (uname: string, tagField, tagValue, isOther)) :: rest ->
             match Map.tryFind c seen with
-            | Some prior when prior <> uname ->
+            // two validated cases write alike — the payload, no tag
+            // [D:validated-types]
+            | Some(prior, priorTag) when
+                prior <> uname
+                && not (priorTag = validatedWireTag && tagField = validatedWireTag)
+                ->
                 err
                     span
                     $"case '{c}' belongs to tagged unions '{prior}' and '{uname}', both reachable from this type — the writer keys cases by name; rename one"
-            | _ -> go (Map.add c uname seen) (Map.add c (tagField, tagValue, isOther) acc) rest
+            | _ -> go (Map.add c (uname, tagField) seen) (Map.add c (tagField, tagValue, isOther) acc) rest
 
     // a record value carries its declared name, which keys the rename
     // and codec tables — two imports' same-named records whose tables
@@ -2131,6 +2145,11 @@ let rec private yamlShape
                             oc, hasPayload)
 
                     Yaml.SUnion(n, udef.Tag.Value, List.rev cs, other))
+            // a validated type reads its payload, then runs `create`
+            // [D:validated-types]
+            | Some(Union({ Cases = [ (_, Some pty) ] } as udef)) when udef.Validated.IsSome ->
+                yamlShape span env (seen.Add n) path pty
+                |> Result.map (fun inner -> Yaml.SValid(n, udef.Validated.Value, inner))
             | Some(Union _) ->
                 err
                     span
@@ -2192,6 +2211,9 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
                                 yamlableOut span env (seen.Add n) (if path = "" then c else $"{path}.{c}") pty
                             | _ -> Ok()))
                     (Ok())
+            // a validated type writes its payload [D:validated-types]
+            | Some(Union({ Cases = [ (_, Some pty) ] } as udef)) when udef.Validated.IsSome ->
+                yamlableOut span env (seen.Add n) path pty
             | Some(Union _) ->
                 err
                     span
@@ -3349,6 +3371,79 @@ let private commaBetweenFields (fields: (string * Span * Expr) list) : Result<un
                 $"record fields are separated by ';' or a newline, not ',' — the comma made a tuple and '{n} = …' an equality; write {{ … ; {n} = … }}"
         | None -> Ok()
 
+// ---- validated types [D:validated-types] ---------------------------------
+
+/// the validated union a written type name resolves to — bare, or
+/// qualified through its import (`Mail.Email`)
+let private validatedType (env: TypeEnv) (written: string) : (string * UnionDef) option =
+    match resolveTypeName env written with
+    | TypeKey key ->
+        match typeDefFor env key with
+        | Some(Union u) when u.Validated.IsSome -> Some(key, u)
+        | _ -> None
+    | _ -> None
+
+/// the case of a validated union an import declares, by its module
+/// alias and case name: Some the type's declared name
+let private validatedModuleCase (env: TypeEnv) (m: string) (case: string) : string option =
+    Map.tryFind m env.ModuleTypes
+    |> Option.bind (fun owned ->
+        owned
+        |> Map.toList
+        |> List.tryPick (fun (declared, key) ->
+            match typeDefFor env key with
+            | Some(Union u) when u.Validated.IsSome && u.Cases |> List.exists (fun (c, _) -> c = case) -> Some declared
+            | _ -> None))
+
+/// a flat boundary's view of a record [D:validated-types]: Args.load and
+/// Env.load parse a validated field as its payload (the innermost one,
+/// for a validated type over another), so each field law runs on what
+/// the token holds; the field keeps its type name and the `create` ids,
+/// outermost first, as attributes the loader validates through
+let validatedFieldsFlat (env: TypeEnv) (def: RecordDef) : RecordDef =
+    let rec chain (ty: Ty) (ids: string list) =
+        match ty with
+        | TNamed(n, []) ->
+            match typeDefFor env n with
+            | Some(Union({ Cases = [ (_, Some p) ] } as u)) when u.Validated.IsSome -> chain p (u.Validated.Value :: ids)
+            | _ -> ty, List.rev ids
+        | _ -> ty, List.rev ids
+
+    def.Fields
+    |> List.fold
+        (fun (d: RecordDef) (f, fty) ->
+            let inner, wrap =
+                match fty with
+                | TNamed("Option", [ t ]) -> t, (fun b -> TNamed("Option", [ b ]))
+                | t -> t, id
+
+            match inner, chain inner [] with
+            | TNamed(n, []), (payloadBase, (_ :: _ as ids)) ->
+                let marks =
+                    [ validatedAttr, Some(AStr(String.concat " " ids))
+                      validatedNameAttr, Some(AStr n) ]
+
+                { d with
+                    Fields = d.Fields |> List.map (fun (g, t) -> if g = f then g, wrap payloadBase else g, t)
+                    Attrs = Map.add f ((Map.tryFind f d.Attrs |> Option.defaultValue []) @ marks) d.Attrs }
+            | _ -> d)
+        def
+
+/// the constructor refusal: the case reads, it never builds
+let validatedCtorMsg (shown: string) (typeSpelling: string) : string =
+    $"'{shown}' is validated — build it with {typeSpelling}.create (it returns a Result)"
+
+/// the derived `T.create : payload -> Result<T, string>` — the runtime
+/// registers it under the declaration's id when the `type` runs
+let private createRef (env: TypeEnv) (span: Span) (written: string) : Result<TypedExpr, TypeError> =
+    match validatedType env written with
+    | Some(key, ({ Cases = [ (_, Some payload) ] } as u)) ->
+        Ok
+            { Kind = TEVar(createVarPrefix + u.Validated.Value)
+              Ty = TFun(payload, TNamed("Result", [ TNamed(key, []); TStr ]))
+              Span = span }
+    | _ -> err span $"unreachable: '{written}' is no validated type"
+
 let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     match expr.Kind with
     // a failure as a value [D:try-form]: Option, or Result carrying the message
@@ -3603,6 +3698,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 err
                     expr.Span
                     $"ambiguous constructor '{name}'; it is declared by: {ownerList} — rename one of the cases"
+            | [ owner ] when
+                (match typeDefFor env owner with
+                 | Some(Union u) -> u.Validated.IsSome
+                 | _ -> false)
+                ->
+                err expr.Span (validatedCtorMsg name owner)
             | _ ->
                 Ok
                     { Kind = TEVar name
@@ -4009,6 +4110,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                      | EVar tyName ->
                          match typeDefFor env tyName with
                          | Some(Record def) when def.Params.IsEmpty ->
+                             // a validated field loads as its payload, then
+                             // validates [D:validated-types]
+                             let def = validatedFieldsFlat env def
                              // an enum field [D:env-enums]: a monomorphic union,
                              // every case 0-arity — the declared set becomes a
                              // boundary conversion exactly like int/bool
@@ -4185,6 +4289,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                      | (c, Some(TNamed(rn, []))) :: rest ->
                                          match typeDefFor env rn with
                                          | Some(Record rdef) when rdef.Params.IsEmpty ->
+                                             let rdef = validatedFieldsFlat env rdef
+
                                              validateFields span $"case '{c}': " rdef
                                              |> Result.bind (fun () -> buildPayloads (Map.add c rdef acc) rest)
                                          | _ -> payloadErr c
@@ -4198,6 +4304,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                          | EVar tyName ->
                              match typeDefFor env tyName with
                              | Some(Record def) when def.Params.IsEmpty ->
+                                 // a validated field parses as its payload
+                                 // [D:validated-types]
+                                 let def = validatedFieldsFlat env def
                                  // the field law [D:shared-flags]: at most one
                                  // union-typed field — the subcommand slot; its
                                  // scalar siblings are shared flags
@@ -4610,6 +4719,34 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                       Span = expr.Span }
             | _ -> return! err fnExpr.Span "the right side of a pipe must be a function"
         }
+    // `T.create` [D:validated-types]: the type's own namespace — a module
+    // member of the same name wins (the module was named first)
+    | EField({ Kind = EVar n }, "create", _) when
+        not (Map.containsKey n env.Modules && env.Modules[n].ContainsKey "create")
+        && (validatedType env n).IsSome
+        ->
+        createRef env expr.Span n
+    | EField({ Kind = EField({ Kind = EVar m }, n, _) }, "create", _) when
+        Map.containsKey m env.ModuleTypes && (validatedType env $"{m}.{n}").IsSome
+        ->
+        createRef env expr.Span $"{m}.{n}"
+    | EField({ Kind = EVar n }, "create", _) when
+        not (Map.containsKey n env.Modules)
+        && (match resolveTypeName env n with
+            | TypeAmbiguous qs -> qs |> List.forall (fun q -> (validatedType env q).IsSome)
+            | _ -> false)
+        ->
+        match resolveTypeName env n with
+        | TypeAmbiguous qs ->
+            let spellings = quotedOrList (qs |> List.map (fun q -> q + ".create"))
+            err expr.Span $"'{n}.create' is ambiguous — more than one import declares '{n}'; write {spellings}"
+        | _ -> err expr.Span "unreachable: ambiguity checked in the guard"
+    | EField({ Kind = EVar m }, field, _) when
+        Map.containsKey m env.Modules
+        && not (Map.containsKey m env.Values)
+        && (validatedModuleCase env m field).IsSome
+        ->
+        err expr.Span (validatedCtorMsg $"{m}.{field}" $"{m}.{(validatedModuleCase env m field).Value}")
     | EField({ Kind = EVar m }, field, fieldSpan) when
         Map.containsKey m env.Modules
         && (not (Map.containsKey m env.Values)
@@ -5254,6 +5391,24 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         { Kind = TEFrom(fmt, TopUnion udef, defs, udefs, seqOf, mapOf)
                           Ty = TFun(TSeq TStr, resultTy)
                           Span = expr.Span }
+                // a validated type in the slot reads its payload's
+                // document, then runs `create` [D:validated-types]
+                | Some(Union udef) when udef.Validated.IsSome ->
+                    let ty = TNamed(name, [])
+                    do! jsonAdmitted true expr.Span env [] "" ty
+
+                    return
+                        { Kind =
+                            TEFrom(
+                                fmt,
+                                TopValue ty,
+                                jsonDefsClosure env Map.empty ty,
+                                jsonUnionsClosure env Map.empty ty,
+                                seqOf,
+                                mapOf
+                            )
+                          Ty = TFun(TSeq TStr, resultTy)
+                          Span = expr.Span }
                 | Some(Record def) ->
                     let args = def.Params |> List.map (fun _ -> "int") |> String.concat ", "
 
@@ -5296,8 +5451,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                           Ty = TFun(TSeq TStr, declared)
                           Span = expr.Span }
                 // a tagged union in the slot [D:wire-unions] — yamlShape
-                // builds the dispatch node; untagged keeps the teaching
-                | Some(Union udef) when udef.Tag.IsSome ->
+                // builds the dispatch node; untagged keeps the teaching. A
+                // validated type reads its payload [D:validated-types]
+                | Some(Union udef) when udef.Tag.IsSome || udef.Validated.IsSome ->
                     let perDoc = if seqOf then TSeq(TNamed(name, [])) else TNamed(name, [])
                     let declared = if streamOf then TSeq perDoc else perDoc
 
@@ -5341,7 +5497,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         { Kind = TEFromToml(name, shape)
                           Ty = TFun(TSeq TStr, TNamed(name, []))
                           Span = expr.Span }
-                | Some(Union udef) when udef.Tag.IsSome ->
+                | Some(Union udef) when udef.Tag.IsSome || udef.Validated.IsSome ->
                     let! shape = tomlShape (TNamed(name, []))
 
                     return
@@ -7077,6 +7233,85 @@ let typecheckWith
 let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     typecheckWith env expr |> Result.map (fun (te, _, _, _) -> te)
 
+// what a binder pattern is, in words — the shape a payload failed to fit
+let private binderWord (p: Pattern) : string =
+    match p.PKind with
+    | PTuple ps -> $"a {ps.Length}-tuple pattern"
+    | PRecord _ -> "a record pattern"
+    | PCase(c, _, q) -> $"a '{qualCase q c}' pattern"
+    | PUnit -> "()"
+    | _ -> "a pattern of another type"
+
+/// a validated type's `validate` block, typed as the function
+/// `payload -> Result<payload, string>` [D:validated-types]: the binder
+/// takes the payload's type, the body must give the Result — each
+/// mismatch names both types. `env` already holds the declaration.
+let typecheckValidator (env: TypeEnv) (typeName: string) (v: Validator) : Result<TypedExpr, TypeError> =
+    catchBudget (fun () ->
+        let payload =
+            match typeDefFor env typeName with
+            | Some(Union { Cases = [ (_, Some p) ] }) -> p
+            | _ -> failwith "unreachable: checkDecl admits validate on a single-case union with a payload"
+
+        let want = TNamed("Result", [ payload; TStr ])
+        let lam = { Kind = ELambdaPat(v.Binder, v.Body); Span = v.Span }
+
+        let env =
+            { withAnonDefs env lam with
+                AnonLitDefs = System.Collections.Generic.Dictionary() }
+
+        let ctx = newCtx ()
+
+        result {
+            let! shape, binds = binderShapeAt ctx env (Some payload) v.Binder
+
+            do!
+                bind ctx env v.Binder.PSpan shape payload
+                |> Result.mapError (fun e ->
+                    { e with
+                        Message =
+                            $"'validate' binds {typeName}'s payload, which is {formatTy payload}, but this binder is {binderWord v.Binder}" })
+
+            let! tbody = infer ctx (bindParams env binds) v.Body
+
+            do!
+                bind ctx env tbody.Span want tbody.Ty
+                |> Result.mapError (fun e ->
+                    { e with
+                        Message =
+                            $"'validate' must return {formatTy want} (Ok of the value, normalised or not; Error of the message users see), but this body returns {formatTy (finalTy ctx tbody.Ty)}" })
+
+            // a validator cannot build its own type: that is recursion,
+            // which weir does not have (no `let rec`)
+            let own =
+                match typeDefFor env typeName with
+                | Some(Union { Validated = Some id }) -> createVarPrefix + id
+                | _ -> ""
+
+            let rec selfUse (te: TypedExpr) : Span option =
+                match te.Kind with
+                | TEVar n when n = own -> Some te.Span
+                | _ -> childExprs te |> List.tryPick selfUse
+
+            match selfUse tbody with
+            | Some span ->
+                return!
+                    err
+                        span
+                        $"'validate' cannot call {typeName}.create — that is recursion, which weir does not have; validate the payload directly"
+            | None ->
+
+            match resolvePendingSplices ctx env Set.empty with
+            | Error e -> return! Error e
+            | Ok() ->
+                return
+                    finalizeExpr
+                        ctx
+                        { Kind = TELambdaPat(v.Binder, tbody)
+                          Ty = TFun(payload, want)
+                          Span = v.Span }
+        })
+
 // ---- check-against-sig [D:module-signatures] ------------------------------
 // A signed module member is checked with its signature's types flowing
 // in (the lambda spine is checked bidirectionally: each param takes the
@@ -7593,6 +7828,27 @@ let private canonDecl (env: TypeEnv) (decl: Decl) : Result<Decl, TypeError> =
             (Ok [])
         |> Result.map (fun cs -> { decl with Body = DUnion(List.rev cs) })
 
+// the id a validated type's derived `create` is registered under at run
+// time [D:validated-types] — fresh per checked declaration
+let mutable private validatorSeq = 0
+
+// where `validate` cannot go [D:validated-types]: one case, with a
+// payload, monomorphic, untagged — None when the union may declare it
+let private validateRefusal (decl: Decl) (cases: (string * Ty option * AttrSpec list) list) : string option =
+    match cases with
+    | [ (c, None, _) ] ->
+        Some
+            $"'validate' checks a payload, and case '{c}' carries none — a validated type wraps a value: type {decl.Name} = {c} of string"
+    | [ _ ] when not decl.Params.IsEmpty ->
+        Some $"a validated type is monomorphic — '{decl.Name}' is generic; validate a concrete payload"
+    | [ _ ] when decl.Attrs |> List.exists (fun a -> a.AName = "Tag") ->
+        Some
+            "[<Tag>] and 'validate' do not combine — a validated type crosses the wire as its payload, with no tag"
+    | [ _ ] -> None
+    | _ ->
+        Some
+            $"'validate' guards a single-case union — '{decl.Name}' has {cases.Length} cases; a union of several cases composes validated payloads (Mail of Email | Phone of Phone) and needs no validator of its own"
+
 let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
     // a declared record's anon field shapes drain here [D:anon-nesting]
     // — registered before validation so the names resolve, and they
@@ -7615,6 +7871,12 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
         | Some dup -> err decl.Span $"duplicate type parameter '{dup}"
         | None ->
             match decl.Body with
+            | DRecord _ when decl.Validate.IsSome ->
+                err
+                    decl.Validate.Value.Span
+                    $"'validate' guards a single-case union (type Email = Email of string), not a record — '{decl.Name}' composes validated values instead: give a field a validated type and the record holds only valid ones"
+            | DUnion cases when decl.Validate.IsSome && validateRefusal decl cases |> Option.isSome ->
+                err decl.Validate.Value.Span (validateRefusal decl cases).Value
             | DRecord fields ->
                 result {
                     match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
@@ -7820,7 +8082,11 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                                   OtherCase =
                                     cases
                                     |> List.tryPick (fun (c, _, specs) ->
-                                        if (caseAttr "Other" specs).IsSome then Some c else None) }
+                                        if (caseAttr "Other" specs).IsSome then Some c else None)
+                                  Validated =
+                                    decl.Validate
+                                    |> Option.map (fun _ ->
+                                        $"{decl.Name}#{System.Threading.Interlocked.Increment &validatorSeq}") }
 
                         let ctorTy payload =
                             match payload with
