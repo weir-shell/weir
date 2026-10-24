@@ -5,10 +5,11 @@ however the block exits: normal completion, an error, `exit n`,
 SIGINT or SIGTERM. This works both in a terminal and detached: a
 `kill -INT`/`kill -TERM` sent to a `setsid` or backgrounded weir
 cleans up the same way, then dies by the signal (`$?` 130/143). While
-a `repeat` or a `Self.waitForStop ()` runs, the first SIGINT, SIGTERM
-or SIGHUP is only a request to stop ([`repeat`](loops.md#repeat)):
-nothing is cut or killed, the loop finishes its iteration and the
-scopes close by their normal path; the second signal is the teardown
+a `repeat` runs or a scope is held by [`until stopped`](#until-stopped),
+the first SIGINT, SIGTERM or SIGHUP is only a request to stop
+([`repeat`](loops.md#repeat)): nothing is cut or killed, the loop
+finishes its iteration, the held scope stops holding, and the scopes
+close by their normal path; the second signal is the teardown
 described here. The
 cleanup runs on the flow's own thread (a script's, a REPL entry's),
 and no statement after the signal runs: a sleep
@@ -134,6 +135,69 @@ always
 
 It behaves exactly like a bare `within` … `always` nested inside the
 scope, so all the rules above apply.
+
+## `until stopped`
+
+Any `within` can end with `until stopped`, the bare one included. The
+block runs, then the scope is held until the program is asked to
+stop, then it closes by its normal path: a `serve` drains its
+handlers, a `proc` kills its process tree, `always` runs whole. The
+statements after the scope run, and the program exits 0. It is how a
+server or a sidecar stays up until the operator stops it:
+
+```weir-demo
+within serve srv = { port = 8080; maxConcurrent = 4 } handler
+    print $"listening on {Server.port srv}"
+until stopped
+
+print "server stopped"
+```
+
+The request is the first SIGINT, SIGTERM or SIGHUP (Ctrl+C on
+Windows) while the scope is held. Nothing is cut or killed by it:
+handlers in flight get the normal two-second drain, not the signal
+path's immediate cut. A second signal is the usual teardown. A signal
+that arrives while the block itself is still running is the usual
+teardown too; the scope only listens for the request once it is
+held. If a stop was already requested (by a `repeat` that ended on
+it, say), the scope does not hold at all and closes right after its
+block. At the prompt, the first Ctrl+C ends the hold and the prompt
+returns.
+
+`always` comes after `until stopped`: the scope is held, then the
+cleanup runs, then the resource is released. Undoing a set-up when
+the operator stops the script needs no resource at all:
+
+```weir-demo
+within
+    kubectl scale deploy/worker --replicas=1
+until stopped
+always
+    kubectl scale deploy/worker --replicas=0
+```
+
+Scoped processes nest. A tunnel held for as long as the script runs,
+with a server behind it:
+
+```weir-demo
+within proc fwd = kubectl port-forward svc/db 5432:5432
+    poll timeout=30s interval=200ms watch=fwd
+        Net.portOpen 5432
+    within proc tun = ssh -N -R 9000:localhost:8080 bastion
+        within serve srv = { port = 8080; maxConcurrent = 4 } handler
+            print "up"
+        until stopped
+print "tunnels closed"
+```
+
+The inner scope holds; when it is asked to stop, the server drains,
+then `ssh` and `kubectl` are killed in reverse order of starting.
+
+`until stopped` is refused inside a `plan` (a dry run cannot wait for
+a signal) and inside `pure`. `stopped` is not a value: it is only a
+word after a `within`'s `until`, and any other word there is an
+error. Written after `always`, it is an error that gives the right
+order.
 
 ## `lock`
 
