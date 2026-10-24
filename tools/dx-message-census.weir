@@ -34,8 +34,9 @@ type Cli = {
     [<Default "weir">]
     bin: string
     /// fail if fewer than this many cases teach a repair
-    // py-def's `def f():` left the def teaching by ruling [D:def-shape]
-    [<Default 31>]
+    // py-def's `def f():` left the def teaching by ruling [D:def-shape];
+    // pasted-indented-command teaches [D:continued-command]
+    [<Default 32>]
     baseline: int
 }
 
