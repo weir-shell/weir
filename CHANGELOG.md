@@ -20,6 +20,24 @@ Many of the changes and fixes below were found porting starship to weir.
   or flag names. It gets 300 ms and 1 MiB, and pressing another key
   stops it (the key is kept); with no answer you get what the signature
   alone gives. REPL only; the editor is unchanged.
+- **`weir add module` vendors a module together with the files it
+  imports.** A module whose relative imports (`./lib/config.weir`,
+  `../fmt.weir`) used to be refused now vendors with them, every file
+  fetched at the same commit, into `.weir/modules/<name>/` with the
+  repo's layout, so the imports work unchanged:
+  `weir add module github.com/weir-shell/ports//starship/starship.weir@main --as starship`,
+  then `import "weir:starship"`. The lock records each file's hash;
+  `restore` refetches a missing or changed file, `verify` checks every
+  file, and running `add` again prints the old and new hash of each
+  file and removes files the module no longer imports. A `weir:` import,
+  an absolute path, or a path outside the repo inside a vendored file is
+  refused, naming the file and line. A module without imports vendors
+  exactly as before, to `.weir/modules/<name>.weir`. From any other
+  host, `weir add module https://host/repo/<sha>/ --path lib/x.weir
+  --as x` vendors imports too: the URL is the repo root and `--path` the
+  entry file in it. A raw URL without `--path` is still one file,
+  fetched as written. A lock with such a module is `schemaVersion` 2,
+  which older weir refuses to read rather than misread.
 
 ### Changed
 

@@ -13636,7 +13636,7 @@ sed -i.bak 's/hi/hacked/' "$amdir/proj/.weir/modules/greet.weir" && rm -f "$amdi
 ( cd "$amdir/proj" && $BIN verify ) | grep -q "module greet: ok" || fail "post-repair verify"
 printf '\n/// third\nlet bye : string -> string\nlet bye n = $"bye {n}"\n' >> "$amdir/serve/greet.weir"
 ( cd "$amdir/proj" && $BIN add module "http://127.0.0.1:$amport/greet.weir" --as greet ) | grep -q "updated module greet: " || fail "re-add must print old → new sha"
-( cd "$amdir/proj" && $BIN add module "http://127.0.0.1:$amport/needsdep.weir" --as dep 2>&1 || true ) | grep -q "vendored modules are leaves for now" || fail "import refusal teach"
+( cd "$amdir/proj" && $BIN add module "http://127.0.0.1:$amport/needsdep.weir" --as dep 2>&1 || true ) | grep -q "a single raw URL has no repo root" || fail "import refusal teach"
 ( cd "$amdir/proj" && $BIN add module "github.com/acme/lib/x.weir@v1" --as x 2>&1 || true ) | grep -q "needs the // repo/path separator" || fail "// teach"
 ( cd "$amdir/proj" && $BIN add module "github.com/acme/lib//x.weir" --as x 2>&1 || true ) | grep -q "an explicit @ref is required" || fail "@ref teach"
 ( cd "$amdir/proj" && $BIN add module "sr.ht/a/b//x.weir@v1" --as x 2>&1 || true ) | grep -q "unknown host 'sr.ht'" || fail "unknown-host teach"
@@ -13659,6 +13659,135 @@ lout=$(cd "$amdir/proj" && $BIN add module "github.com/weir-shell/weir//ci/relea
 echo "$lout" | grep -q "is not a module" || echo "$lout" | grep -qE "rate limit|answered 403" || fail "live shorthand chain: $lout"
 kill $amsrv 2>/dev/null || true
 echo "e2e ok: add module (vendor, walk-import root+subdir, --can at the module's line, tamper→repair, re-add sha pair, the teaches, R1 negative pins, live shorthand)"
+
+# ---- weir add module: a module's closure [D:add-module-closure] ----------
+# a module with relative imports vendors with them, fetched at one commit:
+# a raw root URL plus `--path <entry>` names the repo root, so a local
+# server stands in for the host. Add+import+run, restore one deleted file, verify
+# one modified, re-add at a "new commit" that drops a file, the three
+# refusals (weir: inside, `..` past the root, absolute), the single-raw-URL
+# teach, a `//` raw URL fetched verbatim, the --path refusals, a cycle, the leaf form unchanged, the two-forms collision and a
+# directory the lock does not record.
+cldir=$(mkweirtmp)
+mkdir -p "$cldir/serve/r1/lib/sub" "$cldir/serve/r2/lib" "$cldir/serve/bad" "$cldir/proj" "$cldir/leaf"
+cat > "$cldir/serve/r1/entry.weir" <<'WEOF'
+module Entry
+
+import "./lib/a.weir" as A
+import "./lib/sub/b.weir" as B
+
+/// greets through both libs
+let greet : string -> string
+
+let greet n = B.wrap (A.hello n)
+WEOF
+printf 'module A\n\n/// the base greeting\nlet hello : string -> string\n\nlet hello n = $"hi {n}"\n' > "$cldir/serve/r1/lib/a.weir"
+printf 'module B\n\nimport "../a.weir" as A\n\n/// wraps\nlet wrap : string -> string\n\nlet wrap s = $"[{s}] {A.hello \"b\"}"\n' > "$cldir/serve/r1/lib/sub/b.weir"
+# the "next commit": entry no longer reaches lib/sub/b.weir
+printf 'module Entry\n\nimport "./lib/a.weir" as A\n\n/// greets\nlet greet : string -> string\n\nlet greet n = A.hello n\n' > "$cldir/serve/r2/entry.weir"
+cp "$cldir/serve/r1/lib/a.weir" "$cldir/serve/r2/lib/a.weir"
+printf 'module W\n\nimport "weir:other" as O\n\n/// x\nlet f : int -> int\n\nlet f x = x\n' > "$cldir/serve/bad/weirin.weir"
+printf 'module E\n\nimport "../../outside.weir" as O\n\n/// x\nlet f : int -> int\n\nlet f x = x\n' > "$cldir/serve/bad/esc.weir"
+printf 'module Ab\n\nimport "/etc/abs.weir" as O\n\n/// x\nlet f : int -> int\n\nlet f x = x\n' > "$cldir/serve/bad/abs.weir"
+printf 'module Cyc\n\nimport "./cyc2.weir" as C\n\n/// x\nlet f : int -> int\n\nlet f x = C.g x\n' > "$cldir/serve/bad/cyc.weir"
+printf 'module Cyc2\n\nimport "./cyc.weir" as C\n\n/// x\nlet g : int -> int\n\nlet g x = C.f x\n' > "$cldir/serve/bad/cyc2.weir"
+clport=$((23000 + RANDOM % 2000))
+python3 -m http.server $clport --bind 127.0.0.1 --directory "$cldir/serve" >/dev/null 2>&1 &
+clsrv=$!
+awaitHttp "http://127.0.0.1:$clport/r1/entry.weir" || { kill $clsrv 2>/dev/null || true; fail "the closure server never came up"; }
+( cd "$cldir/proj" && git init -q . )
+( cd "$cldir/leaf" && git init -q . )
+clurl="http://127.0.0.1:$clport"
+cout=$(cd "$cldir/proj" && $BIN add module "$clurl/r1" --path entry.weir --as cl 2>&1) || fail "closure add: $cout"
+expect "closure add names the file and member counts" "added module cl (3 files, 1 member(s))" "$cout"
+for f in entry.weir lib/a.weir lib/sub/b.weir; do
+    [ -f "$cldir/proj/.weir/modules/cl/$f" ] || fail "closure add must mirror the repo layout: $f"
+done
+[ ! -e "$cldir/proj/.weir/modules/cl.weir" ] || fail "a closure lands as a directory, never <name>.weir"
+grep -q '"schemaVersion": 2' "$cldir/proj/.weir/lock.json" || fail "a closure entry writes lock schemaVersion 2"
+grep -q '"entry": "entry.weir"' "$cldir/proj/.weir/lock.json" || fail "the lock records the entry"
+printf 'import "weir:cl" as Cl\nprint (Cl.greet "x")\n' > "$cldir/proj/use.weir"
+[ "$(cd "$cldir/proj" && $BIN use.weir)" = "[hi x] hi b" ] || fail "closure import+run: $(cd "$cldir/proj" && $BIN use.weir 2>&1)"
+rm -f "$cldir/proj/.weir/modules/cl/lib/sub/b.weir"
+rout=$(cd "$cldir/proj" && $BIN restore 2>&1) || fail "closure restore: $rout"
+expect "closure restore refetches the deleted file" "module cl: lib/sub/b.weir: restored from" "$rout"
+[ "$(cd "$cldir/proj" && $BIN use.weir)" = "[hi x] hi b" ] || fail "post-restore run"
+printf '\n' >> "$cldir/proj/.weir/modules/cl/lib/a.weir"
+vout=$(cd "$cldir/proj" && $BIN verify 2>&1 || true)
+expect "closure verify flags the modified file" "module cl: lib/a.weir MODIFIED" "$vout"
+( cd "$cldir/proj" && $BIN restore ) | grep -q "module cl: lib/a.weir: repaired" || fail "closure restore repairs a modified file"
+( cd "$cldir/proj" && $BIN verify ) | grep -q "module cl: ok (3 files)" || fail "post-repair closure verify"
+uout=$(cd "$cldir/proj" && $BIN add module "$clurl/r2/" --path entry.weir --as cl 2>&1) || fail "closure re-add: $uout"
+expect "re-add prints old → new per file" "  entry.weir: " "$uout"
+expect "re-add names the file that left the closure" "  lib/sub/b.weir: removed" "$uout"
+[ ! -e "$cldir/proj/.weir/modules/cl/lib/sub" ] || fail "re-add must remove a file (and its empty dir) that left the closure"
+[ "$(cd "$cldir/proj" && $BIN use.weir)" = "hi x" ] || fail "post-re-add run"
+# a raw root pins only hashes: drift at the source names the entry's own re-add
+cp "$cldir/serve/r2/lib/a.weir" "$cldir/a.keep"
+printf '\n' >> "$cldir/serve/r2/lib/a.weir"
+rm -f "$cldir/proj/.weir/modules/cl/lib/a.weir"
+hout=$(cd "$cldir/proj" && $BIN restore 2>&1 || true)
+expect "a raw root's drift names its own --path re-add" "re-add it: \`weir add module $clurl/r2/ --path entry.weir --as cl\`" "$hout"
+cp "$cldir/a.keep" "$cldir/serve/r2/lib/a.weir"
+( cd "$cldir/proj" && $BIN restore ) >/dev/null || fail "restore after the source came back"
+wout=$(cd "$cldir/proj" && $BIN add module "$clurl/bad/" --path weirin.weir --as w 2>&1 || true)
+expect "a weir: import inside a vendored module refuses, located" "weirin.weir:3:8: imports 'weir:other' — a weir: import inside a vendored module" "$wout"
+expect "the weir: refusal keeps the boundary wording" "current boundary, not a refusal of the idea" "$wout"
+eout=$(cd "$cldir/proj" && $BIN add module "$clurl/bad/" --path esc.weir --as e 2>&1 || true)
+expect "a path escaping the repo root refuses" "esc.weir:3:8: imports '../../outside.weir', which resolves outside the repo root" "$eout"
+bout=$(cd "$cldir/proj" && $BIN add module "$clurl/bad/" --path abs.weir --as ab 2>&1 || true)
+expect "an absolute import refuses" "imports the absolute path '/etc/abs.weir'" "$bout"
+sout=$(cd "$cldir/proj" && $BIN add module "$clurl/r1/entry.weir" --as single 2>&1 || true)
+expect "a single raw URL with imports names the repo-path form" "a single raw URL has no repo root to fetch it from" "$sout"
+expect "the single-raw-URL teach names --path" "weir add module <root url> --path <file> --as single" "$sout"
+# a `//` in a raw URL without --path is data: fetched verbatim, never split
+dout=$(cd "$cldir/proj" && $BIN add module "$clurl/r1//entry.weir" --as dslash 2>&1 || true)
+expect "a // raw URL with imports is one file, not a root" "a single raw URL has no repo root to fetch it from" "$dout"
+vbout=$(cd "$cldir/proj" && $BIN add module "$clurl/r1//lib/a.weir" --as vb 2>&1) || fail "verbatim // add: $vbout"
+expect "a // raw URL adds as one file" "added module vb (" "$vbout"
+[ -f "$cldir/proj/.weir/modules/vb.weir" ] || fail "a // raw URL lands as a leaf"
+grep -qF "\"url\": \"$clurl/r1//lib/a.weir\"" "$cldir/proj/.weir/lock.json" || fail "a // raw URL locks verbatim"
+( cd "$cldir/proj" && $BIN verify ) | grep -q "module vb: ok" || fail "verify reads the verbatim // entry"
+# the --path refusals: the shorthand, absolute, escaping, a missing entry
+pout=$(cd "$cldir/proj" && $BIN add module "github.com/acme/lib//x.weir@v1" --path x.weir --as ps 2>&1 || true)
+expect "--path refuses the shorthand" "the shorthand already carries the path after //" "$pout"
+pout=$(cd "$cldir/proj" && $BIN add module "$clurl/r1/" --path /etc/x.weir --as pa 2>&1 || true)
+# (Git Bash rewrites a /-rooted argument to a Windows path; either spelling is absolute)
+expect "--path refuses an absolute path" "/etc/x.weir' is absolute" "$pout"
+pout=$(cd "$cldir/proj" && $BIN add module "$clurl/r1/" --path lib/../../x.weir --as pe 2>&1 || true)
+expect "--path refuses an escaping path" "--path 'lib/../../x.weir' climbs above the root URL" "$pout"
+pout=$(cd "$cldir/proj" && $BIN add module "$clurl/r1/" --path lib/gone.weir --as pm 2>&1 || true)
+expect "--path names a missing entry" "answered 404" "$pout"
+yout=$(cd "$cldir/proj" && $BIN add module "$clurl/bad/" --path cyc.weir --as cyc 2>&1 || true)
+expect "a cycle is the loader's cycle error" "import cycle:" "$yout"
+for n in w e ab single cyc dslash ps pa pe pm; do
+    [ ! -e "$cldir/proj/.weir/modules/$n" ] && [ ! -e "$cldir/proj/.weir/modules/$n.weir" ] || fail "a refused add wrote $n"
+done
+grep -q '"name": "w"' "$cldir/proj/.weir/lock.json" && fail "a refused add touched the lock"
+# the leaf form is unchanged: one file, a version-1 lock, no closure keys
+lout=$(cd "$cldir/leaf" && $BIN add module "$clurl/r1/" --path lib/a.weir --as la 2>&1) || fail "leaf add: $lout"
+expect "a module without imports stays a leaf" "added module la (" "$lout"
+[ -f "$cldir/leaf/.weir/modules/la.weir" ] && [ ! -e "$cldir/leaf/.weir/modules/la" ] || fail "a leaf lands as <name>.weir"
+grep -q '"schemaVersion": 1' "$cldir/leaf/.weir/lock.json" || fail "a leaf-only lock stays schemaVersion 1"
+grep -q '"files"' "$cldir/leaf/.weir/lock.json" && fail "a leaf entry carries no files"
+grep -qF "\"url\": \"$clurl/r1/lib/a.weir\"" "$cldir/leaf/.weir/lock.json" || fail "a leaf locks its file URL"
+# switching forms: the closure replaces the leaf file, the leaf the directory
+( cd "$cldir/leaf" && $BIN add module "$clurl/r1/" --path entry.weir --as la ) >/dev/null || fail "leaf → closure"
+[ -d "$cldir/leaf/.weir/modules/la" ] && [ ! -e "$cldir/leaf/.weir/modules/la.weir" ] || fail "leaf → closure must remove la.weir"
+( cd "$cldir/leaf" && $BIN add module "$clurl/r1/" --path lib/a.weir --as la ) >/dev/null || fail "closure → leaf"
+[ -f "$cldir/leaf/.weir/modules/la.weir" ] && [ ! -e "$cldir/leaf/.weir/modules/la" ] || fail "closure → leaf must remove the directory"
+grep -q '"schemaVersion": 1' "$cldir/leaf/.weir/lock.json" || fail "back to leaf-only, back to schemaVersion 1"
+# two forms of one name, and a directory the lock does not record
+cp "$cldir/leaf/.weir/modules/la.weir" "$cldir/proj/.weir/modules/cl.weir"
+xout=$(cd "$cldir/proj" && $BIN use.weir 2>&1 || true)
+expect "<name>.weir beside <name>/ is an import error" "names two vendored forms" "$xout"
+rm -f "$cldir/proj/.weir/modules/cl.weir"
+cp -R "$cldir/proj/.weir/modules/cl" "$cldir/proj/.weir/modules/ghost"
+printf 'import "weir:ghost" as G\nprint (G.greet "x")\n' > "$cldir/proj/ghost.weir"
+gout=$(cd "$cldir/proj" && $BIN ghost.weir 2>&1 || true)
+expect "a module directory without a lock entry names the fix" "the lock has no entry for" "$gout"
+kill $clsrv 2>/dev/null || true
+echo "e2e ok: add module closure (add/import/run, restore, verify, re-add drops a file, three refusals + raw-URL teach + verbatim // + --path refusals + cycle, leaf unchanged, form switches, collision, unlocked dir)"
 
 # ---- the homepage quotes the compiler [D:hero] ----------------------------
 # site/src/pages/index.astro quotes four outputs verbatim; all are pinned

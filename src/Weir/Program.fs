@@ -429,7 +429,20 @@ let main argv =
         | "add" :: "sig" :: _ ->
             Console.Error.WriteLine "usage: weir add sig [--global] <tool>   generate a signature from the installed binary (--global: into the user dir, for the REPL's Tab everywhere)"
             2
-        | [ "add"; "module"; spec; "--as"; name ] ->
+        | "add" :: "module" :: spec :: flags when
+            (match flags with
+             | [ "--as"; _ ]
+             | [ "--as"; _; "--path"; _ ]
+             | [ "--path"; _; "--as"; _ ] -> true
+             | _ -> false)
+            ->
+            let name, entryPath =
+                match flags with
+                | [ "--as"; n ] -> n, None
+                | [ "--as"; n; "--path"; p ]
+                | [ "--path"; p; "--as"; n ] -> n, Some p
+                | _ -> "", None
+
             let weirDir =
                 match Contracts.findWeirDir "." with
                 | Ok d -> d
@@ -458,69 +471,149 @@ let main argv =
 
                 1
             else
-                (match Contracts.resolveModuleSpec spec with
+                let shortSha (h: string) = h.Substring(0, 12) + "…"
+
+                // the single-file form, unchanged [D:add-module]
+                let addLeaf (url: string) (bytes: byte[]) =
+                    // validate before any .weir/ write [D:add-validates]:
+                    // a module that does not check must not land
+                    let tmp = IO.Path.Combine(IO.Path.GetTempPath(), $"weir-add-{name}.weir")
+                    IO.File.WriteAllBytes(tmp, bytes)
+                    let checked' = Script.checkVendoredModule tmp
+
+                    (try
+                        IO.File.Delete tmp
+                     with _ ->
+                         ())
+
+                    match checked' with
+                    | Error e ->
+                        // the error names the source, not the temp
+                        // file validation ran against
+                        let e = e.Replace(tmp, quoteData (Http.redactUrl url))
+                        Console.Error.WriteLine $"weir add module: {e}; nothing was written"
+                        1
+                    | Ok memberCount ->
+                        match Contracts.vendorFile weirDir "module" name ("modules/" + name + ".weir") url bytes with
+                        | Error e ->
+                            Console.Error.WriteLine $"weir add module: {e}"
+                            1
+                        | Ok(hash, prior) ->
+                            (match prior with
+                             | Some old when old <> hash ->
+                                 // a re-add is the update path: the sha
+                                 // pair signals there is a diff to review
+                                 Console.WriteLine $"updated module {name}: {old.Substring(0, 12)}… → {hash.Substring(0, 12)}…"
+                             | Some _ -> Console.WriteLine $"module {name}: unchanged ({hash.Substring(0, 12)}…)"
+                             | None ->
+                                 Console.WriteLine
+                                     $"added module {name} ({hash.Substring(0, 12)}…, {memberCount} member(s)) from {quoteData (Http.redactUrl url)}")
+
+                            Console.WriteLine $"import it:  import \"weir:{name}\" as {derivedAlias}"
+                            userinfoNote url
+                            0
+
+                // the closure form [D:add-module-closure]: validated whole in
+                // a scratch directory, then vendored under modules/<name>/
+                let addClosure (src: Contracts.ResolvedModuleSource) (rawBase: string) (files: (string * byte[]) list) =
+                    let entryRepo = fst files.Head
+                    let ancestor = Script.closureAncestor (files |> List.map fst)
+                    let rel (p: string) = p.Substring ancestor.Length
+                    let baseUrl = rawBase + ancestor
+                    let scratch = IO.Directory.CreateTempSubdirectory($"weir-add-{name}-").FullName
+
+                    let checked' =
+                        try
+                            for p, b in files do
+                                let dest = IO.Path.Combine(scratch, rel p)
+                                IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore
+                                IO.File.WriteAllBytes(dest, b)
+
+                            Script.checkVendoredClosure scratch (rel entryRepo)
+                        finally
+                            try
+                                IO.Directory.Delete(scratch, true)
+                            with _ ->
+                                ()
+
+                    match checked' with
+                    | Error e ->
+                        // the error names the source files, not the scratch copy
+                        let e = e.Replace(scratch + string IO.Path.DirectorySeparatorChar, Http.redactUrl baseUrl)
+                        Console.Error.WriteLine $"weir add module: {lockText e}; nothing was written"
+                        1
+                    | Ok memberCount ->
+                        let relFiles = files |> List.map (fun (p, b) -> rel p, b)
+
+                        match Contracts.vendorClosure weirDir name baseUrl src.Sha (rel entryRepo) relFiles with
+                        | Error e ->
+                            Console.Error.WriteLine $"weir add module: {lockText e}"
+                            1
+                        | Ok(hash, prior, changes) ->
+                            let n = List.length files
+
+                            (match prior with
+                             | Some old when old = hash -> Console.WriteLine $"module {name}: unchanged ({n} files, {shortSha hash})"
+                             | Some _ ->
+                                 // the R4 update path, per file: the sha pairs
+                                 // say where the diff to review is
+                                 Console.WriteLine $"updated module {name}: {n} files, {memberCount} member(s)"
+
+                                 for p, o, nw in changes do
+                                     match o, nw with
+                                     | Some a, Some b when a <> b -> Console.WriteLine $"  {quoteData p}: {shortSha a} → {shortSha b}"
+                                     | None, Some b -> Console.WriteLine $"  {quoteData p}: added ({shortSha b})"
+                                     | Some _, None -> Console.WriteLine $"  {quoteData p}: removed"
+                                     | _ -> ()
+                             | None ->
+                                 Console.WriteLine
+                                     $"added module {name} ({n} files, {memberCount} member(s)) from {quoteData (Http.redactUrl baseUrl)}")
+
+                            Console.WriteLine $"import it:  import \"weir:{name}\" as {derivedAlias}"
+                            userinfoNote src.Url
+                            0
+
+                let fetchFail (src: Contracts.ResolvedModuleSource) (e: string) =
+                    let e =
+                        match src.Host with
+                        | Some h -> Contracts.hintPrivate h e
+                        | None -> e
+
+                    Console.Error.WriteLine $"weir add module: {e}; nothing was written"
+                    1
+
+                (match Contracts.resolveModuleSpec spec entryPath with
                  | Error e ->
                      Console.Error.WriteLine $"weir add module: {e}"
                      1
-                 | Ok src ->
+                 | Ok({ Root = None } as src) ->
                      match Contracts.fetchBytesWith src.FetchHeaders src.Url with
-                     | Error e ->
-                         let e =
-                             match src.Host with
-                             | Some h -> Contracts.hintPrivate h e
-                             | None -> e
-
-                         Console.Error.WriteLine $"weir add module: {e}; nothing was written"
-                         1
+                     | Error e -> fetchFail src e
                      | Ok(bytes, _) ->
-                         // validate before any .weir/ write [D:add-validates]:
-                         // a module that does not check must not land
-                         let tmp = IO.Path.Combine(IO.Path.GetTempPath(), $"weir-add-{name}.weir")
-                         IO.File.WriteAllBytes(tmp, bytes)
-                         let checked' = Script.checkVendoredModule tmp
+                         match Script.importsOfSource bytes with
+                         | (l, _, p) :: _ ->
+                             // one raw URL has no repo root to fetch an import from
+                             Console.Error.WriteLine
+                                 $"weir add module: {quoteData (Http.redactUrl src.Url)} imports '{quoteData p}' (line {l}), and a single raw URL has no repo root to fetch it from — name the root and the entry: weir add module <root url> --path <file> --as {name}, or vendor it as <host>/<org>/<repo>//<file>@<ref>; nothing was written"
 
-                         (try
-                             IO.File.Delete tmp
-                          with _ ->
-                              ())
-
-                         match checked' with
-                         | Error e ->
-                             // the error names the source, not the temp
-                             // file validation ran against
-                             let e = e.Replace(tmp, quoteData (Http.redactUrl src.Url))
-                             Console.Error.WriteLine $"weir add module: {e}; nothing was written"
                              1
-                         | Ok memberCount ->
-                             match
-                                 Contracts.vendorFile weirDir "module" name ("modules/" + name + ".weir") src.Url bytes
-                             with
-                             | Error e ->
-                                 Console.Error.WriteLine $"weir add module: {e}"
-                                 1
-                             | Ok(hash, prior) ->
-                                 (match prior with
-                                  | Some old when old <> hash ->
-                                      // a re-add is the update path: the sha
-                                      // pair signals there is a diff to review
-                                      Console.WriteLine
-                                          $"updated module {name}: {old.Substring(0, 12)}… → {hash.Substring(0, 12)}…"
-                                  | Some _ -> Console.WriteLine $"module {name}: unchanged ({hash.Substring(0, 12)}…)"
-                                  | None ->
-                                      Console.WriteLine
-                                          $"added module {name} ({hash.Substring(0, 12)}…, {memberCount} member(s)) from {quoteData (Http.redactUrl src.Url)}")
+                         | [] -> addLeaf src.Url bytes
+                 | Ok({ Root = Some(rawBase, entry) } as src) ->
+                     let fetch (p: string) =
+                         Contracts.fetchBytesWith src.FetchHeaders (rawBase + p) |> Result.map fst
 
-                                 Console.WriteLine $"import it:  import \"weir:{name}\" as {derivedAlias}"
-                                 userinfoNote src.Url
-                                 0)
+                     match Script.walkVendorClosure fetch entry with
+                     | Error e -> fetchFail src e
+                     | Ok [ (p, bytes) ] -> addLeaf (rawBase + p) bytes
+                     | Ok files -> addClosure src rawBase files)
         | "add" :: "module" :: _ ->
             Console.Error.WriteLine
-                "usage: weir add module <host>/<org>/<repo>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       (an explicit @ref is required; the full raw URL is also accepted)"
+                "usage: weir add module <host>/<org>/<repo>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       weir add module <raw url> --as <name>                           one file, fetched verbatim\n       weir add module <raw root url> --path <file> --as <name>        the entry <file> under the root, with its imports\n       (an explicit @ref is required on the shorthand)"
 
             2
         | "add" :: _ ->
             Console.Error.WriteLine
-                "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig [--global] <tool>      generate a signature from the installed binary\n       weir add module <src>//<file>@<ref> --as <name>   vendor a remote module, lock it"
+                "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig [--global] <tool>      generate a signature from the installed binary\n       weir add module <src>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       weir add module <raw url> [--path <file>] --as <name>   the raw-URL form (--path: the URL is the root)"
 
             2
         | [ "restore" ] ->
@@ -776,6 +869,7 @@ let main argv =
                 + "       weir add sig [--global] <tool>          generate a command signature from the installed binary\n"
                 + "       weir add schema <url> --as <name>       fetch an external contract, lock it\n"
                 + "       weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it\n"
+                + "       weir add module <url> [--path <file>] --as <name>  the raw-URL form (--path: the URL is the root)\n"
                 + "       weir gen types --schema <name>          generate weir types from a locked schema\n"
                 + "       weir restore                            re-materialize the lock's artifacts\n"
                 + "       weir verify                             vendored contracts vs the lock\n"
