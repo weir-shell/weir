@@ -2494,6 +2494,62 @@ let private withinExprBody =
             // every within kind's body is a statement context [D:statement-lets]
             >>. (withStmtLetCmd (withExprParen false seqExpr) <?> "the scope's block")
 
+        let sep = opt (str_ws ";" <|> str_ws sibSepStr)
+
+        // `until stopped` [D:held-scope]: a section any kind takes, before
+        // `always` — the body runs, then the scope is held until the stop
+        // request, then it closes by its normal path. `stopped` is a
+        // contextual word after `until` here, never a value; any other word
+        // teaches it (a condition is retry/poll/repeat's `until`)
+        let untilStopped: Parser<bool, unit> =
+            opt (attempt (sep >>. keyword "until"))
+            >>= function
+                | None -> preturn false
+                | Some _ ->
+                    getPosition
+                    >>= fun up ->
+                        opt identSpanned
+                        >>= function
+                            | Some("stopped", _) ->
+                                getPosition
+                                >>= fun ep ->
+                                    (followedBy (
+                                        eof
+                                        <|> skipChar ';'
+                                        <|> skipString sibSepStr
+                                        <|> skipAnyOf ")]}"
+                                     )
+                                     >>% true)
+                                    <|> failFatallyAt
+                                            ep
+                                            "`until stopped` takes no block and nothing after it on the line — the scope's work goes in its block; an `always` cleanup comes on its own line after"
+                            | Some(w, sp) ->
+                                failFatallyAtCol
+                                    sp.Start.Col
+                                    $"a within's until section is `until stopped` — the scope is held until the first stop signal (SIGINT, SIGTERM, SIGHUP), then closes normally; `until {w}` with a condition belongs to retry/poll/repeat"
+                            | None ->
+                                failFatallyAt
+                                    up
+                                    "a within's until section is `until stopped` — the scope is held until the first stop signal (SIGINT, SIGTERM, SIGHUP), then closes normally"
+
+        // `until stopped` after `always` reads as the cleanup's — the order
+        // is fixed: held, then cleaned up [D:held-scope]
+        let noUntilAfterAlways: Parser<unit, unit> =
+            opt (attempt (sep >>. getPosition .>> keyword "until"))
+            >>= function
+                | None -> preturn ()
+                | Some up ->
+                    failFatallyAt
+                        up
+                        "`until stopped` goes before `always` — write the block, then `until stopped`, then `always` and its cleanup: the scope is held, then the cleanup runs"
+
+        let hold (held: bool) (body: Expr) =
+            if held then
+                { Kind = EHold body
+                  Span = body.Span }
+            else
+                body
+
         // the bare scope [D:within-always]: no resource, the exit
         // discipline alone — a body then the `always` segment, run on
         // every exit path (normal, raise, exit; signals via the hook).
@@ -2501,19 +2557,38 @@ let private withinExprBody =
         // statement space-joins the head, so a non-kind word here is
         // the bare form's body (a typo'd kind surfaces at the missing
         // always segment, which names both readings).
+        // held by `until stopped`, the bare scope needs no always
+        // [D:held-scope]
         let bareForm =
             block
-            >>= fun body ->
-                (attempt (opt (str_ws ";" <|> str_ws sibSepStr) >>. keyword "always")
-                 <?> $"the always segment (bare within = body + always cleanup; a resource scope names its kind: {Ast.withinKindList})")
-                >>. (opt (str_ws ";" <|> str_ws sibSepStr))
-                // the always block joins the statement contexts [D:statement-lets]
-                >>. (withStmtLetCmd (withExprParen false seqExpr) <?> "the always block")
-                |>> fun cleanup ->
-                    { Kind = EAlways(body, cleanup)
-                      Span =
-                        { Start = pos p
-                          End = cleanup.Span.End } }
+            .>>. untilStopped
+            >>= fun (body, held) ->
+                let always =
+                    attempt (sep >>. keyword "always")
+                    >>. sep
+                    // the always block joins the statement contexts [D:statement-lets]
+                    >>. (withStmtLetCmd (withExprParen false seqExpr) <?> "the always block")
+                    .>> noUntilAfterAlways
+
+                if held then
+                    opt always
+                    |>> function
+                        | Some cleanup ->
+                            { Kind = EAlways(hold true body, cleanup)
+                              Span =
+                                { Start = pos p
+                                  End = cleanup.Span.End } }
+                        | None ->
+                            { Kind = EHold body
+                              Span = { Start = pos p; End = body.Span.End } }
+                else
+                    (always
+                     <?> $"the always segment (bare within = body + always cleanup; a resource scope names its kind: {Ast.withinKindList}; a held scope ends with `until stopped`)")
+                    |>> fun cleanup ->
+                        { Kind = EAlways(body, cleanup)
+                          Span =
+                            { Start = pos p
+                              End = cleanup.Span.End } }
 
         let kinded =
             attempt (
@@ -2637,9 +2712,12 @@ let private withinExprBody =
         // cleanup runs INSIDE the scope, while the resource is held —
         // desugared to a bare within as the body, so no new runtime
         // (`within K b` + BODY + always C ≡ `within K b` + (BODY always C))
+        // `until stopped` before it [D:held-scope] holds the body inside
+        // the same desugar: within K b (held BODY always C)
         let kindedAlways =
             kinded
-            >>= fun w ->
+            .>>. untilStopped
+            >>= fun (w, held) ->
                 match w.Kind with
                 | EWithin(k, binder, arg, opts, body) ->
                     let names =
@@ -2648,15 +2726,17 @@ let private withinExprBody =
                         | None -> id
 
                     opt (
-                        attempt (opt (str_ws ";" <|> str_ws sibSepStr) >>. keyword "always")
-                        >>. opt (str_ws ";" <|> str_ws sibSepStr)
+                        attempt (sep >>. keyword "always")
+                        >>. sep
                         >>. (names (withStmtLetCmd (withExprParen false seqExpr)) <?> "the always block")
+                        .>> noUntilAfterAlways
                     )
                     |>> function
+                        | None when held -> { w with Kind = EWithin(k, binder, arg, opts, hold true body) }
                         | None -> w
                         | Some cleanup ->
                             let inner =
-                                { Kind = EAlways(body, cleanup)
+                                { Kind = EAlways(hold held body, cleanup)
                                   Span = { Start = body.Span.Start; End = cleanup.Span.End } }
 
                             { Kind = EWithin(k, binder, arg, opts, inner)
@@ -2810,9 +2890,26 @@ let private retryExprBody =
                             attempt (opt (str_ws ";" <|> str_ws sibSepStr) >>. keyword "until")
                             >>. identSpanned
                             >>= fun (b, bspan) ->
-                                (opt (str_ws ";" <|> str_ws sibSepStr))
-                                >>. (withPatNames { PKind = PVar b; PSpan = bspan } (withExprParen false seqExpr)
-                                     <?> "the until predicate")
+                                let pred =
+                                    (opt (str_ws ";" <|> str_ws sibSepStr))
+                                    >>. (withPatNames { PKind = PVar b; PSpan = bspan } (withExprParen false seqExpr)
+                                         <?> "the until predicate")
+
+                                // a block-less `until stopped` is a within's held
+                                // section [D:held-scope]; a repeat already ends
+                                // when stopped
+                                (if b = "stopped" then
+                                     attempt pred
+                                     <|> failFatallyAtCol
+                                             bspan.Start.Col
+                                             (match kind with
+                                              | LoopRepeat ->
+                                                  "a repeat already ends when stopped — drop `until stopped`; use `until x` and a predicate block for a condition"
+                                              | LoopRetry
+                                              | LoopPoll ->
+                                                  $"`until stopped` holds a within scope; a {headWord}'s until names the body's value and takes a predicate block (`until x`, then the condition indented)")
+                                 else
+                                     pred)
                                 |>> fun pred -> ((b, bspan), pred)
                         )
                         |>> fun until ->

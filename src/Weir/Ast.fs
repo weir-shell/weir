@@ -268,6 +268,9 @@ and ExprKind =
     // the bare scope [D:within-always]: no resource, just the exit
     // discipline — body, then the always block on every exit path
     | EAlways of body: Expr * cleanup: Expr
+    // a within's `until stopped` [D:held-scope]: the body runs, then the
+    // scope is held until the stop request; the value is the body's
+    | EHold of body: Expr
     // the $() capture assertion [D:district-retirement]: $() means
     // capture in every position — the wrapper marks the chain so
     // statement arming never touches it; erased at check
@@ -537,6 +540,7 @@ let exprChildren (e: Expr) : Expr list =
     | ELambdaPat(_, b) -> [ b ]
     | EWithin(_, _, arg, opts, b) -> Option.toList arg @ Option.toList opts @ [ b ]
     | EAlways(b, c) -> [ b; c ]
+    | EHold b -> [ b ]
     | ECapture e -> [ e ]
     | EApp(f, x) -> [ f; x ]
     | EPipe(x, f) -> [ x; f ]
@@ -657,6 +661,7 @@ let rec sexpr (e: Expr) : string =
         let ba = [ bn; av; ov ] |> List.filter ((<>) "") |> String.concat " "
         $"(within {withinKindName k} {ba} {sexpr b})"
     | EAlways(b, c) -> $"(within {sexpr b} (always {sexpr c}))"
+    | EHold b -> $"(held {sexpr b})"
     | ECapture e -> $"(capture {sexpr e})"
     | EApp(f, a) -> $"({sexpr f} {sexpr a})"
     | EPipe(a, f) -> $"({sexpr a} |> {sexpr f})"

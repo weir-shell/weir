@@ -78,9 +78,7 @@ let effectfulQualified =
           "Self.stdin"
           // Self.prompt is a static builtin under the Self name [D:prompt]:
           // reads stdin, writes stderr — ambient input like Self.stdin
-          "Self.prompt"
-          // waits for a stop signal [D:wait-for-stop]: ambient, like a sleep
-          "Self.waitForStop" ]
+          "Self.prompt" ]
 
 // `cd` writes the process's directory, `pwd` reads it [D:purity-ambient]
 let effectfulBare =
@@ -212,7 +210,6 @@ let effectClass (n: string) : EffectClass option =
         | "Uuid.v7At" -> Some Ambient // draws randomness (v7 also the clock)
         | "Duration.sleep" -> Some Ambient // waits on the clock — no world change
         | "Self.stdin" -> Some Ambient // reads the process's input stream
-        | "Self.waitForStop" -> Some Ambient // waits for a signal — no world change
         // Http.send/expect: per-method, resolved at the request value (None here)
         | "Http.send"
         | "Http.expect" -> None

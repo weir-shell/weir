@@ -150,6 +150,7 @@ and TypedKind =
         opts: TypedExpr option *
         body: TypedExpr
     | TEAlways of body: TypedExpr * cleanup: TypedExpr
+    | TEHold of body: TypedExpr
     | TEEnvLoad of def: RecordDef * enums: Map<string, string list>
     | TEArgsLoad of target: ArgsTarget
     | TEFrom of
@@ -1106,6 +1107,7 @@ let rec divergesTo (x: Expr) : bool =
     | ELetPat(_, _, b)
     | EWithin(_, _, _, _, b)
     | EAlways(b, _)
+    | EHold b
     | ECapture b -> divergesTo b
     | EIf(_, t, Some e) -> divergesTo t && divergesTo e
     | EMatch(_, arms) -> arms |> List.forall (fun (_, _, b) -> divergesTo b)
@@ -3268,6 +3270,16 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
             return
                 { Kind = TEAlways(tbody, tcleanup)
+                  Ty = tbody.Ty
+                  Span = expr.Span }
+        }
+    | EHold body ->
+        // the held scope's type is the body's [D:held-scope]
+        result {
+            let! tbody = infer ctx env body
+
+            return
+                { Kind = TEHold tbody
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
@@ -5734,6 +5746,9 @@ and armTail (e: Expr) : Expr =
         | EAlways(b, c) ->
             { Kind = EAlways(armTail b, c)
               Span = e.Span }
+        | EHold b ->
+            { Kind = EHold(armTail b)
+              Span = e.Span }
         | ELet(n, ns, v, b) ->
             { Kind = ELet(n, ns, v, armTail b)
               Span = e.Span }
@@ -5939,6 +5954,15 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
 
             return
                 { Kind = TEAlways(tbody, tcleanup)
+                  Ty = tbody.Ty
+                  Span = expr.Span }
+        }
+    | EHold body, _ ->
+        result {
+            let! tbody = check ctx env body expected
+
+            return
+                { Kind = TEHold tbody
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
@@ -6314,6 +6338,7 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TEWithin(k, n, a, o, b) ->
             TEWithin(k, n, a |> Option.map (finalizeExpr ctx), o |> Option.map (finalizeExpr ctx), finalizeExpr ctx b)
         | TEAlways(b, c) -> TEAlways(finalizeExpr ctx b, finalizeExpr ctx c)
+        | TEHold b -> TEHold(finalizeExpr ctx b)
         | TEEnvLoad _
         | TEArgsLoad _ -> te.Kind
         | leaf -> leaf
@@ -6608,6 +6633,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TESeq(a, b) -> [ a; b ]
     | TEWithin(_, _, a, o, b) -> Option.toList a @ Option.toList o @ [ b ]
     | TEAlways(b, c) -> [ b; c ]
+    | TEHold b -> [ b ]
     | TEList items -> items
     | TETuple items -> items
     | TECmd(h, args, envO) ->

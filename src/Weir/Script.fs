@@ -664,7 +664,17 @@ let opensIndentedBody (before: string) : bool =
 
         let fieldEq = t.EndsWith "=" && braceDelta t > 0
 
-        t <> "" && dangleOpensBlock (t.TrimStart()) && not gluedWord && not comparison && not fieldEq
+        // a within's `until stopped` takes no block: it dangles for the
+        // assembler only so a deeper line reaches the parser's teaching
+        // [D:held-scope]
+        let held = t.TrimStart() = "until stopped"
+
+        t <> ""
+        && dangleOpensBlock (t.TrimStart())
+        && not gluedWord
+        && not comparison
+        && not fieldEq
+        && not held
 
 /// A line-end district marker of any kind — the mask below and the
 /// REPL share classifyPiece's marker rules through these predicates.
@@ -3050,9 +3060,7 @@ let selfMembers: Map<string, Scheme> =
           "entryPath", generalize TStr
           // the interactive read [D:prompt] — static (Builtins holds the
           // value under the mangled key); grouped here, not bare
-          "prompt", generalize (TFun(TStr, TStr))
-          // the explicit stop wait [D:wait-for-stop] — static, like prompt
-          "waitForStop", generalize (TFun(TUnit, TUnit)) ]
+          "prompt", generalize (TFun(TStr, TStr)) ]
 
 // the #session prompt's status domain [D:prompt-status-arg]: records
 // are nominal and init.weir admits no signatures, so a provider's
