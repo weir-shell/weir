@@ -31283,6 +31283,23 @@ let argsHelpTests =
                   "the Env.load twin"
 
               Expect.equal
+                  (msgOf
+                      [ "type Mode = Pub | Sub"
+                        "type Cli = { mode: Mode }"
+                        "print $\"{mode}\""
+                        "let args ="
+                        "    Args.load"
+                        "        Cli"
+                        "print $\"{args}\"" ])
+                  "unbound 'mode' — it is a field of 'Cli': load it first ('let cli = Args.load Cli') and write 'cli.mode'; or did you mean 'File.mode'?"
+                  "a multi-line Args.load call is read off the parsed statement"
+
+              Expect.equal
+                  (msgOf [ "type Cfg = { mode: string }"; "print mode"; "print \"Args.load Cfg\"" ])
+                  "unbound 'mode' — it is a field of 'Cfg' — write 'x.mode' on a 'Cfg' value; or did you mean 'File.mode'?"
+                  "text in a string is no load"
+
+              Expect.equal
                   (msgOf [ "type Cfg = { mode: string }"; "print mode" ])
                   "unbound 'mode' — it is a field of 'Cfg' — write 'x.mode' on a 'Cfg' value; or did you mean 'File.mode'?"
                   "a declared record, nothing loaded"
