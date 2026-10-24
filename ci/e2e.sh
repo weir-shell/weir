@@ -9594,7 +9594,9 @@ expect "#help shows a prompt-imported member's /// doc" "doubles-from-the-module
 expect "a relative import after cd resolves from the new cwd" "from-sub" "$out"
 saved=$(cat "$rdir/saved.weir")
 if [ "$IS_WINDOWS" != "1" ]; then
-    expect "#save carries the import, absolute" "import \"$rdir/m.weir\" as M" "$saved"
+    # the import's identity is its real path (macOS: /var is /private/var)
+    rreal=$(cd "$rdir" && pwd -P)
+    expect "#save carries the import, absolute" "import \"$rreal/m.weir\" as M" "$saved"
 else
     expect "#save carries the import" "m.weir\" as M" "$saved"
 fi
