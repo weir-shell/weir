@@ -77,10 +77,13 @@ guarantee cannot leak:
   `Result<payload, string>` — a mismatch names both.
 - Using the case as a constructor (`Email "x"`) anywhere is an error:
   "Email is validated — build it with Email.parse (it returns a Result)".
-- `validate` is pure: commands, file writes and network inside it are
-  refused (the `pure` rules), because it runs at every wire boundary,
-  including `weir check`-time folding of literals if that ever applies.
-  Reads (`Dir.exists`, `File.exists`) — D2 below.
+- `validate` must be PURE (the `pure` rules: no reads, commands, writes
+  or network). A type promises a fact about the value, not about the
+  world: existence can change a moment later, a well-formed shape cannot.
+  It also runs unseen at every wire boundary, so it must not touch the
+  disk, and purity keeps it deterministic and safe to run anywhere
+  (editor, completion, a future check-time fold). Existence checks belong
+  where the value is used (`Dir.exists`, or the failing `File.read`).
 - A recursive or mutually validated payload (a validated type whose
   payload is another validated type) runs the inner `parse` first.
 
@@ -88,12 +91,8 @@ guarantee cannot leak:
 
 - **D1 — the validator's name.** `validate` (recommended) vs `check` /
   `where`.
-- **D2 — ambient reads in `validate`.** `ExistingDir`'s validator reads
-  the filesystem. Allow reads (`readonly` rules) so path types work, at
-  the cost of `parse` no longer being pure; or require pure and leave
-  existence checks to the caller. *Recommend: allow reads* — the
-  `[<Path>]` use case depends on it, and `parse` already returns a
-  `Result`.
+- **D2 — purity.** RULED (user, 2026-10-24): `validate` is pure; an
+  existence check is the caller's, at use.
 - **D3 — literal folding.** Should `Email.parse "a@b.c"` on a literal be
   checked at `weir check` time (a pure validator over a constant)?
   *Recommend: not in v1.*
