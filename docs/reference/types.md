@@ -235,7 +235,10 @@ let e = Email "x" // 'Email' is validated — build it with Email.create (it ret
   failing with the field path, flag or variable
   ([Adapters](adapters.md#validated-types)); `to json`/`to yaml`
   write the payload. `show`, interpolation and `==` treat the value as
-  any single-case union.
+  any single-case union. `Args.load` and `Env.load` refuse a validated
+  field over an optional payload (`Port of Option<int>`): one flag or
+  variable cannot tell an absent field from an absent payload, so
+  declare the field `Option<Port>` over `Port of int`.
 - Hover on the type or on `T.create` shows the `///` doc above
   `validate`; an `Args.load` flag of a validated type shows the type's
   name in `--help` (`--to <Email>`).

@@ -27490,6 +27490,154 @@ let validatedTypeTests =
                     "    if p <> 8080 then fail $\"{p}\"" ]
                   "env"
           }
+          test "a flat boundary refuses a validated field over an optional payload, at check time" {
+              let optPort = [ "type Port = Port of Option<int>"; "    validate p = Ok p" ]
+
+              let refusal (field: string) (ty: string) (innermost: string) =
+                  $"field '{field}': '{ty}' is validated over an optional payload — a flag/variable cannot tell \"absent\" from \"absent payload\"; declare the field `Option<{ty}>` over a validated `{innermost} of int` instead"
+
+              says (optPort @ [ "type Cli = { port: Port }"; "let c = Args.load Cli"; "print $\"{c}\"" ]) (refusal "port" "Port" "Port") "Args.load"
+
+              says
+                  (optPort @ [ "type Cli = { port: Option<Port> }"; "let c = Args.load Cli"; "print $\"{c}\"" ])
+                  (refusal "port" "Port" "Port")
+                  "Args.load, an Option field"
+
+              says
+                  (optPort
+                   @ [ "type Run = { port: Port }"
+                       "type Cmd = Run of Run | Stop"
+                       "let c = Args.load Cmd"
+                       "print $\"{c}\"" ])
+                  ("case 'Run': " + refusal "port" "Port" "Port")
+                  "Args.load, a subcommand's field"
+
+              says (optPort @ [ "let e = Env.load {| VT_P: Port |}"; "print $\"{e}\"" ]) (refusal "VT_P" "Port" "Port") "Env.load"
+
+              says
+                  (optPort @ [ "type Cfg = { VT_P: Option<Port> }"; "let e = Env.load Cfg"; "print $\"{e}\"" ])
+                  (refusal "VT_P" "Port" "Port")
+                  "Env.load, an Option field"
+
+              let nested =
+                  optPort
+                  @ [ "type Admin = Admin of Port"; "    validate p = Ok p" ]
+
+              says (nested @ [ "type Cli = { port: Admin }"; "let c = Args.load Cli"; "print $\"{c}\"" ]) (refusal "port" "Admin" "Port") "nested, Args.load"
+              says (nested @ [ "let e = Env.load {| VT_P: Admin |}"; "print $\"{e}\"" ]) (refusal "VT_P" "Admin" "Port") "nested, Env.load"
+
+              clean
+                  (optPort @ [ "let p = [\"null\"] |> from json Port"; "print $\"{p}\"" ])
+                  "from json keeps an optional payload"
+          }
+          test "flat boundaries: a scalar payload, Option over it (absent never runs create), validated over validated" {
+              let strict =
+                  [ "type Strict = Strict of int"
+                    "    validate n = Error $\"ran on {n}\"" ]
+
+              runsIn
+                  [ "v.weir", strict @ [ "type Cli = { port: Option<Strict> }"; "let c = Args.load Cli"; "if c.port <> None then fail \"some\"" ] ]
+                  "v.weir"
+                  []
+                  "Args: an absent Option field is None, create unrun"
+
+              runsIn
+                  [ "v.weir",
+                    strict
+                    @ [ "type Cli = { port: Option<Strict> }"
+                        "let c = Args.load Cli |> try result"
+                        expectErr "c" "\"Args.load Cli: --port: ran on 3\"" ] ]
+                  "v.weir"
+                  [ "--port"; "3" ]
+                  "Args: a present Option field runs create"
+
+              runs
+                  (strict
+                   @ [ "within env VT_S=3"
+                       "    let e = Env.load {| VT_S: Option<Strict>; VT_NONE_SET: Option<Strict> |} |> try result"
+                       "    " + expectErr "e" "\"Env.load {| VT_NONE_SET: Option<Strict>; VT_S: Option<Strict> |}: VT_S: ran on 3\""
+                       "let none = Env.load {| VT_NONE_SET: Option<Strict> |}"
+                       "if none.VT_NONE_SET <> None then fail \"some\"" ])
+                  "Env: absent is None, present runs create"
+
+              let admin =
+                  [ "type Port = Port of int"
+                    "    validate p = if p > 0 then Ok p else Error $\"{p} is no port\""
+                    "type Admin = Admin of Port"
+                    "    validate p ="
+                    "        let (Port n) = p"
+                    "        if n < 1024 then Ok p else Error $\"not privileged: {n}\""
+                    "type Cli = { port: Admin; spare: Option<Admin> }" ]
+
+              runsIn
+                  [ "v.weir",
+                    admin
+                    @ [ "let c = Args.load Cli"
+                        "let (Admin (Port n)) = c.port"
+                        "if n <> 80 || c.spare <> None then fail $\"{n}\"" ] ]
+                  "v.weir"
+                  [ "--port"; "80" ]
+                  "nested scalar bottoms build"
+
+              runsIn
+                  [ "v.weir",
+                    admin
+                    @ [ "let c = Args.load Cli |> try result"
+                        expectErr "c" "\"Args.load Cli: --port: 0 is no port; --spare: not privileged: 8080\"" ] ]
+                  "v.weir"
+                  [ "--port"; "0"; "--spare"; "8080" ]
+                  "nested: the inner create runs first, then the outer"
+
+              runs
+                  (admin
+                   @ [ "within env VT_A=8080"
+                       "    let e = Env.load {| VT_A: Admin |} |> try result"
+                       "    " + expectErr "e" "\"Env.load {| VT_A: Admin |}: VT_A: not privileged: 8080\"" ])
+                  "nested, Env.load"
+          }
+          test "a [<Tag>] name never reads as a validated entry: unusual tag fields write and read back" {
+              for tag in [ "|valid"; "|"; "|validName"; "|create:0" ] do
+                  let quoted = tag.Replace("\"", "\\\"")
+
+                  runs
+                      (email
+                       @ [ "type Body = { text: Email }"
+                           $"[<Tag \"{quoted}\">] type Ev = Start of Body | Stop"
+                           "let e = match Email.create \"A@B\" with | Ok m -> Start { text = m } | Error m -> fail m"
+                           expectIs "(e |> to json |> Seq.exactlyOne)" $"\"{{\\\"{quoted}\\\":\\\"Start\\\",\\\"text\\\":\\\"a@b\\\"}}\""
+                           expectIs "(([e] |> to json |> from json seq<Ev> |> Seq.exactlyOne) == e)" "true"
+                           expectIs "((e |> to yaml |> from yaml Ev) == e)" "true"
+                           expectIs "(([Stop] |> to json |> from json seq<Ev> |> Seq.exactlyOne) == Stop)" "true"
+                           expectIs "((Stop |> to yaml |> from yaml Ev) == Stop)" "true" ])
+                      $"tag field '{tag}'"
+          }
+          test "the writer's case table: a validated case and a tagged case of one name refuse; two validated share" {
+              let other = [ "module Other"; "type Email = Email of int"; "    validate n = if n > 0 then Ok n else Error \"neg\"" ]
+
+              withFiles
+                  [ "mail.weir", emailModule
+                    "other.weir", other
+                    "clash.weir",
+                    [ "import \"./mail.weir\" as A"
+                      "type Body = { who: A.Email }"
+                      "[<Tag \"|valid\">] type Ev = Email of Body | Stop"
+                      "Stop |> to json |> Seq.iter print" ]
+                    "share.weir",
+                    [ "import \"./mail.weir\" as A"
+                      "import \"./other.weir\" as B"
+                      "type Pair = { a: A.Email; b: B.Email }"
+                      "let p = [\"{\\\"a\\\": \\\"x@y\\\", \\\"b\\\": 3}\"] |> from json Pair"
+                      "p |> to json |> Seq.iter print" ] ]
+                  (fun td ->
+                      let es = errsAt td "clash.weir"
+
+                      Expect.exists
+                          es
+                          (fun (m: string) -> m.Contains "case 'Email' belongs to tagged unions")
+                          $"a tagged '|valid' case sharing a validated case's name refuses, got {es}"
+
+                      Expect.isEmpty (errsAt td "share.weir") "two validated types share a case name")
+          }
           test "qualified access from another module; an ambiguous bare create names both spellings" {
               let other = [ "module Other"; "type Email = Email of int"; "    validate n = if n > 0 then Ok n else Error \"neg\"" ]
 

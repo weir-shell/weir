@@ -9302,6 +9302,12 @@ out=$(printf 'type Port = Port of int\n    validate p = if p > 0 then Ok p else 
 expect "the REPL: T.create builds" "Ok (Port 8080) : Result<Port, string>" "$out"
 expect "the REPL: T.create refuses with the validator's message" 'Error "0 is no port"' "$out"
 expect "the REPL: the case refuses to construct" "'Port' is validated — build it with Port.create" "$out"
+printf 'type Port = Port of Option<int>\n    validate p = Ok p\ntype Cli = { port: Port }\nlet c = Args.load Cli\nprint $"{c}"\n' > "$mdir/vt-optpay.weir"
+out=$($BIN check "$mdir/vt-optpay.weir" 2>&1 || true)
+expect "a flat boundary refuses a validated field over an optional payload" "field 'port': 'Port' is validated over an optional payload" "$out"
+printf 'type Port = Port of int\n    validate p = if p > 0 then Ok p else Error $"{p} is no port"\ntype Cli = { port: Option<Port> }\nlet c = Args.load Cli\nprint $"{c.port}"\n' > "$mdir/vt-optport.weir"
+out=$($BIN "$mdir/vt-optport.weir" 2>&1)
+expect "Option<Port> over a scalar payload: absent is None" "None" "$out"
 
 # an import cycle is a check error naming the loop, at its closing edge
 printf 'module CA\nimport "./cb.weir"\nlet a = 1\n' > "$mdir/ca.weir"

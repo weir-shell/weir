@@ -2531,7 +2531,7 @@ let private refuseDupKeys (who: string) (keys: string seq) =
 
 let private jsonLine
     (renames: Map<string, Map<string, string>>)
-    (unions: Map<string, string * string * bool>)
+    (unions: Map<string, WireCase>)
     (v: Value)
     : string =
     let buffer = new System.Buffers.ArrayBufferWriter<byte>()
@@ -2557,18 +2557,16 @@ let private jsonLine
         | VUnion("None", None) -> writer.WriteNullValue()
         // a validated case writes its payload — the value is already
         // valid [D:validated-types]
-        | VUnion(c, Some payload) when
-            (match Map.tryFind c unions with
-             | Some(tag, _, _) -> tag = validatedWireTag
-             | None -> false)
-            ->
-            write payload
+        | VUnion(c, Some payload) when Map.tryFind c unions = Some WireValidated -> write payload
         // a tagged case writes its payload with the tag reinserted
         // first [D:wire-unions] (k8s's own convention); the [<Other>]
         // case holds what was not understood, so nothing faithful can
         // be written
         | VUnion(c, payload) when unions.ContainsKey c ->
-            let tagField, tagValue, isOther = unions[c]
+            let tagField, tagValue, isOther =
+                match unions[c] with
+                | WireTagged(f, v, o) -> f, v, o
+                | WireValidated -> unreachable $"to json: a validated case '{c}' always carries a payload"
 
             if isOther then
                 failwith
@@ -4131,7 +4129,7 @@ let private yamlMaxDepth = 100
 
 let rec private yamlRender
     (renames: Map<string, Map<string, string>>)
-    (unions: Map<string, string * string * bool>)
+    (unions: Map<string, WireCase>)
     (depth: int)
     (guide: Yaml.Shape option)
     (v: Value)
@@ -4237,11 +4235,7 @@ let rec private yamlRender
         yamlRender renames unions (depth + 1) g inner
     | VUnion("None", None) -> Inline "null" // element position; fields omit above
     // a validated case writes its payload [D:validated-types]
-    | VUnion(c, Some payload) when
-        (match Map.tryFind c unions with
-         | Some(tag, _, _) -> tag = validatedWireTag
-         | None -> false)
-        ->
+    | VUnion(c, Some payload) when Map.tryFind c unions = Some WireValidated ->
         let g =
             match guide with
             | Some(Yaml.SValid(_, _, g)) -> Some g
@@ -4252,7 +4246,10 @@ let rec private yamlRender
     // [D:wire-unions]; the [<Other>] case refuses — nothing faithful
     // can be written
     | VUnion(c, payload) when unions.ContainsKey c ->
-        let tagField, tagValue, isOther = unions[c]
+        let tagField, tagValue, isOther =
+            match unions[c] with
+            | WireTagged(f, v, o) -> f, v, o
+            | WireValidated -> unreachable $"to yaml: a validated case '{c}' always carries a payload"
 
         if isOther then
             failwith
@@ -4318,7 +4315,7 @@ let rec private yamlRender
 
 let private yamlToLines
     (renames: Map<string, Map<string, string>>)
-    (unions: Map<string, string * string * bool>)
+    (unions: Map<string, WireCase>)
     (guide: Yaml.Shape option)
     (v: Value)
     : string list =
@@ -4329,7 +4326,7 @@ let private yamlToLines
 
 let private yamlToImpl
     (renames: Map<string, Map<string, string>>)
-    (unions: Map<string, string * string * bool>)
+    (unions: Map<string, WireCase>)
     (stream: bool)
     (guide: Yaml.Shape option)
     : Value =
@@ -4468,6 +4465,8 @@ let private wrapOpt (ty: Ty) (v: Value) : Value =
 /// type over another); a refusal joins the boundary's one error, named
 /// by `label` (the flag or the variable). A field that failed to parse
 /// (the VUnit placeholder) stays as it is — its problem is recorded.
+/// An `Option<T>` field validates inside Some; None is the absent field,
+/// never an absent payload (the checker refuses an optional payload).
 let private validateFlat
     (problems: ResizeArray<string>)
     (label: string -> string)

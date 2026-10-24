@@ -178,10 +178,10 @@ and TypedKind =
         // record -> field -> declared codec [D:wire-codecs], the rename
         // table's sibling (attrs never reach values)
         codecs: Map<string, Map<string, Codec>> *
-        // caseName -> (tagField, tagValue, isOther) for every tagged
+        // caseName -> its WireCase for every tagged or validated
         // union reachable from the serialized type [D:wire-unions] —
         // a VUnion value carries no type name, so the writer keys cases
-        unions: Map<string, string * string * bool> *
+        unions: Map<string, WireCase> *
         // `to yaml stream` [D:yaml-seq-doc]: one document per element
         stream: bool *
         // the yaml writer's type guide [D:yaml-empty-typed]: the
@@ -2027,8 +2027,8 @@ let rec private jsonUnionsClosure (env: TypeEnv) (acc: Map<string, UnionDef>) (t
         | _ -> acc
     | _ -> acc
 
-// the writer's case table [D:wire-unions]: caseName -> (tagField,
-// tagValue, isOther) over every tagged union the serialized type
+// the writer's case table [D:wire-unions]: caseName -> WireCase
+// over every tagged or validated union the serialized type
 // reaches — a VUnion value carries no type name, so cases key the
 // table, and two reachable unions sharing a case name refuse here
 // (declarable under [D:ambiguous-ctor], unwritable in one closure)
@@ -2036,7 +2036,7 @@ let private unionWriteTable
     (span: Span)
     (env: TypeEnv)
     (ty: Ty)
-    : Result<Map<string, string * string * bool>, TypeError> =
+    : Result<Map<string, WireCase>, TypeError> =
     let udefs = jsonUnionsClosure env Map.empty ty
 
     // keyed by the env key: two imports' same-named unions are two
@@ -2045,30 +2045,26 @@ let private unionWriteTable
         udefs
         |> Map.toList
         |> List.collect (fun (key, udef) ->
-            let tagField =
+            let wire c =
                 if udef.Validated.IsSome then
-                    validatedWireTag
+                    WireValidated
                 else
-                    udef.Tag |> Option.defaultValue ""
+                    WireTagged(udef.Tag |> Option.defaultValue "", caseWire udef c, Some c = udef.OtherCase)
 
-            udef.Cases
-            |> List.map (fun (c, _) -> c, (key, tagField, caseWire udef c, Some c = udef.OtherCase)))
+            udef.Cases |> List.map (fun (c, _) -> c, (key, wire c)))
 
-    let rec go (seen: Map<string, string * string>) acc entries =
+    let rec go (seen: Map<string, string * WireCase>) acc entries =
         match entries with
         | [] -> Ok acc
-        | (c, (uname: string, tagField, tagValue, isOther)) :: rest ->
+        | (c, (uname: string, wire)) :: rest ->
             match Map.tryFind c seen with
             // two validated cases write alike — the payload, no tag
             // [D:validated-types]
-            | Some(prior, priorTag) when
-                prior <> uname
-                && not (priorTag = validatedWireTag && tagField = validatedWireTag)
-                ->
+            | Some(prior, priorWire) when prior <> uname && not (priorWire = WireValidated && wire = WireValidated) ->
                 err
                     span
                     $"case '{c}' belongs to tagged unions '{prior}' and '{uname}', both reachable from this type — the writer keys cases by name; rename one"
-            | _ -> go (Map.add c (uname, tagField) seen) (Map.add c (tagField, tagValue, isOther) acc) rest
+            | _ -> go (Map.add c (uname, wire) seen) (Map.add c wire acc) rest
 
     // a record value carries its declared name, which keys the rename
     // and codec tables — two imports' same-named records whose tables
@@ -3433,25 +3429,46 @@ let private validatedModuleCase (env: TypeEnv) (m: string) (case: string) : stri
 /// for a validated type over another), so each field law runs on what
 /// the token holds; the field keeps its type name and the `create` ids,
 /// outermost first, as attributes the loader validates through
-let validatedFieldsFlat (env: TypeEnv) (def: RecordDef) : RecordDef =
-    let rec chain (ty: Ty) (ids: string list) =
-        match ty with
-        | TNamed(n, []) ->
-            match typeDefFor env n with
-            | Some(Union({ Cases = [ (_, Some p) ] } as u)) when u.Validated.IsSome -> chain p (u.Validated.Value :: ids)
-            | _ -> ty, List.rev ids
-        | _ -> ty, List.rev ids
+let rec private validatedChain (env: TypeEnv) (ty: Ty) (ids: string list) (last: string) =
+    match ty with
+    | TNamed(n, []) ->
+        match typeDefFor env n with
+        | Some(Union({ Cases = [ (_, Some p) ] } as u)) when u.Validated.IsSome ->
+            validatedChain env p (u.Validated.Value :: ids) n
+        | _ -> ty, List.rev ids, last
+    | _ -> ty, List.rev ids, last
 
+let private flatFieldInner (fty: Ty) =
+    match fty with
+    | TNamed("Option", [ t ]) -> t, (fun b -> TNamed("Option", [ b ]))
+    | t -> t, id
+
+/// a flat boundary refuses a validated field over an optional payload
+/// [D:validated-types]: a flag or variable has one absence, so it cannot
+/// say whether the field or the payload is missing
+let validatedOptionalPayload (env: TypeEnv) (def: RecordDef) : string option =
+    def.Fields
+    |> List.tryPick (fun (f, fty) ->
+        match flatFieldInner fty with
+        | TNamed(n, []) as inner, _ ->
+            match validatedChain env inner [] "" with
+            | TNamed("Option", [ bottom ]), _ :: _, innermost ->
+                Some
+                    $"field '{f}': '{n}' is validated over an optional payload — a flag/variable cannot tell \"absent\" from \"absent payload\"; declare the field `Option<{n}>` over a validated `{innermost} of {formatTy bottom}` instead"
+            | _ -> None
+        | _ -> None)
+
+let validatedFieldsFlat (env: TypeEnv) (def: RecordDef) : RecordDef =
     def.Fields
     |> List.fold
         (fun (d: RecordDef) (f, fty) ->
-            let inner, wrap =
-                match fty with
-                | TNamed("Option", [ t ]) -> t, (fun b -> TNamed("Option", [ b ]))
-                | t -> t, id
+            let inner, wrap = flatFieldInner fty
 
-            match inner, chain inner [] with
-            | TNamed(n, []), (payloadBase, (_ :: _ as ids)) ->
+            match inner, validatedChain env inner [] "" with
+            // an optional payload stays unflattened — the boundary
+            // refuses it (validatedOptionalPayload)
+            | _, (TNamed("Option", [ _ ]), _, _) -> d
+            | TNamed(n, []), (payloadBase, (_ :: _ as ids), _) ->
                 let marks =
                     [ validatedAttr, Some(AStr(String.concat " " ids))
                       validatedNameAttr, Some(AStr n) ]
@@ -4356,6 +4373,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                      | TNamed(n, []), Some _ when isEnum ft -> Some(f, n)
                                      | _ -> None)
 
+                             match validatedOptionalPayload env def with
+                             | Some msg -> err arg.Span msg
+                             | None ->
+
                              match payloadCase with
                              | Some(f, n, c) ->
                                  err
@@ -4433,9 +4454,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                              // Default cells / field shapes / flag collisions —
                              // the policy lives in Argv [D:typed-argv]; the arm
                              // keeps the span plumbing
-                             match Argv.fieldProblems label def with
-                             | Some msg -> err span msg
-                             | None -> Ok()
+                             match validatedOptionalPayload env def |> Option.map ((+) label), Argv.fieldProblems label def with
+                             | Some msg, _
+                             | None, Some msg -> err span msg
+                             | None, None -> Ok()
 
                          // case collisions + payload validation, shared by the bare-union
                          // and shared-flags shapes [D:shared-flags]
@@ -4488,6 +4510,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                              | Some(Union u) when u.Params.IsEmpty -> Some(f, u)
                                              | _ -> None
                                          | _ -> None)
+
+                                 match validatedOptionalPayload env def with
+                                 | Some msg -> err arg.Span msg
+                                 | None ->
 
                                  match unionFields with
                                  | [] ->

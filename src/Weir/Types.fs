@@ -716,9 +716,13 @@ type UnionDef =
 /// it unwritable, so no source name can collide with it
 let createVarPrefix = "|create:"
 
-/// a validated case's entry in a writer's union table: the writer
-/// drops the case and writes the payload [D:validated-types]
-let validatedWireTag = "|valid"
+/// a writer's union-table entry [D:wire-unions]: a tagged case writes
+/// its tag field and value first (isOther marks the [<Other>]
+/// fallback); a validated case drops the case and writes the payload
+/// [D:validated-types] — its own case, so no tag spelling collides
+type WireCase =
+    | WireTagged of tagField: string * tagValue: string * isOther: bool
+    | WireValidated
 
 /// a flat boundary field's validated marks [D:validated-types]: the
 /// `create` ids (outermost first, space-separated) and the type's name
