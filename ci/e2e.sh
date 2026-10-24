@@ -13752,7 +13752,8 @@ grep -qF "\"url\": \"$clurl/r1//lib/a.weir\"" "$cldir/proj/.weir/lock.json" || f
 pout=$(cd "$cldir/proj" && $BIN add module "github.com/acme/lib//x.weir@v1" --path x.weir --as ps 2>&1 || true)
 expect "--path refuses the shorthand" "the shorthand already carries the path after //" "$pout"
 pout=$(cd "$cldir/proj" && $BIN add module "$clurl/r1/" --path /etc/x.weir --as pa 2>&1 || true)
-expect "--path refuses an absolute path" "--path '/etc/x.weir' is absolute" "$pout"
+# (Git Bash rewrites a /-rooted argument to a Windows path; either spelling is absolute)
+expect "--path refuses an absolute path" "/etc/x.weir' is absolute" "$pout"
 pout=$(cd "$cldir/proj" && $BIN add module "$clurl/r1/" --path lib/../../x.weir --as pe 2>&1 || true)
 expect "--path refuses an escaping path" "--path 'lib/../../x.weir' climbs above the root URL" "$pout"
 pout=$(cd "$cldir/proj" && $BIN add module "$clurl/r1/" --path lib/gone.weir --as pm 2>&1 || true)
