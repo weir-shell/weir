@@ -20,6 +20,15 @@ Many of the changes and fixes below were found porting starship to weir.
   or flag names. It gets 300 ms and 1 MiB, and pressing another key
   stops it (the key is kept); with no answer you get what the signature
   alone gives. REPL only; the editor is unchanged.
+- **`Path.isName` and `Path.toName` for file names.** `Path.isName s`
+  is true when `s` is one file name valid on Linux, macOS and Windows:
+  not empty, `.` or `..`, no `/`, `\`, control character or
+  `< > : " | ? *`, no trailing space or dot, not a Windows device name
+  (`CON`, `nul.txt`, `COM1`…), at most 255 UTF-8 bytes. `Path.toName s`
+  turns any text into such a name: forbidden characters become `_`,
+  trailing spaces and dots go, a device name gets a `_` prefix, and the
+  cut to 255 bytes never splits a character. A valid name comes back
+  unchanged. Both work inside `pure`.
 
 ### Changed
 

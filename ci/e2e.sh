@@ -4981,6 +4981,12 @@ else
 fi
 echo "e2e ok: Path.under at the binary — twin joins, sibling/absolute/climb/drive/UNC refuse, the separator split holds per platform"
 
+# ---- Path.isName / Path.toName: one portable file name [D:path-name] --------
+out=$($BIN -e 'let pure fix s = Path.toName s
+print $"{Path.isName "report.txt"} {Path.isName "CON.txt"} {fix "Q3: a/b?."} {fix "CON.txt"} {fix ".."}"' 2>&1) || fail "Path.isName/toName must run: $out"
+[ "$out" = 'true false Q3_ a_b_ _CON.txt _' ] || fail "Path.isName/toName at the binary: $out"
+echo "e2e ok: Path.isName/toName at the binary — the portable rule, the toName policy, admitted by pure"
+
 # ---- pure regions [D:pure-stage1] -------------------------------------------
 # the enforced purity assertion at the binary: a pure body runs; an
 # effect refuses with the located teaching (block, let pure, and the
