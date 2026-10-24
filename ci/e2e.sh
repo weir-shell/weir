@@ -9264,6 +9264,21 @@ expect "the REPL: a session type keeps the bare name" '{ mine = true } : LangDef
 expect "the REPL: the import's type stays reachable qualified" '{ symbol = "q" } : A.LangDefaults' "$out"
 fi
 
+# imported and qualified cases in patterns [D:qualified-case-patterns]: an
+# imported case binds in let and parameter patterns; `A.Case` names the
+# import, and a bare case two imports declare names both spellings
+printf 'module Contract\ntype Ghost = Ghost of string\n' > "$mdir/pc-contract.weir"
+printf 'module PcB\ntype Ghost = Ghost of int\n' > "$mdir/pc-b.weir"
+printf 'import "./pc-contract.weir"\nlet g = Contract.Ghost "S"\nlet (Ghost ghost) = g\nlet f (Ghost y) = y\nlet (Contract.Ghost q) = g\nlet m = match g with | Contract.Ghost x -> x\nprint $"{ghost}{f g}{q}{m}"\n' > "$mdir/pc-journal.weir"
+out=$($BIN "$mdir/pc-journal.weir" 2>&1)
+expect "an imported case binds in let/param patterns, qualified too" 'SSSS' "$out"
+printf 'import "./pc-contract.weir"\nimport "./pc-b.weir"\nlet h (Ghost z) = z\nprint $"{h (Contract.Ghost "s")}"\n' > "$mdir/pc-amb.weir"
+out=$($BIN check "$mdir/pc-amb.weir" 2>&1 || true)
+expect "a bare case two imports declare names both spellings" "write the qualified case: 'Contract.Ghost' or 'PcB.Ghost'" "$out"
+printf 'import "./pc-contract.weir"\nimport "./pc-b.weir"\nlet (PcB.Ghost n) = Contract.Ghost "s"\nprint $"{n}"\n' > "$mdir/pc-wrong.weir"
+out=$($BIN check "$mdir/pc-wrong.weir" 2>&1 || true)
+expect "a wrong qualifier names both types" "'PcB.Ghost' is a case of PcB.Ghost, but this value has type Contract.Ghost" "$out"
+
 # an import cycle is a check error naming the loop, at its closing edge
 printf 'module CA\nimport "./cb.weir"\nlet a = 1\n' > "$mdir/ca.weir"
 printf 'module CB\nimport "./ca.weir"\nlet b = 2\n' > "$mdir/cb.weir"

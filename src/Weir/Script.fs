@@ -3981,7 +3981,7 @@ let rec private checkStatementCore
                         | PVar n -> [ n ]
                         | PTuple ps -> ps |> List.collect patVars
                         | PRecord fields -> fields |> List.map snd |> List.collect patVars
-                        | PCase(_, Some inner) -> patVars inner
+                        | PCase(_, Some inner, _) -> patVars inner
                         | _ -> []
 
                     patVars pat
@@ -10676,7 +10676,7 @@ let analyzeLinesAs
                          | PVar n -> [ n ]
                          | PTuple ps -> ps |> List.collect patVars
                          | PRecord fields -> fields |> List.map snd |> List.collect patVars
-                         | PCase(_, Some inner) -> patVars inner
+                         | PCase(_, Some inner, _) -> patVars inner
                          | _ -> []
 
                      let holeScheme =

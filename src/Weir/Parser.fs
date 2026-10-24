@@ -1854,7 +1854,7 @@ let private lambdaBody =
                         | PVar n -> [ n ]
                         | PTuple pts -> pts |> List.collect leafNames
                         | PRecord fields -> fields |> List.map snd |> List.collect leafNames
-                        | PCase(_, Some inner) -> leafNames inner
+                        | PCase(_, Some inner, _) -> leafNames inner
                         | _ -> []
 
                     let names = ps |> List.collect leafNames |> Set.ofList
@@ -1908,7 +1908,7 @@ let patLeafNames (p: Pattern) : string list =
         | PTuple ps
         | PSeqList ps -> ps |> List.iter stack.Push
         | PRecord fields -> fields |> List.iter (snd >> stack.Push)
-        | PCase(_, Some arg) -> stack.Push arg
+        | PCase(_, Some arg, _) -> stack.Push arg
         | PCons(h, t) ->
             stack.Push h
             stack.Push t
@@ -1943,7 +1943,7 @@ let private letInBody =
             >>= fun b ->
                 match b.PKind with
                 | PVar _
-                | PCase(_, None) -> ifail "plain binder takes the ident path"
+                | PCase(_, None, None) -> ifail "plain binder takes the ident path"
                 | _ -> preturn b
         )
 
@@ -2020,7 +2020,7 @@ let private letInBody =
                               | PVar n -> [ n ]
                               | PTuple pts -> pts |> List.collect leafNames
                               | PRecord fields -> fields |> List.map snd |> List.collect leafNames
-                              | PCase(_, Some inner) -> leafNames inner
+                              | PCase(_, Some inner, _) -> leafNames inner
                               | _ -> []
 
                           let names = ps |> List.collect leafNames |> Set.ofList
@@ -2195,6 +2195,11 @@ let private patRecordArm =
     .>> ws
     |>> fun (fields, span) -> { PKind = PRecord fields; PSpan = span }
 
+// a qualified case's `.Case` tail [D:qualified-case-patterns]: the case
+// word is uppercase, so `Seq.head` after an arm stays what it was
+let private qualifiedCaseWord =
+    attempt (pchar '.' >>. identSpanned >>= fun (c, sp) -> if Char.IsUpper c[0] then preturn (c, sp) else pzero)
+
 let private patAtom =
     choice
         [ patLit
@@ -2202,15 +2207,23 @@ let private patAtom =
           patSeq
           patRecordArm
           patWord
-          |>> fun (w, span) ->
-              let kind =
-                  if w = "_" then PWildcard
-                  elif w = "true" then PBool true
-                  elif w = "false" then PBool false
-                  elif Char.IsUpper w[0] then PCase(w, None)
-                  else PVar w
-
-              { PKind = kind; PSpan = span } ]
+          >>= fun (w, span) ->
+              if w = "_" then
+                  preturn { PKind = PWildcard; PSpan = span }
+              elif w = "true" then
+                  preturn { PKind = PBool true; PSpan = span }
+              elif w = "false" then
+                  preturn { PKind = PBool false; PSpan = span }
+              elif Char.IsUpper w[0] then
+                  // a qualified case [D:qualified-case-patterns]
+                  opt qualifiedCaseWord
+                  |>> function
+                      | Some(c, cspan) ->
+                          { PKind = PCase(c, None, Some(w, span))
+                            PSpan = { Start = span.Start; End = cspan.End } }
+                      | None -> { PKind = PCase(w, None, None); PSpan = span }
+              else
+                  preturn { PKind = PVar w; PSpan = span } ]
 
 // The Regex position parses any string kind and tags it; the
 // checker enforces raw-only there [D:raw-strings].
@@ -2250,22 +2263,20 @@ let private patCore =
                         failFatally
                             "Regex patterns take a LITERAL string; computed patterns live on the expression side (Str.isMatch / Str.rmatch)" ]
               elif Char.IsUpper w[0] then
-                  choice
-                      [ // a qualified case in pattern position [D:qualified-name-teach]
-                        // teaches the law instead of a bare expecting-list: the
-                        // scrutinee's type resolves the bare name, imported
-                        // unions included — the qualifier has no meaning here
-                        attempt (pchar '.' >>. identSpanned)
-                        >>= fun (m, _) ->
-                            failFatallyAtCol
-                                span.Start.Col
-                                $"a pattern names a case bare — write '{m}', not '{w}.{m}': the scrutinee's type resolves the case, imported unions included"
-                        opt patAtom
-                        |>> fun arg ->
-                            let e = arg |> Option.map (fun a -> a.PSpan.End) |> Option.defaultValue span.End
+                  // a qualified case `A.Case` names the import whose union
+                  // declares it [D:qualified-case-patterns]; the checker
+                  // resolves the qualifier
+                  opt qualifiedCaseWord .>>. opt patAtom
+                  |>> fun (q, arg) ->
+                      let ctor, qual, headEnd =
+                          match q with
+                          | Some(c, cspan) -> c, Some(w, span), cspan.End
+                          | None -> w, None, span.End
 
-                            { PKind = PCase(w, arg)
-                              PSpan = { Start = span.Start; End = e } } ]
+                      let e = arg |> Option.map (fun a -> a.PSpan.End) |> Option.defaultValue headEnd
+
+                      { PKind = PCase(ctor, arg, qual)
+                        PSpan = { Start = span.Start; End = e } }
               else
                   preturn { PKind = PVar w; PSpan = span } ]
 
@@ -5514,7 +5525,7 @@ let private topLet (r: Resolver) =
                     | PVar n -> [ n ]
                     | PTuple ps -> ps |> List.collect leafNames
                     | PRecord fields -> fields |> List.map snd |> List.collect leafNames
-                    | PCase(_, Some inner) -> leafNames inner
+                    | PCase(_, Some inner, _) -> leafNames inner
                     | _ -> []
 
                 let paramNames = ps |> List.collect leafNames |> Set.ofList
@@ -5679,7 +5690,7 @@ let private stmtWith (r: Resolver) =
                    >>= fun b ->
                        match b.PKind with
                        | PVar _
-                       | PCase(_, None) -> ifail "plain binder takes the ident path"
+                       | PCase(_, None, None) -> ifail "plain binder takes the ident path"
                        | _ -> preturn b)
                   .>>. ((seqExpr >>= pipeOrHint))
                   .>> eof
