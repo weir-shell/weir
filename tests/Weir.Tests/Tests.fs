@@ -727,7 +727,7 @@ let warningTests =
 
               Expect.equal
                   (codes [ "let name = \"h\""; "#session {"; "    env = ["; "        \"X\", name"; "    ]"; "}" ])
-                  [ "session-decl-ref", 6, 14 ]
+                  [ "session-names-declaration", 6, 14 ]
                   "a value naming a declaration — anchored on the name"
 
               Expect.equal
@@ -15764,8 +15764,8 @@ let assemblyRecoveryTests =
               // the bare marker with no block is the assembly error; the
               // == error after it must still be found, and earlier
               // statements survive
-              Expect.exists diags (fun d -> d.Code = "assembly") "assembly diag present"
-              Expect.exists diags (fun d -> d.Code = "eq") "later statement still checked"
+              Expect.exists diags (fun d -> d.Code = "layout") "assembly diag present"
+              Expect.exists diags (fun d -> d.Code = "not-equatable") "later statement still checked"
               Expect.isTrue (stmts |> List.exists (fun (_, c) -> c.Env.Types.ContainsKey "T")) "types survive"
           }
           test "a misaligned field is one located diag — re-indented, its closer still closes [D:field-alignment]" {
@@ -15780,7 +15780,7 @@ let assemblyRecoveryTests =
 
               match diags |> List.filter (fun d -> d.Severity = "error") with
               | [ d ] ->
-                  Expect.equal d.Code "assembly" "the alignment error"
+                  Expect.equal d.Code "layout" "the alignment error"
                   Expect.equal (d.Line, d.Col) (4, 11) "located at the field"
               | other -> failtest $"expected exactly one error: {other |> List.map (fun d -> d.Message)}"
           }
@@ -15801,7 +15801,7 @@ let assemblyRecoveryTests =
                       "t.weir:2:3: this let needs a body"
                       "the runner's spelling"
 
-              match diagsIn "t.weir" [ "let x = 1"; "  let y = 2" ] |> List.filter (fun d -> d.Code = "assembly") with
+              match diagsIn "t.weir" [ "let x = 1"; "  let y = 2" ] |> List.filter (fun d -> d.Code = "layout") with
               | [ d ] ->
                   Expect.equal (d.Line, d.Col) (2, 3) "check/LSP agree"
                   Expect.stringStarts d.Message "this let needs a body" "no doubled line lead"
@@ -16052,6 +16052,27 @@ let casingTests =
               match Weir.Check.typecheck e2 bad with
               | Ok _ -> failtest "uppercase binding must reject"
               | Error terr -> Expect.stringContains terr.Message "binding names start lowercase" ""
+          }
+          test "diagnostic codes say what they are [D:diagnostic-code-names]" {
+              let cases =
+                  [ [ "let Total = 1"; "print (show Total)" ], "lowercase-binding"
+                    [ "let f () ="; "    1"; "    print \"x\""; "f ()" ], "non-unit-statement"
+                    [ "let xs = [(1, 2)] |> Seq.sortBy (fun x -> x)"; "print (show xs)" ], "unsortable-key"
+                    [ "let render x = show x"; "print (render print)" ], "unrenderable-function"
+                    [ "print (show (fail \"x\"))" ], "undetermined-type"
+                    [ "let x = match \"a\" with | Regex @\"(\\d+)-(\\d+)\" a -> a | _ -> \"\""; "print x" ], "regex-binder-count"
+                    [ "let _x = 1"; "  let y = 2" ], "layout"
+                    [ "module M"; "let f : int -> int" ], "missing-implementation"
+                    [ "module M"; "let f : int -> int"; "/// doc"; "let f n = n" ], "doc-on-implementation"
+                    [ "module M"; "echo hi" ], "module-declares-only" ]
+
+              for lines, code in cases do
+                  Expect.equal (firstErrorIn "codes.weir" lines).Code code (String.concat " / " lines)
+
+              Expect.stringContains
+                  (firstErrorIn "codes.weir" [ "let Total = 1"; "print (show Total)" ]).Message
+                  "(a record field keeps its name: let level = cfg.LOG_LEVEL)"
+                  "the casing example"
           }
           test "match patterns untouched: uppercase is still a constructor" {
               expectValue "match Running 1 with | Running n -> n | Stopped -> 0" (VInt 1L)
@@ -20706,7 +20727,7 @@ let walkCohortTests =
               let diags = diagsIn "cap.weir" lines
 
               let assemblyCount =
-                  diags |> List.filter (fun d -> d.Code = "assembly") |> List.length
+                  diags |> List.filter (fun d -> d.Code = "layout") |> List.length
 
               Expect.isTrue (assemblyCount <= 10) $"the cap: got {assemblyCount} assembly diags"
               Expect.isTrue (assemblyCount >= 9) $"the recovery ran to the cap: got {assemblyCount}"
@@ -22418,7 +22439,7 @@ let floatTests =
                   let e = firstErrorIn "feq.weir" [ "type Q = { y: float }"; decl; $"let a = {lit}"; "print $\"{a == a}\"" ]
                   Expect.stringContains e.Message "Float.near" decl
                   Expect.isFalse (e.Message.Contains "sequences and functions") decl
-                  Expect.equal e.Code "eq" "the eq diagnostic code"
+                  Expect.equal e.Code "not-equatable" "the eq diagnostic code"
           }
           test "Ord admitted: total because finite" {
               Expect.equal (run "[3.5; 1.5; 2.5] |> Seq.sortBy (fun x -> x) |> Seq.head") (VFloat 1.5) ""
@@ -24888,20 +24909,20 @@ let portMembersTests =
                   System.IO.File.Delete tmp
           }
           // ---- the two ports' diagnostics, whole-script level ----------
-          test "a qualified case in pattern position teaches the bare law [D:qualified-name-teach]" {
+          test "a local type as a case qualifier names the bare spelling [D:qualified-case-patterns]" {
               mustSay
                   [ "type Spec = System | Ref"
                     "match System with"
                     "| Spec.System -> print \"s\""
                     "| _ -> print \"o\"" ]
-                  "a pattern names a case bare — write 'System', not 'Spec.System'"
+                  "'Spec' is a type, not a module — a case is qualified by its import's name; a case of a union declared here is written bare: 'System'"
                   "the repair is spelled"
           }
-          test "a qualified type in the adapter slot teaches the flat-import law [D:qualified-name-teach]" {
+          test "a qualified type in the adapter slot names its import [D:qualified-type-names]" {
               mustSay
                   [ "let p = [\"{}\"] |> from json Acme.Pod"; "print \"x\"" ]
-                  "write 'Pod', not 'Acme.Pod'"
-                  "the repair is spelled"
+                  "unknown type 'Acme.Pod' — no import is named 'Acme'"
+                  "an unknown qualifier is named"
           }
           test "'as' in the adapter slot teaches the #infer spelling [D:infer-one-shot]" {
               // the fatal's long message hard-wraps in the rendered
@@ -26081,26 +26102,426 @@ let moduleSignatureTests =
                       Expect.isEmpty (diagsOf td "lib.weir") "the pasted signature checks in the module"
                       Expect.isEmpty (diagsOf td "use.weir") "the member now exports")
           }
-          test "a qualified type name in a signature teaches the bare-name law [D:modules-v1]" {
+          test "a qualified type name parses in every type position [D:qualified-type-names]" {
               match Weir.Parser.parseLine cmdResolver "let f : M.Spec -> string" with
-              | Error msg ->
-                  Expect.stringContains
-                      msg
-                      "a signature names types bare — an imported type resolves by its plain name"
-                      "the law"
+              | Ok(SSig("f", ty, _)) -> Expect.equal (Weir.Types.formatTy ty) "M.Spec -> string" "a signature"
+              | other -> failtest $"expected SSig, got {other}"
 
-                  Expect.stringContains msg "write 'Spec', not 'M.Spec'" "the rewrite"
-              | Ok s -> failtest $"a qualified sig type must refuse, got {s}"
+              match Weir.Parser.parseLine cmdResolver "let g : seq<M.Page<int>> -> int" with
+              | Ok(SSig("g", ty, _)) -> Expect.equal (Weir.Types.formatTy ty) "seq<M.Page<int>> -> int" "nested, generic"
+              | other -> failtest $"expected SSig, got {other}"
 
-              // nested type positions teach the same law
-              match Weir.Parser.parseLine cmdResolver "let g : seq<M.Spec> -> int" with
-              | Error msg -> Expect.stringContains msg "a signature names types bare" "nested position"
-              | Ok s -> failtest $"nested qualified must refuse, got {s}"
-
-              // the one type grammar: a record field's type teaches too
               match Weir.Parser.parseLine cmdResolver "type R = { f: M.Spec }" with
-              | Error msg -> Expect.stringContains msg "plain name" "field position"
-              | Ok s -> failtest $"a qualified field type must refuse, got {s}"
+              | Ok(SType d) ->
+                  match d.Body with
+                  | DRecord [ "f", TNamed("M.Spec", []), _ ] -> ()
+                  | b -> failtest $"field type: {b}"
+              | other -> failtest $"expected SType, got {other}"
+          } ]
+
+// imported and qualified cases in patterns [D:qualified-case-patterns]:
+// every binder resolves a case as a match arm does, imported unions
+// included, and `A.Case` names the import whose union declares it
+let qualifiedCasePatternTests =
+    let withDir (files: (string * string list) list) (f: string -> unit) =
+        withTempDir "weir-qcp" (fun td ->
+            for name, lines in files do
+                System.IO.File.WriteAllLines(System.IO.Path.Combine(td, name), lines)
+
+            f td)
+
+    let diags (td: string) (entry: string) =
+        let path = System.IO.Path.Combine(td, entry)
+        diagsIn path (List.ofArray (System.IO.File.ReadAllLines path)) |> List.filter (fun d -> d.Severity = "error")
+
+    let clean td entry label =
+        Expect.isEmpty (diags td entry |> List.map _.Message) $"{label}: expected clean"
+
+    let says td entry (needle: string) label =
+        let es = diags td entry |> List.map _.Message
+        Expect.exists es (fun m -> m.Contains needle) $"{label}: expected '{needle}', got {es}"
+
+    let runs td entry label =
+        Expect.equal (Weir.Script.run (System.IO.Path.Combine(td, entry)) []) 0 $"{label}: runs clean"
+
+    let contract = [ "module Contract"; ""; "type Ghost = Ghost of string" ]
+    let spirit = [ "module Spirit"; ""; "type Spook = Ghost of int" ]
+
+    let a =
+        [ "module A"
+          ""
+          "type Ghost = Ghost of string"
+          "type Multi = One of int | Two"
+          "type Box = Box of Ghost" ]
+
+    let b = [ "module B"; ""; "type Ghost = Ghost of int" ]
+    let both = [ "import \"a.weir\""; "import \"b.weir\"" ]
+
+    let tree (extra: (string * string list) list) f =
+        withDir ([ "contract.weir", contract; "spirit.weir", spirit; "a.weir", a; "b.weir", b ] @ extra) f
+
+    testSequenced
+    <| testList
+        "qualified case patterns [D:qualified-case-patterns]"
+        [ test "an imported case binds in let and parameter patterns (the journal/j2 repros)" {
+              tree
+                  [ "journal.weir",
+                    [ "import \"contract.weir\""
+                      ""
+                      "let g = Contract.Ghost \"S\""
+                      "let (Ghost ghost) = g"
+                      "if ghost <> \"S\" then fail ghost" ]
+                    "j2.weir",
+                    [ "import \"contract.weir\""
+                      ""
+                      "let g = Contract.Ghost \"S\""
+                      "let v = match g with | Ghost x -> x"
+                      "let f (Ghost y) = y"
+                      "if v + f g <> \"SS\" then fail v" ] ]
+                  (fun td ->
+                      clean td "journal.weir" "let pattern"
+                      clean td "j2.weir" "parameter pattern"
+                      runs td "journal.weir" "let pattern"
+                      runs td "j2.weir" "parameter pattern")
+          }
+          test "an imported multi-case union is refutable in a binder" {
+              tree
+                  [ "multi.weir", [ "import \"a.weir\""; "let (One k) = A.One 1"; "print $\"{k}\"" ]
+                    "lam.weir", [ "import \"a.weir\""; "let f = fun (A.One k) -> k"; "print $\"{f (A.One 1)}\"" ] ]
+                  (fun td ->
+                      for f in [ "multi.weir"; "lam.weir" ] do
+                          match diags td f with
+                          | [ d ] ->
+                              Expect.stringStarts d.Message "this pattern can fail; use match" f
+                              Expect.equal d.Code "refutable-binder" f
+                          | ds -> failtest $"{f}: {ds |> List.map _.Message}")
+          }
+          test "a qualified case in a match arm, let, parameter, lambda and nested pattern" {
+              tree
+                  [ "q.weir",
+                    [ "import \"contract.weir\" as C"
+                      "import \"a.weir\""
+                      "let g = C.Ghost \"s\""
+                      "let m = match g with | C.Ghost x -> x"
+                      "let (C.Ghost l) = g"
+                      "let p (C.Ghost y) = y"
+                      "let lam = [g] |> Seq.map (fun (C.Ghost z) -> z) |> Seq.exactlyOne"
+                      "let n ="
+                      "    match (A.Box (A.Ghost \"n\"), Some A.Two) with"
+                      "    | (A.Box (A.Ghost s), Some A.Two) -> s"
+                      "    | _ -> \"?\""
+                      "let (A.Box (Ghost deep)) = A.Box (A.Ghost \"d\")"
+                      "if m + l + p g + lam + n + deep <> \"ssssnd\" then fail m" ] ]
+                  (fun td ->
+                      clean td "q.weir" "every position"
+                      runs td "q.weir" "every position")
+          }
+          test "a wrong qualifier is a type error naming both types" {
+              let both = "'Spirit.Ghost' is a case of Spirit.Spook, but this value has type Contract.Ghost"
+
+              tree
+                  [ "m.weir",
+                    [ "import \"contract.weir\""
+                      "import \"spirit.weir\""
+                      "let v = match Contract.Ghost \"s\" with | Spirit.Ghost n -> n"
+                      "print $\"{v}\"" ]
+                    "l.weir",
+                    [ "import \"contract.weir\""
+                      "import \"spirit.weir\""
+                      "let (Spirit.Ghost n) = Contract.Ghost \"s\""
+                      "print $\"{n}\"" ]
+                    "nomod.weir",
+                    [ "import \"contract.weir\""
+                      "let v = match Contract.Ghost \"s\" with | Nope.Ghost n -> n"
+                      "print v" ]
+                    "nocase.weir",
+                    [ "import \"contract.weir\""
+                      "let v = match Contract.Ghost \"s\" with | Contract.Gost n -> n"
+                      "print v" ] ]
+                  (fun td ->
+                      says td "m.weir" both "match arm"
+                      says td "l.weir" both "let pattern"
+                      says td "nomod.weir" "no module named 'Nope'" "not a module"
+                      says td "nocase.weir" "module 'Contract' declares no case 'Gost'. Did you mean 'Ghost'?" "no such case")
+          }
+          test "same-named unions from two imports resolve by qualifier, and a typed value settles a bare case" {
+              tree
+                  [ "two.weir",
+                    both
+                    @ [ "let a = A.Ghost \"s\""
+                        "let b = B.Ghost 3"
+                        "let (A.Ghost x) = a"
+                        "let (B.Ghost y) = b"
+                        "let f (A.Ghost s) = s"
+                        "let g = fun (B.Ghost n) -> n + 1"
+                        "let m = match b with | B.Ghost n -> n"
+                        "let (Ghost typed) = a"
+                        "let bare = match b with | Ghost n -> n"
+                        "let piped = [b] |> Seq.map (fun (Ghost n) -> n) |> Seq.sum"
+                        "if x + f a + typed <> \"sss\" || y + g b + m + bare + piped <> 16 then fail x" ] ]
+                  (fun td ->
+                      clean td "two.weir" "two imports, one case name"
+                      runs td "two.weir" "two imports, one case name")
+          }
+          test "a bare case two imports declare, with nothing typing the value, names both spellings" {
+              let ambiguous = "case 'Ghost' is ambiguous — more than one import declares it; write the qualified case: 'A.Ghost' or 'B.Ghost'"
+
+              tree
+                  [ "param.weir", both @ [ "let h (Ghost z) = z"; "print $\"{h (A.Ghost \"s\")}\"" ]
+                    "arm.weir", both @ [ "let k x = match x with | Ghost s -> s"; "print $\"{k (A.Ghost \"s\")}\"" ] ]
+                  (fun td ->
+                      says td "param.weir" ambiguous "parameter"
+                      says td "arm.weir" ambiguous "match arm on an untyped value")
+          } ]
+
+// qualified type names [D:qualified-type-names]: two imports may declare
+// one type name; each is reached as `A.T`, a bare name resolves while one
+// import provides it, and identity follows the declaring module
+let qualifiedTypeNameTests =
+    let withDir (files: (string * string list) list) (f: string -> unit) =
+        withTempDir "weir-qtn" (fun td ->
+            for name, lines in files do
+                System.IO.File.WriteAllLines(System.IO.Path.Combine(td, name), lines)
+
+            f td)
+
+    let errs (td: string) (entry: string) =
+        let path = System.IO.Path.Combine(td, entry)
+
+        diagsIn path (List.ofArray (System.IO.File.ReadAllLines path))
+        |> List.filter (fun d -> d.Severity = "error")
+        |> List.map _.Message
+
+    let clean td entry label =
+        Expect.isEmpty (errs td entry) $"{label}: expected clean, got {errs td entry}"
+
+    let says td entry (needle: string) label =
+        let es = errs td entry
+        Expect.exists es (fun m -> m.Contains needle) $"{label}: expected '{needle}', got {es}"
+
+    // the starship shape (tmp/starship-repro/c5)
+    let a =
+        [ "module"
+          ""
+          "type LangDefaults = { symbol: string }"
+          ""
+          "type Shape ="
+          "    | Circle of int"
+          "    | Square of int"
+          ""
+          "let make : string -> LangDefaults"
+          "let make s = { symbol = s }"
+          ""
+          "let area : Shape -> int"
+          "let area s ="
+          "    match s with"
+          "    | Circle r -> r * 3"
+          "    | Square w -> w * w" ]
+
+    let b =
+        [ "module"
+          ""
+          "type LangDefaults = { symbol: string; style: string }"
+          ""
+          "type Shape ="
+          "    | Circle of int"
+          "    | Tri of int"
+          ""
+          "let make : string -> LangDefaults"
+          "let make s = { symbol = s; style = \"bold\" }" ]
+
+    let both = [ "import \"a.weir\" as A"; "import \"b.weir\" as B" ]
+
+    let tree (extra: (string * string list) list) f =
+        withDir ([ "a.weir", a; "b.weir", b ] @ extra) f
+
+    testList
+        "qualified type names [D:qualified-type-names]"
+        [ test "two imports declaring one type name check clean (the c5 repro)" {
+              tree
+                  [ "root.weir", both @ [ "let x = A.make \"a\""; "let y = B.make \"b\""; "print $\"{x.symbol} {y.symbol} {y.style}\"" ]
+                    "root2.weir",
+                    both
+                    @ [ "let x = A.LangDefaults { symbol = \"a\" }"
+                        "let y = B.LangDefaults { symbol = \"b\"; style = \"s\" }"
+                        "print $\"{x.symbol} {y.style}\"" ] ]
+                  (fun td ->
+                      clean td "root.weir" "members returning each type"
+                      clean td "root2.weir" "qualified literals")
+          }
+          test "the qualified name works in every type position" {
+              tree
+                  [ "m.weir",
+                    [ "module M" ]
+                    @ both
+                    @ [ "type Both = { a: A.LangDefaults; b: seq<B.LangDefaults> }"
+                        "type Pick ="
+                        "    | First of A.LangDefaults"
+                        "    | Second of B.LangDefaults"
+                        "let pair : string -> Both"
+                        "let pair s = { a = A.make s; b = [ B.make s ] }"
+                        "let name : B.Shape -> string"
+                        "let name s ="
+                        "    match s with"
+                        "    | Circle r -> $\"c{r}\""
+                        "    | Tri t -> $\"t{t}\"" ]
+                    "slot.weir",
+                    both
+                    @ [ "let one = [\"{\\\"symbol\\\": \\\"s\\\"}\"] |> from json A.LangDefaults"
+                        "let many = [\"[]\"] |> from json seq<B.LangDefaults>"
+                        "let keyed = [\"{}\"] |> from json Map<string, A.LangDefaults>"
+                        "let anon = [\"{\\\"c\\\": {\\\"symbol\\\": \\\"w\\\"}}\"] |> from json {| c: A.LangDefaults |}"
+                        "let y = [\"symbol: a\"; \"style: b\"] |> from yaml B.LangDefaults"
+                        "print $\"{one.symbol} {many |> Seq.length} {Map.count keyed} {anon.c.symbol} {y.style}\"" ]
+                    "cases.weir",
+                    both
+                    @ [ "let n = A.area (A.Circle 2)"
+                        "let t ="
+                        "    match B.Tri 3 with"
+                        "    | Circle r -> r"
+                        "    | Tri t -> t"
+                        "print $\"{n} {t}\"" ]
+                    "load.weir",
+                    both @ [ "let e = Env.load B.LangDefaults"; "let c = Args.load A.LangDefaults"; "print $\"{e.style} {c.symbol}\"" ] ]
+                  (fun td ->
+                      clean td "m.weir" "record fields, union payloads, signatures, patterns"
+                      clean td "slot.weir" "the adapter slot, wrapped and nested"
+                      clean td "cases.weir" "union cases construct qualified, patterns match bare"
+                      clean td "load.weir" "Env.load / Args.load")
+          }
+          test "a bare name two imports declare is an error naming both spellings" {
+              let ambiguous = "type 'LangDefaults' is ambiguous — more than one import declares it; write the qualified name: 'A.LangDefaults' or 'B.LangDefaults'"
+
+              tree
+                  [ "lit.weir", both @ [ "let x = LangDefaults { symbol = \"a\" }"; "print x.symbol" ]
+                    "slot.weir", both @ [ "let x = [\"{}\"] |> from json LangDefaults"; "print x.symbol" ]
+                    "sig.weir", [ "module S" ] @ both @ [ "let f : LangDefaults -> string"; "let f d = d.symbol" ]
+                    "field.weir", [ "module F" ] @ both @ [ "type W = { d: LangDefaults }" ]
+                    "load.weir", both @ [ "let e = Env.load LangDefaults"; "print e.symbol" ] ]
+                  (fun td ->
+                      for f in [ "lit.weir"; "slot.weir"; "sig.weir"; "field.weir"; "load.weir" ] do
+                          says td f ambiguous f)
+          }
+          test "a bare name one import declares still resolves, and so does its qualified spelling" {
+              tree
+                  [ "bare.weir",
+                    [ "import \"a.weir\" as A"
+                      "let x = LangDefaults { symbol = \"a\" }"
+                      "let y = [\"{}\"] |> from json seq<LangDefaults>"
+                      "let z = { symbol = \"z\" }"
+                      "let q = A.LangDefaults { symbol = \"q\" }"
+                      "print $\"{x == A.make \"a\"} {y |> Seq.length} {z == q}\"" ]
+                    "sig.weir",
+                    [ "module S"
+                      "import \"a.weir\" as A"
+                      "let f : LangDefaults -> A.LangDefaults"
+                      "let f d = d" ] ]
+                  (fun td ->
+                      clean td "bare.weir" "bare and qualified are one type"
+                      clean td "sig.weir" "both spellings in one signature")
+          }
+          test "A.T and B.T are different types, even field for field" {
+              withDir
+                  [ "a.weir", [ "module A"; "type Cfg = { name: string }"; "let mk : string -> Cfg"; "let mk s = { name = s }" ]
+                    "b.weir", [ "module B"; "type Cfg = { name: string }"; "let mk : string -> Cfg"; "let mk s = { name = s }" ]
+                    "eq.weir", both @ [ "let same = A.mk \"x\" == B.mk \"x\""; "print $\"{same}\"" ]
+                    "arg.weir",
+                    [ "module G" ]
+                    @ both
+                    @ [ "let f : A.Cfg -> string"; "let f c = c.name"; "let g : unit -> string"; "let g () = f (B.mk \"x\")" ]
+                    "lit.weir", both @ [ "let c = { name = \"x\" }"; "print c.name" ]
+                    "ok.weir", both @ [ "let c = B.Cfg { name = \"x\" }"; "print $\"{c == B.mk \"x\"}\"" ] ]
+                  (fun td ->
+                      says td "eq.weir" "expected A.Cfg, got B.Cfg" "== across origins"
+                      says td "arg.weir" "A.Cfg" "an argument of the other type"
+                      says td "lit.weir" "ambiguous record literal; it matches: A.Cfg, B.Cfg" "the bare literal names both"
+                      clean td "ok.weir" "the qualified literal is B's type")
+          }
+          test "a module name with no such type, and an unknown qualifier, are named" {
+              tree
+                  [ "nope.weir", both @ [ "let x = [\"{}\"] |> from json A.Nope"; "print x.symbol" ]
+                    "noalias.weir", both @ [ "let x = [\"{}\"] |> from json C.LangDefaults"; "print x.symbol" ] ]
+                  (fun td ->
+                      says td "nope.weir" "module 'A' declares no type 'Nope'" "the alias, the missing type"
+                      says td "noalias.weir" "unknown type 'C.LangDefaults' — no import is named 'C'" "no such import")
+          }
+          test "a module's exported type over two same-named imports crosses to its importer [D:transitive-types]" {
+              tree
+                  [ "m.weir",
+                    [ "module M" ]
+                    @ both
+                    @ [ "type Both = { a: A.LangDefaults; b: B.LangDefaults }"
+                        "let pair : string -> Both"
+                        "let pair s = { a = A.make s; b = B.make s }" ]
+                    "only.weir",
+                    [ "import \"m.weir\" as M"
+                      "let p = M.pair \"x\""
+                      "print $\"{p.a.symbol} {p.b.style} {show p}\"" ]
+                    "mixed.weir",
+                    [ "import \"m.weir\" as M"
+                      "let p = M.pair \"x\""
+                      "let wrong = p.a == p.b" ]
+                    "joined.weir",
+                    [ "import \"m.weir\" as M" ]
+                    @ both
+                    @ [ "let p = M.pair \"x\""; "print $\"{p.a == A.make \"x\"} {p.b == B.make \"x\"}\"" ] ]
+                  (fun td ->
+                      clean td "only.weir" "the transitive types read through M"
+                      says td "mixed.weir" "expected A.LangDefaults, got B.LangDefaults" "they stay distinct"
+                      clean td "joined.weir" "a direct import joins the same types")
+          }
+          test "a local declaration keeps the bare name; the import's type is reached qualified" {
+              tree
+                  [ "local.weir",
+                    [ "type LangDefaults = { mine: bool }"
+                      "import \"a.weir\" as A"
+                      "let l = { mine = true }"
+                      "let x = A.make \"a\""
+                      "let q = A.LangDefaults { symbol = \"q\" }"
+                      "print $\"{l.mine} {x == q}\"" ]
+                    "cross.weir",
+                    [ "type LangDefaults = { mine: bool }"
+                      "import \"a.weir\" as A"
+                      "let bad = A.make \"a\" == LangDefaults { mine = true }" ]
+                    "after.weir", [ "import \"a.weir\" as A"; "type LangDefaults = { mine: bool }" ] ]
+                  (fun td ->
+                      clean td "local.weir" "import after a local declaration"
+                      says td "cross.weir" "expected A.LangDefaults, got LangDefaults" "two types"
+                      says td "after.weir" "already provided by the import at line 1" "a declaration after the import still refuses [D:dup-type-decl]")
+          }
+          test "one record name, two wire tables, in one write refuses [D:wire-keys]" {
+              withDir
+                  [ "a.weir", [ "module A"; "type Cfg = {"; "    [<Wire \"nm\">]"; "    name: string"; "}" ]
+                    "b.weir", [ "module B"; "type Cfg = { name: string }" ]
+                    "w.weir",
+                    both
+                    @ [ "type Two = { a: A.Cfg; b: B.Cfg }"
+                        "let v = { a = A.Cfg { name = \"x\" }; b = B.Cfg { name = \"y\" } }"
+                        "v |> to json |> Seq.iter print" ]
+                    "one.weir", both @ [ "A.Cfg { name = \"x\" } |> to json |> Seq.iter print" ] ]
+                  (fun td ->
+                      says td "w.weir" "'A.Cfg' and 'B.Cfg' share a declared name but not their wire keys" "the writer cannot tell them apart"
+                      clean td "one.weir" "one of them alone writes")
+          }
+          test "hover and definition name the qualified type" {
+              withTempDir "weir-qtn-lsp" (fun td ->
+                  System.IO.File.WriteAllLines(System.IO.Path.Combine(td, "a.weir"), a)
+                  System.IO.File.WriteAllLines(System.IO.Path.Combine(td, "b.weir"), b)
+                  let entry = System.IO.Path.Combine(td, "main.weir")
+
+                  let lines =
+                      both
+                      @ [ "let x = A.make \"a\""
+                          "let y = B.LangDefaults { symbol = \"b\"; style = \"s\" }"
+                          "print $\"{x.symbol} {y.style}\"" ]
+
+                  Expect.equal (Weir.Lsp.hoverAt entry lines 3 5) (Some "x : A.LangDefaults") "a value of A's type"
+                  Expect.equal (Weir.Lsp.hoverAt entry lines 4 5) (Some "y : B.LangDefaults") "a value of B's type"
+
+                  Expect.equal
+                      (Weir.Lsp.definitionTarget entry lines 4 12)
+                      (Some(Some(System.IO.Path.Combine(td, "b.weir")), 3, 6, 12))
+                      "the qualified literal's type jumps to B's declaration")
           } ]
 
 let unusedBindingTests =
@@ -32108,6 +32529,8 @@ let allTests =
           lockfileConfinementTests
           lockfileSymlinkConfinementTests
           moduleSignatureTests
+          qualifiedTypeNameTests
+          qualifiedCasePatternTests
           scriptTests
           multilineTests
           readProbes

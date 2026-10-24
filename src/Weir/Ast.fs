@@ -23,7 +23,9 @@ and PatternKind =
     // its span (the provenance anchor) + the sub-pattern; partial
     // field mention is the point (the row's native semantics)
     | PRecord of ((string * Span) * Pattern) list
-    | PCase of ctor: string * arg: Pattern option
+    // qual: the module alias a qualified case names (`A.Case`) and its
+    // span [D:qualified-case-patterns]; None for a bare case
+    | PCase of ctor: string * arg: Pattern option * qual: (string * Span) option
     // the bespoke Regex pattern [D:regex-pattern] — one pattern kind,
     // not a general active-pattern mechanism. The literal is kept
     // verbatim (its backslashes belong to the regex engine); litSpan
@@ -381,7 +383,7 @@ let patChildren (p: Pattern) : Pattern list =
     | PTuple ps
     | PSeqList ps -> ps
     | PRecord fields -> fields |> List.map snd
-    | PCase(_, arg) -> Option.toList arg
+    | PCase(_, arg, _) -> Option.toList arg
     | PRegex(_, _, _, binder) -> [ binder ]
     | PCons(h, t) -> [ h; t ]
 
@@ -579,6 +581,12 @@ type Stmt =
 // consumers: the test suite's parse pins and fmt's respace safety
 // check (a formatted statement must sexpr-match its original)
 // [D:fmt-respace].
+// a case's written spelling: `A.Case` when qualified
+let qualCase (qual: (string * Span) option) (ctor: string) : string =
+    match qual with
+    | Some(m, _) -> m + "." + ctor
+    | None -> ctor
+
 let rec sexprPat (p: Pattern) : string =
     match p.PKind with
     | PWildcard -> "_"
@@ -594,8 +602,8 @@ let rec sexprPat (p: Pattern) : string =
            |> List.map (fun ((f, _), sub) -> $"{f} = {sexprPat sub}")
            |> String.concat "; ")
         + " }"
-    | PCase(c, None) -> c
-    | PCase(c, Some arg) -> $"({c} {sexprPat arg})"
+    | PCase(c, None, q) -> qualCase q c
+    | PCase(c, Some arg, q) -> $"({qualCase q c} {sexprPat arg})"
     | PRegex(pat, _, _, binder) -> $"(regex \"{pat}\" {sexprPat binder})"
     | PSeqNil -> "[]"
     | PCons(h, t) -> $"({sexprPat h} :: {sexprPat t})"

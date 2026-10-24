@@ -284,10 +284,13 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   last-wins [D:ambiguous-ctor]; rename one. Arity does not disambiguate
   (applying it does not pick an overload), and PATTERNS are unaffected: a
   case in a pattern resolves against the scrutinee's type. Imported unions
-  never collide — their cases are not in scope bare. A pattern names a
-  case BARE only: a qualified case (`| X.Case v ->`) is a parse error in
-  pattern position — the scrutinee's type resolves the bare name,
-  imported unions included.
+  never collide — their cases are not in scope bare. A pattern names an
+  imported case bare OR qualified [D:qualified-case-patterns] —
+  `| X.Case v ->`, `let (X.W w) = …`, `fun (X.W w) -> …`, nested too; the
+  qualifier is the import's name (the one you construct with) and must
+  match the value's type (a mismatch is a type error naming both). A bare
+  case two imports declare, with nothing typing the value, refuses naming
+  both qualified spellings; a local union's cases stay bare.
 - A FUNCTION TYPE is writable [D:function-types] in any type position — a
   union payload (`Custom of (string -> bool)`), a record field
   (`{ matches: string -> bool }`), a generic arg. `->` is right-associative
@@ -2009,8 +2012,8 @@ type Bad = C of int
   `uniqueItems`, `readOnly`, `const`, `format`, `contentEncoding`, …)
   are accepted but NOT enforced — each gets a `// note: not enforced:`
   line (`const` drafts its type); a root `$id` is ignored; import it with
-  `import "weir:<name>" as X` (type names resolve bare in the
-  adapter slot). `from table` stays the tier for tools with no
+  `import "weir:<name>" as X` (the slot takes `X.Name`, or the bare
+  name while no other import declares it). `from table` stays the tier for tools with no
   schema at all. The generated file is yours — regeneration is an
   explicit re-run, and every place the schema could not decide is a
   `// note:` line, never a silent guess.
@@ -2270,8 +2273,14 @@ conf |> Seq.iter print
   `let helper n = …`, annotation-free: the signature's types flow
   INTO its checking, so a param can pattern-match its declared union
   and a generic sig (`'a -> 'a`) is honoured — an impl that pins `'a`
-  refuses as less-general. A signature names types bare — an imported
-  type resolves by its plain name, never `X.Ty`. A type a module
+  refuses as less-general. An imported type is `X.Ty` in ANY type
+  position [D:qualified-type-names] — signature, field, case payload,
+  the adapter slot (`from json X.Cfg`, `seq<X.Cfg>`), `Env.load`/`Args.load`,
+  the literal `X.Cfg { … }` — and its bare name works while ONE import
+  declares it. Two imports declaring one name (`A.Cfg`, `B.Cfg`) are two
+  types, field-identical or not; the bare `Cfg` then refuses, naming both
+  spellings — never a silent pick. A local `type` keeps the bare name over
+  an import below it (the import's is reached qualified). A type a module
   imports crosses to ITS importers with the signatures that mention
   it (fields, show, `==`, match all work), but stays the defining
   module's — no `B.Pt { … }` literal through the re-exporter.
@@ -2334,6 +2343,42 @@ print (show (M.raw 1))
 ```
 
 ```weir
+// two imports, one type name: each reached qualified [D:qualified-type-names]
+["module"; "type Cfg = { name: string }"] |> File.write "qtn-a.weir"
+["module"; "type Cfg = { name: string; port: int }"] |> File.write "qtn-b.weir"
+```
+
+```weir
+import "./qtn-a.weir" as A
+import "./qtn-b.weir" as B
+let a = A.Cfg { name = "x" }
+let b = ["{\"name\": \"y\", \"port\": 1}"] |> from json B.Cfg
+print $"{a.name} {b.port}"
+```
+
+```weir-error
+// the bare name two imports declare refuses, naming A.Cfg and B.Cfg
+import "./qtn-a.weir" as A
+import "./qtn-b.weir" as B
+let c = ["{}"] |> from json Cfg
+```
+
+```weir
+// an imported case in patterns, bare or qualified [D:qualified-case-patterns]
+["module"; "type Ref = Ref of string"] |> File.write "qcp-a.weir"
+["module"; "type Ref = Ref of int"] |> File.write "qcp-b.weir"
+```
+
+```weir
+import "./qcp-a.weir" as A
+import "./qcp-b.weir" as B
+let (A.Ref name) = A.Ref "main"
+let depth (B.Ref n) = n
+let typed = match A.Ref "dev" with | Ref r -> r
+print $"{name} {depth (B.Ref 2)} {typed}"
+```
+
+```weir
 let clean = not (1 == 2)
 if clean then sh -c "echo acting"
 ```
@@ -2386,8 +2431,9 @@ print (show (let r = sh -c "echo x" | complete in r.exitCode))
   Destructure ANYWHERE irrefutable: `let x, y = pair`,
   `let (k, _) = pair`, `fun (k, v) -> ...` (parens required on
   params). A SINGLE-case union's constructor is irrefutable too
-  (`type W = W of int` then `let un (W x) = x`). Refutable patterns in
-  binders are errors — use match.
+  (`type W = W of int` then `let un (W x) = x`), an imported one included
+  (`let (X.W x) = w`, or bare). Refutable patterns in binders are errors —
+  use match.
 - Irrefutable RECORD patterns [D:record-patterns] destructure at every
   binding position — `let { names = n } = c`, params (bare, no parens
   needed), lambdas, match arms (the `when` guard does the testing),
@@ -2514,7 +2560,7 @@ print (f 1)
   Stranded-script reports should cite the error codes.
 - Casing law: binding names start LOWERCASE (`let foo`, `fun x ->`);
   uppercase is types/modules/constructors. Record fields keep their
-  names: `let region = cfg.AWS_REGION`.
+  names: `let level = cfg.LOG_LEVEL`.
   No tuple ordering (sortBy/sortByDescending keys stay scalar).
   Records remain the spelling for anything with NAMES. Prefix minus
   follows F#'s adjacency rule: `-n`, `2 * -3`, and `f -1` (passes -1

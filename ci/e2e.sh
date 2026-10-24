@@ -1384,7 +1384,7 @@ echo "e2e ok: bodyless block let rejected"
 # runner and check agree, and the message drops its "line N:" lead
 expect "the runner locates an assembly error line:col" "blockbad.weir:2:5: this let needs a body" "$errout"
 errout=$($BIN check "$scriptdir/blockbad.weir" 2>&1) && fail "check must refuse the bodyless block let"
-expect "check locates the same assembly error" "blockbad.weir:2:5: error [assembly]: this let needs a body" "$errout"
+expect "check locates the same assembly error" "blockbad.weir:2:5: error [layout]: this let needs a body" "$errout"
 
 rm -rf "$scriptdir"
 
@@ -2077,12 +2077,12 @@ let Foo = 1
 Seq.initInfinite id == Seq.initInfinite id
 WEOF
 out=$($BIN check "$ckdir/multi.weir") && fail "check must exit 1 on errors" || true
-echo "$out" | grep -qF "[casing-law]" || fail "casing code missing: $out"
-echo "$out" | grep -qF "[eq]" || fail "second independent error missing (recovery): $out"
+echo "$out" | grep -qF "[lowercase-binding]" || fail "casing code missing: $out"
+echo "$out" | grep -qF "[not-equatable]" || fail "second independent error missing (recovery): $out"
 echo "e2e ok: weir check reports ALL errors, located and coded"
 
 out=$($BIN check --json "$ckdir/multi.weir" || true)
-echo "$out" | grep -qF '"code":"casing-law"' || fail "json code field: $out"
+echo "$out" | grep -qF '"code":"lowercase-binding"' || fail "json code field: $out"
 echo "$out" | grep -qF '"line":1' || fail "json line field: $out"
 echo "e2e ok: weir check --json carries file/line/col/code"
 
@@ -9153,6 +9153,46 @@ printf 'import "./bdoc.weir"\nprint $"{Doc.render (Doc.Text "hi")} {Doc.id 1} {i
 out=$($BIN "$mdir/bdoc-main.weir" 2>&1)
 expect "builtin-named members export; the bare name stays the builtin" 'hi 101 1 Text "b"' "$out"
 
+# qualified type names [D:qualified-type-names]: two imports declaring one
+# type name each stay reachable qualified; a bare name two imports declare
+# refuses naming both spellings; identity follows the declaring module
+printf 'module\ntype LangDefaults = { symbol: string }\nlet make : string -> LangDefaults\nlet make s = { symbol = s }\n' > "$mdir/qa.weir"
+printf 'module\ntype LangDefaults = { symbol: string; style: string }\nlet make : string -> LangDefaults\nlet make s = { symbol = s; style = "bold" }\n' > "$mdir/qb.weir"
+printf 'import "./qa.weir" as A\nimport "./qb.weir" as B\nlet x = A.make "a"\nlet y = B.LangDefaults { symbol = "b"; style = "s" }\nlet r = ["{\\"symbol\\": \\"a\\"}"] |> from json A.LangDefaults\nprint $"{x.symbol} {y.style} {x == r}"\ny |> to json |> Seq.iter print\n' > "$mdir/qmain.weir"
+out=$($BIN "$mdir/qmain.weir" 2>&1)
+expect "two imports' same-named types, each reached qualified" 'a s true' "$out"
+expect "a qualified type writes its own fields" '{"symbol":"b","style":"s"}' "$out"
+printf 'import "./qa.weir" as A\nimport "./qb.weir" as B\nlet z = [\"{}\"] |> from json LangDefaults\nprint z.symbol\n' > "$mdir/qamb.weir"
+out=$($BIN check "$mdir/qamb.weir" 2>&1 || true)
+expect "a bare name two imports declare names both spellings" "write the qualified name: 'A.LangDefaults' or 'B.LangDefaults'" "$out"
+printf 'import "./qa.weir" as A\nimport "./qb.weir" as B\nlet same = A.make "x" == B.make "x"\nprint $"{same}"\n' > "$mdir/qid.weir"
+out=$($BIN check "$mdir/qid.weir" 2>&1 || true)
+expect "A.T and B.T are different types" "expected A.LangDefaults, got B.LangDefaults" "$out"
+# the REPL: init imports follow the rule; a session type keeps the bare
+# name and the import's type stays reachable qualified
+mkdir -p "$mdir/qcfg/weir"
+cp "$mdir/qa.weir" "$mdir/qb.weir" "$mdir/qcfg/weir/"
+printf '#init\nimport "./qa.weir" as A\nimport "./qb.weir" as B\n' > "$mdir/qcfg/weir/init.weir"
+out=$(printf 'let x = A.make "a"\nx\ntype LangDefaults = { mine: bool }\nlet m = { mine = true }\nm\nA.LangDefaults { symbol = "q" }\n' | XDG_CONFIG_HOME="$mdir/qcfg" APPDATA="$mdir/qcfg" $BIN 2>&1)
+expect "the REPL: an init import's type echoes qualified" '{ symbol = "a" } : A.LangDefaults' "$out"
+expect "the REPL: a session type keeps the bare name" '{ mine = true } : LangDefaults' "$out"
+expect "the REPL: the import's type stays reachable qualified" '{ symbol = "q" } : A.LangDefaults' "$out"
+
+# imported and qualified cases in patterns [D:qualified-case-patterns]: an
+# imported case binds in let and parameter patterns; `A.Case` names the
+# import, and a bare case two imports declare names both spellings
+printf 'module Contract\ntype Ghost = Ghost of string\n' > "$mdir/pc-contract.weir"
+printf 'module PcB\ntype Ghost = Ghost of int\n' > "$mdir/pc-b.weir"
+printf 'import "./pc-contract.weir"\nlet g = Contract.Ghost "S"\nlet (Ghost ghost) = g\nlet f (Ghost y) = y\nlet (Contract.Ghost q) = g\nlet m = match g with | Contract.Ghost x -> x\nprint $"{ghost}{f g}{q}{m}"\n' > "$mdir/pc-journal.weir"
+out=$($BIN "$mdir/pc-journal.weir" 2>&1)
+expect "an imported case binds in let/param patterns, qualified too" 'SSSS' "$out"
+printf 'import "./pc-contract.weir"\nimport "./pc-b.weir"\nlet h (Ghost z) = z\nprint $"{h (Contract.Ghost "s")}"\n' > "$mdir/pc-amb.weir"
+out=$($BIN check "$mdir/pc-amb.weir" 2>&1 || true)
+expect "a bare case two imports declare names both spellings" "write the qualified case: 'Contract.Ghost' or 'PcB.Ghost'" "$out"
+printf 'import "./pc-contract.weir"\nimport "./pc-b.weir"\nlet (PcB.Ghost n) = Contract.Ghost "s"\nprint $"{n}"\n' > "$mdir/pc-wrong.weir"
+out=$($BIN check "$mdir/pc-wrong.weir" 2>&1 || true)
+expect "a wrong qualifier names both types" "'PcB.Ghost' is a case of PcB.Ghost, but this value has type Contract.Ghost" "$out"
+
 # an import cycle is a check error naming the loop, at its closing edge
 printf 'module CA\nimport "./cb.weir"\nlet a = 1\n' > "$mdir/ca.weir"
 printf 'module CB\nimport "./ca.weir"\nlet b = 2\n' > "$mdir/cb.weir"
@@ -9238,7 +9278,7 @@ out=$($BIN check "$mdir/sig_script.weir" 2>&1 || true)
 expect "a script refuses the signature form" "signatures belong to module APIs — scripts infer" "$out"
 printf 'module Orph\nlet f : int -> int\n' > "$mdir/sig_orph.weir"
 out=$($BIN check "$mdir/sig_orph.weir" 2>&1 || true)
-expect "a signature without implementation errors at the sig" "sig_orph.weir:2:5: error [sig-orphan]: signature without implementation" "$out"
+expect "a signature without implementation errors at the sig" "sig_orph.weir:2:5: error [missing-implementation]: signature without implementation" "$out"
 printf 'module Mm\nlet f : int -> int\nlet f x = "s"\n' > "$mdir/sig_mis.weir"
 out=$($BIN check "$mdir/sig_mis.weir" 2>&1 || true)
 expect "a sig/impl mismatch names both sites and both types" "the signature (line 2) declares int -> int, but the implementation is int -> string" "$out"
@@ -10087,7 +10127,7 @@ echo "e2e ok: the hostile-byte fixture is byte-exact through check and run"
 # is the indentation error, with its column
 printf 'let t = <<<\n    abc\n    \tdef\nprint t\n' > "$hbdir/tablead.weir"
 out=$($BIN check "$hbdir/tablead.weir" 2>&1) && fail "a leading tab in block content must be refused"
-expect "a leading tab in block content is the indentation error" "tablead.weir:3:5: error [assembly]: tabs are not allowed in indentation (a tab at column 5)" "$out"
+expect "a leading tab in block content is the indentation error" "tablead.weir:3:5: error [layout]: tabs are not allowed in indentation (a tab at column 5)" "$out"
 
 # CRLF [D:content-bytes]: a source file's line ending is not data —
 # normalized at read, so a CRLF-saved file behaves identically

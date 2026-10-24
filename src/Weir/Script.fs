@@ -3328,6 +3328,8 @@ let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
                     // under check's assume-command rule [D:modules-v1]
                     && not (Map.containsKey n tenv.Types)
                     && not (Map.containsKey n tenv.Modules)
+                    // an import's type, its bare name ambiguous [D:qualified-type-names]
+                    && not (tenv.ModuleTypes |> Map.exists (fun _ owned -> owned.ContainsKey n))
                     && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-')) }
 
 // mkR builds the resolver from the current env per statement, so
@@ -3548,6 +3550,7 @@ let private renameEnvTypes (m: Map<string, string>) (tenv: TypeEnv) : TypeEnv =
             Modules = tenv.Modules |> Map.map (fun _ ms -> ms |> Map.map (fun _ sch -> renameScheme m sch))
             ModulePrivate = tenv.ModulePrivate |> Map.map (fun _ ms -> ms |> Map.map (fun _ sch -> renameScheme m sch))
             Types = tenv.Types |> Map.toList |> List.map (fun (n, d) -> key n, renameDef m d) |> Map.ofList
+            ModuleTypes = tenv.ModuleTypes |> Map.map (fun _ owned -> owned |> Map.map (fun _ k -> key k))
             TypeOrigins = tenv.TypeOrigins |> Map.toList |> List.map (fun (n, o) -> key n, o) |> Map.ofList }
 
 // "A.Pt@/abs/a.weir" -> "A.Pt", made unique against the env's types
@@ -3562,7 +3565,7 @@ let private qualifiedFree (tenv: TypeEnv) (origin: string) : string =
 
 let private isTransitive (tenv: TypeEnv) (n: string) =
     tenv.TypeOrigins.ContainsKey n
-    && not (tenv.ModuleTypes |> Map.exists (fun _ owned -> owned.Contains n))
+    && not (tenv.ModuleTypes |> Map.exists (fun _ owned -> owned |> Map.exists (fun _ k -> k = n)))
 
 /// a transitive type named `n` gives its plain name up (see above)
 let yieldTransitive (n: string) (tenv: TypeEnv) : TypeEnv =
@@ -3571,10 +3574,35 @@ let yieldTransitive (n: string) (tenv: TypeEnv) : TypeEnv =
     else
         tenv
 
+// "A" + "T" -> "A.T", made unique against the env's types and `taken`
+let private qualifiedKey (tenv: TypeEnv) (taken: Set<string>) (alias: string) (n: string) : string =
+    let rec free (c: string) =
+        if Map.containsKey c tenv.Types || taken.Contains c then free (c + "'") else c
+
+    free (alias + "." + n)
+
+/// an imported type holding the plain name `n` gives it up: a transitive
+/// one to its origin-qualified name, an import's own one to its
+/// alias-qualified key [D:qualified-type-names]
+let yieldImported (n: string) (tenv: TypeEnv) : TypeEnv =
+    let tenv = yieldTransitive n tenv
+
+    match
+        tenv.ModuleTypes
+        |> Map.tryFindKey (fun _ owned -> owned |> Map.exists (fun plain k -> plain = n && k = n))
+    with
+    | Some holder when tenv.TypeOrigins.ContainsKey n ->
+        renameEnvTypes (Map [ n, qualifiedKey tenv Set.empty holder n ]) tenv
+    | _ -> tenv
+
 // merge a loaded module into the importer's env [D:modules-v1]: values
-// (and union ctors) under Modules[Alias], types flat under their plain
-// name, and the provenance for the qualified literal under ModuleTypes.
-// Its transitive types [D:transitive-types] join an existing entry of the
+// (and union ctors) under Modules[Alias], types under their key, and the
+// alias's name -> key table under ModuleTypes. An own type keys by its
+// plain name while no other import declares that name; when one does,
+// both move to their qualified keys ("A.T", "B.T") and the bare name
+// resolves to neither [D:qualified-type-names]; a local declaration keeps
+// the bare name and the import's type is reached qualified. Its
+// transitive types [D:transitive-types] join an existing entry of the
 // same origin, else take the plain name if free, else the qualified one.
 let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
     let originOf n =
@@ -3582,15 +3610,34 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
 
     let own = Set.ofList lm.TypeNames
 
-    // an own type takes its name from a transitive holder of another origin
-    let tenv =
+    // the aliases already declaring a type named n
+    let ownersOf (t: TypeEnv) (n: string) =
+        t.ModuleTypes |> Map.toList |> List.choose (fun (a, owned) -> Map.tryFind n owned |> Option.map (fun k -> a, k))
+
+    // each own type claims its key, moving another import's holder of the
+    // plain name to that holder's qualified key
+    let tenv, ownKeys =
         lm.TypeNames
         |> List.fold
-            (fun (t: TypeEnv) n ->
-                match Map.tryFind n t.TypeOrigins, originOf n with
-                | Some held, Some o when held = o -> t
-                | _ -> yieldTransitive n t)
-            tenv
+            (fun (t: TypeEnv, keys: Map<string, string>) n ->
+                let taken = keys |> Map.values |> Set.ofSeq
+
+                match originOf n |> Option.bind (fun o -> t.TypeOrigins |> Map.tryFindKey (fun _ held -> held = o)) with
+                | Some existing -> t, Map.add n existing keys
+                | None ->
+                    let t = yieldTransitive n t
+
+                    if Map.containsKey n t.Types then
+                        match ownersOf t n |> List.tryFind (fun (_, k) -> k = n) with
+                        | Some(holder, _) ->
+                            let t = renameEnvTypes (Map [ n, qualifiedKey t taken holder n ]) t
+                            t, Map.add n (qualifiedKey t taken lm.Alias n) keys
+                        | None -> t, Map.add n (qualifiedKey t taken lm.Alias n) keys
+                    elif not (List.isEmpty (ownersOf t n)) then
+                        t, Map.add n (qualifiedKey t taken lm.Alias n) keys
+                    else
+                        t, Map.add n n keys)
+            (tenv, Map.empty)
 
     let subst =
         lm.TypeDefs
@@ -3601,13 +3648,24 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
 
                 match tenv.TypeOrigins |> Map.tryFindKey (fun _ held -> held = o) with
                 | Some existing -> Map.add n existing acc, taken
-                | None when not (Map.containsKey n tenv.Types) && not (own.Contains n) && not (taken.Contains n) ->
+                | None when
+                    not (Map.containsKey n tenv.Types)
+                    && not (own.Contains n)
+                    && not (taken.Contains n)
+                    && List.isEmpty (ownersOf tenv n)
+                    ->
                     acc, Set.add n taken
                 | None ->
                     let q = qualifiedFree tenv o
+
+                    let rec unique (c: string) =
+                        if taken.Contains c then unique (c + "'") else c
+
+                    let q = unique q
                     Map.add n q acc, Set.add q taken)
-            (Map.empty, Set.empty)
+            (Map.empty, ownKeys |> Map.values |> Set.ofSeq)
         |> fst
+        |> fun transitive -> Map.fold (fun m n k -> if n = k then m else Map.add n k m) transitive ownKeys
 
     let rename n = Map.tryFind n subst |> Option.defaultValue n
 
@@ -3615,11 +3673,12 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
         lm.TypeDefs
         |> List.choose (fun (n, d) ->
             let n' = rename n
+
             // joined an existing same-origin entry: nothing to add
-            if n' <> n && Map.containsKey n' tenv.Types && not (own.Contains n) then
-                None
-            else
-                Some(n', renameDef subst d))
+            match Map.tryFind n' tenv.TypeOrigins, originOf n with
+            | Some held, Some o when held = o -> None
+            | _ when n' <> n && Map.containsKey n' tenv.Types && not (own.Contains n) -> None
+            | _ -> Some(n', renameDef subst d))
 
     let origins =
         lm.TypeOrigins |> List.map (fun (n, o) -> rename n, o)
@@ -3627,7 +3686,7 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
     { tenv with
         Modules = Map.add lm.Alias (lm.Members |> List.map (fun (n, s) -> n, renameScheme subst s) |> Map.ofList) tenv.Modules
         Types = typeDefs |> List.fold (fun ts (n, d) -> Map.add n d ts) tenv.Types
-        ModuleTypes = Map.add lm.Alias own tenv.ModuleTypes
+        ModuleTypes = Map.add lm.Alias ownKeys tenv.ModuleTypes
         TypeOrigins = origins |> List.fold (fun m (n, o) -> Map.add n o m) tenv.TypeOrigins
         ModulePrivate =
             Map.add
@@ -3829,8 +3888,10 @@ let rec private checkStatementCore
                       Warnings = [] }
         | Ok(SType decl) ->
             // a local declaration takes its name from a transitive type
-            // [D:transitive-types]
-            match Check.checkDecl (yieldTransitive decl.Name tenv) decl with
+            // [D:transitive-types], and in the REPL from an import's own
+            // type, which stays reachable qualified [D:qualified-type-names]
+            // (a script refuses the redeclaration: dup-type-decl)
+            match Check.checkDecl (yieldImported decl.Name tenv) decl with
             | Error terr -> Error(typed StmtTag.Type terr)
             | Ok tenv' ->
                 Ok
@@ -3867,7 +3928,7 @@ let rec private checkStatementCore
                     else
                         match Check.validateSigTy tenv nameSpan ty with
                         | Error terr -> Error(typed StmtTag.Let terr)
-                        | Ok tenv' ->
+                        | Ok(tenv', ty) ->
                             let line, col = translate ll nameSpan.Start.Col
 
                             Ok
@@ -3905,7 +3966,7 @@ let rec private checkStatementCore
                         | PVar n -> [ n ]
                         | PTuple ps -> ps |> List.collect patVars
                         | PRecord fields -> fields |> List.map snd |> List.collect patVars
-                        | PCase(_, Some inner) -> patVars inner
+                        | PCase(_, Some inner, _) -> patVars inner
                         | _ -> []
 
                     patVars pat
@@ -4218,28 +4279,12 @@ let rec private checkStatementCore
                         $"the name '{lm.Alias}' is a union case in scope; import the module under a different name with 'as'"
                 )
             | Ok lm ->
-                // a transitive holder yields, the same type reached again is
-                // no clash [D:transitive-types]
-                let sameOrigin n =
-                    match Map.tryFind n tenv.TypeOrigins, lm.TypeOrigins |> List.tryFind (fst >> (=) n) with
-                    | Some held, Some(_, o) -> held = o
-                    | _ -> false
-
-                match
-                    lm.TypeNames
-                    |> List.tryFind (fun n ->
-                        Map.containsKey n tenv.Types && not (sameOrigin n) && not (isTransitive tenv n))
-                with
-                | Some clash ->
-                    Error(
-                        stmtErr
-                            $"import '{lm.Alias}' declares a type '{clash}' that is already declared here; rename one (cross-module same-name types are not yet distinguishable)"
-                    )
-                | None ->
-                    Ok
-                        { Kind = KImport lm
-                          Env = mergeModule tenv lm
-                          Warnings = [] }
+                // a type name another import or a local declaration holds is
+                // no clash: mergeModule keys it [D:qualified-type-names]
+                Ok
+                    { Kind = KImport lm
+                      Env = mergeModule tenv lm
+                      Warnings = [] }
     finally
         Check.toPhys.Value <- None
 
@@ -4311,7 +4356,7 @@ let checkStatement
 // ---- unused bindings [D:unused-bindings]: whole-file threading ------------
 // The check is a whole-file judgement (a binder's readers may sit any
 // number of statements later), so it applies post-fold — beside the
-// sig-orphan check — in every consumer that folds a complete file:
+// missing-implementation check — in every consumer that folds a complete file:
 // analyzeLines (check / --can / LSP), the runner's check phase, the
 // module loader, and the fidelity mirror. Per-statement consumers
 // (REPL, -e, Complete) never see it. An errored statement poisons the
@@ -5538,11 +5583,11 @@ let private codeOf (parse: bool) (msg: string) : string =
     if parse then
         "parse"
     elif msg.StartsWith "binding names start lowercase" then
-        "casing-law"
+        "lowercase-binding"
     elif msg.Contains "discards it" then
         "discard"
     elif msg.StartsWith "a sequenced expression must be unit" then
-        "seq-unit"
+        "non-unit-statement"
     elif msg.StartsWith "this pattern can fail" then
         "refutable-binder"
     elif msg.StartsWith "match is not exhaustive" || msg.Contains "needs a catch-all" then
@@ -5552,17 +5597,17 @@ let private codeOf (parse: bool) (msg: string) : string =
     elif msg.StartsWith "invalid regex" then
         "regex"
     elif msg.StartsWith "this regex has" then
-        "regex-arity"
+        "regex-binder-count"
     elif msg.StartsWith "cannot sort by this key" then
-        "ord-key"
+        "unsortable-key"
     elif msg.Contains "equatable" || msg.Contains "cannot be compared" then
-        "eq"
+        "not-equatable"
     elif msg.Contains "cannot render functions" then
-        "show-fn"
+        "unrenderable-function"
     elif msg.StartsWith "unbound variable" then
         "unbound"
     elif msg.Contains "nothing determines" then
-        "ambiguous-constraint"
+        "undetermined-type"
     else
         "check"
 
@@ -9459,10 +9504,10 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
         | Ok lls -> Some lls
         | Error msg ->
             match assemblyErrorAt numbered msg with
-            | Some(line, col, rest) -> into.Add(initError file line col None "assembly" rest)
+            | Some(line, col, rest) -> into.Add(initError file line col None "layout" rest)
             | None ->
                 let line = numbered |> List.tryHead |> Option.map fst |> Option.defaultValue 1
-                into.Add(initError file line 1 None "assembly" msg)
+                into.Add(initError file line 1 None "layout" msg)
 
             None
 
@@ -9606,7 +9651,7 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
 
                         diags.Add
                             { d' with
-                                Code = "session-decl-ref"
+                                Code = "session-names-declaration"
                                 EndLine = Some d'.Line
                                 EndCol = Some(d'.Col + n.Length)
                                 Message = sessionDeclRefMessage n }
@@ -9852,7 +9897,7 @@ let analyzeLinesAs
                   EndLine = None
                   EndCol = None
                   Severity = "error"
-                  Code = "assembly"
+                  Code = "layout"
                   Message = message }
 
             match misaligned.Value with
@@ -9977,7 +10022,7 @@ let analyzeLinesAs
 
         // possible re-enumeration [D:reenum-warning]: fed per statement,
         // flushed after the fold; modules skip (a command-running module
-        // `let` is already the module-rule error)
+        // `let` is already the module-declares-only error)
         let reenumTracker = ReenumTracker()
 
         // the newTempDir footgun [D:newtempdir-lint]: same per-statement
@@ -10117,7 +10162,7 @@ let analyzeLinesAs
                                EndLine = None
                                EndCol = None
                                Severity = "error"
-                               Code = "module-rule"
+                               Code = "module-declares-only"
                                Message = msg }
                      | None -> ())
 
@@ -10199,7 +10244,7 @@ let analyzeLinesAs
                          | PVar n -> [ n ]
                          | PTuple ps -> ps |> List.collect patVars
                          | PRecord fields -> fields |> List.map snd |> List.collect patVars
-                         | PCase(_, Some inner) -> patVars inner
+                         | PCase(_, Some inner, _) -> patVars inner
                          | _ -> []
 
                      let holeScheme =
@@ -10305,7 +10350,7 @@ let analyzeLinesAs
                        EndLine = None
                        EndCol = None
                        Severity = "error"
-                       Code = "sig-orphan"
+                       Code = "missing-implementation"
                        Message = $"signature without implementation — no 'let {name} … = …' follows in this module" }
 
              let attaches = docAttachments rawLines
@@ -10320,7 +10365,7 @@ let analyzeLinesAs
                            EndLine = None
                            EndCol = None
                            Severity = "error"
-                           Code = "sig-doc"
+                           Code = "doc-on-implementation"
                            Message =
                              $"'{name}' is signed, and its /// doc belongs on the signature — move it above 'let {name} : …' (one doc home)" }
                  | None -> ()

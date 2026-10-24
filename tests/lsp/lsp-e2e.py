@@ -100,7 +100,7 @@ send({"jsonrpc": "2.0", "method": "textDocument/didOpen",
 diag = read_msg()
 expect(diag["method"] == "textDocument/publishDiagnostics", "expected diagnostics")
 ds = diag["params"]["diagnostics"]
-expect(len(ds) == 1 and ds[0]["code"] == "casing-law", f"bad diags: {ds}")
+expect(len(ds) == 1 and ds[0]["code"] == "lowercase-binding", f"bad diags: {ds}")
 
 # fix it -> diagnostics clear
 send({"jsonrpc": "2.0", "method": "textDocument/didChange",
@@ -608,7 +608,7 @@ else:
     sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
            "params": {"textDocument": {"uri": INIT_URI},
                       "contentChanges": [{"text": '#init\nlet prompt () = "> "\nlet Bad = 1\n\n#session {\n    prompt = prompt\n}\n'}]}})
-    expect("casing-law" in [d["code"] for d in init_diags()], "a real init declaration error still shows")
+    expect("lowercase-binding" in [d["code"] for d in init_diags()], "a real init declaration error still shows")
     # a stray init.weir NOT under the config dir stays a normal script — its
     # #session is flagged (proving the path check, not the basename)
     STRAY = furi(os.path.join(tempfile.mkdtemp(), "init.weir"))
