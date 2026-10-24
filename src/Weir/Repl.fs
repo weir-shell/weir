@@ -2828,6 +2828,54 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
         // [D:module-signatures]
         state
 
+/// the entry's first continued command [D:continued-command], found by
+/// checking the whole entry before any statement runs: the fold threads
+/// each statement's checked env and evaluates nothing. A statement that
+/// does not check ends the search — the real fold reports it
+let private entryContinuedCommand (state: State) (lls: Script.LogicalLine list) : Script.ContinuedCommand option =
+    let resolves (w: string) =
+        Script.resolvesAsProgram w || ((resolver state).AliasHead w).IsSome
+
+    let rec go (tenv: TypeEnv) (rest: Script.LogicalLine list) =
+        match rest with
+        | [] -> None
+        | ll :: tail ->
+            let st = { state with TypeEnv = tenv }
+
+            match Script.checkStatement false None (fun _ -> resolver st) Script.scriptOnlyImport tenv ll with
+            | Error _ -> None
+            | Ok chk ->
+                let hit =
+                    match chk.Kind with
+                    | Script.KLet(_, _, te)
+                    | Script.KLetPat(_, _, te)
+                    | Script.KCmd te
+                    | Script.KExpr te -> Script.continuedCommands resolves [] ll te |> List.tryHead
+                    | _ -> None
+
+                match hit with
+                | Some h -> Some h
+                | None -> go (Check.withPendingAnonDefs chk.Env) tail
+
+    if lls |> List.exists (fun ll -> ll.Segments.Length > 1) then
+        go state.TypeEnv lls
+    else
+        None
+
+/// the REPL's continued-command refusal seam [D:continued-command]: the
+/// message a fresh session refuses this multi-line entry with, or None
+let continuedCommandForTest (entry: string) : string option =
+    let numbered =
+        entry.Split '\n'
+        |> Array.toList
+        |> List.mapi (fun i l -> i + 1, l)
+        |> List.filter (fun (_, raw) -> Script.classifyLine raw <> Script.LineKind.CommentOnly)
+        |> List.map (fun (n, raw) -> n, Script.stripComment raw)
+
+    match Script.assemble numbered with
+    | Error _ -> None
+    | Ok lls -> entryContinuedCommand initial lls |> Option.map (fun h -> $"{h.CLine}:{h.CCol}: {h.CMessage}")
+
 /// the it-matrix seam [D:repl-it]: fold statements through the real
 /// check+eval path against a fresh session and answer `it`'s bound type
 /// (None = unbound). Echo output is swallowed — these pins assert the
@@ -4075,9 +4123,31 @@ let rec private loop (state: State) =
             |> List.filter (fun (_, raw) -> Script.classifyLine raw <> Script.LineKind.CommentOnly)
             |> List.map (fun (n, raw) -> n, Script.stripComment raw)
 
+        let assembled = Script.assemble numbered
+
+        // a continued command refuses the whole entry before anything runs
+        // [D:continued-command]
+        let continued =
+            match assembled with
+            | Ok lls -> entryContinuedCommand state lls
+            | Error _ -> None
+
         let next =
-            match Script.assemble numbered with
-            | Error msg ->
+            match assembled, continued with
+            | _, Some h ->
+                lastErrored <- true
+                lastExit <- None
+
+                (if h.CLine >= 1 && h.CLine <= srcLines.Length then
+                     diagLine srcLines[h.CLine - 1]
+
+                     Console.WriteLine(
+                         Types.Color.red Types.Color.onStdout.Value (String(' ', max 0 (h.CCol - 1)) + "^")
+                     ))
+
+                diagLine $"error: {h.CMessage}"
+                state
+            | Error msg, None ->
                 // the named line under a caret at its indentation
                 // [D:assembly-col], as a parse error shows its line
                 match Script.assemblyErrorAt numbered msg with
@@ -4088,7 +4158,7 @@ let rec private loop (state: State) =
 
                 diagLine msg
                 state
-            | Ok lls ->
+            | Ok lls, None ->
                 let entryStatement (st: State) (ll: Script.LogicalLine) =
                     match
                         Script.checkStatement
