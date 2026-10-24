@@ -9522,6 +9522,99 @@ WEOF
     echo "e2e ok: File.append — 4 concurrent appenders, every call contiguous and intact, reader unblocked"
 fi
 
+# ---- File.readFrom under a concurrent appender [D:file-readfrom] ----------
+# writers append (O_APPEND, one write per call) while a reader polls with
+# File.readFrom and a byte cursor kept in a state file; every line must
+# arrive exactly once, whole (each carries its own sha256), and in file
+# order — the collected lines byte-equal the final file. Payloads cycle
+# small, three-line, 5000 B and 200000 B, so a poll can land mid-write.
+# Bounded: the reader polls until it has every line or 90s pass.
+rfdir=$(mkweirtmp)
+cat > "$rfdir/writer.weir" <<'WEOF'
+type Cli = {
+    /// writer id
+    id: int
+    /// append calls to make
+    calls: int
+    /// the shared log path
+    log: string
+}
+
+let cli = Args.load Cli
+
+let payload size tag =
+    let unit = $"{tag}-abcdefghijklmnopqrstuvwxyz0123456789-"
+    let reps = size / Str.length unit + 1
+    ([1..reps] |> Seq.map (fun _ -> unit) |> Str.join "")[0 .. size - 1]
+
+let jline q k data =
+    $"{{\"w\":{cli.id},\"q\":{q + 0},\"k\":{k + 0},\"h\":\"{Str.sha256 data}\",\"d\":\"{data}\"}}"
+
+for s in [1 .. cli.calls] do
+    Duration.sleep 20ms
+    match s % 4 with
+    | 1 -> File.append cli.log [ jline s 1 (payload 40 $"w{cli.id}s{s}") ]
+    | 2 ->
+        File.append
+            cli.log
+            [ jline s 1 (payload 60 $"w{cli.id}s{s}a")
+              jline s 2 (payload 60 $"w{cli.id}s{s}b")
+              jline s 3 (payload 60 $"w{cli.id}s{s}c") ]
+    | 3 -> File.append cli.log [ jline s 1 (payload 5000 $"w{cli.id}s{s}") ]
+    | _ -> File.append cli.log [ jline s 1 (payload 200000 $"w{cli.id}s{s}") ]
+WEOF
+cat > "$rfdir/reader.weir" <<'WEOF'
+type Cli = {
+    /// the shared log path
+    log: string
+    /// the cursor file: "<next offset> <lines so far>"
+    state: string
+    /// where every returned line is appended
+    out: string
+    /// lines to wait for
+    total: int
+}
+
+type Line = { w: int; q: int; k: int; h: string; d: string }
+
+let cli = Args.load Cli
+[ "0 0" ] |> File.write cli.state
+File.write cli.out []
+
+let step () =
+    let (offText, countText) = File.read cli.state |> Seq.exactlyOne |> Str.splitOnce " "
+    let chunk = File.readFrom cli.log (Size.bytes (Str.toInt offText))
+    for l in chunk.lines do
+        let r = [ l ] |> from json Line
+        if Str.sha256 r.d <> r.h then fail $"torn line: w{r.w} q{r.q} k{r.k}"
+    chunk.lines |> File.append cli.out
+    let count = Str.toInt countText + Seq.length chunk.lines
+    [ $"{Size.toBytes chunk.next} {count}" ] |> File.write cli.state
+    count >= cli.total
+
+poll timeout=90s interval=10ms
+    step ()
+
+print "readfrom-reader ok"
+WEOF
+rflog="$rfdir/shared.jsonl"
+: > "$rflog"
+rfids=""
+for i in 1 2 3; do
+    "$BIN" "$rfdir/writer.weir" --id "$i" --calls 24 --log "$rflog" & rfids="$rfids $!"
+done
+rfrc=0
+out=$("$BIN" "$rfdir/reader.weir" --log "$rflog" --state "$rfdir/state" --out "$rfdir/got.jsonl" --total 108 2>&1) || rfrc=$?
+rfwrc=0
+for p in $rfids; do wait "$p" || rfwrc=1; done
+[ "$rfwrc" = "0" ] || fail "readFrom stress: a writer failed"
+[ "$rfrc" = "0" ] || fail "readFrom stress: the reader failed: $out"
+expect "File.readFrom — a reader polling 3 concurrent appenders" "readfrom-reader ok" "$out"
+cmp -s "$rflog" "$rfdir/got.jsonl" || fail "readFrom stress: the lines read differ from the file (lost, duplicated or reordered)"
+[ "$(wc -l < "$rfdir/got.jsonl" | tr -d ' ')" = "108" ] || fail "readFrom stress: expected 108 lines"
+echo "e2e ok: File.readFrom — every appended line read exactly once, whole and in order"
+rm -rf "$rfdir"
+
 # ---- File.write integrity + File.writeAtomic [D:write-integrity] ----------
 # a File.write whose content raises mid-enumeration must leave the file
 # byte-identical (the payload encodes before the truncate); writeAtomic

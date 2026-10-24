@@ -2842,6 +2842,111 @@ let private readLinesShared (r: string) : string[] =
 
         acc.ToArray())
 
+// a read-only window [start, start+len) over a seekable stream — the
+// byte range File.readFrom decodes [D:file-readfrom]
+type private WindowStream(inner: Stream, start: int64, len: int64) =
+    inherit Stream()
+    let mutable pos = 0L
+    override _.CanRead = true
+    override _.CanSeek = false
+    override _.CanWrite = false
+    override _.Length = len
+    override _.Position
+        with get () = pos
+        and set _ = raise (System.NotSupportedException())
+    override _.Flush() = ()
+    override _.Seek(_, _) = raise (System.NotSupportedException())
+    override _.SetLength _ = raise (System.NotSupportedException())
+    override _.Write(_, _, _) = raise (System.NotSupportedException())
+
+    override _.Read(buffer: byte[], offset: int, count: int) =
+        let want = int (min (int64 count) (len - pos))
+
+        if want <= 0 then
+            0
+        else
+            inner.Position <- start + pos
+            let n = inner.Read(buffer, offset, want)
+
+            if n = 0 then
+                raise (IOException "the file shrank while it was being read")
+
+            pos <- pos + int64 n
+            n
+
+// File.readFrom's body [D:file-readfrom]: the complete lines from byte
+// `off` up to the size at open (a snapshot), and the offset just past the
+// last one's '\n'. File.read's decoding and line split over that window;
+// a UTF-8 BOM is skipped only at offset 0.
+let private readLinesFrom (op: string) (r: string) (off: int64) : string[] * int64 =
+    withReadStream r (fun s ->
+        if not s.CanSeek then
+            failwith $"{op}: {quoteData r} is not a regular file (a FIFO or device cannot seek to an offset)"
+
+        let size = s.Length
+
+        let readByteAt (p: int64) =
+            s.Position <- p
+
+            match s.ReadByte() with
+            | -1 -> raise (IOException "the file shrank while it was being read")
+            | b -> byte b
+
+        if off < 0L then
+            failwith $"{op}: the offset {off} is negative"
+
+        if off > size then
+            failwith
+                $"{op}: the offset {off} is past the end of {quoteData r} ({size} bytes) — the file was truncated or replaced"
+
+        // byte offsets count UTF-8 bytes; a UTF-16/32 file has no '\n' byte boundary
+        if size >= 2L then
+            let b0, b1 = readByteAt 0L, readByteAt 1L
+
+            let utf32be =
+                size >= 4L && b0 = 0uy && b1 = 0uy && readByteAt 2L = 0xFEuy && readByteAt 3L = 0xFFuy
+
+            if (b0 = 0xFFuy && b1 = 0xFEuy) || (b0 = 0xFEuy && b1 = 0xFFuy) || utf32be then
+                failwith $"{op}: {quoteData r} starts with a UTF-16/32 byte order mark — byte offsets need UTF-8 text"
+
+        if off > 0L && readByteAt (off - 1L) <> 10uy then
+            failwith
+                $"{op}: the offset {off} is not at a line start in {quoteData r} — the byte before it is not a newline (pass 0 or a 'next' File.readFrom returned)"
+
+        // the last '\n' in [off, size): the snapshot's complete lines end there
+        let lastLf =
+            let buf = Array.zeroCreate<byte> 65536
+
+            let rec scan (hi: int64) =
+                if hi <= off then
+                    -1L
+                else
+                    let lo = max off (hi - int64 buf.Length)
+                    let n = int (hi - lo)
+                    s.Position <- lo
+                    s.ReadExactly(buf, 0, n)
+
+                    match System.Array.LastIndexOf(buf, 10uy, n - 1, n) with
+                    | -1 -> scan lo
+                    | i -> lo + int64 i
+
+            scan size
+
+        if lastLf < 0L then
+            [||], off
+        else
+            let next = lastLf + 1L
+            use w = new WindowStream(s, off, next - off)
+            use sr = new StreamReader(w, System.Text.UTF8Encoding(false), (off = 0L))
+            let acc = ResizeArray()
+            let mutable line = sr.ReadLine()
+
+            while line <> null do
+                acc.Add line
+                line <- sr.ReadLine()
+
+            acc.ToArray(), next)
+
 let private readTextShared (r: string) : string =
     withReadStream r (fun s ->
         use sr = new StreamReader(s)
@@ -3907,6 +4012,23 @@ let private fileMembers: (string * Ty * Value) list =
               readGuard "File.read" r
               VSeq(ioGuarded "File.read" r (fun () -> readLinesShared r) |> Seq.map VStr)
           | v -> unreachable $"the checker rejects 'File.read' on {formatValue v}")
+      // the polling reader of an append-only file [D:file-readfrom]: eager
+      // like File.read, so `next` is exact when the call returns
+      "readFrom",
+      TFun(TStr, TFun(TSize, TNamed("FileChunk", []))),
+      VBuiltin(fun pathV ->
+          VBuiltin(fun offV ->
+              match pathV, offV with
+              | VStr path, VSize off ->
+                  let r = Session.resolveFs path
+                  PlanMode.checkRead "File.readFrom" r
+                  readGuard "File.readFrom" r
+
+                  let lines, next =
+                      ioGuarded "File.readFrom" r (fun () -> readLinesFrom "File.readFrom" r off)
+
+                  VRecord("FileChunk", [ "lines", VSeq(Array.map VStr lines :> seq<Value>); "next", VSize next ])
+              | _ -> unreachable "the checker rejects 'File.readFrom' on these arguments"))
       // a token in a file is a real pattern [D:secret]: a mounted
       // container secret is a file. One member (a family would be
       // parked): the whole content is the secret, trailing newlines
@@ -7270,6 +7392,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "File.read",
           (bd "Read a file's lines. The whole file is read immediately." None None
            |> named [ "path" ])
+          "File.readFrom",
+          (bd
+              "Read the complete lines of a file from a byte offset, for polling a file that is being appended to. Returns a FileChunk: lines, and next, the offset to pass on the next call. Only the bytes from the offset to the file's size when the read starts are read, and a last line without its newline yet is left for the next call, so every line is returned once and whole. Lines decode as File.read's do (a BOM is skipped only at offset 0, and a \\r\\n line ending counts as two bytes). Raises when the offset is past the end (the file was truncated or replaced) or is not at the start of a line; pass 0 or a next this function returned."
+              (Some
+                  "let d = Path.newTempDir ()\nlet f = $\"{d}/log.txt\"\n[\"a\"; \"b\"] |> File.append f\nlet c = File.readFrom f 0B\nc.lines |> Seq.iter print\n[\"c\"] |> File.append f\n(File.readFrom f c.next).lines |> Seq.iter print\nDir.deleteAll d")
+              None
+           |> named [ "path"; "offset" ])
           "File.readBytes",
           (bd
               "Read a file's raw bytes, exactly as stored, without decoding or splitting into lines (File.read does both and replaces invalid characters). The whole file is loaded into memory, so it is not meant for very large files."
@@ -7822,7 +7951,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "A directory entry, as returned by `ls`. Fields: name; kind (Regular, Directory or Symlink); target (Some link target for a symlink, None otherwise; no File.* function gives you this); bytes (0 B for a directory); modified (the last-write time as an Instant, which does not change after you read it; tables show it as relative time, show prints ISO); hidden; and path. `ls` lists files and subdirectories sorted by name, case-sensitively with uppercase first, regardless of locale. Use name for matching and display and path when calling File.* functions. Less common details are separate functions rather than fields, such as File.mode for permissions."
               None
               None
-          "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None ]
+          "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None
+          "FileChunk",
+          bd
+              "What File.readFrom returns: lines, the complete lines read, and next, the byte offset just past the last one (the offset you started from when there were none). Pass next to the following File.readFrom."
+              None
+              None ]
 
 /// the boundary adapters a direction supports, derived from the doc keys
 /// (`from json` / `to yaml` …) [D:form-word-hover] — the one source the

@@ -535,6 +535,31 @@ print $"{key} -> {value}"
   json/yaml REJECT on their own — declare `[<ByteCount>] sz: Size`
   [D:wire-codecs], or convert via `Size.toBytes`. No `print` (holes
   render: `$"{sz}"`).
+- Polling an append-only file is `File.readFrom path offset :
+  FileChunk` [D:file-readfrom] — `{ lines: seq<string>; next: Size }`:
+  the COMPLETE lines from byte `offset` up to the file's size when the
+  read starts (a snapshot — bytes appended during the read wait), and
+  `next`, the offset just past the last returned line's `\n` (the
+  same offset when there are none). A last line whose `\n` has not
+  landed is left for the next call, so with `File.append`'s whole-call
+  writes [D:append-oappend] every line arrives once and whole. Only
+  that byte range is read; the lines are read at the call, like
+  `File.read`, and decode as its lines do (a UTF-8 BOM is skipped at
+  offset 0 only; `\r\n` counts two bytes). An offset past the end (the
+  file was truncated or replaced) raises naming both numbers; one that
+  is not at a line start (the byte before it is not `\n`) raises —
+  pass `0B` or a `next`. A read: `readonly` admits it, `pure` refuses.
+
+```weir
+within tmp d
+    let log = $"{d}/events.jsonl"
+    ["a"; "b"] |> File.append log
+    let c = File.readFrom log 0B
+    c.lines |> Seq.iter print
+    ["c"] |> File.append log
+    let c2 = File.readFrom log c.next
+    print $"{c2.lines |> Seq.head} next={c2.next}"
+```
 - Time is `Duration` (integer ms inside): literals `500ms`/`30s`/`2m`/`1h`
   (single-unit, expression position; in command position `30s` is an
   ordinary argv word). `+`/`-` between durations, `*`/`/` by int;
@@ -2884,7 +2909,7 @@ not the teaching.
 - `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move` `stat`
 - `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
 - `Env`: `fromFile` `get` `getOr` `load` `need` `ofPairs` `pair` `vars`
-- `File`: `append` `copy` `delete` `exists` `isExecutable` `mode` `move` `read` `readBytes` `readSecret` `sha256` `size` `stat` `write` `writeAtomic` `writeBytes` — `mode` is the permissions as `Some "rwxr-xr-x"` (`None` on Windows); `stat` is one path's `FileRow` (a symlink describes the link itself); `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity], and refuses a FIFO (use `write`) [D:fifo-ops-polled] — the temp file is born with that mode, so a 0600 file's new content is never readable wider [D:private-temp]
+- `File`: `append` `copy` `delete` `exists` `isExecutable` `mode` `move` `read` `readBytes` `readFrom` `readSecret` `sha256` `size` `stat` `write` `writeAtomic` `writeBytes` — `mode` is the permissions as `Some "rwxr-xr-x"` (`None` on Windows); `stat` is one path's `FileRow` (a symlink describes the link itself); `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity], and refuses a FIFO (use `write`) [D:fifo-ops-polled] — the temp file is born with that mode, so a 0600 file's new content is never readable wider [D:private-temp]
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Uuid`: `fromBytes` `instant` `max` `nil` `ns` `parse` `toBytes` `toString` `tryParse` `v4` `v5` `v7` `v7At` `version`
@@ -2924,6 +2949,7 @@ the checker's own environment [D:surface-gate] — same contract as above:
 - type `Completed`: { `exitCode` `stdout` `stderr` }
 - type `EnvVar`: { `name` `value` }
 - type `FileKind`: `Regular` `Directory` `Symlink`
+- type `FileChunk`: { `lines` `next` }
 - type `FileRow`: { `name` `kind` `target` `bytes` `modified` `hidden` `path` }
 - type `HttpBody`: `NoBody` `Json` `Text` `Stream` `Form`
 - type `HttpMethod`: `Get` `Post` `Put` `Delete` `Patch` `Head` `Options` `Query` `Other`
