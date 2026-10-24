@@ -106,7 +106,7 @@ guarantee cannot leak:
 ## Tests
 
 Unit: declaration rules, the constructor refusal (inside and outside the
-module), `parse` results, normalisation, reading via patterns, every wire
+module), `create` results, normalisation, reading via patterns, every wire
 boundary's error text, composition (multi-case of validated payloads,
 records), qualified access from another module. e2e: an Args flag and a
 JSON field rejecting a bad value with the right exit code and message.
