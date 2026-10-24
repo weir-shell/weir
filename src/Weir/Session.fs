@@ -288,6 +288,17 @@ let createPrivateDir (dir: string) : unit =
         )
         |> ignore
 
+/// an empty file only its owner can read or write [D:private-temp] — 0600
+/// on POSIX, as the dir it lives in
+let createPrivateFile (path: string) : unit =
+    let opts =
+        System.IO.FileStreamOptions(Mode = System.IO.FileMode.CreateNew, Access = System.IO.FileAccess.Write)
+
+    if not (System.OperatingSystem.IsWindows()) then
+        opts.UnixCreateMode <- System.Nullable(System.IO.UnixFileMode.UserRead ||| System.IO.UnixFileMode.UserWrite)
+
+    (new System.IO.FileStream(path, opts)).Dispose()
+
 // script argv, for the Args module scanners (script-only semantics:
 // the REPL leaves this empty)
 let mutable ScriptArgs: string list = []

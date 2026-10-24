@@ -3204,6 +3204,32 @@ WEOF
     [ "$leaked" = "0" ] && [ "$left" = "0" ] || fail "spill: SIGTERM leaked $leaked weir-proc dir(s), $left orphan(s)"
     echo "e2e ok: a teardown stops piter taking arms; no spill dir or child leaks"
 
+    # the second TERM's hard exit sweeps the spill dirs while arms still
+    # start [D:hard-exit]: a pid TERM then a group TERM (timeout's pair),
+    # bounded stress — 40 runs, 8 at a time
+    spill2() {
+        local t="$dtdir/spill2/$1"
+        mkdir -p "$t"
+        TMPDIR="$t" setsid "$BIN" "$dtdir/spill.weir" </dev/null >/dev/null 2>&1 &
+        local wpid=$!
+        sleep 1
+        kill -TERM "$wpid" 2>/dev/null || true
+        kill -TERM -- "-$wpid" 2>/dev/null || true
+        local c=0; wait "$wpid" 2>/dev/null || c=$?
+        echo "$c" > "$dtdir/spill2/$1.code"
+    }
+    for b in 0 8 16 24 32; do
+        for i in $(seq "$b" $((b + 7))); do spill2 "$i" & done
+        wait
+    done
+    leaked=$(find "$dtdir/spill2" -mindepth 2 -maxdepth 2 | wc -l)
+    codes=$(cat "$dtdir"/spill2/*.code | sort -u | tr '\n' ' ')
+    left=$(pgrep -cf "^sleep $MK4\$" 2>/dev/null || true); left=${left:-0}
+    pkill -9 -f "^sleep $MK4\$" 2>/dev/null || true
+    [ "$codes" = "143 " ] || fail "spill2: a double SIGTERM must exit 143 (got $codes)"
+    [ "$leaked" = "0" ] && [ "$left" = "0" ] || fail "spill2: a double SIGTERM leaked $leaked spill dir entr(ies), $left orphan(s)"
+    echo "e2e ok: a double SIGTERM's hard exit leaks no spill dir"
+
     # a teardown cuts in-flight arms at their next boundary and joins them
     # before any enclosing scope closes [D:teardown-joins-arms]: the arms
     # sleep past the signal, `always` runs 1.5s from it, so an unjoined arm

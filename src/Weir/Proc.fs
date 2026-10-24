@@ -1180,7 +1180,8 @@ let complete (prog: string) (args: string list) (input: seq<string> option) : in
 // a scoped background child [D:scoped-procs]: both streams spill to
 // files (the parent's terminal never interleaves; Proc.tail and the
 // poll-watch errors read them back), stdin closed — a child that reads
-// gets EOF. Registered with the exit hook by the caller.
+// gets EOF. Registered with the exit hook by the caller, which creates
+// both files.
 /// returns the process and a bounded drain: joining the pump threads
 /// guarantees the spill holds the child's last output before a reader
 /// composes an error from it — a fast-exiting child raced the pumps
@@ -1204,17 +1205,15 @@ let startSpilled
         let t =
             System.Threading.Thread(fun () ->
                 try
-                    // owner-only, as the spill dir [D:private-temp]
+                    // the caller created the file, owner-only [D:private-temp];
+                    // opened, never created, so a swept spill dir gains no
+                    // entry [D:hard-exit]
                     let opts =
                         System.IO.FileStreamOptions(
-                            Mode = System.IO.FileMode.Create,
+                            Mode = System.IO.FileMode.Open,
                             Access = System.IO.FileAccess.Write,
                             Share = System.IO.FileShare.ReadWrite
                         )
-
-                    if not (System.OperatingSystem.IsWindows()) then
-                        opts.UnixCreateMode <-
-                            System.Nullable(System.IO.UnixFileMode.UserRead ||| System.IO.UnixFileMode.UserWrite)
 
                     use dst = new System.IO.FileStream(path, opts)
 
