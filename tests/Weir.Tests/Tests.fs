@@ -31963,7 +31963,8 @@ let replImportTests =
                       write (Path.Combine(sub, "rel.weir")) (modText "2")
                       write (Path.Combine(dir, ".weir", "modules", "vend.weir")) (modText "3")
                       let run, _ = Weir.Repl.sessionForTest ()
-                      let absPath = Path.Combine(dir, "abs.weir")
+                      // forward slashes: a Windows path's `\` would be a string escape
+                      let absPath = Path.Combine(dir, "abs.weir").Replace('\\', '/')
                       Expect.stringContains (run $"import \"{absPath}\" as A") "module A imported (2 members: greet, v)" "absolute"
                       Expect.stringContains (run "A.v") "1 : int" "absolute value"
                       // cd moves the anchor: the same relative spelling meets sub/
