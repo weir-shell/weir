@@ -1411,10 +1411,14 @@ since whoever wrote that text chose the unit.
 A file that other processes append to (a log, a JSONL queue) is read
 in steps with `File.readFrom path offset`. It returns a `FileChunk`:
 `lines`, the complete lines from that byte offset, and `next`, the
-offset to pass the next time. Only the bytes after the offset are
-read, and a last line still missing its newline is left for the next
-call, so each line comes back once and whole even while writers are
-appending:
+offset to pass the next time. Only the bytes from the offset to the
+file's size are read, and a last line still missing its newline is
+left for the next call, so each line comes back once and whole even
+while writers are appending. A record still missing its newline has no
+complete line to stop at, so each call re-examines it until its newline
+lands: for a large record, gate the poll on growth (keep the last
+`File.size` and skip the call while it is unchanged) or poll at a
+coarser interval:
 
 ```weir
 ["a"; "b"] |> File.append "guide-follow.log"

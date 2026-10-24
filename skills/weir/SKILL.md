@@ -546,7 +546,9 @@ print $"{key} -> {value}"
   same offset when there are none). A last line whose `\n` has not
   landed is left for the next call, so with `File.append`'s whole-call
   writes [D:append-oappend] every line arrives once and whole. Only
-  that byte range is read; the lines are read at the call, like
+  that byte range is read — a record still missing its `\n` has no line
+  to stop at, so each call re-examines it until the newline lands (gate
+  a poll on `File.size` growth); the lines are read at the call, like
   `File.read`, and decode as its lines do (a UTF-8 BOM is skipped at
   offset 0 only; `\r\n` counts two bytes). An offset past the end (the
   file was truncated or replaced) raises naming both numbers; one that

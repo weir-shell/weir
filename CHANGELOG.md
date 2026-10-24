@@ -88,8 +88,11 @@ Many of the changes and fixes below were found porting starship to weir.
   offset up to the file's size when the read starts, and `next`, the
   offset to pass next time. A last line still missing its newline is
   left for the next call, so a reader polling a file that `File.append`
-  writes to gets each line once and whole, and only the new bytes are
-  read. Lines decode as `File.read`'s do. An offset past the end (the
+  writes to gets each line once and whole, and no line is returned
+  twice. A record still missing its newline has no line boundary to
+  stop at, so each call re-examines it until the newline lands; gate a
+  poll on `File.size` growth to keep it cheap. Lines decode as
+  `File.read`'s do. An offset past the end (the
   file was truncated or replaced) or not at the start of a line
   raises. `FileChunk` is now a built-in type name.
 
