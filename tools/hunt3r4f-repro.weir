@@ -199,14 +199,20 @@ let onFreePort off textOf run =
 // `EXIT <code|timeout>` (a death by a signal is -n), `EXITMS <ms from spawn
 // to exit, -1 on timeout>`, `SENT <ms of each HEX write>`, `STATUS <status
 // line|closed|error>` per GET
+// `WAIT <text>` / `WAITRE <regex>` hold the scenario until the output since
+// the previous WAIT holds a match — a readiness marker, never a guessed
+// delay; after 20s the driver kills the session and exits 3 naming the
+// wait, and ptyRun fails the probe (a harness failure keeps the gate shut)
 let ptyPy = <<<
-    import os, pty, sys, time, select, signal, fcntl, termios, struct, threading, socket
+    import os, pty, sys, time, select, signal, fcntl, termios, struct, threading, socket, re
     timeout = float(sys.argv[1]); cmd = sys.argv[2:]
     steps = []
     for line in sys.stdin.read().splitlines():
         if line.startswith("SLEEP "): steps.append(("sleep", int(line[6:])))
         elif line.startswith("HEX "): steps.append(("send", bytes.fromhex(line[4:].strip())))
         elif line.startswith("GET "): steps.append(("get", int(line[4:])))
+        elif line.startswith("WAIT "): steps.append(("wait", (re.compile(re.escape(line[5:].encode())), line[5:])))
+        elif line.startswith("WAITRE "): steps.append(("wait", (re.compile(line[7:].encode()), line[7:])))
         elif line.strip() == "HANGUP": steps.append(("hangup", 0))
     pid, fd = pty.fork()
     if pid == 0:
@@ -248,8 +254,20 @@ let ptyPy = <<<
                 d += x
             gets.append(d.split(b"\r\n")[0].decode("latin-1") or "closed")
         except Exception as e: gets.append("error " + type(e).__name__)
+    seen = 0
     for kind, arg in steps:
-        if code is not None: break
+        if kind == "wait":
+            rx, text = arg; lim = time.monotonic() + 20; m = rx.search(out, seen)
+            while m is None and time.monotonic() < lim:
+                ended = code is not None
+                pump(time.monotonic() + (0.3 if ended else 0.02)); m = rx.search(out, seen)
+                if ended: break
+            if m is None:
+                if code is None: os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
+                sys.stderr.write("WAIT timed out for '%s'%s\n" % (text, "" if code is None else " (the session ended first)"))
+                sys.exit(3)
+            seen = m.end(); continue
+        if code is not None: continue
         if kind == "sleep": pump(time.monotonic() + arg / 1000.0)
         elif kind == "send":
             try: os.write(fd, arg); sent.append(ms())
@@ -393,6 +411,7 @@ let ptyRun d secs args steps =
     let py = put d "ptydrive.py" ptyPy
     within cd d
         let r = steps | timeout 120 python3 -I $py $secs env $@noProxy $"TMPDIR={d}" $@args | complete
+        if codeOf r <> 0 then fail $"the pty driver failed (exit {codeOf r}): {errOf r}"
         let ls = r.stdout |> Seq.freeze
         let ints s = s |> Str.fields |> Seq.map Str.toInt |> Seq.freeze
         {
@@ -409,6 +428,11 @@ let typedLine s = $"HEX {hx s}0d"
 let contLine s = $"HEX {hx s}1b0d"
 
 let ctrlC = "HEX 03"
+
+// the REPL's empty prompt (the line editor is reading) and its empty
+// continuation line (an Alt-Enter has been taken)
+let promptReady = @"WAITRE weir> \r"
+let contReady = @"WAITRE … \r"
 
 // a REPL's HOME and every XDG dir pinned to the probe dir, as env words
 let replEnv d =
@@ -483,7 +507,7 @@ let c11ArmsWith mark armS outerS = $$<<<
 
 let c11Arms mark = c11ArmsWith mark "2.5" "3.5"
 
-// at a terminal: ^C in the body, ^C again 500ms into the inner cleanup
+// at a terminal: ^C in the body, ^C again once the inner cleanup runs
 let c11Tty mark = $$<<<
     let log = Self.args |> Seq.head
     let ev s = File.append log [s]
@@ -493,6 +517,7 @@ let c11Tty mark = $$<<<
             sleep $mark
         always
             ev "inner cleanup start"
+            print "inner cleanup running"
             Duration.sleep 5s
             ev "inner cleanup end"
     always
@@ -532,7 +557,7 @@ let h3r4c11 d =
     let td = $"{d}/tty"
     Dir.create td
     let mark = markOf 30 3
-    let tty = ptyRun td "15" [cli.bin; put td "tty.weir" (c11Tty mark); $"{td}/log"] ["SLEEP 900"; ctrlC; "SLEEP 500"; ctrlC; "SLEEP 4000"]
+    let tty = ptyRun td "15" [cli.bin; put td "tty.weir" (c11Tty mark); $"{td}/log"] ["WAIT body"; ctrlC; "WAIT inner cleanup running"; ctrlC; "SLEEP 4000"]
     reap mark
     let second = tty.sent |> Seq.tryItem 1 |> Option.defaultValue 0
     let tMs = if tty.exitMs < 0 then 99999 else tty.exitMs - second
@@ -545,8 +570,8 @@ let h3r4c11 d =
 
 // ---- H3R4-C1-2: a terminal ^C cuts an always cleanup's commands (R8) ---------
 
-// ^C 600ms in, while the cleanup's command runs; the command traps INT so a
-// ^C that reaches it shows
+// ^C once the cleanup's command is up; the command traps INT so a ^C that
+// reaches it shows
 let c12Fixture cmd = $$<<<
     within
         print "body"
@@ -557,8 +582,8 @@ let c12Fixture cmd = $$<<<
     print "after"
 
 let c12Cmds mark = [
-    ("a plain command", $"sh -c \"sleep {mark}; echo cmd-done\"")
-    ("a command trapping INT", $"sh -c \"trap 'echo child-got-int' INT; sleep {mark} & wait; echo cmd-done\"")
+    ("a plain command", $"sh -c \"echo cmd-armed; sleep {mark}; echo cmd-done\"")
+    ("a command trapping INT", $"sh -c \"trap 'echo child-got-int' INT; echo cmd-armed; sleep {mark} & wait; echo cmd-done\"")
 ]
 
 // a pid-directed SIGTERM in the same cleanup: the cleanup runs whole
@@ -575,7 +600,7 @@ let h3r4c12 d =
     |> Seq.collect (fun (k, (label, cmd)) ->
         let sd = $"{d}/c{k}"
         Dir.create sd
-        let run = ptyRun sd "6" [cli.bin; put sd "c12.weir" (c12Fixture cmd)] ["SLEEP 600"; ctrlC; "SLEEP 2500"]
+        let run = ptyRun sd "6" [cli.bin; put sd "c12.weir" (c12Fixture cmd)] ["WAIT cmd-armed"; ctrlC; "SLEEP 2500"]
         reap mark
         let t = run.text
         let shown = $"EXIT {run.code} at {run.exitMs}ms, session '{t |> oneLine}'"
@@ -595,6 +620,7 @@ let c13Fixture mark tail = $$<<<
     let ev s = File.append log [s]
     within
         ev "body"
+        print "body-armed"
         sleep $mark
     always
         ev "cleanup start"
@@ -611,7 +637,7 @@ let c13Run d k tail =
     let mark = markOf 20 (40 + k)
     let sd = $"{d}/h{k}"
     Dir.create sd
-    let run = ptyRun sd "10" [cli.bin; put sd "h.weir" (c13Fixture mark tail); $"{sd}/log"] ["SLEEP 800"; "HANGUP"; "SLEEP 3000"]
+    let run = ptyRun sd "10" [cli.bin; put sd "h.weir" (c13Fixture mark tail); $"{sd}/log"] ["WAIT body-armed"; "HANGUP"; "SLEEP 3000"]
     reap mark
     (run, linesOf $"{sd}/log")
 
@@ -634,7 +660,7 @@ let h3r4c13 d =
         |> Seq.freeze
     let pd = $"{d}/printing"
     Dir.create pd
-    let run = ptyRun pd "10" [cli.bin; put pd "p.weir" c13Printing; $"{pd}/log"] ["SLEEP 800"; "HANGUP"; "SLEEP 2000"]
+    let run = ptyRun pd "10" [cli.bin; put pd "p.weir" c13Printing; $"{pd}/log"] ["WAIT 10"; "HANGUP"; "SLEEP 2000"]
     let ls = linesOf $"{pd}/log"
     let printing = ($"""a terminal hangup while the body prints: the cleanup runs and weir exits by the SIGHUP (EXIT {run.code}, log '{joined ls}')""", sigExit run.code 1 && Seq.equal ls ["cleanup end"])
     Seq.append cleanups [printing] |> failing
@@ -645,6 +671,7 @@ let c14Scoped mark = $$<<<
     let log = Self.args |> Seq.head
     within
         File.append log ["BODY DONE"]
+        print "body-armed"
         sleep $mark
     always
         print "cleanup"
@@ -672,13 +699,13 @@ let h3r4c14 d =
     let td = $"{d}/tty"
     Dir.create td
     let mark = markOf 20 6
-    let tty = ptyRun td "10" [cli.bin; put td "s.weir" (c14Scoped mark); $"{td}/log"] ["SLEEP 900"; ctrlC; "SLEEP 1500"]
+    let tty = ptyRun td "10" [cli.bin; put td "s.weir" (c14Scoped mark); $"{td}/log"] ["WAIT body-armed"; ctrlC; "SLEEP 1500"]
     reap mark
     let ld = $"{d}/loop"
     Dir.create ld
     let lmark = markOf 20 7
     let ls = put ld "s.weir" (c14Scoped lmark)
-    let loop = ptyRun ld "2" ["bash"; put ld "loop.sh" (c14Loop cli.bin ls)] ["SLEEP 1200"; ctrlC; "SLEEP 1500"]
+    let loop = ptyRun ld "2" ["bash"; put ld "loop.sh" (c14Loop cli.bin ls)] ["WAIT body-armed"; ctrlC; "SLEEP 1500"]
     reap lmark
     let ttyCases = [
         ($"a scoped script, a terminal ^C: weir must die by SIGINT after the unwind (EXIT {tty.code}, cleanup shown: {tty.text |> Str.contains "cleanup"})", tty.code == "-2" && (tty.text |> Str.contains "cleanup"))
@@ -754,19 +781,21 @@ let h3r4c16 d =
 // ---- H3R4-C23: a REPL ^C ends only the running statement of an entry ----------
 
 let c23Steps = [
-    "SLEEP 2500"
+    promptReady
+    contLine "print (Str.toUpper \"entry-armed\")"
+    contReady
     contLine "Duration.sleep 2s"
-    "SLEEP 150"
+    contReady
     contLine "print (Str.toUpper \"late-two\")"
-    "SLEEP 150"
+    contReady
     typedLine "sh -c \"sleep 2; echo late-three | tr a-z A-Z\""
-    "SLEEP 700"
+    "WAIT ENTRY-ARMED"
     ctrlC
     "SLEEP 3500"
     contLine "fail \"boom\""
-    "SLEEP 150"
+    contReady
     typedLine "print (Str.toUpper \"after-fail\")"
-    "SLEEP 1000"
+    promptReady
     typedLine "print (Str.toUpper \"still-here\")"
     "SLEEP 800"
     "HEX 04"
@@ -775,7 +804,7 @@ let c23Steps = [
 
 // a ^C at an idle multi-statement prompt is no entry: the session goes on
 let ctlReplCtrlCSession d =
-    let run = ptyRun d "6" (replArgv d) ["SLEEP 2500"; typedLine "Duration.sleep 3s"; "SLEEP 600"; ctrlC; "SLEEP 1000"; typedLine "print (Str.toUpper \"still-here\")"; "SLEEP 800"; "HEX 04"; "SLEEP 500"]
+    let run = ptyRun d "6" (replArgv d) [promptReady; typedLine "print (Str.toUpper \"armed\") ; Duration.sleep 3s"; "WAIT ARMED"; ctrlC; "SLEEP 1000"; typedLine "print (Str.toUpper \"still-here\")"; "SLEEP 800"; "HEX 04"; "SLEEP 500"]
     (run.text |> Str.contains "STILL-HERE") && (run.text |> Str.contains "exit 130")
 
 let h3r4c23 d =
@@ -1159,7 +1188,7 @@ let h3r4e4 d =
 
 // ---- H3R4-E5: runtime errors quoting data pass CR and SGR (R1) -----------------
 
-let eReplSteps = ["SLEEP 2000"; typedLine "Float.parse (Env.need \"BODY\")"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]
+let eReplSteps = [promptReady; typedLine "Float.parse (Env.need \"BODY\")"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]
 
 // R1's other side: weir's own diagnostic styling keeps its SGR at a tty
 let ctlDiagStyled d =
