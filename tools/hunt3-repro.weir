@@ -857,12 +857,13 @@ let h3c4 d =
                     not (Proc.running w)
                 Proc.wait w
     Duration.sleep 500ms
-    let leaked = Dir.list $"{d}/tb" |> Seq.length
+    let leftovers = Dir.list $"{d}/tb" |> Seq.map Path.fileName |> Seq.freeze
+    let leaked = Seq.length leftovers
     let left = sleepers mark
     let _k = pkill -9 -f $"^sleep {mark}$" | complete
     failing [
         ($"piter took {grew} more arm(s) after SIGTERM (exit {codeA})", grew <= 16)
-        ($"{leaked} weir-proc dir(s) leaked, {left} orphan(s) (exit {codeB})", leaked == 0 && left == 0)
+        ($"""{leaked} TMPDIR entr(ies) leaked [{leftovers |> Str.join ", "}], {left} orphan(s) (exit {codeB})""", leaked == 0 && left == 0)
     ]
 
 // ---- H3-C5: `exit n` inside a pfirst arm is swallowed ------------------------
