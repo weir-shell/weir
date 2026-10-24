@@ -868,7 +868,7 @@ let private adoptMain () =
 
 
 // ---- the stop request [D:stop-request] ----------------------------------
-// While a stop-aware construct runs (a `repeat`, a `Self.waitForStop`), the
+// While a stop-aware construct runs (a `repeat`, a held scope), the
 // first stop signal only asks the program to stop: it sets the sticky
 // request, wakes the stop-aware waits and returns — no teardown, no cut, no
 // kill. A second signal, or any signal with none live, is the teardown.

@@ -22175,17 +22175,12 @@ let repeatTests =
 
               Expect.exists w (fun m -> m.Contains "watch= is poll's key") $"watch: {w}"
           }
-          test "refused inside plan and pure; Self.waitForStop types unit -> unit and refuses in plan" {
+          test "refused inside plan and pure" {
               let pl = stopCheck [ "let p ="; "    plan"; "        repeat interval=1s"; "            print \"x\""; "print (show p)" ]
               Expect.exists pl (fun m -> m.Contains "'repeat' is refused inside 'plan'") $"plan: {pl}"
 
               let pu = stopCheck [ "let n ="; "    pure"; "        repeat interval=1s"; "            1 == 1"; "        1"; "print (show n)" ]
               Expect.exists pu (fun m -> m.Contains "'repeat' waits on the clock") $"pure: {pu}"
-
-              Expect.isEmpty (stopCheck [ "Self.waitForStop ()" ]) "waitForStop checks as a unit statement"
-
-              let wp = stopCheck [ "let p ="; "    plan"; "        Self.waitForStop ()"; "print (show p)" ]
-              Expect.exists wp (fun m -> m.Contains "'Self.waitForStop' is refused inside 'plan'") $"plan: {wp}"
           }
           test "eval: a bool block ends the loop, until yields the value, a timeout raises as poll's does" {
               expectValue "repeat interval=1ms (1 == 1)" VUnit
@@ -22210,6 +22205,98 @@ let repeatTests =
                   Expect.stringContains hv "the loop a stop signal ends" "repeat's meaning"
                   Expect.stringContains hv "interval: Duration, timeout: Option<Duration>" "repeat's keys"
               | None -> failtest "repeat must answer"
+          } ]
+
+let heldScopeTests =
+    // a within's `until stopped` [D:held-scope]: the body, the hold, then
+    // the normal close; before `always`, on every kind
+    let errs lines = errorMsgsIn "held.weir" lines
+
+    let shape (lines: string list) =
+        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        | Ok [ ll ] ->
+            match Weir.Parser.parseLineFull cmdResolver ll.Text with
+            | Ok s -> Weir.Ast.sexprStmt s
+            | Error f -> failtest f.Message
+        | other -> failtest $"unexpected assembly: {other}"
+
+    let says (needle: string) (lines: string list) =
+        let ms = errs lines
+        Expect.exists ms (fun m -> m.Contains needle) $"{needle}: {ms}"
+
+    testList
+        "within … until stopped [D:held-scope]"
+        [ test "every kind, and the bare scope, takes until stopped, with or without always" {
+              for head in
+                  [ "within tmp d"
+                    "within cd \".\""
+                    "within env [Env.pair \"A\" \"1\"]"
+                    "within lock \"/tmp/held.lock\""
+                    "within proc p = sleep 1"
+                    "within serve srv = { port = 8599; maxConcurrent = 1 } (fun r -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" })"
+                    "within" ] do
+                  Expect.isEmpty (errs [ head; "    print \"b\""; "until stopped"; "print \"after\"" ]) head
+
+                  Expect.isEmpty
+                      (errs [ head; "    print \"b\""; "until stopped"; "always"; "    print \"c\""; "print \"after\"" ])
+                      $"{head} + always"
+          }
+          test "the hold sits inside the scope, the always outside the hold" {
+              let sx = shape [ "within tmp d"; "    print \"b\""; "until stopped"; "always"; "    print \"c\"" ]
+              let w = sx.IndexOf "within tmp"
+              let h = sx.IndexOf "(held"
+              let a = sx.IndexOf "(always"
+              Expect.isTrue (w >= 0 && h > w && a > h) $"within, then held, then always: {sx}"
+
+              let bare = shape [ "within"; "    print \"b\""; "until stopped" ]
+              Expect.stringContains bare "(held" $"the bare held scope: {bare}"
+              Expect.isFalse (bare.Contains "(always") $"no always without one: {bare}"
+          }
+          test "the scope's value is the body's, and the binder reaches the body" {
+              Expect.isEmpty
+                  (errs [ "let v ="; "    within tmp d"; "        d + \"/x\""; "    until stopped"; "print v" ])
+                  "value position"
+          }
+          test "until stopped after always teaches the order" {
+              says
+                  "`until stopped` goes before `always`"
+                  [ "within tmp d"; "    print \"b\""; "always"; "    print \"c\""; "until stopped" ]
+
+              says "`until stopped` goes before `always`" [ "within"; "    print \"b\""; "always"; "    print \"c\""; "until stopped" ]
+          }
+          test "a within's until takes only stopped, and no block" {
+              says "a within's until section is `until stopped`" [ "within tmp d"; "    print \"b\""; "until done" ]
+              says "`until stopped` takes no block" [ "within tmp d"; "    print \"b\""; "until stopped"; "    print \"x\"" ]
+          }
+          test "a repeat refuses until stopped; retry/poll's until binder is unchanged" {
+              says "a repeat already ends when stopped" [ "repeat interval=1s"; "    print \"x\""; "until stopped" ]
+              says "`until stopped` holds a within scope" [ "let r ="; "    poll timeout=1s interval=10ms"; "        true"; "    until stopped" ]
+
+              Expect.isEmpty
+                  (errs [ "let r ="; "    retry attempts=2"; "        3"; "    until stopped"; "        stopped > 2"; "print (show r)" ])
+                  "a binder named stopped with its predicate block is the until form"
+
+              Expect.isEmpty
+                  (errs [ "let r ="; "    retry attempts=2"; "        within tmp d"; "            1"; "    until r"; "        r > 0"; "print (show r)" ])
+                  "a retry's until after a within body stays the retry's"
+          }
+          test "refused inside plan and pure; readonly admits the wait" {
+              says
+                  "'until stopped' is refused inside 'plan'"
+                  [ "let p ="; "    plan"; "        within"; "            print \"x\""; "        until stopped"; "print (show p)" ]
+
+              says
+                  "'until stopped' waits for a stop signal"
+                  [ "let pure f () ="; "    within"; "        1"; "    until stopped"; "print (show (f ()))" ]
+
+              Expect.isEmpty (errs [ "readonly"; "    within"; "        ()"; "    until stopped" ]) "readonly admits a hold"
+          }
+          test "the REPL's smart indent opens no body after until stopped" {
+              Expect.isFalse (Weir.Script.opensIndentedBody "until stopped") "until stopped takes no block"
+              Expect.isTrue (Weir.Script.opensIndentedBody "    until r") "a loop's until binder opens its predicate"
+          }
+          test "Self has no waitForStop member: the hold is the section" {
+              Expect.isNonEmpty (errs [ "Self.waitForStop ()" ]) "no Self.waitForStop"
           } ]
 
 let retryPollTests =
@@ -32565,6 +32652,7 @@ let allTests =
           retryPollTests
           stopRequestTests
           repeatTests
+          heldScopeTests
           sigTests
           sigCompleteTests
           sigDynamicTests

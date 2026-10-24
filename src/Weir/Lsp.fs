@@ -1420,7 +1420,7 @@ let private retryPollFormHover (env: TypeEnv) (text: string) (jcol: int) : strin
             )
         | "until" ->
             Some
-                "until <name> — the predicate segment of a retry/poll/repeat VALUE body: names the body's binding and decides when the loop stops"
+                "until <name> — the predicate segment of a retry/poll/repeat VALUE body: names the body's binding and decides when the loop stops. After a within's block, `until stopped` holds the scope until the first stop signal, then it closes normally"
         | _ -> None)
 
 /// a form-word hover: within/from/to/retry/poll/until and their

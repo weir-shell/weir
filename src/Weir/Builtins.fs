@@ -6170,23 +6170,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
                 // a terminal's arrows are ignored [D:prompt-tty-keys]
                 | line when not System.Console.IsInputRedirected -> VStr(Session.Stdin.dropKeySequences line)
                 | line -> VStr line
-            | v -> unreachable $"the checker rejects 'Self.prompt' on {formatValue v}")
-        // the explicit stop wait [D:wait-for-stop]: blocks until the first
-        // stop signal and returns normally, so the scope around it closes
-        // by its normal path; stop-aware while it waits [D:stop-request]
-        "waitForStop",
-        TFun(TUnit, TUnit),
-        VBuiltin(fun _ ->
-            if PlanMode.active () then
-                failwith
-                    "'Self.waitForStop' is refused inside 'plan' — a plan's dry run cannot wait for a signal; wait outside the plan"
-
-            Session.stopAware (fun () ->
-                while not (Session.stopRequested ()) do
-                    Session.waitOrCancel System.Threading.Timeout.InfiniteTimeSpan (Session.stopToken ())
-                    |> ignore)
-
-            VUnit) ]
+            | v -> unreachable $"the checker rejects 'Self.prompt' on {formatValue v}") ]
       "Frontier", frontierMembers
       "Graph", graphMembers
       "Tree", treeMembers
@@ -6282,7 +6266,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           bd
               "Run an indented block until the program is asked to stop: `repeat interval=1s` followed by the block, which runs, then the interval passes, then it runs again. The first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`; Ctrl+C on Windows) lets the iteration in hand finish and returns, so the code after the loop runs and the program exits 0; a second signal tears down as usual. A bool block ends the loop when true; `until r` binds a value block's result and returns it once the predicate holds; `timeout=(Some 5m)` raises when it passes, as poll's does. Waits inside the block are not ended by the request — only the interval is."
               (Some "repeat interval=1ms true")
-              (Some "A server or sidecar held until the operator stops it uses `Self.waitForStop ()` instead.")
+              (Some "A server or sidecar held until the operator stops it is a `within` scope with `until stopped` after its block instead.")
           "within",
           bd
               ("Open a resource for an indented block. It is released however the block exits, normally or by an error. The kinds: "
@@ -6290,7 +6274,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
                   |> List.filter (fun k -> not k.Standalone)
                   |> List.map (fun k -> $"`{k.Name}` — {k.Doc}")
                   |> String.concat "; ")
-               + ".")
+               + ". After the block, `until stopped` holds the scope until the first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`), then it closes by its normal path and the program exits 0; an `always` cleanup comes after it.")
               (Some "within tmp d\n    print d")
               (Some "`within proc srv = <command>` binds a Proc handle; the process and its children are killed and reaped when the block exits.")
           // the purity assertion's two spellings [D:pure-stage1] — its
@@ -7445,11 +7429,6 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
               (Some "`let name = Self.prompt \"your name?\"`. In tests, pipe the answer in.")
            |> named [ "message" ])
-          "Self.waitForStop",
-          bd
-              "Block until the program is asked to stop — the first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`; Ctrl+C on Windows) — then return normally, so the code after it runs and the scopes around it close by their normal path (a `within serve` drains its handlers). While it waits, the first signal is only that request; a second one tears down as usual. Returns at once when a stop was already requested."
-              None
-              (Some "Hold a scope open until the operator stops the program: `within serve srv = … handler`, then `Self.waitForStop ()` as the block's last line.")
           "Self.scriptPath", bd "The path of the file that contains this code; in a module, the module's own path." None None
           "Self.entryPath",
           bd "The path of the script that was run. Unlike scriptPath, it is the same in every module." None None
@@ -7948,7 +7927,7 @@ let moduleBlurbs: Map<string, string> =
           "Secret", "rendering-masked values: of, map, reveal"
           "Color", "terminal colour: red/green/…, bold/dim/underline, sgr — auto-off when piped"
           "Term", "the terminal: width (columns; 80 when there is no terminal), title (set the window title)"
-          "Self", "the process's own facts: args, stdin, pid, paths — and prompt, waitForStop"
+          "Self", "the process's own facts: args, stdin, pid, paths — and prompt"
           "Seq", "lazy sequence pipeline ops: map, where, fold, pmap"
           "Size", "byte sizes: binary-unit literals, arithmetic, parse"
           "Str", "string ops: trim, split, match, encode, hash"

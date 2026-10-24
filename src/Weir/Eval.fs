@@ -5653,6 +5653,22 @@ and eval (env: Env) (te: TypedExpr) : Value =
                      (sanitizeIfTty System.Console.IsErrorRedirected ce.Message))
 
             raise original
+    | TEHold body ->
+        // a within's `until stopped` [D:held-scope]: the body, then the hold,
+        // stop-aware while it waits [D:stop-request]; the scope around it
+        // then closes by its normal path
+        if PlanMode.active () then
+            failwith
+                "'until stopped' is refused inside 'plan' — a plan's dry run cannot wait for a signal; hold the scope outside the plan"
+
+        let v = eval env body
+
+        Session.stopAware (fun () ->
+            while not (Session.stopRequested ()) do
+                Session.waitOrCancel System.Threading.Timeout.InfiniteTimeSpan (Session.stopToken ())
+                |> ignore)
+
+        v
     | TEWithin(kind, binder, targ, topts, body) ->
         // dispatch kind-first on the union [D:within-kind-union]: a new
         // kind must claim its runtime here or the build fails. Binder
