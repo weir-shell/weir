@@ -26456,6 +26456,158 @@ let reenumWarningTests =
                   "one real error beats advisory noise"
           } ]
 
+let continuedCommandTests =
+    // an indented line under a command adds arguments; one whose first word
+    // names a program was meant as its own command [D:continued-command]
+    let hitsIn (lines: string list) =
+        diagsIn "cc.weir" lines |> List.filter (fun d -> d.Code = "continued-command")
+
+    let silent (lines: string list) (label: string) =
+        Expect.isEmpty (hitsIn lines) $"{label}: expected no continued-command warning, got {hitsIn lines |> List.map _.Message}"
+
+    let one (lines: string list) =
+        match hitsIn lines with
+        | [ d ] -> d
+        | other -> failtest $"expected one continued-command warning, got {other |> List.map (fun d -> d.Message)}"
+
+    let withSigTree (sigSource: string list) (script: string list) =
+        withTempDir "weir-cc-sig" (fun root ->
+            System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, ".weir", "sigs"))
+            |> ignore
+
+            System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, ".git"))
+            |> ignore
+
+            System.IO.File.WriteAllLines(System.IO.Path.Combine(root, ".weir", "sigs", "fixtool.weir"), sigSource)
+            let p = System.IO.Path.Combine(root, "use.weir")
+            System.IO.File.WriteAllLines(p, script)
+
+            diagsIn p (List.ofArray (System.IO.File.ReadAllLines p))
+            |> List.filter (fun d -> d.Code = "continued-command" || d.Code = "sig"))
+
+    testList
+        "continued command [D:continued-command]"
+        [ test "two pasted git pushes warn at the second git, as a warning with its own code" {
+              let d =
+                  one
+                      [ "git push --force-with-lease origin ci/cargo-cache"
+                        "    git push --force-with-lease origin fix/joey-workflow-env" ]
+
+              Expect.equal (d.Line, d.Col) (2, 5) "located at the continuation's first word"
+              Expect.equal (d.EndLine, d.EndCol) (Some 2, Some 8) "the word squiggles whole"
+              Expect.equal d.Severity "warning" "advisory: check exits 0"
+
+              Expect.equal
+                  d.Message
+                  "this indented line continues `git push …` — its words become its arguments, and `git` looks like a second command: dedent the line to run it on its own, or quote the word if it really is an argument"
+                  "the message names the command, the word and both repairs"
+          }
+          test "echo over an indented echo warns" {
+              let d = one [ "echo a"; "    echo b" ]
+              Expect.stringContains d.Message "`echo a …`" "the continued command is shown"
+          }
+          test "flags and plain arguments on the continuation are silent" {
+              silent [ "echo a"; "    --flag x" ] "a flag"
+              silent [ "echo a"; "    -n b" ] "a short flag"
+              silent [ "echo a"; "    hello world" ] "plain words"
+              silent [ "echo a"; "    ./bin/echo b" ] "a path"
+              silent [ "let x = \"v\""; "echo a"; "    $x echo" ] "a splice"
+          }
+          test "a | continuation is the multi-line pipeline — silent" {
+              silent [ "echo a | cat"; "    | cat" ] "a pipe stage"
+              silent [ "echo a"; "    |> Seq.iter print" ] "a function stage"
+          }
+          test "a command that takes a command is exempt, every listed wrapper" {
+              for w in Weir.Script.commandWrappers do
+                  silent [ $"{w} -x a"; "    echo b" ] w
+          }
+          test "the wrapper list is the brief's" {
+              Expect.equal
+                  (Set.count Weir.Script.commandWrappers)
+                  19
+                  "sudo doas env xargs time nice nohup timeout exec command watch ssh parallel flock chroot strace stdbuf setsid unbuffer"
+          }
+          test "a quoted word stays an argument — silent" {
+              silent [ "echo a"; "    \"echo\" b" ] "double-quoted"
+              silent [ "echo a"; "    'echo' b" ] "single-quoted"
+          }
+          test "a word not on PATH is an argument — silent" {
+              silent [ "echo a"; "    notaprogramzzq b" ] "unresolved"
+          }
+          test "an explicit ^cmd counts as a program" {
+              let d = one [ "echo a"; "    ^git status" ]
+              Expect.stringContains d.Message "`git` looks like a second command" "the sigil is dropped from the name"
+          }
+          test "inside a function body, at a deeper indent, it warns" {
+              let d = one [ "let f () ="; "    echo x"; "        printf y"; "f ()" ]
+              Expect.equal (d.Line, d.Col) (3, 9) "located in the body"
+          }
+          test "inside within, if and for bodies it warns" {
+              Expect.equal (hitsIn [ "within tmp d"; "    echo inside"; "        echo nested" ]).Length 1 "within"
+              Expect.equal (hitsIn [ "if 1 > 0 then"; "    echo a"; "        echo b" ]).Length 1 "if"
+              Expect.equal (hitsIn [ "for f in [\"a\"] do"; "    echo $f"; "        echo b" ]).Length 1 "for"
+          }
+          test "sibling body lines are separate commands — silent" {
+              silent [ "if 1 > 0 then"; "    echo a"; "    echo b" ] "siblings"
+          }
+          test "a continued pipeline flags the stage the line lands in" {
+              let d = one [ "echo a | cat"; "    echo c" ]
+              Expect.stringContains d.Message "`cat …`" "the last stage is continued"
+          }
+          test "a reified command is checked too" {
+              let d = one [ "let _r = echo a"; "    echo b | complete" ]
+              Expect.stringContains d.Message "`echo a …`" "the reified command"
+          }
+          test "heredoc content is bytes — silent" {
+              silent [ "let t = <<<"; "    echo a"; "        echo b"; "t |> Seq.iter print" ] "heredoc"
+              silent [ "let t = $<<<"; "    echo a"; "        echo b"; "t |> Seq.iter print" ] "interpolated heredoc"
+          }
+          test "a sig's stopAtOperand exempts the case it names, not its siblings" {
+              let sigSrc =
+                  [ "module Fixtool"
+                    "let version = \"fixtool 1.2.3\""
+                    "let stopAtOperand = [ \"run\" ]"
+                    "type RunArgs = {"
+                    "    [<Positional>]"
+                    "    image: string"
+                    "}"
+                    "type Cmd = Run of RunArgs | Clean" ]
+
+              let ran = withSigTree sigSrc [ "#sig fixtool"; "fixtool run img"; "    echo b" ]
+              Expect.isEmpty ran $"run takes a command: {ran |> List.map _.Message}"
+              let cleaned = withSigTree sigSrc [ "#sig fixtool"; "fixtool clean"; "    echo b" ]
+
+              Expect.equal
+                  (cleaned |> List.map _.Code)
+                  [ "continued-command" ]
+                  $"clean does not: {cleaned |> List.map _.Message}"
+          }
+          test "a sig naming the tool itself (\"\") exempts every line" {
+              let sigSrc =
+                  [ "module Fixtool"
+                    "let version = \"fixtool 1.2.3\""
+                    "let stopAtOperand = [ \"\" ]"
+                    "type Cmd = { verbose: bool }" ]
+
+              let ds = withSigTree sigSrc [ "#sig fixtool"; "fixtool --verbose x"; "    echo b" ]
+              Expect.isEmpty ds $"the tool takes a command: {ds |> List.map _.Message}"
+          }
+          test "the REPL refuses the entry with the same message" {
+              match Weir.Repl.continuedCommandForTest "echo a\n    echo b" with
+              | Some m ->
+                  Expect.stringStarts m "2:5: this indented line continues `echo a …`" "located, same message"
+              | None -> failtest "the entry must be refused"
+          }
+          test "the REPL takes a clean entry, a pipeline continuation included" {
+              Expect.isNone (Weir.Repl.continuedCommandForTest "echo a | cat\n    | cat") "a pipe stage"
+              Expect.isNone (Weir.Repl.continuedCommandForTest "if 1 > 0 then\n    echo a\n    echo b") "siblings"
+          }
+          test "the REPL checks the whole entry before anything: a later statement's hit refuses it" {
+              match Weir.Repl.continuedCommandForTest "let n = 1\nprint (show n)\necho a\n    echo b" with
+              | Some m -> Expect.stringStarts m "4:5:" "the hit in the third statement"
+              | None -> failtest "the entry must be refused"
+          } ]
+
 let tempDirLintTests =
     // the newTempDir footgun [D:newtempdir-lint]: a Path.newTempDir binding
     // deleted in the same scope is the manual (and Ctrl+C-leaky) spelling of
@@ -32143,6 +32295,7 @@ let allTests =
           unusedBindingTests
           reenumWarningTests
           tempDirLintTests
+          continuedCommandTests
           replSaveDistillTests
           cmdChainTests
           aliasTests

@@ -94,7 +94,9 @@ let corpus =
       ("block-trailing-arg", [ @"File.write ""f.txt"" <<<"; @"    hi" ])
       // [D:fs-reflexes]
       ("fs-string-module", [ @"let s = String.trim ""  a """; @"print s" ])
-      ("fs-list-type", [ @"type C = { xs: list<string> }"; @"print ""x""" ]) ]
+      ("fs-list-type", [ @"type C = { xs: list<string> }"; @"print ""x""" ])
+      // [D:continued-command]
+      ("pasted-indented-command", [ @"echo a"; @"    echo b" ]) ]
 
 // a message "teaches" if it names a repair; the phrases below are the
 // vocabulary the existing good messages already use
