@@ -70,7 +70,12 @@ let private evalOnce (input: string) : int =
                      )
 
                      Console.Error.WriteLine $"type error: {d.Message}"
-                 | None -> Console.Error.WriteLine d.Message)
+                 | None ->
+                     match d.File with
+                     // an import's module error, at the module's own site
+                     // [D:repl-import]
+                     | Some mf -> Console.Error.WriteLine $"{quoteData mf}:{d.PhysLine}:{d.PhysCol}: error: {d.Message}"
+                     | None -> Console.Error.WriteLine d.Message)
 
             printHint line
 
@@ -91,7 +96,7 @@ let private evalOnce (input: string) : int =
                 match rest with
                 | [] -> Ok(List.rev acc)
                 | (ll: Script.LogicalLine) :: tail ->
-                    match Script.checkStatement false None Script.resolver Script.scriptOnlyImport tenv ll with
+                    match Script.checkStatement false None Script.resolver Script.sessionImportLoader tenv ll with
                     | Error d -> Error d
                     | Ok chk -> checkAll chk.Env ((ll, chk) :: acc) tail
 
@@ -111,9 +116,7 @@ let private evalOnce (input: string) : int =
                         | Script.KLet _ -> Some "-e takes an expression, not a let statement"
                         | Script.KLetPat _ -> Some "-e evaluates one expression; use 'let (x, y) = ... in ...'"
                         | Script.KModule _ -> Some "-e takes an expression, not a module declaration"
-                        | Script.KImport _ ->
-                            // unreachable: scriptOnlyImport rejects the import before this
-                            Some "import is script-only"
+                        | Script.KImport _ -> Some "-e takes an expression, not an import — follow it with one"
                         | Script.KSig _ ->
                             // unreachable: -e passes no sig context, so the
                             // form already refused [D:module-signatures]
@@ -154,11 +157,11 @@ let private evalOnce (input: string) : int =
                                 | Script.KLetPat(pat, _, te) ->
                                     let bindings = Eval.bindPattern pat (Eval.eval venv te)
                                     execAll (bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv) (idx + 1) tail
+                                | Script.KImport lm -> execAll (Script.importInto venv lm) (idx + 1) tail
                                 | Script.KModule _
-                                | Script.KImport _
                                 | Script.KSig _ ->
-                                    // unreachable: gated above / by scriptOnlyImport /
-                                    // the sig-context refusal [D:module-signatures]
+                                    // unreachable: gated above / by the
+                                    // sig-context refusal [D:module-signatures]
                                     execAll venv (idx + 1) tail
                                 | Script.KExpr te
                                 | Script.KCmd te when idx < lastIdx ->

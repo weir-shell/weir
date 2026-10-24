@@ -326,6 +326,45 @@ let private recordKind (chk: Script.CheckedStatement) : TranscriptKind option =
     | Script.KImport _
     | Script.KSig _ -> None
 
+// the init file's /// docs [D:repl-init]: position-keyed attachments
+// mapped to binding names at load, so #help on a session name answers
+// with its doc — and a failed init leaves this empty, never stale. A
+// prompt import adds its members' docs [D:repl-import]
+let mutable private initDocs: Map<string, string list> = Map.empty
+
+// the prompt's import loader [D:repl-import]: the session cwd anchors the
+// path, and an alias an earlier import holds may be rebound (a reload)
+let private sessionImport: Script.ImportLoader =
+    fun p span alias ->
+        Script.sessionImportLoader p span alias
+        |> Result.map (fun lm -> { lm with MayRebind = true })
+
+// a prompt import records for #save [D:repl-import], keyed by alias and
+// re-spelled with its resolved path (a relative path meant the session
+// cwd, not the saved file's directory; a weir: name keeps its spelling).
+// A re-import replaces the earlier line in place, so it still precedes
+// the lets that use it
+let private recordImport (chk: Script.CheckedStatement) (text: string) =
+    match chk.Kind with
+    | Script.KImport lm ->
+        let path =
+            match Parser.parseLineFull (Script.resolver chk.Env) text with
+            | Ok(SImport(p, _, _)) when p.StartsWith "weir:" -> p
+            | _ -> lm.AbsPath
+
+        let literal = "\"" + path.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""
+        let line = $"import {literal} as {lm.Alias}"
+        let key = $"import {lm.Alias}"
+
+        match transcript |> Seq.tryFindIndex (fun t -> t.Kind = TDef key) with
+        | Some i ->
+            transcript[i] <-
+                { Text = line
+                  PhysText = line
+                  Kind = TDef key }
+        | None -> recordDef key line line
+    | _ -> ()
+
 // the cooked-terminal trap [D:repl-cooked-trap]: when a child that shares
 // the terminal runs long enough, .NET restores cooked mode for it and can
 // fail to re-apply its raw config afterwards (the managed surface offers
@@ -2819,9 +2858,50 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
         Console.WriteLine "the REPL has no file to be a module of; 'module' belongs at the top of a script file"
 
         state
-    | Script.KImport _ ->
-        // unreachable: scriptOnlyImport rejects imports at check
-        state
+    | Script.KImport lm ->
+        // replay and bind `Alias.member`, as init imports do; a rebound
+        // alias drops its old members and docs first [D:repl-import]
+        (try
+            let prefix = lm.Alias + "."
+            let reload = Map.containsKey lm.Alias state.TypeEnv.Modules
+            let kept = state.Values |> Map.filter (fun k _ -> not (k.StartsWith prefix))
+            let venv = Script.importInto kept lm
+
+            initDocs <-
+                lm.MemberDocs
+                |> Map.fold
+                    (fun acc n d -> Map.add $"{prefix}{n}" d acc)
+                    (initDocs |> Map.filter (fun k _ -> not (k.StartsWith prefix)))
+
+            let count = List.length lm.Members
+            let verb = if reload then "reloaded" else "imported"
+
+            let listed =
+                if count = 0 then
+                    "0 members"
+                else
+                    let s = if count = 1 then "" else "s"
+                    let names = lm.Members |> List.map fst |> String.concat ", "
+                    $"{count} member{s}: {names}"
+
+            Console.WriteLine $"module {lm.Alias} {verb} ({listed})"
+
+            { state with
+                TypeEnv = chk.Env
+                Values = venv }
+         with
+         | Eval.ExitRequest _ -> reraise ()
+         | :? Session.Interrupted -> reraise ()
+         | ex ->
+             lastErrored <- true
+             lastExit <- None
+
+             Console.WriteLine(
+                 Types.Color.red Types.Color.onStdout.Value "error"
+                 + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
+             )
+
+             state)
     | Script.KSig _ ->
         // unreachable: the REPL passes no sig context, so the form
         // already refused with the scripts-infer teaching
@@ -2947,11 +3027,6 @@ let private memberHelp (color: bool) (te: TypeEnv) (name: string) : string optio
         Some(sigLine + Builtins.renderBuiltinDocWith tintExample d)
     | None, Some sch -> Some(fmtSig name [] sch.Ty)
     | None, None -> None
-
-// the init file's /// docs [D:repl-init]: position-keyed attachments
-// mapped to binding names at load, so #help on a session name answers
-// with its doc — and a failed init leaves this empty, never stale
-let mutable private initDocs: Map<string, string list> = Map.empty
 
 // the module a bare name aliases, while the session has not rebound it
 // (the same scheme as the qualified member) [D:bare-partition]
@@ -3193,6 +3268,42 @@ let knownForTest: string -> bool = knownIn initial.TypeEnv
 let knownWithAliasesForTest (aliases: Set<string>) : string -> bool = knownInWith aliases initial.TypeEnv
 let findFallbackForTest (query: string) : string = findFallback initial.TypeEnv query
 let findCandidatesForTest () : string list = findCandidates initial.TypeEnv
+
+/// a prompt session seam [D:repl-import]: each call runs one entry
+/// through the single-line path's check + eval (a `#help` entry through
+/// the directive) and answers what it printed; the session carries
+/// between calls, and the second function reads its type env
+let sessionForTest () : (string -> string) * (unit -> TypeEnv) =
+    let st = ref initial
+
+    let run (entry: string) =
+        let old = Console.Out
+        use sw = new StringWriter()
+        Console.SetOut sw
+
+        try
+            if entry.StartsWith "#help " then
+                Console.WriteLine(helpDirective false st.Value.TypeEnv (entry.Substring 6))
+            else
+                let ll = Script.singleLine (Script.stripComment entry)
+
+                match
+                    Script.checkStatement false None (fun _ -> resolver st.Value) sessionImport st.Value.TypeEnv ll
+                with
+                | Ok chk -> st.Value <- evalCheckedBody entry st.Value chk
+                | Error d ->
+                    let at =
+                        match d.File with
+                        | Some f -> $"{f}:{d.PhysLine}:{d.PhysCol}: "
+                        | None -> ""
+
+                    Console.WriteLine $"error: {at}{d.Message}"
+        finally
+            Console.SetOut old
+
+        sw.ToString()
+
+    run, (fun () -> st.Value.TypeEnv)
 
 // ---- #infer [D:repl-infer]: draft named types from a sample ----------
 // The directive owns its parse (string-match, like #help): split the
@@ -4091,14 +4202,15 @@ let rec private loop (state: State) =
             | Ok lls ->
                 let entryStatement (st: State) (ll: Script.LogicalLine) =
                     match
-                        Script.checkStatement
-                            false
-                            None
-                            (fun _ -> resolver st)
-                            Script.scriptOnlyImport
-                            st.TypeEnv
-                            ll
+                        Script.checkStatement false None (fun _ -> resolver st) sessionImport st.TypeEnv ll
                     with
+                    | Error({ File = Some mf } as d) ->
+                        // a prompt import's module error, at the module's
+                        // own site [D:repl-import]
+                        lastErrored <- true
+                        lastExit <- None
+                        diagLine $"{quoteData mf}:{d.PhysLine}:{d.PhysCol}: error: {d.Message}"
+                        st
                     | Error d ->
                         lastErrored <- true
                         lastExit <- None
@@ -4151,7 +4263,7 @@ let rec private loop (state: State) =
                              | Some(TDef name) -> recordDef name phys ll.Text
                              | Some TDiscard -> recordDiscard phys ll.Text
                              | Some TOther -> recordOther phys ll.Text
-                             | None -> ())
+                             | None -> recordImport chk ll.Text)
 
                         st'
 
@@ -4200,7 +4312,7 @@ let rec private loop (state: State) =
             let ll = Script.singleLine (Script.stripComment line)
 
             match
-                Script.checkStatement false None (fun _ -> resolver state) Script.scriptOnlyImport state.TypeEnv ll
+                Script.checkStatement false None (fun _ -> resolver state) sessionImport state.TypeEnv ll
             with
             | Error d when d.Parse ->
                 lastErrored <- true
@@ -4221,15 +4333,18 @@ let rec private loop (state: State) =
                 d.Span
                 |> Option.iter (underline >> Types.Color.red Types.Color.onStdout.Value >> Console.WriteLine)
 
-                (match d.Span with
-                 | Some sp ->
+                (match d.Span, d.File with
+                 | Some sp, _ ->
                      diagLine (
                          Check.formatError
                              { Span = sp
                                Message = d.Message
                                Origin = None }
                      )
-                 | None -> diagLine d.Message)
+                 // a prompt import's module error, at the module's own
+                 // site [D:repl-import]
+                 | None, Some mf -> diagLine $"{quoteData mf}:{d.PhysLine}:{d.PhysCol}: error: {d.Message}"
+                 | None, None -> diagLine d.Message)
 
                 // the streamed-`it` misuse teach [D:repl-it]: `it` is
                 // unit-bound after a streamed statement (the latch holds
@@ -4257,7 +4372,7 @@ let rec private loop (state: State) =
                      | Some(TDef name) -> recordDef name ll.Text ll.Text
                      | Some TDiscard -> recordDiscard ll.Text ll.Text
                      | Some TOther -> recordOther ll.Text ll.Text
-                     | None -> ())
+                     | None -> recordImport chk ll.Text)
 
                 next
 

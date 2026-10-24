@@ -2261,11 +2261,12 @@ Imports are resolved by the checker, from the literal path. Nothing
 is loaded at runtime, and a missing file is an error that shows the
 full absolute path it looked for. Imports of imports work too. A
 module imported by two others is checked only once, and a cycle of
-imports is an error that names it. `import` only works in files: a
-script, or the REPL's [init file](repl.md#the-init-file), whose
-imported members you can then use at the prompt. You can't type it
-at the prompt or use it with `-e`. Importing the wrong kind of file
-is also a clear error:
+imports is an error that names it. In a script or the REPL's
+[init file](repl.md#the-init-file), a relative path is resolved from
+the file. You can also type an import at the prompt or use it with
+`-e`; there a relative path is resolved from the current directory
+(see [Importing at the prompt](repl.md#importing-at-the-prompt)).
+Importing the wrong kind of file is also a clear error:
 
 ```weir
 ["print 1"] |> File.write "plain.weir"
