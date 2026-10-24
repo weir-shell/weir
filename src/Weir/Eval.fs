@@ -2450,6 +2450,14 @@ let private jsonLine
         // omitted, below)
         | VUnion("Some", Some inner) -> write inner
         | VUnion("None", None) -> writer.WriteNullValue()
+        // a validated case writes its payload — the value is already
+        // valid [D:validated-types]
+        | VUnion(c, Some payload) when
+            (match Map.tryFind c unions with
+             | Some(tag, _, _) -> tag = validatedWireTag
+             | None -> false)
+            ->
+            write payload
         // a tagged case writes its payload with the tag reinserted
         // first [D:wire-unions] (k8s's own convention); the [<Other>]
         // case holds what was not understood, so nothing faithful can
@@ -2590,6 +2598,33 @@ let private jsonGotWord (k: System.Text.Json.JsonValueKind) : string =
     | System.Text.Json.JsonValueKind.Object -> "an object"
     | System.Text.Json.JsonValueKind.Null -> "null"
     | _ -> "nothing"
+
+// ---- validated types [D:validated-types] ---------------------------------
+
+/// every validated type's derived `create`, by the declaration's id: the
+/// `type` statement registers it when it runs (a module's when its body
+/// replays), so a boundary reaches a type it can only name transitively
+let private validators =
+    System.Collections.Concurrent.ConcurrentDictionary<string, Value -> Value>()
+
+/// run a validated type's `create` over a payload: Ok the built value,
+/// Error the validator's message
+let runCreate (id: string) (payload: Value) : Result<Value, string> =
+    match validators.TryGetValue id with
+    | true, create ->
+        match create payload with
+        | VUnion("Ok", Some built) -> Ok built
+        | VUnion("Error", Some(VStr msg)) -> Error msg
+        | v -> unreachable $"a validator returns Result<_, string>, got {formatValue v}"
+    | _ -> unreachable $"validated type {id} is used before its declaration ran"
+
+/// a boundary's located validation failure: the who prefix, the path
+/// (field, element, flag or variable), the validator's own message
+let private validationFailed (who: string) (path: string) (msg: string) : 'a =
+    if path = "" then
+        failwith $"{who}: {msg}"
+    else
+        failwith $"{who}: {path}: {msg}"
 
 /// one object document/element -> one row of `def`. `who` names the
 /// adapter in every message ("from json" / "from jsonl") and `shown`
@@ -2732,6 +2767,15 @@ let private jsonDocRead
                     $"{who}: field '{name}' expected an object ({n}), got {jsonKindName prop.ValueKind} in: {shown}"
 
             objRow $"{name}." defs[n] prop
+        // a validated type reads its payload, then runs `create`
+        // [D:validated-types]; the path is the field's
+        | TNamed(n, []) when udefs.ContainsKey n && udefs[n].Validated.IsSome ->
+            match udefs[n].Cases with
+            | [ (_, Some payloadTy) ] ->
+                match runCreate udefs[n].Validated.Value (readValue name payloadTy prop) with
+                | Ok v -> v
+                | Error msg -> validationFailed who name msg
+            | _ -> unreachable "checkDecl admits validate on one case with a payload"
         | TNamed(n, []) when udefs.ContainsKey n ->
             if prop.ValueKind <> System.Text.Json.JsonValueKind.Object then
                 failwith
@@ -2884,9 +2928,25 @@ let private jsonDocRead
         match top with
         | TopRec d -> objRow prefix d el
         | TopUnion u -> readUnion prefix u el
-        | TopValue _ -> unreachable "the checker admits a value top only under Map< >"
+        // a validated type in the slot [D:validated-types]: the path
+        // drops the trailing dot a record prefix carries
+        | TopValue ty -> readValue (prefix.TrimEnd '.') ty el
 
     match top with
+    // a validated type's document [D:validated-types]: one value, or an
+    // array of them — the payload's JSON kind, not necessarily an object
+    | TopValue ty when not wantMap ->
+        match wantSeq, root.ValueKind with
+        | true, System.Text.Json.JsonValueKind.Array ->
+            root.EnumerateArray()
+            |> Seq.mapi (fun i el -> readTopEl $"[{i}]." el)
+            |> List.ofSeq
+            |> List.toSeq
+            |> VSeq
+        | true, k ->
+            failwith
+                $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is seq<{topName}>, in: {shown}"
+        | false, _ -> readTopEl "" root
     | TopValue ty when wantMap ->
         // a non-record value type [D:map-values]: each property reads
         // as a Map<string, V> field's values do, paths through the key
@@ -3593,12 +3653,43 @@ let private yamlLeadingZeroRefusal (line: int) (raw: string) (asInt: bool) : Val
     failwith
         $"from yaml: line {line}: '{quoteData raw}' has a leading zero — YAML 1.2 (weir) reads decimal {n}, YAML 1.1 readers (PyYAML, kubectl) read it as {theirs}; write {octal}{n} for decimal, or quote it for a string"
 
+// a yaml/toml validation failure on its way out [D:validated-types]: the
+// path grows as it passes each mapping field and sequence item, and the
+// adapter's entry point turns it into its located error
+exception private YamlInvalid of path: string * line: int * msg: string
+
+let private yamlUnder (seg: string) (f: unit -> Value) : Value =
+    try
+        f ()
+    with YamlInvalid(path, line, msg) ->
+        let joined =
+            if path = "" then seg
+            elif path.StartsWith "[" then seg + path
+            else seg + "." + path
+
+        raise (YamlInvalid(joined, line, msg))
+
+/// a yaml-family conversion with its validation failures located: the
+/// line, the field path, the validator's message
+let private yamlLocated (who: string) (f: unit -> Value) : Value =
+    try
+        f ()
+    with YamlInvalid(path, line, msg) ->
+        let at = if path = "" then "" else $"{path}: "
+        failwith $"{who}: line {line}: {at}{msg}"
+
 // `localDate line raw`: is this scalar an offset-less TOML datetime
 // [D:toml-local-instant] — false for every yaml read
 let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.Shape) (node: Yaml.Node) : Value =
     let yamlConvert = yamlConvertWith localDate
 
     match shape, node with
+    // a validated type reads its payload, then runs `create`
+    // [D:validated-types]
+    | Yaml.SValid(_, id, inner), n ->
+        match runCreate id (yamlConvert inner n) with
+        | Ok v -> v
+        | Error msg -> raise (YamlInvalid("", Yaml.nodeLine n, msg))
     | Yaml.SOpt _, Yaml.NNull _ -> VUnion("None", None)
     | Yaml.SOpt inner, n -> VUnion("Some", Some(yamlConvert inner n))
     | Yaml.SInt, Yaml.NScalar(raw, quoted, line) ->
@@ -3706,9 +3797,9 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
                 | None, _ ->
                     failwith
                         $"from yaml: line {line}: missing field '{fname}'{wireNote} in '{name}' — if the field is sometimes absent, declare it Option<…>; a type drafted from a sample only sees what the sample had"
-                | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SSecret | Yaml.SBool | Yaml.SUuid | Yaml.SCodec _ | Yaml.SRec _) ->
+                | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SSecret | Yaml.SBool | Yaml.SUuid | Yaml.SCodec _ | Yaml.SRec _ | Yaml.SValid _) ->
                     failwith $"from yaml: line {l}: field '{fname}' is null; declare it Option<…> to allow it"
-                | Some(_, v), _ -> fname, yamlConvert fshape v)
+                | Some(_, v), _ -> fname, yamlUnder fname (fun () -> yamlConvert fshape v))
 
         VRecord(name, fieldValues)
     // the tag dispatch [D:wire-unions]: the discriminator entry picks
@@ -3732,14 +3823,19 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
                         $"from yaml: line {line}: tag '{tag}' is '{quoteData tagValue}', which matches no case of {uname} (cases: {cases})"
         | Some(_, n) ->
             failwith $"from yaml: line {Yaml.nodeLine n}: tag field '{tag}' ({uname}) expects a string scalar"
-    | Yaml.SSeq inner, Yaml.NSeq(items, _) -> VSeq(items |> List.map (yamlConvert inner) |> List.toSeq)
+    | Yaml.SSeq inner, Yaml.NSeq(items, _) ->
+        VSeq(
+            items
+            |> List.mapi (fun i item -> yamlUnder $"[{i}]" (fun () -> yamlConvert inner item))
+            |> List.toSeq
+        )
     // a null where a seq/mapping sits is the empty collection (the
     // yaml idiom: `ports:` with nothing below)
     | Yaml.SSeq _, Yaml.NNull _ -> VSeq Seq.empty
     | Yaml.SPairs inner, Yaml.NMap(entries, _) ->
         VSeq(
             entries
-            |> List.map (fun (k, v) -> VTuple [ VStr k; yamlConvert inner v ])
+            |> List.map (fun (k, v) -> VTuple [ VStr k; yamlUnder $"[\"{k}\"]" (fun () -> yamlConvert inner v) ])
             |> List.toSeq
         )
     | Yaml.SPairs _, Yaml.NNull _ -> VSeq Seq.empty
@@ -3763,6 +3859,7 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
             | Yaml.SPairs _ -> "a mapping"
             | Yaml.SOpt _ -> "an optional value"
             | Yaml.SNode -> "a yaml node"
+            | Yaml.SValid(n, _, _) -> $"a {n}"
 
         let got =
             match node with
@@ -3794,7 +3891,11 @@ let private yamlFromImpl (shape: Yaml.Shape) (stream: bool) : Value =
                 // the stream cardinality [D:wire-unions]: N documents,
                 // each converted through the same per-document shape —
                 // an empty stream is zero documents, not an error
-                VSeq(docs |> List.map (yamlConvert shape) |> List.toSeq)
+                VSeq(
+                    docs
+                    |> List.map (fun d -> yamlLocated "from yaml" (fun () -> yamlConvert shape d))
+                    |> List.toSeq
+                )
             | Ok [] -> failwith "from yaml: empty input — expected one document"
             | Ok [ doc ] ->
                 // one document; the declared shape names the top level
@@ -3806,7 +3907,7 @@ let private yamlFromImpl (shape: Yaml.Shape) (stream: bool) : Value =
                         "from yaml: expected a sequence at the top level (the declared type is seq<…>); got a mapping — write from yaml T"
                 | Yaml.SRec(n, _), Yaml.NSeq _ ->
                     failwith $"from yaml: the top level is a sequence, not a mapping — declare seq<{n}> to read it"
-                | _ -> yamlConvert shape doc
+                | _ -> yamlLocated "from yaml" (fun () -> yamlConvert shape doc)
             | Ok docs ->
                 // the one-document spelling stays one-document
                 // [D:yaml-seq] — the stream form is the suggested
@@ -3824,6 +3925,7 @@ let rec private shapeHoldsSecret (shape: Yaml.Shape) : bool =
     | Yaml.SPairs s -> shapeHoldsSecret s
     | Yaml.SRec(_, fields) -> fields |> List.exists (fun (_, _, s) -> shapeHoldsSecret s)
     | Yaml.SUnion(_, _, cases, _) -> cases |> List.exists (fun (_, _, p) -> Option.exists shapeHoldsSecret p)
+    | Yaml.SValid(_, _, s) -> shapeHoldsSecret s
     | _ -> false
 
 // from toml T [D:from-toml]: the toml parser builds the yaml node tree and
@@ -3847,7 +3949,8 @@ let private tomlFromImpl (shape: Yaml.Shape) : Value =
             | Error(line, msg) -> failwith $"from toml: line {line}: {msg}"
             | Ok doc ->
                 try
-                    yamlConvertWith (fun line raw -> doc.LocalDates.Contains((line, raw))) shape doc.Root
+                    yamlLocated "from toml" (fun () ->
+                        yamlConvertWith (fun line raw -> doc.LocalDates.Contains((line, raw))) shape doc.Root)
                 with Failure msg when msg.StartsWith "from yaml: " ->
                     failwith (
                         "from toml: "
@@ -4025,6 +4128,18 @@ let rec private yamlRender
 
         yamlRender renames unions (depth + 1) g inner
     | VUnion("None", None) -> Inline "null" // element position; fields omit above
+    // a validated case writes its payload [D:validated-types]
+    | VUnion(c, Some payload) when
+        (match Map.tryFind c unions with
+         | Some(tag, _, _) -> tag = validatedWireTag
+         | None -> false)
+        ->
+        let g =
+            match guide with
+            | Some(Yaml.SValid(_, _, g)) -> Some g
+            | g -> g
+
+        yamlRender renames unions depth g payload
     // a tagged case renders its payload with the tag entry first
     // [D:wire-unions]; the [<Other>] case refuses — nothing faithful
     // can be written
@@ -4175,8 +4290,8 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
             (fun acc (subP, subV) -> acc |> Option.bind (fun bs -> tryBind subP subV |> Option.map (fun b -> bs @ b)))
             (Some [])
     | PTuple _, v -> unreachable $"the checker rejects tuple patterns on {formatValue v}"
-    | PCase(ctor, None), VUnion(case, None) -> if ctor = case then Some [] else None
-    | PCase(ctor, Some argPat), VUnion(case, Some payload) -> if ctor = case then tryBind argPat payload else None
+    | PCase(ctor, None, _), VUnion(case, None) -> if ctor = case then Some [] else None
+    | PCase(ctor, Some argPat, _), VUnion(case, Some payload) -> if ctor = case then tryBind argPat payload else None
     | PCase _, VUnion _ -> None
     | PCase _, v -> unreachable $"the checker rejects constructor patterns on {formatValue v}"
     | PRegex(pat, _, _, binder), VStr s ->
@@ -4240,6 +4355,44 @@ let private wrapOpt (ty: Ty) (v: Value) : Value =
     | TNamed("Option", _) -> VUnion("Some", Some v)
     | _ -> v
 
+/// a flat boundary's validated fields [D:validated-types]: each parsed
+/// payload runs its type's `create` (innermost first, for a validated
+/// type over another); a refusal joins the boundary's one error, named
+/// by `label` (the flag or the variable). A field that failed to parse
+/// (the VUnit placeholder) stays as it is — its problem is recorded.
+let private validateFlat
+    (problems: ResizeArray<string>)
+    (label: string -> string)
+    (def: RecordDef)
+    (fields: (string * Value) list)
+    : (string * Value) list =
+    let build (f: string) (ids: string list) (v: Value) =
+        ids
+        |> List.rev
+        |> List.fold
+            (fun acc id ->
+                match acc with
+                | Ok payload -> runCreate id payload
+                | Error _ -> acc)
+            (Ok v)
+        |> function
+            | Ok built -> built
+            | Error msg ->
+                problems.Add $"{label f}: {msg}"
+                VUnit
+
+    fields
+    |> List.map (fun (f, v) ->
+        match Types.fieldValidators def f, v with
+        | [], _
+        | _, VUnit
+        | _, VUnion("None", None) -> f, v
+        | ids, VUnion("Some", Some inner) ->
+            match build f ids inner with
+            | VUnit -> f, VUnit
+            | built -> f, VUnion("Some", Some built)
+        | ids, v -> f, build f ids v)
+
 // ---- Args.load [D:typed-argv] ------------------------------------
 // collect-then-raise over Session.ScriptArgs; --help short-circuits
 // before validation (help must work on invalid invocations)
@@ -4276,7 +4429,13 @@ let private argvUsageLinesWith (flagShorts: Map<string, string>) (def: RecordDef
             | Some sh -> $"-{sh}, "
             | None -> "    "
 
-        let left = $"  {short}{flag}{argvValueSlot ty}"
+        // a validated field shows its type's name [D:validated-types]
+        let slot =
+            match Types.fieldValidatedName def f with
+            | Some n -> $" <{n}>"
+            | None -> argvValueSlot ty
+
+        let left = $"  {short}{flag}{slot}"
 
         let need =
             match ty, Argv.defaultOf def f with
@@ -4677,7 +4836,9 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
 
     go tokens
 
-    let fields = argvFill problems def values
+    let fields =
+        argvFill problems def values
+        |> validateFlat problems (fun f -> "--" + Argv.kebabFlag f) def
 
     if problems.Count > 0 then
         failwith ($"{label}: " + String.concat "; " problems)
@@ -4820,7 +4981,9 @@ let private argvLoadShared
      | Some(_, tok), None -> problems.Add $"unknown subcommand '{quoteData tok}'{didYouMean tok (caseTable |> List.map fst)}"
      | Some _, Some _ -> ())
 
-    let collectFields def values = argvFill problems def values
+    let collectFields def values =
+        argvFill problems def values
+        |> validateFlat problems (fun f -> "--" + Argv.kebabFlag f) def
 
     let sharedFields = collectFields sharedDef sharedValues
 
@@ -5200,6 +5363,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
             match ambientRebinders.TryGetValue name with
             | true, (original, rebind) when obj.ReferenceEquals(v, original) -> rebind ()
             | _ -> v
+        // `T.create` [D:validated-types]: registered when the type ran
+        | None when name.StartsWith createVarPrefix ->
+            let id = name.Substring createVarPrefix.Length
+
+            match validators.TryGetValue id with
+            | true, create -> VBuiltin create
+            | _ -> unreachable $"validated type {id} is used before its declaration ran"
         | None -> unreachable $"the checker rejects unbound variable '{name}'"
     | TELet(name, _, value, body) -> eval (Map.add name (eval env value) env) body
     | TELetPat(pat, value, body) ->
@@ -5446,7 +5616,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             | Weir.Ast.PSeqList _ -> true
             | Weir.Ast.PTuple ps -> ps |> List.exists hasSeqPat
             | Weir.Ast.PRecord fields -> fields |> List.exists (snd >> hasSeqPat)
-            | Weir.Ast.PCase(_, Some a) -> hasSeqPat a
+            | Weir.Ast.PCase(_, Some a, _) -> hasSeqPat a
             | _ -> false
 
         let v =
@@ -5582,6 +5752,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     | _ -> unreachable "the checker rejects non-scalar Env.load fields"
 
                 field, value) // the RECORD field keeps its weir name
+            // validated fields run `create`, naming the variable
+            // [D:validated-types]
+            |> validateFlat problems (Types.wireName def) def
 
         if problems.Count > 0 then
             failwith ($"Env.load {def.Name}: " + String.concat "; " problems)
@@ -6676,3 +6849,23 @@ let constructorValues (cases: (string * Ty option * AttrSpec list) list) : (stri
         match payload with
         | None -> case, VUnion(case, None)
         | Some _ -> case, VBuiltin(fun v -> VUnion(case, Some v)))
+
+/// a `type` declaration run [D:validated-types]: its constructors bind in
+/// `env`, and a validated type's `create` — the validator, then the case
+/// around what it returns — registers under the declaration's id, where
+/// `T.create` and every wire boundary find it
+let declare (env: Env) (decl: Decl) (validator: (string * TypedExpr) option) : Env =
+    match decl.Body, validator with
+    | DUnion [ (case, Some _, _) ], Some(id, vte) ->
+        let check = eval env vte
+
+        validators[id] <-
+            fun payload ->
+                match apply check payload with
+                | VUnion("Ok", Some v) -> VUnion("Ok", Some(VUnion(case, Some v)))
+                | err -> err
+    | _ -> ()
+
+    match decl.Body with
+    | DUnion cases -> constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) env
+    | DRecord _ -> env

@@ -685,7 +685,7 @@ let rec private patScope (p: Ast.Pattern) (scope: Map<string, Span>) : Map<strin
     | Ast.PVar n -> Map.add n p.PSpan scope
     | Ast.PTuple ps -> ps |> List.fold (fun s q -> patScope q s) scope
     | Ast.PRecord fields -> fields |> List.fold (fun s (_, q) -> patScope q s) scope
-    | Ast.PCase(_, Some inner) -> patScope inner scope
+    | Ast.PCase(_, Some inner, _) -> patScope inner scope
     | _ -> scope
 
 // lexical resolution for local binders [PLAN-diagnostics-arc C]: find
@@ -760,6 +760,7 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
             | None -> n
 
         if word = decl.Name then
+            let validated = if decl.Validate.IsSome then "  (validated)" else ""
             // a tagged union shows its discriminator [D:wire-unions] —
             // the hover carries the wire fact the cases alone cannot
             let tagPrefix =
@@ -773,6 +774,7 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
             Some(
                 tagPrefix
                 + (cases |> List.map (fun (n, tyO, _) -> caseSig (n, tyO)) |> String.concat " | ")
+                + validated
             )
         else
             cases
@@ -866,7 +868,7 @@ let private typeSiteIn
     stmts
     |> List.tryPick (fun (ll, c) ->
         match c.Kind with
-        | Script.KType d when d.Name = tyName ->
+        | Script.KType(d, _) when d.Name = tyName ->
             let eq = ll.Text.IndexOf '='
 
             let jc =
@@ -1014,7 +1016,7 @@ let private sigFlagField (si: Script.SigInfo) (words: (string * Span) list) (w: 
             sigStmts
             |> List.tryPick (fun (_, c) ->
                 match c.Kind with
-                | Script.KType d when d.Name = rn -> Map.tryFind rn c.Env.Types
+                | Script.KType(d, _) when d.Name = rn -> Map.tryFind rn c.Env.Types
                 | _ -> None)
             |> Option.bind (function
                 | Record rd ->
@@ -1080,11 +1082,24 @@ let definitionTarget
             | Script.KImport lm -> Some lm
             | _ -> None)
 
-    // local KType first; else the import that declared the type (imported
-    // types merge in unqualified, so the name alone picks the module)
+    // local KType first; else the import that declared the type — a
+    // qualified key ("A.T") names its import's alias, a plain one is
+    // unambiguous, so the name alone picks the module [D:qualified-type-names]
     let typeSite (tyName: string) (member_: string option) =
+        let viaAlias =
+            match tyName.Split '.' with
+            | [| alias; plain |] ->
+                imports
+                |> List.tryFind (fun lm -> lm.Alias = alias && List.contains plain lm.TypeNames)
+                |> Option.bind (fun lm ->
+                    targetStmts lm.AbsPath
+                    |> Option.bind (fun (_, mstmts) -> typeSiteIn mstmts plain member_)
+                    |> Option.map (fun (pl, pc, len) -> Some lm.AbsPath, pl, pc, len))
+            | _ -> None
+
         match typeSiteIn stmts tyName member_ with
         | Some(pl, pc, len) -> Some(None, pl, pc, len)
+        | None when viaAlias.IsSome -> viaAlias
         | None ->
             imports
             |> List.tryPick (fun lm ->
@@ -1111,10 +1126,12 @@ let definitionTarget
 
     // a PCase whose ctor word contains the column (a payload binder is
     // a local binder — the binder-span park, not this)
-    let rec patCaseAt (jcol: int) (p: Ast.Pattern) : string option =
+    // a qualified case's qualifier word answers `Choice1Of2 alias`, its case
+    // word `Choice2Of2 (Some alias, ctor)` [D:qualified-case-patterns]
+    let rec patCaseAt (jcol: int) (p: Ast.Pattern) : Choice<string, string option * string> option =
         let deeper =
             match p.PKind with
-            | Ast.PCase(_, Some inner) -> patCaseAt jcol inner
+            | Ast.PCase(_, Some inner, _) -> patCaseAt jcol inner
             | Ast.PTuple ps -> ps |> List.tryPick (patCaseAt jcol)
             | Ast.PRecord fields -> fields |> List.tryPick (snd >> patCaseAt jcol)
             | _ -> None
@@ -1123,10 +1140,17 @@ let definitionTarget
         | Some d -> Some d
         | None ->
             match p.PKind with
-            | Ast.PCase(ctor, _) when p.PSpan.Start.Col <= jcol && jcol < p.PSpan.Start.Col + ctor.Length -> Some ctor
+            | Ast.PCase(ctor, _, None) when p.PSpan.Start.Col <= jcol && jcol < p.PSpan.Start.Col + ctor.Length ->
+                Some(Choice2Of2(None, ctor))
+            | Ast.PCase(ctor, _, Some(m, mspan)) ->
+                let caseCol = mspan.End.Col + 1
+
+                if mspan.Start.Col <= jcol && jcol < mspan.End.Col then Some(Choice1Of2 m)
+                elif caseCol <= jcol && jcol < caseCol + ctor.Length then Some(Choice2Of2(Some m, ctor))
+                else None
             | _ -> None
 
-    let rec matchCaseAt (jcol: int) (te: Check.TypedExpr) : string option =
+    let rec matchCaseAt (jcol: int) (te: Check.TypedExpr) : Choice<string, string option * string> option =
         let here =
             match te.Kind with
             | Check.TEMatch(_, arms) -> arms |> List.tryPick (fun (p, _, _) -> patCaseAt jcol p)
@@ -1194,7 +1218,22 @@ let definitionTarget
             let fromPattern =
                 teOf chk
                 |> Option.bind (matchCaseAt jcol)
-                |> Option.bind (fun ctor -> unionOf env ctor |> Option.bind (fun tn -> typeSite tn (Some ctor)))
+                |> Option.bind (function
+                    | Choice1Of2 alias ->
+                        imports
+                        |> List.tryFind (fun lm -> lm.Alias = alias)
+                        |> Option.map (fun lm -> Some lm.AbsPath, 1, 1, 0)
+                    | Choice2Of2(Some alias, ctor) ->
+                        env.ModuleTypes
+                        |> Map.tryFind alias
+                        |> Option.bind (
+                            Map.tryPick (fun _ key ->
+                                match Map.tryFind key env.Types with
+                                | Some(Union d) when d.Cases |> List.exists (fun (c, _) -> c = ctor) -> Some key
+                                | _ -> None)
+                        )
+                        |> Option.bind (fun tn -> typeSite tn (Some ctor))
+                    | Choice2Of2(None, ctor) -> unionOf env ctor |> Option.bind (fun tn -> typeSite tn (Some ctor)))
 
             match fromPattern with
             | Some r -> Some r
@@ -1239,13 +1278,19 @@ let definitionTarget
                          | TNamed(tn, _) -> typeSite tn (Some field)
                          | _ -> None)
                     | Check.TERecord(recName, _) ->
-                        // the literal's own words: the record name or a field
+                        // the literal's own words: the record name or a field;
+                        // the type's env key picks the declaration
+                        let key =
+                            match node.Ty with
+                            | TNamed(k, _) -> k
+                            | _ -> recName
+
                         wordAt useLl.Text jcol
                         |> Option.bind (fun w ->
                             if w = recName then
-                                typeSite recName None
-                            elif recordHasField env recName w then
-                                typeSite recName (Some w)
+                                typeSite key None
+                            elif recordHasField env key w then
+                                typeSite key (Some w)
                             else
                                 None)
                     // `from json T`: the adapter's type name jumps to its
@@ -1257,8 +1302,16 @@ let definitionTarget
                             | Check.TopUnion u -> u.Name
                             | Check.TopValue _ -> ""
 
+                        // the slot's env key, peeled from the node's type
+                        let rec keyOf (ty: Ty) =
+                            match ty with
+                            | TSeq t
+                            | TNamed("Map", [ _; t ]) -> keyOf t
+                            | TNamed(k, _) when k.EndsWith("." + topName) -> k
+                            | _ -> topName
+
                         wordAt useLl.Text jcol
-                        |> Option.bind (fun w -> if w = topName then typeSite topName None else None)
+                        |> Option.bind (fun w -> if w = topName then typeSite (keyOf node.Ty) None else None)
                     | Check.TEFromYaml(tyName, _, _)
                     | Check.TEFromToml(tyName, _) ->
                         wordAt useLl.Text jcol
@@ -1514,7 +1567,29 @@ let private typeDefHover (env: TypeEnv) (tyName: string) : string option =
                 match tyO with
                 | Some t -> $"{cn} of {formatTy t}"
                 | None -> cn)
-            |> String.concat " | ")
+            |> String.concat " | "
+            // a validated type says so [D:validated-types]
+            |> fun shape -> if d.Validated.IsSome then shape + "  (validated)" else shape)
+
+/// the first line of a validated type's `validate` doc
+/// [D:validated-types], read in the file that declares it: `tyName` is
+/// the declared name among that file's statements
+let private validateDocIn
+    (lines: string list)
+    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (tyName: string)
+    : string option =
+    stmts
+    |> List.tryPick (fun (ll, chk) ->
+        match chk.Kind with
+        | Script.KType(d, Some _) when d.Name = tyName ->
+            d.Validate
+            |> Option.bind (fun v ->
+                let pl, pc = Script.translate ll v.Span.Start.Col
+
+                Script.docAttachments lines
+                |> List.tryPick (fun a -> if a.Line = pl && a.Col = pc then List.tryHead a.Doc else None))
+        | _ -> None)
 
 // the schema= name's hover [D:schema-hover]: file facts, not type facts
 // — the resolved vendored path, the lock's provenance, and whether the
@@ -1633,10 +1708,15 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         // as the field's type, not the record's (nodeAt sees only TERecord)
         let fieldInLiteral =
             match node with
-            | Some { Kind = Check.TERecord(recName, _) } ->
+            | Some { Kind = Check.TERecord(recName, _); Ty = recTy } ->
+                let key =
+                    match recTy with
+                    | TNamed(k, _) -> k
+                    | _ -> recName
+
                 wordAt ll.Text jcol
                 |> Option.bind (fun w ->
-                    match Map.tryFind recName chk.Env.Types with
+                    match Map.tryFind key chk.Env.Types with
                     | Some(Record def) ->
                         def.Fields
                         |> List.tryPick (fun (f, fty) -> if f = w then Some(formatTy fty) else None)
@@ -1668,6 +1748,54 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                         | _ -> None))
 
         let word = wordAt ll.Text jcol
+
+        // `T.create` [D:validated-types]: `create` hovers the derived
+        // function, the type word its type
+        let createKey =
+            node
+            |> Option.bind (fun n ->
+                match n.Kind, n.Ty with
+                | Check.TEVar vn, TFun(_, TNamed("Result", [ TNamed(key, []); _ ])) when
+                    vn.StartsWith Types.createVarPrefix
+                    ->
+                    Some(key, n.Ty)
+                | _ -> None)
+
+        let createSig =
+            createKey
+            |> Option.bind (fun (key, fty) ->
+                if word = Some "create" then
+                    Some $"{key}.create : {formatTy fty}"
+                else
+                    typeDefHover chk.Env key)
+
+        // the validated type a hover is about, for its `validate` doc:
+        // `T.create`, the declaration's name, or a reference to the type
+        let validatedKey =
+            match createKey, chk.Kind with
+            | Some(key, _), _ -> Some key
+            | None, Script.KType(d, Some _) when word = Some d.Name -> Some d.Name
+            | None, _ ->
+                word
+                |> Option.filter (fun w ->
+                    match Map.tryFind w chk.Env.Types with
+                    | Some(Union u) -> u.Validated.IsSome
+                    | _ -> false)
+
+        let validateDoc =
+            validatedKey
+            |> Option.bind (fun key ->
+                match Map.tryFind key chk.Env.TypeOrigins with
+                | Some origin when origin.Contains '@' ->
+                    // "Module.Name@absPath" — the declaring module's file
+                    let at = origin.IndexOf '@'
+                    let declared = origin.Substring(0, at)
+                    let declared = declared.Substring(declared.IndexOf '.' + 1)
+
+                    targetStmts (origin.Substring(at + 1))
+                    |> Option.bind (fun (mlines, mstmts) -> validateDocIn mlines mstmts declared)
+                | _ -> validateDocIn lines stmts key)
+            |> Option.map (fun d -> $"validate — {d}")
 
         // an exact use of a name (TEVar at the cursor) wins; else a pattern
         // payload binder resolved from a use of it [Group 2]; else the
@@ -1768,6 +1896,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         let ty =
             (sigHead |> Option.map fst)
             |> Option.orElse (sigFlag |> Option.map fst)
+            |> Option.orElse createSig
             |> Option.orElse fieldInLiteral
             |> Option.orElse constructorSig
             |> Option.orElse binderSig
@@ -1830,7 +1959,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 // a member signature line hovers the sig verbatim
                 // [D:module-signatures]
                 | Script.KSig(name, sd) when word = Some name -> Some $"{name} : {formatTy sd.Ty}"
-                | Script.KType decl -> word |> Option.bind (declHover decl)
+                | Script.KType(decl, _) -> word |> Option.bind (declHover decl)
                 | _ -> None)
             // a referenced type name anywhere hovers its shape
             // [D:lsp-typename]: a field's type in a record decl, the
@@ -1905,6 +2034,12 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             |> Option.orElse sourceDoc
             |> Option.orElse usageDoc
             |> Option.orElse builtinDoc
+            // a validated type's `validate` doc rides below [D:validated-types]
+            |> fun d ->
+                match d, validateDoc with
+                | Some d, Some v -> Some(d + "\n\n" + v)
+                | None, v -> v
+                | d, None -> d
 
         match ty, doc with
         | Some t, Some d -> Some(t + "\n\n" + d) // type FIRST, then the doc

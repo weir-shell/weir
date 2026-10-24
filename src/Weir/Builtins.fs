@@ -42,7 +42,8 @@ let fileKind: UnionDef =
       Cases = [ "Regular", None; "Directory", None; "Symlink", None ]
       Tag = None
       CaseWires = Map.empty
-      OtherCase = None }
+      OtherCase = None
+      Validated = None }
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 

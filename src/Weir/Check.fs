@@ -291,6 +291,155 @@ let private firstDup (xs: string list) : string option =
     |> List.countBy id
     |> List.tryPick (fun (x, n) -> if n > 1 then Some x else None)
 
+// written type names [D:qualified-type-names]: `A.T` names import A's
+// type T, a bare name resolves as it always did — unless two imports each
+// provide one, when neither holds the bare name and a use must qualify
+type TypeNameRes =
+    | TypeKey of string
+    // the qualified spellings that would each resolve it
+    | TypeAmbiguous of string list
+    | TypeNotInModule of alias: string * name: string * owned: string list
+    | TypeUnresolved
+
+let private typeSpellings (env: TypeEnv) (name: string) : (string * string) list =
+    env.ModuleTypes
+    |> Map.toList
+    |> List.choose (fun (alias, owned) -> Map.tryFind name owned |> Option.map (fun key -> alias + "." + name, key))
+
+let resolveTypeName (env: TypeEnv) (written: string) : TypeNameRes =
+    let dot = written.IndexOf '.'
+
+    if dot > 0 then
+        let m = written.Substring(0, dot)
+        let t = written.Substring(dot + 1)
+
+        match Map.tryFind m env.ModuleTypes |> Option.bind (Map.tryFind t) with
+        | Some key -> TypeKey key
+        | None when (typeDefFor env written).IsSome -> TypeKey written
+        | None ->
+            match Map.tryFind m env.ModuleTypes with
+            | Some owned -> TypeNotInModule(m, t, owned |> Map.keys |> List.ofSeq)
+            | None -> TypeUnresolved
+    elif (typeDefFor env written).IsSome then
+        TypeKey written
+    else
+        let spellings = typeSpellings env written
+
+        if (spellings |> List.map snd |> List.distinct |> List.length) > 1 then
+            TypeAmbiguous(spellings |> List.map fst |> List.sort)
+        else
+            TypeUnresolved
+
+// 'A.T', 'B.T' or 'C.T'
+let private quotedOrList (spellings: string list) : string =
+    let quoted = spellings |> List.map (fun q -> $"'{q}'")
+
+    match List.rev quoted with
+    | last :: rest when not rest.IsEmpty -> (List.rev rest |> String.concat ", ") + " or " + last
+    | _ -> String.concat ", " quoted
+
+let private ambiguousTypeMsg (name: string) (spellings: string list) : string =
+    $"type '{name}' is ambiguous — more than one import declares it; write the qualified name: {quotedOrList spellings}"
+
+let private notInModuleMsg (m: string) (t: string) (owned: string list) : string =
+    $"module '{m}' declares no type '{t}'{didYouMean t owned}"
+
+/// the unknown-type message for a written name, naming the qualified
+/// spellings when the bare name is ambiguous [D:qualified-type-names]
+let unknownTypeMsg (env: TypeEnv) (n: string) : string =
+    match resolveTypeName env n with
+    | TypeAmbiguous qs -> ambiguousTypeMsg n qs
+    | TypeNotInModule(m, t, owned) -> notInModuleMsg m t owned
+    | _ when n.IndexOf '.' > 0 ->
+        let m = n.Substring(0, n.IndexOf '.')
+        $"unknown type '{n}' — no import is named '{m}'{didYouMean m (Map.keys env.ModuleTypes)}"
+    | _ -> $"unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+
+/// a written type with every name resolved to its env key
+/// [D:qualified-type-names]; a name nothing resolves is left as written
+/// for the caller's own unknown-type teaching. An anonymous shape whose
+/// fields resolve differently is re-minted under its canonical name.
+let rec canonTyKeeping (self: string) (env: TypeEnv) (span: Span) (ty: Ty) : Result<Ty, TypeError> =
+    let canonTy = canonTyKeeping self
+
+    let all (ts: Ty list) =
+        ts
+        |> List.fold
+            (fun acc t -> acc |> Result.bind (fun xs -> canonTy env span t |> Result.map (fun t' -> t' :: xs)))
+            (Ok [])
+        |> Result.map List.rev
+
+    let fieldsOf (fs: (string * Ty) list) =
+        all (fs |> List.map snd) |> Result.map (List.zip (fs |> List.map fst))
+
+    match ty with
+    | TFun(a, b) -> all [ a; b ] |> Result.map (fun ts -> TFun(ts[0], ts[1]))
+    | TSeq t -> canonTy env span t |> Result.map TSeq
+    | TTuple ts -> all ts |> Result.map TTuple
+    | TRowVar(r, fs) -> fieldsOf fs |> Result.map (fun fs' -> TRowVar(r, fs'))
+    | TNamed(n, []) when n.StartsWith "{|" ->
+        match typeDefFor env n with
+        | Some(Record rd) ->
+            fieldsOf rd.Fields
+            |> Result.map (fun fs' ->
+                if fs' = rd.Fields then
+                    ty
+                else
+                    let n' = anonRecordName fs'
+
+                    env.AnonLitDefs[n'] <-
+                        Record
+                            { rd with
+                                Name = n'
+                                Fields = List.sortBy fst fs' }
+
+                    Types.pushAnonDef n' fs'
+                    TNamed(n', []))
+        | _ -> Ok ty
+    | TNamed(n, args) when n = self -> all args |> Result.map (fun args' -> TNamed(n, args'))
+    | TNamed(n, args) ->
+        all args
+        |> Result.bind (fun args' ->
+            match resolveTypeName env n with
+            | TypeKey k -> Ok(TNamed(k, args'))
+            | TypeAmbiguous qs -> err span (ambiguousTypeMsg n qs)
+            | TypeNotInModule(m, t, owned) -> err span (notInModuleMsg m t owned)
+            | TypeUnresolved -> Ok(TNamed(n, args')))
+    | t -> Ok t
+
+let canonTy (env: TypeEnv) (span: Span) (ty: Ty) : Result<Ty, TypeError> = canonTyKeeping "" env span ty
+
+/// the adapter slot's payload with its names resolved
+/// [D:qualified-type-names]: `from json A.Config` reads module A's type
+let rec private canonShape (env: TypeEnv) (span: Span) (shape: FromShape) : Result<FromShape, TypeError> =
+    let named (n: string) (args: Ty list) =
+        canonTy env span (TNamed(n, args))
+        |> Result.map (function
+            | TNamed(k, []) -> FromName k
+            | TNamed(k, args') -> FromApp(k, args')
+            | _ -> shape)
+
+    match shape with
+    | FromName n -> named n []
+    | FromApp(n, args) -> named n args
+    | FromTy ty -> canonTy env span ty |> Result.map FromTy
+    | FromMap(k, inner) ->
+        canonTy env span k
+        |> Result.bind (fun k' -> canonShape env span inner |> Result.map (fun i -> FromMap(k', i)))
+    | FromAnon fields ->
+        let n = anonRecordName fields
+
+        match typeDefFor env n with
+        | Some _ ->
+            canonTy env span (TNamed(n, []))
+            |> Result.map (function
+                | TNamed(n', []) when n' <> n ->
+                    match typeDefFor env n' with
+                    | Some(Record rd) -> FromAnon rd.Fields
+                    | _ -> shape
+                | _ -> shape)
+        | None -> Ok shape
+
 // an inline `Env.load {| … |}` / `Args.load {| … |}` shape registers
 // under its canonical name with every field as written; a repeated
 // name is refused as a declared record's is [D:env-inline-type]
@@ -1611,13 +1760,16 @@ let rec private jsonAdmitted
                 | Some pty when Some c <> udef.OtherCase ->
                     jsonAdmitted reading span env (n :: seen) (if path = "" then c else $"{path}.{c}") pty
                 | _ -> Ok())
+        // a validated type crosses as its payload [D:validated-types]
+        | Some(Union({ Cases = [ (_, Some pty) ] } as udef)) when udef.Validated.IsSome ->
+            jsonAdmitted reading span env (n :: seen) path pty
         | Some(Union _) ->
             err
                 span
                 $"{at}'{n}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration; {jsonAdmittedSet}"
         | None when List.contains n deflessBuiltinNominals ->
             err span $"{at}{n} is an opaque value with no JSON form — encode the fields you need into a record"
-        | None -> err span $"{at}unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+        | None -> err span $"{at}{unknownTypeMsg env n}"
     | TVar v when not reading && not (v.StartsWith "__hole") -> err span (at + genericWireTeach "json" ty)
     // a generic record left uninstantiated [D:wire-generics]
     | TNamed(_, _ :: _) when not reading && not (Set.isEmpty (tyVars ty)) ->
@@ -1723,7 +1875,7 @@ let rec private xmlAdmitted
             err span $"{at}'{n}' is a union — XML has no tagged-union reading; {xmlAdmittedSet}"
         | None when List.contains n deflessBuiltinNominals ->
             err span $"{at}{n} is an opaque value with no XML form — encode the fields you need into a record"
-        | None -> err span $"{at}unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+        | None -> err span $"{at}{unknownTypeMsg env n}"
     | ty -> err span $"{at}type {formatTy ty} is not admitted; {xmlAdmittedSet}"
 
 let private xmlableRecord (span: Span) (env: TypeEnv) (def: RecordDef) : Result<unit, TypeError> =
@@ -1806,7 +1958,7 @@ and private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty
         // the closure walks through a tagged union [D:wire-unions]: its
         // payload records ride so the reader/renames reach them (payloads
         // cannot reference the union back — declaration order forbids it)
-        | Some(Union udef) when udef.Tag.IsSome ->
+        | Some(Union udef) when udef.Tag.IsSome || udef.Validated.IsSome ->
             udef.Cases
             |> List.fold
                 (fun a (_, payload) ->
@@ -1829,7 +1981,9 @@ let rec private jsonUnionsClosure (env: TypeEnv) (acc: Map<string, UnionDef>) (t
     | TNamed(n, []) when not (acc.ContainsKey n) ->
         match typeDefFor env n with
         | Some(Record def) -> def.Fields |> List.fold (fun a (_, fty) -> jsonUnionsClosure env a fty) acc
-        | Some(Union udef) when udef.Tag.IsSome ->
+        // a validated type rides too: its reader runs `create`, its
+        // writer drops the case [D:validated-types]
+        | Some(Union udef) when udef.Tag.IsSome || udef.Validated.IsSome ->
             udef.Cases
             |> List.fold
                 (fun a (_, payload) ->
@@ -1852,27 +2006,58 @@ let private unionWriteTable
     : Result<Map<string, string * string * bool>, TypeError> =
     let udefs = jsonUnionsClosure env Map.empty ty
 
+    // keyed by the env key: two imports' same-named unions are two
+    // unions [D:qualified-type-names]
     let entries =
         udefs
         |> Map.toList
-        |> List.collect (fun (_, udef) ->
-            let tagField = udef.Tag |> Option.defaultValue ""
+        |> List.collect (fun (key, udef) ->
+            let tagField =
+                if udef.Validated.IsSome then
+                    validatedWireTag
+                else
+                    udef.Tag |> Option.defaultValue ""
 
             udef.Cases
-            |> List.map (fun (c, _) -> c, (udef.Name, tagField, caseWire udef c, Some c = udef.OtherCase)))
+            |> List.map (fun (c, _) -> c, (key, tagField, caseWire udef c, Some c = udef.OtherCase)))
 
-    let rec go (seen: Map<string, string>) acc entries =
+    let rec go (seen: Map<string, string * string>) acc entries =
         match entries with
         | [] -> Ok acc
         | (c, (uname: string, tagField, tagValue, isOther)) :: rest ->
             match Map.tryFind c seen with
-            | Some prior when prior <> uname ->
+            // two validated cases write alike — the payload, no tag
+            // [D:validated-types]
+            | Some(prior, priorTag) when
+                prior <> uname
+                && not (priorTag = validatedWireTag && tagField = validatedWireTag)
+                ->
                 err
                     span
                     $"case '{c}' belongs to tagged unions '{prior}' and '{uname}', both reachable from this type — the writer keys cases by name; rename one"
-            | _ -> go (Map.add c uname seen) (Map.add c (tagField, tagValue, isOther) acc) rest
+            | _ -> go (Map.add c (uname, tagField) seen) (Map.add c (tagField, tagValue, isOther) acc) rest
 
-    go Map.empty Map.empty entries
+    // a record value carries its declared name, which keys the rename
+    // and codec tables — two imports' same-named records whose tables
+    // differ cannot both be written by one closure [D:qualified-type-names]
+    let tablesOf (def: RecordDef) =
+        def.Fields |> List.map (fun (f, _) -> f, wireName def f, fieldCodec def f)
+
+    let clash =
+        jsonDefsClosure env Map.empty ty
+        |> Map.toList
+        |> List.groupBy (fun (_, def) -> def.Name)
+        |> List.tryPick (fun (_, group) ->
+            match group |> List.distinctBy (fun (_, def) -> tablesOf def) with
+            | (k1, _) :: (k2, _) :: _ -> Some(k1, k2)
+            | _ -> None)
+
+    match clash with
+    | Some(k1, k2) ->
+        err
+            span
+            $"'{k1}' and '{k2}' share a declared name but not their wire keys or codecs, and both are reachable from this type — the writer keys records by that name; rename one"
+    | None -> go Map.empty Map.empty entries
 
 // ---- the yaml tree law [D:yaml-v1] — richer than json's flat-row law
 // because YAML is a document format, not a row stream: scalars, nested
@@ -1960,13 +2145,18 @@ let rec private yamlShape
                             oc, hasPayload)
 
                     Yaml.SUnion(n, udef.Tag.Value, List.rev cs, other))
+            // a validated type reads its payload, then runs `create`
+            // [D:validated-types]
+            | Some(Union({ Cases = [ (_, Some pty) ] } as udef)) when udef.Validated.IsSome ->
+                yamlShape span env (seen.Add n) path pty
+                |> Result.map (fun inner -> Yaml.SValid(n, udef.Validated.Value, inner))
             | Some(Union _) ->
                 err
                     span
                     $"{at}'{n}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
             | None when List.contains n deflessBuiltinNominals ->
                 err span $"{at}{n} is an opaque value with no YAML form — encode the fields you need into a record"
-            | None -> err span $"{at}unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+            | None -> err span $"{at}{unknownTypeMsg env n}"
     | TVar v when v.StartsWith "__hole" ->
         // cascade suppression [PLAN-diagnostics-arc B6]: the hole means
         // an earlier error was already reported — never print its name
@@ -2021,6 +2211,9 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
                                 yamlableOut span env (seen.Add n) (if path = "" then c else $"{path}.{c}") pty
                             | _ -> Ok()))
                     (Ok())
+            // a validated type writes its payload [D:validated-types]
+            | Some(Union({ Cases = [ (_, Some pty) ] } as udef)) when udef.Validated.IsSome ->
+                yamlableOut span env (seen.Add n) path pty
             | Some(Union _) ->
                 err
                     span
@@ -2133,7 +2326,7 @@ let casingError (span: Span) (name: string) : Result<'a, TypeError> =
     err
         span
         ($"binding names start lowercase; uppercase names are types, modules, and constructors"
-         + $" — bind '{name.ToLowerInvariant()}' (a record field keeps its name: let region = cfg.AWS_REGION)")
+         + $" — bind '{name.ToLowerInvariant()}' (a record field keeps its name: let level = cfg.LOG_LEVEL)")
 
 // builtins without a qualified spelling are reserved as binder names
 // [D:reserve-builtins]: shadowing one removes the capability for the
@@ -2207,6 +2400,14 @@ let checkBinderName (span: Span) (name: string) : Result<unit, TypeError> =
 let builtinTypeNames: System.Collections.Concurrent.ConcurrentDictionary<string, byte> =
     System.Collections.Concurrent.ConcurrentDictionary<string, byte>()
 
+// every imported type's key in this env — own and transitive alike
+// [D:transitive-types] [D:qualified-type-names]
+let private importedTypeKeys (env: TypeEnv) : Set<string> =
+    env.ModuleTypes
+    |> Map.toList
+    |> List.collect (snd >> Map.values >> List.ofSeq)
+    |> List.fold (fun acc k -> Set.add k acc) (env.TypeOrigins |> Map.keys |> Set.ofSeq)
+
 /// constructor is already overwritten; ownership must be asked of the
 /// type table, not the value table.
 let rec ctorOwners (env: TypeEnv) (name: string) : string list =
@@ -2227,16 +2428,12 @@ and ctorOwnersAll (env: TypeEnv) (name: string) : string list =
     if name.Length = 0 || not (System.Char.IsUpper name[0]) then
         []
     else
-        // imported types are excluded: they live flat in `Types` so signatures
+        // imported types are excluded: they live in `Types` so signatures
         // and field access resolve, but their cases are not in scope bare
         // (access is always qualified), so they are not candidates for this
         // name and must not make a local declaration look ambiguous — a type
         // reached only transitively [D:transitive-types] included
-        let imported =
-            env.ModuleTypes
-            |> Map.toList
-            |> List.map snd
-            |> List.fold Set.union (env.TypeOrigins |> Map.keys |> Set.ofSeq)
+        let imported = importedTypeKeys env
 
         let owners =
             env.Types
@@ -2253,11 +2450,7 @@ and ctorOwnersAll (env: TypeEnv) (name: string) : string list =
 // leaves out (their cases are not in scope bare), consulted only where
 // a pattern types its scrutinee [D:match-scrutinee-infer]
 let private importedCtorOwners (env: TypeEnv) (name: string) : string list =
-    let imported =
-        env.ModuleTypes
-        |> Map.toList
-        |> List.map snd
-        |> List.fold Set.union (env.TypeOrigins |> Map.keys |> Set.ofSeq)
+    let imported = importedTypeKeys env
 
     env.Types
     |> Map.toList
@@ -2265,6 +2458,81 @@ let private importedCtorOwners (env: TypeEnv) (name: string) : string list =
         match d with
         | Union u when imported.Contains tn && u.Cases |> List.exists (fun (c, _) -> c = name) -> Some tn
         | _ -> None)
+
+// the unions a bare case pattern can name with nothing typing the value:
+// the in-scope owners, else — their cases being not in scope bare — the
+// imported unions declaring it, as construction reaches them qualified
+// [D:match-scrutinee-infer] [D:qualified-case-patterns]
+let private caseOwners (env: TypeEnv) (ctor: string) : string list =
+    match ctorOwners env ctor with
+    | [] -> importedCtorOwners env ctor
+    | local -> local
+
+// the qualifier a module-qualified name needs is an import's alias
+// [D:module-qualifier]; a type name used as one says it is a type
+let private noModuleMsg (env: TypeEnv) (m: string) : string =
+    if Map.containsKey m env.Types then
+        $"'{m}' is a type, not a value — read a field from a value of it, like `x.field`"
+    else
+        let hint = didYouMean m (Map.keys env.Modules)
+        $"no module named '{m}'{hint} — a module comes from `import \"./file.weir\" as {m}` (or `weir:name` for a vendored one)"
+
+// a type's written spelling: `A.T` for an imported type, so a message
+// naming two same-named unions tells them apart [D:qualified-case-patterns]
+let private typeSpelling (env: TypeEnv) (ty: Ty) : string =
+    match ty with
+    | TNamed(key, _) ->
+        env.ModuleTypes
+        |> Map.toList
+        |> List.tryPick (fun (alias, owned) ->
+            owned |> Map.tryPick (fun name k -> if k = key then Some(alias + "." + name) else None))
+        |> Option.defaultValue (formatTy ty)
+    | ty -> formatTy ty
+
+// the unions import `m` declares with case `ctor` — a qualified case
+// pattern's candidates [D:qualified-case-patterns]; Error is the message
+let private qualifiedCaseOwners (env: TypeEnv) (m: string) (ctor: string) : Result<string list, string> =
+    match Map.tryFind m env.ModuleTypes with
+    | Some owned ->
+        let unions =
+            owned
+            |> Map.values
+            |> Seq.distinct
+            |> Seq.choose (fun key ->
+                match typeDefFor env key with
+                | Some(Union u) -> Some(key, u)
+                | _ -> None)
+            |> List.ofSeq
+
+        match unions |> List.filter (fun (_, u) -> u.Cases |> List.exists (fun (c, _) -> c = ctor)) with
+        | [] ->
+            let cases = unions |> List.collect (fun (_, u) -> List.map fst u.Cases)
+            Error $"module '{m}' declares no case '{ctor}'{didYouMean ctor cases}"
+        | hits -> Ok(hits |> List.map fst |> List.sort)
+    | None when Map.containsKey m env.Modules -> Error $"module '{m}' declares no case '{ctor}'"
+    | None when Map.containsKey m env.Types ->
+        Error $"'{m}' is a type, not a module — a case is qualified by its import's name; a case of a union declared here is written bare: '{ctor}'"
+    | None -> Error(noModuleMsg env m)
+
+// a qualified case whose union is not the value's type
+let private wrongQualifierMsg (env: TypeEnv) (m: string) (ctor: string) (owners: string list) (ty: Ty) : string =
+    let named = owners |> List.map (fun o -> typeSpelling env (TNamed(o, []))) |> String.concat "/"
+    $"'{m}.{ctor}' is a case of {named}, but this value has type {typeSpelling env ty}"
+
+// a bare case two imports declare, with nothing typing the value: the
+// qualified spellings settle it [D:qualified-case-patterns]
+let private ambiguousCaseMsg (env: TypeEnv) (ctor: string) (owners: string list) : string =
+    let spellings =
+        env.ModuleTypes
+        |> Map.toList
+        |> List.choose (fun (alias, owned) ->
+            if owned |> Map.exists (fun _ key -> List.contains key owners) then
+                Some(alias + "." + ctor)
+            else
+                None)
+        |> List.sort
+
+    $"case '{ctor}' is ambiguous — more than one import declares it; write the qualified case: {quotedOrList spellings}"
 
 let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(string * Ty) list, TypeError> =
     // a pattern whose shape determines a type binds an unresolved
@@ -2505,9 +2773,22 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                     | _ -> ""
 
                 err p.PSpan $"tuple patterns need a tuple value; this one has type {formatTy ty}{hint}"
-        | PCase(ctor, argPat) ->
-            match ty with
-            | TNamed(typeName, targs) ->
+        | PCase(ctor, argPat, qual) ->
+            // a qualifier names the import whose union declares the case
+            // [D:qualified-case-patterns]: it admits that import's owners
+            let admitted =
+                match qual with
+                | Some(m, mspan) ->
+                    match qualifiedCaseOwners env m ctor with
+                    | Ok os -> Ok(Some os)
+                    | Error msg -> err mspan msg
+                | None -> Ok None
+
+            match admitted, ty with
+            | Error e, _ -> Error e
+            | Ok(Some os), TNamed(typeName, _) when not (List.contains typeName os) ->
+                err p.PSpan (wrongQualifierMsg env (fst qual.Value) ctor os ty)
+            | Ok _, TNamed(typeName, targs) ->
                 match typeDefFor env typeName with
                 | Some(Union def) ->
                     match def.Cases |> List.tryFind (fun (c, _) -> c = ctor) with
@@ -2537,21 +2818,14 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
             // nested payloads too (`Some (Ok n)` resolves Option's param to
             // the owner of Ok). A mixed/ambiguous owner stays unresolved and
             // falls to the teaching: params are not typed from patterns.
-            | TVar v ->
+            | Ok admitted, TVar v ->
                 let teach () =
                     err
                         p.PSpan
                         ("constructor patterns need a scrutinee whose type is already known — params are not typed from patterns. "
                          + "Two repairs: inline the lambda at its use site (a typed pipe position types the binder there), or match on already-typed data")
 
-                // an imported union's case types it too, as it does at a
-                // typed scrutinee — when no in-scope union declares the name
-                let owners =
-                    match ctorOwners env ctor with
-                    | [] -> importedCtorOwners env ctor
-                    | local -> local
-
-                match owners with
+                match admitted |> Option.defaultWith (fun () -> caseOwners env ctor) with
                 | [ owner ] ->
                     match typeDefFor env owner with
                     | Some(Union def) ->
@@ -2560,8 +2834,10 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                         bind ctx env p.PSpan (TNamed(owner, targs)) (TVar v)
                         |> Result.bind (fun () -> checkPattern ctx env (resolve ctx (TVar v)) p)
                     | _ -> teach ()
+                | _ :: _ :: _ as owners when admitted.IsNone && (ctorOwners env ctor).IsEmpty ->
+                    err p.PSpan (ambiguousCaseMsg env ctor owners)
                 | _ -> teach ()
-            | ty -> err p.PSpan $"constructor patterns need a union value; this one has type {formatTy ty}"
+            | Ok _, ty -> err p.PSpan $"constructor patterns need a union value; this one has type {formatTy ty}"
 
 // A binder pattern's shape: fresh vars at the leaves, TUnit at (),
 // tuples composed — bound against the RHS type, so components resolve
@@ -2570,7 +2846,18 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
 // The casing law [D:lowercase-binds] applies at every binder
 // position; fields and match patterns are deliberately untouched.
 
-let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty * (string * Ty) list, TypeError> =
+// `hint` is the value's type where the binder site already knows it (a
+// pushed lambda domain, a `for` element, a let's value when a case needs
+// it): a case resolves against it first, as a match arm resolves against
+// its scrutinee [D:qualified-case-patterns]
+let rec private binderShapeAt
+    (ctx: Ctx)
+    (env: TypeEnv)
+    (hint: Ty option)
+    (p: Pattern)
+    : Result<Ty * (string * Ty) list, TypeError> =
+    let hint = hint |> Option.map (resolve ctx)
+
     match p.PKind with
     | PVar n ->
         checkBinderName p.PSpan n
@@ -2580,11 +2867,17 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
     | PWildcard -> Ok(TVar(freshName ctx "a"), [])
     | PUnit -> Ok(TUnit, [])
     | PTuple ps ->
-        ps
+        let hints =
+            match hint with
+            | Some(TTuple ts) when List.length ts = List.length ps -> List.map Some ts
+            | _ -> List.map (fun _ -> None) ps
+
+        List.zip ps hints
         |> List.fold
-            (fun acc sub ->
+            (fun acc (sub, h) ->
                 acc
-                |> Result.bind (fun (ts, bs) -> binderShape ctx env sub |> Result.map (fun (t, b) -> t :: ts, bs @ b)))
+                |> Result.bind (fun (ts, bs) ->
+                    binderShapeAt ctx env h sub |> Result.map (fun (t, b) -> t :: ts, bs @ b)))
             (Ok([], []))
         |> Result.map (fun (ts, bs) -> TTuple(List.rev ts), bs)
     | PRecord fields ->
@@ -2613,46 +2906,87 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
 
             return TRowVar(r, []), shaped |> List.collect snd
         }
-    | PCase(ctor, _) when not (Map.containsKey ctor env.Values) ->
+    | PCase(ctor, argPat, qual) ->
+        // resolved exactly as a match arm resolves it: the qualifier's
+        // import, else the value's type, else the owners in scope and then
+        // the imported unions [D:qualified-case-patterns]
+        let hinted =
+            match hint with
+            | Some(TNamed(k, targs)) ->
+                match typeDefFor env k with
+                | Some(Union u) when u.Cases |> List.exists (fun (c, _) -> c = ctor) -> Some(k, targs)
+                | _ -> None
+            | _ -> None
+
+        let owners =
+            match qual with
+            | Some(m, mspan) ->
+                match qualifiedCaseOwners env m ctor, hint with
+                | Error msg, _ -> err mspan msg
+                | Ok os, Some(TNamed(k, _) as ty) when not (List.contains k os) && (typeDefFor env k).IsSome ->
+                    err p.PSpan (wrongQualifierMsg env m ctor os ty)
+                | Ok os, _ -> Ok os
+            | None ->
+                match hinted with
+                | Some(k, _) -> Ok [ k ]
+                | None -> Ok(caseOwners env ctor)
+
+        match owners with
+        | Error e -> Error e
         // an unknown uppercase name in a binder is the casing law's
         // case (a function/name spelled uppercase), not refutability
-        casingError p.PSpan ctor
-    // a single-case union's constructor cannot fail — `let un (W x) = x`
-    // destructures as F#'s does
-    | PCase(ctor, argPat) when
-        (match ctorOwners env ctor with
-         | [ owner ] ->
-             match typeDefFor env owner with
-             | Some(Union u) -> u.Cases.Length = 1
-             | _ -> false
-         | _ -> false)
-        ->
-        let owner = (ctorOwners env ctor).Head
+        | Ok [] when qual.IsNone && not (Map.containsKey ctor env.Values) -> casingError p.PSpan ctor
+        // a single-case union's constructor cannot fail — `let un (W x) = x`
+        // destructures as F#'s does
+        | Ok [ owner ] ->
+            match typeDefFor env owner with
+            | Some(Union u) when u.Cases.Length = 1 ->
+                let targs =
+                    match hinted with
+                    | Some(k, ta) when k = owner -> ta
+                    | _ -> u.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
 
-        match typeDefFor env owner with
-        | Some(Union u) ->
-            let targs = u.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
-            let ty = TNamed(owner, targs)
+                let ty = TNamed(owner, targs)
 
-            match snd u.Cases.Head, argPat with
-            | None, None -> Ok(ty, [])
-            | None, Some ap -> err ap.PSpan $"'{ctor}' has no payload"
-            | Some payload, Some ap ->
-                result {
-                    let! t, binds = binderShape ctx env ap
-                    do! bind ctx env ap.PSpan (substParams u.Params targs payload) t
-                    return ty, binds
-                }
-            | Some payload, None -> err p.PSpan $"'{ctor}' carries {formatTy (substParams u.Params targs payload)}; add a pattern for it"
-        | _ -> err p.PSpan "this pattern can fail; use match"
+                match snd u.Cases.Head, argPat with
+                | None, None -> Ok(ty, [])
+                | None, Some ap -> err ap.PSpan $"'{ctor}' has no payload"
+                | Some payload, Some ap ->
+                    let payloadTy = substParams u.Params targs payload
+
+                    result {
+                        let! t, binds = binderShapeAt ctx env (Some payloadTy) ap
+                        do! bind ctx env ap.PSpan payloadTy t
+                        return ty, binds
+                    }
+                | Some payload, None -> err p.PSpan $"'{ctor}' carries {formatTy (substParams u.Params targs payload)}; add a pattern for it"
+            | _ -> err p.PSpan "this pattern can fail; use match"
+        | Ok(_ :: _ :: _ as owners) when qual.IsNone && (ctorOwners env ctor).IsEmpty ->
+            err p.PSpan (ambiguousCaseMsg env ctor owners)
+        | Ok _ -> err p.PSpan "this pattern can fail; use match"
     | PBool _
     | PInt _
     | PStr _
     | PRegex _
     | PSeqNil
     | PCons _
-    | PSeqList _
-    | PCase _ -> err p.PSpan "this pattern can fail; use match"
+    | PSeqList _ -> err p.PSpan "this pattern can fail; use match"
+
+and private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty * (string * Ty) list, TypeError> =
+    binderShapeAt ctx env None p
+
+// a binder whose case only the value's type can settle — a qualified case
+// (its import is checked against the value) or a bare one two imports
+// declare: the let checks its value first [D:qualified-case-patterns]
+let rec private binderNeedsValueType (env: TypeEnv) (p: Pattern) : bool =
+    match p.PKind with
+    | PCase(_, _, Some _) -> true
+    | PCase(ctor, arg, None) ->
+        ((ctorOwners env ctor).IsEmpty && (importedCtorOwners env ctor).Length > 1)
+        || (arg |> Option.exists (binderNeedsValueType env))
+    | PTuple ps -> ps |> List.exists (binderNeedsValueType env)
+    | PRecord fields -> fields |> List.exists (snd >> binderNeedsValueType env)
+    | _ -> false
 
 // row provenance [D:row-provenance]: field-access positions for the
 // given row vars, physical — logical spans cannot cross the statement
@@ -2748,7 +3082,7 @@ let private specializePat (c: string) (arity: int) (p: Pattern) : Pattern list o
     | PTuple ps when c = "(,)" -> Some ps
     | _ when isIrrefutablePat p -> Some(List.replicate arity wild)
     | PBool b when c = (if b then "true" else "false") -> Some []
-    | PCase(case, arg) when case = c ->
+    | PCase(case, arg, _) when case = c ->
         match arg, arity with
         | Some a, 1 -> Some [ a ]
         | None, 0 -> Some []
@@ -2835,7 +3169,7 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
                             pats
                             |> List.exists (fun p ->
                                 match p.PKind with
-                                | PCase(c, None) -> c = case
+                                | PCase(c, None, _) -> c = case
                                 | _ -> false)
                             |> not
                         | Some payloadTy ->
@@ -2843,7 +3177,7 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
                                 pats
                                 |> List.choose (fun p ->
                                     match p.PKind with
-                                    | PCase(c, Some arg) when c = case -> Some arg
+                                    | PCase(c, Some arg, _) when c = case -> Some arg
                                     | _ -> None)
 
                             payloadPats.IsEmpty
@@ -3036,6 +3370,79 @@ let private commaBetweenFields (fields: (string * Span * Expr) list) : Result<un
                 span
                 $"record fields are separated by ';' or a newline, not ',' — the comma made a tuple and '{n} = …' an equality; write {{ … ; {n} = … }}"
         | None -> Ok()
+
+// ---- validated types [D:validated-types] ---------------------------------
+
+/// the validated union a written type name resolves to — bare, or
+/// qualified through its import (`Mail.Email`)
+let private validatedType (env: TypeEnv) (written: string) : (string * UnionDef) option =
+    match resolveTypeName env written with
+    | TypeKey key ->
+        match typeDefFor env key with
+        | Some(Union u) when u.Validated.IsSome -> Some(key, u)
+        | _ -> None
+    | _ -> None
+
+/// the case of a validated union an import declares, by its module
+/// alias and case name: Some the type's declared name
+let private validatedModuleCase (env: TypeEnv) (m: string) (case: string) : string option =
+    Map.tryFind m env.ModuleTypes
+    |> Option.bind (fun owned ->
+        owned
+        |> Map.toList
+        |> List.tryPick (fun (declared, key) ->
+            match typeDefFor env key with
+            | Some(Union u) when u.Validated.IsSome && u.Cases |> List.exists (fun (c, _) -> c = case) -> Some declared
+            | _ -> None))
+
+/// a flat boundary's view of a record [D:validated-types]: Args.load and
+/// Env.load parse a validated field as its payload (the innermost one,
+/// for a validated type over another), so each field law runs on what
+/// the token holds; the field keeps its type name and the `create` ids,
+/// outermost first, as attributes the loader validates through
+let validatedFieldsFlat (env: TypeEnv) (def: RecordDef) : RecordDef =
+    let rec chain (ty: Ty) (ids: string list) =
+        match ty with
+        | TNamed(n, []) ->
+            match typeDefFor env n with
+            | Some(Union({ Cases = [ (_, Some p) ] } as u)) when u.Validated.IsSome -> chain p (u.Validated.Value :: ids)
+            | _ -> ty, List.rev ids
+        | _ -> ty, List.rev ids
+
+    def.Fields
+    |> List.fold
+        (fun (d: RecordDef) (f, fty) ->
+            let inner, wrap =
+                match fty with
+                | TNamed("Option", [ t ]) -> t, (fun b -> TNamed("Option", [ b ]))
+                | t -> t, id
+
+            match inner, chain inner [] with
+            | TNamed(n, []), (payloadBase, (_ :: _ as ids)) ->
+                let marks =
+                    [ validatedAttr, Some(AStr(String.concat " " ids))
+                      validatedNameAttr, Some(AStr n) ]
+
+                { d with
+                    Fields = d.Fields |> List.map (fun (g, t) -> if g = f then g, wrap payloadBase else g, t)
+                    Attrs = Map.add f ((Map.tryFind f d.Attrs |> Option.defaultValue []) @ marks) d.Attrs }
+            | _ -> d)
+        def
+
+/// the constructor refusal: the case reads, it never builds
+let validatedCtorMsg (shown: string) (typeSpelling: string) : string =
+    $"'{shown}' is validated — build it with {typeSpelling}.create (it returns a Result)"
+
+/// the derived `T.create : payload -> Result<T, string>` — the runtime
+/// registers it under the declaration's id when the `type` runs
+let private createRef (env: TypeEnv) (span: Span) (written: string) : Result<TypedExpr, TypeError> =
+    match validatedType env written with
+    | Some(key, ({ Cases = [ (_, Some payload) ] } as u)) ->
+        Ok
+            { Kind = TEVar(createVarPrefix + u.Validated.Value)
+              Ty = TFun(payload, TNamed("Result", [ TNamed(key, []); TStr ]))
+              Span = span }
+    | _ -> err span $"unreachable: '{written}' is no validated type"
 
 let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     match expr.Kind with
@@ -3291,6 +3698,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 err
                     expr.Span
                     $"ambiguous constructor '{name}'; it is declared by: {ownerList} — rename one of the cases"
+            | [ owner ] when
+                (match typeDefFor env owner with
+                 | Some(Union u) -> u.Validated.IsSome
+                 | _ -> false)
+                ->
+                err expr.Span (validatedCtorMsg name owner)
             | _ ->
                 Ok
                     { Kind = TEVar name
@@ -3390,9 +3803,22 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | ELetPat(pat, value, body) ->
         result {
             // binder judged first: casing/refutability errors beat any
-            // error inside the value (the binder is what the user wrote)
-            let! shape, binds = binderShape ctx env pat
-            let! tvalue = infer ctx env value
+            // error inside the value (the binder is what the user wrote) —
+            // unless a case in it needs the value's type to resolve
+            let! shape, binds, tvalue =
+                if binderNeedsValueType env pat then
+                    result {
+                        let! tvalue = infer ctx env value
+                        let! shape, binds = binderShapeAt ctx env (Some tvalue.Ty) pat
+                        return shape, binds, tvalue
+                    }
+                else
+                    result {
+                        let! shape, binds = binderShape ctx env pat
+                        let! tvalue = infer ctx env value
+                        return shape, binds, tvalue
+                    }
+
             do! bind ctx env pat.PSpan shape tvalue.Ty
 
             let schemes = binds |> List.map (generalizeBinding ctx env)
@@ -3625,11 +4051,33 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                             |> Result.bind (fun ts -> checkField f |> Result.map (fun t -> t :: ts)))
                                         (Ok [])
 
+                                // the value carries the declared name, the
+                                // type its env key [D:qualified-type-names]
                                 return
                                     { Kind = TERecord(def.Name, List.rev tfields)
-                                      Ty = TNamed(def.Name, targs)
+                                      Ty = TNamed(typeName, targs)
                                       Span = expr.Span }
                     }
+
+                // `Env.load A.Cfg` / `Args.load A.Cli`: a type argument
+                // module A declares reads as its env key [D:qualified-type-names]
+                let typeArgKind (arg: Expr) =
+                    match arg.Kind with
+                    | EField({ Kind = EVar m }, t, _) when not (Map.containsKey m env.Values) ->
+                        match Map.tryFind m env.ModuleTypes |> Option.bind (Map.tryFind t) with
+                        | Some key -> { arg with Kind = EVar key }
+                        | None -> arg
+                    | _ -> arg
+
+                // a qualified literal's env key, when module m declares a
+                // record of that name [D:qualified-type-names]
+                let qualifiedRecordKey (m: string) (tyName: string) =
+                    match Map.tryFind m env.ModuleTypes |> Option.bind (Map.tryFind tyName) with
+                    | Some key ->
+                        match typeDefFor env key with
+                        | Some(Record _) -> Some key
+                        | _ -> None
+                    | None -> None
 
                 match head.Kind, args with
                 | EVar tyName, [ { Kind = ERecord fields } ] when
@@ -3639,27 +4087,32 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     && not (Map.containsKey tyName env.Values)
                     ->
                     namedRecord tyName fields
-                | EField({ Kind = EVar m }, tyName, _), [ { Kind = ERecord fields } ] when
-                    (match Map.tryFind m env.ModuleTypes with
-                     | Some ts -> Set.contains tyName ts
-                     | None -> false)
-                    && (match typeDefFor env tyName with
-                        | Some(Record _) -> true
-                        | _ -> false)
+                | EVar tyName, [ { Kind = ERecord _ } ] when
+                    (match resolveTypeName env tyName with
+                     | TypeAmbiguous _ -> true
+                     | _ -> false)
+                    && not (Map.containsKey tyName env.Values)
                     ->
-                    namedRecord tyName fields
+                    err head.Span (unknownTypeMsg env tyName)
+                | EField({ Kind = EVar m }, tyName, _), [ { Kind = ERecord fields } ] when
+                    (qualifiedRecordKey m tyName).IsSome
+                    ->
+                    namedRecord (qualifiedRecordKey m tyName).Value fields
                 | EField({ Kind = EVar "Env" }, "load", _), [ arg ] when
                     not (Map.containsKey "Env" env.Values) && Map.containsKey "Env" env.Modules
                     ->
                     // Env.load T — a typed-boundary instance (from json, env).
                     // Imitates from-json's type-name-in-special-position
                     // resolution, relocated to expression position.
-                    (match arg.Kind with
+                    (match (typeArgKind arg).Kind with
                      | EVar tyName when (loadShapeDup env tyName).IsSome ->
                          err arg.Span $"duplicate field '{(loadShapeDup env tyName).Value}' in the anonymous record"
                      | EVar tyName ->
                          match typeDefFor env tyName with
                          | Some(Record def) when def.Params.IsEmpty ->
+                             // a validated field loads as its payload, then
+                             // validates [D:validated-types]
+                             let def = validatedFieldsFlat env def
                              // an enum field [D:env-enums]: a monomorphic union,
                              // every case 0-arity — the declared set becomes a
                              // boundary conversion exactly like int/bool
@@ -3783,7 +4236,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                          | Some(Record def) ->
                              err arg.Span $"Env.load needs a monomorphic record; '{tyName}' is generic"
                          | Some(Union _) -> err arg.Span $"'{tyName}' is a union; Env.load needs a record"
-                         | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
+                         | None -> err arg.Span (unknownTypeMsg env tyName)
                      // a value literal where the inline TYPE goes [D:env-inline-type]
                      | EAnonRecord _ ->
                          err arg.Span "Env.load takes a type, not a value — the inline type spells fields with ':': Env.load {| PORT: int |}"
@@ -3836,6 +4289,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                      | (c, Some(TNamed(rn, []))) :: rest ->
                                          match typeDefFor env rn with
                                          | Some(Record rdef) when rdef.Params.IsEmpty ->
+                                             let rdef = validatedFieldsFlat env rdef
+
                                              validateFields span $"case '{c}': " rdef
                                              |> Result.bind (fun () -> buildPayloads (Map.add c rdef acc) rest)
                                          | _ -> payloadErr c
@@ -3843,12 +4298,15 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                                  buildPayloads Map.empty udef.Cases
 
-                         match arg.Kind with
+                         match (typeArgKind arg).Kind with
                          | EVar tyName when (loadShapeDup env tyName).IsSome ->
                              err arg.Span $"duplicate field '{(loadShapeDup env tyName).Value}' in the anonymous record"
                          | EVar tyName ->
                              match typeDefFor env tyName with
                              | Some(Record def) when def.Params.IsEmpty ->
+                                 // a validated field parses as its payload
+                                 // [D:validated-types]
+                                 let def = validatedFieldsFlat env def
                                  // the field law [D:shared-flags]: at most one
                                  // union-typed field — the subcommand slot; its
                                  // scalar siblings are shared flags
@@ -3955,7 +4413,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                              | Some(Record _)
                              | Some(Union _) ->
                                  err arg.Span $"Args.load needs a monomorphic type; '{tyName}' is generic"
-                             | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
+                             | None -> err arg.Span (unknownTypeMsg env tyName)
                          | EAnonRecord _ ->
                              err arg.Span "Args.load takes a type, not a value — the inline type spells fields with ':': Args.load {| verbose: bool |}"
                          | _ -> err arg.Span "Args.load takes a type name, e.g. Args.load Cli")
@@ -4261,6 +4719,34 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                       Span = expr.Span }
             | _ -> return! err fnExpr.Span "the right side of a pipe must be a function"
         }
+    // `T.create` [D:validated-types]: the type's own namespace — a module
+    // member of the same name wins (the module was named first)
+    | EField({ Kind = EVar n }, "create", _) when
+        not (Map.containsKey n env.Modules && env.Modules[n].ContainsKey "create")
+        && (validatedType env n).IsSome
+        ->
+        createRef env expr.Span n
+    | EField({ Kind = EField({ Kind = EVar m }, n, _) }, "create", _) when
+        Map.containsKey m env.ModuleTypes && (validatedType env $"{m}.{n}").IsSome
+        ->
+        createRef env expr.Span $"{m}.{n}"
+    | EField({ Kind = EVar n }, "create", _) when
+        not (Map.containsKey n env.Modules)
+        && (match resolveTypeName env n with
+            | TypeAmbiguous qs -> qs |> List.forall (fun q -> (validatedType env q).IsSome)
+            | _ -> false)
+        ->
+        match resolveTypeName env n with
+        | TypeAmbiguous qs ->
+            let spellings = quotedOrList (qs |> List.map (fun q -> q + ".create"))
+            err expr.Span $"'{n}.create' is ambiguous — more than one import declares '{n}'; write {spellings}"
+        | _ -> err expr.Span "unreachable: ambiguity checked in the guard"
+    | EField({ Kind = EVar m }, field, _) when
+        Map.containsKey m env.Modules
+        && not (Map.containsKey m env.Values)
+        && (validatedModuleCase env m field).IsSome
+        ->
+        err expr.Span (validatedCtorMsg $"{m}.{field}" $"{m}.{(validatedModuleCase env m field).Value}")
     | EField({ Kind = EVar m }, field, fieldSpan) when
         Map.containsKey m env.Modules
         && (not (Map.containsKey m env.Values)
@@ -4336,14 +4822,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                  List.isEmpty (ctorOwners env suggested)))
             ->
             Error e
-        | _ when Map.containsKey m env.Types ->
-            err target.Span $"'{m}' is a type, not a value — read a field from a value of it, like `x.field`"
-        | _ ->
-            let hint = didYouMean m (Map.keys env.Modules)
-
-            err
-                target.Span
-                $"no module named '{m}'{hint} — a module comes from `import \"./file.weir\" as {m}` (or `weir:name` for a vendored one)"
+        | _ -> err target.Span (noModuleMsg env m)
     | EField(target, field, fieldSpan) ->
         result {
             let! ttarget = infer ctx env target
@@ -4630,11 +5109,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     |> Map.toList
                     |> List.choose (fun (tn, def) ->
                         match def with
-                        | Record r when isUserName tn && Set.ofList (List.map fst r.Fields) = names -> Some r
+                        | Record r when isUserName tn && Set.ofList (List.map fst r.Fields) = names -> Some(tn, r)
                         | _ -> None)
 
                 match candidates with
-                | [ def ] ->
+                | [ key, def ] ->
                     let targs = def.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
 
                     let checkField (name: string, _: Span, value: Expr) =
@@ -4654,13 +5133,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                     return
                         { Kind = TERecord(def.Name, List.rev tfields)
-                          Ty = TNamed(def.Name, targs)
+                          Ty = TNamed(key, targs)
                           Span = expr.Span }
                 | [] ->
                     let fieldList = String.concat ", " (Set.toList names)
                     return! err expr.Span $"no declared record has exactly the fields: {fieldList}"
                 | many ->
-                    let nameList = many |> List.map (fun r -> r.Name) |> String.concat ", "
+                    let nameList = many |> List.map fst |> String.concat ", "
                     return! err expr.Span $"ambiguous record literal; it matches: {nameList}"
         }
     // the anonymous literal [D:anon-literals]: fields infer, the
@@ -4719,6 +5198,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         }
     | EFrom(fmt, shape, seqOf, streamOf) ->
         result {
+            let! shape =
+                match shape with
+                | Some sh -> canonShape env expr.Span sh |> Result.map Some
+                | None -> Ok None
+
             // resolve the slot's payload to a name [D:anon-records]: a
             // declared name passes through; an anonymous shape resolves
             // to its canonical name, whose def withAnonDefs registered
@@ -4768,7 +5252,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     | Some(Record def) ->
                         err expr.Span $"'{n}' takes {def.Params.Length} type argument(s), got {args.Length}"
                     | Some(Union _) -> err expr.Span $"'{n}' is a union; a generic union does not cross the wire"
-                    | None -> err expr.Span $"unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+                    | None -> err expr.Span (unknownTypeMsg env n)
                 // the parser reads a nested Map as a value type
                 // (FromTy) [D:map-values]
                 | Some(FromMap _) -> failwith "unreachable: a nested Map< > in the slot parses as FromTy"
@@ -4907,6 +5391,24 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         { Kind = TEFrom(fmt, TopUnion udef, defs, udefs, seqOf, mapOf)
                           Ty = TFun(TSeq TStr, resultTy)
                           Span = expr.Span }
+                // a validated type in the slot reads its payload's
+                // document, then runs `create` [D:validated-types]
+                | Some(Union udef) when udef.Validated.IsSome ->
+                    let ty = TNamed(name, [])
+                    do! jsonAdmitted true expr.Span env [] "" ty
+
+                    return
+                        { Kind =
+                            TEFrom(
+                                fmt,
+                                TopValue ty,
+                                jsonDefsClosure env Map.empty ty,
+                                jsonUnionsClosure env Map.empty ty,
+                                seqOf,
+                                mapOf
+                            )
+                          Ty = TFun(TSeq TStr, resultTy)
+                          Span = expr.Span }
                 | Some(Record def) ->
                     let args = def.Params |> List.map (fun _ -> "int") |> String.concat ", "
 
@@ -4919,7 +5421,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         err
                             expr.Span
                             $"'{name}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
-                | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
+                | None -> return! err expr.Span (unknownTypeMsg env name)
             | ("json" | "jsonl"), None ->
                 let seqHint =
                     if fmt = "json" then
@@ -4949,8 +5451,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                           Ty = TFun(TSeq TStr, declared)
                           Span = expr.Span }
                 // a tagged union in the slot [D:wire-unions] — yamlShape
-                // builds the dispatch node; untagged keeps the teaching
-                | Some(Union udef) when udef.Tag.IsSome ->
+                // builds the dispatch node; untagged keeps the teaching. A
+                // validated type reads its payload [D:validated-types]
+                | Some(Union udef) when udef.Tag.IsSome || udef.Validated.IsSome ->
                     let perDoc = if seqOf then TSeq(TNamed(name, [])) else TNamed(name, [])
                     let declared = if streamOf then TSeq perDoc else perDoc
 
@@ -4972,7 +5475,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         err
                             expr.Span
                             $"'{name}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
-                | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
+                | None -> return! err expr.Span (unknownTypeMsg env name)
             | "yaml", None ->
                 return!
                     err
@@ -4994,7 +5497,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         { Kind = TEFromToml(name, shape)
                           Ty = TFun(TSeq TStr, TNamed(name, []))
                           Span = expr.Span }
-                | Some(Union udef) when udef.Tag.IsSome ->
+                | Some(Union udef) when udef.Tag.IsSome || udef.Validated.IsSome ->
                     let! shape = tomlShape (TNamed(name, []))
 
                     return
@@ -5007,7 +5510,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         err
                             expr.Span
                             $"'{name}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
-                | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
+                | None -> return! err expr.Span (unknownTypeMsg env name)
             | "toml", None ->
                 return! err expr.Span "'from toml' needs a record name, e.g. from toml Cargo — or an inline shape {| package: {| version: string |} |}"
             // from xml T reads one document's root element -> T
@@ -5031,7 +5534,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | Some(Record _) -> return! err expr.Span $"'from xml' needs a monomorphic record; '{name}' is generic"
                 | Some(Union _) ->
                     return! err expr.Span $"'from xml' needs a record; '{name}' is a union — XML has no tagged-union reading"
-                | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
+                | None -> return! err expr.Span (unknownTypeMsg env name)
             | "xml", None -> return! err expr.Span "'from xml' needs a record name, e.g. from xml Project"
             // from table T reads aligned column output (kubectl/docker
             // style) -> seq<T> [D:from-table]: the first non-blank line
@@ -5054,7 +5557,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         err
                             expr.Span
                             $"'from table' needs a row record; '{name}' is a union — a table row has no tag convention"
-                | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
+                | None -> return! err expr.Span (unknownTypeMsg env name)
             | "table", None ->
                 return! err expr.Span "'from table' needs a row record name, e.g. from table Pod — it yields seq<Pod>"
             | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, jsonl, yaml, toml, xml, table"
@@ -5263,12 +5766,24 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         arms
                         |> List.choose (fun (p, _, _) ->
                             match p.PKind with
-                            | PCase(c, _) -> Some(c, p.PSpan)
+                            | PCase(c, _, None) -> Some(c, p.PSpan)
                             | _ -> None)
 
                     let names = ctors |> List.map fst |> List.distinct
 
-                    if names.Length < 2 || names |> List.exists (fun c -> (ctorOwnersAll env c).IsEmpty) then
+                    // a qualified arm names its union itself [D:qualified-case-patterns]
+                    let qualified =
+                        arms
+                        |> List.exists (fun (p, _, _) ->
+                            match p.PKind with
+                            | PCase(_, _, Some _) -> true
+                            | _ -> false)
+
+                    if
+                        qualified
+                        || names.Length < 2
+                        || names |> List.exists (fun c -> (ctorOwnersAll env c).IsEmpty)
+                    then
                         // one constructor (or an unknown one): checkPattern's
                         // per-pattern bind and its messages decide
                         Ok()
@@ -5931,7 +6446,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
         // domain before the body runs, so piped element types reach
         // the components ahead of any hole defaulting
         result {
-            let! shape, binds = binderShape ctx env pat
+            let! shape, binds = binderShapeAt ctx env (Some dom) pat
             do! bind ctx env pat.PSpan shape dom
             return! lambdaCore env expr.Span (fun tb -> TELambdaPat(pat, tb)) dom binds (fun e -> check ctx e body cod)
         }
@@ -6098,7 +6613,7 @@ and private checkYamlEntry (ctx: Ctx) (env: TypeEnv) (entry: YamlTplEntry) : Res
             let! tsrc = infer ctx env source
             let elem = TVar(freshName ctx "a")
             do! bind ctx env source.Span (TSeq elem) tsrc.Ty
-            let! shape, binds = binderShape ctx env binder
+            let! shape, binds = binderShapeAt ctx env (Some elem) binder
             do! bind ctx env binder.PSpan shape elem
             let env' = bindParams env binds
 
@@ -6122,7 +6637,7 @@ and private checkYamlItem (ctx: Ctx) (env: TypeEnv) (item: YamlTplItem) : Result
             let! tsrc = infer ctx env source
             let elem = TVar(freshName ctx "a")
             do! bind ctx env source.Span (TSeq elem) tsrc.Ty
-            let! shape, binds = binderShape ctx env binder
+            let! shape, binds = binderShapeAt ctx env (Some elem) binder
             do! bind ctx env binder.PSpan shape elem
             let env' = bindParams env binds
 
@@ -6375,10 +6890,21 @@ let typecheckBinderCore
 
     let ctx = newCtx ()
 
-    match binderShape ctx env pat with
+    // binder first, unless a case in it needs the value's type
+    // [D:qualified-case-patterns] — ELetPat's order
+    let shaped =
+        if binderNeedsValueType env pat then
+            infer ctx env expr
+            |> Result.bind (fun te -> binderShapeAt ctx env (Some te.Ty) pat |> Result.map (fun sb -> sb, Some te))
+        else
+            binderShape ctx env pat |> Result.map (fun sb -> sb, None)
+
+    match shaped with
     | Error e -> Error e
-    | Ok(shape, binds) ->
-        match infer ctx env expr with
+    | Ok((shape, binds), inferred) ->
+        match (match inferred with
+               | Some te -> Ok te
+               | None -> infer ctx env expr) with
         | Error e -> Error e
         | Ok te ->
             match bind ctx env pat.PSpan shape te.Ty with
@@ -6707,6 +7233,85 @@ let typecheckWith
 let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     typecheckWith env expr |> Result.map (fun (te, _, _, _) -> te)
 
+// what a binder pattern is, in words — the shape a payload failed to fit
+let private binderWord (p: Pattern) : string =
+    match p.PKind with
+    | PTuple ps -> $"a {ps.Length}-tuple pattern"
+    | PRecord _ -> "a record pattern"
+    | PCase(c, _, q) -> $"a '{qualCase q c}' pattern"
+    | PUnit -> "()"
+    | _ -> "a pattern of another type"
+
+/// a validated type's `validate` block, typed as the function
+/// `payload -> Result<payload, string>` [D:validated-types]: the binder
+/// takes the payload's type, the body must give the Result — each
+/// mismatch names both types. `env` already holds the declaration.
+let typecheckValidator (env: TypeEnv) (typeName: string) (v: Validator) : Result<TypedExpr, TypeError> =
+    catchBudget (fun () ->
+        let payload =
+            match typeDefFor env typeName with
+            | Some(Union { Cases = [ (_, Some p) ] }) -> p
+            | _ -> failwith "unreachable: checkDecl admits validate on a single-case union with a payload"
+
+        let want = TNamed("Result", [ payload; TStr ])
+        let lam = { Kind = ELambdaPat(v.Binder, v.Body); Span = v.Span }
+
+        let env =
+            { withAnonDefs env lam with
+                AnonLitDefs = System.Collections.Generic.Dictionary() }
+
+        let ctx = newCtx ()
+
+        result {
+            let! shape, binds = binderShapeAt ctx env (Some payload) v.Binder
+
+            do!
+                bind ctx env v.Binder.PSpan shape payload
+                |> Result.mapError (fun e ->
+                    { e with
+                        Message =
+                            $"'validate' binds {typeName}'s payload, which is {formatTy payload}, but this binder is {binderWord v.Binder}" })
+
+            let! tbody = infer ctx (bindParams env binds) v.Body
+
+            do!
+                bind ctx env tbody.Span want tbody.Ty
+                |> Result.mapError (fun e ->
+                    { e with
+                        Message =
+                            $"'validate' must return {formatTy want} (Ok of the value, normalised or not; Error of the message users see), but this body returns {formatTy (finalTy ctx tbody.Ty)}" })
+
+            // a validator cannot build its own type: that is recursion,
+            // which weir does not have (no `let rec`)
+            let own =
+                match typeDefFor env typeName with
+                | Some(Union { Validated = Some id }) -> createVarPrefix + id
+                | _ -> ""
+
+            let rec selfUse (te: TypedExpr) : Span option =
+                match te.Kind with
+                | TEVar n when n = own -> Some te.Span
+                | _ -> childExprs te |> List.tryPick selfUse
+
+            match selfUse tbody with
+            | Some span ->
+                return!
+                    err
+                        span
+                        $"'validate' cannot call {typeName}.create — that is recursion, which weir does not have; validate the payload directly"
+            | None ->
+
+            match resolvePendingSplices ctx env Set.empty with
+            | Error e -> return! Error e
+            | Ok() ->
+                return
+                    finalizeExpr
+                        ctx
+                        { Kind = TELambdaPat(v.Binder, tbody)
+                          Ty = TFun(payload, want)
+                          Span = v.Span }
+        })
+
 // ---- check-against-sig [D:module-signatures] ------------------------------
 // A signed module member is checked with its signature's types flowing
 // in (the lambda spine is checked bidirectionally: each param takes the
@@ -6787,7 +7392,7 @@ let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Re
                       Ty = TFun(dom, tb.Ty)
                       Span = e.Span })
         | ELambdaPat(pat, body), TFun(dom, cod) ->
-            match binderShape ctx env pat with
+            match binderShapeAt ctx env (Some dom) pat with
             | Error terr -> Error(SigBody terr)
             | Ok(shape, binds) ->
                 match bind ctx env pat.PSpan dom shape with
@@ -6943,7 +7548,7 @@ let rec private validateTy
         // F#/.NET collection names [D:fs-reflexes]: one sequence type
         | None when List.contains n [ "list"; "List"; "array"; "Array"; "ResizeArray" ] ->
             err span $"unknown type '{n}' — weir's one sequence type is seq<T> (seq<string>, seq<int>, ...)"
-        | None -> err span $"unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+        | None -> err span (unknownTypeMsg env n)
         | Some a when a <> targs.Length -> err span $"'{n}' expects {a} type argument(s), got {targs.Length}"
         | Some _ -> allOk targs (validateTy env selfName selfArity allowed span)
 
@@ -6951,10 +7556,14 @@ let rec private validateTy
 // unknown names and generic arities refuse at the sig; its type vars are
 // implicitly quantified (every 'a is its own universal). Returns the env
 // with any anonymous shapes the sig's parse minted, so they persist.
-let validateSigTy (env: TypeEnv) (span: Span) (ty: Ty) : Result<TypeEnv, TypeError> =
+// Returns the type with its names resolved [D:qualified-type-names].
+let validateSigTy (env: TypeEnv) (span: Span) (ty: Ty) : Result<TypeEnv * Ty, TypeError> =
     let env = withDefList env (pendingAnonRecords ())
 
-    validateTy env "" 0 (tyVars ty) span ty |> Result.map (fun () -> env)
+    canonTy env span ty
+    |> Result.bind (fun ty ->
+        let env = withDefList env (pendingAnonRecords ())
+        validateTy env "" 0 (tyVars ty) span ty |> Result.map (fun () -> env, ty))
 
 // registered attribute names [D:attributes]: unknown names are check
 // errors; registered-but-unconsumed is legal-and-inert. Validation
@@ -7195,6 +7804,51 @@ let private validateShortCollisions (fields: (string * Ty * AttrSpec list) list)
 let preludeLoading: System.Threading.ThreadLocal<bool> =
     new System.Threading.ThreadLocal<bool>(fun () -> false)
 
+// a declaration's field and payload types with their names resolved
+// [D:qualified-type-names]; the type's own name (self-reference) stays
+let private canonDecl (env: TypeEnv) (decl: Decl) : Result<Decl, TypeError> =
+    let one (ty: Ty) = canonTyKeeping decl.Name env decl.Span ty
+
+    match decl.Body with
+    | DRecord fields ->
+        fields
+        |> List.fold
+            (fun acc (n, t, a) -> acc |> Result.bind (fun xs -> one t |> Result.map (fun t' -> (n, t', a) :: xs)))
+            (Ok [])
+        |> Result.map (fun fs -> { decl with Body = DRecord(List.rev fs) })
+    | DUnion cases ->
+        cases
+        |> List.fold
+            (fun acc (c, p, a) ->
+                acc
+                |> Result.bind (fun xs ->
+                    match p with
+                    | Some t -> one t |> Result.map (fun t' -> (c, Some t', a) :: xs)
+                    | None -> Ok((c, None, a) :: xs)))
+            (Ok [])
+        |> Result.map (fun cs -> { decl with Body = DUnion(List.rev cs) })
+
+// the id a validated type's derived `create` is registered under at run
+// time [D:validated-types] — fresh per checked declaration
+let mutable private validatorSeq = 0
+
+// where `validate` cannot go [D:validated-types]: one case, with a
+// payload, monomorphic, untagged — None when the union may declare it
+let private validateRefusal (decl: Decl) (cases: (string * Ty option * AttrSpec list) list) : string option =
+    match cases with
+    | [ (c, None, _) ] ->
+        Some
+            $"'validate' checks a payload, and case '{c}' carries none — a validated type wraps a value: type {decl.Name} = {c} of string"
+    | [ _ ] when not decl.Params.IsEmpty ->
+        Some $"a validated type is monomorphic — '{decl.Name}' is generic; validate a concrete payload"
+    | [ _ ] when decl.Attrs |> List.exists (fun a -> a.AName = "Tag") ->
+        Some
+            "[<Tag>] and 'validate' do not combine — a validated type crosses the wire as its payload, with no tag"
+    | [ _ ] -> None
+    | _ ->
+        Some
+            $"'validate' guards a single-case union — '{decl.Name}' has {cases.Length} cases; a union of several cases composes validated payloads (Mail of Email | Phone of Phone) and needs no validator of its own"
+
 let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
     // a declared record's anon field shapes drain here [D:anon-nesting]
     // — registered before validation so the names resolve, and they
@@ -7204,6 +7858,11 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
     if not preludeLoading.Value && builtinTypeNames.ContainsKey decl.Name then
         err decl.Span $"'{decl.Name}' is a built-in type — pick another name"
     else
+        match canonDecl env decl with
+        | Error e -> Error e
+        | Ok decl ->
+
+        let env = withDefList env (pendingAnonRecords ())
         let allowed = Set.ofList decl.Params
         let selfArity = decl.Params.Length
         let selfTy = TNamed(decl.Name, decl.Params |> List.map TVar)
@@ -7212,6 +7871,12 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
         | Some dup -> err decl.Span $"duplicate type parameter '{dup}"
         | None ->
             match decl.Body with
+            | DRecord _ when decl.Validate.IsSome ->
+                err
+                    decl.Validate.Value.Span
+                    $"'validate' guards a single-case union (type Email = Email of string), not a record — '{decl.Name}' composes validated values instead: give a field a validated type and the record holds only valid ones"
+            | DUnion cases when decl.Validate.IsSome && validateRefusal decl cases |> Option.isSome ->
+                err decl.Validate.Value.Span (validateRefusal decl cases).Value
             | DRecord fields ->
                 result {
                     match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
@@ -7417,7 +8082,11 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                                   OtherCase =
                                     cases
                                     |> List.tryPick (fun (c, _, specs) ->
-                                        if (caseAttr "Other" specs).IsSome then Some c else None) }
+                                        if (caseAttr "Other" specs).IsSome then Some c else None)
+                                  Validated =
+                                    decl.Validate
+                                    |> Option.map (fun _ ->
+                                        $"{decl.Name}#{System.Threading.Interlocked.Increment &validatorSeq}") }
 
                         let ctorTy payload =
                             match payload with

@@ -23,7 +23,9 @@ and PatternKind =
     // its span (the provenance anchor) + the sub-pattern; partial
     // field mention is the point (the row's native semantics)
     | PRecord of ((string * Span) * Pattern) list
-    | PCase of ctor: string * arg: Pattern option
+    // qual: the module alias a qualified case names (`A.Case`) and its
+    // span [D:qualified-case-patterns]; None for a bare case
+    | PCase of ctor: string * arg: Pattern option * qual: (string * Span) option
     // the bespoke Regex pattern [D:regex-pattern] — one pattern kind,
     // not a general active-pattern mechanism. The literal is kept
     // verbatim (its backslashes belong to the regex engine); litSpan
@@ -330,6 +332,13 @@ type DeclBody =
     | DRecord of fields: (string * Ty * AttrSpec list) list
     | DUnion of cases: (string * Ty option * AttrSpec list) list
 
+// `validate <binder> = <expr>` under a single-case union
+// [D:validated-types]: the type's one gate — Span is the keyword's
+type Validator =
+    { Binder: Pattern
+      Body: Expr
+      Span: Span }
+
 type Decl =
     { Name: string
       Params: string list
@@ -337,6 +346,7 @@ type Decl =
       // declaration-level attributes [D:attr-positions] — union decls
       // host [<Tag>]; validated at checkDecl, bound at consumption
       Attrs: AttrSpec list
+      Validate: Validator option
       Span: Span }
 
 // every Expr embedded in a yaml template — splices, key splices, and
@@ -381,7 +391,7 @@ let patChildren (p: Pattern) : Pattern list =
     | PTuple ps
     | PSeqList ps -> ps
     | PRecord fields -> fields |> List.map snd
-    | PCase(_, arg) -> Option.toList arg
+    | PCase(_, arg, _) -> Option.toList arg
     | PRegex(_, _, _, binder) -> [ binder ]
     | PCons(h, t) -> [ h; t ]
 
@@ -579,6 +589,12 @@ type Stmt =
 // consumers: the test suite's parse pins and fmt's respace safety
 // check (a formatted statement must sexpr-match its original)
 // [D:fmt-respace].
+// a case's written spelling: `A.Case` when qualified
+let qualCase (qual: (string * Span) option) (ctor: string) : string =
+    match qual with
+    | Some(m, _) -> m + "." + ctor
+    | None -> ctor
+
 let rec sexprPat (p: Pattern) : string =
     match p.PKind with
     | PWildcard -> "_"
@@ -594,8 +610,8 @@ let rec sexprPat (p: Pattern) : string =
            |> List.map (fun ((f, _), sub) -> $"{f} = {sexprPat sub}")
            |> String.concat "; ")
         + " }"
-    | PCase(c, None) -> c
-    | PCase(c, Some arg) -> $"({c} {sexprPat arg})"
+    | PCase(c, None, q) -> qualCase q c
+    | PCase(c, Some arg, q) -> $"({qualCase q c} {sexprPat arg})"
     | PRegex(pat, _, _, binder) -> $"(regex \"{pat}\" {sexprPat binder})"
     | PSeqNil -> "[]"
     | PCons(h, t) -> $"({sexprPat h} :: {sexprPat t})"
@@ -808,6 +824,9 @@ let sexprStmt (s: Stmt) : string =
     | SLetPat(p, e) -> $"(sletpat {sexprPat p} {sexpr e})"
     | SExpr e -> $"(sexpr {sexpr e})"
     | SCmd e -> $"(scmd {sexpr e})"
+    | SType({ Validate = Some v } as d) ->
+        // the validator body is code fmt respaces [D:validated-types]
+        $"(stype {d.Name} (validate {sexprPat v.Binder} {sexpr v.Body}))"
     | SType d -> $"(stype {d.Name})"
     | SSig(n, ty, _) -> $"(ssig {n} {formatTy ty})"
     | SModule(None, _) -> "(module)"

@@ -70,13 +70,98 @@ use signatures; in a script, types are always inferred.
 
 ## Qualified access, and what never leaks
 
-Imported values are always qualified: `X.helper`. Imported types can
-be used by their plain name — `Ctx { field = v }`, `from json Ctx` —
-and a record can also be built with the qualified `X.Ctx { field = v }`.
+Imported values are always qualified: `X.helper`. An imported type has
+a qualified name too, `X.Ctx`, and it works in every place a type is
+written: a record field, a union case's payload, a signature, the
+`from json` slot (`from json X.Ctx`, `seq<X.Ctx>`, `Map<string, X.Ctx>`),
+`Env.load`/`Args.load`, and the record literal `X.Ctx { field = v }`.
+The plain name works too — `Ctx { field = v }`, `from json Ctx` — as long
+as only one import declares a type of that name.
+
+Two imports may declare the same type name. Then the plain name refers
+to neither: writing it is an error that lists the qualified names to
+choose from, and each type is reached as `A.Ctx` or `B.Ctx`. The two are
+different types even when their fields are the same, and error messages
+and hovers show the qualified name. A type you declare yourself keeps
+the plain name, and an import of the same name declared below it is
+reached qualified; a declaration below an import that already provides
+the name is an error.
+
 An imported union's cases are qualified when you construct a value
-(`X.Red`) but named bare in a pattern (`| Red ->`), and a local
-declaration always takes precedence over an imported name. A module exports only its own
-declarations, not what it imported.
+(`X.Red`). In a pattern you may name them bare (`| Red ->`) or
+qualified (`| X.Red ->`). That holds in every pattern position: match
+arms, `let` patterns, parameters, lambdas and nested patterns. A bare
+case resolves against the value's type, as a match arm does, so
+`let (Red r) = paint` works for an imported single-case union and a
+multi-case one is refused in a `let` as a pattern that can fail. A
+qualified case names its import, and the import is checked against the
+value: `Y.Red` on an `X` value is a type error naming both types. When
+two imports declare unions with the same case name and nothing types
+the value, a bare case is an error that lists the qualified spellings.
+
+A [validated type](types.md#validated-types) exports with its
+`create`: whenever the type is exported (always — types export with
+their cases), `X.Email.create` is reachable, or bare `Email.create`
+while one import declares `Email` (two imports name both spellings).
+Its case still exports for patterns (`| X.Email raw ->`), but not for
+construction: `X.Email "a@b"` refuses, naming `X.Email.create`.
+A local declaration always takes precedence over an imported name. A
+module exports only its own declarations, not what it imported.
+
+```weir
+let langA = <<<
+    module
+
+    type LangDefaults = { symbol: string }
+
+    let make : string -> LangDefaults
+
+    let make s = { symbol = s }
+
+let langB = <<<
+    module
+
+    type LangDefaults = { symbol: string; style: string }
+
+let root = <<<
+    import "./lang-a.weir" as A
+    import "./lang-b.weir" as B
+
+    let a = A.make "py"
+    let b = B.LangDefaults { symbol = "rs"; style = "bold" }
+    print $"{a.symbol} {b.style}"
+
+langA |> File.write "lang-a.weir"
+langB |> File.write "lang-b.weir"
+root |> File.write "use-langs.weir"
+weir use-langs.weir
+```
+
+```weir
+let paintA = <<<
+    module
+
+    type Paint = Paint of string
+
+let paintB = <<<
+    module
+
+    type Paint = Paint of int
+
+let walls = <<<
+    import "./paint-a.weir" as A
+    import "./paint-b.weir" as B
+
+    let (A.Paint colour) = A.Paint "red"
+    let coats (B.Paint n) = n
+    let label = match A.Paint "blue" with | Paint c -> c
+    print $"{colour} {coats (B.Paint 2)} {label}"
+
+paintA |> File.write "paint-a.weir"
+paintB |> File.write "paint-b.weir"
+walls |> File.write "walls.weir"
+weir walls.weir
+```
 
 ## The graph
 

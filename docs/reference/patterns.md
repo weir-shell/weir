@@ -6,7 +6,9 @@ Patterns appear in `match` arms (the `| pattern -> …` lines), `let`,
 record pattern (without parentheses: `let label { names = n } = n`).
 In these binding positions the pattern must always succeed; a pattern
 that can fail (`Some x`, a literal) is rejected there — use `match`
-or `function` instead.
+or `function` instead. A single-case union's constructor always
+succeeds (`let (Tag t) = tag`), whether the union is declared here or
+imported.
 
 ```weir
 type Crew = { names: string }
@@ -98,6 +100,59 @@ let n =
     | Empty -> "-"
 
 print n
+```
+
+### Qualified cases
+
+A case of an imported union may be written qualified, `A.Case`, in any
+pattern: a match arm, a `let` pattern, a parameter, a lambda, or nested
+inside another pattern. The qualifier is the import's name (its `as`
+alias, or the module's own name when there is no alias), the same name
+you construct with. It is checked against the value's type, so a case
+of one import's union on a value of another import's type is a type
+error naming both. A bare case keeps working; when two imports declare
+unions with the same case name and the value's type does not settle
+which one is meant, the bare case is an error listing both qualified
+spellings. Cases of a union declared in the same file are written bare.
+
+```weir
+["module Shapes"; "type Shape = Circle of int | Square of int"; "type Tag = Tag of string"]
+    |> File.write "shapes.weir"
+let use = <<<
+    import "./shapes.weir"
+
+    let area s =
+        match s with
+        | Shapes.Circle r -> r * 3
+        | Square w -> w * w
+    let name (Shapes.Tag t) = t
+    print $"{area (Shapes.Circle 2)} {area (Shapes.Square 3)} {name (Shapes.Tag "x")}"
+use |> File.write "use-shapes.weir"
+weir use-shapes.weir
+```
+
+### Validated types
+
+A [validated type](types.md#validated-types)'s case never constructs
+— `T.create` is the one way in — but it reads like any single-case
+union: a pattern destructures it anywhere, bare or qualified, in the
+declaring module and outside it. Binder positions take it too, since
+one case cannot fail to match.
+
+```weir
+["module Mail"; "type Email = Email of string"; "    validate s = if Str.contains \"@\" s then Ok s else Error \"no @\""]
+    |> File.write "mail-v.weir"
+let use = <<<
+    import "./mail-v.weir"
+
+    let user (Mail.Email raw) = raw |> Str.split "@" |> Seq.head
+    match Mail.Email.create "ada@example.org" with
+    | Ok e ->
+        let (Email whole) = e
+        print $"{user e} {whole}"
+    | Error msg -> print msg
+use |> File.write "use-mail-v.weir"
+weir use-mail-v.weir
 ```
 
 ## Record patterns

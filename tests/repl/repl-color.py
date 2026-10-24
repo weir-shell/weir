@@ -167,15 +167,15 @@ def run_check(argv_path, keep_fd, redirect_fd, outfile):
 
 # tty stdout: the diagnostic arrives there, colored; stderr carries none
 pty_out, err_file = run_check(_d + "/bad.weir", 1, 2, _d + "/err.txt")
-if "casing-law" not in pty_out or "\x1b[" not in pty_out:
+if "lowercase-binding" not in pty_out or "\x1b[" not in pty_out:
     failures.append(
         f"check on a tty must color its stdout diagnostic: {pty_out[-200:]!r}")
-if "casing-law" in err_file:
+if "lowercase-binding" in err_file:
     failures.append(f"stderr must carry no diagnostic: {err_file[-200:]!r}")
 
 # redirected stdout: the diagnostic is plain in the capture (pipe-safe)
 _pty_err, out_file = run_check(_d + "/bad.weir", 2, 1, _d + "/out.txt")
-if "casing-law" not in out_file or "\x1b[" in out_file:
+if "lowercase-binding" not in out_file or "\x1b[" in out_file:
     failures.append(
         f"a redirected check must capture the plain diagnostic: {out_file[-200:]!r}")
 

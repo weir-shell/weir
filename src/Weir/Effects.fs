@@ -124,7 +124,10 @@ let libraryDesugarTarget (n: string) : string option = libraryDesugarTargets.Try
 /// targets a spawn (effectful); a library desugar targets a plain member
 /// (classified as that member, never as a command).
 let isCommandReifier (n: string) =
-    n.StartsWith "|" && not (libraryDesugarTargets.ContainsKey n)
+    n.StartsWith "|"
+    && not (libraryDesugarTargets.ContainsKey n)
+    // a validated type's `create` is weir code, no spawn [D:validated-types]
+    && not (n.StartsWith Weir.Types.createVarPrefix)
 
 /// is a name classified-effectful? A command reifier targets a spawn
 /// [D:exit-reifiers]; a library desugar reads as its target member, so a

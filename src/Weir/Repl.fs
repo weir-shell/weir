@@ -319,7 +319,7 @@ let private recordKind (chk: Script.CheckedStatement) : TranscriptKind option =
         match names |> List.filter isNamedBinder with
         | first :: _ -> Some(TDef first)
         | [] -> Some TDiscard
-    | Script.KType decl -> Some(TDef decl.Name)
+    | Script.KType(decl, _) -> Some(TDef decl.Name)
     | Script.KCmd te
     | Script.KExpr te -> Some(if te.Ty = TUnit then TOther else TDiscard)
     | Script.KModule _
@@ -2527,24 +2527,34 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
     lastExit <- None
 
     match chk.Kind with
-    | Script.KType decl ->
-        let ctors =
-            match decl.Body with
-            | DUnion cases -> Eval.constructorValues cases
-            | DRecord _ -> []
+    | Script.KType(decl, validator) ->
 
         // the REPL replaces on redeclaration [D:dup-type-decl] —
         // scripts error instead; the note exists because the confusing
         // half is real: an old value still echoes with its fields
         // while field access resolves against the new shape
-        if Map.containsKey decl.Name state.TypeEnv.Types then
+        // an import's own type gave the name up and stays reachable
+        // qualified [D:qualified-type-names]
+        let movedImport =
+            if state.TypeEnv.TypeOrigins.ContainsKey decl.Name then
+                chk.Env.ModuleTypes
+                |> Map.tryPick (fun _ owned ->
+                    match Map.tryFind decl.Name owned with
+                    | Some key when key <> decl.Name -> Some key
+                    | _ -> None)
+            else
+                None
+
+        if movedImport.IsSome then
+            Console.WriteLine $"type {decl.Name} declared; the imported {decl.Name} is now {movedImport.Value}"
+        elif Map.containsKey decl.Name state.TypeEnv.Types then
             Console.WriteLine $"type {decl.Name} redeclared; earlier values keep the old shape"
         else
             Console.WriteLine $"type {decl.Name} declared"
 
         { state with
             TypeEnv = chk.Env
-            Values = ctors |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
+            Values = Eval.declare state.Values decl validator }
     | Script.KLetPat(pat, schemes, te) ->
         printWarnings state te
 
@@ -3328,16 +3338,11 @@ let private injectDecls (state: State) (declText: string list) : Result<State * 
                 | Error d -> Error(formatDraftedDiag physical d)
                 | Ok chk ->
                     match chk.Kind with
-                    | Script.KType decl ->
-                        let ctors =
-                            match decl.Body with
-                            | DUnion cases -> Eval.constructorValues cases
-                            | DRecord _ -> []
-
+                    | Script.KType(decl, validator) ->
                         let st' =
                             { st with
                                 TypeEnv = chk.Env
-                                Values = ctors |> List.fold (fun vs (n, v) -> Map.add n v vs) st.Values }
+                                Values = Eval.declare st.Values decl validator }
 
                         go st' (decl.Name :: defined) tail
                     | _ -> Error "#infer: a drafted statement was not a type declaration"
@@ -4445,15 +4450,9 @@ let private loadInit (baseState: State) : State =
 
                 try
                     match chk.Kind with
-                    | Script.KType decl ->
+                    | Script.KType(decl, validator) ->
                         names <- names + 1
-
-                        (match decl.Body with
-                         | Ast.DUnion cases ->
-                             venv <-
-                                 Eval.constructorValues cases
-                                 |> List.fold (fun m (n, v) -> Map.add n v m) venv
-                         | Ast.DRecord _ -> ())
+                        venv <- Eval.declare venv decl validator
                     | Script.KLet(name, _, te) ->
                         names <- names + 1
                         let v = Eval.eval venv te

@@ -142,14 +142,8 @@ let private evalOnce (input: string) : int =
                         | (_, (chk: Script.CheckedStatement)) :: tail ->
                             try
                                 match chk.Kind with
-                                | Script.KType decl ->
-                                    let venv' =
-                                        match decl.Body with
-                                        | DUnion cases ->
-                                            Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) venv
-                                        | DRecord _ -> venv
-
-                                    execAll venv' (idx + 1) tail
+                                | Script.KType(decl, validator) ->
+                                    execAll (Eval.declare venv decl validator) (idx + 1) tail
                                 | Script.KLet(name, _, te) -> execAll (Map.add name (Eval.eval venv te) venv) (idx + 1) tail
                                 | Script.KLetPat(pat, _, te) ->
                                     let bindings = Eval.bindPattern pat (Eval.eval venv te)
@@ -735,7 +729,7 @@ let main argv =
                                                              $"import it:  import {quoteData importPath} as {gen.ModuleName}"
 
                                                          Console.WriteLine
-                                                             $"read with:  from json {gen.TopType} / from yaml {gen.TopType}  (type names resolve bare)"
+                                                             $"read with:  from json {gen.ModuleName}.{gen.TopType} / from yaml {gen.ModuleName}.{gen.TopType}  (or the bare name, while no other import declares it)"
 
                                                          0)
         | "gen" :: _ ->
