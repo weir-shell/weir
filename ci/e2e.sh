@@ -16070,9 +16070,9 @@ echo "e2e ok: a bare or two-home member after |> teaches its qualified spelling,
 rm -rf "$pfdir"
 
 # ---- repeat and the stop request [D:repeat] [D:stop-request] ---------------
-# While a `repeat` or a `Self.waitForStop` runs, the first stop signal only
-# asks the program to stop: the iteration in hand finishes, the code after
-# the loop runs, exit 0; a second signal is the teardown. Every signal here
+# While a `repeat` or a held scope (`within … until stopped`) runs, the first
+# stop signal only asks the program to stop: the iteration in hand finishes,
+# the code after the loop runs, exit 0; a second signal is the teardown. Every signal here
 # waits for a marker written while the stop-aware construct is live — never
 # a guessed delay. rsig.py reports the raw status (-n: died by signal n)
 if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
@@ -16139,14 +16139,15 @@ WEOF
     echo "e2e ok: repeat — a TERM during the interval wait ends it at once, no new iteration"
 
     # two TERMs: the second is today's teardown — the iteration's sleep is cut,
-    # the always runs, weir dies by SIGTERM. The marker after Self.waitForStop
+    # the always runs, weir dies by SIGTERM. The marker after the held scope
     # shows the first was taken as the request
     cat > "$rpdir/two.weir" <<'WEOF'
 let log = Self.args |> Seq.head
 within
     repeat interval=200ms
-        File.append log ["start"]
-        Self.waitForStop ()
+        within
+            File.append log ["start"]
+        until stopped
         File.append log ["requested"]
         Duration.sleep 30s
         File.append log ["end"]
@@ -16223,10 +16224,12 @@ WEOF
     [ "$(tail -1 "$rpdir/piter.log")" = "after" ] || fail "the two-arm receipt: the fan-out completes before the code after: $(rplog "$rpdir/piter.log")"
     echo "e2e ok: repeat — the two-arm Seq.piter receipt: both arms stop, the fan-out completes, exit 0"
 
-    # within serve + Self.waitForStop: a request in flight when TERM lands is
-    # answered by the normal close's drain, the line after the scope prints,
-    # exit 0; a second TERM during that drain cuts as today. The marker comes
-    # from a repeat arm, so the TERM always lands while the scope waits
+    # within serve + until stopped [D:held-scope]: a request in flight when
+    # TERM lands is answered by the normal close's drain, the always and the
+    # line after the scope run, exit 0; a second TERM during the close cuts as
+    # today. `live` is the body's last statement and the client's request
+    # starts only after it, so the scope is held before the handler's marker
+    # can trigger the TERM (a TERM before the hold would tear down: exit -15)
     if command -v curl >/dev/null 2>&1; then
         rpport=8561
         cat > "$rpdir/serve.weir" <<WEOF
@@ -16239,12 +16242,9 @@ let handler = fun req ->
 within serve srv = { port = $rpport; maxConcurrent = 2 } handler
     poll timeout=8s interval=50ms
         Net.portOpen $rpport
-    [ 1; 2 ] |> Seq.piter (fun i ->
-        if i == 1 then
-            Self.waitForStop ()
-        else
-            repeat interval=100ms
-                File.append log ["live"])
+    File.append log ["live"]
+until stopped
+always
     File.append log ["closing"]
 File.append log ["after"]
 WEOF
@@ -16254,9 +16254,9 @@ WEOF
         cpid=$!
         r=$(python3 "$rpdir/rsig.py" 15 "wait:$rpdir/serve.log:handler" kill:TERM -- "$BIN" "$rpdir/serve.weir" "$rpdir/serve.log" 1500ms)
         wait "$cpid" 2>/dev/null || true
-        echo "$r" | grep -q "^status 0 " || fail "within serve + Self.waitForStop exits 0 on a TERM: $r"
+        echo "$r" | grep -q "^status 0 " || fail "within serve + until stopped exits 0 on a TERM: $r"
         [ "$(cat "$rpdir/serve.out" 2>/dev/null)" = "late-ok" ] || fail "a request in flight at the TERM gets its response (the normal drain): '$(cat "$rpdir/serve.out" 2>/dev/null)' $r"
-        [ "$(tail -1 "$rpdir/serve.log")" = "after" ] || fail "the line after the serve scope runs: $(rplog "$rpdir/serve.log")"
+        [ "$(tail -2 "$rpdir/serve.log" | tr '\n' ',')" = "closing,after," ] || fail "the always, then the line after the serve scope run: $(rplog "$rpdir/serve.log")"
         rm -f "$rpdir/serve.log" "$rpdir/serve.out"
         (for _ in $(seq 1 200); do grep -qxF live "$rpdir/serve.log" 2>/dev/null && break; sleep 0.05; done
          curl -s --max-time 10 "http://127.0.0.1:$rpport/" > "$rpdir/serve.out" 2>/dev/null) &
@@ -16267,8 +16267,36 @@ WEOF
         ms=$(echo "$r" | awk '{print $4}')
         [ "$ms" -lt 4000 ] || fail "a second TERM cuts the drain (${ms}ms): $r"
         grep -qxF after "$rpdir/serve.log" && fail "a second TERM: nothing runs after the scope: $(rplog "$rpdir/serve.log")"
-        echo "e2e ok: within serve + Self.waitForStop — a TERM closes by the normal path (in-flight request answered, exit 0); a second TERM cuts"
+        echo "e2e ok: within serve + until stopped — a TERM closes by the normal path (in-flight request answered, always runs, exit 0); a second TERM cuts"
     fi
+
+    # held scopes [D:held-scope]: the body, the hold, then the normal close —
+    # the always runs while the resource is still held (tmp dir present, the
+    # scoped process alive), then the release; exit 0. A stop already
+    # requested (sticky) makes a later hold return at once
+    cat > "$rpdir/held.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within tmp d
+    File.write (d + "/f") ["x"]
+    within proc p = sleep 30
+        File.append log ["held"]
+    until stopped
+    always
+        File.append log [if Proc.running p then "proc alive in always" else "proc dead in always"]
+    File.append log [if File.exists (d + "/f") then "tmp present after the proc scope" else "tmp gone"]
+File.append log ["after"]
+within
+    File.append log ["second"]
+until stopped
+File.append log ["end"]
+WEOF
+    rm -f "$rpdir/held.log"
+    r=$(python3 "$rpdir/rsig.py" 10 "wait:$rpdir/held.log:held" kill:TERM -- "$BIN" "$rpdir/held.weir" "$rpdir/held.log")
+    echo "$r" | grep -q "^status 0 " || fail "a TERM ends a held scope by its normal path, exit 0: $r"
+    ms=$(echo "$r" | awk '{print $4}')
+    [ "$ms" -lt 3000 ] || fail "a TERM ends the hold at once, and the sticky request skips the second hold (${ms}ms): $r"
+    [ "$(rplog "$rpdir/held.log")" = "held,proc alive in always,tmp present after the proc scope,after,second,end," ] || fail "held scope order: $(rplog "$rpdir/held.log")"
+    echo "e2e ok: within … until stopped — held until the TERM, the always runs inside the scope, the release follows, a later hold returns at once (sticky), exit 0"
 
     # a terminal ^C reaches the iteration's child too: its death is the stop,
     # not a command failure — the loop ends cleanly [D:stop-caused-failure]
@@ -16287,15 +16315,16 @@ WEOF
 
     # the REPL (D1): the first ^C stops a repeat gracefully and the prompt
     # returns; the request ends with the entry, so the next repeat runs; a
-    # second ^C cuts the entry as today [D:repl-stop-request]
+    # second ^C cuts the entry as today [D:repl-stop-request]. A typed held
+    # scope submits at `until stopped` and its first ^C is the request too
     rph="$rpdir/home"; mkdir -p "$rph"
-    tout=$(printf '%s\n' 'WAIT weir>' 'SEND repeat interval=100ms\x1b\r    sh -c "echo tick-a | tr a-z A-Z; sleep 3; echo tick-z | tr a-z A-Z"\r' 'WAIT TICK-A' 'SEND \x03' 'WAIT weir>' 'SEND repeat interval=50ms\x1b\r    print (Str.toUpper "again")\x1b\r    true\r' 'WAIT AGAIN' 'SEND repeat interval=100ms\x1b\r    print (Str.toUpper "tock")\x1b\r    Duration.sleep 5s\x1b\r    print (Str.toUpper "tock-end")\r' 'WAIT TOCK' 'SEND \x03' 'SLEEP 300' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "still-here")\r' 'WAIT STILL-HERE' 'SEND \x04' 'SLEEP 500' | env HOME="$rph" XDG_CONFIG_HOME="$rph/c" XDG_DATA_HOME="$rph/d" XDG_STATE_HOME="$rph/s" XDG_CACHE_HOME="$rph/k" NO_COLOR=1 python3 "$ptyrun" 30 "$BIN")
-    for want in "AGAIN" "STILL-HERE" "EXIT 0"; do
+    tout=$(printf '%s\n' 'WAIT weir>' 'SEND repeat interval=100ms\x1b\r    sh -c "echo tick-a | tr a-z A-Z; sleep 3; echo tick-z | tr a-z A-Z"\r' 'WAIT TICK-A' 'SEND \x03' 'WAIT weir>' 'SEND repeat interval=50ms\x1b\r    print (Str.toUpper "again")\x1b\r    true\r' 'WAIT AGAIN' 'SEND repeat interval=100ms\x1b\r    print (Str.toUpper "tock")\x1b\r    Duration.sleep 5s\x1b\r    print (Str.toUpper "tock-end")\r' 'WAIT TOCK' 'SEND \x03' 'SLEEP 300' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "still-here")\r' 'WAIT STILL-HERE' 'SEND within\x1b\r    print (Str.toUpper "held-a")\x1b\runtil stopped\r' 'WAIT HELD-A' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "post-held")\r' 'WAIT POST-HELD' 'SEND \x04' 'SLEEP 500' | env HOME="$rph" XDG_CONFIG_HOME="$rph/c" XDG_DATA_HOME="$rph/d" XDG_STATE_HOME="$rph/s" XDG_CACHE_HOME="$rph/k" NO_COLOR=1 python3 "$ptyrun" 30 "$BIN")
+    for want in "AGAIN" "STILL-HERE" "HELD-A" "POST-HELD" "EXIT 0"; do
         echo "$tout" | grep -qF "$want" || fail "repeat at the REPL: '$want' expected: $tout"
     done
     echo "$tout" | grep -qE "TICK-Z|TOCK-END|command failed" && fail "repeat at the REPL: the first ^C stops gracefully, the second cuts: $tout"
     [ "$(echo "$tout" | grep -c 'exit 130')" = "1" ] || fail "repeat at the REPL: only the second ^C reports the interrupt: $tout"
-    echo "e2e ok: repeat at the REPL — the first ^C stops it gracefully, the next repeat runs, a second ^C cuts the entry"
+    echo "e2e ok: repeat at the REPL — the first ^C stops it gracefully, the next repeat runs, a second ^C cuts the entry; a held scope ends at its first ^C"
 
     # the plan refusal and the missing interval are check errors (nothing runs)
     printf '%s\n' 'let p =' '    plan' '        repeat interval=1s' '            print "x"' 'print (show p)' > "$rpdir/plan.weir"
