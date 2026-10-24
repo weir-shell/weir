@@ -7777,9 +7777,9 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Use it in a condition: `if git diff --quiet | succeeds then …`.")
           "orFail",
           bd
-              "Run the command with its output streaming to the terminal; if it exits nonzero, raise with your message and the exit code."
-              None
-              (Some "Use it to stop the script when a command fails: `make test | orFail \"tests failed\"`.")
+              "Stop with a message if it didn't work. After a command, `<command> | orFail \"msg\"` runs it with its output streaming to the terminal; if it exits nonzero, it raises with your message and the exit code. After an expression, `<expr> |> orFail` is the inverse of `|> try`: `Ok v` and `Some v` give `v`, `Error msg` raises `msg`, and `None` raises `orFail: no value (None)`. With a message, `|> orFail \"msg\"` raises `msg: <error>` for an Error and `msg` for None."
+              (Some "Map.tryGet \"port\" (Map.ofPairs [(\"port\", \"8080\")]) |> orFail \"no port\"")
+              (Some "Use it to stop the script when a command fails: `make test | orFail \"tests failed\"`. The raise is an ordinary one: `|> try` catches it.")
           "exitCode",
           bd
               "Run the command with its output streaming to the terminal and return its exit code as an int. It never raises."

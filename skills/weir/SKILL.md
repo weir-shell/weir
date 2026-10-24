@@ -2868,6 +2868,34 @@ print $"exit={r.exitCode}"
   cases shadow Result's for construction; patterns resolve by type (an
   untyped scrutinee by the union owning ALL the arms' cases). Commands
   keep their own spelling: `cmd | complete`.
+- The inverse of try [D:orfail-form]: `e |> orFail` turns a failed
+  VALUE back into a raise — `Result<'T, string> |> orFail : 'T` and
+  `Option<'T> |> orFail : 'T` (`Ok v`/`Some v` give `v`). The same FORM
+  shape as `try` (after `|>`, captures everything to its left, `orFail`
+  is reserved) with an optional message atom, as the reifier takes one:
+  `Error msg` raises `msg`, or `"<message>: msg"` with a message (the
+  Error's text is data — CR/LF/escapes render visibly
+  [D:error-data-escape]); `None` raises the message, or `orFail: no
+  value (None)` without one. Anything else is a check error naming
+  both shapes. The raise is located at the `orFail` and is an ordinary
+  one — `|> try` catches it, `pure` admits it (raising is not an
+  effect). Fail fast inside, value at the boundary: helpers `|> orFail`,
+  the caller decides with `|> try result`. One meaning, two positions:
+  after a COMMAND it is the reifier `cmd | orFail "msg"` (single pipe;
+  `cmd |> orFail` teaches it).
+
+```weir
+let cfg = Map.ofPairs [("port", "8080")]
+let port = Map.tryGet "port" cfg |> orFail "no port" |> Str.tryToInt |> orFail
+let host = Map.tryGet "host" cfg |> orFail "no host" |> try result
+print $"{port} {host}"
+```
+
+```weir-error
+// orFail takes a Result<'T, string> or an Option<'T> — an int is neither
+let n = 3 |> orFail
+print (show n)
+```
 - `exit n` exits with code n silently (propagation:
   `if r.exitCode <> 0 then exit (r.exitCode)`); n outside 0..255
   raises (a literal is a check error) [D:exit-range]; `fail "msg"` is

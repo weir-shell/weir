@@ -65,6 +65,15 @@ Many of the changes and fixes below were found porting starship to weir.
   way (a server answers the requests in flight, `always` runs whole),
   the code after it runs, and the script exits 0. An `always` cleanup
   goes after `until stopped`.
+- **`|> orFail`, the inverse of `|> try`.** `Map.tryGet "port" cfg |>
+  orFail "no port"` gives the value inside an `Ok` or a `Some`, and
+  stops on `Error msg` (with `no port: msg`) or `None` (with `no
+  port`). Without a message, `Error msg` stops with `msg` and `None`
+  with `orFail: no value (None)`. Anything other than a
+  `Result<'T, string>` or an `Option<'T>` is a check error. The error
+  points at the `orFail`, and `|> try` catches it like any other.
+  After a command the same word is still the reifier, `cmd | orFail
+  "msg"`. `orFail` is now a keyword, so it can't be used as a name.
 
 ### Changed
 

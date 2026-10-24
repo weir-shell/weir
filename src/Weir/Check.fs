@@ -169,6 +169,9 @@ and TypedKind =
     | TEFromToml of tyName: string * shape: Yaml.Shape
     // `e |> try [result]` [D:try-form]: e evaluated inside a capture
     | TETry of body: TypedExpr * asResult: bool
+    // `e |> orFail [msg]` [D:orfail-form]: `site` is a unit node at the
+    // form, so a raise there has a mapped position
+    | TEOrFail of body: TypedExpr * message: TypedExpr option * site: TypedExpr
     | TETo of
         format: string *
         renames: Map<string, Map<string, string>> *
@@ -3095,6 +3098,59 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         err
             expr.Span
             "'try' goes after a pipeline: `<expr> |> try` gives an Option (None if it failed), `<expr> |> try result` a Result with the error message"
+    // the inverse of try [D:orfail-form]: Ok v / Some v unwrap to v; Error
+    // and None raise at the form
+    | EOrFail(body, msg, site) ->
+        result {
+            let! tb = infer ctx env body
+
+            let! tm =
+                match msg with
+                | None -> Ok None
+                | Some m ->
+                    infer ctx env m
+                    |> Result.bind (fun tm ->
+                        match resolve ctx tm.Ty with
+                        | TStr -> Ok(Some tm)
+                        | TVar _ as v -> bind ctx env m.Span TStr v |> Result.map (fun () -> Some tm)
+                        | t -> err m.Span $"orFail's message is a string; this is {formatTy (finalTy ctx t)}")
+
+            let shapes = "orFail takes a Result<'T, string> or an Option<'T>"
+
+            let! ty =
+                match resolve ctx tb.Ty with
+                | TNamed("Option", [ t ]) -> Ok t
+                | TNamed("Result", [ t; e ]) ->
+                    (match resolve ctx e with
+                     | TStr -> Ok t
+                     | TVar _ as v -> bind ctx env body.Span TStr v |> Result.map (fun () -> t)
+                     | _ -> err site $"{shapes}; this is {formatTy (finalTy ctx tb.Ty)} — its Error must carry a string")
+                | TVar _ ->
+                    err
+                        site
+                        $"{shapes}, and the type of its left side is not known yet — use it where the value's type is fixed (a call's result, a matched value)"
+                | t -> err site $"{shapes}; this is {formatTy (finalTy ctx t)}"
+
+            let tsite =
+                { Kind = TEUnit
+                  Ty = TUnit
+                  Span = site }
+
+            return
+                { Kind = TEOrFail(tb, tm, tsite)
+                  Ty = ty
+                  Span = expr.Span }
+        }
+    // a command chain's `|> orFail` stage [D:orfail-form]: a failing
+    // command already raises; the reifier adds the message
+    | EPipe(_, ({ Kind = EOrFailForm _ } as form)) ->
+        err
+            form.Span
+            "a failing command already stops the script; to stop with your message, use the reifier: `<command> | orFail \"msg\"`. `|> orFail` unwraps a Result or an Option"
+    | EOrFailForm _ ->
+        err
+            expr.Span
+            "'orFail' goes after a pipeline: `<expr> |> orFail` unwraps a Result or an Option and raises on Error/None (`|> orFail \"msg\"` adds your message); after a command, `<command> | orFail \"msg\"`"
     | EInt n ->
         Ok
             { Kind = TEInt n
@@ -6638,6 +6694,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEFromToml _
     | TETo _ -> []
     | TETry(b, _) -> [ b ]
+    | TEOrFail(b, m, site) -> b :: (Option.toList m @ [ site ])
     | TELet(_, _, v, b) -> [ v; b ]
     | TELetPat(_, v, b) -> [ v; b ]
     | TELambda(_, _, b) -> [ b ]
