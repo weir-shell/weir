@@ -301,7 +301,7 @@ let private escapeFor (opener: string) (s: string) : string =
 
 let private stringLiteral (s: string) = "\"" + escapeFor "\"" s + "\""
 
-let private bareArgvSafe (s: string) =
+let bareArgvSafe (s: string) =
     s <> ""
     && s
        |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || "._-/~+,=:%@^".IndexOf c >= 0)

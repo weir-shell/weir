@@ -5829,7 +5829,10 @@ type SigInfo =
       // declaration site [D:lsp-cross-file]
       SigPath: string
       Version: string
-      SubRecords: Map<string, string> }
+      SubRecords: Map<string, string>
+      // the REPL's dynamic values: "" none, "git", "cobra"
+      // [D:sig-dynamic-complete]
+      Dynamic: string }
 
 // a value word that names a file: the field's name or a spelling has a
 // path word, or its doc's first line does [D:sig-arg-complete] —
@@ -6256,6 +6259,29 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                 $"#sig {quoteData decl.Tool}: `let convention = \"{convention}\"` names no flag convention — use \"gnu\" (the default), \"go\" or \"find\""
                         )
 
+                    // the mechanism the REPL's Tab may ask for values
+                    // [D:sig-dynamic-complete]: a name, never a command
+                    let dynamic =
+                        let bad what =
+                            diags.Add(
+                                mk
+                                    decl.Line
+                                    $"#sig {quoteData decl.Tool}: {what} — use \"git\" or \"cobra\", or drop the line"
+                            )
+
+                            ""
+
+                        match
+                            lm.Body
+                            |> List.tryPick (function
+                                | _, CLet(n, te) when n = "dynamic" -> Some te.Kind
+                                | _ -> None)
+                        with
+                        | None -> ""
+                        | Some(Check.TEStr("git" | "cobra" as m)) -> m
+                        | Some(Check.TEStr s) -> bad $"`let dynamic = \"{quoteData s}\"` names no completion mechanism"
+                        | Some _ -> bad "`let dynamic` takes a mechanism's name, a string"
+
                     // a field typed by a union of bare cases records its
                     // choices (`type Color = | Always | Never | Auto` →
                     // always, never, auto) [D:sig-arg-complete]
@@ -6288,7 +6314,8 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                           Unchecked = keysOf "unchecked"
                           SigPath = sigFile
                           Version = letStr "version" |> Option.defaultValue ""
-                          SubRecords = subRecords }
+                          SubRecords = subRecords
+                          Dynamic = dynamic }
 
                     match lm.TypeDefs |> List.tryFind (fun (n, _) -> n = "Cmd") with
                     | None ->
@@ -6815,6 +6842,12 @@ type SigCompletion =
     /// a value the sig knows nothing about: no offer
     | SigNothing
 
+/// where a word sits, for the tool's own values [D:sig-dynamic-complete]
+type DynSlot =
+    | DynOperand
+    | DynValue
+    | DynStatic
+
 module SigComplete =
     // argv words, whitespace-split outside quotes and parens
     let private tokens (s: string) : string list =
@@ -7117,6 +7150,39 @@ module SigComplete =
         | SigWords cs -> SigWords(cs |> List.filter spellable)
         | r -> r
 
+    /// the argv words of `argText`, the complete ones and the one at its
+    /// end ("" after whitespace)
+    let split (argText: string) : string list * string =
+        let ts = tokens argText
+
+        if argText = "" || Char.IsWhiteSpace argText[argText.Length - 1] then
+            ts, ""
+        else
+            List.truncate (ts.Length - 1) ts, List.last ts
+
+    /// where the word at the end of `argText` sits, for the tool's own
+    /// values [D:sig-dynamic-complete]: an operand or a flag's value may
+    /// ask; a subcommand or a flag name stays the sig's (Tab spawns
+    /// nothing there)
+    let dynamicSlot (si: SigInfo) (argText: string) : DynSlot =
+        let before, cur = split argText
+
+        if Set.contains "" si.Unchecked then
+            (if isFlag cur then DynStatic else DynOperand)
+        else
+            match walk si "" before with
+            | Value _ -> DynValue
+            | Open -> if isFlag cur then DynStatic else DynOperand
+            | InCase key when isFlag cur && cur.Contains '=' ->
+                let name = cur.Substring(0, cur.IndexOf '=')
+
+                match sigSurfaceAt si key |> Option.bind (fun sf -> flagArity si sf name) with
+                | Some(ANone, _) -> DynStatic
+                | _ -> DynValue
+            | InCase _ when isFlag cur -> DynStatic
+            | InCase key when sigHasChildren si key -> DynStatic
+            | InCase _ -> DynOperand
+
 /// the sigs the REPL sees, by tool name at Tab time [D:sig-arg-complete]:
 /// the nearest project .weir/sigs/ (resolved as #sig resolves it), then
 /// the user dir. Loaded once per file version — path + mtime
@@ -7174,10 +7240,122 @@ module SigLookup =
 
     let find (cwd: string) (tool: string) : SigInfo option = findIn cwd (userDir ()) tool
 
+/// the mechanism a sig's `let dynamic` is granted [D:sig-dynamic-complete]
+type DynMechanism =
+    | DynOff
+    | DynGit
+    | DynCobra
+    /// a project sig asking to run its tool: ignored, with a hint
+    | DynRefused
+
+/// "git" runs only weir's own fixed git commands, so any sig has it;
+/// "cobra" runs the tool, so only a sig from the user dir (`add sig
+/// --global`) has it — a project's loads unasked
+let dynamicFor (userDir: string) (si: SigInfo) : DynMechanism =
+    match si.Dynamic with
+    | "git" -> DynGit
+    | "cobra" ->
+        let norm (p: string) =
+            IO.Path.TrimEndingDirectorySeparator(IO.Path.GetFullPath p)
+
+        let cmp =
+            if OperatingSystem.IsWindows() then
+                StringComparison.OrdinalIgnoreCase
+            else
+                StringComparison.Ordinal
+
+        let fromUser =
+            try
+                String.Equals(norm (IO.Path.GetDirectoryName(IO.Path.GetFullPath si.SigPath)), norm userDir, cmp)
+            with _ ->
+                false
+
+        if fromUser then DynCobra else DynRefused
+    | _ -> DynOff
+
+/// the hint a refused cobra sig gets, once per session per tool
+let dynamicHint (tool: string) : string =
+    let t = Eval.sanitizeTtyEcho tool
+    $"dynamic completion for {t} needs a user-level sig: weir add sig --global {t}"
+
+// the tool's own values for the word at the end of `argText` (the text
+// after the head, alias-expanded) [D:sig-dynamic-complete]: None defers to
+// layer 1. An answer is the tool's untrusted text: offered only as a bare
+// argv word (Complete.bareArgvSafe, never needing quotes) — anything else
+// is dropped, as layer 1 drops a spelling it cannot offer bare
+let private dynamicAnswer
+    (hooks: DynComplete.Hooks)
+    (userDir: string)
+    (si: SigInfo)
+    (tool: string)
+    (argText: string)
+    (word: string)
+    : string list option =
+    let slot = SigComplete.dynamicSlot si argText
+    let before, cur = SigComplete.split argText
+
+    // a word weir would read as more than its text (a quote, a splice, a
+    // subexpression) is not what the tool would see: no ask
+    let plain (w: string) =
+        w
+        |> Seq.forall (fun c -> not (Char.IsControl c || "\"'`$()\\".IndexOf c >= 0))
+
+    let offer (outcome: DynComplete.Outcome) (valuesOnly: bool) =
+        match outcome with
+        | DynComplete.Interrupted -> Some []
+        | DynComplete.Fallback -> None
+        | DynComplete.Answer(cands, noFiles) ->
+            // cobra answers `--flag=` with the values alone
+            let lead = if valuesOnly then cur.Substring(0, cur.IndexOf '=' + 1) else ""
+            let cut = cur.Length - word.Length
+
+            let fits =
+                cands
+                |> List.map (fun c -> lead + c)
+                |> List.filter (fun c -> c.StartsWith cur && Complete.bareArgvSafe c)
+                |> List.map (fun c -> c.Substring cut)
+                |> List.distinct
+
+            match fits with
+            | [] when noFiles -> Some []
+            | [] -> None
+            | fs -> Some fs
+
+    if slot = DynStatic || not (cur.EndsWith word) || not (List.forall plain (cur :: before)) then
+        None
+    else
+        match dynamicFor userDir si with
+        | DynOff -> None
+        | DynRefused ->
+            DynComplete.hintOnce tool (fun () -> hooks.Note(dynamicHint tool))
+            None
+        | DynGit ->
+            match slot, DynComplete.gitWant before with
+            | DynOperand, Some want ->
+                offer
+                    (hooks.Run
+                        { Mechanism = "git"
+                          Exe = "git"
+                          Args = DynComplete.gitArgs want })
+                    false
+            | _ -> None
+        | DynCobra ->
+            offer
+                (hooks.Run
+                    { Mechanism = "cobra"
+                      Exe = tool
+                      Args = before @ [ cur ] })
+                (cur.StartsWith "-" && cur.Contains '=')
+
 /// a command argv word the sig of its head completes: Some offers, Some
 /// [] for "nothing", None when the line machinery decides (no sig, a
-/// path the sig defers to, a splice, a quoted word)
-let sigArgvComplete
+/// path the sig defers to, a splice, a quoted word). With `hooks` (the
+/// REPL), an operand or a flag's value the sig answers with paths or
+/// nothing asks the tool first when the sig names a mechanism
+/// [D:sig-dynamic-complete]
+let sigArgvCompleteWith
+    (hooks: DynComplete.Hooks option)
+    (userDir: string)
     (aliases: Map<string, string * string list>)
     (env: TypeEnv)
     (text: string)
@@ -7186,13 +7364,15 @@ let sigArgvComplete
     let before = text.Substring(0, min wordStart text.Length)
     let word = text.Substring(min wordStart text.Length)
 
-    let plainSlot =
-        word.IndexOf '/' < 0
-        && not (word.StartsWith "~")
-        && (before = "" || Char.IsWhiteSpace before[before.Length - 1] || before[before.Length - 1] = '=')
+    let argvSlot =
+        (before = "" || Char.IsWhiteSpace before[before.Length - 1] || before[before.Length - 1] = '=')
         && not (Weir.Scan.endsInsideString before)
 
-    if not plainSlot then
+    // a `/` word is a path to layer 1; the tool may still know it
+    // (`feature/x`, `pod/web`) — a `~` word is a home path
+    let plainSlot = argvSlot && word.IndexOf '/' < 0 && not (word.StartsWith "~")
+
+    if not argvSlot || word.StartsWith "~" then
         None
     else
         match Complete.commandArgvAt env before with
@@ -7207,22 +7387,41 @@ let sigArgvComplete
                     exe, (if prefix.IsEmpty then argText else " " + String.concat " " prefix + argText)
                 | _ -> head.TrimStart '^', argText
 
-            match SigLookup.find (Session.resolve ".") tool with
+            match SigLookup.findIn (Session.resolve ".") userDir tool with
             | None -> None
             | Some si ->
-                match SigComplete.complete si (argText + word) word with
-                | SigWords ws -> Some ws
-                | SigNothing -> Some []
-                | SigPaths -> None
+                let layer1 =
+                    if plainSlot then
+                        SigComplete.complete si (argText + word) word
+                    else
+                        SigPaths
+
+                let static' =
+                    match layer1 with
+                    | SigWords ws -> Some ws
+                    | SigNothing -> Some []
+                    | SigPaths -> None
+
+                match hooks, layer1 with
+                | Some h, (SigPaths | SigNothing) ->
+                    match dynamicAnswer h userDir si tool (argText + word) word with
+                    | Some offers -> Some offers
+                    | None -> static'
+                | _ -> static'
+
+let sigArgvComplete aliases env text wordStart =
+    sigArgvCompleteWith None (SigLookup.userDir ()) aliases env text wordStart
 
 /// the REPL's Tab over its entry [D:entry-complete]: `entry` is the
 /// entry up to the cursor (dedented, its last line cut there), `text`
 /// the cursor's own line up to the cursor and `wordStart` within it,
 /// `aliases` the session's (name -> exe, prefix). A
 /// repaired `head.`/`_.` word answers first (the LSP's precedence), the
-/// sig of a command's head next, the line machinery under the entry's
-/// env otherwise
-let suggestEntry
+/// sig of a command's head next (with `hooks`, the tool's own values
+/// [D:sig-dynamic-complete]), the line machinery under the entry's env
+/// otherwise
+let suggestEntryWith
+    (hooks: DynComplete.Hooks option)
     (aliases: Map<string, string * string list>)
     (values: Map<string, Eval.Value>)
     (env: TypeEnv)
@@ -7236,9 +7435,12 @@ let suggestEntry
     | Some(_ :: _ as fields) -> fields
     | _ ->
         // a command argv word under a sig'd head [D:sig-arg-complete]
-        match sigArgvComplete aliases ctxEnv text wordStart with
+        match sigArgvCompleteWith hooks (SigLookup.userDir ()) aliases ctxEnv text wordStart with
         | Some offers -> offers
         | None -> Complete.suggestSession (aliases |> Map.keys |> Set.ofSeq) values ctxEnv text wordStart
+
+let suggestEntry aliases values env entry text wordStart =
+    suggestEntryWith None aliases values env entry text wordStart
 
 // ---- `weir add sig <tool>`: generation [D:command-signatures] --------------
 // Sources in fidelity order [D:sig-sources], the chosen one recorded in the
@@ -8735,6 +8937,19 @@ module SigGen =
                 | None ->
                     line
                         "// no `let version`: the tool answers neither --version nor the version subcommand, so there is no identity to record"
+
+                // the REPL's Tab may ask the tool for values
+                // [D:sig-dynamic-complete]; the line is the user's to drop
+                match source with
+                | "cobra-complete" ->
+                    line "/// the REPL's Tab asks the tool for values (`__complete`); honored from"
+                    line "/// the user sig dir only (weir add sig --global) — delete to turn off"
+                    line "let dynamic = \"cobra\""
+                | "git-helper" ->
+                    line "/// the REPL's Tab lists refs and remotes (weir's own read-only git"
+                    line "/// commands) — delete to turn off"
+                    line "let dynamic = \"git\""
+                | _ -> ()
 
                 // the convention lets [D:sig-conventions]
                 if convention <> "gnu" then

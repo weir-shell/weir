@@ -1,11 +1,14 @@
 module Gitfx
-/// generated from 'gitfx' on 2026-10-22
+/// generated from 'gitfx' on 2026-10-23
 /// source: git-helper+subs — a scraped surface may be incomplete (partial
 /// by default; add `let exhaustive = true` once verified by hand)
 /// scoped surface [D:scoped-sigs]: the LONGEST matching subcommand
 /// path picks the case (issue list beats issue); a case checks its
 /// own flags and the Globals; an unlisted subcommand is not checked
 let version = "git version 2.53.0"
+/// the REPL's Tab lists refs and remotes (weir's own read-only git
+/// commands) — delete to turn off
+let dynamic = "git"
 /// a multi-letter single-dash word is a bundle of shorts (`-xzf`)
 let bundles = true
 /// these pass options the source cannot list (git's revision options):

@@ -1,11 +1,14 @@
 module Cobrafx
-/// generated from 'cobrafx' on 2026-10-22
+/// generated from 'cobrafx' on 2026-10-23
 /// source: cobra-complete+subs — a scraped surface may be incomplete (partial
 /// by default; add `let exhaustive = true` once verified by hand)
 /// scoped surface [D:scoped-sigs]: the LONGEST matching subcommand
 /// path picks the case (issue list beats issue); a case checks its
 /// own flags and the Globals; an unlisted subcommand is not checked
 let version = "cobrafx version v2.1.0, build dfc520d"
+/// the REPL's Tab asks the tool for values (`__complete`); honored from
+/// the user sig dir only (weir add sig --global) — delete to turn off
+let dynamic = "cobra"
 /// a multi-letter single-dash word is a bundle of shorts (`-xzf`)
 let bundles = true
 /// the first operand of these ends the tool's own options (what follows is

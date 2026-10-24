@@ -177,6 +177,7 @@ replPtyProbes() {
         replProbe repl-b repl-anon-complete.py "repl anonymous-record field completion" "e2e ok: repl an anonymous record's fields complete on the next line [D:anon-literals]"
         replProbe repl-b repl-entry-complete.py "repl entry-context completion" "e2e ok: repl Tab completes a binder from an earlier line of the entry and the \`_.\` argument's element, nothing for a bare \`|> _.\` stage [D:entry-complete]"
         replProbe repl-b repl-sig-complete.py "repl sig argument completion" "e2e ok: repl Tab completes subcommands, flags and --flag= values from the project's and the user dir's sigs, through a session alias; a sig-less head keeps paths [D:sig-arg-complete]"
+        replProbe repl-b repl-sig-dynamic.py "repl sig dynamic completion" "e2e ok: repl Tab asks a user-dir cobra tool and git through an alias; a project cobra sig never runs its tool; a hung or flooding tool is bounded and leaves no child [D:sig-dynamic-complete]"
         replProbe repl-b repl-splice-complete.py "repl \$ splice completion" "e2e ok: repl a \$ splice completes only the bindings the checker admits there, after an external or builtin head [D:argv-splice-complete]"
         replProbe repl-a repl-multiline.py "repl multiline editor" "e2e ok: repl 2D buffer, Enter-completeness, whole-entry history, wrap at two widths"
     fi
@@ -4334,7 +4335,7 @@ WEOF
 ptpid=$!
 ptpeak=0
 while kill -0 "$ptpid" 2>/dev/null; do
-    t=$(awk '/^Threads:/{print $2}' "/proc/$ptpid/status" 2>/dev/null)
+    t=$(awk '/^Threads:/{print $2}' "/proc/$ptpid/status" 2>/dev/null) || t=""
     [ -n "$t" ] && [ "$t" -gt "$ptpeak" ] && ptpeak=$t
     sleep 0.05
 done
