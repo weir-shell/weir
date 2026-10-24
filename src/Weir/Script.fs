@@ -6827,6 +6827,217 @@ let sigCmdDiagnostics
                     else
                         walk [] "" [] words |> List.rev))
 
+// ---- a continuation line that starts with a command [D:continued-command] --
+// An indented line continues its statement, so under a command its words
+// become that command's arguments. When the continuation's first word
+// names a program, the line was almost certainly meant as a command of
+// its own (pasted from an indented list or doc).
+
+/// commands whose job is to take a command: a continuation under one of
+/// these is the wrapped command's own words [D:continued-command]
+let commandWrappers: Set<string> =
+    set
+        [ "sudo"
+          "doas"
+          "env"
+          "xargs"
+          "time"
+          "nice"
+          "nohup"
+          "timeout"
+          "exec"
+          "command"
+          "watch"
+          "ssh"
+          "parallel"
+          "flock"
+          "chroot"
+          "strace"
+          "stdbuf"
+          "setsid"
+          "unbuffer" ]
+
+/// what weir resolves as a program in head position: a PATH lookup and
+/// the builtin command heads (the REPL adds its alias table)
+let resolvesAsProgram (w: string) : bool =
+    Builtins.commandCallable.Contains w || Extern.exists w
+
+/// one hit: the continuation word's physical (line, col, endCol) and the
+/// message
+type ContinuedCommand =
+    { CLine: int
+      CCol: int
+      CEndCol: int
+      CMessage: string }
+
+/// every command in the statement whose argv takes the first word of a
+/// continuation line that names a program
+let continuedCommands
+    (resolves: string -> bool)
+    (infos: SigInfo list)
+    (ll: LogicalLine)
+    (te: Check.TypedExpr)
+    : ContinuedCommand list =
+    let segs = List.toArray ll.Segments
+
+    // logical index -> true when it is the first character of a physical
+    // line the assembler joined with a plain space (a sibling, `in`, or
+    // district join is never an argv continuation)
+    let spaceJoined (idx: int) =
+        ll.Ends.Length = segs.Length
+        && segs
+           |> Array.indexed
+           |> Array.exists (fun (i, (js, _, _)) -> i > 0 && js = idx && ll.Ends[i - 1] + 1 = js)
+
+    let byTool = infos |> List.map (fun i -> i.Tool, i) |> Map.ofList
+
+    // a sig marking the command's (sub)command as taking a command
+    // [D:sig-operand-stop]: `""` is the tool itself, else a `-`-joined
+    // run of the leading operand words
+    let sigTakesCommand (prog: string) (args: Check.TypedExpr list) =
+        match Map.tryFind prog byTool with
+        | None -> false
+        | Some si ->
+            let run =
+                args
+                |> List.map (fun a ->
+                    match a.Kind with
+                    | Check.TEStr w -> Some w
+                    | _ -> None)
+                |> List.takeWhile (fun w ->
+                    match w with
+                    | Some w -> not (w.StartsWith "-")
+                    | None -> false)
+                |> List.choose id
+
+            Set.contains "" si.StopAtOperand
+            || [ 1 .. run.Length ]
+               |> List.exists (fun n -> Set.contains (String.concat "-" (List.truncate n run)) si.StopAtOperand)
+
+    // the program a continuation word names, if it does: an explicit
+    // `^cmd`, or a bare word that resolves — never a flag, a quoted
+    // string, a splice or a path
+    let programWord (a: Check.TypedExpr) =
+        match a.Kind with
+        | Check.TEStr w when w <> "" && spaceJoined (a.Span.Start.Col - 1) ->
+            let first = ll.Text[a.Span.Start.Col - 1]
+
+            if first = '"' || first = '\'' || first = '@' || first = '$' then None
+            elif w.StartsWith "^" && w.Length > 1 then Some w
+            elif w.StartsWith "-" || w.Contains '/' then None
+            elif resolves w then Some w
+            else None
+        | _ -> None
+
+    let hits (head: string) (exempt: bool) (headSpan: Span) (args: Check.TypedExpr list) =
+        if exempt then
+            []
+        else
+            let headLine = fst (translate ll headSpan.Start.Col)
+
+            let shown =
+                match args with
+                | { Kind = Check.TEStr w; Span = sp } :: _ when fst (translate ll sp.Start.Col) = headLine ->
+                    $"{head} {w} …"
+                | _ -> $"{head} …"
+
+            args
+            |> List.choose (fun a ->
+                programWord a
+                |> Option.map (fun w ->
+                    let line, col = translate ll a.Span.Start.Col
+                    let word = w.TrimStart '^'
+
+                    { CLine = line
+                      CCol = col
+                      CEndCol = col + w.Length
+                      CMessage =
+                        $"this indented line continues `{shown}` — its words become its arguments, and `{word}` looks like a second command: dedent the line to run it on its own, or quote the word if it really is an argument" }))
+
+    // a reified argv: the literal chunks are TEList descendants
+    // (a splatted argv is a Seq.append fold)
+    let rec argvWords (e: Check.TypedExpr) =
+        match e.Kind with
+        | Check.TEList items -> items
+        | _ -> Check.childExprs e |> List.collect argvWords
+
+    let litHead (prog: string) (args: Check.TypedExpr list) =
+        Set.contains prog commandWrappers || sigTakesCommand prog args
+
+    let rec walk (e: Check.TypedExpr) : ContinuedCommand list =
+        let own =
+            match e.Kind with
+            | Check.TECmd(Check.THeadLit prog, args, _) -> hits prog (litHead prog args) e.Span args
+            | Check.TECmd(Check.THeadDyn(d, _), args, _) -> hits $"^{d}" false e.Span args
+            | Check.TEApp _ ->
+                let rec spine (x: Check.TypedExpr) acc =
+                    match x.Kind with
+                    | Check.TEApp(f, a) -> spine f (a :: acc)
+                    | Check.TEVar v -> Some(v, acc)
+                    | _ -> None
+
+                match spine e [] with
+                // a reified pipeline's stages ride (prog, argv, env) tuples
+                // [D:chain-reifiers]
+                | Some(v, args) when v.StartsWith "|chain" ->
+                    args
+                    |> List.collect (fun a ->
+                        match a.Kind with
+                        | Check.TEList stages ->
+                            stages
+                            |> List.collect (fun st ->
+                                match st.Kind with
+                                | Check.TETuple [ { Kind = Check.TEStr prog; Span = sp }; argv; _ ] ->
+                                    let words = argvWords argv
+                                    hits prog (litHead prog words) sp words
+                                | _ -> [])
+                        | _ -> [])
+                // a single reified command carries (prog, argv) [D:exit-reifiers]
+                | Some(v, args) ->
+                    match reifiedProgSlot v with
+                    | Some(idx, arity) when List.length args = arity ->
+                        match List.item idx args with
+                        | { Kind = Check.TEStr prog; Span = sp } ->
+                            let words = argvWords (List.item (idx + 1) args)
+                            hits prog (litHead prog words) sp words
+                        | _ -> []
+                    | _ -> []
+                | None -> []
+            | _ -> []
+
+        own @ (Check.childExprs e |> List.collect walk)
+
+    // no continuation, no claim: the walk runs only over joined lines
+    if segs.Length < 2 then [] else walk te |> List.distinct
+
+/// the continued-command warnings for checked statements — `weir check`,
+/// the LSP and the runner [D:continued-command]
+let continuedCommandDiagnostics
+    (path: string)
+    (infos: SigInfo list)
+    (pairs: (LogicalLine * CheckedStatement) list)
+    : Diagnostic list =
+    pairs
+    |> List.collect (fun (ll, chk) ->
+        match chk.Kind with
+        | KLet(_, _, te)
+        | KLetPat(_, _, te)
+        | KCmd te
+        | KExpr te -> continuedCommands resolvesAsProgram infos ll te
+        | KType _
+        | KSig _
+        | KModule _
+        | KImport _ -> [])
+    |> List.map (fun h ->
+        { File = path
+          Line = h.CLine
+          Col = h.CCol
+          EndLine = Some h.CLine
+          EndCol = Some h.CEndCol
+          Severity = "warning"
+          Code = "continued-command"
+          Message = h.CMessage })
+
 // ---- signature-driven argument completion [D:sig-arg-complete] -------------
 // One completer for the REPL's Tab and the LSP: subcommand words, a
 // case's flags, a flag's value by arity — walked by the checker's own
@@ -10390,6 +10601,7 @@ let analyzeLinesAs
          @ schemaDiagnostics path (List.ofSeq stmts)
          @ sigLoadDiags
          @ sigCmdDiagnostics path sigInfos (List.ofSeq stmts)
+         @ continuedCommandDiagnostics path sigInfos (List.ofSeq stmts)
          |> withInitRules
          |> List.sortWith (fun a b ->
              let byLine = compare a.Line b.Line
@@ -10662,7 +10874,11 @@ let run (path: string) (scriptArgs: string list) : int =
                                     // [D:command-signatures]
                                     let sigDs = sigCmdDiagnostics path runSigInfos [ (ll, chk) ]
 
-                                    for d in sigDs |> List.filter (fun d -> d.Severity = "warning") do
+                                    // a continued command warns and runs, as every
+                                    // check warning does here [D:continued-command]
+                                    for d in
+                                        (sigDs |> List.filter (fun d -> d.Severity = "warning"))
+                                        @ continuedCommandDiagnostics path runSigInfos [ (ll, chk) ] do
                                         Console.Error.WriteLine(
                                             $"{quoteData path}:{d.Line}:{d.Col}: " + Color.yellow c "warning" + $": {d.Message}"
                                         )

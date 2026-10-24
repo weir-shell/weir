@@ -23,6 +23,17 @@ a line's leading whitespace is an error, inside text and `yaml`
 blocks too. Blank lines and comment lines are
 ignored for layout, so you can put gaps inside a block.
 
+Under a command, an indented line's words become more arguments of
+that command, so a pasted list of commands that kept its indentation
+runs as one command. `weir check` warns (`continued-command`) when
+such a line starts with a word that names a program — one on `PATH`,
+`cd`, or an explicit `^cmd` — and the REPL refuses the entry before
+anything runs. A flag, a quoted word, a splice or a path never counts,
+nor does a `|` line (the multi-line pipeline), and a command that takes
+a command (`sudo`, `env`, `xargs`, `timeout`, `ssh` and the like, or a
+signature's `stopAtOperand`) may be continued freely. Dedent the line
+to run it on its own, or quote the word to keep it as an argument.
+
 An indented `let` ends at the next line with the same indentation.
 An open bracket keeps the statement going, but the closing bracket
 must not be at column 0 while the statement is unfinished:

@@ -282,6 +282,33 @@ fout=$($BIN check "$redir/fcall.weir" 2>&1) || fail "fcall must check clean: $fo
 echo "$fout" | grep -q "re-enumeration" && fail "a frozen call result must not warn: $fout" || true
 echo "e2e ok: re-enumeration — a call of a freezing function carries nothing"
 
+# ---- a continuation line that starts with a command [D:continued-command] --
+# check warns (exit 0) at the second git; the runner prints the warning and
+# runs as before; the piped REPL refuses the entry before anything runs; a
+# `|` continuation and a wrapper are silent
+ccdir=$(mkweirtmp)
+cat > "$ccdir/pasted.weir" <<'WEOF'
+echo one
+    echo two
+echo three | cat
+    | cat
+env sh -c "true"
+    echo four
+WEOF
+out=$($BIN check "$ccdir/pasted.weir" 2>&1) || fail "a continued-command warning must exit 0: $out"
+echo "$out" | grep -qF "pasted.weir:2:5: warning [continued-command]: this indented line continues \`echo one …\` — its words become its arguments, and \`echo\` looks like a second command: dedent the line to run it on its own, or quote the word if it really is an argument" \
+  || fail "the continued-command warning, located at the second echo: $out"
+[ "$(echo "$out" | grep -c "continued-command")" -eq 1 ] || fail "the | line and the wrapper must stay silent: $out"
+jout=$($BIN check --json "$ccdir/pasted.weir" 2>&1) || fail "check --json: $jout"
+echo "$jout" | grep -qF '"line":2,"col":5,"endLine":2,"endCol":9,"severity":"warning","code":"continued-command"' || fail "the --json shape: $jout"
+rout=$($BIN "$ccdir/pasted.weir" 2>"$ccdir/err") || fail "the run is not refused: $rout"
+[ "$(echo "$rout" | head -1)" = "one echo two" ] || fail "the run keeps its meaning: $rout"
+grep -qF "pasted.weir:2:5: warning: this indented line continues" "$ccdir/err" || fail "the run prints the warning: $(cat "$ccdir/err")"
+rpl=$(printf 'echo one\n    echo two\n' | $BIN 2>&1)
+echo "$rpl" | grep -qF "error: this indented line continues \`echo one …\`" || fail "the REPL refuses the entry: $rpl"
+echo "$rpl" | grep -qF "one echo two" && fail "the refused entry must not run: $rpl" || true
+echo "e2e ok: continued command — check warns at the second command (exit 0, --json code), the run warns and runs, the REPL refuses the entry; | lines and wrappers silent"
+
 # walk candidates: exit codes exact; File.readSecret (never covered); Dir.copy success
 pw2=$(mkweirtmp)
 rc=0; $BIN -e 'exit 4' >/dev/null 2>&1 || rc=$?
