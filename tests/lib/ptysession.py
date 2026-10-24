@@ -60,7 +60,18 @@ class Repl:
         next prompt"""
         start = len(self.out)
         self.send(data)
-        return self.prompt(start, timeout) or clean(self.out[start:])
+        # the prompt after a line break, then a quiet moment: the editor
+        # redraws `weir> ` with every typed key, and a slow read can end
+        # right after one; a redraw goes on writing, the final prompt
+        # does not
+        deadline = time.time() + timeout
+        while True:
+            t = self.wait_for(r"\n[^\n]*weir> $", start, max(0.1, deadline - time.time()))
+            if t is None:
+                return clean(self.out[start:])
+            n = len(self.out)
+            if not self._read(0.3) or len(self.out) == n or time.time() >= deadline:
+                return clean(self.out[start:])
 
     def close(self):
         try:
