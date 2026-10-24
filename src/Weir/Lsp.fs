@@ -760,6 +760,7 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
             | None -> n
 
         if word = decl.Name then
+            let validated = if decl.Validate.IsSome then "  (validated)" else ""
             // a tagged union shows its discriminator [D:wire-unions] —
             // the hover carries the wire fact the cases alone cannot
             let tagPrefix =
@@ -773,6 +774,7 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
             Some(
                 tagPrefix
                 + (cases |> List.map (fun (n, tyO, _) -> caseSig (n, tyO)) |> String.concat " | ")
+                + validated
             )
         else
             cases
@@ -866,7 +868,7 @@ let private typeSiteIn
     stmts
     |> List.tryPick (fun (ll, c) ->
         match c.Kind with
-        | Script.KType d when d.Name = tyName ->
+        | Script.KType(d, _) when d.Name = tyName ->
             let eq = ll.Text.IndexOf '='
 
             let jc =
@@ -1014,7 +1016,7 @@ let private sigFlagField (si: Script.SigInfo) (words: (string * Span) list) (w: 
             sigStmts
             |> List.tryPick (fun (_, c) ->
                 match c.Kind with
-                | Script.KType d when d.Name = rn -> Map.tryFind rn c.Env.Types
+                | Script.KType(d, _) when d.Name = rn -> Map.tryFind rn c.Env.Types
                 | _ -> None)
             |> Option.bind (function
                 | Record rd ->
@@ -1570,7 +1572,29 @@ let private typeDefHover (env: TypeEnv) (tyName: string) : string option =
                 match tyO with
                 | Some t -> $"{cn} of {formatTy t}"
                 | None -> cn)
-            |> String.concat " | ")
+            |> String.concat " | "
+            // a validated type says so [D:validated-types]
+            |> fun shape -> if d.Validated.IsSome then shape + "  (validated)" else shape)
+
+/// the first line of a validated type's `validate` doc
+/// [D:validated-types], read in the file that declares it: `tyName` is
+/// the declared name among that file's statements
+let private validateDocIn
+    (lines: string list)
+    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (tyName: string)
+    : string option =
+    stmts
+    |> List.tryPick (fun (ll, chk) ->
+        match chk.Kind with
+        | Script.KType(d, Some _) when d.Name = tyName ->
+            d.Validate
+            |> Option.bind (fun v ->
+                let pl, pc = Script.translate ll v.Span.Start.Col
+
+                Script.docAttachments lines
+                |> List.tryPick (fun a -> if a.Line = pl && a.Col = pc then List.tryHead a.Doc else None))
+        | _ -> None)
 
 // the schema= name's hover [D:schema-hover]: file facts, not type facts
 // — the resolved vendored path, the lock's provenance, and whether the
@@ -1730,6 +1754,54 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
 
         let word = wordAt ll.Text jcol
 
+        // `T.create` [D:validated-types]: `create` hovers the derived
+        // function, the type word its type
+        let createKey =
+            node
+            |> Option.bind (fun n ->
+                match n.Kind, n.Ty with
+                | Check.TEVar vn, TFun(_, TNamed("Result", [ TNamed(key, []); _ ])) when
+                    vn.StartsWith Types.createVarPrefix
+                    ->
+                    Some(key, n.Ty)
+                | _ -> None)
+
+        let createSig =
+            createKey
+            |> Option.bind (fun (key, fty) ->
+                if word = Some "create" then
+                    Some $"{key}.create : {formatTy fty}"
+                else
+                    typeDefHover chk.Env key)
+
+        // the validated type a hover is about, for its `validate` doc:
+        // `T.create`, the declaration's name, or a reference to the type
+        let validatedKey =
+            match createKey, chk.Kind with
+            | Some(key, _), _ -> Some key
+            | None, Script.KType(d, Some _) when word = Some d.Name -> Some d.Name
+            | None, _ ->
+                word
+                |> Option.filter (fun w ->
+                    match Map.tryFind w chk.Env.Types with
+                    | Some(Union u) -> u.Validated.IsSome
+                    | _ -> false)
+
+        let validateDoc =
+            validatedKey
+            |> Option.bind (fun key ->
+                match Map.tryFind key chk.Env.TypeOrigins with
+                | Some origin when origin.Contains '@' ->
+                    // "Module.Name@absPath" — the declaring module's file
+                    let at = origin.IndexOf '@'
+                    let declared = origin.Substring(0, at)
+                    let declared = declared.Substring(declared.IndexOf '.' + 1)
+
+                    targetStmts (origin.Substring(at + 1))
+                    |> Option.bind (fun (mlines, mstmts) -> validateDocIn mlines mstmts declared)
+                | _ -> validateDocIn lines stmts key)
+            |> Option.map (fun d -> $"validate — {d}")
+
         // an exact use of a name (TEVar at the cursor) wins; else a pattern
         // payload binder resolved from a use of it [Group 2]; else the
         // enclosing node's type; else the binder-name scheme / declaration.
@@ -1829,6 +1901,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         let ty =
             (sigHead |> Option.map fst)
             |> Option.orElse (sigFlag |> Option.map fst)
+            |> Option.orElse createSig
             |> Option.orElse fieldInLiteral
             |> Option.orElse constructorSig
             |> Option.orElse binderSig
@@ -1891,7 +1964,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 // a member signature line hovers the sig verbatim
                 // [D:module-signatures]
                 | Script.KSig(name, sd) when word = Some name -> Some $"{name} : {formatTy sd.Ty}"
-                | Script.KType decl -> word |> Option.bind (declHover decl)
+                | Script.KType(decl, _) -> word |> Option.bind (declHover decl)
                 | _ -> None)
             // a referenced type name anywhere hovers its shape
             // [D:lsp-typename]: a field's type in a record decl, the
@@ -1967,6 +2040,12 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             |> Option.orElse sourceDoc
             |> Option.orElse usageDoc
             |> Option.orElse builtinDoc
+            // a validated type's `validate` doc rides below [D:validated-types]
+            |> fun d ->
+                match d, validateDoc with
+                | Some d, Some v -> Some(d + "\n\n" + v)
+                | None, v -> v
+                | d, None -> d
 
         match ty, doc with
         | Some t, Some d -> Some(t + "\n\n" + d) // type FIRST, then the doc

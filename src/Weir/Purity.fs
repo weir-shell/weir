@@ -38,8 +38,11 @@ let private builtinNames =
 // a module never survives check as a value — so a function type here
 // is a payload arrow, not a callable that could reach an effect. Data
 // by construction, hence pure [D:pure-stdin-ctors]
+// a validated type's `create` is as pure as a constructor: its validator
+// is checked pure [D:validated-types]
 let private isCtorName (n: string) =
-    not (n.Contains ".") && n.Length > 0 && System.Char.IsUpper n[0]
+    (not (n.Contains ".") && n.Length > 0 && System.Char.IsUpper n[0])
+    || n.StartsWith Weir.Types.createVarPrefix
 
 let rec tyHasFun (t: Ty) =
     match t with
@@ -246,6 +249,15 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
          | _ ->
              Some((headOf te).Span, "a computed function is an unknown callable, and an unknown callable forfeits purity"))
     | _ -> Check.childExprs te |> List.tryPick (firstEffect env)
+
+/// a validated type's `validate` must be pure [D:validated-types]: it
+/// runs unseen wherever a value of the type is built, every wire
+/// boundary included — the first effect, located, or None
+let validatorViolation (env: Map<string, bool>) (te: TypedExpr) : (Span * string) option =
+    firstEffect env te
+    |> Option.map (fun (span, phrase) ->
+        span,
+        $"'validate' must be pure — it runs unseen wherever a value of the type is built, every wire boundary included — but {phrase}; check what the world says where the value is used")
 
 // the mutation-class phrase: effectPhrase names the effect; this
 // appends its class so the readonly teaching says both what the

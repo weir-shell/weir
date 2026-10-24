@@ -704,7 +704,51 @@ type UnionDef =
       // Tag is None.
       Tag: string option
       CaseWires: Map<string, string>
-      OtherCase: string option }
+      OtherCase: string option
+      // a validated type [D:validated-types]: Some id when the union
+      // declares `validate` — the id keys the runtime's derived
+      // `create`, which every wire boundary runs (one per checked
+      // declaration, so two imports' same-named types never share one)
+      Validated: string option }
+
+/// the variable a validated type's derived `create` evaluates through
+/// [D:validated-types]: the prefix plus the declaration's id — `|` makes
+/// it unwritable, so no source name can collide with it
+let createVarPrefix = "|create:"
+
+/// a validated case's entry in a writer's union table: the writer
+/// drops the case and writes the payload [D:validated-types]
+let validatedWireTag = "|valid"
+
+/// a flat boundary field's validated marks [D:validated-types]: the
+/// `create` ids (outermost first, space-separated) and the type's name
+/// — `|` keeps them out of the attribute registry's reach
+let validatedAttr = "|valid"
+
+let validatedNameAttr = "|validName"
+
+/// a flat boundary field's `create` ids, outermost first
+let fieldValidators (def: RecordDef) (field: string) : string list =
+    match Map.tryFind field def.Attrs with
+    | Some specs ->
+        specs
+        |> List.tryPick (fun (n, a) ->
+            match n, a with
+            | n, Some(AStr ids) when n = validatedAttr -> Some(ids.Split(' ') |> List.ofArray)
+            | _ -> None)
+        |> Option.defaultValue []
+    | None -> []
+
+/// a flat boundary field's validated type name, for `--help`
+let fieldValidatedName (def: RecordDef) (field: string) : string option =
+    match Map.tryFind field def.Attrs with
+    | Some specs ->
+        specs
+        |> List.tryPick (fun (n, a) ->
+            match n, a with
+            | n, Some(AStr t) when n = validatedNameAttr -> Some t
+            | _ -> None)
+    | None -> None
 
 /// A tagged case's tag value — the [<Wire>] override or the case name
 let caseWire (def: UnionDef) (case: string) : string =

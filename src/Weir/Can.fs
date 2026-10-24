@@ -699,7 +699,7 @@ let private ofChecked (pairs: (LogicalLine * CheckedStatement) list) : (LogicalL
         | KExpr te -> Some(ll, CExpr te)
         | KCmd te -> Some(ll, CCmd te)
         | KImport lm -> Some(ll, CImport lm)
-        | KType d -> Some(ll, CType d)
+        | KType(d, v) -> Some(ll, CType(d, v))
         | KModule _
         | KSig _ -> None)
 
