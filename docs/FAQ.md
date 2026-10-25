@@ -277,17 +277,34 @@ See [The init file](repl.md#the-init-file).
 
 ### Can I `import` a module at the prompt or in `weir -e`?
 
-Not today: there it is refused with "import is script-only", because
-it needs a file to resolve its path against. Put the import in
-init.weir; its members are then available in every session as
-`X.member`.
+Yes. A relative path resolves against the directory you are in when
+the import runs, so after `cd ~/tools` an `import "./git.weir"` reads
+`~/tools/git.weir`. `weir:<name>` finds the nearest `.weir/` above
+that directory. In `-e`, paths resolve against the directory weir
+was started in.
 
 ```text
-#init
-import "./tools.weir" as X
+weir> import "./tools.weir" as X
+module X imported (1 member: hi)
+weir> X.hi ()
+"hi" : string
 ```
 
-See [Script-only](reference/modules.md#script-only).
+The module rules are the same as in a script: only a file starting
+with `module` can be imported, nothing in it may run a command while
+it loads, and a module that fails to check binds nothing. Edit the
+file and run the same import again to reload it.
+
+In `-e`, put each statement on its own line and end with an
+expression:
+
+```text
+weir -e 'import "./tools.weir" as X
+X.hi ()'
+```
+
+To have a module in every session, import it in init.weir instead.
+See [Importing at the prompt](repl.md#importing-at-the-prompt).
 
 ## The REPL and init.weir
 

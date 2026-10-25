@@ -34083,11 +34083,139 @@ let sigDynamicTests =
                       Expect.isFalse (fish |> List.exists (fun l -> l.StartsWith "let dynamic")) "a fish source: none")
           } ]
 
+// importing at the prompt [D:repl-import]: the session cwd anchors a
+// relative path; the module rules are a script import's; a re-import
+// reloads. Sequenced: the session cwd and Console.Out are process-wide
+let replImportTests =
+    testSequenced
+    <| testList
+        "REPL import"
+        [ let modText (v: string) =
+              [ "module M"; "/// the greeting"; "let greet : string -> string"; "let greet n = $\"hi {n}\""; "let v : int"; $"let v = {v}" ]
+
+          let write (path: string) (lines: string list) = File.WriteAllLines(path, lines)
+
+          test "absolute, relative after cd, and weir: paths resolve against the session" {
+              withTempDir "weir-replimp" (fun dir ->
+                  inCwd dir (fun () ->
+                      let sub = Path.Combine(dir, "sub")
+                      Directory.CreateDirectory(Path.Combine(dir, ".weir", "modules")) |> ignore
+                      Directory.CreateDirectory sub |> ignore
+                      write (Path.Combine(dir, "abs.weir")) (modText "1")
+                      write (Path.Combine(sub, "rel.weir")) (modText "2")
+                      write (Path.Combine(dir, ".weir", "modules", "vend.weir")) (modText "3")
+                      let run, _ = Weir.Repl.sessionForTest ()
+                      // forward slashes: a Windows path's `\` would be a string escape
+                      let absPath = Path.Combine(dir, "abs.weir").Replace('\\', '/')
+                      Expect.stringContains (run $"import \"{absPath}\" as A") "module A imported (2 members: greet, v)" "absolute"
+                      Expect.stringContains (run "A.v") "1 : int" "absolute value"
+                      // cd moves the anchor: the same relative spelling meets sub/
+                      Expect.stringContains (run "import \"./rel.weir\" as R") "no file at" "not in the start dir"
+                      run "cd sub" |> ignore
+                      Expect.stringContains (run "import \"./rel.weir\" as R") "module R imported" "relative after cd"
+                      Expect.stringContains (run "R.v") "2 : int" "relative value"
+                      // weir: walks up from the session cwd to dir/.weir
+                      Expect.stringContains (run "import \"weir:vend\" as V") "module V imported" "weir: from a subdir"
+                      Expect.stringContains (run "V.v") "3 : int" "weir: value"))
+          }
+
+          test "a non-module, a command at import and a module type error bind nothing" {
+              withTempDir "weir-replimp" (fun dir ->
+                  inCwd dir (fun () ->
+                      write (Path.Combine(dir, "plain.weir")) [ "let x = 1" ]
+                      write (Path.Combine(dir, "cmd.weir")) [ "module C"; "let x : string"; "let x = echo hi | line" ]
+
+                      write
+                          (Path.Combine(dir, "late.weir"))
+                          [ "module W"
+                            "let helper () = sh -c \"echo val\""
+                            "let _h = helper"
+                            "let v : int"
+                            "let v = (fun () -> helper ()) () |> Seq.length" ]
+
+                      write (Path.Combine(dir, "bad.weir")) [ "module B"; "let x : int"; "let x = \"s\"" ]
+                      let run, env = Weir.Repl.sessionForTest ()
+                      Expect.stringContains (run "import \"./plain.weir\" as P") "is not a module" "non-module"
+                      Expect.stringContains (run "import \"./cmd.weir\"") "cannot run a command at import" "check-time guard"
+                      Expect.stringContains (run "import \"./late.weir\"") "runs a command while module W is imported" "run-time guard"
+                      let bad = run "import \"./bad.weir\""
+                      Expect.stringContains bad "bad.weir:3:" "a module error names the module's own site"
+                      Expect.stringContains bad "does not match its signature" "full typecheck"
+
+                      for alias in [ "P"; "C"; "W"; "B" ] do
+                          Expect.isFalse (Map.containsKey alias (env ()).Modules) $"{alias} bound nothing"
+
+                      Expect.stringContains (run "W.v") "error" "the run-time refusal left no values"))
+          }
+
+          test "a re-import after an edit reloads; a new alias binds beside the old" {
+              withTempDir "weir-replimp" (fun dir ->
+                  inCwd dir (fun () ->
+                      let m = Path.Combine(dir, "m.weir")
+                      write m (modText "1")
+                      let run, env = Weir.Repl.sessionForTest ()
+                      Expect.stringContains (run "import \"./m.weir\"") "module M imported" "first import"
+                      Expect.stringContains (run "M.v") "1 : int" "first value"
+                      write m ((modText "42") @ [ "let w : string"; "let w = \"new\"" ])
+                      Expect.stringContains (run "import \"./m.weir\"") "module M reloaded (3 members" "same alias reloads"
+                      Expect.stringContains (run "M.v") "42 : int" "new value"
+                      Expect.stringContains (run "M.w") "\"new\"" "new member"
+                      write m (modText "7")
+                      Expect.stringContains (run "import \"./m.weir\" as N") "module N imported" "a new alias"
+                      Expect.stringContains (run "N.v") "7 : int" "the new alias reads the edit"
+                      Expect.stringContains (run "M.w") "\"new\"" "the old alias stays"
+                      // a re-import whose module changed a type's shape replaces it
+                      write m [ "module M"; "type R = { a: int }"; "let r : R"; "let r = { a = 1 }" ]
+                      run "import \"./m.weir\"" |> ignore
+                      write m [ "module M"; "type R = { a: int; b: string }"; "let r : R"; "let r = { a = 2; b = \"x\" }" ]
+                      Expect.stringContains (run "import \"./m.weir\"") "module M reloaded" "the type changed"
+                      Expect.stringContains (run "M.r.b") "\"x\"" "the new shape"
+                      Expect.isFalse (Map.containsKey "w" (env ()).Modules["M"]) "the dropped member is gone"
+                      // a builtin module name is never rebound
+                      Expect.stringContains (run "import \"./m.weir\" as Str") "already a module in scope" "builtin"))
+          }
+
+          test "a reloaded type a second import also declares keeps its qualified key [D:qualified-type-names]" {
+              withTempDir "weir-replimp" (fun dir ->
+                  inCwd dir (fun () ->
+                      let m = Path.Combine(dir, "m.weir")
+                      write m [ "module M"; "type R = { a: int }"; "let r : R"; "let r = { a = 1 }" ]
+                      write (Path.Combine(dir, "o.weir")) [ "module O"; "type R = { c: bool }"; "let r : R"; "let r = { c = true }" ]
+                      let run, env = Weir.Repl.sessionForTest ()
+                      Expect.stringContains (run "import \"./m.weir\"") "module M imported" "first provider"
+                      Expect.stringContains (run "import \"./o.weir\"") "module O imported" "second provider"
+                      write m [ "module M"; "type R = { a: int; b: string }"; "let r : R"; "let r = { a = 2; b = \"x\" }" ]
+                      Expect.stringContains (run "import \"./m.weir\"") "module M reloaded" "reload"
+                      Expect.equal ((env ()).ModuleTypes["M"]["R"]) "M.R" "M's R stays qualified"
+                      Expect.equal ((env ()).ModuleTypes["O"]["R"]) "O.R" "O's R stays qualified"
+                      Expect.isFalse (Map.containsKey "R" (env ()).Types) "the bare name names neither"
+                      Expect.stringContains (run "M.r.b") "\"x\"" "the new shape"
+                      Expect.stringContains (run "O.r.c") "true" "the other import's type is untouched"
+                      run "let q = M.R { a = 3; b = \"y\" }" |> ignore
+                      Expect.stringContains (run "q.b") "\"y\"" "the qualified literal takes the new shape"
+                      Expect.stringContains (run "M.R { a = 4 }") "error" "the old shape is gone"
+                      Expect.stringContains (run "O.R { a = 5; b = \"z\" }") "error" "M.R and O.R stay distinct"))
+          }
+
+          test "#help and completion see a prompt import's members" {
+              withTempDir "weir-replimp" (fun dir ->
+                  inCwd dir (fun () ->
+                      write (Path.Combine(dir, "m.weir")) (modText "1")
+                      let run, env = Weir.Repl.sessionForTest ()
+                      run "import \"./m.weir\" as G" |> ignore
+                      let help = run "#help G.greet"
+                      Expect.stringContains help "G.greet : string -> string" "the signature"
+                      Expect.stringContains help "the greeting" "the /// doc"
+                      let offers = Weir.Script.suggestEntry Map.empty Map.empty (env ()) [ "G.gr" ] "G.gr" 0
+                      Expect.contains offers "G.greet" "Tab completes the member"))
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
         [ portFindingsTests
+          replImportTests
           hardeningTests
           teardownSeamTests
           hunt3BehaviourTests

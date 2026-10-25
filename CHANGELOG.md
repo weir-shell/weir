@@ -111,6 +111,13 @@ Many of the changes and fixes below were found porting starship to weir.
   `File.read`'s do. An offset past the end (the
   file was truncated or replaced) or not at the start of a line
   raises. `FileChunk` is now a built-in type name.
+- **`import` works at the REPL prompt and in `weir -e`.** A relative
+  path resolves against the session's current directory when the
+  import runs (in `-e`, where weir was started), and `weir:<name>`
+  finds the nearest `.weir/` above it. The module rules are a script's.
+  Running the import again after editing the module reloads it.
+  `#help Alias.member` shows the member's `///` doc, and `#save` keeps
+  the import with its path written out absolute.
 
 ### Changed
 
