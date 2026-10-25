@@ -16606,7 +16606,7 @@ WEOF
     # not a command failure — the loop ends cleanly [D:stop-caused-failure]
     cat > "$rpdir/tty.weir" <<'WEOF'
 repeat interval=100ms
-    sh -c "echo child-ready | tr a-z A-Z; sleep 5; echo child-done"
+    sh -c "ps -o pid=,pgid=,tpgid=,sigmask= -p $$; stty -a | grep -o -e -isig -e isig | head -1; python3 -c 'import signal; print(\"sigint\", signal.getsignal(2))'; echo child-ready | tr a-z A-Z; sleep 5; echo child-done"
     print "iteration end"
 print (Str.toUpper "after-repeat")
 WEOF
@@ -16643,7 +16643,7 @@ WEOF
     # the first child prints its pid, pgid, the terminal's foreground group and
     # its blocked and ignored signals: where a platform's ^C misses it, the
     # transcript names why
-    tout=$(printf '%s\n' 'WAIT weir>' 'SEND repeat interval=100ms\n    sh -c "ps -o pid=,pgid=,tpgid=,sigmask=,sigignore= -p $$; echo tick-a | tr a-z A-Z; sleep 3; echo tick-z | tr a-z A-Z"\r' 'WAIT TICK-A' 'SEND \x03' 'WAIT weir>' 'SEND repeat interval=50ms\n    print (Str.toUpper "again")\n    true\r' 'WAIT AGAIN' 'SEND repeat interval=100ms\n    print (Str.toUpper "tock")\n    Duration.sleep 5s\n    print (Str.toUpper "tock-end")\r' 'WAIT TOCK' 'SEND \x03' 'SLEEP 300' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "still-here")\r' 'WAIT STILL-HERE' 'SEND within\n    print (Str.toUpper "held-a")\nuntil stopped\r' 'WAIT HELD-A' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "post-held")\r' 'WAIT POST-HELD' 'SEND \x04' 'SLEEP 500' | env HOME="$rph" XDG_CONFIG_HOME="$rph/c" XDG_DATA_HOME="$rph/d" XDG_STATE_HOME="$rph/s" XDG_CACHE_HOME="$rph/k" NO_COLOR=1 python3 "$ptyrun" 30 "$BIN")
+    tout=$(printf '%s\n' 'WAIT weir>' 'SEND repeat interval=100ms\n    sh -c "ps -o pid=,pgid=,tpgid=,sigmask= -p $$; stty -a | grep -o -e -isig -e isig | head -1; echo tick-a | tr a-z A-Z; sleep 3; echo tick-z | tr a-z A-Z"\r' 'WAIT TICK-A' 'SEND \x03' 'WAIT weir>' 'SEND repeat interval=50ms\n    print (Str.toUpper "again")\n    true\r' 'WAIT AGAIN' 'SEND repeat interval=100ms\n    print (Str.toUpper "tock")\n    Duration.sleep 5s\n    print (Str.toUpper "tock-end")\r' 'WAIT TOCK' 'SEND \x03' 'SLEEP 300' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "still-here")\r' 'WAIT STILL-HERE' 'SEND within\n    print (Str.toUpper "held-a")\nuntil stopped\r' 'WAIT HELD-A' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "post-held")\r' 'WAIT POST-HELD' 'SEND \x04' 'SLEEP 500' | env HOME="$rph" XDG_CONFIG_HOME="$rph/c" XDG_DATA_HOME="$rph/d" XDG_STATE_HOME="$rph/s" XDG_CACHE_HOME="$rph/k" NO_COLOR=1 python3 "$ptyrun" 30 "$BIN")
     for want in "AGAIN" "STILL-HERE" "HELD-A" "POST-HELD" "EXIT 0"; do
         echo "$tout" | grep -qF "$want" || fail "repeat at the REPL: '$want' expected: $tout"
     done
