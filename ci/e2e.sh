@@ -16617,6 +16617,24 @@ WEOF
     echo "$tout" | grep -qE "command failed|child-done|iteration end" && fail "a terminal ^C: the child's death is the stop, not a failure: $tout"
     echo "e2e ok: repeat — a terminal ^C kills the iteration's child as under bash, and that death ends the loop cleanly (exit 0)"
 
+    # a child the terminal's ^C does not reach (its own session, by setsid):
+    # the script's stop request sends it the SIGINT itself, and its death is
+    # the stop [D:stop-forward-script]
+    if command -v setsid >/dev/null 2>&1; then
+        cat > "$rpdir/ttysid.weir" <<'WEOF'
+repeat interval=100ms
+    setsid sh -c "echo ready | tr a-z A-Z; sleep 3; echo sid-done"
+    print "iteration end"
+print (Str.toUpper "after-repeat")
+WEOF
+        tout=$(printf 'WAIT READY\nSEND \\x03\nSLEEP 1500\n' | python3 "$ptyrun" 10 "$BIN" "$rpdir/ttysid.weir")
+        for want in "AFTER-REPEAT" "EXIT 0"; do
+            echo "$tout" | grep -qF "$want" || fail "a terminal ^C, a child outside the terminal's group: '$want' expected: $tout"
+        done
+        echo "$tout" | grep -qE "command failed|sid-done|iteration end" && fail "a terminal ^C: the stop request's ^C reaches a setsid child and its death is the stop: $tout"
+        echo "e2e ok: repeat — a terminal ^C reaches the iteration's child outside the terminal's group (setsid) too, and its death ends the loop cleanly"
+    fi
+
     # the REPL (D1): the first ^C stops a repeat gracefully and the prompt
     # returns; the request ends with the entry, so the next repeat runs; a
     # second ^C cuts the entry as today [D:repl-stop-request]. A typed held

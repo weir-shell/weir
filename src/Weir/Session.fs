@@ -3166,8 +3166,8 @@ let private terminalInterrupt () =
 
     startBackstop 100 100 ready 130
 
-/// where the REPL's stop-request ^C is sent for a live child
-/// [D:repl-stop-request]: nowhere when the child is in the terminal's
+/// where the stop request's ^C is sent for a live child
+/// [D:repl-stop-request] [D:stop-forward-script]: nowhere when the child is in the terminal's
 /// foreground group (the terminal's SIGINT reached it); otherwise, the
 /// child's own group when it leads one that weir is not in, as a terminal
 /// signals a group, else the child alone. A pgid weir could not read is
@@ -3179,7 +3179,7 @@ let interruptTarget (childPid: int) (childPgid: int) (selfPgid: int) (ttyForegro
     | _ -> Some childPid
 
 // the stop request's ^C, for each live child the terminal's did not reach
-// [D:repl-stop-request]: a plain SIGINT, no tree kill — its death is the
+// [D:repl-stop-request] [D:stop-forward-script]: a plain SIGINT, no tree kill — its death is the
 // stop [D:stop-caused-failure]
 let private forwardStopInterrupt () =
     let fg = Libc.terminalForegroundGroup ()
@@ -3215,7 +3215,9 @@ let private dispatchSignal (ctx: System.Runtime.InteropServices.PosixSignalConte
         | StopRequested -> forwardStopInterrupt ()
     // the first stop signal while a stop-aware construct runs asks it to
     // stop: no cut, no kill, no backstop [D:stop-request]. SIGQUIT is
-    // always the teardown, and so is TERM/HUP at the interactive REPL
+    // always the teardown, and so is TERM/HUP at the interactive REPL. A
+    // SIGINT's ^C goes on to the children the terminal's missed
+    // [D:stop-forward-script]
     elif
         ctx.Signal <> System.Runtime.InteropServices.PosixSignal.SIGQUIT
         && not replSurvivesSigint.Value
@@ -3223,6 +3225,9 @@ let private dispatchSignal (ctx: System.Runtime.InteropServices.PosixSignalConte
         && stop.Signal() = StopRequested
     then
         ctx.Cancel <- true
+
+        if sigint then
+            forwardStopInterrupt ()
     elif System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
         ctx.Cancel <- true
         hardExit code
