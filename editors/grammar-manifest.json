@@ -37,6 +37,7 @@
     "module",
     "mutable",
     "of",
+    "orFail",
     "plan",
     "poll",
     "pure",

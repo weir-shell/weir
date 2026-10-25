@@ -256,6 +256,11 @@ and ExprKind =
     | ETry of body: Expr * asResult: bool
     // the bare form before `|>` folds it; anywhere else it is a check error
     | ETryForm of asResult: bool
+    // `e |> orFail [msg]` [D:orfail-form]: try's inverse — a failed
+    // Result/Option back into a raise at `site` (the form's own span)
+    | EOrFail of body: Expr * message: Expr option * site: Span
+    // the bare form before `|>` folds it; anywhere else it is a check error
+    | EOrFailForm of message: Expr option
     | EList of items: Expr list
     | ETuple of items: Expr list
     | ELetPat of binder: Pattern * value: Expr * body: Expr
@@ -534,6 +539,8 @@ let exprChildren (e: Expr) : Expr list =
     | ETo _
     | ETryForm _ -> []
     | ETry(b, _) -> [ b ]
+    | EOrFail(b, m, _) -> b :: Option.toList m
+    | EOrFailForm m -> Option.toList m
     | ELet(_, _, v, b) -> [ v; b ]
     | ELetPat(_, v, b) -> [ v; b ]
     | ELambda(_, _, b) -> [ b ]
@@ -702,6 +709,10 @@ let rec sexpr (e: Expr) : string =
     | ESeq(a, b) -> $"(seq {sexpr a} {sexpr b})"
     | ETry(b, r) -> (if r then "(try result " else "(try ") + sexpr b + ")"
     | ETryForm r -> if r then "(try result)" else "(try)"
+    | EOrFail(b, None, _) -> $"(orFail {sexpr b})"
+    | EOrFail(b, Some m, _) -> $"(orFail {sexpr b} {sexpr m})"
+    | EOrFailForm None -> "(orFail)"
+    | EOrFailForm(Some m) -> $"(orFail {sexpr m})"
     | EFrom(fmt, None, _, _) -> $"(from {fmt})"
     | EFrom(fmt, Some(FromName ty), false, true) -> $"(from {fmt} stream {ty})"
     | EFrom(fmt, Some(FromName ty), false, _) -> $"(from {fmt} {ty})"

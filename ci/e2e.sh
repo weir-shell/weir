@@ -6844,6 +6844,29 @@ echo "$out" | grep -qF "not reached" && fail "exit must not be captured: $out"
 echo "e2e ok: |> try — None / Error from real failures, exit passes through"
 rm -rf "$ydir"
 
+# |> orFail [D:orfail-form]: try's inverse — a real file's Option unwraps,
+# an Error re-raises with the message at the orFail's own column, and
+# |> try catches it like any raise
+ydir=$(mkweirtmp)
+printf 'port = 8080\n' > "$ydir/cfg.toml"
+cat > "$ydir/orfail.weir" <<'WEOF'
+let cfg = File.read "cfg.toml" |> from toml {| port: Option<int>; host: Option<string> |}
+let port = cfg.port |> orFail "no port"
+print $"port {port}"
+let host = cfg.host |> orFail "no host" |> try result
+print $"{host}"
+let _bad = File.read "nope.toml" |> try result |> orFail "config"
+print "not reached"
+WEOF
+rc=0; out=$(cd "$ydir" && $BIN orfail.weir 2>&1) || rc=$?
+expect "|> orFail: Some unwraps" "port 8080" "$out"
+expect "|> orFail: try catches the None raise" 'Error "no host"' "$out"
+expect "|> orFail: Error re-raises with the message, at the orFail" "orfail.weir:6:51: error: config: File.read:" "$out"
+[ $rc -eq 1 ] || fail "|> orFail must exit 1 on the raise (rc=$rc): $out"
+echo "$out" | grep -qF "not reached" && fail "|> orFail must stop the script: $out"
+echo "e2e ok: |> orFail — unwraps, raises at its own column with the message, try catches it"
+rm -rf "$ydir"
+
 # from table [D:from-table]: the aligned-table boundary on a real file —
 # a kubectl-shaped fixture (tabwriter reality: 3-space padding, spaced
 # values, <none>) read into typed rows; the header-offset law is the

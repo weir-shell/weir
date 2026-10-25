@@ -123,6 +123,30 @@ status ()
 
 See [The statement rule](reference/statements.md#the-statement-rule).
 
+### How do I fail fast on an Error, like Rust's `?`?
+
+End the expression with `|> orFail`. It gives the value inside an
+`Ok` or a `Some`, and stops with an error on `Error` or `None`; add a
+message to say what was missing. Errors propagate on their own, so
+there is nothing to thread back up: the caller that wants to handle
+the failure ends its call with `|> try result` and gets `Ok` or
+`Error` with the message.
+
+```weir
+let portOf cfg =
+    Map.tryGet "port" cfg |> orFail "no port" |> Str.tryToInt |> orFail "port is not a number"
+
+let good = Map.ofPairs [("port", "8080")]
+let bad = Map.ofPairs [("port", "http")]
+
+for cfg in [good; bad] do
+    match portOf cfg |> try result with
+    | Ok p -> print $"port {p}"
+    | Error msg -> printerr $"skipped: {msg}"
+```
+
+See [Raising](reference/errors.md#raising).
+
 ## Names: scripts and the prompt
 
 ### `ls |> map _.name` works at the prompt; why not in my script or init.weir?
