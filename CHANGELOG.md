@@ -7,9 +7,10 @@ Many of the changes and fixes below were found porting starship to weir.
 ### Added
 
 - **Validated types: a type that only holds valid values.** Give a
-  single-case union an indented `validate s = …` block that returns the
-  payload (it may normalise, e.g. lowercase) or refuses with `fail
-  "msg"` (any raise refuses, with its message), and weir derives
+  single-case union an indented `validate s = …` block that checks the
+  payload and refuses with `fail "msg"` (any raise refuses, with its
+  message; the block returns nothing and the value is stored exactly as
+  given — normalise before `create` if you need to), and weir derives
   `Email.create : string -> Email` — the only way to build a value,
   inside the declaring module too (`Email "x"` is an error naming
   `Email.create`). When the block refuses, `create` raises its message

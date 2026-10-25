@@ -177,25 +177,31 @@ match v with
 
 A single-case union can declare a `validate` block: an indented
 `validate <binder> = <expr>` under the declaration. The binder takes
-the payload; the body returns the payload — the value as given, or
-normalised (as the lowercased email below) — and refuses by raising:
-`fail` with the message users will see, or any other raise (a failing
-`Str.toInt`, an `|> orFail`), whose message becomes the refusal. The
-type then holds only values the block accepted.
+the payload; the body only checks it and returns `unit`, refusing by
+raising: `fail` with the message users will see, or any other raise (a
+failing `Str.toInt`, an `|> orFail`), whose message becomes the
+refusal. `if … then fail …` with no `else` is the idiom. The block
+cannot change the value: an accepted payload is stored exactly as
+given, so a wire round trip is byte-identical and `==` compares what
+was written. Normalising is the caller's job:
+`Email.create (Str.toLower input)`. The type then holds only values
+the block accepted.
 
 ```weir
 type Email = Email of string
-    /// lowercased; one @, no spaces
+    /// one @, no spaces
     validate s =
-        if Str.isMatch @"^[^@\s]+@[^@\s]+$" s then Str.toLower s
-        else fail $"not an email: {s}"
+        if not (Str.isMatch @"^[^@\s]+@[^@\s]+$" s) then fail $"not an email: {s}"
 
 let (Email raw) = Email.create "Ada@Example.org"
 print raw
+let (Email low) = Email.create (Str.toLower "Ada@Example.org")
+print low
 print $"{Email.create "nope" |> try result}"
 ```
 
-(prints `ada@example.org`, then `Error "not an email: nope"`.)
+(prints `Ada@Example.org`, then `ada@example.org`, then
+`Error "not an email: nope"`.)
 
 - **`T.create` is the only way to build a value.** Weir derives
   `T.create : payload -> T` in the type's own name (`Email.create`;
@@ -210,7 +216,7 @@ print $"{Email.create "nope" |> try result}"
 
 ```weir-error
 type Email = Email of string
-    validate s = if Str.contains "@" s then s else fail "no @"
+    validate s = if not (Str.contains "@" s) then fail "no @"
 let e = Email "x" // 'Email' is validated — build it with Email.create (it raises when validate refuses; `|> try result` for a Result)
 ```
 

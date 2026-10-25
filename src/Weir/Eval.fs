@@ -7149,14 +7149,17 @@ let constructorValues (cases: (string * Ty option * AttrSpec list) list) : (stri
 
 /// a `type` declaration run [D:validated-types]: its constructors bind in
 /// `env`, and a validated type's `create` — the validator, then the case
-/// around what it returns — registers under the declaration's id, where
+/// around the payload as given — registers under the declaration's id, where
 /// `T.create` and every wire boundary find it
 let declare (env: Env) (decl: Decl) (validator: (string * TypedExpr) option) : Env =
     match decl.Body, validator with
     | DUnion [ (case, Some _, _) ], Some(id, vte) ->
         let check = eval env vte
 
-        validators[id] <- fun payload -> VUnion(case, Some(apply check payload))
+        validators[id] <-
+            fun payload ->
+                apply check payload |> ignore
+                VUnion(case, Some payload)
     | _ -> ()
 
     match decl.Body with

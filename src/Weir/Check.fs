@@ -7453,9 +7453,9 @@ let private binderWord (p: Pattern) : string =
     | _ -> "a pattern of another type"
 
 /// a validated type's `validate` block, typed as the function
-/// `payload -> payload`, refusing by raising [D:validated-types]: the binder
-/// takes the payload's type, the body must give the payload — each
-/// mismatch names both types. `env` already holds the declaration.
+/// `payload -> unit`, refusing by raising [D:validated-types]: the binder
+/// takes the payload's type (a mismatch names both), the body must be
+/// unit (a mismatch names its type). `env` already holds the declaration.
 let typecheckValidator (env: TypeEnv) (typeName: string) (v: Validator) : Result<TypedExpr, TypeError> =
     catchBudget (fun () ->
         let payload =
@@ -7463,7 +7463,7 @@ let typecheckValidator (env: TypeEnv) (typeName: string) (v: Validator) : Result
             | Some(Union { Cases = [ (_, Some p) ] }) -> p
             | _ -> failwith "unreachable: checkDecl admits validate on a single-case union with a payload"
 
-        let want = payload
+        let want = TUnit
         let lam = { Kind = ELambdaPat(v.Binder, v.Body); Span = v.Span }
 
         let env =
@@ -7489,7 +7489,7 @@ let typecheckValidator (env: TypeEnv) (typeName: string) (v: Validator) : Result
                 |> Result.mapError (fun e ->
                     { e with
                         Message =
-                            $"'validate' must return {typeName}'s payload, {formatTy want} (the value, normalised or not; it refuses by raising — fail with the message users see), but this body returns {formatTy (finalTy ctx tbody.Ty)}" })
+                            $"'validate' checks and returns nothing — refuse by raising (fail with the message users see); it cannot change the value, which is stored as given — but this body returns {formatTy (finalTy ctx tbody.Ty)}" })
 
             // a validator cannot build its own type: that is recursion,
             // which weir does not have (no `let rec`)

@@ -296,10 +296,12 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   both qualified spellings; a local union's cases stay bare.
 - A VALIDATED TYPE [D:validated-types] is a single-case union with an
   indented `validate <binder> = <expr>` block: the binder takes the
-  payload, the body returns the PAYLOAD (it may normalise — the
-  lowercased email) and refuses by RAISING: `fail "msg"` (the
-  user-facing message), or any raise — a failing `Str.toInt`, an
-  `|> orFail`. The case then NEVER constructs (declaring module
+  payload, the body returns UNIT — it only checks (`if … then fail …`,
+  no else) and refuses by RAISING: `fail "msg"` (the user-facing
+  message), or any raise — a failing `Str.toInt`, an `|> orFail`. It
+  CANNOT change the value: the payload is stored exactly as given
+  (exact wire round trips, honest `==`); normalising is the caller's
+  job, `Email.create (Str.toLower input)`. The case then NEVER constructs (declaring module
   included): the one way in is the derived `T.create : payload -> T` —
   `Email.create "a@b"`, `Mail.Email.create` across a module, bare while
   one import declares it. A refusal makes `create` RAISE validate's
@@ -321,8 +323,8 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
 
 ```weir
 type Email = Email of string
-    /// lowercased; must hold an @
-    validate s = if Str.contains "@" s then Str.toLower s else fail $"not an email: {s}"
+    /// must hold an @
+    validate s = if not (Str.contains "@" s) then fail $"not an email: {s}"
 type User = { name: string; email: Email }
 
 let (Email raw) = Email.create "Ada@Example.org"
@@ -334,14 +336,14 @@ print $"{bad}"
 
 ```weir-error
 type Email = Email of string
-    validate s = if Str.contains "@" s then s else fail "no @"
+    validate s = if not (Str.contains "@" s) then fail "no @"
 let e = Email "x" // 'Email' is validated — build it with Email.create (it raises when validate refuses; `|> try result` for a Result)
 ```
 
 ```weir-error
 // validate is pure: existence belongs where the value is used
 type ExistingDir = ExistingDir of string
-    validate p = if Dir.exists p then p else fail $"no such directory: {p}"
+    validate p = if not (Dir.exists p) then fail $"no such directory: {p}"
 ```
 - A FUNCTION TYPE is writable [D:function-types] in any type position — a
   union payload (`Custom of (string -> bool)`), a record field

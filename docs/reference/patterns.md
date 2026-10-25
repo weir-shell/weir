@@ -140,7 +140,7 @@ declaring module and outside it. Binder positions take it too, since
 one case cannot fail to match.
 
 ```weir
-["module Mail"; "type Email = Email of string"; "    validate s = if Str.contains \"@\" s then s else fail \"no @\""]
+["module Mail"; "type Email = Email of string"; "    validate s = if not (Str.contains \"@\" s) then fail \"no @\""]
     |> File.write "mail-v.weir"
 let use = <<<
     import "./mail-v.weir"

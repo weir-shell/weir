@@ -9282,10 +9282,10 @@ expect "a wrong qualifier names both types" "'PcB.Ghost' is a case of PcB.Ghost,
 # validated types [D:validated-types]: the case never constructs, T.create
 # is the one gate, and every boundary runs validate — an Args flag and a
 # JSON field refuse a bad value naming the flag / the field path; the REPL
-printf 'module Mail\ntype Email = Email of string\n    validate s = if Str.contains "@" s then Str.toLower s else fail $"not an email: {s}"\ntype User = { name: string; email: Email }\n' > "$mdir/vt-mail.weir"
+printf 'module Mail\ntype Email = Email of string\n    validate s = if not (Str.contains "@" s) then fail $"not an email: {s}"\ntype User = { name: string; email: Email }\n' > "$mdir/vt-mail.weir"
 printf 'import "./vt-mail.weir"\ntype Cli = { recipient: Email }\nlet c = Args.load Cli\nlet (Email r) = c.recipient\nprint r\n' > "$mdir/vt-args.weir"
 out=$($BIN "$mdir/vt-args.weir" --recipient A@B 2>&1)
-expect "a validated flag parses, validates and normalises" "a@b" "$out"
+expect "a validated flag parses and validates, stored exactly as given" "A@B" "$out"
 rc=0; out=$($BIN "$mdir/vt-args.weir" --recipient nope 2>&1) || rc=$?
 expect "a validated flag refuses a bad value, naming the flag" "Args.load Cli: --recipient: not an email: nope" "$out"
 [ "$rc" = 1 ] || fail "a validated flag's refusal exits as the Args error path does (1), got $rc"
@@ -9295,22 +9295,27 @@ printf 'import "./vt-mail.weir"\nlet u = ["{\\"users\\": [{\\"name\\": \\"a\\", 
 rc=0; out=$($BIN "$mdir/vt-json.weir" 2>&1) || rc=$?
 expect "a JSON field refuses a bad value, naming its path" "from json: users[0].email: not an email: x" "$out"
 [ "$rc" = 1 ] || fail "a JSON validation refusal exits 1, got $rc"
+printf '{"name":" Ada ","email":"Ada.Lovelace@Example.ORG"}\n' > "$mdir/vt-user.json"
+printf 'import "./vt-mail.weir"\nFile.read "%s" |> from json Mail.User |> to json |> Seq.iter print\n' "$mdir/vt-user.json" > "$mdir/vt-round.weir"
+out=$($BIN "$mdir/vt-round.weir" 2>&1)
+[ "$out" = "$(cat "$mdir/vt-user.json")" ] || fail "a validated field round-trips from json to json byte-identical, got: $out"
+echo "e2e ok: a validated field round-trips from json to json byte-identical"
 printf 'import "./vt-mail.weir"\nlet e = Mail.Email "a@b"\n' > "$mdir/vt-ctor.weir"
 out=$($BIN check "$mdir/vt-ctor.weir" 2>&1 || true)
 expect "a validated case never constructs" "'Mail.Email' is validated — build it with Mail.Email.create (it raises when validate refuses; \`|> try result\` for a Result)" "$out"
 printf 'import "./vt-mail.weir"\nlet (Email ok) = Email.create "A@B"\nprint ok\nlet (Email bad) = Email.create "nope"\nprint bad\n' > "$mdir/vt-create.weir"
 rc=0; out=$($BIN "$mdir/vt-create.weir" 2>&1) || rc=$?
-expect "T.create builds and normalises" "a@b" "$out"
+expect "T.create stores the payload exactly as given" "A@B" "$out"
 expect "T.create raises validate's message, located at the call" "vt-create.weir:4:19: error: not an email: nope" "$out"
 [ "$rc" = 1 ] || fail "an uncaught T.create refusal exits 1, got $rc"
-out=$(printf 'type Port = Port of int\n    validate p = if p > 0 then p else fail $"{p} is no port"\nPort.create 8080\nPort.create 0 |> try result\nPort 1\n' | $BIN 2>&1)
+out=$(printf 'type Port = Port of int\n    validate p = if p <= 0 then fail $"{p} is no port"\nPort.create 8080\nPort.create 0 |> try result\nPort 1\n' | $BIN 2>&1)
 expect "the REPL: T.create builds" "Port 8080 : Port" "$out"
 expect "the REPL: try result keeps the validator's message" 'Error "0 is no port" : Result<Port, string>' "$out"
 expect "the REPL: the case refuses to construct" "'Port' is validated — build it with Port.create" "$out"
-printf 'type Port = Port of Option<int>\n    validate p = p\ntype Cli = { port: Port }\nlet c = Args.load Cli\nprint $"{c}"\n' > "$mdir/vt-optpay.weir"
+printf 'type Port = Port of Option<int>\n    validate p = ()\ntype Cli = { port: Port }\nlet c = Args.load Cli\nprint $"{c}"\n' > "$mdir/vt-optpay.weir"
 out=$($BIN check "$mdir/vt-optpay.weir" 2>&1 || true)
 expect "a flat boundary refuses a validated field over an optional payload" "field 'port': 'Port' is validated over an optional payload" "$out"
-printf 'type Port = Port of int\n    validate p = if p > 0 then p else fail $"{p} is no port"\ntype Cli = { port: Option<Port> }\nlet c = Args.load Cli\nprint $"{c.port}"\n' > "$mdir/vt-optport.weir"
+printf 'type Port = Port of int\n    validate p = if p <= 0 then fail $"{p} is no port"\ntype Cli = { port: Option<Port> }\nlet c = Args.load Cli\nprint $"{c.port}"\n' > "$mdir/vt-optport.weir"
 out=$($BIN "$mdir/vt-optport.weir" 2>&1)
 expect "Option<Port> over a scalar payload: absent is None" "None" "$out"
 
