@@ -175,7 +175,7 @@ print $"branches: {branches}"
   binding went unread errors AT the earlier binder (the copy-paste
   bug), and a module's UNSIGNED member unread at home is dead private
   code — an error naming the signature repair. EXEMPT: function
-  params, match-arm binders, `for`/`until`/`within` binders, and
+  params, match-arm binders, `for`/`pfor`/`until`/`within` binders, and
   SIGNED module members (the signature is the use). The law judges
   the WHOLE file after every statement checks; an errored file
   reports only its real error, never unused echoes.
@@ -792,7 +792,8 @@ within tmp d
 - No async/task/await — processes and pipelines are the concurrency
   model. A task that truly needs async belongs in full F#, not weir.
   For fan-out over items: `xs |> Seq.pmap (fun x -> ...)` (parallel,
-  ordered results) / `Seq.piter` for effects — sized for I/O-BOUND
+  ordered results) / `Seq.piter` for effects (`pfor x in xs do` is its
+  loop spelling) — sized for I/O-BOUND
   arms (spawns/waits/sleeps): the DEFAULT ceiling is PER FAN-OUT and
   shrinks with nesting — 64 at top level, 8 inside a worker, and a
   fan-out nested twice runs serially — so nested fan-outs cannot multiply into a width
@@ -1273,6 +1274,16 @@ repeat interval=10ms
   `match x with | Case …` body dispatches). A bare command
   body is an ordinary statement: `for f in files do git add $f`
   streams and raises per iteration.
+  `pfor x in xs do body` is the PARALLEL `for` [D:pfor]: exactly
+  `xs |> Seq.piter (fun x -> body)` — `for`'s binder and body rules,
+  `piter`'s everything else (the 64/8/1 default ceiling with no
+  ceiling syntax — `Seq.piterWith n` sets one; unit body; arms finish
+  in any order and their output INTERLEAVES — a command in an arm
+  inherits the terminal at a tty, relays whole lines when redirected,
+  so capture with `| complete` or collect via `Seq.pmap` for tidy
+  output; first error by input order after every arm; refused inside
+  `plan`; the same signal teardown). Effects only: `pfor x in xs -> e`
+  and a `yield` body refuse, naming `Seq.pmap`.
   Comprehension: `[for x in xs -> e]` (eager). No guard clause —
   filter with `Seq.where` upstream.
   `[1..10] |> Seq.iter (fun i -> print $"{i}")` for counted repetition.
@@ -1282,6 +1293,19 @@ repeat interval=10ms
   (consumes the source; not for infinite seqs), and the piped
   spelling anchors the folder's types (prefer it). Multi-accumulator
   loops fold over a record: `Seq.fold (fun c x -> { c with ... }) c0`.
+
+```weir
+// pfor: Seq.piter spelled as a loop — arms run in parallel, any order
+pfor (name, ms) in [("a", 30); ("b", 10)] do
+    Duration.sleep (Duration.ms ms)
+    print $"done {name}"
+```
+
+```weir-error
+// effects only — collecting is Seq.pmap
+let doubled = [pfor x in [1; 2] -> x * 2]
+```
+
 - Graph/tree walks need no recursion [D:structural-walk] — the
   frontier/visited worklist is a builtin, bounded by construction (the
   visited set caps a finite graph; a 100000-step budget turns anything

@@ -430,6 +430,7 @@ let classifyPiece (piece: string) : PieceClass =
         // body like an else, and a dedented sibling statement closes both
         || piece = "within"
         || piece.StartsWith "for "
+        || piece.StartsWith "pfor "
         // the bounded-loop pair [D:retry-poll] — the machine's 5th and
         // 6th members, still no stack
         || piece.StartsWith "retry "

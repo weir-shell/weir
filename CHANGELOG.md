@@ -118,6 +118,16 @@ Many of the changes and fixes below were found porting starship to weir.
   Running the import again after editing the module reloads it.
   `#help Alias.member` shows the member's `///` doc, and `#save` keeps
   the import with its path written out absolute.
+- **`pfor x in xs do …`, the parallel `for`.** It is exactly
+  `xs |> Seq.piter (fun x -> …)` written as a loop: the same binder
+  patterns and indented body as `for`, and everything else from
+  `Seq.piter` — up to 64 arms at once (fewer when nested; use
+  `Seq.piterWith n` to pick a number), a unit body, arms finishing in
+  any order with their output interleaved, the first error by input
+  order raised after every arm has run, refused inside a `plan`, and
+  the same Ctrl+C/SIGTERM cleanup. It runs effects only:
+  `pfor x in xs -> e` and a `yield` body are refused with a pointer to
+  `Seq.pmap`. `pfor` is now a keyword, so it can no longer be a name.
 
 ### Changed
 
