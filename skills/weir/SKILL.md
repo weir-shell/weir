@@ -2584,6 +2584,23 @@ print (f 1)
   symlinked dirs that `Path.glob`'s `**` deliberately skips — each is
   correct in isolation (glob skips for loop-immunity, explicit access
   follows as a shell does), but they are not the same rule.
+- One file NAME [D:path-name]: **isName to check one name; toName to
+  make one; under to confine a join.** `Path.isName s` is true iff `s`
+  is a single name valid on Linux, macOS AND Windows — not `""`/`.`/`..`,
+  no `/` `\` control char or `< > : " | ? *`, no trailing space or dot,
+  not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0`–`COM9`,
+  `LPT0`–`LPT9`, `COM¹`–`COM³`, `LPT¹`–`LPT³`, any case, any extension),
+  at most 255 UTF-8 bytes. `Path.toName s` makes one from any text:
+  forbidden chars become `_`, trailing spaces/dots go, a device name
+  gets a `_` prefix, the cut to 255 bytes never splits a character, an
+  empty result is `_`; a valid name comes back unchanged, so it is
+  idempotent. Both are pure.
+
+```weir
+print (Path.toName "Q3: draft/final?.txt")
+let fixed = Path.toName "CON.txt"
+print $"{fixed} {Path.isName fixed}"
+```
 - `Path.glob "src/**/*.fs" : seq<string>` — typed discovery
   (nothing expands in argv, ever): `*` within-segment, `**`
   cross-segment (never through symlinked dirs — bash globstar),
@@ -3026,7 +3043,7 @@ not the teaching.
 - `Net`: `portOpen`
 - `Result`: `defaultValue` `isOk` `map` `toOption` — what `e |> try result` gives (`Ok v` / `Error msg`)
 - `Option`: `bind` `defaultValue` `defaultWith` `flatten` `iter` `map` `orElse` `orElseWith` — `bind` chains lookups that may each fail (`f` returns an Option; no nesting); `flatten` collapses `Option<Option<T>>`
-- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `normalize` `stateHome` `stem` `tempRoot` `under` — `normalize` resolves `.`/`..` in the path TEXT (no filesystem, no symlinks; use it where `under` refuses a path that leaves its base); `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`) — home is `$HOME` verbatim when set, the OS lookup when unset, and an empty HOME raises [D:home-verbatim]; HOME and `XDG_*` are read through a `within env` overlay [D:home-overlay]; in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to
+- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `isName` `newTempDir` `normalize` `stateHome` `stem` `tempRoot` `toName` `under` — `isName` is true for one file name valid on Linux, macOS and Windows; `toName` turns any text into one; `normalize` resolves `.`/`..` in the path TEXT (no filesystem, no symlinks; use it where `under` refuses a path that leaves its base); `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`) — home is `$HOME` verbatim when set, the OS lookup when unset, and an empty HOME raises [D:home-verbatim]; HOME and `XDG_*` are read through a `within env` overlay [D:home-overlay]; in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to
 - `Poll`: `defaults`
 - `Plan`: `apply` `isEmpty` `ops` `preview` — the value a `plan` block yields: `ops` the recorded `Op`s, `preview` one line each, `apply` performs them in order
 - `Proc`: `pid` `running` `stop` `tail` `wait`

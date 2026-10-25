@@ -15439,6 +15439,138 @@ let agentFindingsTests =
               expectValue "Path.normalize \"/a/../../b\"" (VStr "/b")
               expectValue "Path.combine \"/repo/src/App\" \"../Core/Core.csproj\" |> Path.normalize" (VStr "/repo/src/Core/Core.csproj")
           }
+          test "Path.isName: the portable truth table [D:path-name]" {
+              let isName = Weir.Builtins.pathIsName
+
+              for (n, want) in
+                  [ "report-2026.txt", true // the reference script's cases first
+                    "a/b", false
+                    "..", false
+                    "x:y", false
+                    "CON.txt", false
+                    "CONIN$", false
+                    "conout$.txt", false
+                    "CoNiN$.log", false
+                    "trail.", false
+                    "", false
+                    ".", false
+                    ".bashrc", true
+                    "...x", true
+                    "my file.txt", true
+                    " lead", true
+                    "trail ", false
+                    @"a\b", false
+                    "a\u0000b", false
+                    "tab\there", false
+                    "a\u001fb", false
+                    "a\u007fb", true
+                    "<", false
+                    ">", false
+                    "\"", false
+                    "|", false
+                    "?", false
+                    "*", false
+                    "con", false
+                    "Nul.tar.gz", false
+                    "lpt9.log", false
+                    "COM0", false
+                    "com¹", false
+                    "LPT³.txt", false
+                    "CON .txt", false
+                    "COM10", true
+                    "CONSOLE", true
+                    "xCON", true
+                    "_CON.txt", true
+                    "café", true
+                    "日本語.md", true
+                    "😀", true
+                    string (char 0xD800), false // a lone surrogate has no UTF-8 form
+                    "a" + string (char 0xDC00), false ] do
+                  Expect.equal (isName n) want $"isName {n}"
+
+              // the length edge counts UTF-8 bytes: 255 passes, 256 refuses
+              Expect.isTrue (isName (String.replicate 255 "a")) "255 ASCII bytes"
+              Expect.isFalse (isName (String.replicate 256 "a")) "256 ASCII bytes"
+              Expect.isTrue (isName (String.replicate 127 "é" + "a")) "2-byte chars, 255 bytes"
+              Expect.isFalse (isName (String.replicate 128 "é")) "128 chars, 256 bytes"
+              Expect.isTrue (isName (String.replicate 63 "😀" + "abc")) "4-byte chars, 255 bytes"
+              Expect.isFalse (isName (String.replicate 64 "😀")) "64 code points, 256 bytes"
+              expectValue "Path.isName \"report-2026.txt\"" (VBool true)
+              expectValue "Path.isName \"CON.txt\"" (VBool false)
+          }
+          test "Path.toName: the policy table, idempotent, never splits [D:path-name]" {
+              let toName = Weir.Builtins.pathToName
+
+              for (s, want) in
+                  [ "report-2026.txt", "report-2026.txt"
+                    "a/b", "a_b"
+                    @"a\b", "a_b"
+                    "Q3: draft/final?.txt", "Q3_ draft_final_.txt"
+                    "<>:\"|?*", "_______"
+                    "a\u0000b\tc\u001fd", "a_b_c_d"
+                    "trail.", "trail"
+                    "trail. . ", "trail"
+                    "", "_"
+                    ".", "_"
+                    "..", "_"
+                    " . ", "_"
+                    "CON.txt", "_CON.txt"
+                    "CONOUT$", "_CONOUT$"
+                    "conin$.log", "_conin$.log"
+                    "con", "_con"
+                    "com¹.log", "_com¹.log"
+                    "CON .txt", "_CON .txt"
+                    "my File.TXT", "my File.TXT"
+                    " lead", " lead"
+                    string (char 0xD800) + "x", "_x" ] do
+                  Expect.equal (toName s) want $"toName {s}"
+
+              let bytes (s: string) = System.Text.Encoding.UTF8.GetByteCount s
+
+              // truncation lands on a code-point boundary, never inside a
+              // UTF-8 sequence or a surrogate pair
+              let e = toName (String.replicate 200 "é")
+              Expect.equal e (String.replicate 127 "é") "254 bytes: the 128th é would split"
+              let emoji = toName ("a" + String.replicate 100 "😀")
+              Expect.equal emoji ("a" + String.replicate 63 "😀") "253 bytes: no half surrogate pair"
+              Expect.isFalse (System.Char.IsHighSurrogate emoji[emoji.Length - 1]) "the pair is whole"
+              // a cut that leaves a trailing dot or space strips again
+              Expect.equal (toName (String.replicate 254 "a" + ". b")) (String.replicate 254 "a") "the cut re-strips"
+              Expect.equal (toName (String.replicate 300 "." + "x")) "_" "all dots after the cut"
+              // the prefix can push a long reserved name past the limit; it is cut again
+              let longCon = toName ("CON." + String.replicate 251 "a")
+              Expect.equal longCon ("_CON." + String.replicate 250 "a") "prefix then re-cut"
+              // the cut can expose a device name; it is prefixed after the cut
+              Expect.equal (toName ("CON" + String.replicate 260 " " + "x")) "_CON" "a cut down to CON"
+
+              let samples =
+                  [ "report.txt"; "a/b"; ""; "."; ".."; "CON.txt"; "trail. "; "Q3: x?"; string (char 0xD800)
+                    String.replicate 300 "é"; "a" + String.replicate 100 "😀"; "CON." + String.replicate 251 "a"
+                    String.replicate 254 "a" + ". b"; "CON" + String.replicate 260 " " + "x"; "日本語/テスト:1" ]
+
+              for s in samples do
+                  let n = toName s
+                  Expect.isTrue (Weir.Builtins.pathIsName n) $"toName {s} is a name"
+                  Expect.equal (toName n) n $"toName is idempotent on {s}"
+                  Expect.isLessThanOrEqual (bytes n) 255 $"toName {s} fits"
+
+              expectValue "Path.toName \"CON.txt\"" (VStr "_CON.txt")
+              expectValue "Path.toName \"..\"" (VStr "_")
+          }
+          test "Path.isName and Path.toName on bulk text cost a name's work, not the text's [D:path-name]" {
+              let big = String.replicate 20_000_000 "a/"
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+              Expect.isFalse (Weir.Builtins.pathIsName big) "far over the limit"
+              let n = Weir.Builtins.pathToName big
+              Expect.isTrue (System.Text.Encoding.UTF8.GetByteCount n <= 255) "capped at the limit"
+              Expect.isTrue (Weir.Builtins.pathIsName n) "a name"
+              Expect.isLessThan sw.Elapsed.TotalSeconds 2.0 "bounded by the limit, not the input"
+          }
+          test "Path.isName and Path.toName are pure [D:path-name]" {
+              Expect.isEmpty
+                  (errorsIn "pathname.weir" [ "let pure safe s = if Path.isName s then s else Path.toName s"; "print (safe \"a/b\")" ])
+                  "pure admits both"
+          }
           test "Path.normalize and Path.glob root a Windows drive on Windows only [D:path-drive-root]" {
               let norm = Weir.Builtins.pathNormalizeOn
               Expect.equal (norm true "C:/../y") "C:/y" "a drive root swallows '..'"

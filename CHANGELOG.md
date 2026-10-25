@@ -74,6 +74,15 @@ Many of the changes and fixes below were found porting starship to weir.
   points at the `orFail`, and `|> try` catches it like any other.
   After a command the same word is still the reifier, `cmd | orFail
   "msg"`. `orFail` is now a keyword, so it can't be used as a name.
+- **`Path.isName` and `Path.toName` for file names.** `Path.isName s`
+  is true when `s` is one file name valid on Linux, macOS and Windows:
+  not empty, `.` or `..`, no `/`, `\`, control character or
+  `< > : " | ? *`, no trailing space or dot, not a Windows device name
+  (`CON`, `nul.txt`, `COM1`…), at most 255 UTF-8 bytes. `Path.toName s`
+  turns any text into such a name: forbidden characters become `_`,
+  trailing spaces and dots go, a device name gets a `_` prefix, and the
+  cut to 255 bytes never splits a character. A valid name comes back
+  unchanged. Both work inside `pure`.
 
 ### Changed
 
