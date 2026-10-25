@@ -83,7 +83,7 @@ let private interpreters =
 // constructor…) are deliberately absent — building a request is not
 // sending it.
 let private fsReads =
-    Set [ "File.read"; "File.size"; "Dir.list"; "Dir.exists"; "Path.glob" ]
+    Set [ "File.read"; "File.readFrom"; "File.size"; "Dir.list"; "Dir.exists"; "Path.glob" ]
 
 let private fsWrites =
     Set

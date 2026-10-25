@@ -42,6 +42,9 @@ let source =
       // code (None after a non-command error, and when ok). Consumers
       // read fields, so the record grows without breaking a prompt.
       "type PromptStatus = { ok: bool; exit: Option<int> }"
+      // File.readFrom's result [D:file-readfrom]: the complete lines and
+      // the offset to pass next time, so a poll is one call
+      "type FileChunk = { lines: seq<string>; next: Size }"
       // the shared body union [D:http] [D:http-serve]: NoBody/Json/Text
       // are the client-and-server cases; Stream is the server response's
       // lazy line source — pulled and written chunked as produced
