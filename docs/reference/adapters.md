@@ -77,8 +77,9 @@ supported; the error suggests `[<Tag>]`.
 
 `Map<string, T>` reads an object keyed by IDs, either as a field or
 as the whole document (`from json Map<string, int>`; `T` is anything
-a field can hold). Keys must be strings, entries are iterated in
-key order, and for duplicate keys the last one wins. `to json` writes
+a field can hold). Keys must be strings at the JSON boundary (a
+`Map<int, T>` elsewhere in the program is fine; convert its keys with
+`show` to write it), entries are iterated in key order, and for duplicate keys the last one wins. `to json` writes
 the object back.
 
 ```weir

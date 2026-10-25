@@ -68,6 +68,14 @@ Many of the changes and fixes below were found porting starship to weir.
 
 ### Changed
 
+- **A `Map` takes any key with equality.** `Map<int, string>`, a map
+  keyed by a union (`ls |> Seq.countBy _.kind |> Map.ofPairs`), a
+  tuple or a record now work, with every `Map` function. A `float`
+  key, or a record holding one, is refused as `==` refuses it. Keys
+  come out in a fixed order: scalars as `Seq.sort` orders them, union
+  cases by case name (not declaration order, as F# has it). JSON
+  still takes string keys only: `to json`/`from json` of a
+  `Map<int, …>` is an error that shows the `show k` conversion.
 - **`def` is an ordinary name.** `let def = 1` and a field called `def`
   work. A line shaped like a definition, `def double x = …`, still gets
   "'def' is not a weir word — define with 'let f x = ...'".
