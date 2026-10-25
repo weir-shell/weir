@@ -287,10 +287,13 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   last-wins [D:ambiguous-ctor]; rename one. Arity does not disambiguate
   (applying it does not pick an overload), and PATTERNS are unaffected: a
   case in a pattern resolves against the scrutinee's type. Imported unions
-  never collide — their cases are not in scope bare. A pattern names a
-  case BARE only: a qualified case (`| X.Case v ->`) is a parse error in
-  pattern position — the scrutinee's type resolves the bare name,
-  imported unions included.
+  never collide — their cases are not in scope bare. A pattern names an
+  imported case bare OR qualified [D:qualified-case-patterns] —
+  `| X.Case v ->`, `let (X.W w) = …`, `fun (X.W w) -> …`, nested too; the
+  qualifier is the import's name (the one you construct with) and must
+  match the value's type (a mismatch is a type error naming both). A bare
+  case two imports declare, with nothing typing the value, refuses naming
+  both qualified spellings; a local union's cases stay bare.
 - A FUNCTION TYPE is writable [D:function-types] in any type position — a
   union payload (`Custom of (string -> bool)`), a record field
   (`{ matches: string -> bool }`), a generic arg. `->` is right-associative
@@ -2486,6 +2489,21 @@ let c = ["{}"] |> from json Cfg
 ```
 
 ```weir
+// an imported case in patterns, bare or qualified [D:qualified-case-patterns]
+["module"; "type Ref = Ref of string"] |> File.write "qcp-a.weir"
+["module"; "type Ref = Ref of int"] |> File.write "qcp-b.weir"
+```
+
+```weir
+import "./qcp-a.weir" as A
+import "./qcp-b.weir" as B
+let (A.Ref name) = A.Ref "main"
+let depth (B.Ref n) = n
+let typed = match A.Ref "dev" with | Ref r -> r
+print $"{name} {depth (B.Ref 2)} {typed}"
+```
+
+```weir
 let clean = not (1 == 2)
 if clean then sh -c "echo acting"
 ```
@@ -2538,8 +2556,9 @@ print (show (let r = sh -c "echo x" | complete in r.exitCode))
   Destructure ANYWHERE irrefutable: `let x, y = pair`,
   `let (k, _) = pair`, `fun (k, v) -> ...` (parens required on
   params). A SINGLE-case union's constructor is irrefutable too
-  (`type W = W of int` then `let un (W x) = x`). Refutable patterns in
-  binders are errors — use match.
+  (`type W = W of int` then `let un (W x) = x`), an imported one included
+  (`let (X.W x) = w`, or bare). Refutable patterns in binders are errors —
+  use match.
 - Irrefutable RECORD patterns [D:record-patterns] destructure at every
   binding position — `let { names = n } = c`, params (bare, no parens
   needed), lambdas, match arms (the `when` guard does the testing),
@@ -2683,7 +2702,7 @@ print $"{fixed} {Path.isName fixed}"
   Stranded-script reports should cite the error codes.
 - Casing law: binding names start LOWERCASE (`let foo`, `fun x ->`);
   uppercase is types/modules/constructors. Record fields keep their
-  names: `let region = cfg.AWS_REGION`.
+  names: `let level = cfg.LOG_LEVEL`.
   No tuple ordering (sortBy/sortByDescending keys stay scalar).
   Records remain the spelling for anything with NAMES. Prefix minus
   follows F#'s adjacency rule: `-n`, `2 * -3`, and `f -1` (passes -1

@@ -137,9 +137,35 @@ Many of the changes and fixes below were found porting starship to weir.
   `custom.shell`, `python.python_binary`) used to draft as `string`
   and reject every list. It is now `Yaml`, with a note saying how each
   kind reads.
+- **A case of an imported union can be written qualified in a
+  pattern.** `| Contract.Ghost x ->`, `let (Contract.Ghost g) = …`,
+  `let f (Contract.Ghost y) = …`, lambdas and nested patterns all take
+  it; before, a match arm refused it ("a pattern names a case bare") and
+  a `let` pattern failed with "Expecting: identifier". The qualifier is
+  the import's name and must match the value's type: a case of another
+  import's union is an error naming both types. With two imports that
+  declare unions with the same case name, the qualifier says which one
+  you mean; a bare case there, with nothing typing the value, is an
+  error that lists both qualified spellings.
+- **Error codes say what they mean.** The code in `error [code]:` and
+  in `weir check --json` is renamed where it was weir's internal
+  vocabulary: `casing-law` is now `lowercase-binding`, `seq-unit`
+  `non-unit-statement`, `ord-key` `unsortable-key`, `eq`
+  `not-equatable`, `show-fn` `unrenderable-function`,
+  `ambiguous-constraint` `undetermined-type`, `regex-arity`
+  `regex-binder-count`, `assembly` `layout`, `sig-orphan`
+  `missing-implementation`, `sig-doc` `doc-on-implementation`,
+  `session-decl-ref` `session-names-declaration` and `module-rule`
+  `module-declares-only`. If a script or editor setup matches on a code,
+  update it.
 
 ### Fixed
 
+- **An imported union's case binds in `let` and parameter patterns.**
+  `let (Ghost g) = ghost` and `let f (Ghost y) = y`, with `Ghost` from an
+  imported module, failed with "binding names start lowercase"; they now
+  resolve the case as `match` does. A multi-case imported union is
+  refused there as a pattern that can fail, as a local one is.
 - **`#help` shows the `///` doc of a module member imported by
   init.weir.** `#help Git.refresh` printed only the signature; it now
   prints the doc written above the member's signature, as it already

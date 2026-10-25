@@ -3981,7 +3981,7 @@ let rec private checkStatementCore
                         | PVar n -> [ n ]
                         | PTuple ps -> ps |> List.collect patVars
                         | PRecord fields -> fields |> List.map snd |> List.collect patVars
-                        | PCase(_, Some inner) -> patVars inner
+                        | PCase(_, Some inner, _) -> patVars inner
                         | _ -> []
 
                     patVars pat
@@ -4371,7 +4371,7 @@ let checkStatement
 // ---- unused bindings [D:unused-bindings]: whole-file threading ------------
 // The check is a whole-file judgement (a binder's readers may sit any
 // number of statements later), so it applies post-fold — beside the
-// sig-orphan check — in every consumer that folds a complete file:
+// missing-implementation check — in every consumer that folds a complete file:
 // analyzeLines (check / --can / LSP), the runner's check phase, the
 // module loader, and the fidelity mirror. Per-statement consumers
 // (REPL, -e, Complete) never see it. An errored statement poisons the
@@ -5803,11 +5803,11 @@ let private codeOf (parse: bool) (msg: string) : string =
     if parse then
         "parse"
     elif msg.StartsWith "binding names start lowercase" then
-        "casing-law"
+        "lowercase-binding"
     elif msg.Contains "discards it" then
         "discard"
     elif msg.StartsWith "a sequenced expression must be unit" then
-        "seq-unit"
+        "non-unit-statement"
     elif msg.StartsWith "this pattern can fail" then
         "refutable-binder"
     elif msg.StartsWith "match is not exhaustive" || msg.Contains "needs a catch-all" then
@@ -5817,17 +5817,17 @@ let private codeOf (parse: bool) (msg: string) : string =
     elif msg.StartsWith "invalid regex" then
         "regex"
     elif msg.StartsWith "this regex has" then
-        "regex-arity"
+        "regex-binder-count"
     elif msg.StartsWith "cannot sort by this key" then
-        "ord-key"
+        "unsortable-key"
     elif msg.Contains "equatable" || msg.Contains "cannot be compared" then
-        "eq"
+        "not-equatable"
     elif msg.Contains "cannot render functions" then
-        "show-fn"
+        "unrenderable-function"
     elif msg.StartsWith "unbound variable" then
         "unbound"
     elif msg.Contains "nothing determines" then
-        "ambiguous-constraint"
+        "undetermined-type"
     else
         "check"
 
@@ -9936,10 +9936,10 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
         | Ok lls -> Some lls
         | Error msg ->
             match assemblyErrorAt numbered msg with
-            | Some(line, col, rest) -> into.Add(initError file line col None "assembly" rest)
+            | Some(line, col, rest) -> into.Add(initError file line col None "layout" rest)
             | None ->
                 let line = numbered |> List.tryHead |> Option.map fst |> Option.defaultValue 1
-                into.Add(initError file line 1 None "assembly" msg)
+                into.Add(initError file line 1 None "layout" msg)
 
             None
 
@@ -10083,7 +10083,7 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
 
                         diags.Add
                             { d' with
-                                Code = "session-decl-ref"
+                                Code = "session-names-declaration"
                                 EndLine = Some d'.Line
                                 EndCol = Some(d'.Col + n.Length)
                                 Message = sessionDeclRefMessage n }
@@ -10329,7 +10329,7 @@ let analyzeLinesAs
                   EndLine = None
                   EndCol = None
                   Severity = "error"
-                  Code = "assembly"
+                  Code = "layout"
                   Message = message }
 
             match misaligned.Value with
@@ -10454,7 +10454,7 @@ let analyzeLinesAs
 
         // possible re-enumeration [D:reenum-warning]: fed per statement,
         // flushed after the fold; modules skip (a command-running module
-        // `let` is already the module-rule error)
+        // `let` is already the module-declares-only error)
         let reenumTracker = ReenumTracker()
 
         // the newTempDir footgun [D:newtempdir-lint]: same per-statement
@@ -10594,7 +10594,7 @@ let analyzeLinesAs
                                EndLine = None
                                EndCol = None
                                Severity = "error"
-                               Code = "module-rule"
+                               Code = "module-declares-only"
                                Message = msg }
                      | None -> ())
 
@@ -10676,7 +10676,7 @@ let analyzeLinesAs
                          | PVar n -> [ n ]
                          | PTuple ps -> ps |> List.collect patVars
                          | PRecord fields -> fields |> List.map snd |> List.collect patVars
-                         | PCase(_, Some inner) -> patVars inner
+                         | PCase(_, Some inner, _) -> patVars inner
                          | _ -> []
 
                      let holeScheme =
@@ -10782,7 +10782,7 @@ let analyzeLinesAs
                        EndLine = None
                        EndCol = None
                        Severity = "error"
-                       Code = "sig-orphan"
+                       Code = "missing-implementation"
                        Message = $"signature without implementation — no 'let {name} … = …' follows in this module" }
 
              let attaches = docAttachments rawLines
@@ -10797,7 +10797,7 @@ let analyzeLinesAs
                            EndLine = None
                            EndCol = None
                            Severity = "error"
-                           Code = "sig-doc"
+                           Code = "doc-on-implementation"
                            Message =
                              $"'{name}' is signed, and its /// doc belongs on the signature — move it above 'let {name} : …' (one doc home)" }
                  | None -> ()
