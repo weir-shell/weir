@@ -27326,12 +27326,12 @@ let validatedTypeTests =
           test "a binder or return mismatch names both types" {
               says
                   [ "type S = S of int"; "    validate x = if x > 0 then \"x\" else fail \"n\"" ]
-                  "'validate' checks and returns nothing — refuse by raising (fail with the message users see); it cannot change the value, which is stored as given — but this body returns string"
+                  "expected unit, got string"
                   "return"
 
               says
                   [ "type S = S of int"; "    validate x = Some x" ]
-                  "but this body returns Option<int>"
+                  "expected unit, got Option<int>"
                   "not a Result at all"
 
               says

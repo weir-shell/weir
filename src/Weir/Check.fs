@@ -7484,12 +7484,7 @@ let typecheckValidator (env: TypeEnv) (typeName: string) (v: Validator) : Result
 
             let! tbody = infer ctx (bindParams env binds) v.Body
 
-            do!
-                bind ctx env tbody.Span want tbody.Ty
-                |> Result.mapError (fun e ->
-                    { e with
-                        Message =
-                            $"'validate' checks and returns nothing — refuse by raising (fail with the message users see); it cannot change the value, which is stored as given — but this body returns {formatTy (finalTy ctx tbody.Ty)}" })
+            do! bind ctx env tbody.Span want tbody.Ty
 
             // a validator cannot build its own type: that is recursion,
             // which weir does not have (no `let rec`)
