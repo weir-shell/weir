@@ -32,7 +32,7 @@ let m = File.read "editors/grammar-manifest.json" |> from json Manifest
 
 // import is weir's own word — F# spells the concept `open`
 let core = ["do"; "elif"; "else"; "false"; "for"; "fun"; "function"; "if"; "in"; "let"; "match"; "module"; "of"; "then"; "true"; "type"; "when"; "with"]
-let specific = ["always"; "from"; "import"; "plan"; "poll"; "pure"; "readonly"; "retry"; "to"; "try"; "until"; "within"]
+let specific = ["always"; "from"; "import"; "plan"; "poll"; "pure"; "readonly"; "repeat"; "retry"; "to"; "try"; "until"; "within"]
 let inert = ["mutable"; "rec"]
 let teaching = ["return"; "while"]
 
@@ -63,8 +63,9 @@ let block = [
     // its own head, never `within pure` [D:pure-stage1]
     $"After `within` comes the kind of scope: {fmt (m.withinKinds |> Seq.where (fun k -> k <> "pure"))}."
     $"Data is read with `from` ({fmt m.adapters.fromAdapters}) and written with `to`"
-    $"({fmt m.adapters.toAdapters}). These words are special only in those positions;"
-    "anywhere else they are ordinary names."
+    $"({fmt m.adapters.toAdapters}). A `within`'s block may end with `until stopped`."
+    "These words are special only in those positions; anywhere else they are"
+    "ordinary names."
     ""
     "`pure`, `readonly` and `plan` each start their own indented block. Code in a"
     "`pure` block may have no effects at all; code in a `readonly` block may"

@@ -42,6 +42,7 @@
     "pure",
     "readonly",
     "rec",
+    "repeat",
     "retry",
     "return",
     "then",

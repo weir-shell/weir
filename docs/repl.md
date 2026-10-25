@@ -7,7 +7,11 @@ work as you'd expect. `Ctrl+C` abandons the current line, and while
 an entry runs it stops what the entry is waiting on — a command, a
 sleep, a `poll` or `retry` wait, a lock, an Http request, a
 `Self.prompt` (it takes no input), the rest of a `pmap` or
-`piter` — and returns to the prompt; `Ctrl+D` or `#quit` exits. For a tour, see the [guide](GUIDE.md#the-repl); this
+`piter` — and returns to the prompt. A `repeat` or a scope held by
+`until stopped` is the exception: the first `Ctrl+C` asks it to stop,
+so the loop finishes its iteration (the scope closes normally) and the
+prompt returns, and a second `Ctrl+C` stops it at once; the next `repeat` you type runs as
+usual. `Ctrl+D` or `#quit` exits. For a tour, see the [guide](GUIDE.md#the-repl); this
 page covers the details, and the [FAQ](FAQ.md) answers the common
 questions about init.weir, the prompt and completion.
 

@@ -188,6 +188,17 @@ before any effect, so a script with an error in line 40 executes none
 of lines 1–39. "Check-green must mean runnable modulo uninstalled
 tools" is the contract the assume-resolver serves. [D:assume-resolver]
 
+**Teardown vs stop request.** Two answers to a signal. The
+**teardown** cuts every flow at its next boundary, kills what they wait
+on, unwinds through every `always` and dies by the signal
+[D:signal-main-unwind]. A **stop request** cuts nothing: it is a sticky
+flag a stop-aware construct (`repeat`, a scope held by `until stopped`)
+reads at its own wait, so the work in hand finishes and the program
+exits normally. The first signal is a request only while a stop-aware
+construct is live; the second is always the teardown. **Graceful** in
+the repo means the request path, never "a teardown with cleanups".
+[D:stop-request]
+
 ---
 
 ## 2. Testing and verification techniques

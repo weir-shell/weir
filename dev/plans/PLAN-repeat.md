@@ -3,7 +3,8 @@
 **Status: RULED** (user, 2026-10-23) — every decision took the recommendation:
 D1 graceful then cut in the REPL; D2 exit 0; D3 a stop-caused failure is the stop;
 D4 sticky; D5 mirror `poll`; D6 inner waits not ended; D7 `repeat interval=…`;
-D8 `Self.waitForStop ()`.
+D8 `Self.waitForStop ()` — **superseded** (user, 2026-10-24): the explicit
+wait is a `within … until stopped` section, and `Self.waitForStop` is removed.
 
 ## The receipt
 
@@ -108,38 +109,67 @@ returns, because the request is still set when it checks.
   ended by the stop request — only `repeat`'s own `interval` wait is.
   (D6: should they be?)
 
-## `Self.waitForStop` — the explicit wait (servers, sidecars)
+## `until stopped` — the held scope (servers, sidecars)
+
+Ruled by the user, 2026-10-24, superseding D8's `Self.waitForStop ()`
+[D:held-scope].
 
 `repeat` observes the stop request implicitly: its own interval wait is
 stop-aware. A scope that should simply be held until the operator stops
-the program — a `within serve`, a `within proc` sidecar — says so
-explicitly:
+the program — a `within serve`, a `within proc` sidecar — says so with
+a section after its block:
 
 ```weir
 within serve srv = { port = 8080; maxConcurrent = 4 } handler
     print $"listening on {Server.port srv}"
-    Self.waitForStop ()
+until stopped
 
 print "server stopped"
 ```
 
-- `Self.waitForStop () : unit` blocks until the first stop signal and
-  returns normally. While it waits, the process is in stop-request mode
-  exactly as under a `repeat`: the first signal is the request, the
-  second is today's teardown.
-- Because it returns normally, `within serve` closes by its **normal**
-  path: handlers in flight get the normal close drain (2s together,
-  then the cut, cleanups joined whole — [D:serve-cut],
+- Any `within` kind takes it: serve, proc, tmp, cd, env, lock, bare. The
+  block runs; then the scope is HELD until the stop request; then it
+  closes by its NORMAL path — `within serve` gets the normal close drain
+  (2s together, then the cut, cleanups joined whole — [D:serve-cut],
   [D:serve-cut-joins-cleanup]), not the signal path's immediate cut
-  ([D:serve-drain-signal]).
+  ([D:serve-drain-signal]); `within proc` its tree-kill and spill
+  removal; `always` cleanups run whole. Then the statements after it
+  run, and the exit is 0 (D2).
+- While a scope is held the process is stop-aware: it counts in
+  `stopAwareDepth`, like a `repeat`. The first signal is the request, the
+  second today's teardown. A signal during the block itself is the
+  teardown — only the hold listens.
+- With the stop already requested (sticky, D4) when the block finishes,
+  the hold returns at once.
+- The REPL: the `repl-stop-request` rules apply unchanged.
+- **Order with `always`:** `until stopped` comes before `always` — the
+  scope holds, then the cleanup runs, then the release:
+
+  ```weir
+  within
+      kubectl scale deploy/worker --replicas=1
+  until stopped
+  always
+      kubectl scale deploy/worker --replicas=0
+  ```
+
+  `always` after `until stopped` works on every kind ([D:within-always-any]);
+  `until stopped` after `always` is a parse error teaching the order.
+  The bare `within` with `until stopped` needs no `always`.
+- **Grammar:** `stopped` is a contextual word after a within's `until`,
+  not a value and not reserved. The loops' `until <binder>` stays as is.
+  `within … until <anything but stopped>` is a parse error teaching
+  `until stopped`; `until stopped` takes no block. `repeat … until
+  stopped` is refused ("a repeat already ends when stopped — drop
+  `until stopped`; use `until x` for a condition").
+- The parse desugar: `within K b` + BODY + `until stopped` [+ `always` C]
+  ≡ `within K b` + (held BODY [always C]) — one new node (`EHold`), the
+  [D:within-always-any] desugar otherwise unchanged.
 - `within serve` itself is unchanged: the server lives exactly as long as
-  the block. No blocking variant of `serve` — one scope rule, and the
-  same wait serves any scope.
-- Stop-request mode is active while any stop-aware construct runs: a
-  `repeat` or a `Self.waitForStop`. The handler's check becomes
-  `stopAwareDepth > 0` (one counter for both).
-- With the stop already requested (sticky, D4), `waitForStop` returns at
-  once.
+  the scope. No blocking variant of `serve` — one scope rule, and the
+  same section serves any scope.
+- Refused in `plan` (a dry run cannot wait for a signal) and `pure`;
+  `readonly` admits it.
 
 ## Checker and parser
 
@@ -161,7 +191,7 @@ print "server stopped"
 ## Runtime
 
 - One process-wide `Session.stopRequested` flag and a count of live
-  stop-aware constructs, `repeat`s and `Self.waitForStop` calls
+  stop-aware constructs, `repeat`s and held scopes
   (`Session.stopAwareDepth`).
 - The signal handler: when `stopAwareDepth > 0` and no stop request is set,
   set it, wake every `repeat` wait (a shared `ManualResetEventSlim` or
@@ -200,7 +230,7 @@ print "server stopped"
   - terminal ^C at a pty with a child running in the iteration;
   - the receipt's two-arm `Seq.piter`: both arms stop, both after-lines
     print, exit D2;
-  - `within serve` + `Self.waitForStop`: a request in flight when TERM
+  - `within serve` + `until stopped`: a request in flight when TERM
     lands still gets its response (normal drain), the line after the
     scope prints, exit D2; a second TERM cuts as today;
   - TERM with a `kill -TERM` to weir only while a `sleep 3` command runs
@@ -241,7 +271,8 @@ print "server stopped"
   `Duration.sleep`/`poll`/`retry` wait inside the current iteration?
   *Recommend: no* — "finish the iteration" means the iteration's own
   waits are part of its work; the second signal is there for a stuck one.
-- **D8 — the explicit wait's name.** `Self.waitForStop ()`,
+- **D8 — the explicit wait's name.** *Superseded (user, 2026-10-24):
+  a `within … until stopped` section, see above.* `Self.waitForStop ()`,
   `Signal.wait ()`, `Self.awaitStop ()`. *Recommend: `Self.waitForStop`*
   — `Self` holds the process facts; no new module for one member.
 - **D7 — the name.** `repeat`, `every 1s`, `serve`, `loop`. *Recommend:

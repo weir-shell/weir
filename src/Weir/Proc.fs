@@ -96,6 +96,11 @@ let private importRefusal (prog: string) : unit =
 let private startedAfterSignal =
     System.Runtime.CompilerServices.ConditionalWeakTable<Process, obj>()
 
+// the children started once a stop was requested: the request cannot
+// have caused their failure [D:stop-caused-failure]
+let private startedAfterStop =
+    System.Runtime.CompilerServices.ConditionalWeakTable<Process, obj>()
+
 // the single spawn point [D:spawn-spec]: psi construction, the env
 // law, cwd, the not-found mapping, and the race-group registration
 // every child owes [D:seq-pfirst]. Redirection is the caller's — the
@@ -254,6 +259,7 @@ let private spawn
         // read before the start: a child forked before weir acted on a
         // signal took a group-directed one with weir [D:cleanup-group-signal]
         let afterSignal = Session.teardownRequested () <> 0
+        let afterStop = Session.stopRequested ()
 
         // a shim a ^C killed before its trap never started the command:
         // start it again [D:cleanup-sigign]
@@ -274,6 +280,9 @@ let private spawn
 
         if afterSignal then
             startedAfterSignal.Add(p, null)
+
+        if afterStop then
+            startedAfterStop.Add(p, null)
 
         // a racing arm's children join its group [D:seq-pfirst] — a no-op
         // outside pfirst, and the scoped child owes it too: the spill path
@@ -415,6 +424,10 @@ type CommandFailure(code: int, signalNote: string, shown: string) =
     /// raised outside a cleanup, where weir's signal arriving first would
     /// have made the death the teardown's [D:settle-pending]
     member val SignalMayOwn = false with get, set
+    /// a command started before the stop request that failed once it was
+    /// set: the stop, not an error — `repeat` ends on it
+    /// [D:stop-caused-failure]
+    member val StopCaused = false with get, set
 
 /// a script's fatal error that is a signal's after all: a command outside
 /// a cleanup that died 129-143 took a signal weir's own reached later —
@@ -428,7 +441,7 @@ let fatalTeardown (ex: exn) : int option =
         | c -> Some c
     | _ -> None
 
-let private raiseFailure (s: Spec) (code: int) : unit =
+let private raiseFailure (s: Spec) (stopCaused: bool) (code: int) : unit =
     let shown = showArgv (s.Prog :: s.Args)
 
     let signalNote =
@@ -441,7 +454,7 @@ let private raiseFailure (s: Spec) (code: int) : unit =
         | c when c > 128 && c < 165 -> $" (signal {c - 128})"
         | _ -> ""
 
-    raise (CommandFailure(code, signalNote, shown, SignalMayOwn = not (Session.inCleanup ())))
+    raise (CommandFailure(code, signalNote, shown, SignalMayOwn = not (Session.inCleanup ()), StopCaused = stopCaused))
 
 // `statement`: the command's output is unused (a statement relays or
 // inherits it), so a death the cleanup pass covers truncates no value
@@ -467,8 +480,15 @@ let private raiseNonzero (statement: bool) (p: Process) (s: Spec) (code: int) : 
         let mutable o = null
         not (startedAfterSignal.TryGetValue(p, &o))
 
+    // a command running when the stop was requested, failing once it is
+    // set (the terminal's ^C reached it too): the stop's
+    // [D:stop-caused-failure]
+    let stopCaused =
+        Session.stopRequested ()
+        && (let mutable o = null in not (startedAfterStop.TryGetValue(p, &o)))
+
     if not (Session.cleanupKilledByTeardown statement running code) then
-        raiseFailure s code
+        raiseFailure s stopCaused code
 
 // ---- the consumers (the output axis) -------------------------------
 

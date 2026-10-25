@@ -98,6 +98,8 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
     | TEArgsLoad _ -> false
     // retry/poll sleep between attempts — the clock is ambient input
     | TERetry _ -> false
+    // a held scope waits for a stop signal [D:held-scope] — ambient input
+    | TEHold _ -> false
     | TEVar n ->
         if effectfulName n then false
         elif builtinNames.Force().Contains n then true
@@ -212,7 +214,8 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
          | WithinLock -> Some(te.Span, $"'within {withinKindName kind}' scopes a resource"))
     | TEEnvLoad _ -> Some(te.Span, "'Env.load' reads the environment")
     | TEArgsLoad _ -> Some(te.Span, "'Args.load' reads the arguments")
-    | TERetry _ -> Some(te.Span, "'retry'/'poll' waits on the clock")
+    | TERetry(kind, _, _, _, _) -> Some(te.Span, $"'{loopHead kind}' waits on the clock")
+    | TEHold _ -> Some(te.Span, "'until stopped' waits for a stop signal")
     | TEVar n ->
         if effectfulName n then
             Some(te.Span, effectPhrase n)
@@ -440,6 +443,17 @@ let rec private planRefusalRoot (refused: Map<string, string>) (te: TypedExpr) :
             $"'{theadDisplay h}' runs a command, and commands are refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
     // a nested plan composes: it handles its own refusals
     | TEWithin(WithinPlan, _, _, _, _) -> None
+    // a loop only a signal ends cannot be honoured by a plan's dry run
+    // [D:repeat] [D:plan-parallel-refusal]
+    | TERetry(LoopRepeat, _, _, _, _) ->
+        found
+            te.Span
+            "'repeat' is refused inside 'plan' — a loop that only a stop signal ends cannot be dry-run; run the loop outside the plan (a plan inside the loop's block is fine)"
+    // a held scope waits for a signal [D:held-scope]
+    | TEHold _ ->
+        found
+            te.Span
+            "'until stopped' is refused inside 'plan' — a plan's dry run cannot wait for a signal; hold the scope outside the plan"
     // a helper whose body reaches a refusal refuses at the call
     // [D:plan-helper-refusal]
     | TEVar n when refused.ContainsKey n ->
