@@ -18,33 +18,35 @@ module Mail
 
 type Email = Email of string
     validate s =
-        if Str.isMatch @"^[^@\s]+@[^@\s]+$" s then Ok (Str.toLower s)
-        else Error $"not an email: {s}"
+        if not (Str.isMatch @"^[^@\s]+@[^@\s]+$" s) then fail $"not an email: {s}"
 
 type Domain = Domain of string
     validate s =
-        if Str.contains "." s then Ok s else Error $"not a domain: {s}"
+        if not (Str.contains "." s) then fail $"not a domain: {s}"
 ```
 
 - **`validate` belongs to the type declaration** — an indented block
   under a single-case union: `validate <binder> = <expr>` with
-  `<expr> : Result<payload, string>`. It may normalise (the lowercased
-  email) as well as accept or reject; the error text is what users see.
+  `<expr> : unit`, refusing by raising (D1 as amended twice on
+  2026-10-25; originally `Result<payload, string>`, then the payload).
+  It only accepts or rejects — no normalising; the raise's message is
+  what users see.
 - **`validate` implies the constructor is not available for
-  construction** — no `private` keyword. A constructor returns `T`, not
-  a `Result`, so it cannot report failure; the only way to make a value
-  is the derived `create`. This holds inside the declaring module too:
+  construction** — no `private` keyword. A constructor never runs the
+  check, so it cannot refuse; the only way to make a value is the
+  derived `create`. This holds inside the declaring module too:
   the invariant has exactly one gate.
-- **Weir derives `T.create : payload -> Result<T, string>`** in the
-  type's own namespace. Not `parse`: the payload can be any type
-  (`type Small = Small of int` with `validate x = if x < 10 then Ok x
-  else Error "…"`), and `parse` means "from text" (`Uuid.parse`). A
-  `create` that returns a `Result` is the F# "designing with types"
-  idiom (user ruling, D1). Two types in one module get `Email.create`
+- **Weir derives `T.create : payload -> T`** (D1 as amended
+  2026-10-25; originally `Result<T, string>`, the F# "designing with
+  types" idiom) in the type's own namespace; a refusal raises. Not
+  `parse`: the payload can be any type (`type Small = Small of int`
+  with `validate x = if x >= 10 then fail "…"`), and `parse`
+  means "from text" (`Uuid.parse`). Two types in one module get `Email.create`
   and `Domain.create`; from another module `Mail.Email.create`, or bare
   `Email.create` when unambiguous ([D:qualified-type-names]).
-- **No raising variant.** Code that knows a value is good says so
-  visibly, with a `match` on the `Result`.
+- **No second variant.** Originally "no raising variant"; since the
+  2026-10-25 amendment `create` is the raising one and `|> try result`
+  covers the Result (no `tryCreate`).
 - **Reading is public**: `match e with | Email raw -> …`,
   `let (Email raw) = e`, `let f (Email raw) = …` work anywhere
   (the qualified spelling `Mail.Email raw` too, per fix/pattern-cases).
@@ -76,10 +78,12 @@ guarantee cannot leak:
 
 - `validate` only on a single-case union with a payload; elsewhere a
   teaching error.
-- `validate`'s binder has the payload type; its body must be
-  `Result<payload, string>` — a mismatch names both.
+- `validate`'s binder has the payload type (a mismatch names both);
+  its body must be `unit` (originally `Result<payload, string>`) — a
+  mismatch names the body's type.
 - Using the case as a constructor (`Email "x"`) anywhere is an error:
-  "Email is validated — build it with Email.create (it returns a Result)".
+  "'Email' is validated — build it with Email.create (it raises when
+  validate refuses; `|> try result` for a Result)".
 - `validate` must be PURE (the `pure` rules: no reads, commands, writes
   or network). A type promises a fact about the value, not about the
   world: existence can change a moment later, a well-formed shape cannot.
@@ -94,6 +98,29 @@ guarantee cannot leak:
 
 - **D1 — names.** RULED (user, 2026-10-24): the block is `validate`,
   the derived function `T.create : payload -> Result<T, string>`.
+  AMENDED (user, 2026-10-25), superseding "create returns Result" and
+  "validate returns Result" above: weir's model is "operations raise on
+  failure; `|> try` / `|> try result` (or a `tryX` twin) turn failure
+  into a value; `|> orFail` turns an Option/Result back into a raise",
+  and a Result-returning `create` was the only member of weir's own API
+  that broke it. So `validate` returns the payload (normalised or not)
+  and refuses by raising — `fail "msg"`, or any raise, whose message is
+  the refusal; `T.create : payload -> T` raises that message, located
+  at the call, as an ordinary raise (`create x |> try result` is
+  `Error msg`, like `Uuid.parse`). No `tryCreate`. The constructor
+  refusal reads "'Email' is validated — build it with Email.create (it
+  raises when validate refuses; `|> try result` for a Result)". Wire
+  boundaries catch the raise into their own located errors; `exit`
+  stays refused by the purity rule (and would pass through, as through
+  `try`).
+  AMENDED AGAIN (user, 2026-10-25), superseding "validate returns the
+  payload (normalised or not)": `validate : payload -> unit`. It only
+  checks — `if … then fail …`, no else — and cannot transform; an
+  accepted payload is stored exactly as given. Reasons: exact round
+  trips (`from json` then `to json` writes back the same bytes), honest
+  equality (`==` compares what was written, not a rewritten form), and
+  "validated" means checked, not changed. Normalising is the caller's
+  job: `Email.create (Str.toLower input)`.
 - **D2 — purity.** RULED (user, 2026-10-24): `validate` is pure; an
   existence check is the caller's, at use.
 - **D3 — literal folding.** Should `Email.create "a@b.c"` on a literal be
@@ -106,7 +133,7 @@ guarantee cannot leak:
 ## Tests
 
 Unit: declaration rules, the constructor refusal (inside and outside the
-module), `create` results, normalisation, reading via patterns, every wire
+module), `create` results, the payload stored as given, reading via patterns, every wire
 boundary's error text, composition (multi-case of validated payloads,
 records), qualified access from another module. e2e: an Args flag and a
 JSON field rejecting a bad value with the right exit code and message.

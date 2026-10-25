@@ -173,6 +173,85 @@ match v with
 | Fail -> print "no"
 ```
 
+## Validated types
+
+A single-case union can declare a `validate` block: an indented
+`validate <binder> = <expr>` under the declaration. The binder takes
+the payload; the body only checks it and returns `unit`, refusing by
+raising: `fail` with the message users will see, or any other raise (a
+failing `Str.toInt`, an `|> orFail`), whose message becomes the
+refusal. `if … then fail …` with no `else` is the idiom. The block
+cannot change the value: an accepted payload is stored exactly as
+given, so a wire round trip is byte-identical and `==` compares what
+was written. Normalising is the caller's job:
+`Email.create (Str.toLower input)`. The type then holds only values
+the block accepted.
+
+```weir
+type Email = Email of string
+    /// one @, no spaces
+    validate s =
+        if not (Str.isMatch @"^[^@\s]+@[^@\s]+$" s) then fail $"not an email: {s}"
+
+let (Email raw) = Email.create "Ada@Example.org"
+print raw
+let (Email low) = Email.create (Str.toLower "Ada@Example.org")
+print low
+print $"{Email.create "nope" |> try result}"
+```
+
+(prints `Ada@Example.org`, then `ada@example.org`, then
+`Error "not an email: nope"`.)
+
+- **`T.create` is the only way to build a value.** Weir derives
+  `T.create : payload -> T` in the type's own name (`Email.create`;
+  from another module `Mail.Email.create`, or bare `Email.create`
+  while one import declares `Email`). When `validate` refuses,
+  `create` raises with its message, located at the call — an ordinary
+  raise, like `Uuid.parse`'s: `|> try result` turns it into
+  `Error "not an email: nope"`, `|> try` into `None`
+  ([errors](errors.md)). There is no `tryCreate`.
+- **The case does not construct**, anywhere — the declaring module
+  included, so the check has exactly one gate:
+
+```weir-error
+type Email = Email of string
+    validate s = if not (Str.contains "@" s) then fail "no @"
+let e = Email "x" // 'Email' is validated — build it with Email.create (it raises when validate refuses; `|> try result` for a Result)
+```
+
+- **Reading is public.** Patterns destructure the value anywhere —
+  `match`, `let (Email raw) = e`, `let f (Email raw) = …`, bare or
+  qualified ([Patterns](patterns.md#validated-types)).
+- **Single-case only.** A union of several cases composes validated
+  payloads (`type Contact = Mail of Email | Call of Phone` can only be
+  built from valid values) and needs no validator of its own; so does
+  a record with validated fields. `validate` on a record, a
+  multi-case union or a case with no payload is a check error that
+  says so. A validated type is monomorphic and untagged.
+- **A validated payload is already valid.** `type Work = Work of Email`
+  with its own `validate` takes an `Email`, so `Work.create` expects an
+  `Email` value and never re-runs `Email`'s check.
+- **`validate` is pure** (the [`pure`](scopes.md) rules): no file,
+  environment, command, network, clock or console touch. A type
+  promises a fact about the value, and the block runs unseen wherever
+  a value is built; whether a path exists is a question for the place
+  that uses it (`Dir.exists`, or the failing `File.read`). Raising is
+  not an effect, so `fail` is fine; `exit` is refused. It cannot call
+  its own `T.create` (weir has no recursion).
+- **Every boundary runs it.** `from json`/`jsonl`/`yaml`/`toml`,
+  `Args.load` and `Env.load` read the payload and then validate,
+  failing with the field path, flag or variable
+  ([Adapters](adapters.md#validated-types)); `to json`/`to yaml`
+  write the payload. `show`, interpolation and `==` treat the value as
+  any single-case union. `Args.load` and `Env.load` refuse a validated
+  field over an optional payload (`Port of Option<int>`): one flag or
+  variable cannot tell an absent field from an absent payload, so
+  declare the field `Option<Port>` over `Port of int`.
+- Hover on the type or on `T.create` shows the `///` doc above
+  `validate`; an `Args.load` flag of a validated type shows the type's
+  name in `--help` (`--to <Email>`).
+
 ## `Option`
 
 `Some x` / `None` represent a value that may be missing. The `try`

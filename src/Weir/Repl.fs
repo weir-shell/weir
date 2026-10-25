@@ -319,7 +319,7 @@ let private recordKind (chk: Script.CheckedStatement) : TranscriptKind option =
         match names |> List.filter isNamedBinder with
         | first :: _ -> Some(TDef first)
         | [] -> Some TDiscard
-    | Script.KType decl -> Some(TDef decl.Name)
+    | Script.KType(decl, _) -> Some(TDef decl.Name)
     | Script.KCmd te
     | Script.KExpr te -> Some(if te.Ty = TUnit then TOther else TDiscard)
     | Script.KModule _
@@ -2527,11 +2527,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
     lastExit <- None
 
     match chk.Kind with
-    | Script.KType decl ->
-        let ctors =
-            match decl.Body with
-            | DUnion cases -> Eval.constructorValues cases
-            | DRecord _ -> []
+    | Script.KType(decl, validator) ->
 
         // the REPL replaces on redeclaration [D:dup-type-decl] —
         // scripts error instead; the note exists because the confusing
@@ -2558,7 +2554,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
 
         { state with
             TypeEnv = chk.Env
-            Values = ctors |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
+            Values = Eval.declare state.Values decl validator }
     | Script.KLetPat(pat, schemes, te) ->
         printWarnings state te
 
@@ -3390,16 +3386,11 @@ let private injectDecls (state: State) (declText: string list) : Result<State * 
                 | Error d -> Error(formatDraftedDiag physical d)
                 | Ok chk ->
                     match chk.Kind with
-                    | Script.KType decl ->
-                        let ctors =
-                            match decl.Body with
-                            | DUnion cases -> Eval.constructorValues cases
-                            | DRecord _ -> []
-
+                    | Script.KType(decl, validator) ->
                         let st' =
                             { st with
                                 TypeEnv = chk.Env
-                                Values = ctors |> List.fold (fun vs (n, v) -> Map.add n v vs) st.Values }
+                                Values = Eval.declare st.Values decl validator }
 
                         go st' (decl.Name :: defined) tail
                     | _ -> Error "#infer: a drafted statement was not a type declaration"
@@ -4529,15 +4520,9 @@ let private loadInit (baseState: State) : State =
 
                 try
                     match chk.Kind with
-                    | Script.KType decl ->
+                    | Script.KType(decl, validator) ->
                         names <- names + 1
-
-                        (match decl.Body with
-                         | Ast.DUnion cases ->
-                             venv <-
-                                 Eval.constructorValues cases
-                                 |> List.fold (fun m (n, v) -> Map.add n v m) venv
-                         | Ast.DRecord _ -> ())
+                        venv <- Eval.declare venv decl validator
                     | Script.KLet(name, _, te) ->
                         names <- names + 1
                         let v = Eval.eval venv te

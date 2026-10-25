@@ -43,6 +43,9 @@ type Shape =
         tag: string *
         cases: (string * string * Shape option) list *
         other: (string * bool) option
+    // a validated type [D:validated-types]: the payload's shape, then
+    // the runtime `create` registered under id
+    | SValid of name: string * id: string * payload: Shape
 
 // the internal node tree — quotedness and positions ride here; the
 // public `Yaml` union (prelude) carries neither, because construction

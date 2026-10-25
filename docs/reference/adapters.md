@@ -407,6 +407,37 @@ Codecs affect only `to`/`from` `json`, `jsonl` and `yaml`; `show` and
 - `Secret` is always refused. Credentials are never serialized, in any
   encoding.
 
+## Validated types
+
+A [validated type](types.md#validated-types) crosses every boundary as
+its payload, and every boundary runs its `validate` block: a reader
+parses the payload as usual, then validates, and keeps the payload
+exactly as read (a round trip writes back the same bytes); a refusal (whatever `validate` raised) is the adapter's own
+located error, naming the field path. That holds for record fields, seq elements, `Option` fields,
+`Map` values, anonymous shapes and the whole document (`from json
+Email`, `from json seq<Email>`), in `json`, `jsonl`, `yaml` (which also
+names the line) and `toml`. `to json`/`to yaml` write the payload.
+
+```weir
+type Email = Email of string
+    validate s = if not (Str.contains "@" s) then fail $"not an email: {s}"
+type User = { name: string; email: Email }
+
+let u = ["{\"name\": \"ada\", \"email\": \"Ada@Example.org\"}"] |> from json User
+u |> to json |> Seq.iter print
+let bad = ["{\"users\": [{\"name\": \"b\", \"email\": \"x\"}]}"] |> from json {| users: seq<User> |} |> try result
+print $"{bad}"
+```
+
+(prints `{"name":"ada","email":"Ada@Example.org"}`, then
+`Error "from json: users[0].email: not an email: x"`.)
+
+`Args.load` and `Env.load` parse the payload as they would a plain
+field (an `int` for `Small of int`), then validate; a refusal joins the
+load's one error, naming the flag (`--to: not an email: x`) or the
+variable. A `[<Default>]` literal is validated the same way, and
+`--help` shows the type's name as the flag's value (`--to <Email>`).
+
 ## Anonymous shapes at the boundary
 
 For a shape you read only once, you can write the type inline:

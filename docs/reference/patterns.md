@@ -131,6 +131,28 @@ use |> File.write "use-shapes.weir"
 weir use-shapes.weir
 ```
 
+### Validated types
+
+A [validated type](types.md#validated-types)'s case never constructs
+— `T.create` is the one way in — but it reads like any single-case
+union: a pattern destructures it anywhere, bare or qualified, in the
+declaring module and outside it. Binder positions take it too, since
+one case cannot fail to match.
+
+```weir
+["module Mail"; "type Email = Email of string"; "    validate s = if not (Str.contains \"@\" s) then fail \"no @\""]
+    |> File.write "mail-v.weir"
+let use = <<<
+    import "./mail-v.weir"
+
+    let user (Mail.Email raw) = raw |> Str.split "@" |> Seq.head
+    let e = Mail.Email.create "ada@example.org"
+    let (Email whole) = e
+    print $"{user e} {whole}"
+use |> File.write "use-mail-v.weir"
+weir use-mail-v.weir
+```
+
 ## Record patterns
 
 A record pattern can name any subset of fields; the rest are

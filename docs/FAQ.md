@@ -212,6 +212,30 @@ byLength |> Map.pairs |> Seq.map (fun (k, v) -> (show k, v)) |> Map.ofPairs |> t
 
 See [`Map`](reference/types.md#map).
 
+### How do I make a type that only holds valid values?
+
+Give a single-case union a `validate` block that checks the payload
+and refuses with `fail` (it returns nothing and cannot change the
+value; normalise before calling `create` if you need to). Weir
+derives `T.create`, which raises with that message when the block
+refuses (`|> try result` gives you `Error msg`), and the case stops
+constructing — so every value went through the check, including those read from JSON/YAML/TOML,
+argv and the environment, which run it too. Patterns still read the
+value anywhere.
+
+```weir
+type Port = Port of int
+    /// 1–65535
+    validate p = if p < 1 || p > 65535 then fail $"{p} is not a port"
+
+let ports = [80; 0] |> Seq.map (fun p -> Port.create p |> try result) |> Seq.freeze
+ports |> Seq.iter (fun r -> print $"{r}")
+```
+
+(prints `Ok (Port 80)`, then `Error "0 is not a port"`.)
+
+See [Validated types](reference/types.md#validated-types).
+
 ## Modules and imports
 
 ### Can a module have a top-level `let z = ls` or `let v = git --version`?

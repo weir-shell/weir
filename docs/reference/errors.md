@@ -50,6 +50,11 @@ part of the statement they're written in.
 
 ## Raising
 
+The model in one sentence: operations raise on failure; `|> try` /
+`|> try result` (or a `tryX` twin such as `Str.tryToInt`) turn a
+failure into a value; `|> orFail` turns an `Option`/`Result` back into
+a raise.
+
 A failing command raises an error when its output is read; a reifier
 turns the failure into a value instead
 ([commands](commands.md#reifiers-and-chaining)). Builtins raise errors with a

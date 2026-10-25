@@ -294,6 +294,57 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   match the value's type (a mismatch is a type error naming both). A bare
   case two imports declare, with nothing typing the value, refuses naming
   both qualified spellings; a local union's cases stay bare.
+- A VALIDATED TYPE [D:validated-types] is a single-case union with an
+  indented `validate <binder> = <expr>` block: the binder takes the
+  payload, the body returns UNIT — it only checks (`if … then fail …`,
+  no else) and refuses by RAISING: `fail "msg"` (the user-facing
+  message), or any raise — a failing `Str.toInt`, an `|> orFail`. It
+  CANNOT change the value: the payload is stored exactly as given
+  (exact wire round trips, honest `==`); normalising is the caller's
+  job, `Email.create (Str.toLower input)`. The case then NEVER constructs (declaring module
+  included): the one way in is the derived `T.create : payload -> T` —
+  `Email.create "a@b"`, `Mail.Email.create` across a module, bare while
+  one import declares it. A refusal makes `create` RAISE validate's
+  message, located at the call — an ordinary raise like `Uuid.parse`'s:
+  `Email.create s |> try result` is `Error "not an email: x"`. No
+  `tryCreate`.
+  Patterns READ it anywhere, bare or qualified (`let (Email raw) = e`).
+  `validate` is PURE (the `pure` rules; a path's existence is checked
+  where it is used; `fail` is fine, `exit` refuses), may not call its own `create`, and belongs to
+  single-case unions with a payload only — records and multi-case
+  unions compose validated values instead. A validated payload is
+  already valid: `type Work = Work of Email`'s `create` takes an
+  `Email`. Every boundary runs it: `from json`/`jsonl`/`yaml`/`toml`
+  (the error names the path: `from json: users[0].email: not an
+  email: x`), `Args.load`/`Env.load` (the payload parses as usual, then
+  validates — `Args.load Cli: --to: not an email: x`; `--help` shows
+  `--to <Email>`); `to json`/`to yaml` write the payload. `show`,
+  interpolation and `==` see an ordinary single-case union.
+
+```weir
+type Email = Email of string
+    /// must hold an @
+    validate s = if not (Str.contains "@" s) then fail $"not an email: {s}"
+type User = { name: string; email: Email }
+
+let (Email raw) = Email.create "Ada@Example.org"
+print raw
+print $"{Email.create "nope" |> try result}"
+let bad = ["{\"name\": \"b\", \"email\": \"x\"}"] |> from json User |> try result
+print $"{bad}"
+```
+
+```weir-error
+type Email = Email of string
+    validate s = if not (Str.contains "@" s) then fail "no @"
+let e = Email "x" // 'Email' is validated — build it with Email.create (it raises when validate refuses; `|> try result` for a Result)
+```
+
+```weir-error
+// validate is pure: existence belongs where the value is used
+type ExistingDir = ExistingDir of string
+    validate p = if not (Dir.exists p) then fail $"no such directory: {p}"
+```
 - A FUNCTION TYPE is writable [D:function-types] in any type position — a
   union payload (`Custom of (string -> bool)`), a record field
   (`{ matches: string -> bool }`), a generic arg. `->` is right-associative

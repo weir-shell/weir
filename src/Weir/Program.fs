@@ -142,14 +142,8 @@ let private evalOnce (input: string) : int =
                         | (_, (chk: Script.CheckedStatement)) :: tail ->
                             try
                                 match chk.Kind with
-                                | Script.KType decl ->
-                                    let venv' =
-                                        match decl.Body with
-                                        | DUnion cases ->
-                                            Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) venv
-                                        | DRecord _ -> venv
-
-                                    execAll venv' (idx + 1) tail
+                                | Script.KType(decl, validator) ->
+                                    execAll (Eval.declare venv decl validator) (idx + 1) tail
                                 | Script.KLet(name, _, te) -> execAll (Map.add name (Eval.eval venv te) venv) (idx + 1) tail
                                 | Script.KLetPat(pat, _, te) ->
                                     let bindings = Eval.bindPattern pat (Eval.eval venv te)
