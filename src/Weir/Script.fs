@@ -4293,10 +4293,26 @@ let rec private checkStatementCore
             | Ok lm ->
             // a session re-import [D:repl-import]: the alias an earlier
             // import holds is unbound first, then the import proceeds as
-            // fresh — its types, members and privates replace the old
+            // fresh — its types, members and privates replace the old. Its
+            // own type keys leave Types/TypeOrigins too, else the new
+            // module's same-origin types would join the stale defs
+            // [D:qualified-type-names]; a key another import still names
+            // stays
             let tenv =
                 if lm.MayRebind && tenv.ModuleTypes.ContainsKey lm.Alias then
+                    let others = tenv.ModuleTypes |> Map.remove lm.Alias
+
+                    let dropped =
+                        tenv.ModuleTypes[lm.Alias]
+                        |> Map.values
+                        |> Seq.filter (fun k ->
+                            tenv.TypeOrigins.ContainsKey k
+                            && not (others |> Map.exists (fun _ owned -> owned |> Map.exists (fun _ k' -> k' = k))))
+                        |> Set.ofSeq
+
                     { tenv with
+                        Types = tenv.Types |> Map.filter (fun k _ -> not (dropped.Contains k))
+                        TypeOrigins = tenv.TypeOrigins |> Map.filter (fun k _ -> not (dropped.Contains k))
                         Modules = Map.remove lm.Alias tenv.Modules
                         ModuleTypes = Map.remove lm.Alias tenv.ModuleTypes
                         ModulePrivate = Map.remove lm.Alias tenv.ModulePrivate }

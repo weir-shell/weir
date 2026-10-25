@@ -34175,6 +34175,28 @@ let replImportTests =
                       Expect.stringContains (run "import \"./m.weir\" as Str") "already a module in scope" "builtin"))
           }
 
+          test "a reloaded type a second import also declares keeps its qualified key [D:qualified-type-names]" {
+              withTempDir "weir-replimp" (fun dir ->
+                  inCwd dir (fun () ->
+                      let m = Path.Combine(dir, "m.weir")
+                      write m [ "module M"; "type R = { a: int }"; "let r : R"; "let r = { a = 1 }" ]
+                      write (Path.Combine(dir, "o.weir")) [ "module O"; "type R = { c: bool }"; "let r : R"; "let r = { c = true }" ]
+                      let run, env = Weir.Repl.sessionForTest ()
+                      Expect.stringContains (run "import \"./m.weir\"") "module M imported" "first provider"
+                      Expect.stringContains (run "import \"./o.weir\"") "module O imported" "second provider"
+                      write m [ "module M"; "type R = { a: int; b: string }"; "let r : R"; "let r = { a = 2; b = \"x\" }" ]
+                      Expect.stringContains (run "import \"./m.weir\"") "module M reloaded" "reload"
+                      Expect.equal ((env ()).ModuleTypes["M"]["R"]) "M.R" "M's R stays qualified"
+                      Expect.equal ((env ()).ModuleTypes["O"]["R"]) "O.R" "O's R stays qualified"
+                      Expect.isFalse (Map.containsKey "R" (env ()).Types) "the bare name names neither"
+                      Expect.stringContains (run "M.r.b") "\"x\"" "the new shape"
+                      Expect.stringContains (run "O.r.c") "true" "the other import's type is untouched"
+                      run "let q = M.R { a = 3; b = \"y\" }" |> ignore
+                      Expect.stringContains (run "q.b") "\"y\"" "the qualified literal takes the new shape"
+                      Expect.stringContains (run "M.R { a = 4 }") "error" "the old shape is gone"
+                      Expect.stringContains (run "O.R { a = 5; b = \"z\" }") "error" "M.R and O.R stay distinct"))
+          }
+
           test "#help and completion see a prompt import's members" {
               withTempDir "weir-replimp" (fun dir ->
                   inCwd dir (fun () ->
