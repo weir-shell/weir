@@ -412,15 +412,15 @@ Codecs affect only `to`/`from` `json`, `jsonl` and `yaml`; `show` and
 A [validated type](types.md#validated-types) crosses every boundary as
 its payload, and every boundary runs its `validate` block: a reader
 parses the payload as usual, then validates (and keeps the normalised
-value); a refusal is the adapter's own located error, naming the field
-path. That holds for record fields, seq elements, `Option` fields,
+value); a refusal (whatever `validate` raised) is the adapter's own
+located error, naming the field path. That holds for record fields, seq elements, `Option` fields,
 `Map` values, anonymous shapes and the whole document (`from json
 Email`, `from json seq<Email>`), in `json`, `jsonl`, `yaml` (which also
 names the line) and `toml`. `to json`/`to yaml` write the payload.
 
 ```weir
 type Email = Email of string
-    validate s = if Str.contains "@" s then Ok (Str.toLower s) else Error $"not an email: {s}"
+    validate s = if Str.contains "@" s then Str.toLower s else fail $"not an email: {s}"
 type User = { name: string; email: Email }
 
 let u = ["{\"name\": \"ada\", \"email\": \"Ada@Example.org\"}"] |> from json User

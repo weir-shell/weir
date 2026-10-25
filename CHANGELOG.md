@@ -7,11 +7,14 @@ Many of the changes and fixes below were found porting starship to weir.
 ### Added
 
 - **Validated types: a type that only holds valid values.** Give a
-  single-case union an indented `validate s = …` block returning
-  `Result<payload, string>` (it may normalise, e.g. lowercase), and weir
-  derives `Email.create : string -> Result<Email, string>` — the only way
-  to build a value, inside the declaring module too (`Email "x"` is an
-  error naming `Email.create`). Patterns still read the value anywhere.
+  single-case union an indented `validate s = …` block that returns the
+  payload (it may normalise, e.g. lowercase) or refuses with `fail
+  "msg"` (any raise refuses, with its message), and weir derives
+  `Email.create : string -> Email` — the only way to build a value,
+  inside the declaring module too (`Email "x"` is an error naming
+  `Email.create`). When the block refuses, `create` raises its message
+  at the call, like `Uuid.parse`; `Email.create s |> try result` gives
+  `Error "not an email: x"`. Patterns still read the value anywhere.
   Every boundary runs the check: `from json`/`jsonl`/`yaml`/`toml` fail
   with the field path (`from json: users[0].email: not an email: x`),
   `Args.load`/`Env.load` name the flag or variable, and `to json`/`to

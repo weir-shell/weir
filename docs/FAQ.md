@@ -214,8 +214,10 @@ See [`Map`](reference/types.md#map).
 
 ### How do I make a type that only holds valid values?
 
-Give a single-case union a `validate` block. Weir derives `T.create`,
-which returns a `Result`, and the case stops constructing — so every
+Give a single-case union a `validate` block that returns the payload
+or refuses with `fail`. Weir derives `T.create`, which raises with
+that message when the block refuses (`|> try result` gives you
+`Error msg`), and the case stops constructing — so every
 value went through the check, including those read from JSON/YAML/TOML,
 argv and the environment, which run it too. Patterns still read the
 value anywhere.
@@ -223,9 +225,9 @@ value anywhere.
 ```weir
 type Port = Port of int
     /// 1–65535
-    validate p = if p >= 1 && p <= 65535 then Ok p else Error $"{p} is not a port"
+    validate p = if p >= 1 && p <= 65535 then p else fail $"{p} is not a port"
 
-let ports = [80; 0] |> Seq.map Port.create |> Seq.freeze
+let ports = [80; 0] |> Seq.map (fun p -> Port.create p |> try result) |> Seq.freeze
 ports |> Seq.iter (fun r -> print $"{r}")
 ```
 

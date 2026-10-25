@@ -3481,16 +3481,16 @@ let validatedFieldsFlat (env: TypeEnv) (def: RecordDef) : RecordDef =
 
 /// the constructor refusal: the case reads, it never builds
 let validatedCtorMsg (shown: string) (typeSpelling: string) : string =
-    $"'{shown}' is validated — build it with {typeSpelling}.create (it returns a Result)"
+    $"'{shown}' is validated — build it with {typeSpelling}.create (it raises when validate refuses; `|> try result` for a Result)"
 
-/// the derived `T.create : payload -> Result<T, string>` — the runtime
+/// the derived `T.create : payload -> T`, raising validate's message — the runtime
 /// registers it under the declaration's id when the `type` runs
 let private createRef (env: TypeEnv) (span: Span) (written: string) : Result<TypedExpr, TypeError> =
     match validatedType env written with
     | Some(key, ({ Cases = [ (_, Some payload) ] } as u)) ->
         Ok
             { Kind = TEVar(createVarPrefix + u.Validated.Value)
-              Ty = TFun(payload, TNamed("Result", [ TNamed(key, []); TStr ]))
+              Ty = TFun(payload, TNamed(key, []))
               Span = span }
     | _ -> err span $"unreachable: '{written}' is no validated type"
 
@@ -7453,8 +7453,8 @@ let private binderWord (p: Pattern) : string =
     | _ -> "a pattern of another type"
 
 /// a validated type's `validate` block, typed as the function
-/// `payload -> Result<payload, string>` [D:validated-types]: the binder
-/// takes the payload's type, the body must give the Result — each
+/// `payload -> payload`, refusing by raising [D:validated-types]: the binder
+/// takes the payload's type, the body must give the payload — each
 /// mismatch names both types. `env` already holds the declaration.
 let typecheckValidator (env: TypeEnv) (typeName: string) (v: Validator) : Result<TypedExpr, TypeError> =
     catchBudget (fun () ->
@@ -7463,7 +7463,7 @@ let typecheckValidator (env: TypeEnv) (typeName: string) (v: Validator) : Result
             | Some(Union { Cases = [ (_, Some p) ] }) -> p
             | _ -> failwith "unreachable: checkDecl admits validate on a single-case union with a payload"
 
-        let want = TNamed("Result", [ payload; TStr ])
+        let want = payload
         let lam = { Kind = ELambdaPat(v.Binder, v.Body); Span = v.Span }
 
         let env =
@@ -7489,7 +7489,7 @@ let typecheckValidator (env: TypeEnv) (typeName: string) (v: Validator) : Result
                 |> Result.mapError (fun e ->
                     { e with
                         Message =
-                            $"'validate' must return {formatTy want} (Ok of the value, normalised or not; Error of the message users see), but this body returns {formatTy (finalTy ctx tbody.Ty)}" })
+                            $"'validate' must return {typeName}'s payload, {formatTy want} (the value, normalised or not; it refuses by raising — fail with the message users see), but this body returns {formatTy (finalTy ctx tbody.Ty)}" })
 
             // a validator cannot build its own type: that is recursion,
             // which weir does not have (no `let rec`)

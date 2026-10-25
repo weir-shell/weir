@@ -1760,9 +1760,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             node
             |> Option.bind (fun n ->
                 match n.Kind, n.Ty with
-                | Check.TEVar vn, TFun(_, TNamed("Result", [ TNamed(key, []); _ ])) when
-                    vn.StartsWith Types.createVarPrefix
-                    ->
+                | Check.TEVar vn, TFun(_, TNamed(key, [])) when vn.StartsWith Types.createVarPrefix ->
                     Some(key, n.Ty)
                 | _ -> None)
 
@@ -1770,7 +1768,8 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             createKey
             |> Option.bind (fun (key, fty) ->
                 if word = Some "create" then
-                    Some $"{key}.create : {formatTy fty}"
+                    Some
+                        $"{key}.create : {formatTy fty}\n\nRaises validate's message when it refuses; `|> try result` for a Result."
                 else
                     typeDefHover chk.Env key)
 

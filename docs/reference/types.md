@@ -177,39 +177,41 @@ match v with
 
 A single-case union can declare a `validate` block: an indented
 `validate <binder> = <expr>` under the declaration. The binder takes
-the payload; the body returns `Result<payload, string>` — `Ok` with the
-value (it may normalise it, as the lowercased email below), `Error`
-with the message users will see. The type then holds only values the
-block accepted.
+the payload; the body returns the payload — the value as given, or
+normalised (as the lowercased email below) — and refuses by raising:
+`fail` with the message users will see, or any other raise (a failing
+`Str.toInt`, an `|> orFail`), whose message becomes the refusal. The
+type then holds only values the block accepted.
 
 ```weir
 type Email = Email of string
     /// lowercased; one @, no spaces
     validate s =
-        if Str.isMatch @"^[^@\s]+@[^@\s]+$" s then Ok (Str.toLower s)
-        else Error $"not an email: {s}"
+        if Str.isMatch @"^[^@\s]+@[^@\s]+$" s then Str.toLower s
+        else fail $"not an email: {s}"
 
-match Email.create "Ada@Example.org" with
-| Ok (Email raw) -> print raw
-| Error msg -> print msg
-print $"{Email.create "nope"}"
+let (Email raw) = Email.create "Ada@Example.org"
+print raw
+print $"{Email.create "nope" |> try result}"
 ```
 
 (prints `ada@example.org`, then `Error "not an email: nope"`.)
 
 - **`T.create` is the only way to build a value.** Weir derives
-  `T.create : payload -> Result<T, string>` in the type's own name
-  (`Email.create`; from another module `Mail.Email.create`, or bare
-  `Email.create` while one import declares `Email`). There is no
-  raising variant: code that knows a value is good says so with a
-  `match` on the `Result`.
+  `T.create : payload -> T` in the type's own name (`Email.create`;
+  from another module `Mail.Email.create`, or bare `Email.create`
+  while one import declares `Email`). When `validate` refuses,
+  `create` raises with its message, located at the call — an ordinary
+  raise, like `Uuid.parse`'s: `|> try result` turns it into
+  `Error "not an email: nope"`, `|> try` into `None`
+  ([errors](errors.md)). There is no `tryCreate`.
 - **The case does not construct**, anywhere — the declaring module
   included, so the check has exactly one gate:
 
 ```weir-error
 type Email = Email of string
-    validate s = if Str.contains "@" s then Ok s else Error "no @"
-let e = Email "x" // 'Email' is validated — build it with Email.create (it returns a Result)
+    validate s = if Str.contains "@" s then s else fail "no @"
+let e = Email "x" // 'Email' is validated — build it with Email.create (it raises when validate refuses; `|> try result` for a Result)
 ```
 
 - **Reading is public.** Patterns destructure the value anywhere —
@@ -228,8 +230,9 @@ let e = Email "x" // 'Email' is validated — build it with Email.create (it ret
   environment, command, network, clock or console touch. A type
   promises a fact about the value, and the block runs unseen wherever
   a value is built; whether a path exists is a question for the place
-  that uses it (`Dir.exists`, or the failing `File.read`). It cannot
-  call its own `T.create` (weir has no recursion).
+  that uses it (`Dir.exists`, or the failing `File.read`). Raising is
+  not an effect, so `fail` is fine; `exit` is refused. It cannot call
+  its own `T.create` (weir has no recursion).
 - **Every boundary runs it.** `from json`/`jsonl`/`yaml`/`toml`,
   `Args.load` and `Env.load` read the payload and then validate,
   failing with the field path, flag or variable

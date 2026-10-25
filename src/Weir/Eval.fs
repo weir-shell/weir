@@ -2714,14 +2714,18 @@ let private validators =
     System.Collections.Concurrent.ConcurrentDictionary<string, Value -> Value>()
 
 /// run a validated type's `create` over a payload: Ok the built value,
-/// Error the validator's message
+/// Error the message of whatever validate raised — exit, cancellation and
+/// weir's own internal errors pass through, as through try [D:try-form]
 let runCreate (id: string) (payload: Value) : Result<Value, string> =
     match validators.TryGetValue id with
     | true, create ->
-        match create payload with
-        | VUnion("Ok", Some built) -> Ok built
-        | VUnion("Error", Some(VStr msg)) -> Error msg
-        | v -> unreachable $"a validator returns Result<_, string>, got {formatValue v}"
+        try
+            Ok(create payload)
+        with
+        | ExitRequest _ -> reraise ()
+        | :? System.OperationCanceledException -> reraise ()
+        | Failure m when m.StartsWith "unreachable:" -> reraise ()
+        | ex -> Error ex.Message
     | _ -> unreachable $"validated type {id} is used before its declaration ran"
 
 /// a boundary's located validation failure: the who prefix, the path
@@ -5496,13 +5500,18 @@ and eval (env: Env) (te: TypedExpr) : Value =
             match ambientRebinders.TryGetValue name with
             | true, (original, rebind) when obj.ReferenceEquals(v, original) -> rebind ()
             | _ -> v
-        // `T.create` [D:validated-types]: registered when the type ran
+        // `T.create` [D:validated-types]: registered when the type ran; a
+        // refusal raises validate's message, located at the `T.create`
         | None when name.StartsWith createVarPrefix ->
             let id = name.Substring createVarPrefix.Length
 
-            match validators.TryGetValue id with
-            | true, create -> VBuiltin create
-            | _ -> unreachable $"validated type {id} is used before its declaration ran"
+            VBuiltin(fun payload ->
+                match runCreate id payload with
+                | Ok built -> built
+                | Error msg ->
+                    RunPos.Current <- box te
+                    RunPos.Exact <- true
+                    failwith msg)
         | None -> unreachable $"the checker rejects unbound variable '{name}'"
     | TELet(name, _, value, body) -> eval (Map.add name (eval env value) env) body
     | TELetPat(pat, value, body) ->
@@ -7147,11 +7156,7 @@ let declare (env: Env) (decl: Decl) (validator: (string * TypedExpr) option) : E
     | DUnion [ (case, Some _, _) ], Some(id, vte) ->
         let check = eval env vte
 
-        validators[id] <-
-            fun payload ->
-                match apply check payload with
-                | VUnion("Ok", Some v) -> VUnion("Ok", Some(VUnion(case, Some v)))
-                | err -> err
+        validators[id] <- fun payload -> VUnion(case, Some(apply check payload))
     | _ -> ()
 
     match decl.Body with

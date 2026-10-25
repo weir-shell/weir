@@ -296,15 +296,19 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   both qualified spellings; a local union's cases stay bare.
 - A VALIDATED TYPE [D:validated-types] is a single-case union with an
   indented `validate <binder> = <expr>` block: the binder takes the
-  payload, the body returns `Result<payload, string>` (`Ok` may
-  normalise — the lowercased email; `Error` is the user-facing message).
-  The case then NEVER constructs (declaring module included): the one
-  way in is the derived `T.create : payload -> Result<T, string>` —
+  payload, the body returns the PAYLOAD (it may normalise — the
+  lowercased email) and refuses by RAISING: `fail "msg"` (the
+  user-facing message), or any raise — a failing `Str.toInt`, an
+  `|> orFail`. The case then NEVER constructs (declaring module
+  included): the one way in is the derived `T.create : payload -> T` —
   `Email.create "a@b"`, `Mail.Email.create` across a module, bare while
-  one import declares it; no raising variant (`match` the Result).
+  one import declares it. A refusal makes `create` RAISE validate's
+  message, located at the call — an ordinary raise like `Uuid.parse`'s:
+  `Email.create s |> try result` is `Error "not an email: x"`. No
+  `tryCreate`.
   Patterns READ it anywhere, bare or qualified (`let (Email raw) = e`).
   `validate` is PURE (the `pure` rules; a path's existence is checked
-  where it is used), may not call its own `create`, and belongs to
+  where it is used; `fail` is fine, `exit` refuses), may not call its own `create`, and belongs to
   single-case unions with a payload only — records and multi-case
   unions compose validated values instead. A validated payload is
   already valid: `type Work = Work of Email`'s `create` takes an
@@ -318,26 +322,26 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
 ```weir
 type Email = Email of string
     /// lowercased; must hold an @
-    validate s = if Str.contains "@" s then Ok (Str.toLower s) else Error $"not an email: {s}"
+    validate s = if Str.contains "@" s then Str.toLower s else fail $"not an email: {s}"
 type User = { name: string; email: Email }
 
-match Email.create "Ada@Example.org" with
-| Ok (Email raw) -> print raw
-| Error msg -> print msg
+let (Email raw) = Email.create "Ada@Example.org"
+print raw
+print $"{Email.create "nope" |> try result}"
 let bad = ["{\"name\": \"b\", \"email\": \"x\"}"] |> from json User |> try result
 print $"{bad}"
 ```
 
 ```weir-error
 type Email = Email of string
-    validate s = if Str.contains "@" s then Ok s else Error "no @"
-let e = Email "x" // 'Email' is validated — build it with Email.create (it returns a Result)
+    validate s = if Str.contains "@" s then s else fail "no @"
+let e = Email "x" // 'Email' is validated — build it with Email.create (it raises when validate refuses; `|> try result` for a Result)
 ```
 
 ```weir-error
 // validate is pure: existence belongs where the value is used
 type ExistingDir = ExistingDir of string
-    validate p = if Dir.exists p then Ok p else Error $"no such directory: {p}"
+    validate p = if Dir.exists p then p else fail $"no such directory: {p}"
 ```
 - A FUNCTION TYPE is writable [D:function-types] in any type position — a
   union payload (`Custom of (string -> bool)`), a record field

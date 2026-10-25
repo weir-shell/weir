@@ -27198,8 +27198,8 @@ let validatedTypeTests =
         [ "type Email = Email of string"
           "    /// lowercased; must hold an @"
           "    validate s ="
-          "        if Str.contains \"@\" s then Ok (Str.toLower s)"
-          "        else Error $\"not an email: {s}\"" ]
+          "        if Str.contains \"@\" s then Str.toLower s"
+          "        else fail $\"not an email: {s}\"" ]
 
     let emailModule = [ "module Mail" ] @ email
 
@@ -27242,7 +27242,7 @@ let validatedTypeTests =
     <| testList
         "validated types [D:validated-types]"
         [ test "the validate clause parses onto the declaration; 'validate' stays an ordinary name" {
-              match Weir.Parser.parseLine cmdResolver "type S = S of int validate x = Ok x" with
+              match Weir.Parser.parseLine cmdResolver "type S = S of int validate x = x" with
               | Ok(SType d as st) ->
                   Expect.isSome d.Validate "the clause rides the declaration"
                   Expect.stringContains (sexprStmt st) "(stype S (validate x" "the sexpr carries the validator"
@@ -27250,23 +27250,46 @@ let validatedTypeTests =
 
               clean [ "let validate x = x + 1"; "print $\"{validate 1}\"" ] "a function named validate"
           }
-          test "create builds and normalises; a refusal is the validator's message" {
+          test "create builds and normalises; a refusal raises the validator's message, try result keeps it intact" {
               runs
                   (email
-                   @ [ "match Email.create \"A@B.C\" with"
-                       "| Ok (Email raw) -> if raw <> \"a@b.c\" then fail raw"
-                       "| Error m -> fail m"
-                       expectIs "Email.create \"nope\"" "Error \"not an email: nope\""
-                       "let all = [\"x@y\"; \"z\"] |> Seq.map Email.create |> Seq.map Result.isOk |> Seq.freeze"
+                   @ [ "let (Email raw) = Email.create \"A@B.C\""
+                       "if raw <> \"a@b.c\" then fail raw"
+                       expectIs "(Email.create \"nope\" |> try result)" "Error \"not an email: nope\""
+                       expectIs "(Email.create \"nope\" |> try)" "None"
+                       "let all = [\"x@y\"; \"z\"] |> Seq.map (fun s -> Email.create s |> try result) |> Seq.map Result.isOk |> Seq.freeze"
                        expectIs "Seq.length (all |> Seq.where id)" "1" ])
                   "create"
+
+              withFiles
+                  [ "v.weir", email @ [ "let ok = Email.create \"a@b\""; "let bad = Email.create \"nope\"" ] ]
+                  (fun td -> Expect.notEqual (Weir.Script.run (Path.Combine(td, "v.weir")) []) 0 "an uncaught refusal fails the script")
+          }
+          test "any raise inside validate refuses with its message — fail, a failing builtin, orFail; boundaries report it as their own" {
+              runs
+                  [ "type Pos = Pos of string"
+                    "    validate s = if Str.toInt s > 0 then s else fail \"not positive\""
+                    "type Dig = Dig of string"
+                    "    validate s = Str.tryToInt s |> Option.map (fun _ -> s) |> orFail \"not digits\""
+                    "type Row = { p: Pos }"
+                    expectIs "(Pos.create \"0\" |> try result)" "Error \"not positive\""
+                    expectIs "(Pos.create \"x\" |> try result)" "Error \"toInt: not an integer: \\\"x\\\"\""
+                    expectIs "(Dig.create \"x\" |> try result)" "Error \"not digits\""
+                    "let r = [\"{\\\"p\\\": \\\"x\\\"}\"] |> from json Row |> try result"
+                    expectErr "r" "\"from json: p: toInt: not an integer: \\\"x\\\"\"" ]
+                  "raising validators"
+
+              says
+                  [ "type X = X of int"; "    validate n = if n > 0 then n else exit 3" ]
+                  "'validate' must be pure"
+                  "exit is no refusal: the purity check refuses it"
           }
           test "the case never constructs — in the declaring module, outside it, as a value; located at the use" {
               match errorsIn "v.weir" (email @ [ "let e = Email \"x\"" ]) with
               | d :: _ ->
                   Expect.equal
                       d.Message
-                      "'Email' is validated — build it with Email.create (it returns a Result)"
+                      "'Email' is validated — build it with Email.create (it raises when validate refuses; `|> try result` for a Result)"
                       "the teaching"
 
                   Expect.equal (d.Line, d.Col) (6, 9) "located at the use"
@@ -27281,7 +27304,7 @@ let validatedTypeTests =
 
               withFiles
                   [ "mail.weir", emailModule @ [ "let mk : string -> Email"; "let mk s = Email s" ]
-                    "ok.weir", emailModule @ [ "let mk : string -> Result<Email, string>"; "let mk s = Email.create s" ]
+                    "ok.weir", emailModule @ [ "let mk : string -> Email"; "let mk s = Email.create s" ]
                     "use.weir", [ "import \"./ok.weir\" as Mail"; "let e = Mail.Email \"a@b\"" ] ]
                   (fun td ->
                       Expect.exists
@@ -27291,20 +27314,20 @@ let validatedTypeTests =
 
                       Expect.exists
                           (errsAt td "use.weir")
-                          (fun m -> m = "'Mail.Email' is validated — build it with Mail.Email.create (it returns a Result)")
+                          (fun m -> m = "'Mail.Email' is validated — build it with Mail.Email.create (it raises when validate refuses; `|> try result` for a Result)")
                           "qualified, from an importer")
           }
           test "validate belongs to a single-case union with a payload — elsewhere a teaching error" {
-              says [ "type R = { a: int }"; "    validate r = Ok r" ] "'validate' guards a single-case union (type Email = Email of string), not a record" "a record"
-              says [ "type U = A of int | B"; "    validate x = Ok x" ] "'U' has 2 cases; a union of several cases composes validated payloads" "multi-case"
-              says [ "type U = A"; "    validate x = Ok x" ] "'validate' checks a payload, and case 'A' carries none" "no payload"
-              says [ "type G<'a> = G of 'a"; "    validate x = Ok x" ] "a validated type is monomorphic" "generic"
-              says [ "[<Tag \"kind\">]"; "type T = T of int"; "    validate x = Ok x" ] "[<Tag>] and 'validate' do not combine" "tagged"
+              says [ "type R = { a: int }"; "    validate r = r" ] "'validate' guards a single-case union (type Email = Email of string), not a record" "a record"
+              says [ "type U = A of int | B"; "    validate x = x" ] "'U' has 2 cases; a union of several cases composes validated payloads" "multi-case"
+              says [ "type U = A"; "    validate x = x" ] "'validate' checks a payload, and case 'A' carries none" "no payload"
+              says [ "type G<'a> = G of 'a"; "    validate x = x" ] "a validated type is monomorphic" "generic"
+              says [ "[<Tag \"kind\">]"; "type T = T of int"; "    validate x = x" ] "[<Tag>] and 'validate' do not combine" "tagged"
           }
           test "a binder or return mismatch names both types" {
               says
-                  [ "type S = S of int"; "    validate x = if x > 0 then Ok \"x\" else Error \"n\"" ]
-                  "'validate' must return Result<int, string> (Ok of the value, normalised or not; Error of the message users see), but this body returns Result<string, string>"
+                  [ "type S = S of int"; "    validate x = if x > 0 then \"x\" else fail \"n\"" ]
+                  "'validate' must return S's payload, int (the value, normalised or not; it refuses by raising — fail with the message users see), but this body returns string"
                   "return"
 
               says
@@ -27313,12 +27336,12 @@ let validatedTypeTests =
                   "not a Result at all"
 
               says
-                  [ "type S = S of int"; "    validate (a, b) = Ok a" ]
+                  [ "type S = S of int"; "    validate (a, b) = a" ]
                   "'validate' binds S's payload, which is int, but this binder is a 2-tuple pattern"
                   "binder"
           }
           test "validate is pure: an effect refuses at the offending call, a helper's too; create is pure" {
-              match errorsIn "v.weir" [ "type D = D of string"; "    validate p = if Dir.exists p then Ok p else Error \"no\"" ] with
+              match errorsIn "v.weir" [ "type D = D of string"; "    validate p = if Dir.exists p then p else fail \"no\"" ] with
               | d :: _ ->
                   Expect.stringStarts d.Message "'validate' must be pure" "the teaching"
                   Expect.stringContains d.Message "'Dir.exists' reads the filesystem" "names the offender"
@@ -27326,42 +27349,40 @@ let validatedTypeTests =
               | [] -> failtest "an effectful validator must refuse"
 
               says
-                  [ "let leak s = File.exists s"; "type P = P of string"; "    validate s = if leak s then Ok s else Error \"x\"" ]
+                  [ "let leak s = File.exists s"; "type P = P of string"; "    validate s = if leak s then s else fail \"x\"" ]
                   "'leak' reaches an effect"
                   "through a helper"
 
               clean
                   [ "let norm s = Str.toLower s"
                     "type P = P of string"
-                    "    validate s = Ok (norm s)"
+                    "    validate s = norm s"
                     "let pure mk s = P.create s"
                     "print $\"{mk \"A\"}\"" ]
                   "a pure helper inside, create inside a pure function"
           }
           test "validate cannot call its own create" {
               says
-                  [ "type S = S of int"; "    validate x = if x > 0 then Ok x else S.create (x + 1) |> Result.map (fun (S y) -> y)" ]
+                  [ "type S = S of int"; "    validate x = if x > 0 then x else let (S y) = S.create (x + 1) in y" ]
                   "'validate' cannot call S.create — that is recursion"
                   "self-call"
           }
           test "patterns read the value: match, let, parameters, lambdas" {
               runs
                   (email
-                   @ [ "match Email.create \"q@w\" with"
-                       "| Ok e ->"
-                       "    let (Email a) = e"
-                       "    let f (Email b) = b"
-                       "    let g = fun (Email c) -> c"
-                       "    let d = match e with | Email d -> d"
-                       "    if a + f e + g e + d <> \"q@wq@wq@wq@w\" then fail a"
-                       "| Error m -> fail m" ])
+                   @ [ "let e = Email.create \"q@w\""
+                       "let (Email a) = e"
+                       "let f (Email b) = b"
+                       "let g = fun (Email c) -> c"
+                       "let d = match e with | Email d -> d"
+                       "if a + f e + g e + d <> \"q@wq@wq@wq@w\" then fail a" ])
                   "reading"
           }
           test "composition: a multi-case union and a record of validated payloads; a nested type takes the inner TYPE" {
               let work =
                   email
                   @ [ "type Phone = Phone of string"
-                      "    validate s = if Str.startsWith \"+\" s then Ok s else Error $\"not a phone: {s}\""
+                      "    validate s = if Str.startsWith \"+\" s then s else fail $\"not a phone: {s}\""
                       "type Contact ="
                       "    | Mail of Email"
                       "    | Call of Phone"
@@ -27369,25 +27390,19 @@ let validatedTypeTests =
                       "type Work = Work of Email"
                       "    validate e ="
                       "        let (Email raw) = e"
-                      "        if Str.endsWith \"@corp\" raw then Ok e else Error $\"not a work address: {raw}\"" ]
+                      "        if Str.endsWith \"@corp\" raw then e else fail $\"not a work address: {raw}\"" ]
 
               runs
                   (work
-                   @ [ "let card ="
-                       "    match Phone.create \"+1\" with"
-                       "    | Ok p -> { who = \"a\"; reach = Call p }"
-                       "    | Error m -> fail m"
+                   @ [ "let card = { who = \"a\"; reach = Call (Phone.create \"+1\") }"
                        "let shown ="
                        "    match card.reach with"
                        "    | Mail (Email e) -> e"
                        "    | Call (Phone p) -> p"
                        "if shown <> \"+1\" then fail shown"
-                       "match Email.create \"X@CORP\" with"
-                       "| Ok e -> if Work.create e |> Result.isOk |> not then fail \"work\""
-                       "| Error m -> fail m"
-                       "match Email.create \"x@home\" with"
-                       "| Ok e -> " + expectIs "Work.create e" "Error \"not a work address: x@home\""
-                       "| Error m -> fail m" ])
+                       "let (Work (Email w)) = Work.create (Email.create \"X@CORP\")"
+                       "if w <> \"x@corp\" then fail w"
+                       expectIs "(Work.create (Email.create \"x@home\") |> try result)" "Error \"not a work address: x@home\"" ])
                   "composition"
 
               says (work @ [ "let w = Work.create \"x@corp\"" ]) "expected Email, got string" "create takes the inner type"
@@ -27480,7 +27495,7 @@ let validatedTypeTests =
           test "Env.load parses the payload then validates, naming the variable" {
               runs
                   [ "type Port = Port of int"
-                    "    validate p = if p > 0 && p < 65536 then Ok p else Error $\"{p} is no port\""
+                    "    validate p = if p > 0 && p < 65536 then p else fail $\"{p} is no port\""
                     "within env VT_PORT=0 VT_P2=99999"
                     "    let e = Env.load {| VT_PORT: Port; VT_P2: Option<Port> |} |> try result"
                     "    " + expectErr "e" "\"Env.load {| VT_P2: Option<Port>; VT_PORT: Port |}: VT_P2: 99999 is no port; VT_PORT: 0 is no port\""
@@ -27491,7 +27506,7 @@ let validatedTypeTests =
                   "env"
           }
           test "a flat boundary refuses a validated field over an optional payload, at check time" {
-              let optPort = [ "type Port = Port of Option<int>"; "    validate p = Ok p" ]
+              let optPort = [ "type Port = Port of Option<int>"; "    validate p = p" ]
 
               let refusal (field: string) (ty: string) (innermost: string) =
                   $"field '{field}': '{ty}' is validated over an optional payload — a flag/variable cannot tell \"absent\" from \"absent payload\"; declare the field `Option<{ty}>` over a validated `{innermost} of int` instead"
@@ -27521,7 +27536,7 @@ let validatedTypeTests =
 
               let nested =
                   optPort
-                  @ [ "type Admin = Admin of Port"; "    validate p = Ok p" ]
+                  @ [ "type Admin = Admin of Port"; "    validate p = p" ]
 
               says (nested @ [ "type Cli = { port: Admin }"; "let c = Args.load Cli"; "print $\"{c}\"" ]) (refusal "port" "Admin" "Port") "nested, Args.load"
               says (nested @ [ "let e = Env.load {| VT_P: Admin |}"; "print $\"{e}\"" ]) (refusal "VT_P" "Admin" "Port") "nested, Env.load"
@@ -27533,7 +27548,7 @@ let validatedTypeTests =
           test "flat boundaries: a scalar payload, Option over it (absent never runs create), validated over validated" {
               let strict =
                   [ "type Strict = Strict of int"
-                    "    validate n = Error $\"ran on {n}\"" ]
+                    "    validate n = fail $\"ran on {n}\"" ]
 
               runsIn
                   [ "v.weir", strict @ [ "type Cli = { port: Option<Strict> }"; "let c = Args.load Cli"; "if c.port <> None then fail \"some\"" ] ]
@@ -27562,11 +27577,11 @@ let validatedTypeTests =
 
               let admin =
                   [ "type Port = Port of int"
-                    "    validate p = if p > 0 then Ok p else Error $\"{p} is no port\""
+                    "    validate p = if p > 0 then p else fail $\"{p} is no port\""
                     "type Admin = Admin of Port"
                     "    validate p ="
                     "        let (Port n) = p"
-                    "        if n < 1024 then Ok p else Error $\"not privileged: {n}\""
+                    "        if n < 1024 then p else fail $\"not privileged: {n}\""
                     "type Cli = { port: Admin; spare: Option<Admin> }" ]
 
               runsIn
@@ -27603,7 +27618,7 @@ let validatedTypeTests =
                       (email
                        @ [ "type Body = { text: Email }"
                            $"[<Tag \"{quoted}\">] type Ev = Start of Body | Stop"
-                           "let e = match Email.create \"A@B\" with | Ok m -> Start { text = m } | Error m -> fail m"
+                           "let e = Start { text = Email.create \"A@B\" }"
                            expectIs "(e |> to json |> Seq.exactlyOne)" $"\"{{\\\"{quoted}\\\":\\\"Start\\\",\\\"text\\\":\\\"a@b\\\"}}\""
                            expectIs "(([e] |> to json |> from json seq<Ev> |> Seq.exactlyOne) == e)" "true"
                            expectIs "((e |> to yaml |> from yaml Ev) == e)" "true"
@@ -27612,7 +27627,7 @@ let validatedTypeTests =
                       $"tag field '{tag}'"
           }
           test "the writer's case table: a validated case and a tagged case of one name refuse; two validated share" {
-              let other = [ "module Other"; "type Email = Email of int"; "    validate n = if n > 0 then Ok n else Error \"neg\"" ]
+              let other = [ "module Other"; "type Email = Email of int"; "    validate n = if n > 0 then n else fail \"neg\"" ]
 
               withFiles
                   [ "mail.weir", emailModule
@@ -27639,23 +27654,21 @@ let validatedTypeTests =
                       Expect.isEmpty (errsAt td "share.weir") "two validated types share a case name")
           }
           test "qualified access from another module; an ambiguous bare create names both spellings" {
-              let other = [ "module Other"; "type Email = Email of int"; "    validate n = if n > 0 then Ok n else Error \"neg\"" ]
+              let other = [ "module Other"; "type Email = Email of int"; "    validate n = if n > 0 then n else fail \"neg\"" ]
 
               runsIn
                   [ "mail.weir",
                     emailModule
                     @ [ "type Contact = { name: string; email: Email }"
-                        "let mk : string -> Result<Email, string>"
+                        "let mk : string -> Email"
                         "let mk s = Email.create s" ]
                     "use.weir",
                     [ "import \"./mail.weir\""
-                      "match Mail.Email.create \"X@Y\" with"
-                      "| Ok (Mail.Email raw) -> if raw <> \"x@y\" then fail raw"
-                      "| Error m -> fail m"
-                      "match Email.create \"Z@W\" with"
-                      "| Ok (Email raw) -> if raw <> \"z@w\" then fail raw"
-                      "| Error m -> fail m"
-                      expectIs "(Mail.mk \"nope\")" "Error \"not an email: nope\""
+                      "let (Mail.Email raw) = Mail.Email.create \"X@Y\""
+                      "if raw <> \"x@y\" then fail raw"
+                      "let (Email bare) = Email.create \"Z@W\""
+                      "if bare <> \"z@w\" then fail bare"
+                      expectIs "(Mail.mk \"nope\" |> try result)" "Error \"not an email: nope\""
                       "let c = [\"{\\\"name\\\": \\\"n\\\", \\\"email\\\": \\\"bad\\\"}\"] |> from json Mail.Contact |> try result"
                       expectErr "c" "\"from json: email: not an email: bad\"" ] ]
                   "use.weir"
@@ -27684,14 +27697,14 @@ let validatedTypeTests =
               clean
                   [ "let norm s = Str.toLower s"
                     "type P = P of string"
-                    "    validate s = Ok (norm s)"
+                    "    validate s = norm s"
                     "print $\"{P.create \"A\"}\"" ]
                   "a helper only the validator reads"
           }
           test "hover shows the validate doc on the type and on T.create" {
               let lines =
                   [ "/// an address"; "type Email = Email of string"; "    /// lowercased, must hold an @"
-                    "    validate s = if Str.contains \"@\" s then Ok (Str.toLower s) else Error \"no\""
+                    "    validate s = if Str.contains \"@\" s then Str.toLower s else fail \"no\""
                     "let e = Email.create \"a@b\""; "print $\"{e}\"" ]
 
               match Weir.Lsp.hoverType lines 2 7 with
@@ -27703,7 +27716,8 @@ let validatedTypeTests =
 
               match Weir.Lsp.hoverType lines 5 16 with
               | Some h ->
-                  Expect.stringStarts h "Email.create : string -> Result<Email, string>" "create's signature"
+                  Expect.stringStarts h "Email.create : string -> Email" "create's signature"
+                  Expect.stringContains h "Raises validate's message when it refuses; `|> try result` for a Result." "the raise note"
                   Expect.stringContains h "validate — lowercased, must hold an @" "the validate doc"
               | None -> failtest "create hovers"
           }
@@ -27712,7 +27726,7 @@ let validatedTypeTests =
                   [ "vt.weir",
                     [ "module Vt"
                       "type ConfigFile = ConfigFile of string"
-                      "    validate s = Ok s"
+                      "    validate s = s"
                       "type Cmd = {"
                       "    conf: ConfigFile"
                       "    label: string"
