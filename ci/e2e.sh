@@ -16606,16 +16606,35 @@ WEOF
     # not a command failure — the loop ends cleanly [D:stop-caused-failure]
     cat > "$rpdir/tty.weir" <<'WEOF'
 repeat interval=100ms
-    sh -c "echo child-ready | tr a-z A-Z; sleep 5; echo child-done"
+    sh -c "ps -o pid=,pgid=,tpgid=,sigmask= -p $$; stty -a | grep -o -e -isig -e isig | head -1; python3 -c 'import signal; print(\"sigint\", signal.getsignal(2))'; echo child-ready | tr a-z A-Z; sleep 5; echo child-done"
     print "iteration end"
 print (Str.toUpper "after-repeat")
 WEOF
     tout=$(printf 'WAIT CHILD-READY\nSEND \\x03\nSLEEP 1500\n' | python3 "$ptyrun" 10 "$BIN" "$rpdir/tty.weir")
+    echo "diag (script repeat child): $(echo "$tout" | grep -aoE "b'([0-9]+ [0-9]+ [0-9]+ +[0-9a-f]+|-?isig|sigint [A-Za-z_.<> -]*)" | sed "s/^b'//" | tr '\n' ' ')"
     for want in "AFTER-REPEAT" "EXIT 0"; do
         echo "$tout" | grep -qF "$want" || fail "a terminal ^C during the iteration's child: '$want' expected: $tout"
     done
     echo "$tout" | grep -qE "command failed|child-done|iteration end" && fail "a terminal ^C: the child's death is the stop, not a failure: $tout"
     echo "e2e ok: repeat — a terminal ^C kills the iteration's child as under bash, and that death ends the loop cleanly (exit 0)"
+
+    # a child the terminal's ^C does not reach (its own session, by setsid):
+    # the script's stop request sends it the SIGINT itself, and its death is
+    # the stop [D:stop-forward-script]
+    if command -v setsid >/dev/null 2>&1; then
+        cat > "$rpdir/ttysid.weir" <<'WEOF'
+repeat interval=100ms
+    setsid sh -c "echo ready | tr a-z A-Z; sleep 3; echo sid-done"
+    print "iteration end"
+print (Str.toUpper "after-repeat")
+WEOF
+        tout=$(printf 'WAIT READY\nSEND \\x03\nSLEEP 1500\n' | python3 "$ptyrun" 10 "$BIN" "$rpdir/ttysid.weir")
+        for want in "AFTER-REPEAT" "EXIT 0"; do
+            echo "$tout" | grep -qF "$want" || fail "a terminal ^C, a child outside the terminal's group: '$want' expected: $tout"
+        done
+        echo "$tout" | grep -qE "command failed|sid-done|iteration end" && fail "a terminal ^C: the stop request's ^C reaches a setsid child and its death is the stop: $tout"
+        echo "e2e ok: repeat — a terminal ^C reaches the iteration's child outside the terminal's group (setsid) too, and its death ends the loop cleanly"
+    fi
 
     # the REPL (D1): the first ^C stops a repeat gracefully and the prompt
     # returns; the request ends with the entry, so the next repeat runs; a
@@ -16625,7 +16644,9 @@ WEOF
     # the first child prints its pid, pgid, the terminal's foreground group and
     # its blocked and ignored signals: where a platform's ^C misses it, the
     # transcript names why
-    tout=$(printf '%s\n' 'WAIT weir>' 'SEND repeat interval=100ms\n    sh -c "ps -o pid=,pgid=,tpgid=,sigmask=,sigignore= -p $$; echo tick-a | tr a-z A-Z; sleep 3; echo tick-z | tr a-z A-Z"\r' 'WAIT TICK-A' 'SEND \x03' 'WAIT weir>' 'SEND repeat interval=50ms\n    print (Str.toUpper "again")\n    true\r' 'WAIT AGAIN' 'SEND repeat interval=100ms\n    print (Str.toUpper "tock")\n    Duration.sleep 5s\n    print (Str.toUpper "tock-end")\r' 'WAIT TOCK' 'SEND \x03' 'SLEEP 300' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "still-here")\r' 'WAIT STILL-HERE' 'SEND within\n    print (Str.toUpper "held-a")\nuntil stopped\r' 'WAIT HELD-A' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "post-held")\r' 'WAIT POST-HELD' 'SEND \x04' 'SLEEP 500' | env HOME="$rph" XDG_CONFIG_HOME="$rph/c" XDG_DATA_HOME="$rph/d" XDG_STATE_HOME="$rph/s" XDG_CACHE_HOME="$rph/k" NO_COLOR=1 python3 "$ptyrun" 30 "$BIN")
+    printf 'import signal\nprint("sigint", signal.getsignal(2))\n' > "$rpdir/sigdisp.py"
+    tout=$(printf '%s\n' 'WAIT weir>' 'SEND repeat interval=100ms\n    sh -c "ps -o pid=,pgid=,tpgid=,sigmask= -p $$; stty -a | grep -o -e -isig -e isig | head -1; python3 '"$rpdir/sigdisp.py"'; echo tick-a | tr a-z A-Z; sleep 3; echo tick-z | tr a-z A-Z"\r' 'WAIT TICK-A' 'SEND \x03' 'WAIT weir>' 'SEND repeat interval=50ms\n    print (Str.toUpper "again")\n    true\r' 'WAIT AGAIN' 'SEND repeat interval=100ms\n    print (Str.toUpper "tock")\n    Duration.sleep 5s\n    print (Str.toUpper "tock-end")\r' 'WAIT TOCK' 'SEND \x03' 'SLEEP 300' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "still-here")\r' 'WAIT STILL-HERE' 'SEND within\n    print (Str.toUpper "held-a")\nuntil stopped\r' 'WAIT HELD-A' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "post-held")\r' 'WAIT POST-HELD' 'SEND \x04' 'SLEEP 500' | env HOME="$rph" XDG_CONFIG_HOME="$rph/c" XDG_DATA_HOME="$rph/d" XDG_STATE_HOME="$rph/s" XDG_CACHE_HOME="$rph/k" NO_COLOR=1 python3 "$ptyrun" 30 "$BIN")
+    echo "diag (repl repeat child): $(echo "$tout" | grep -aoE "b'([0-9]+ [0-9]+ [0-9]+ +[0-9a-f]+|-?isig|sigint [A-Za-z_.<> -]*)" | sed "s/^b'//" | tr '\n' ' ')"
     for want in "AGAIN" "STILL-HERE" "HELD-A" "POST-HELD" "EXIT 0"; do
         echo "$tout" | grep -qF "$want" || fail "repeat at the REPL: '$want' expected: $tout"
     done
