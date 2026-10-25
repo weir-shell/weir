@@ -500,8 +500,10 @@ import "weir:pod" as Pod
 let p = kubectl get pod web -o json |> from json Pod
 ```
 
-(An imported type can be named without its module prefix here, so
-`from json` takes `Pod`, not `Pod.Pod`.)
+(An imported type can be named without its module prefix while no
+other import declares the same name, so `from json` takes `Pod`;
+`Pod.Pod` always works. Two generated modules that both declare, say,
+`ObjectMeta` are each reached by the qualified name.)
 
 ## Remote modules
 

@@ -2287,7 +2287,9 @@ for an imported type, `G.Ctx { field = v }` to build one of its
 records. Without `as`, the prefix is the module's declared name, or
 else the file name with a capital first letter. Nothing is imported
 without a prefix, not even a union's cases, and a local declaration
-always takes priority over an imported name.
+always takes priority over an imported name. The one shortcut is a
+type's plain name (`Ctx`), which works while only one import declares
+it; when two imports both declare a `Ctx`, write `G.Ctx` or `H.Ctx`.
 
 Imports are resolved by the checker, from the literal path. Nothing
 is loaded at runtime, and a missing file is an error that shows the
