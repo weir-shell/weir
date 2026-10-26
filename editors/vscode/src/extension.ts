@@ -37,13 +37,11 @@ function resolveServer(configured: string): string | undefined {
   return undefined;
 }
 
-export function activate(_context: vscode.ExtensionContext): void {
+export function activate(context: vscode.ExtensionContext): void {
+  const cfg = vscode.workspace.getConfiguration("weir");
   // `|| "weir"` not `?? "weir"`: a CLEARED setting arrives as the empty
   // string, which is not nullish — the "command": "" trap
-  const configured =
-    (
-      vscode.workspace.getConfiguration("weir").get<string>("serverPath") ?? ""
-    ).trim() || "weir";
+  const configured = (cfg.get<string>("serverPath") ?? "").trim() || "weir";
 
   const resolved = resolveServer(configured);
 
@@ -73,10 +71,58 @@ export function activate(_context: vscode.ExtensionContext): void {
     },
     {
       documentSelector: [{ language: "weir" }],
+      // the inlay hint settings travel to the server: the whole `weir`
+      // section at initialize and on every change — the client never
+      // filters hints itself
+      initializationOptions: { inlayHints: cfg.get("inlayHints") },
+      synchronize: { configurationSection: "weir" },
     }
   );
 
   void client.start();
+
+  // run / check / check --can in a reused integrated terminal named
+  // `weir`, with the SAME binary the server runs — no code lens, no
+  // server-side execution: the server never evaluates
+  let terminal: vscode.Terminal | undefined;
+
+  const quote = (s: string): string => `"${s.replace(/"/g, '\\"')}"`;
+
+  const inTerminal = async (args: string[]): Promise<void> => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== "weir") {
+      void vscode.window.showInformationMessage(
+        "weir: open a weir script first"
+      );
+      return;
+    }
+    if (editor.document.isDirty || editor.document.isUntitled) {
+      if (!(await editor.document.save())) {
+        return;
+      }
+    }
+    if (!terminal || terminal.exitStatus !== undefined) {
+      terminal = vscode.window.createTerminal("weir");
+    }
+    terminal.show(true);
+    terminal.sendText(
+      [quote(resolved), ...args, quote(editor.document.uri.fsPath)].join(" ")
+    );
+  };
+
+  context.subscriptions.push(
+    // `weir <file>` runs a script — there is no `run` verb
+    vscode.commands.registerCommand("weir.run", () => inTerminal([])),
+    vscode.commands.registerCommand("weir.check", () => inTerminal(["check"])),
+    vscode.commands.registerCommand("weir.checkCan", () =>
+      inTerminal(["check", "--can"])
+    ),
+    vscode.window.onDidCloseTerminal((t) => {
+      if (t === terminal) {
+        terminal = undefined;
+      }
+    })
+  );
 }
 
 export function deactivate(): Thenable<void> | undefined {
