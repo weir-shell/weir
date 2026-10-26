@@ -75,6 +75,21 @@ let private retiredBare (name: string) : string option =
     | "first" -> Some "weir's first is 'Seq.take' (bare: 'take') — one name per operation"
     | _ -> None
 
+// the bare-name inverse [D:structured-fixes]: (bare, qualified) read
+// back from the two bare-partition teachings — the module-qualified
+// arm below and the parser's "spell it" form [D:bare-partition]
+let qualifyTarget (msg: string) : (string * string) option =
+    let m =
+        System.Text.RegularExpressions.Regex.Match(
+            msg,
+            "^'(\\w+)' is (?:a bare module member(?:, not a program)? — spell it|module-qualified; use) '(\\w+\\.\\w+)'"
+        )
+
+    if m.Success then
+        Some(m.Groups[1].Value, m.Groups[2].Value)
+    else
+        None
+
 /// Members that live as bespoke checker arms, not as entries in a
 /// module's member map: `Args.load`/`Env.load` resolve a record/union
 /// type name, so their scheme is not a plain member. Completion must
@@ -279,6 +294,17 @@ let rec private firstTombstone (tpl: YamlTpl) : Span option =
                 body
                 |> List.tryPick (fun e -> firstTombstone (YtMap([ e ], Unchecked.defaultof<Span>))))
 
+// the unwrap teaching's tail — fixOf reads it back [D:structured-fixes]
+let orFailTail = " — `|> orFail` unwraps it (raising on None/Error)"
+
+// the wrapped value where its payload is wanted [D:structured-fixes]:
+// the unwrap is one pipe away, so the message names it
+let private unwrapHint (expected: Ty) (actual: Ty) =
+    match expected, actual with
+    | t, TNamed("Option", [ inner ])
+    | t, TNamed("Result", [ inner; _ ]) when inner = t -> orFailTail
+    | _ -> ""
+
 let private mismatch (span: Span) (expected: Ty) (actual: Ty) =
     // a built request where a URL string is expected — name the two
     // run spellings instead of leaving a bare type mismatch
@@ -286,7 +312,7 @@ let private mismatch (span: Span) (expected: Ty) (actual: Ty) =
     let hint =
         match expected, actual with
         | TStr, TNamed("HttpRequest", _) -> " — a request runs through Http.expect (raising) or Http.send (status as data)"
-        | _ -> ""
+        | _ -> unwrapHint expected actual
 
     err span $"expected {formatTy expected}, got {formatTy actual}{hint}"
 
@@ -1588,7 +1614,7 @@ let rec private typeBinOp
             if isShorthand l || isShorthand r then
                 " (note: _.Field is a whole function; to compare the field, write fun x -> x.Field ...)"
             else
-                ""
+                unwrapHint a b
 
         err r.Span $"expected {formatTy a}, got {formatTy b}{shorthandHint}"
     | _, a, _ -> err opSpan $"operator '{op}' is not defined for {formatTy a}"
@@ -3269,7 +3295,9 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
                             )
 
                     uncovered)
-                |> List.map fst
+                // named as the arm to write [D:structured-fixes]: a
+                // payload case's pattern carries its payload
+                |> List.map (fun (case, payload) -> if payload.IsSome then case + " _" else case)
             // a record scrutinee is a product like a tuple
             // [D:refutable-record-patterns]: only an irrefutable arm
             // completes it (the guard above already returned for those),

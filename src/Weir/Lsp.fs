@@ -3156,6 +3156,55 @@ let diagnosticTags (d: Script.Diagnostic) : int list =
     | "unused-binding" when d.Message <> Script.bareDiscardMessage -> [ 1 ]
     | "unreachable-arm" -> [ 1 ]
     | _ -> []
+// a code action [D:structured-fixes]: the editor's rendering of a
+// Script.Fix — Diagnostics carries the ones it resolves, Edits the
+// repair in the document the diagnostics were published for
+type CodeAction =
+    { Title: string
+      Kind: string // "quickfix" | "source.fixAll"
+      Diagnostics: Script.Diagnostic list
+      Edits: Script.FixEdit list }
+
+// the source.fixAll titles per family [D:structured-fixes]; R8 keeps the
+// `_`-prefix rename out of every family
+let private fixAllTitle (family: string) =
+    match family with
+    | "qualify" -> "Qualify all bare names in file"
+    | "doc-align" -> "Align all doc comments in file"
+    | f -> $"Fix all: {f}"
+
+/// code actions over the published diagnostics [D:structured-fixes]: a
+/// quickfix per diagnostic with a Fix inside the requested line range
+/// (None = whole file), plus one source.fixAll per family present
+/// anywhere in the file
+let codeActionsFor (diags: Script.Diagnostic list) (range: (int * int) option) : CodeAction list =
+    let inRange (d: Script.Diagnostic) =
+        match range with
+        | Some(a, b) -> d.Line >= a && d.Line <= b
+        | None -> true
+
+    let withFix = diags |> List.choose (fun d -> d.Fix |> Option.map (fun f -> d, f))
+
+    let quick =
+        withFix
+        |> List.filter (fun (d, _) -> inRange d)
+        |> List.map (fun (d, f) ->
+            { Title = f.Title
+              Kind = "quickfix"
+              Diagnostics = [ d ]
+              Edits = f.Edits })
+
+    let all =
+        withFix
+        |> List.choose (fun (d, f) -> f.Family |> Option.map (fun fam -> fam, d, f))
+        |> List.groupBy (fun (fam, _, _) -> fam)
+        |> List.map (fun (fam, members) ->
+            { Title = fixAllTitle fam
+              Kind = "source.fixAll"
+              Diagnostics = members |> List.map (fun (_, d, _) -> d)
+              Edits = members |> List.collect (fun (_, _, f) -> f.Edits) })
+
+    quick @ all
 
 // ---- the server ---------------------------------------------------
 
@@ -3285,8 +3334,8 @@ let run (debug: bool) : int =
     // URIs published with diagnostics last cycle — cleared when they go clean
     let publishedUris = Collections.Generic.HashSet<string>()
 
-    // the last published set per URI — the code-action handler reads the
-    // qualified spelling out of a bare-name teaching [D:bare-partition]
+    // the last published set per URI — the code-action handler reads its
+    // fixes from here [D:structured-fixes]
     let lastPublished = Collections.Generic.Dictionary<string, Script.Diagnostic list>()
 
     // what the client declared at initialize [D:diagnostic-tags]: tags
@@ -3663,12 +3712,9 @@ let run (debug: bool) : int =
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/codeAction" ->
-                        // quickfix on a bare-name teaching: the diagnostic
-                        // carries the qualified spelling ("spell it
-                        // 'Seq.where'" / "use 'Seq.where'"), so the edit
-                        // derives from the published set — no re-analysis
-                        // [D:bare-partition]. source.fixAll qualifies every
-                        // such name in the file.
+                        // the fixes derive from the published set — no
+                        // re-analysis [D:structured-fixes]; the edits are
+                        // keyed by the document's own URI
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
                             | Some(uri, _) ->
@@ -3676,20 +3722,6 @@ let run (debug: bool) : int =
                                     match lastPublished.TryGetValue uri with
                                     | true, ds -> ds
                                     | _ -> []
-
-                                let actionable =
-                                    published
-                                    |> List.choose (fun d ->
-                                        let m =
-                                            Text.RegularExpressions.Regex.Match(
-                                                d.Message,
-                                                "^'(\\w+)' is (?:a bare module member — spell it|module-qualified; use) '(\\w+\\.\\w+)'"
-                                            )
-
-                                        if m.Success then
-                                            Some(d, m.Groups[1].Value, m.Groups[2].Value)
-                                        else
-                                            None)
 
                                 let requestedLines =
                                     jObj "range" ps
@@ -3701,37 +3733,53 @@ let run (debug: bool) : int =
                                             | _ -> None
                                         | _ -> None)
 
-                                let inRange (d: Script.Diagnostic) =
-                                    match requestedLines with
-                                    | Some(a, b) -> d.Line >= a && d.Line <= b
-                                    | None -> true
-
-                                let writeEdit (d: Script.Diagnostic) (bare: string) (qualified: string) =
-                                    w.WriteStartObject()
+                                let writeRange (l1: int) (c1: int) (l2: int) (c2: int) =
                                     w.WritePropertyName "range"
                                     w.WriteStartObject()
                                     w.WritePropertyName "start"
                                     w.WriteStartObject()
-                                    w.WriteNumber("line", d.Line - 1)
-                                    w.WriteNumber("character", d.Col - 1)
+                                    w.WriteNumber("line", l1 - 1)
+                                    w.WriteNumber("character", c1 - 1)
                                     w.WriteEndObject()
                                     w.WritePropertyName "end"
                                     w.WriteStartObject()
-                                    w.WriteNumber("line", d.Line - 1)
-                                    w.WriteNumber("character", d.Col - 1 + bare.Length)
+                                    w.WriteNumber("line", l2 - 1)
+                                    w.WriteNumber("character", c2 - 1)
                                     w.WriteEndObject()
-                                    w.WriteEndObject()
-                                    w.WriteString("newText", qualified)
                                     w.WriteEndObject()
 
-                                let writeAction
-                                    (title: string)
-                                    (kind: string)
-                                    (edits: (Script.Diagnostic * string * string) list)
-                                    =
+                                w.WriteStartArray()
+
+                                for a in codeActionsFor published requestedLines do
                                     w.WriteStartObject()
-                                    w.WriteString("title", title)
-                                    w.WriteString("kind", kind)
+                                    w.WriteString("title", a.Title)
+                                    w.WriteString("kind", a.Kind)
+                                    w.WritePropertyName "diagnostics"
+                                    w.WriteStartArray()
+
+                                    for d in a.Diagnostics do
+                                        w.WriteStartObject()
+
+                                        writeRange
+                                            d.Line
+                                            d.Col
+                                            (d.EndLine |> Option.defaultValue d.Line)
+                                            (d.EndCol |> Option.defaultValue (d.Col + 1))
+
+                                        w.WriteNumber(
+                                            "severity",
+                                            (match d.Severity with
+                                             | "warning" -> 2
+                                             | "note" -> 3
+                                             | _ -> 1)
+                                        )
+
+                                        w.WriteString("code", d.Code)
+                                        w.WriteString("source", "weir")
+                                        w.WriteString("message", d.Message)
+                                        w.WriteEndObject()
+
+                                    w.WriteEndArray()
                                     w.WritePropertyName "edit"
                                     w.WriteStartObject()
                                     w.WritePropertyName "changes"
@@ -3739,21 +3787,16 @@ let run (debug: bool) : int =
                                     w.WritePropertyName uri
                                     w.WriteStartArray()
 
-                                    for d, bare, qualified in edits do
-                                        writeEdit d bare qualified
+                                    for e in a.Edits do
+                                        w.WriteStartObject()
+                                        writeRange e.Line e.Col e.EndLine e.EndCol
+                                        w.WriteString("newText", e.NewText)
+                                        w.WriteEndObject()
 
                                     w.WriteEndArray()
                                     w.WriteEndObject()
                                     w.WriteEndObject()
                                     w.WriteEndObject()
-
-                                w.WriteStartArray()
-
-                                for d, bare, qualified in actionable |> List.filter (fun (d, _, _) -> inRange d) do
-                                    writeAction $"Qualify: {qualified}" "quickfix" [ d, bare, qualified ]
-
-                                if not actionable.IsEmpty then
-                                    writeAction "Qualify all bare names in file" "source.fixAll" actionable
 
                                 w.WriteEndArray()
                             | None -> w.WriteNullValue()

@@ -55,7 +55,11 @@ usage: weir                                    the REPL
   signature an implementation mismatches, the import an imported
   error came through, the rebinding that shadows an unread binder —
   carries it in a `related` array of `{file, line, col, message}`;
-  the key is absent otherwise.
+  the key is absent otherwise. A diagnostic weir knows how to repair carries a
+  `fix`: a `title` and the `edits` that repair it (`line`, `col`,
+  `endLine`, `endCol` — 1-based, end-exclusive, all against the
+  unedited file — and `newText`), the same edits the editor's quick
+  fix applies.
 - `weir check --can script.weir` — list what the script can run,
   read, write and connect to, with a `file:line` for each item. This
   is what the script *could* do, not what it will do, so a branch

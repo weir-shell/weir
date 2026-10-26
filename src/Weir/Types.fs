@@ -1054,6 +1054,28 @@ let didYouMean (name: string) (candidates: seq<string>) : string =
     |> Option.map (fun (c, _) -> $". Did you mean '{quoteData c}'?")
     |> Option.defaultValue ""
 
+// the did-you-mean inverse [D:structured-fixes]: (typo, suggestion)
+// read back from a message carrying the tail above — the typo is the
+// last quoted name before it (or the bare word after a colon, the
+// cmd-not-found spelling); the fix's edit replaces the typo
+let didYouMeanTarget (msg: string) : (string * string) option =
+    let m =
+        System.Text.RegularExpressions.Regex.Match(
+            msg,
+            @"(?:'([^']+)'[^']*|: ([^\s']+))\. Did you mean '([^']+)'\?"
+        )
+
+    if m.Success then
+        let typo =
+            if m.Groups[1].Success then
+                m.Groups[1].Value
+            else
+                m.Groups[2].Value
+
+        Some(typo, m.Groups[3].Value)
+    else
+        None
+
 module Color =
     open System
 

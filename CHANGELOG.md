@@ -57,6 +57,23 @@
   editor-title buttons, running the same binary the language server
   uses in a reused `weir` terminal; `weir.inlayHints.*` settings. No
   code lens: the server never runs anything.
+- **Quick fixes in the editor, and `fix` in `check --json`.** A
+  diagnostic weir knows how to repair now carries the repair: the
+  editor's lightbulb offers it, and `weir check --json` prints it as
+  `fix` (a title and the edits, so an agent can apply it). The set:
+  replace a misspelled variable, field, case, attribute, flag or
+  command with the name it meant; qualify a bare module member, or
+  all of them at once; add the missing match arms or a missing
+  `else`, each with a `fail "todo"` body; rename an unused binder to
+  `_name`; lowercase a binder; align a `///` doc, or move one from a
+  signed implementation to its signature; call an uncalled function;
+  unwrap an `Option`/`Result` with `|> orFail`; add a stub
+  implementation under a signature.
+- **Two new teachings.** A statement that is a `unit -> X` function
+  says so ("that is the function itself, not its result: call it with
+  ()"), and a mismatch where the value is an `Option<T>`/`Result<T, _>`
+  of the wanted `T` names the unwrap (`|> orFail`). A non-exhaustive
+  match now names a payload case as the pattern to write (`Push _`).
 
 ## v0.0.78
 
