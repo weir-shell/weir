@@ -46,13 +46,13 @@ const toc = bodies
 <Base title="Showcase" toc={toc}>
   <h1>The showcase</h1>
   <p>
-    One script touring the whole language — commands, pipelines,
+    One script touring the whole language: commands, pipelines,
     records, matching, scopes, retries, the boundaries. It runs in CI
-    against every release, on Linux, macOS and Windows: what you read
-    here executed. It runs the same on all three <em>by construction</em>,
-    not by a test matrix — the only external commands it names are
-    <code>weir</code> itself and <code>git</code>, so there is nothing
-    platform-specific for a resolver to find.
+    on Linux, macOS and Windows against every release, so what you
+    read here has executed. The only external commands it names are
+    <code>weir</code> itself and <code>git</code>, which is why it
+    runs the same everywhere. Its module, schema and git signature are
+    checked in beside it, so <code>weir check</code> needs no network.
   </p>
   {bodies.map((s) => (
     <section class="showcase-section">

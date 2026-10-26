@@ -1,21 +1,8 @@
 #!/usr/bin/env weir
 #sig git
 // weir showcase — one runnable tour of the language.
-// `weir check examples/showcase.weir` finds every error before any
-// line runs; `weir examples/showcase.weir [--verbose] [--tag x]`
-// executes. Portable by construction: the only external heads are
-// `weir` itself and `git`, so the tour runs on Linux, macOS, and
-// Windows alike (coreutils are cmd builtins there — nothing for a
-// resolver to find). The POSIX escape hatch is still a feature:
-// sh -c "..." on POSIX, cmd /c on Windows — spelled here in prose
-// because a named head must resolve on your platform.
-// The tour now hosts its own module (showcase-lib.weir), a vendored
-// schema and a hand-written git signature (examples/.weir/ — checked
-// in, so `check` needs no restore and no network). Still not here,
-// each with its reason: the REPL (interactive by nature) and
-// `weir add sig` generation (spawns the probed tool — this tour
-// stays deterministic; the signature here is hand-written instead,
-// which demos the partial-by-default ruling).
+// check:  weir check examples/showcase.weir
+// run:    weir examples/showcase.weir [--verbose] [--tag x]
 
 // ---- a user module: import goes before all declarations ---------------
 // qualified access always; the module is declaration-only by law
