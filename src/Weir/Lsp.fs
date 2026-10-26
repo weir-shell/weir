@@ -135,6 +135,8 @@ let private parseError = -32700
 let private invalidRequest = -32600
 let private methodNotFound = -32601
 let private internalError = -32603
+// a request the server declines for a reason the client shows (LSP 3.17)
+let private requestFailed = -32803
 
 let private respondError (id: MsgId option) (code: int) (message: string) =
     send (
@@ -1452,7 +1454,7 @@ let private fileOccurrences (stmts: (Script.LogicalLine * Script.CheckedStatemen
 
         let bound =
             match chk.Kind with
-            | Script.KLet(n, _, _) ->
+            | Script.KLet(n, _, _) when Check.occurrenceName n ->
                 // the implementation of a signed member shares its sig's key
                 let key =
                     match lastTop.TryGetValue n with
@@ -1461,7 +1463,7 @@ let private fileOccurrences (stmts: (Script.LogicalLine * Script.CheckedStatemen
 
                 add n key true (siteOf ll n)
                 [ n, key ]
-            | Script.KSig(n, _) ->
+            | Script.KSig(n, _) when Check.occurrenceName n ->
                 add n (TopKey(n, i)) true (siteOf ll n)
                 [ n, TopKey(n, i) ]
             | Script.KLetPat(pat, _, _) ->
@@ -1487,7 +1489,8 @@ let private occurrenceAt
     (line: int)
     (col: int)
     : (FileOcc list * FileOcc) option =
-    let _, stmts, _, _ = analyzeCached path lines
+    let _, stmts0, _, _, partials = analyzeCached path lines
+    let stmts = withPartials stmts0 partials
     let table = fileOccurrences stmts
 
     table
@@ -1530,6 +1533,182 @@ let referencesFor
 let documentHighlightFor (path: string) (lines: string list) (line: int) (col: int) : (int * int * int * int) list option =
     occurrencesFor path lines line col
     |> Option.map (List.map (fun (l, c, len, site) -> l, c, len, (if site then 3 else 2)))
+
+// ---- rename [D:lsp-rename]: complete or refused. A rename that misses
+// one use is the failure that must not happen, so every doubt refuses
+// with a reason the editor shows under the rename box: the cursor is
+// on no value binder of this file; a statement in the name's scope
+// failed to check (its uses are invisible); the new name is not a
+// binder name; the new name is already visible in the scope (the
+// conservative collision rule — a refusal names its site, a capture
+// would be silent); an init file (its directives bind loader-owned
+// names) or a sig contract file (its members are read by name).
+
+let private isSigFile (path: string) =
+    path.Replace('\\', '/').Contains "/.weir/sigs/"
+
+// the parser's identifier rule (rawWord): a letter or `_`, then
+// letters, digits or `_`
+let private isIdentName (n: string) =
+    n.Length > 0
+    && (Char.IsLetter n[0] || n[0] = '_')
+    && (n |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_'))
+
+/// the renamable binder at the cursor: the file's table, the occurrence
+/// under the cursor, and the binder's scope extent as statement indices
+/// (first, last inclusive) — or the refusal
+let private renameTarget
+    (path: string)
+    (lines: string list)
+    (line: int)
+    (col: int)
+    : Result<FileOcc list * FileOcc * (int * int), string> =
+    let diags, stmts0, _, _, partials = analyzeCached path lines
+    let stmts = withPartials stmts0 partials
+    let table = fileOccurrences stmts
+    let arr = List.toArray stmts
+
+    if isSigFile path then
+        Error "rename is not available in a signature file — its members are the contract a #sig reads by name"
+    elif isReplInitPath path || Script.isInitMarked lines then
+        Error "rename is not available in an init file — its #session and #alias lines bind names the loader owns"
+    else
+        match
+            table
+            |> List.tryFind (fun o -> o.OLine = line && o.OCol <= col && col < o.OCol + o.OName.Length)
+        with
+        | None ->
+            let w =
+                if line >= 1 && line <= List.length lines then
+                    wordAt (List.item (line - 1) lines) col
+                else
+                    None
+
+            match w with
+            | Some "_" -> Error "'_' is the wildcard, not a name"
+            | Some w when Parser.isKeyword w -> Error $"'{w}' is a keyword, not a name"
+            | Some w when Char.IsUpper w[0] ->
+                Error
+                    $"'{w}' is a type or a union case — only value bindings rename (fields, cases and type names are wire names)"
+            | _ -> Error "nothing to rename here — put the cursor on a value name bound in this file"
+        | Some o ->
+            match o.Key with
+            | TopKey(n, -1) ->
+                Error $"'{n}' is not bound in this file — a builtin or an imported name renames where it is defined"
+            | key ->
+                // the scope extent: a local's statement; a top-level's
+                // statement through the one that rebinds the name (whose
+                // right-hand side still reads this binder)
+                // (first, last): the statements whose names the new name
+                // must not clash with; `next` the first statement past them
+                let first, last, next =
+                    match key with
+                    | LocalKey(i, _) -> i, i, Some(i + 1)
+                    | TopKey(n, j) ->
+                        let rebinding =
+                            table
+                            |> List.filter (fun x -> x.OBinderSite && x.OName = n && x.Key <> key && x.OStmt > j)
+                            |> List.map (fun x -> x.OStmt)
+                            |> List.sort
+                            |> List.tryHead
+
+                        j, (rebinding |> Option.defaultValue (arr.Length - 1)), rebinding
+
+                // physical lines of the extent: the binder's statement head
+                // through the line before `next` (a statement that failed
+                // to check owns no segment — the lines between cover it)
+                let firstLine = (fst arr[first]).Head
+
+                let lastLine =
+                    match next with
+                    | Some k when k < arr.Length -> (fst arr[k]).Head - 1
+                    | _ -> List.length lines
+
+                let errorInScope =
+                    diags
+                    |> List.tryFind (fun d ->
+                        d.Severity = "error" && d.File = path && d.Line >= firstLine && d.Line <= lastLine)
+
+                match errorInScope with
+                | Some d ->
+                    Error
+                        $"a statement in '{o.OName}'s scope has an error at line {d.Line} — fix it first, so no use of the name is missed"
+                | None -> Ok(table, o, (first, last))
+
+/// every value binder site in the file as (physLine, physCol) — the
+/// round-trip property's walk (rename each, re-analyze, compare)
+let binderSitesFor (path: string) (lines: string list) : (int * int) list =
+    let _, stmts, _, _, _ = analyzeCached path lines
+
+    fileOccurrences stmts
+    |> List.filter (fun o -> o.OBinderSite)
+    |> List.map (fun o -> o.OLine, o.OCol)
+    |> List.distinct
+    |> List.sort
+
+/// textDocument/prepareRename: the occurrence's (physLine, physCol, len)
+/// — the name is the placeholder — or the refusal. Pure; the handler and
+/// the unit pins share it.
+let prepareRenameFor (path: string) (lines: string list) (line: int) (col: int) : Result<int * int * int, string> =
+    renameTarget path lines line col
+    |> Result.map (fun (_, o, _) -> o.OLine, o.OCol, o.OName.Length)
+
+/// textDocument/rename: every edit as (physLine, physCol, len), sorted,
+/// or the refusal. Re-validates the position (a client may skip
+/// prepareRename).
+let renameFor
+    (path: string)
+    (lines: string list)
+    (line: int)
+    (col: int)
+    (newName: string)
+    : Result<(int * int * int) list, string> =
+    renameTarget path lines line col
+    |> Result.bind (fun (table, o, (first, last)) ->
+        let _, stmts0, env0, _, partials = analyzeCached path lines
+        let stmts = withPartials stmts0 partials
+        let arr = List.toArray stmts
+        let n = o.OName
+
+        let envBefore =
+            if first = 0 then env0 else (snd arr[first - 1]).Env
+
+        let collision =
+            table
+            |> List.filter (fun x -> x.OName = newName && x.OStmt >= first && x.OStmt <= last)
+            |> List.sortBy (fun x -> x.OLine, x.OCol)
+            |> List.tryHead
+
+        if newName = n then
+            Error $"'{n}' is already the name"
+        elif newName = "_" then
+            Error "'_' is the wildcard, not a name"
+        elif not (isIdentName newName) then
+            Error $"'{newName}' is not a name — a name starts with a letter or '_' and continues with letters, digits or '_'"
+        elif Parser.isKeyword newName then
+            Error $"'{newName}' is a keyword, not a name"
+        else
+            let noSpan =
+                { Start = { Line = 1; Col = 1 }
+                  End = { Line = 1; Col = 1 } }
+
+            match Check.checkBinderName noSpan newName with
+            | Error e -> Error e.Message
+            | Ok() ->
+                match collision with
+                | Some c ->
+                    Error
+                        $"'{newName}' is already used at line {c.OLine}, column {c.OCol} — pick a name that is new in '{n}'s scope"
+                | None when Map.containsKey newName envBefore.Values ->
+                    Error
+                        $"'{newName}' is already bound here (a builtin, or a binding above line {(fst arr[first]).Head}) — pick a name that is new in '{n}'s scope"
+                | None ->
+                    table
+                    |> List.filter (fun x -> x.Key = o.Key)
+                    |> List.map (fun x -> x.OLine, x.OCol, x.OName.Length)
+                    |> List.distinct
+                    |> List.sort
+                    |> Ok)
 
 // the within form answers [D:within-kinds] — one table, three
 // consumers. The kind hovers its doc + binds/consumes nature; the
@@ -2594,7 +2773,7 @@ let run (debug: bool) : int =
                                 // <tag>+<hash>, all JSON-safe chars, so the placeholder
                                 // splice needs no escaping.
                                 w.WriteRawValue(
-                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"referencesProvider":true,"documentHighlightProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":[".","-"]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir","version":"__WEIR_VERSION__"}}"""
+                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"referencesProvider":true,"documentHighlightProvider":true,"renameProvider":{"prepareProvider":true},"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":[".","-"]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir","version":"__WEIR_VERSION__"}}"""
                                         .Replace("__WEIR_VERSION__", Weir.Version.current)
                                 )))
                     | "initialized" -> ()
@@ -2862,6 +3041,62 @@ let run (debug: bool) : int =
                             | _ -> w.WriteNullValue()
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
+                    | "textDocument/prepareRename" ->
+                        // a refusal is a RequestFailed error whose message is
+                        // the reason — the client shows it under the rename
+                        // box, where a null shows nothing [D:lsp-rename]
+                        let outcome =
+                            match docOf (), posOf () with
+                            | Some(uri, text), Some(line, col) ->
+                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+
+                                prepareRenameFor (uriToPath uri) lines line col
+                                |> Result.map (fun (pl, pc, len) -> lines, pl, pc, len)
+                            | _ -> Error "nothing to rename here — the document is not open"
+
+                        idStr
+                        |> Option.iter (fun id ->
+                            match outcome with
+                            | Ok(lines, pl, pc, len) ->
+                                respond id (fun w ->
+                                    w.WriteStartObject()
+                                    writeRange w pl pc len
+                                    w.WriteString("placeholder", (List.item (pl - 1) lines).Substring(pc - 1, len))
+                                    w.WriteEndObject())
+                            | Error reason -> respondError (Some id) requestFailed reason)
+                    | "textDocument/rename" ->
+                        let outcome =
+                            match docOf (), posOf (), jStr "newName" ps with
+                            | Some(uri, text), Some(line, col), Some newName ->
+                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+
+                                renameFor (uriToPath uri) lines line col newName
+                                |> Result.map (fun edits -> uri, newName, edits)
+                            | _, _, None -> Error "rename needs the new name"
+                            | _ -> Error "nothing to rename here — the document is not open"
+
+                        idStr
+                        |> Option.iter (fun id ->
+                            match outcome with
+                            | Ok(uri, newName, edits) ->
+                                // the document's own URI spelling [D:lsp-uri-spelling]
+                                respond id (fun w ->
+                                    w.WriteStartObject()
+                                    w.WritePropertyName "changes"
+                                    w.WriteStartObject()
+                                    w.WritePropertyName uri
+                                    w.WriteStartArray()
+
+                                    for pl, pc, len in edits do
+                                        w.WriteStartObject()
+                                        writeRange w pl pc len
+                                        w.WriteString("newText", newName)
+                                        w.WriteEndObject()
+
+                                    w.WriteEndArray()
+                                    w.WriteEndObject()
+                                    w.WriteEndObject())
+                            | Error reason -> respondError (Some id) requestFailed reason)
                     | "textDocument/formatting" ->
                         // client-sent text only (the security non-claim holds);
                         // editor options are ignored — weir fmt is canonical,

@@ -11727,6 +11727,161 @@ let lspRenameTests =
               Expect.equal (refs m 3 5) (Some [ (3, 5, 1); (4, 5, 1); (5, 9, 1) ]) "from the sig: sig, impl, use"
               Expect.equal (refs m 5 9) (Some [ (3, 5, 1); (4, 5, 1); (5, 9, 1) ]) "from the use: the same set"
           }
+          test "renameFor: a shadowed name edits only its scope; edits cover every occurrence form" {
+              let ren (lines: string list) (line: int) (col: int) (nn: string) =
+                  Weir.Lsp.renameFor "rename.weir" lines line col nn
+
+              let sh = [ "let x = 1"; "let f x = x + 1"; "print (show (f x))"; "let x = 3"; "print (show x)" ]
+              Expect.equal (ren sh 2 7 "y") (Ok [ (2, 7, 1); (2, 11, 1) ]) "the param: its lambda only"
+              Expect.equal (ren sh 1 5 "y") (Ok [ (1, 5, 1); (3, 16, 1) ]) "the first top-level: up to the rebinding"
+              Expect.equal (ren sh 4 5 "y") (Ok [ (4, 5, 1); (5, 13, 1) ]) "the rebinding: its own uses"
+
+              let cov =
+                  [ "let s = \"v\""
+                    "let xs = [s]"
+                    "echo $s $@xs $\"{s}\""
+                    "let y = yaml"
+                    "    k: $s"
+                    "    $s: 1"
+                    "y |> to yaml |> print"
+                    "// s stays" ]
+
+              Expect.equal
+                  (ren cov 1 5 "t")
+                  (Ok [ (1, 5, 1); (2, 11, 1); (3, 7, 1); (3, 17, 1); (5, 9, 1); (6, 6, 1) ])
+                  "binder, list use, splice, hole, yaml splice and key splice — never the comment"
+
+              Expect.equal (ren cov 2 5 "ys") (Ok [ (2, 5, 2); (3, 11, 2) ]) "the splat's name after $@"
+
+              let m =
+                  [ "module"
+                    "let s : string"
+                    "let s = \"v\""
+                    "let shout : unit -> string"
+                    "let shout () = $\"{s}!\"" ]
+
+              Expect.equal (ren m 3 5 "t") (Ok [ (2, 5, 1); (3, 5, 1); (5, 19, 1) ]) "a signed member: the sig line renames too"
+              Expect.equal (Weir.Lsp.prepareRenameFor "rename.weir" sh 3 16) (Ok(3, 16, 1)) "prepare: the use's own range"
+          }
+          test "renameFor refusals, each with its reason [D:lsp-rename]" {
+              let dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "weir-rename-" + string (System.Guid.NewGuid()))
+              System.IO.Directory.CreateDirectory dir |> ignore
+              System.IO.File.WriteAllLines(System.IO.Path.Combine(dir, "lib.weir"), [ "module"; "let f : int -> int"; "let f x = x + 1" ])
+              let main = System.IO.Path.Combine(dir, "main.weir")
+
+              let lines =
+                  [ "import \"./lib.weir\" as Lib"
+                    "type R = { a: int }"
+                    "type U = | A | B"
+                    "let r = { a = 1 }"
+                    "print (show (Lib.f r.a))"
+                    "let u = A"
+                    "print (show u)"
+                    "let k = if r.a > 0 then 1 else 2"
+                    "print (show k)" ]
+
+              let ren (line: int) (col: int) (nn: string) = Weir.Lsp.renameFor main lines line col nn
+
+              Expect.equal
+                  (ren 5 1 "q")
+                  (Error "'print' is not bound in this file — a builtin or an imported name renames where it is defined")
+                  "builtin"
+
+              Expect.equal
+                  (ren 5 14 "q")
+                  (Error "'Lib.f' is not bound in this file — a builtin or an imported name renames where it is defined")
+                  "module member"
+
+              Expect.equal
+                  (ren 5 22 "q")
+                  (Error "nothing to rename here — put the cursor on a value name bound in this file")
+                  "a field"
+
+              Expect.equal
+                  (ren 6 9 "q")
+                  (Error
+                      "'A' is a type or a union case — only value bindings rename (fields, cases and type names are wire names)")
+                  "a case"
+
+              Expect.equal
+                  (ren 2 6 "q")
+                  (Error
+                      "'R' is a type or a union case — only value bindings rename (fields, cases and type names are wire names)")
+                  "a type name"
+
+              Expect.equal (ren 8 9 "q") (Error "'if' is a keyword, not a name") "a keyword under the cursor"
+              Expect.equal (ren 4 5 "_") (Error "'_' is the wildcard, not a name") "target _"
+              Expect.equal (ren 4 5 "if") (Error "'if' is a keyword, not a name") "keyword target"
+
+              Expect.equal
+                  (ren 4 5 "9x")
+                  (Error "'9x' is not a name — a name starts with a letter or '_' and continues with letters, digits or '_'")
+                  "not an identifier"
+
+              Expect.isTrue
+                  (match ren 4 5 "Q" with
+                   | Error m -> m.StartsWith "binding names start lowercase"
+                   | Ok _ -> false)
+                  "uppercase target: the casing teaching"
+
+              Expect.isTrue
+                  (match ren 4 5 "print" with
+                   | Error m -> m.StartsWith "'print' is a builtin with no qualified spelling"
+                   | Ok _ -> false)
+                  "reserved target: the reserve teaching"
+
+              Expect.equal
+                  (ren 4 5 "k")
+                  (Error "'k' is already used at line 8, column 5 — pick a name that is new in 'r's scope")
+                  "collision: the new name is bound inside the scope"
+
+              Expect.equal (ren 4 5 "r") (Error "'r' is already the name") "the same name"
+              Expect.equal (ren 4 5 "z") (Ok [ (4, 5, 1); (5, 20, 1); (8, 12, 1) ]) "a fresh name renames"
+
+              let inner = [ "let a = 1"; "let f b = b + 1"; "print (show (f a))"; "let g c = c + a"; "print (show (g 2))" ]
+
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" inner 1 5 "b")
+                  (Error "'b' is already used at line 2, column 7 — pick a name that is new in 'a's scope")
+                  "collision: the new name is bound in an inner scope"
+
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" inner 2 7 "a")
+                  (Error "'a' is already bound here (a builtin, or a binding above line 2) — pick a name that is new in 'b's scope")
+                  "collision: the new name is in the env at the binder"
+
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" inner 4 7 "a")
+                  (Error "'a' is already used at line 4, column 15 — pick a name that is new in 'c's scope")
+                  "collision: the new name is used inside the scope"
+
+              let part = [ "let a = 1"; "let bad = a + \"s\""; "print (show a)" ]
+
+              Expect.equal
+                  (Weir.Lsp.prepareRenameFor "rename.weir" part 1 5)
+                  (Error "a statement in 'a's scope has an error at line 2 — fix it first, so no use of the name is missed")
+                  "a statement in scope failed to check: prepare refuses"
+
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" [ "let a = 1"; "print (show a)"; "let a = 2"; "let bad = a + \"s\"" ] 1 5 "z")
+                  (Ok [ (1, 5, 1); (2, 13, 1) ])
+                  "an error past the rebinding is outside the scope"
+
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" [ "#init"; "let a = 1" ] 2 5 "z")
+                  (Error "rename is not available in an init file — its #session and #alias lines bind names the loader owns")
+                  "init-marked file"
+
+              Expect.equal
+                  (Weir.Lsp.renameFor (System.IO.Path.Combine(dir, ".weir", "sigs", "tool.weir")) [ "type T = { a: int }" ] 1 6 "z")
+                  (Error "rename is not available in a signature file — its members are the contract a #sig reads by name")
+                  "sig contract file"
+
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" [ "let a = 1 // a here"; "print (show a)" ] 1 14 "z")
+                  (Error "nothing to rename here — put the cursor on a value name bound in this file")
+                  "a comment mention"
+          }
           test "corpus: bindingUsage's free set equals occurrences' TopLevel set, statement by statement" {
               let root = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..")
 
@@ -11740,7 +11895,7 @@ let lspRenameTests =
 
               for f in files do
                   let lines = System.IO.File.ReadAllLines f |> Array.toList
-                  let _, stmts, _, _ = Weir.Script.analyzeLines f lines
+                  let _, stmts, _, _, _ = Weir.Script.analyzeLines f lines
 
                   for _, chk in stmts do
                       match chk.Kind with

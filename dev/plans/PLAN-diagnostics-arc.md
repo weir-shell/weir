@@ -75,6 +75,13 @@ park's own ledger entry recording the trigger FIRING as written —
 user-demanded, first hour of dogfooding; the criterion working
 exactly as designed.
 
+GAP, closed 2026-10-26 [D:lsp-rename]: this session left two binders
+without spans — `TEWithin`'s binder and `TERetry`'s `until` binder
+(the Ast had both; the typed kinds dropped them at construction) — and
+`localDef` without their arms, so a use inside `within tmp d` jumped to
+a same-named top-level `d` or nowhere. The rename session completed
+the set and amended [D:lsp-requests]'s stale scope line in its own row.
+
 ## Session D — row-constraint provenance [#5, highest locality value]
 
 STATUS: EXECUTED (2026-07-27). The bless hypothesis was HALF-right:

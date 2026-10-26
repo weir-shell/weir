@@ -7591,9 +7591,13 @@ type Occurrence =
       IsBinderSite: bool }
 
 /// a name the editor may show: a user spelling no desugar introduced
-/// (`_chain`, `|print`, the `_.field` wildcard, `()`)
+/// (`_chain`, `|print`, the `_.field` wildcard, `()`); a bare uppercase
+/// word is a union case in expression position, not a value name
 let occurrenceName (n: string) : bool =
-    isUserName n && not (n.StartsWith "_") && not (n.StartsWith "|")
+    isUserName n
+    && not (n.StartsWith "_")
+    && not (n.StartsWith "|")
+    && not (System.Char.IsUpper n[0] && not (n.Contains '.'))
 
 let occurrences (te: TypedExpr) : Occurrence list =
     let found = ResizeArray<Occurrence>()
