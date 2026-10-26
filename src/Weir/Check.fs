@@ -143,12 +143,12 @@ and TypedKind =
         opts: TypedExpr *
         watch: TypedExpr option *
         body: TypedExpr *
-        until: (string * TypedExpr) option
+        until: ((string * Span) * TypedExpr) option
     | TESize of bytes: int64
     | TESeq of first: TypedExpr * rest: TypedExpr
     | TEWithin of
         kind: WithinKindId *
-        binder: string option *
+        binder: (string * Span) option *
         arg: TypedExpr option *
         opts: TypedExpr option *
         body: TypedExpr
@@ -3779,7 +3779,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                          body)
 
             match until with
-            | Some((b, _), pred) ->
+            | Some((b, bs), pred) ->
                 // a bool body is its own predicate [D:retry-poll]: an
                 // until segment on top of one is a contradiction
                 match resolve ctx tbody.Ty with
@@ -3791,15 +3791,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | bodyTy ->
                     let env' = bindValue b (generalize bodyTy) env
 
-                    do!
-                        match until with
-                        | Some((n, bs), _) -> checkBinderName bs n
-                        | None -> Ok()
+                    do! checkBinderName bs b
 
                     let! tpred = check ctx env' pred TBool
 
                     return
-                        { Kind = TERetry(kind, topts, twatch, tbody, Some(b, tpred))
+                        { Kind = TERetry(kind, topts, twatch, tbody, Some((b, bs), tpred))
                           Ty = bodyTy
                           Span = expr.Span }
             | None ->
@@ -3920,7 +3917,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | _ -> tbody.Ty
 
             return
-                { Kind = TEWithin(kind, binder |> Option.map fst, targ, topts, tbody)
+                { Kind = TEWithin(kind, binder, targ, topts, tbody)
                   Ty = scopeTy
                   Span = expr.Span }
         }
@@ -6737,7 +6734,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             do! bind ctx env expr.Span expected planTy
 
             return
-                { Kind = TEWithin(WithinPlan, binder |> Option.map fst, targ, topts, tbody)
+                { Kind = TEWithin(WithinPlan, binder, targ, topts, tbody)
                   Ty = planTy
                   Span = expr.Span }
         }
@@ -6747,7 +6744,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             let! tbody = check ctx benv body expected
 
             return
-                { Kind = TEWithin(kind, binder |> Option.map fst, targ, topts, tbody)
+                { Kind = TEWithin(kind, binder, targ, topts, tbody)
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
@@ -7520,7 +7517,7 @@ let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
                 unionAll [ walk o; (w |> Option.map walk |> Option.defaultValue Set.empty); walk b ]
 
             match u with
-            | Some(n, pred) -> Set.union head (Set.remove n (walk pred))
+            | Some((n, _), pred) -> Set.union head (Set.remove n (walk pred))
             | None -> head
         | TEWithin(_, binder, a, o, b) ->
             let args =
@@ -7530,7 +7527,7 @@ let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
 
             let fb =
                 match binder with
-                | Some n -> Set.remove n (walk b)
+                | Some(n, _) -> Set.remove n (walk b)
                 | None -> walk b
 
             Set.union args fb
@@ -8922,14 +8919,14 @@ let rec private reenumWalk
         walk tracked o
         w |> Option.iter (walk tracked)
         walk tracked b
-        u |> Option.iter (fun (n, pred) -> walk (Map.remove n tracked) pred)
+        u |> Option.iter (fun ((n, _), pred) -> walk (Map.remove n tracked) pred)
     | TEWithin(_, binder, a, o, b) ->
         a |> Option.iter (walk tracked)
         o |> Option.iter (walk tracked)
 
         walk
             (match binder with
-             | Some n -> Map.remove n tracked
+             | Some(n, _) -> Map.remove n tracked
              | None -> tracked)
             b
     | _ -> childExprs te |> List.iter (walk tracked)
@@ -9071,7 +9068,7 @@ let tempDirEvents (nextId: unit -> int) (tracked0: Map<string, int>) (root: Type
 
             walk
                 (match binder with
-                 | Some n -> Map.remove n tracked
+                 | Some(n, _) -> Map.remove n tracked
                  | None -> tracked)
                 b
         | _ -> childExprs te |> List.iter (walk tracked)

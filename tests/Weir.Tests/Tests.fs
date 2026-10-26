@@ -11686,6 +11686,24 @@ let semanticTokenTests =
               Expect.equal (Weir.Lsp.definitionFor shadow 2 11) (Some(2, 7, 1)) "inside f: the param"
               Expect.equal (Weir.Lsp.definitionFor shadow 3 12) (Some(1, 5, 1)) "outside f: the top-level"
           }
+          test "definitionFor: within and until binders resolve, and shadow a top-level [D:lsp-rename]" {
+              let within =
+                  [ "let d = \"top\""; "within tmp d"; "    print d"; "print d" ]
+
+              Expect.equal (Weir.Lsp.definitionFor within 3 11) (Some(2, 12, 1)) "inside the scope: the within binder"
+              Expect.equal (Weir.Lsp.definitionFor within 4 7) (Some(1, 5, 1)) "outside: the top-level"
+
+              let until =
+                  [ "let r = 1"
+                    "let out = retry attempts=3 delay=1s"
+                    "    echo hi | complete"
+                    "until r"
+                    "    r.exitCode == 0"
+                    "print r" ]
+
+              Expect.equal (Weir.Lsp.definitionFor until 5 5) (Some(4, 7, 1)) "in the predicate: the until binder"
+              Expect.equal (Weir.Lsp.definitionFor until 6 7) (Some(1, 5, 1)) "outside: the top-level"
+          }
           test "definitionFor: the from-json type name jumps to its declaration [PLAN-diagnostics-arc A3]" {
               let lines =
                   [ "type Oidc = { value: string }"

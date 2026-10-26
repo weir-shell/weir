@@ -755,6 +755,22 @@ let rec private localDef
                  match inGuard with
                  | Some r -> Some r
                  | None -> localDef s2 name jcol body))
+    | Check.TEWithin(_, binder, arg, opts, body) ->
+        (match Option.toList arg @ Option.toList opts |> List.tryPick (localDef scope name jcol) with
+         | Some r -> Some r
+         | None ->
+             let s2 =
+                 match binder with
+                 | Some(n, bspan) -> Map.add n bspan scope
+                 | None -> scope
+
+             localDef s2 name jcol body)
+    | Check.TERetry(_, opts, watch, body, until) ->
+        (match opts :: Option.toList watch @ [ body ] |> List.tryPick (localDef scope name jcol) with
+         | Some r -> Some r
+         | None ->
+             until
+             |> Option.bind (fun ((n, bspan), pred) -> localDef (Map.add n bspan scope) name jcol pred))
     | _ -> Check.childExprs te |> List.tryPick (localDef scope name jcol)
 
 /// hover text at (1-based physical line, col), or None. Pure — the
