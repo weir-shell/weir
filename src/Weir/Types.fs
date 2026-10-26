@@ -572,7 +572,12 @@ let plainSigStyle: SigStyle = { Name = id; Ty = id; Punct = id }
 /// result). Valid F# declaration syntax — claims nothing false. Zero
 /// names -> `name : ty`, no empty parens. The plain arrow `formatTy`
 /// stays the fallback (unnamed values) and the truth for type errors.
-let formatSignatureWith (st: SigStyle) (name: string) (paramNames: string list) (ty: Ty) : string =
+let private signatureParts
+    (st: SigStyle)
+    (name: string)
+    (paramNames: string list)
+    (ty: Ty)
+    : string * (string * int * int) list =
     // presentation guards [D:sig-render]: the internal sentinel
     // quantifier ('__print) renders as plain 'a — the accepted set is
     // described in the member's prose, and a double-underscore name is
@@ -599,20 +604,36 @@ let formatSignatureWith (st: SigStyle) (name: string) (paramNames: string list) 
         | _ -> [], t
 
     match split paramNames ty with
-    | [], _ -> st.Name name + st.Punct " : " + st.Ty(formatTy ty)
+    | [], _ -> st.Name name + st.Punct " : " + st.Ty(formatTy ty), []
     | ps, result ->
-        let rendered =
+        let sb = System.Text.StringBuilder(st.Name name)
+
+        let parts =
             ps
             |> List.map (fun (n, t) ->
-                match t with
-                | TUnit -> st.Punct "()"
-                | _ -> st.Punct "(" + n + st.Punct ": " + st.Ty(formatTy t) + st.Punct ")")
-            |> String.concat " "
+                sb.Append " " |> ignore
+                let start = sb.Length
 
-        st.Name name + " " + rendered + st.Punct " : " + st.Ty(formatTy result)
+                (match t with
+                 | TUnit -> sb.Append(st.Punct "()")
+                 | _ -> sb.Append(st.Punct "(" + n + st.Punct ": " + st.Ty(formatTy t) + st.Punct ")"))
+                |> ignore
+
+                n, start, sb.Length)
+
+        sb.Append(st.Punct " : " + st.Ty(formatTy result)).ToString(), parts
+
+let formatSignatureWith (st: SigStyle) (name: string) (paramNames: string list) (ty: Ty) : string =
+    fst (signatureParts st name paramNames ty)
 
 let formatSignature (name: string) (paramNames: string list) (ty: Ty) : string =
     formatSignatureWith plainSigStyle name paramNames ty
+
+/// the plain signature with each named `(p: t)` group's [start, end)
+/// offsets in it [D:signature-help] — the one composition, so the
+/// offsets cannot drift from the text
+let formatSignatureParts (name: string) (paramNames: string list) (ty: Ty) : string * (string * int * int) list =
+    signatureParts plainSigStyle name paramNames ty
 
 /// Echo var normalization [D:repl-fn-echo]: the checker's fresh names
 /// ('a1, 'a2, 'b3…) rename to 'a, 'b, … in first-appearance order.

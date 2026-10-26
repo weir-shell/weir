@@ -8864,6 +8864,103 @@ let lspCrossFileTests =
           }
           test "an UNSIGNED command head stays quiet — no bogus location" {
               withTree (fun entry lines _ _ -> Expect.equal (Weir.Lsp.definitionTarget entry lines 8 9) None "")
+          }
+          test
+              "signature help in command position [D:signature-help]: the typed line, one param per flag with its /// doc — the tool is NOT on PATH (no spawn); an unsigned head answers nothing" {
+              withTree (fun entry lines _ _ ->
+                  // the space after `--dry-run` is the trigger: the flag just typed is the active parameter
+                  let typed = lines |> List.mapi (fun i l -> if i = 6 then l + " " else l)
+                  let sh = (Weir.Lsp.signatureHelpAt entry typed 7 27).Value
+                  Expect.equal sh.Label "mytool --dry-run" "the typed line normalised"
+                  Expect.equal
+                      sh.Params
+                      [ (7, 16, Some "run without side effects") ]
+                      "one parameter per flag present, its doc the field's ///"
+                  Expect.equal sh.Active (Some 0) "the flag just typed"
+                  // the flag itself under the cursor, no space yet
+                  Expect.equal (Weir.Lsp.signatureHelpAt entry lines 7 26).Value.Active (Some 0) "the flag being typed"
+                  Expect.equal (Weir.Lsp.signatureHelpAt entry lines 8 16) None "unsigned head: nothing")
+          } ]
+
+let signatureHelpTests =
+    // [D:signature-help]: one signature built from the textual spine at
+    // the cursor's paren depth, the head resolved in the env in scope,
+    // the active parameter = the arguments supplied; null over a guess
+    let at (lines: string list) (line: int) (col: int) =
+        Weir.Lsp.signatureHelpAt "sighelp" lines line col
+
+    let group (sh: Weir.Lsp.SigHelp) (i: int) =
+        let s, e, _ = sh.Params[i]
+        sh.Label.Substring(s, e - s)
+
+    testList
+        "Signature help [D:signature-help]"
+        [ test "a builtin head: the three named params off builtinDocs, offsets cutting the label at each (p: t) group, active = supplied" {
+              let sh = (at [ "let r = Seq.fold " ] 1 18).Value
+              Expect.stringStarts sh.Label "Seq.fold (f: " "the annotated signature"
+              Expect.equal sh.Params.Length 3 "f, init, xs"
+              Expect.stringStarts (group sh 1) "(init: " "the second group's offsets"
+              Expect.stringStarts (group sh 2) "(xs: seq<" "the third group's offsets"
+              Expect.equal sh.Active (Some 0) "nothing supplied yet"
+              Expect.isTrue (sh.Doc.Value.StartsWith "Combine the elements") "the builtin's doc"
+              Expect.equal (at [ "let r = Seq.fold f 0 " ] 1 22).Value.Active (Some 2) "two supplied"
+              Expect.equal (at [ "let r = Seq.fold f 0" ] 1 21).Value.Active (Some 1) "the cursor inside the second atom"
+              Expect.equal (at [ "let r = Seq.fold (" ] 1 19).Value.Active (Some 0) "the ( trigger opens the first argument"
+          }
+          test "the pipe rule: the piped value fills the LAST parameter, whose doc says so; explicit slots come first" {
+              let sh = (at [ "let xs = [1; 2]"; "let r = xs |> Seq.fold f " ] 2 26).Value
+              Expect.equal sh.Active (Some 1) "f supplied, init next"
+              let _, _, lastDoc = sh.Params[2]
+              Expect.equal lastDoc (Some "xs — filled by the piped value") "the pipe mark"
+              Expect.equal
+                  (at [ "let xs = [1; 2]"; "let r = xs |> Seq.fold f 0 " ] 2 28).Value.Active
+                  (Some 2)
+                  "all explicit slots supplied: the piped one"
+              Expect.equal (at [ "let xs = [1; 2]"; "let r = xs |> Seq.fold f 0 1 " ] 2 30) None "over-applied: nothing"
+          }
+          test "when the statement checks, the instantiated type replaces the scheme" {
+              let sh = (at [ "let xs = [1; 2]"; "let r = xs |> Seq.fold (fun a b -> a + b) 0" ] 2 44).Value
+              Expect.equal (group sh 0) "(f: int -> int -> int)" "the node type, not 'a -> 'b -> 'a"
+              Expect.equal sh.Active (Some 1) "the cursor inside the second argument"
+          }
+          test "a user function: names from its lambda chain, the /// doc at its declaration" {
+              let sh = (at [ "/// adds two numbers"; "let add a b = a + b + 0"; "let r = add 1 " ] 3 15).Value
+              Expect.equal sh.Label "add (a: int) (b: int) : int" "the hover's own text"
+              Expect.equal sh.Doc (Some "adds two numbers") "the ///"
+              Expect.equal (sh.Params |> List.map (fun (s, e, _) -> s, e)) [ (4, 12); (13, 21) ] "exact offsets"
+              Expect.equal sh.Active (Some 1) ""
+              // partial truth: a function whose statement failed has no typed body — nothing, while a neighbour still answers
+              let broken = [ "let add a b = a + b"; "let r = add 1 "; "let s = Seq.fold " ]
+              Expect.equal (at broken 2 15) None "the failed statement's binder"
+              Expect.equal (at broken 3 18).Value.Active (Some 0) "the neighbour"
+          }
+          test "the paren depth: inside `print (Str.replace \"a\" ` the inner call answers, active 1" {
+              let sh = (at [ "print (Str.replace \"a\" " ] 1 24).Value
+              Expect.stringStarts sh.Label "Str.replace (old: string)" ""
+              Expect.equal sh.Active (Some 1) ""
+          }
+          test "a union case: one parameter, the payload, the case's /// doc" {
+              let sh =
+                  (at [ "type V ="; "    | Good"; "    /// a bad one"; "    | Bad of int"; "let k = Some (Bad " ] 5 19)
+                      .Value
+              Expect.equal sh.Label "Bad (value: int) : V" ""
+              Expect.equal sh.Doc (Some "a bad one") ""
+              Expect.equal sh.Active (Some 0) ""
+          }
+          test "a multi-line statement: the spine reads the joined text; an inner statement starts the spine over" {
+              Expect.equal (at [ "let r ="; "    Seq.fold f " ] 2 16).Value.Active (Some 1) "continuation line"
+              Expect.equal (at [ "let f x ="; "    let a = 1"; "    Seq.fold f " ] 3 16).Value.Active (Some 1) "after a sibling"
+          }
+          test "null over a guess: a string, a comment, over-application, a keyword/form head, a lambda, | chaining, an unknown head" {
+              Expect.equal (at [ "print \"Seq.fold \"" ] 1 16) None "inside a string"
+              Expect.equal (at [ "let r = Seq.fold f 0 // c " ] 1 26) None "inside a comment"
+              Expect.equal (at [ "let r = Seq.fold f 0 xs " ] 1 25) None "over-applied"
+              Expect.equal (at [ "retry times=3 " ] 1 15) None "a form head"
+              Expect.equal (at [ "let r = fun x -> " ] 1 18) None "a lambda"
+              Expect.equal (at [ "let r = { Name = " ] 1 18) None "a record literal"
+              Expect.equal (at [ "ls | Seq.length " ] 1 17) None "| command chaining"
+              Expect.equal (at [ "echo hi " ] 1 9) None "an unknown head"
+              Expect.equal (at [ "let r = Seq.fol" ] 1 16) None "still typing the head"
           } ]
 
 let letBindingHoverTests =
@@ -36299,6 +36396,7 @@ let allTests =
           lspCrossFileTests
           lspRenameTests
           lspPolishTests
+          signatureHelpTests
           letBindingHoverTests
           purityBadgeTests
           pureRegionTests

@@ -216,6 +216,41 @@ comp = read_msg()
 labels = [c["label"] for c in comp["result"]]
 expect("Seq.map" in labels and "Seq.sortBy" in labels, f"Seq members missing: {labels[:10]}")
 
+# signature help [D:signature-help]: both triggers declared; a space
+# after `Seq.fold f` in a pipe stage answers one signature naming the
+# head, the second parameter active (f supplied) and the last one marked
+# as the piped value; a space inside a string answers null (the chatty
+# trigger's null path)
+shp = init["result"]["capabilities"]["signatureHelpProvider"]
+expect(shp["triggerCharacters"] == ["(", " "] and shp["retriggerCharacters"] == [" "],
+       f"signatureHelp triggers: {shp}")
+SIG_LINE = "let r = [1] |> Seq.fold f "
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": SIG_LINE + "\n"}]}})
+read_msg()  # diagnostics (f unbound; fine)
+send({"jsonrpc": "2.0", "id": 30, "method": "textDocument/signatureHelp",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": len(SIG_LINE)}}})
+sh = read_msg()["result"]
+expect(sh and len(sh["signatures"]) == 1 and "Seq.fold" in sh["signatures"][0]["label"],
+       f"one signature naming the head: {sh}")
+expect(sh["activeSignature"] == 0 and sh["activeParameter"] == 1, f"f supplied, init active: {sh}")
+params = sh["signatures"][0]["parameters"]
+expect(len(params) == 3 and all(isinstance(p["label"], list) for p in params),
+       f"three parameters with [start, end] labels: {params}")
+expect("filled by the piped value" in params[2].get("documentation", ""),
+       f"the pipe rule marks the last parameter: {params[2]}")
+send({"jsonrpc": "2.0", "id": 31, "method": "textDocument/signatureHelp",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": len(SIG_LINE) - 1}}})
+expect(read_msg()["result"]["activeParameter"] == 0, "the cursor inside the first argument")
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": 'print "Seq.fold "\n'}]}})
+read_msg()
+send({"jsonrpc": "2.0", "id": 32, "method": "textDocument/signatureHelp",
+      "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": len('print "Seq.fold ')}}})
+expect(read_msg()["result"] is None, "a space inside a string pops nothing")
+
 # completion after a dot on a record type (ls row field)
 send({"jsonrpc": "2.0", "method": "textDocument/didChange",
       "params": {"textDocument": {"uri": URI},
@@ -862,6 +897,15 @@ expect(v == "bool \n \nrun without side effects", f"flag hover: {v!r}")
 d = req4(8, "textDocument/definition", ent_uri, 4, 19)["result"]
 expect(d and d["uri"].endswith("/mytool.weir") and d["range"]["start"] == {"line": 4, "character": 4},
        f"flag definition: {d}")
+
+# command-position signature help off the sig file alone [D:signature-help]:
+# the typed line with one parameter per flag, its /// doc — mytool is NOT
+# on PATH (no spawn)
+sh = req4(12, "textDocument/signatureHelp", ent_uri, 4, len("let st = mytool --dry-run"))["result"]
+expect(sh and sh["signatures"][0]["label"] == "mytool --dry-run"
+       and sh["signatures"][0]["parameters"][0]["documentation"] == "run without side effects"
+       and sh["activeParameter"] == 0,
+       f"signed command signature help: {sh}")
 
 # once the target is OPEN under the client's own spelling, Locations ride
 # THAT string [D:lsp-uri-spelling] — never a re-derived one

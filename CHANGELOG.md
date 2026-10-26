@@ -24,11 +24,6 @@
   visible in the scope; an init or signature file). References and
   highlight on a builtin or an imported member list this file's uses.
 
-### Fixed
-
-- **Go to definition on a `within` or `until` binder's use** jumped to
-  a same-named top-level binding (or nowhere) — the two binders now
-  carry their spans, so the use inside the scope lands on the binder.
 - **The editor session fills out: outline, folding, inlay hints,
   links.** `weir lsp` now answers document symbols (types with their
   fields and cases, functions with their nested functions, imports and
@@ -74,6 +69,22 @@
   ()"), and a mismatch where the value is an `Option<T>`/`Result<T, _>`
   of the wanted `T` names the unwrap (`|> orFail`). A non-exhaustive
   match now names a payload case as the pattern to write (`Push _`).
+- **Signature help in the editor.** A space or `(` after a function
+  shows `Seq.fold (f: 'a -> 'b -> 'a) (init: 'a) (xs: seq<'b>) : 'a`
+  with the parameter you are on highlighted and the `///` or builtin
+  doc below; in a `|>` stage the last parameter is marked as filled by
+  the piped value. A function of your own shows the names from its
+  definition, an imported one the names from its module. After a
+  command declared with `#sig`, the flags you have typed show what each
+  takes and means, read from the signature file alone (the tool need
+  not be installed). Nothing pops inside a string or comment, after a
+  keyword, or once every parameter is supplied.
+
+### Fixed
+
+- **Go to definition on a `within` or `until` binder's use** jumped to
+  a same-named top-level binding (or nowhere) — the two binders now
+  carry their spans, so the use inside the scope lands on the binder.
 
 ## v0.0.78
 

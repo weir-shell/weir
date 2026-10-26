@@ -43,6 +43,11 @@ In any editor with LSP support you get:
   member show the breakage as diagnostics on their next refresh.
 - **Completion** of module members (type `Lib.` to list them), and of
   the `within` kinds after `within `.
+- **Signature help.** A space or `(` after a function shows its
+  signature with the parameter you are on highlighted, and its doc;
+  in a `|>` stage the last parameter is the piped value. After a
+  command declared with `#sig`, the flags you have typed show what
+  each takes and means, read from the signature file only.
 - **Hover on keywords.** `within`, `retry`/`poll`
   (with their keys), `until`, and `from`/`to` (with the list of
   adapters) explain themselves. The same word inside a string or
