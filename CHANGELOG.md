@@ -107,11 +107,13 @@
 
 - **The library's first module, `semver`.** `weir add module
   semver@v0.1.0` vendors Semantic Versioning 2.0.0: `parse`/`tryParse`,
-  `toString`, `build`, `isPrerelease`, `core` and the three bumps, with
-  `[<Ord>]` on the parsed record so `Seq.sort`, `<` and `Seq.max`
-  follow the spec's precedence (`1.0.0-alpha < 1.0.0-alpha.1 <
-  1.0.0-beta.11 < 1.0.0`, `1.9.0 < 1.10.0`). Every member is `let
-  pure`. See docs/tooling.md "The library".
+  `toString`, `isPrerelease`, `core` and the three bumps, with
+  `[<Ord n>]` on the parsed record's key so `Seq.sort`, `<` and
+  `Seq.max` follow the spec's precedence (`1.0.0-alpha < 1.0.0-alpha.1
+  < 1.0.0-beta.11 < 1.0.0`, `1.9.0 < 1.10.0`); build metadata is the
+  record's unnumbered `build` field — kept, rendered back, ignored for
+  precedence. Every member is `let pure`. See docs/tooling.md "The
+  library".
 
 ### Fixed
 

@@ -1,6 +1,6 @@
 # PLAN: `semver` — the library's first module, ordered by `[<Ord>]` over a normalised prerelease key
 
-**Status: BUILT (2026-10-26, branch feat/semver; module committed in /output/lib, untagged, unpushed) — R1–R8 as recommended; the module and its test landed in the library as the plan's source with the `[<Ord>]` lines in place and no stop-gap; the weir side is docs and ledger only. Session report at the end.**
+**Status: BUILT, then AMENDED (2026-10-26, branch feat/semver; module committed in /output/lib, untagged, unpushed) — built under R1–R8 as recommended; the user's `[<Ord n>]` ruling the same day (PLAN-derived-ord's amendment) re-spelled the key on the members and moved build metadata INTO the record as an unnumbered field, superseding R1. The module and test blocks below are the SHIPPED text; the prose around them is the original plan; the session report and the amendment at the end say what landed. The weir side is docs and ledger only.**
 
 Siblings (parallel branches, planned the same day): PLAN-derived-ord
 (feat/derived-ord) owns the `[<Ord>]` attribute; PLAN-lib (feat/lib)
@@ -266,22 +266,24 @@ module SemVer
 // no file, command, env or clock reaches any member.
 
 /// The prerelease. `Pre` carries the ORDER KEY built by `parse` (not the
-/// text — `toString` decodes it); `Release` is no prerelease. Declared in
-/// this order so a prerelease sorts below its release.
-[<Ord>]
+/// text — `toString` decodes it); `Release` is no prerelease. Numbered so
+/// a prerelease sorts below its release.
 type Pre =
-    | Pre of string
-    | Release
+    | [<Ord 1>] Pre of string
+    | [<Ord 2>] Release
 
 /// A parsed version. Ordered by major, minor, patch, then the prerelease
-/// key — the spec's precedence. Build metadata is not a field: it never
-/// takes part in precedence (`SemVer.build` reads it from the text).
-[<Ord>]
+/// key — the spec's precedence. `build` is unnumbered: build metadata
+/// is ignored when determining precedence (§10), so two versions that
+/// differ only in build metadata have the same precedence — neither is
+/// `<` the other and `Seq.sort` keeps their input order — but they are
+/// not `==`: equality is whole-value.
 type SemVer = {
-    major: int
-    minor: int
-    patch: int
-    pre: Pre
+    [<Ord 1>] major: int
+    [<Ord 2>] minor: int
+    [<Ord 3>] patch: int
+    [<Ord 4>] pre: Pre
+    build: Option<string>
 }
 
 // the key alphabet [D:lib-semver]: every marker sorts below every
@@ -350,8 +352,8 @@ let pure core3 text =
     | [a; b; c] -> (coreNum "major" a, coreNum "minor" b, coreNum "patch" c)
     | _ -> fail $"'{text}' is not MAJOR.MINOR.PATCH"
 
-/// Parse a version; raises naming what is wrong. Build metadata is
-/// validated and dropped (`build` reads it).
+/// Parse a version; raises naming what is wrong — the part first (core,
+/// then prerelease, then build), then the identifier.
 let parse : string -> SemVer
 
 let pure parse s =
@@ -360,31 +362,25 @@ let pure parse s =
     let (major, minor, patch) = core3 c
     b |> Option.iter buildCheck
     let pre = match p with | Some t -> Pre (preKey t) | None -> Release
-    { major = major; minor = minor; patch = patch; pre = pre }
+    { major = major; minor = minor; patch = patch; pre = pre; build = b }
 
 /// `parse` as an Option: `None` for anything `parse` refuses.
 let tryParse : string -> Option<SemVer>
 
 let pure tryParse s = parse s |> try
 
-/// Render `MAJOR.MINOR.PATCH[-PRERELEASE]`; `toString (parse s) == s`
-/// for every `s` without build metadata.
+/// Render `MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`; `toString (parse s) == s`.
 let toString : SemVer -> string
 
 let pure toString v =
     let core = $"{v.major}.{v.minor}.{v.patch}"
-    match v.pre with
-    | Release -> core
-    | Pre k -> $"{core}-{preText k}"
-
-/// The build metadata of a version text (`Some "sha.5114f85"` for
-/// `1.0.0+sha.5114f85`); the text must parse.
-let build : string -> Option<string>
-
-let pure build s =
-    let _checked = parse s
-    let (_c, _p, b) = parts s
-    b
+    let tagged =
+        match v.pre with
+        | Release -> core
+        | Pre k -> $"{core}-{preText k}"
+    match v.build with
+    | Some b -> $"{tagged}+{b}"
+    | None -> tagged
 
 /// True when the version has a prerelease.
 let isPrerelease : SemVer -> bool
@@ -394,25 +390,27 @@ let pure isPrerelease v =
     | Pre _ -> true
     | Release -> false
 
-/// The release this version precedes or is: the prerelease dropped.
+/// The release this version precedes or is: the prerelease and the
+/// build metadata dropped.
 let core : SemVer -> SemVer
 
-let pure core v = { v with pre = Release }
+let pure core v = { v with pre = Release; build = None }
 
-/// Next major: minor and patch reset, prerelease dropped.
+/// Next major: minor and patch reset, prerelease and build metadata
+/// dropped.
 let bumpMajor : SemVer -> SemVer
 
-let pure bumpMajor v = { major = v.major + 1; minor = 0; patch = 0; pre = Release }
+let pure bumpMajor v = { major = v.major + 1; minor = 0; patch = 0; pre = Release; build = None }
 
-/// Next minor: patch reset, prerelease dropped.
+/// Next minor: patch reset, prerelease and build metadata dropped.
 let bumpMinor : SemVer -> SemVer
 
-let pure bumpMinor v = { v with minor = v.minor + 1; patch = 0; pre = Release }
+let pure bumpMinor v = { v with minor = v.minor + 1; patch = 0; pre = Release; build = None }
 
-/// Next patch: prerelease dropped.
+/// Next patch: prerelease and build metadata dropped.
 let bumpPatch : SemVer -> SemVer
 
-let pure bumpPatch v = { v with patch = v.patch + 1; pre = Release }
+let pure bumpPatch v = { v with patch = v.patch + 1; pre = Release; build = None }
 ```
 
 **The stop-gap, if PLAN-derived-ord has not landed** (R6 — not
@@ -450,13 +448,13 @@ spec's list sorted with `Seq.sort`, `<` across every adjacent pair,
 
 ```weir
 #!/usr/bin/env weir
-// semver.test.weir — the library runner runs it; exit 0 is the pass
-import "./semver.weir" as SemVer
+// tests/semver.weir — the library runner runs it; exit 0 is the pass
+import "../semver.weir" as SemVer
 
 let expect name got want =
     if got <> want then fail $"{name}: got {got}, want {want}"
 
-// parse and render round-trip (build metadata excluded — see below)
+// parse and render round-trip, build metadata included
 let table = [
     "0.0.0"
     "1.2.3"
@@ -470,6 +468,10 @@ let table = [
     "1.0.0-rc.1"
     "999999999999999999.0.0"
     "1.0.0-123456789012345678"
+    "1.0.0+20130313144700"
+    "1.0.0-alpha+001"
+    "1.0.0-beta+exp.sha.5114f85"
+    "1.2.3-rc.1+exp.sha"
 ]
 for s in table do expect $"round-trip {s}" (SemVer.toString (SemVer.parse s)) s
 
@@ -480,12 +482,19 @@ expect "patch" v.patch 3
 expect "isPrerelease" (SemVer.isPrerelease v) true
 expect "isPrerelease release" (SemVer.isPrerelease (SemVer.parse "1.2.3")) false
 
-// build metadata: validated, dropped from the value, read by `build`
-expect "build dropped" (SemVer.toString (SemVer.parse "1.0.0-alpha+001")) "1.0.0-alpha"
-expect "build read" (SemVer.build "1.0.0+20130313144700") (Some "20130313144700")
-expect "build with dash" (SemVer.build "1.0.0-beta+exp.sha.5114f85") (Some "exp.sha.5114f85")
-expect "no build" (SemVer.build "1.0.0") None
-expect "eq modulo build" (SemVer.parse "1.0.0+a" == SemVer.parse "1.0.0+b") true
+// build metadata: kept in the value, ignored for precedence (§10) — the
+// same precedence, not the same value
+expect "build" (SemVer.parse "1.0.0+20130313144700").build (Some "20130313144700")
+expect "build with dash" (SemVer.parse "1.0.0-beta+exp.sha.5114f85").build (Some "exp.sha.5114f85")
+expect "no build" (SemVer.parse "1.0.0").build None
+let ba = SemVer.parse "1.0.0+a"
+let bb = SemVer.parse "1.0.0+b"
+expect "same precedence: not <" (ba < bb) false
+expect "same precedence: not >" (bb < ba) false
+expect "same precedence: <=" (ba <= bb && bb <= ba) true
+expect "not ==" (ba == bb) false
+expect "sort keeps input order" ([bb; ba] |> Seq.sort |> Seq.map SemVer.toString |> Str.join " ") "1.0.0+b 1.0.0+a"
+expect "min is the first" (Seq.min [bb; ba] |> SemVer.toString) "1.0.0+b"
 
 // precedence: the spec's own list (semver.org §11), ascending
 let spec = [
@@ -517,8 +526,9 @@ let more =
 let moreWant = ["1.0.0-alpha.1"; "1.0.0-alpha-1"; "1.0.0-rc.1"; "1.0.0"; "1.0.1-alpha"; "1.9.0"; "1.10.0"; "2.0.0-0"]
 if not (Seq.equal more moreWant) then fail $"sort: {more}"
 
-// bumps clear the lower parts and the prerelease; core is the release
-let pre = SemVer.parse "1.2.3-rc.1"
+// bumps clear the lower parts, the prerelease and the build metadata;
+// core is the release
+let pre = SemVer.parse "1.2.3-rc.1+exp.sha"
 expect "bumpMajor" (SemVer.toString (SemVer.bumpMajor pre)) "2.0.0"
 expect "bumpMinor" (SemVer.toString (SemVer.bumpMinor pre)) "1.3.0"
 expect "bumpPatch" (SemVer.toString (SemVer.bumpPatch pre)) "1.2.4"
@@ -874,3 +884,76 @@ report. No weir code changed.
 - **R7's checker bug** (`function | Regex …` under `let pure` misread as
   a command head) — a one-line fix in the purity walk, in weir, its own
   commit.
+
+## Amendment (2026-10-26, user ruling)
+
+**What changed.** PLAN-derived-ord's amendment removed the type-level
+`[<Ord>]` before it shipped; the only form is `[<Ord n>]` on a record
+field or a union case, and UNNUMBERED record fields take no part in
+the order (the partial-key law). The module was rewritten to it and
+re-committed in /output/lib (`1f2633f`, as queil, on top of `d991ca0`;
+no tag, no push):
+
+- `type Pre = | [<Ord 1>] Pre of string | [<Ord 2>] Release` — the
+  prerelease still sorts below its release, by number instead of by
+  declaration order.
+- `type SemVer = { [<Ord 1>] major; [<Ord 2>] minor; [<Ord 3>] patch;
+  [<Ord 4>] pre; build: Option<string> }` — build metadata REJOINS the
+  record as the unnumbered field. The partial-key law is §10 verbatim
+  ("build metadata MUST be ignored when determining version
+  precedence"), so R1's reason for keeping it out of the value — a
+  field that is in `==` but not in the order was a trap the type
+  could not express — is now the type's own law, stated in its `///`
+  doc: two versions differing only in build metadata have the same
+  precedence (neither `<` the other, `Seq.sort` keeps input order,
+  `min`/`max` the first) and are not `==` (equality is whole-value).
+- `parse` keeps the metadata (validation unchanged, `buildCheck`);
+  `toString` renders it back, so `toString (parse s) == s` holds for
+  EVERY `s` (`1.2.3-rc.1+exp.sha` round-trips).
+- `build : string -> Option<string>` is REMOVED — unreleased, nothing
+  to deprecate; the field is the reader (`(parse s).build`), and a
+  member that re-parsed the text to read what the value now carries
+  would be two homes for one fact. None of R1–R8 gives a reason to
+  keep it: R1 chose (a) over (c) only because (c) minted a record
+  whose `==` differed from `SemVer`'s, which is exactly what `SemVer`
+  itself is now.
+- `core` and the three bumps drop the metadata with the prerelease
+  (`build = None`): the metadata names a build of the version it was
+  parsed with, and a derived version is a different version — carrying
+  `+exp.sha` onto `1.2.4` would label a build that never happened.
+  Documented on each member.
+- Eight signed members (was nine), every impl `let pure`; the R7
+  spelling (`fun k -> match k with`) stays; `--can` is still
+  `terminates: fail × 12` only.
+
+**The test.** The round-trip table gains four build-metadata texts
+(`1.0.0+20130313144700`, `1.0.0-alpha+001`,
+`1.0.0-beta+exp.sha.5114f85`, `1.2.3-rc.1+exp.sha`); the build block
+reads the field, then pins the partial-key law on `1.0.0+a`/`1.0.0+b`:
+`<` false both ways, `<=` true both ways, `==` false, `Seq.sort` of
+`[b; a]` keeps `b a`, `Seq.min` is the first; the bump block starts
+from `1.2.3-rc.1+exp.sha` and expects the same four results as before.
+`eq modulo build` (which asserted `==` true) and `build dropped` are
+gone with the law they pinned. Everything else is as it was.
+
+**Verified** (the binary published from this tree, `0.0.0-dev+458b8c0`):
+`weir check`/`weir fmt --check` clean on both files; `weir
+tests/semver.weir` → `semver: ok`; `weir tools/test.weir` → six `ok`
+lines, `ok: 1 modules`; hover through `weir lsp`: all eight members
+`(pure)`, `SemVer` hovers `{ major: int; minor: int; patch: int; pre:
+Pre; build: Option<string> }  (ordered by major, minor, patch, pre)`,
+`Pre` `(ordered by Pre, Release)`. The vendoring proof re-run by hand
+(http.server over /output/lib, a scratch git project, `weir add module
+http://127.0.0.1:8731/ --path semver.weir --as semver` → `added module
+semver (c1dadf9c61e2…, 10 member(s))`, the docs/tooling.md example over
+`v1.9.0 v1.10.0 v1.10.0+build.7 v1.11.0-rc.1 junk` → `1.11.0`, the
+test with `import "weir:semver"` → `semver: ok`, `weir verify` →
+`module semver: ok`).
+
+**Weir side.** docs/tooling.md's sentence, the `lib-semver` DECISIONS
+row (rewritten in place — this branch's own, unreleased), the CHANGELOG
+bullet, dev/plans/README.md's line, this file. No weir code.
+
+**Follow-ups** unchanged: the `v0.1.0` tag and push in /output/lib;
+ci/e2e.sh's `[D:lib-short-name]` probe to the positive path once the
+tag exists; R7's purity-walk fix.

@@ -640,8 +640,9 @@ vendored module can't import another vendored module yet (above).
 The module list and the versioning rule are in the repo's README.
 
 The first module is `semver`: parse, order and bump a version, with
-`[<Ord>]` on the parsed record so `Seq.sort`, `<` and `Seq.max` follow
-the spec's precedence. Vendored as above and used from a release
+`[<Ord n>]` on the parsed record's key so `Seq.sort`, `<` and
+`Seq.max` follow the spec's precedence (build metadata is the one
+field left unnumbered). Vendored as above and used from a release
 script:
 
 ```text
