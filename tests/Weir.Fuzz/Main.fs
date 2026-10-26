@@ -983,3 +983,130 @@ let positiveControls =
               let b = shapesOf [ "let x = 1" ]
               Expect.isTrue (a.IsSome && b.IsSome && a <> b) "two different programs must have different shapes"
           } ]
+
+// ---- rename round trip [D:lsp-rename] ---------------------------------
+// The oracle for "no occurrence missed": every value binder renamed to
+// a fresh same-length name (columns stay, so diagnostics compare
+// positionally) re-analyzes to the same diagnostics modulo the name,
+// and the new name's occurrences are exactly the old set. A binder the
+// rename refuses (an error in its scope) is skipped — the refusal is
+// the pinned answer there.
+
+let private applyEdits (lines: string list) (edits: (int * int * int) list) (newName: string) : string list =
+    let arr = List.toArray lines
+
+    for l, c, len in edits |> List.sortDescending do
+        let t = arr[l - 1]
+        arr[l - 1] <- t.Substring(0, c - 1) + newName + t.Substring(c - 1 + len)
+
+    List.ofArray arr
+
+/// `sample`: at most that many binder sites, evenly spaced — the corpus
+/// has ~9,500 and each costs one analysis of its file
+let renameRoundTrip (sample: int option) (path: string) (lines: string list) : string list =
+    let violations = ResizeArray<string>()
+    let text = String.concat "\n" lines
+    let diags0, _, _, _, _ = Weir.Lsp.analyzeCached path lines
+
+    let wordRe (w: string) =
+        Text.RegularExpressions.Regex(@"(?<![\w])" + Text.RegularExpressions.Regex.Escape w + @"(?![\w])")
+
+    let fresh (len: int) =
+        [ 'q' .. 'z' ] @ [ 'a' .. 'p' ]
+        |> List.map (fun ch -> string ch + String('9', len - 1))
+        |> List.tryFind (fun cand -> not ((wordRe cand).IsMatch text) && not (Weir.Parser.isKeyword cand))
+
+    let sites =
+        let all = Weir.Lsp.binderSitesFor path lines
+
+        match sample with
+        | Some k when all.Length > k ->
+            let step = float all.Length / float k
+            [ 0 .. k - 1 ] |> List.map (fun i -> all[int (float i * step)])
+        | _ -> all
+
+    // everything read off the original first — the analysis cache holds
+    // one text per file, so the renamed texts must not evict it per binder
+    let planned =
+        sites
+        |> List.choose (fun (l, c) ->
+            match Weir.Lsp.prepareRenameFor path lines l c with
+            | Error _ -> None
+            | Ok(_, _, len) ->
+                let old = (List.item (l - 1) lines).Substring(c - 1, len)
+
+                fresh len
+                |> Option.map (fun nn -> l, c, old, nn, Weir.Lsp.renameFor path lines l c nn, Weir.Lsp.occurrencesFor path lines l c))
+
+    for l, c, old, nn, rename, before in planned do
+        // a `_`-led target is always refused: the table it would be checked
+        // against hides `_` binders, so a capture there could not be seen
+        match Weir.Lsp.renameFor path lines l c ("_" + nn) with
+        | Error _ -> ()
+        | Ok _ -> violations.Add $"{path}:{l}:{c} rename '{old}' -> '_{nn}' was not refused"
+
+        match rename with
+        | Error m -> violations.Add $"{path}:{l}:{c} rename '{old}' -> '{nn}' refused: {m}"
+        | Ok edits ->
+            let renamed = applyEdits lines edits nn
+            let diags1, _, _, _, _ = Weir.Lsp.analyzeCached path renamed
+
+            let key (d: Weir.Script.Diagnostic) (msg: string) =
+                d.Line, d.Col, d.Severity, d.Code, msg
+
+            let expected =
+                diags0 |> List.map (fun d -> key d ((wordRe old).Replace(d.Message, nn)))
+
+            let actual = diags1 |> List.map (fun d -> key d d.Message)
+
+            if expected <> actual then
+                violations.Add
+                    $"{path}:{l}:{c} rename '{old}' -> '{nn}' changed the diagnostics:\n  before: %A{expected}\n  after:  %A{actual}"
+
+            let after = Weir.Lsp.occurrencesFor path renamed l c
+
+            if before <> after then
+                violations.Add
+                    $"{path}:{l}:{c} rename '{old}' -> '{nn}' moved its occurrences:\n  before: %A{before}\n  after:  %A{after}"
+
+    List.ofSeq violations
+
+[<Tests>]
+let renameTests =
+    testList
+        "Rename round trip [D:lsp-rename]"
+        [ testPropertyWithConfig cfg "every value binder of a generated program renames without losing an occurrence" (fun (p: Program) ->
+              match renameRoundTrip None "fuzz.weir" (renderPlain p) with
+              | [] -> ()
+              | vs -> failtest (String.concat "\n" vs))
+          test "every value binder of the repo corpus renames without losing an occurrence" {
+              let root =
+                  match Runner.repoRoot with
+                  | Some r -> r
+                  | None -> failtest "no repo root (weir.slnx) above the test binary"
+
+              let files =
+                  [ "examples"; "ci"; "tools" ]
+                  |> List.collect (fun d -> IO.Directory.GetFiles(IO.Path.Combine(root, d), "*.weir") |> Array.toList)
+                  |> List.sort
+
+              Expect.isGreaterThan files.Length 20 "the corpus is there"
+
+              let vs =
+                  files
+                  |> List.collect (fun f -> renameRoundTrip (Some 16) f (IO.File.ReadAllLines f |> Array.toList))
+
+              Expect.isEmpty vs (String.concat "\n" vs)
+          }
+          test "the round-trip detector fires: a rename that misses a use is DETECTED, named" {
+              // the detector's own control [D:walk-findings]: hand it a
+              // program whose rename is complete and whose occurrence set
+              // must therefore survive — then a doctored edit list that
+              // skips one use must change the diagnostics (an unused
+              // binder appears)
+              let lines = [ "let abc = 1"; "print (show abc)" ]
+              Expect.isEmpty (renameRoundTrip None "ctl.weir" lines) "the honest rename is clean"
+              let partial = applyEdits lines [ (1, 5, 3) ] "q99"
+              let diags, _, _, _, _ = Weir.Script.analyzeLines "ctl.weir" partial
+              Expect.isTrue (diags |> List.exists (fun d -> d.Severity = "error")) "a missed use is an error the detector would see"
+          } ]

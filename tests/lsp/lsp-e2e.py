@@ -1185,4 +1185,113 @@ while m.get("id") != 2:
     m = read6()
 send6({"jsonrpc": "2.0", "method": "exit", "params": {}}); p6.wait(timeout=5)
 
+# ---- references, highlight, rename [D:lsp-rename] -------------------
+# one server, the request shapes VS Code sends (F2 / Shift+F12); no
+# headless editor rig here — nvim is not a CI dependency, so the e2e
+# speaks the shapes and the unit pins hold the resolution
+p7 = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+PROCS.append(p7)
+
+def send7(o):
+    b = json.dumps(o).encode()
+    p7.stdin.write(f"Content-Length: {len(b)}\r\n\r\n".encode() + b); p7.stdin.flush()
+
+def read7():
+    length = None
+    while True:
+        line = p7.stdout.readline()
+        if not line:
+            sys.exit("rename server closed stream")
+        line = line.strip()
+        if line.startswith(b"Content-Length:"): length = int(line.split(b":")[1])
+        elif line == b"": break
+    return json.loads(p7.stdout.read(length))
+
+def req7(i, method, uri, line, char, extra=None):
+    params = {"textDocument": {"uri": uri}, "position": {"line": line, "character": char}}
+    if extra:
+        params.update(extra)
+    send7({"jsonrpc": "2.0", "id": i, "method": method, "params": params})
+    m = read7()
+    while m.get("id") != i:
+        m = read7()
+    return m
+
+send7({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+caps7 = read7()["result"]["capabilities"]
+expect(caps7.get("referencesProvider") is True, f"referencesProvider: {caps7}")
+expect(caps7.get("documentHighlightProvider") is True, f"documentHighlightProvider: {caps7}")
+expect(caps7.get("renameProvider") == {"prepareProvider": True}, f"renameProvider: {caps7}")
+
+# the client's OWN URI spelling comes back on every Location and on the
+# WorkspaceEdit key [D:lsp-uri-spelling]
+uri7 = "file:///t%2Ddir/rename.weir"
+doc7 = 'let name = "n"\nprint name\necho $name // name here\nlet shout x = x + name\nprint (shout "!")\n'
+send7({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": uri7, "text": doc7}}})
+m = read7()
+while m.get("method") != "textDocument/publishDiagnostics":
+    m = read7()
+expect(m["params"]["diagnostics"] == [], f"the fixture is clean: {m['params']}")
+
+refs = req7(2, "textDocument/references", uri7, 0, 5, {"context": {"includeDeclaration": True}})["result"]
+rows = sorted((r["range"]["start"]["line"], r["range"]["start"]["character"], r["range"]["end"]["character"]) for r in refs)
+expect(rows == [(0, 4, 8), (1, 6, 10), (2, 6, 10), (3, 18, 22)], f"references: {rows}")
+expect(all(r["uri"] == uri7 for r in refs), f"Location uri must be the client's spelling: {refs}")
+
+refs = req7(3, "textDocument/references", uri7, 0, 5, {"context": {"includeDeclaration": False}})["result"]
+rows = sorted((r["range"]["start"]["line"], r["range"]["start"]["character"]) for r in refs)
+expect(rows == [(1, 6), (2, 6), (3, 18)], f"includeDeclaration=false drops the binder: {rows}")
+
+hl = req7(4, "textDocument/documentHighlight", uri7, 1, 7)["result"]
+kinds = sorted((h["range"]["start"]["line"], h["kind"]) for h in hl)
+expect(kinds == [(0, 3), (1, 2), (2, 2), (3, 2)], f"highlight kinds (3 at the binder, 2 at uses): {kinds}")
+
+# prepareRename answers the use's own range and the name as placeholder
+pr = req7(5, "textDocument/prepareRename", uri7, 2, 7)["result"]
+expect(pr == {"range": {"start": {"line": 2, "character": 6}, "end": {"line": 2, "character": 10}},
+              "placeholder": "name"}, f"prepareRename: {pr}")
+
+# rename: a WorkspaceEdit keyed by the document's own URI, every
+# occurrence edited (the splice keeps its sigil), the comment untouched
+re7 = req7(6, "textDocument/rename", uri7, 2, 7, {"newName": "label"})["result"]
+edits = re7["changes"][uri7]
+expect(sorted((e["range"]["start"]["line"], e["range"]["start"]["character"], e["newText"]) for e in edits)
+       == [(0, 4, "label"), (1, 6, "label"), (2, 6, "label"), (3, 18, "label")], f"rename edits: {edits}")
+expect(list(re7["changes"].keys()) == [uri7], f"WorkspaceEdit key is the client's spelling: {re7}")
+
+# a refused prepare is a JSON-RPC error (RequestFailed) whose message is
+# the reason; rename after it errors the same way (clients may skip prepare)
+err = req7(7, "textDocument/prepareRename", uri7, 1, 1)
+expect("error" in err and err["error"]["code"] == -32803, f"a builtin refuses as an error: {err}")
+expect("'print' is not bound in this file" in err["error"]["message"], f"the reason: {err}")
+err = req7(8, "textDocument/rename", uri7, 1, 1, {"newName": "say"})
+expect("error" in err and err["error"]["code"] == -32803 and "'print' is not bound" in err["error"]["message"],
+       f"rename after a refused prepare errors too: {err}")
+err = req7(9, "textDocument/rename", uri7, 0, 5, {"newName": "shout"})
+expect("error" in err and "'shout' is already used at line 4" in err["error"]["message"],
+       f"a collision names its site: {err}")
+
+# the 20k-line tripwire (the recheck-latency style): references is one
+# cache hit plus one occurrences walk over every statement — generous
+# bound on AOT, a regression to per-statement re-analysis would blow it
+big = "let a = 1\n" + "".join(f"print (show (a + {i}))\n" for i in range(19999))
+send7({"jsonrpc": "2.0", "method": "textDocument/didChange",
+       "params": {"textDocument": {"uri": uri7}, "contentChanges": [{"text": big}]}})
+m = read7()
+while m.get("method") != "textDocument/publishDiagnostics":
+    m = read7()
+_t0 = time.monotonic()
+refs = req7(10, "textDocument/references", uri7, 0, 4, {"context": {"includeDeclaration": True}})["result"]
+_dt = time.monotonic() - _t0
+expect(len(refs) == 20000, f"every statement's use listed: {len(refs)}")
+expect(_dt < 2.0, f"references on 20k lines must answer within 2s, took {_dt:.3f}s")
+print(f"lsp-e2e: references on 20k lines in {_dt:.3f}s")
+
+send7({"jsonrpc": "2.0", "id": 11, "method": "shutdown", "params": {}})
+m = read7()
+while m.get("id") != 11:
+    m = read7()
+send7({"jsonrpc": "2.0", "method": "exit", "params": {}}); p7.wait(timeout=5)
+
 print("lsp-e2e: all probes green")

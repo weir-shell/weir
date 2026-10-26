@@ -11604,6 +11604,329 @@ let schemaHoverTests =
                   Expect.equal (Weir.Lsp.definitionTarget entry ln 1 22) None "no file to open")
           } ]
 
+let lspRenameTests =
+    let refs (lines: string list) (line: int) (col: int) =
+        Weir.Lsp.referencesFor "refs" lines line col true
+
+    testList
+        "References, highlight, rename [D:lsp-rename]"
+        [ test "referencesFor: a top-level binder owns its uses up to the next rebinding; a param shadows inside its lambda" {
+              let lines =
+                  [ "let x = 1"
+                    "print (show x)"
+                    "let x = 2"
+                    "print (show x)"
+                    "let f x = x + 1"
+                    "print (show (f x))"
+                    "// x in a comment" ]
+
+              Expect.equal (refs lines 1 5) (Some [ (1, 5, 1); (2, 13, 1) ]) "the first x: its let and the use before the rebinding"
+              Expect.equal (refs lines 4 13) (Some [ (3, 5, 1); (4, 13, 1); (6, 16, 1) ]) "the second x: never the first's"
+              Expect.equal (refs lines 5 11) (Some [ (5, 7, 1); (5, 11, 1) ]) "inside f: the param's set only"
+              Expect.equal (refs lines 6 16) (Some [ (3, 5, 1); (4, 13, 1); (6, 16, 1) ]) "outside f: the top-level's"
+              Expect.equal (refs lines 7 4) None "a comment is no occurrence"
+
+              Expect.equal
+                  (Weir.Lsp.referencesFor "refs" lines 1 5 false)
+                  (Some [ (2, 13, 1) ])
+                  "includeDeclaration=false drops the binder site"
+
+              Expect.equal
+                  (Weir.Lsp.documentHighlightFor "refs" lines 1 5)
+                  (Some [ (1, 5, 1, 3); (2, 13, 1, 2) ])
+                  "highlight: Write at the binder, Read at the use"
+          }
+          test "referencesFor: interpolation holes, heredocs, argv splices and splats — sigil-stripped columns" {
+              let lines =
+                  [ "let s = \"v\""
+                    "let xs = [\"a\"]"
+                    "echo $s $@xs (s) $\"{s}\""
+                    "let h = $<<<"
+                    "    {s}"
+                    "    >>>"
+                    "let h2 = $$<<<"
+                    "    $s ${s}"
+                    "    >>>"
+                    "print h"
+                    "print h2" ]
+
+              Expect.equal
+                  (refs lines 1 5)
+                  (Some [ (1, 5, 1); (3, 7, 1); (3, 15, 1); (3, 21, 1); (5, 6, 1); (8, 6, 1); (8, 10, 1) ])
+                  "$s names the s after the sigil; (s) the s inside the parens; every hole counts"
+
+              Expect.equal (refs lines 2 5) (Some [ (2, 5, 2); (3, 11, 2) ]) "$@xs names the xs after the sigil"
+          }
+          test "referencesFor: yaml district splices, key splices and for binders" {
+              let lines =
+                  [ "let name = \"n\""
+                    "let items = [1; 2]"
+                    "let pairs = [(\"k\", 1)]"
+                    "let y = yaml"
+                    "    kind: $name"
+                    "    $name: 1"
+                    "    list:"
+                    "        for i in items"
+                    "            - $i"
+                    "    labels:"
+                    "        for (k, v) in pairs"
+                    "            $k: $v"
+                    "    e: $(name)"
+                    "y |> to yaml |> print" ]
+
+              Expect.equal
+                  (refs lines 1 5)
+                  (Some [ (1, 5, 4); (5, 12, 4); (6, 6, 4); (13, 10, 4) ])
+                  "value splice, key splice and $(expr) splice"
+
+              Expect.equal (refs lines 9 16) (Some [ (8, 13, 1); (9, 16, 1) ]) "the sequence for binder and its item"
+              Expect.equal (refs lines 11 14) (Some [ (11, 14, 1); (12, 14, 1) ]) "the map for's tuple binder and its key"
+          }
+          test "referencesFor: pattern binders — let-tuple, case payload, lambda tuple, for tuple, regex captures" {
+              let lines =
+                  [ "type V = | Push of int | Pop"
+                    "let (a, b) = (1, 2)"
+                    "print (show (a + b))"
+                    "match Push 1 with"
+                    "| Push n -> print (show n)"
+                    "| Pop -> ()"
+                    "let g = fun (k, v) -> show k + show v"
+                    "print (g (1, 2))"
+                    "for (k, v) in [(1, 2)] do"
+                    "    print (show (k + v))"
+                    "match \"a=1\" with"
+                    "| Regex @\"(\\w+)=(\\d+)\" (key, num) -> print $\"{key}{num}\""
+                    "| _ -> ()" ]
+
+              Expect.equal (refs lines 2 6) (Some [ (2, 6, 1); (3, 14, 1) ]) "let (a, b): a"
+              Expect.equal (refs lines 5 8) (Some [ (5, 8, 1); (5, 25, 1) ]) "| Push n: n"
+              Expect.equal (refs lines 7 14) (Some [ (7, 14, 1); (7, 28, 1) ]) "fun (k, v): k"
+              Expect.equal (refs lines 9 6) (Some [ (9, 6, 1); (10, 18, 1) ]) "for (k, v): k — not the lambda's k"
+              Expect.equal (refs lines 12 25) (Some [ (12, 25, 3); (12, 47, 3) ]) "a regex capture binder"
+          }
+          test "referencesFor: `with` source counts, `_.field` is silent, a builtin lists this file's uses (R2)" {
+              let lines =
+                  [ "type R = { a: int }"
+                    "let r = { a = 1 }"
+                    "let r2 = { r with a = 2 }"
+                    "print (show r2.a)"
+                    "[r] |> Seq.map _.a |> Seq.iter print" ]
+
+              Expect.equal (refs lines 2 5) (Some [ (2, 5, 1); (3, 12, 1); (5, 2, 1) ]) "the update's source is a use"
+              Expect.equal (refs lines 5 16) None "_.a: the wildcard is no name"
+              Expect.equal (refs lines 4 1) (Some [ (4, 1, 5); (5, 32, 5) ]) "print: no binder here, the uses still list"
+              Expect.equal (refs lines 5 8) (Some [ (5, 8, 7) ]) "Seq.map likewise"
+              Expect.equal (refs lines 4 16) None "a field is no occurrence"
+          }
+          test "referencesFor: within/until binders, and a signed member's signature line" {
+              let within = [ "let d = \"top\""; "within tmp d"; "    print d"; "print d" ]
+              Expect.equal (refs within 2 12) (Some [ (2, 12, 1); (3, 11, 1) ]) "the within binder's scope"
+              Expect.equal (refs within 1 5) (Some [ (1, 5, 1); (4, 7, 1) ]) "the top-level d outside it"
+
+              let m = [ "module"; "/// doc"; "let f : int -> int"; "let f x = x + 1"; "let g = f 2"; "let _ = g" ]
+              Expect.equal (refs m 3 5) (Some [ (3, 5, 1); (4, 5, 1); (5, 9, 1) ]) "from the sig: sig, impl, use"
+              Expect.equal (refs m 5 9) (Some [ (3, 5, 1); (4, 5, 1); (5, 9, 1) ]) "from the use: the same set"
+          }
+          test "renameFor: a shadowed name edits only its scope; edits cover every occurrence form" {
+              let ren (lines: string list) (line: int) (col: int) (nn: string) =
+                  Weir.Lsp.renameFor "rename.weir" lines line col nn
+
+              let sh = [ "let x = 1"; "let f x = x + 1"; "print (show (f x))"; "let x = 3"; "print (show x)" ]
+              Expect.equal (ren sh 2 7 "y") (Ok [ (2, 7, 1); (2, 11, 1) ]) "the param: its lambda only"
+              Expect.equal (ren sh 1 5 "y") (Ok [ (1, 5, 1); (3, 16, 1) ]) "the first top-level: up to the rebinding"
+              Expect.equal (ren sh 4 5 "y") (Ok [ (4, 5, 1); (5, 13, 1) ]) "the rebinding: its own uses"
+
+              let cov =
+                  [ "let s = \"v\""
+                    "let xs = [s]"
+                    "echo $s $@xs $\"{s}\""
+                    "let y = yaml"
+                    "    k: $s"
+                    "    $s: 1"
+                    "y |> to yaml |> print"
+                    "// s stays" ]
+
+              Expect.equal
+                  (ren cov 1 5 "t")
+                  (Ok [ (1, 5, 1); (2, 11, 1); (3, 7, 1); (3, 17, 1); (5, 9, 1); (6, 6, 1) ])
+                  "binder, list use, splice, hole, yaml splice and key splice — never the comment"
+
+              Expect.equal (ren cov 2 5 "ys") (Ok [ (2, 5, 2); (3, 11, 2) ]) "the splat's name after $@"
+
+              let m =
+                  [ "module"
+                    "let s : string"
+                    "let s = \"v\""
+                    "let shout : unit -> string"
+                    "let shout () = $\"{s}!\"" ]
+
+              Expect.equal (ren m 3 5 "t") (Ok [ (2, 5, 1); (3, 5, 1); (5, 19, 1) ]) "a signed member: the sig line renames too"
+              Expect.equal (Weir.Lsp.prepareRenameFor "rename.weir" sh 3 16) (Ok(3, 16, 1)) "prepare: the use's own range"
+          }
+          test "renameFor refusals, each with its reason [D:lsp-rename]" {
+              let dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "weir-rename-" + string (System.Guid.NewGuid()))
+              System.IO.Directory.CreateDirectory dir |> ignore
+              System.IO.File.WriteAllLines(System.IO.Path.Combine(dir, "lib.weir"), [ "module"; "let f : int -> int"; "let f x = x + 1" ])
+              let main = System.IO.Path.Combine(dir, "main.weir")
+
+              let lines =
+                  [ "import \"./lib.weir\" as Lib"
+                    "type R = { a: int }"
+                    "type U = | A | B"
+                    "let r = { a = 1 }"
+                    "print (show (Lib.f r.a))"
+                    "let u = A"
+                    "print (show u)"
+                    "let k = if r.a > 0 then 1 else 2"
+                    "print (show k)" ]
+
+              let ren (line: int) (col: int) (nn: string) = Weir.Lsp.renameFor main lines line col nn
+
+              Expect.equal
+                  (ren 5 1 "q")
+                  (Error "'print' is not bound in this file — a builtin or an imported name renames where it is defined")
+                  "builtin"
+
+              // a `_`-led new name: the occurrence table hides `_` binders, so
+              // a clash with one is invisible — refused rather than guessed
+              Expect.equal
+                  (ren 4 5 "_r")
+                  (Error "'_r' starts with '_', and weir tracks no occurrence of a '_'-led name — a rename onto one cannot be checked for a clash; pick a name without the leading '_'")
+                  "underscore target"
+
+              Expect.equal
+                  (ren 5 14 "q")
+                  (Error "'Lib.f' is not bound in this file — a builtin or an imported name renames where it is defined")
+                  "module member"
+
+              Expect.equal
+                  (ren 5 22 "q")
+                  (Error "nothing to rename here — put the cursor on a value name bound in this file")
+                  "a field"
+
+              Expect.equal
+                  (ren 6 9 "q")
+                  (Error
+                      "'A' is a type or a union case — only value bindings rename (fields, cases and type names are wire names)")
+                  "a case"
+
+              Expect.equal
+                  (ren 2 6 "q")
+                  (Error
+                      "'R' is a type or a union case — only value bindings rename (fields, cases and type names are wire names)")
+                  "a type name"
+
+              Expect.equal (ren 8 9 "q") (Error "'if' is a keyword, not a name") "a keyword under the cursor"
+              Expect.equal (ren 4 5 "_") (Error "'_' is the wildcard, not a name") "target _"
+              Expect.equal (ren 4 5 "if") (Error "'if' is a keyword, not a name") "keyword target"
+
+              Expect.equal
+                  (ren 4 5 "9x")
+                  (Error "'9x' is not a name — a name starts with a letter or '_' and continues with letters, digits or '_'")
+                  "not an identifier"
+
+              Expect.isTrue
+                  (match ren 4 5 "Q" with
+                   | Error m -> m.StartsWith "binding names start lowercase"
+                   | Ok _ -> false)
+                  "uppercase target: the casing teaching"
+
+              Expect.isTrue
+                  (match ren 4 5 "print" with
+                   | Error m -> m.StartsWith "'print' is a builtin with no qualified spelling"
+                   | Ok _ -> false)
+                  "reserved target: the reserve teaching"
+
+              Expect.equal
+                  (ren 4 5 "k")
+                  (Error "'k' is already used at line 8, column 5 — pick a name that is new in 'r's scope")
+                  "collision: the new name is bound inside the scope"
+
+              Expect.equal (ren 4 5 "r") (Error "'r' is already the name") "the same name"
+              Expect.equal (ren 4 5 "z") (Ok [ (4, 5, 1); (5, 20, 1); (8, 12, 1) ]) "a fresh name renames"
+
+              let inner = [ "let a = 1"; "let f b = b + 1"; "print (show (f a))"; "let g c = c + a"; "print (show (g 2))" ]
+
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" inner 1 5 "b")
+                  (Error "'b' is already used at line 2, column 7 — pick a name that is new in 'a's scope")
+                  "collision: the new name is bound in an inner scope"
+
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" inner 2 7 "a")
+                  (Error "'a' is already bound here (a builtin, or a binding above line 2) — pick a name that is new in 'b's scope")
+                  "collision: the new name is in the env at the binder"
+
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" inner 4 7 "a")
+                  (Error "'a' is already used at line 4, column 15 — pick a name that is new in 'c's scope")
+                  "collision: the new name is used inside the scope"
+
+              let part = [ "let a = 1"; "let bad = a + \"s\""; "print (show a)" ]
+
+              Expect.equal
+                  (Weir.Lsp.prepareRenameFor "rename.weir" part 1 5)
+                  (Error "a statement in 'a's scope has an error at line 2 — fix it first, so no use of the name is missed")
+                  "a statement in scope failed to check: prepare refuses"
+
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" [ "let a = 1"; "print (show a)"; "let a = 2"; "let bad = a + \"s\"" ] 1 5 "z")
+                  (Ok [ (1, 5, 1); (2, 13, 1) ])
+                  "an error past the rebinding is outside the scope"
+
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" [ "#init"; "let a = 1" ] 2 5 "z")
+                  (Error "rename is not available in an init file — its #session and #alias lines bind names the loader owns")
+                  "init-marked file"
+
+              Expect.equal
+                  (Weir.Lsp.renameFor (System.IO.Path.Combine(dir, ".weir", "sigs", "tool.weir")) [ "type T = { a: int }" ] 1 6 "z")
+                  (Error "rename is not available in a signature file — its members are the contract a #sig reads by name")
+                  "sig contract file"
+
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" [ "let a = 1 // a here"; "print (show a)" ] 1 14 "z")
+                  (Error "nothing to rename here — put the cursor on a value name bound in this file")
+                  "a comment mention"
+          }
+          test "corpus: bindingUsage's free set equals occurrences' TopLevel set, statement by statement" {
+              let root = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..")
+
+              let files =
+                  [ "examples"; "ci"; "tools" ]
+                  |> List.collect (fun d ->
+                      System.IO.Directory.GetFiles(System.IO.Path.Combine(root, d), "*.weir") |> Array.toList)
+
+              Expect.isGreaterThan files.Length 20 "the corpus is there"
+              let mutable statements = 0
+
+              for f in files do
+                  let lines = System.IO.File.ReadAllLines f |> Array.toList
+                  let _, stmts, _, _, _ = Weir.Script.analyzeLines f lines
+
+                  for _, chk in stmts do
+                      match chk.Kind with
+                      | Weir.Script.KLet(_, _, te)
+                      | Weir.Script.KLetPat(_, _, te)
+                      | Weir.Script.KCmd te
+                      | Weir.Script.KExpr te ->
+                          statements <- statements + 1
+                          let free, _ = Weir.Check.bindingUsage te
+
+                          let top =
+                              Weir.Check.occurrences te
+                              |> List.choose (fun o ->
+                                  match o.Binder with
+                                  | Weir.Check.TopLevel n -> Some n
+                                  | Weir.Check.Local _ -> None)
+                              |> Set.ofList
+
+                          Expect.equal top (Set.filter Weir.Check.occurrenceName free) $"{f}: the two walks agree"
+                      | _ -> ()
+
+              Expect.isGreaterThan statements 200 "the corpus has statements"
+          } ]
+
 let semanticTokenTests =
     testList
         "Semantic tokens"
@@ -11685,6 +12008,24 @@ let semanticTokenTests =
               let shadow = [ "let x = 1"; "let f x = x + 2"; "print $\"{f x}\"" ]
               Expect.equal (Weir.Lsp.definitionFor shadow 2 11) (Some(2, 7, 1)) "inside f: the param"
               Expect.equal (Weir.Lsp.definitionFor shadow 3 12) (Some(1, 5, 1)) "outside f: the top-level"
+          }
+          test "definitionFor: within and until binders resolve, and shadow a top-level [D:lsp-rename]" {
+              let within =
+                  [ "let d = \"top\""; "within tmp d"; "    print d"; "print d" ]
+
+              Expect.equal (Weir.Lsp.definitionFor within 3 11) (Some(2, 12, 1)) "inside the scope: the within binder"
+              Expect.equal (Weir.Lsp.definitionFor within 4 7) (Some(1, 5, 1)) "outside: the top-level"
+
+              let until =
+                  [ "let r = 1"
+                    "let out = retry attempts=3 delay=1s"
+                    "    echo hi | complete"
+                    "until r"
+                    "    r.exitCode == 0"
+                    "print r" ]
+
+              Expect.equal (Weir.Lsp.definitionFor until 5 5) (Some(4, 7, 1)) "in the predicate: the until binder"
+              Expect.equal (Weir.Lsp.definitionFor until 6 7) (Some(1, 5, 1)) "outside: the top-level"
           }
           test "definitionFor: the from-json type name jumps to its declaration [PLAN-diagnostics-arc A3]" {
               let lines =
@@ -35163,6 +35504,7 @@ let allTests =
           semanticTokenTests
           blockRecoveryTests
           lspCrossFileTests
+          lspRenameTests
           letBindingHoverTests
           purityBadgeTests
           pureRegionTests

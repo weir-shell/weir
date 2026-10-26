@@ -53,6 +53,63 @@ costs one extra statement check per erroring statement per cache miss.
 FS0025 listed one exhaustive matcher for the new case (Eval); Purity,
 Can, Script and the LSP walks reach holes through wildcard arms or
 `childExprs`, which is where the one-line `TEHole` entry lives.
+## References and rename — the park opens (2026-10-26)
+
+[D:lsp-requests] parked rename, references and full definition on one
+prerequisite, binder spans in the checker, with the reopen criterion
+"a real user demands one of the three". The user asked for F2 in VS
+Code. The ledger row was also stale: Session C of the diagnostics arc
+had already given params, block-lets and pattern binders their spans
+(2026-07-27) and nobody amended the row. What was still missing was
+small and specific: `TEWithin`'s binder and `TERetry`'s `until` binder
+dropped their spans at construction (`binder |> Option.map fst`), and
+`localDef` had no arm for either, so a use of `d` inside `within tmp
+d` read as top-level territory and jumped to a same-named top-level
+`let d` — or nowhere. Derived from the code, then pinned.
+
+One walk, not three. `Check.occurrences` is `bindingUsage`'s sibling:
+the same forms bind, the same `patNameSpans` leaves, the same yaml
+template coverage; it lists every user-named use with the binder that
+owns it and every local binder site. `Lsp.localDef` became its
+consumer (and `patScope`, the LSP's own partial pattern walk — it
+missed `PRegex`, `PCons`, `PSeqList` — is gone). The corpus pin holds
+the two walks' free sets equal statement by statement.
+
+Spans lie a little. The plan assumed a TEVar's span ends at the name,
+so `[End - name.Length, End)` would strip a `$` or `$@`. Probing the
+typed tree showed two other shapes: `(x)` gives the inner node the
+parens' span (`parens` does `{ inner with Span = span }` on purpose —
+the caret lands on the group), and a yaml `$key:` splice carried a
+one-character span (`spanAt col`). The edit range is now found by a
+word-bounded search for the name inside the span's text, which covers
+all four shapes at once; the key-splice span was fixed to the key's
+width. The Fuzz round trip is the oracle that no shape was missed:
+every value binder of every generated program (and 16 per corpus
+file — the corpus has ~9,500 binders at ~100-400 ms per analysis,
+exhaustive is a quarter hour) renamed to a fresh same-length name,
+re-analyzed: same diagnostics modulo the name, same occurrence set.
+Its first run caught `_`-led top-level lets: filtered as uses
+(`occurrenceName`) but listed as sites — the rename then changed the
+unused-binding verdict. Sites filter the same way now.
+
+Refusal 2 under the sibling's recovery. The plan words it as "a
+statement in the binder's scope extent is a partial". Partials are the
+recovery branch's product and that branch lands on another branch; so
+the check here is "an error diagnostic lies inside the extent's
+physical lines" — a statement that failed to check is exactly one that
+carries an error, so the two are equivalent today and stay equivalent
+after the merge, and the implementation never touches
+`analyzeLinesAs`'s shape. The extent's physical lines, not its
+statement list, because a failed statement owns no segment.
+
+Shapes verified over the wire against the AOT binary (one server, the
+request shapes VS Code sends): Location URIs and the WorkspaceEdit key
+in the client's own spelling, `includeDeclaration: false` dropping the
+binder, prepareRename's `{range, placeholder}`, the refused prepare as
+a -32803 error whose message is the reason, rename after it erroring
+the same way, and references on a 20k-line file under the 2 s
+tripwire. No nvim rig: nvim is not installed in this container, so the
+e2e speaks the shapes and the unit pins hold the resolution.
 
 ## The cleanup shim is sh; a dead stderr never aborts (2026-10-19)
 

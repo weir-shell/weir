@@ -5599,7 +5599,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         let predicate (v: Value) =
             match until with
-            | Some(b, pred) ->
+            | Some((b, _), pred) ->
                 match eval (Map.add b v env) pred with
                 | VBool ok -> ok
                 | pv -> unreachable $"the checker rejects a predicate of {formatValue pv}"
@@ -6163,7 +6163,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         let binderOf (what: string) =
             match binder with
-            | Some b -> b
+            | Some(b, _) -> b
             | None -> unreachable $"the parser gives within {what} its binder"
 
         match kind with
@@ -6859,7 +6859,7 @@ and private evalRepeat
     (env: Env)
     (optsE: TypedExpr)
     (body: TypedExpr)
-    (until: (string * TypedExpr) option)
+    (until: ((string * Span) * TypedExpr) option)
     : Value =
     if PlanMode.active () then
         failwith
@@ -6935,7 +6935,7 @@ and private evalRepeat
 
         let predicate (v: Value) =
             match until with
-            | Some(b, pred) ->
+            | Some((b, _), pred) ->
                 match eval (Map.add b v env) pred with
                 | VBool ok -> ok
                 | pv -> unreachable $"the checker rejects a predicate of {formatValue pv}"

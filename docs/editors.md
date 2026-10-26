@@ -23,6 +23,24 @@ In any editor with LSP support you get:
   came from, and whether it catches unknown fields.
 - **Go to definition** for locals, module members, import paths,
   signature files and vendored schemas.
+- **Find references** and **highlight** of a name's uses across the
+  file: every binder weir knows (top-level and block `let`s, params,
+  pattern binders, `within`/`until` binders, yaml `for` binders), its
+  uses in expressions, `$name` splices, `$@xs` splats, interpolation
+  holes and yaml districts. On a builtin or an imported member the
+  uses in this file are listed. Comments and strings are never
+  included.
+- **Rename** (F2) of a value binder, with the same reach — the sig
+  line of a signed module member renames with it. Rename is complete
+  or refused, and the refusal says why: the cursor is not on a value
+  bound in this file (builtins, imported members, record fields,
+  union cases and type names do not rename), a statement in the
+  name's scope has an error, the new name is not a binder name or
+  starts with `_` (a `_`-led binder is deliberately unused, so weir
+  tracks no uses of it and could not see a clash), or the new name is
+  already visible in that scope. Init files and
+  signature files do not rename. Other files that import a renamed
+  member show the breakage as diagnostics on their next refresh.
 - **Completion** of module members (type `Lib.` to list them), and of
   the `within` kinds after `within `.
 - **Hover on keywords.** `within`, `retry`/`poll`

@@ -11,6 +11,24 @@
   name whose value failed (and anything typed from it) shows nothing
   until it is fixed. `weir check`, the runner and the REPL report
   exactly what they did before — the recovery is the editor's only.
+- **Find references, highlight and rename in the editor.** `weir lsp`
+  answers `textDocument/references`, `documentHighlight`,
+  `prepareRename` and `rename` for value binders: top-level and block
+  `let`s, params, pattern binders, `within`/`until` binders and yaml
+  `for` binders, with uses in expressions, `$name` splices, `$@xs`
+  splats, interpolation holes and yaml districts; a signed module
+  member's signature line renames with it. Rename is complete or
+  refused with a reason the editor shows (a builtin, an imported
+  member, a field, a case or a type name under the cursor; an error in
+  the name's scope; a new name that is not a binder name or is already
+  visible in the scope; an init or signature file). References and
+  highlight on a builtin or an imported member list this file's uses.
+
+### Fixed
+
+- **Go to definition on a `within` or `until` binder's use** jumped to
+  a same-named top-level binding (or nowhere) — the two binders now
+  carry their spans, so the use inside the scope lands on the binder.
 
 ## v0.0.78
 

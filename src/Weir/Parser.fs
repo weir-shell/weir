@@ -3571,7 +3571,9 @@ and private parseTplBlockBody
                                         Result.Ok(
                                             YtKeySplice
                                                 { Kind = EVar kIdent
-                                                  Span = spanAt col }
+                                                  Span =
+                                                    { Start = { Line = 1; Col = col }
+                                                      End = { Line = 1; Col = col + rawKey.Length } } }
                                         )
                                     else
                                         Result.Error("a key splice is $name (string-typed)", col)
