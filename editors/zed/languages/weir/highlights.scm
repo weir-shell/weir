@@ -9,6 +9,8 @@
 ((comment) @comment.documentation (#match? @comment.documentation "^///"))
 
 (string) @string
+(string_text) @string
+(string_escape) @constant.character.escape
 (raw_verbatim) @string
 (raw_string) @string
 (interp_string) @string
@@ -20,6 +22,11 @@
 (boolean) @constant.builtin.boolean
 
 (keyword) @keyword
+
+; `until stopped` [scopes]: `stopped` is contextual, not a keyword — it
+; reads as one only right after `until`
+((keyword) @_until . (identifier) @keyword
+ (#eq? @_until "until") (#eq? @keyword "stopped"))
 (let_head "let" @keyword)
 (let_head name: (identifier) @variable)
 (type_head "type" @keyword)
@@ -97,4 +104,11 @@
 ; '.', so the casing law paints it @type — reclaim it as a member. An
 ; identifier immediately after '.' is a member regardless of case.
 ((operator) @_dot . (constructor) @property
+ (#eq? @_dot "."))
+
+; a qualified case or type name (`Contract.Ghost`, `A.T`): values are
+; lowercase by the casing law, so a constructor before '.' is a module or
+; type qualifier and the constructor after it stays a @type. Placed after
+; the member reclaim above so it wins for this shape
+((constructor) . (operator) @_dot . (constructor) @type
  (#eq? @_dot "."))
