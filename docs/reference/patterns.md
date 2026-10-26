@@ -131,7 +131,7 @@ use |> File.write "use-shapes.weir"
 weir use-shapes.weir
 ```
 
-### Validated types
+### Matching validated types
 
 A [validated type](types.md#validated-types)'s case never constructs
 — `T.create` is the one way in — but it reads like any single-case

@@ -407,7 +407,7 @@ Codecs affect only `to`/`from` `json`, `jsonl` and `yaml`; `show` and
 - `Secret` is always refused. Credentials are never serialized, in any
   encoding.
 
-## Validated types
+## Validated types at the boundaries
 
 A [validated type](types.md#validated-types) crosses every boundary as
 its payload, and every boundary runs its `validate` block: a reader
