@@ -15647,6 +15647,63 @@ let lockfileConfinementTests =
           } ]
 
 
+let libSpecTests =
+    // [D:lib-short-name]: the bare-name expansion is pure — every arm
+    // pinned here; the host chain behind it is the live e2e probe's
+    let expand spec =
+        match Weir.Contracts.libSpec spec with
+        | Ok(Some l) -> l
+        | Ok None -> failtest $"'{spec}' must expand, not pass through"
+        | Error e -> failtest $"'{spec}' must expand: {e}"
+
+    let refuse spec =
+        match Weir.Contracts.libSpec spec with
+        | Error e -> e
+        | Ok _ -> failtest $"'{spec}' must refuse"
+
+    let passes spec =
+        match Weir.Contracts.libSpec spec with
+        | Ok None -> ()
+        | Ok(Some l) -> failtest $"'{spec}' must pass through, not expand to {l.Source}"
+        | Error e -> failtest $"'{spec}' must pass through, not refuse: {e}"
+
+    testList
+        "lib short name [D:lib-short-name]"
+        [ test "a bare name@tag expands to the library shorthand; the name is the default --as" {
+              Expect.equal
+                  (expand "semver@v0.1.0")
+                  { Name = "semver"
+                    Tag = "v0.1.0"
+                    Source = "github.com/weir-shell/lib//semver.weir@v0.1.0" }
+                  "the expansion"
+          }
+          test "any ref the shorthand accepts is accepted (R4); underscores and digits are name characters" {
+              Expect.equal (expand "semver@main").Tag "main" "a branch"
+              Expect.equal (expand "semver@0123abcd").Tag "0123abcd" "a sha prefix"
+              Expect.equal (expand "a_b2@v1").Source "github.com/weir-shell/lib//a_b2.weir@v1" "a_b2"
+          }
+          test "no @tag refuses naming the spelling" {
+              for spec in [ "semver"; "semver@" ] do
+                  let e = refuse spec
+                  Expect.stringContains e "has no @tag" $"{spec}: the refusal"
+                  Expect.stringContains e "weir add module semver@v0.1.0" $"{spec}: the spelling"
+          }
+          test "a name that cannot be a file and an alias refuses" {
+              for spec in [ "semver.weir@v1"; "my-mod@v1"; "@v1"; "1x@v1" ] do
+                  Expect.stringContains (refuse spec) "is not a library module name" $"{spec}: the refusal"
+          }
+          test "every spec with a / or : passes through untouched — the long grammar's teaches stand" {
+              for spec in
+                  [ "github.com/acme/lib//x.weir@v1"
+                    "https://h/x.weir"
+                    "weir:semver"
+                    "./x.weir"
+                    "sr.ht/a/b//x@v1" ] do
+                  passes spec
+          }
+          test "an expansion never re-expands" { passes (expand "semver@v0.1.0").Source } ]
+
+
 let vendorClosureTests =
     // [D:add-module-closure]: the closure walk, its refusals, the layout,
     // the lock round-trip, per-file confinement and weir: resolution order
@@ -36895,6 +36952,7 @@ let allTests =
           lockfileConfinementTests
           lockfileSymlinkConfinementTests
           vendorClosureTests
+          libSpecTests
           moduleSignatureTests
           qualifiedTypeNameTests
           qualifiedCasePatternTests

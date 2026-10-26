@@ -1,6 +1,6 @@
 # PLAN: lib — the official module library, and the bare-name add
 
-**Status: PROPOSED (2026-10-26) — implementation follows on this branch under the recommended rulings; user review pending.**
+**Status: BUILT (2026-10-26, branch feat/lib; library skeleton at /output/lib, unpushed) — R1–R6 as recommended; session report at the end.**
 
 Sequencing: this plan first; PLAN-derived-ord next; PLAN-semver (the
 library's first module) after both, gated on this plan's SESSION REPORT
@@ -523,3 +523,59 @@ one.
   line already names `raw.githubusercontent.com/weir-shell/lib/<sha>/
   semver.weir`, and the resolve error names the API URL; a third line
   is noise.
+
+## Session report (2026-10-26, feat/lib)
+
+**weir.** `Contracts.libRepo`/`LibSpec`/`libSpec` (pure, in front of
+`resolveModuleSpec`; rules 1–4 as planned). Program.fs: the guard
+admits `[]` and `[--path p]` ONLY when `libSpec spec <> Ok None`, so
+the long form without `--as` still falls to the existing usage branch
+(no duplicated usage text); the library error rides the existing
+`if/elif` chain ahead of `plainName`; `--as` derives from the name and
+overrides; the three usage texts gain the library line. Script.fs: the
+missing-vendored teach names `weir add module <n>@<tag>` first (R5).
+Messages 1–2 as specified; 3–4 unchanged existing text. Pins:
+`libSpecTests` (6 cases: expansion, R4 refs, no-tag ×2, not-a-name ×4,
+pass-through ×5, no re-expansion); e2e cells in the `[D:add-module]`
+block — no-tag (exit 1, the spelling named, `.weir/` tree hash
+unchanged), not-a-name, `retry@v0.1.0` → the builtin refusal,
+`semver@v0.1.0 --path x.weir` → the existing `--path` refusal, the long
+form without `--as` → usage exit 2 naming the library line, the
+missing-vendored grep moved to the new text, and the live probe
+(`nosuch@v0` → output names
+`api.github.com/repos/weir-shell/lib/commits/v0`). Docs: tooling.md
+bullet + `### The library`; CHANGELOG `## v0.0.79` / `### Added`;
+SKILL.md vendoring sentence (inline); DECISIONS `lib-short-name`;
+NOTES "The official module library".
+
+**Deviations.** (1) The plan expected `semver@v0.1.0 --path x.weir` to
+reach the `--path goes with a raw root URL` refusal; the guard never
+admitted `[--path p]` without `--as`, so it hit usage — the guard now
+admits that shape for a library-shaped spec, and the refusal fires as
+planned. (2) The sandbox turned out to have outbound network
+(api.github.com answers), so the live probes ran here; the lib repo
+does not exist yet, so the probe sees the honest 404 naming the URL
+(Risk 4), which is the assertion. (3) Commit areas derive as
+`cli,parser` (Script.fs maps to `parser` in ci/commit-area.weir), not
+the plan's `contracts,cli,docs`.
+
+**The library** (`/output/lib`, `main`, one commit as queil, no tag,
+no remote): README, CONTRIBUTING (the bar incl. the full builtin-alias
+list), LICENSE (weir's), NOTICE (first block), `tools/test.weir`
+(`weir check`/`fmt --check` clean on v0.0.78; runs from any cwd via
+`Self.scriptPath`), `tests/.gitkeep`, `.github/workflows/ci.yml`,
+`.gitignore`. Verified by hand: zero modules → `ok: 0 modules` exit 0;
+a planted `tests/orphan.weir` fails naming the orphan; a planted module
+with `import "weir:x"` fails naming line 3 (and its check).
+
+**Gates** (published binary `0.0.0-dev+59db64d-dirty`): unit 2568/2568
+(the 6 lib cases listed by the verbose logger); decision-keys ok (821
+rows); dead-privates 0; dx census 32/32 baseline; skill-doc 368 blocks
++ surface 300 members.
+e2e: the full battery died at an unrelated cell (`a thread the limit
+refuses is a weir error naming the limit`, ci/e2e.sh ~4476 —
+`Resource temporarily unavailable (os error 11)`, the shared box
+refusing a thread) before reaching the `[D:add-module]` block; the
+block run in isolation (prologue + block) passes, live probes
+included: `e2e ok: add module (… the library spelling's refusals,
+live shorthand + library host)`.

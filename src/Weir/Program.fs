@@ -428,17 +428,30 @@ let main argv =
             2
         | "add" :: "module" :: spec :: flags when
             (match flags with
+             // a bare name derives --as [D:lib-short-name]; the long form
+             // keeps requiring it (its path is not a name) and falls to usage
+             | []
+             | [ "--path"; _ ] -> Contracts.libSpec spec <> Ok None
              | [ "--as"; _ ]
              | [ "--as"; _; "--path"; _ ]
              | [ "--path"; _; "--as"; _ ] -> true
              | _ -> false)
             ->
-            let name, entryPath =
+            let asName, entryPath =
                 match flags with
-                | [ "--as"; n ] -> n, None
+                | [ "--as"; n ] -> Some n, None
                 | [ "--as"; n; "--path"; p ]
-                | [ "--path"; p; "--as"; n ] -> n, Some p
-                | _ -> "", None
+                | [ "--path"; p; "--as"; n ] -> Some n, Some p
+                | [ "--path"; p ] -> None, Some p
+                | _ -> None, None
+
+            // the library's short spelling expands here [D:lib-short-name];
+            // everything after sees the shorthand, as if typed
+            let spec, name, libError =
+                match Contracts.libSpec spec with
+                | Error e -> spec, "", Some e
+                | Ok None -> spec, (asName |> Option.defaultValue ""), None
+                | Ok(Some l) -> l.Source, (asName |> Option.defaultValue l.Name), None
 
             let weirDir =
                 match Contracts.findWeirDir "." with
@@ -457,7 +470,10 @@ let main argv =
                 else
                     name
 
-            if not nameOk then
+            if libError.IsSome then
+                Console.Error.WriteLine $"weir add module: {Option.get libError}"
+                1
+            elif not nameOk then
                 Console.Error.WriteLine
                     $"weir add module: '--as {quoteData name}' must be a plain name (a letter, then letters/digits/_) — it becomes the vendored file and the import alias"
 
@@ -605,12 +621,12 @@ let main argv =
                      | Ok files -> addClosure src rawBase files)
         | "add" :: "module" :: _ ->
             Console.Error.WriteLine
-                "usage: weir add module <host>/<org>/<repo>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       weir add module <raw url> --as <name>                           one file, fetched verbatim\n       weir add module <raw root url> --path <file> --as <name>        the entry <file> under the root, with its imports\n       (an explicit @ref is required on the shorthand)"
+                "usage: weir add module <host>/<org>/<repo>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       weir add module <raw url> --as <name>                           one file, fetched verbatim\n       weir add module <raw root url> --path <file> --as <name>        the entry <file> under the root, with its imports\n       weir add module <name>@<tag> [--as <name>]                      an official library module (github.com/weir-shell/lib)\n       (an explicit @ref is required on the shorthand)"
 
             2
         | "add" :: _ ->
             Console.Error.WriteLine
-                "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig [--global] <tool>      generate a signature from the installed binary\n       weir add module <src>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       weir add module <raw url> [--path <file>] --as <name>   the raw-URL form (--path: the URL is the root)"
+                "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig [--global] <tool>      generate a signature from the installed binary\n       weir add module <src>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       weir add module <raw url> [--path <file>] --as <name>   the raw-URL form (--path: the URL is the root)\n       weir add module <name>@<tag> [--as <name>]   an official library module (github.com/weir-shell/lib)"
 
             2
         | [ "restore" ] ->
@@ -867,6 +883,7 @@ let main argv =
                 + "       weir add schema <url> --as <name>       fetch an external contract, lock it\n"
                 + "       weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it\n"
                 + "       weir add module <url> [--path <file>] --as <name>  the raw-URL form (--path: the URL is the root)\n"
+                + "       weir add module <name>@<tag> [--as <name>]      an official library module (github.com/weir-shell/lib)\n"
                 + "       weir gen types --schema <name>          generate weir types from a locked schema\n"
                 + "       weir restore                            re-materialize the lock's artifacts\n"
                 + "       weir verify                             vendored contracts vs the lock\n"

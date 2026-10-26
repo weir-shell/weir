@@ -94,6 +94,17 @@
   number them. `Option` values sort too. Hover on the type shows the
   key in order, on a member its position.
 
+- **`weir add module <name>@<tag>` vendors an official library
+  module.** A bare name resolves to
+  [github.com/weir-shell/lib](https://github.com/weir-shell/lib) —
+  `weir add module semver@v0.1.0` is `weir add module
+  github.com/weir-shell/lib//semver.weir@v0.1.0 --as semver`, and
+  `--as` still renames. The lock, `verify` and `restore` see the raw
+  URL at the full sha, as for the long spelling. The `@tag` is
+  required: `weir add module semver` refuses and names the spelling.
+  The missing-module error for `import "weir:x"` now names the bare
+  spelling first.
+
 ### Fixed
 
 - **Go to definition on a `within` or `until` binder's use** jumped to

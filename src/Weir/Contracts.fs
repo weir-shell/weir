@@ -980,6 +980,41 @@ let private rootEntryPath (path: string) : Result<string, string> =
             Error $"--path '{quoteData path}' names the root itself — name the entry file relative to it"
         | Ok _ -> Ok path
 
+// the official library's short spelling [D:lib-short-name]: a spec with
+// no `/` is `<name>@<tag>` and expands to the github shorthand at libRepo;
+// everything with a `/` is the existing grammar, untouched
+let libRepo = "github.com/weir-shell/lib"
+
+type LibSpec =
+    { Name: string
+      Tag: string
+      Source: string }
+
+/// Ok None: not library-shaped (has a `/` or `:`) — the caller passes the
+/// spec through unchanged. Ok (Some s): expanded. Error: library-shaped
+/// but malformed; the message names the spelling.
+let libSpec (spec: string) : Result<LibSpec option, string> =
+    if spec.IndexOfAny([| '/'; ':' |]) >= 0 then
+        Ok None
+    else
+        let j = spec.LastIndexOf '@'
+        let name = if j < 0 then spec else spec.Substring(0, j)
+        let tag = if j < 0 then "" else spec.Substring(j + 1)
+
+        if tag = "" then
+            Error
+                $"'{quoteData spec}' has no @tag — a library module is pinned by its release tag: weir add module {quoteData name}@v0.1.0 (the tags: https://{libRepo}/tags)"
+        elif not (plainName name) then
+            Error
+                $"'{quoteData spec}' is not a library module name — <name>@<tag>, the name a letter then letters/digits/_: weir add module semver@v0.1.0"
+        else
+            Ok(
+                Some
+                    { Name = name
+                      Tag = tag
+                      Source = $"{libRepo}//{name}.weir@{tag}" }
+            )
+
 let resolveModuleSpec (spec: string) (entryPath: string option) : Result<ResolvedModuleSource, string> =
     if spec.StartsWith "http://" || spec.StartsWith "https://" then
         // the explicit raw-URL form — any host, no expansion
