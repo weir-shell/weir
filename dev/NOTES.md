@@ -230,6 +230,74 @@ What the probes taught:
 
 Out of scope, as ruled: form keys (`retry times=`), reifier messages,
 `|` chaining, record literals, lambdas — null, never a guess.
+## Derived Ord — `[<Ord n>]` on fields and cases (2026-10-26)
+
+The type-classes plan parked "Ord on records/unions — no receipts". The
+receipt arrived with the SemVer module: versions that sort and compare,
+with a union (`Pre of string | Release`) in the key — a shape key-packing
+cannot spell. PLAN-derived-ord; [D:derived-ord].
+
+Built first as a type-level `[<Ord>]` deriving DECLARATION order, and
+amended the same day by a user ruling before anything shipped: with
+the order read off the declaration, reordering a record's fields for
+readability silently changed program behaviour — the very trap the
+opt-in attribute was meant to flag, moved one step back rather than
+removed. The replacement spells the key: `[<Ord n>]` on each field or
+case, ascending `n`, gaps allowed, one member per position. Three
+things follow. A record's unnumbered fields take no part (the
+partial-key law — SemVer's build metadata, present but ignored for
+precedence, is the customer), and equality stays whole-value, so two
+values equal on the key but different elsewhere are neither `<` nor
+`>` nor `==`; sorts keep their input order, min/max the first. A union
+numbers every case or none, since an unplaced case has no position.
+And the runtime can no longer zip record fields positionally: the
+carried order is not the key, so a record registry (name -> key)
+joins the union one, filled from the same `type` statement, with a
+check-time law for the pair a checker can see (a local declaration
+beside an import of the same name) and the same tripwire for the pair
+it cannot. [D:record-order] stands whole again — order is carried,
+never semantic.
+
+The one fact that shaped the runtime: a `VUnion` carries its case name
+and payload, no index and no type name ([D:map-keys] chose name order
+for Map keys precisely so no hidden state was needed). A union's
+positions therefore need a registry: case name -> (owner, position),
+filled when the `type` statement runs (the validators' precedent). The
+trade is a check-time collision law — two ordered unions one checker
+can see may not share a case name, the prelude's Some/None included —
+plus a tripwire at registration for the pair no checker sees (two
+modules with no import between them): `unreachable` at the second
+module's replay, never a silent misorder. The REPL's replace forgets
+the replaced type's entries first, so a redeclaration with other case
+names or another key leaves nothing stale. The structural fix (an
+index on `VUnion`, ~290 sites) is the recorded reopen if the tripwire
+ever fires in practice.
+
+`Option` orders by the solver's own arm, not the attribute: the
+registry seeds `None -> 0, Some -> 1`, F#'s order, and the prelude's
+declaration stays unnumbered.
+
+The repair tail names only what the author can edit. The plan wrote
+"add [<Ord>] above `type FileRow`" for `ls |> Seq.sort`; FileRow is a
+built-in record, so that line would send the reader to a declaration
+that does not exist in their script. Built-in and prelude types and
+anonymous records get the admitted set (or, for the anonymous shape,
+"declare the shape as a record"); the "number its fields" repair is
+for the author's own declarations — `builtinTypeNames` already held
+the line.
+
+A finding on the way: the brief's "an attribute line above a RECORD
+`type` is a parse error today" was true only for a MULTI-LINE record
+body. The assembler's attr-only join ([D:attr-positions]) produces a
+buffer starting `[<…>] type R = {`, and the record-body district
+recognised a type head by `bufStartsWith "type "` — so the fields below
+were read as a record literal's continuation and the parser failed at
+the first `name: type`. Unions never hit it (their continuation is the
+`|` rule). `bufIsTypeDecl` reads through the join. No registered
+attribute sits above a record `type` any more, so the fix is pinned
+by an e2e cell whose `[<Tag "kind">]` above a multi-line record must
+reach the registry's position teaching, located on the attribute,
+rather than a parse error on the first field.
 
 ## The cleanup shim is sh; a dead stderr never aborts (2026-10-19)
 

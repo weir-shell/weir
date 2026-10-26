@@ -793,6 +793,10 @@ type RecordDef =
       // check-time data, fully erased [D:attributes] — never reaches
       // eval, Value, show, json, or equatability
       Attrs: Map<string, (string * AttrArg option) list>
+      // the `[<Ord n>]` fields by ascending n [D:derived-ord]: the
+      // record's ordering key, empty when nothing is numbered; the
+      // unnumbered fields take no part. Check-time data like Attrs
+      OrdKey: string list
       // field -> the `///` doc's first line, the derived --help text
       // [D:doc-help]. `--help` reads this instead of the retired
       // [<Doc>] attribute; hover still reads the full doc out-of-band.
@@ -893,6 +897,10 @@ type UnionDef =
       // `create`, which every wire boundary runs (one per checked
       // declaration, so two imports' same-named types never share one)
       Validated: string option
+      // the `[<Ord n>]` cases by ascending n [D:derived-ord]: the union
+      // orders by this position, then payload; empty when none is
+      // numbered (every case is numbered or none)
+      OrdKey: string list
       // case -> the `///` doc's first line, a subcommand's --help text,
       // and "" -> the type's own doc [D:help-case-docs]; check-time-erased
       // like RecordDef.Docs

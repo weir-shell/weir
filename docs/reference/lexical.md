@@ -377,6 +377,13 @@ For data read and written with the adapters ([Adapters](adapters.md)):
 - `[<Attr>]` and `[<Elem "Name">]` for XML attributes and repeated
   child elements
 
+For ordering ([Types](types.md#constraints)):
+
+- `[<Ord n>]` on a record field or a union case, a position in the
+  type's ordering key (ascending `n`; unnumbered fields take no part; a
+  union numbers every case or none) — the type then sorts and compares
+  with `<`, `>`, `<=`, `>=`
+
 And `[<Positional>]`, in signature files only, where a foreign CLI's
 operands need describing.
 

@@ -30,6 +30,7 @@ let fileRow: RecordDef =
           "hidden", TBool
           "path", TStr ]
       Attrs = Map.empty
+      OrdKey = []
       Docs = Map.empty }
 
 // the row's kind axis [D:filerow]: module names are load-bearing
@@ -44,6 +45,7 @@ let fileKind: UnionDef =
       CaseWires = Map.empty
       OtherCase = None
       Validated = None
+      OrdKey = []
       Docs = Map.empty }
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
@@ -519,6 +521,7 @@ let completedDef: RecordDef =
       Params = []
       Fields = [ "exitCode", TInt; "stdout", TSeq TStr; "stderr", TSeq TStr ]
       Attrs = Map.empty
+      OrdKey = []
       Docs = Map.empty }
 
 // completedWith is the shared body; completed is the empty overlay and
@@ -1326,23 +1329,6 @@ let private isEmptyImpl: Value =
         | VSeq items -> VBool(Seq.isEmpty items)
         | v -> unreachable $"the checker rejects 'isEmpty' on {formatValue v}")
 
-// sortBy's key is statically Ord-constrained
-// [D:inferred-type-classes], so this comparison is total over what
-// remains.
-let private scalarCompare (name: string) (a: Value) (b: Value) : int =
-    match a, b with
-    | VInt x, VInt y -> compare x y
-    | VStr x, VStr y -> compare x y
-    | VBool x, VBool y -> compare x y
-    | VFloat x, VFloat y -> compare x y
-    | VDur x, VDur y -> compare x y
-    | VInstant x, VInstant y -> compare x y
-    // Guid's CompareTo is field-wise unsigned, which is big-endian byte
-    // order [D:uuid] — the canonical text's order too
-    | VUuid x, VUuid y -> compare x y
-    | VSize x, VSize y -> compare x y
-    | v, _ -> unreachable $"the checker rejects '{name}' keys of {formatValue v}"
-
 let private foldImpl: Value =
     VBuiltin(fun folder ->
         VBuiltin(fun init ->
@@ -1360,7 +1346,7 @@ let private sortByImpl: Value =
                     Seq.delay (fun () ->
                         items
                         |> Seq.map (fun item -> apply keyf item, item)
-                        |> Seq.sortWith (fun (k1, _) (k2, _) -> scalarCompare "sortBy" k1 k2)
+                        |> Seq.sortWith (fun (k1, _) (k2, _) -> orderCompare "sortBy" k1 k2)
                         |> Seq.map snd)
                 )
             | v -> unreachable $"the checker rejects 'sortBy' on {formatValue v}"))
@@ -1376,7 +1362,7 @@ let private sortByDescImpl: Value =
                     Seq.delay (fun () ->
                         items
                         |> Seq.map (fun item -> apply keyf item, item)
-                        |> Seq.sortWith (fun (k1, _) (k2, _) -> scalarCompare "sortByDescending" k2 k1)
+                        |> Seq.sortWith (fun (k1, _) (k2, _) -> orderCompare "sortByDescending" k2 k1)
                         |> Seq.map snd)
                 )
             | v -> unreachable $"the checker rejects 'sortByDescending' on {formatValue v}"))
@@ -2549,7 +2535,7 @@ let private extremumImpl (name: string) (better: int -> bool) : Value =
                     match best with
                     | ValueNone -> ValueSome x
                     | ValueSome b ->
-                        if better (scalarCompare name x b) then
+                        if better (orderCompare name x b) then
                             ValueSome x
                         else
                             ValueSome b
@@ -2573,7 +2559,7 @@ let private extremumByImpl (name: string) (better: int -> bool) : Value =
                         match best with
                         | ValueNone -> ValueSome(x, k)
                         | ValueSome(bx, bk) ->
-                            if better (scalarCompare name k bk) then
+                            if better (orderCompare name k bk) then
                                 ValueSome(x, k)
                             else
                                 ValueSome(bx, bk)
@@ -2593,9 +2579,9 @@ let private sortPlainImpl (name: string) (flip: bool) : Value =
                     items
                     |> Seq.sortWith (fun a b ->
                         if flip then
-                            scalarCompare name b a
+                            orderCompare name b a
                         else
-                            scalarCompare name a b))
+                            orderCompare name a b))
             )
         | v -> unreachable $"the checker rejects '{name}' on {formatValue v}")
 
@@ -3702,6 +3688,7 @@ let envVarDef: RecordDef =
       Params = []
       Fields = [ "name", TStr; "value", TStr ]
       Attrs = Map.empty
+      OrdKey = []
       Docs = Map.empty }
 
 // Env.fromFile parses the dotenv subset only: KEY=VALUE, optional
@@ -8298,6 +8285,8 @@ let attrDocs: Map<string, string> =
           "[<Tag \"field\">] — marks a union as wire-tagged: the named field discriminates the case at the json/yaml boundary"
           "Other",
           "[<Other>] — the open-world fallback case: wire tags matching no declared case land here (carries the raw tag as a string, or nothing)"
+          "Ord",
+          "[<Ord n>] — a position in the type's ordering key, on a record field or a union case: the type then sorts, min/max-es, keys sortBy and compares with < > <= >= by its numbered members in ascending n (a union by case position, then payload). Unnumbered record fields take no part: two values equal on the key but different elsewhere are neither < nor > nor ==; Seq.sort keeps their input order, min/max return the first"
           "Iso8601", "[<Iso8601>] — an Instant field crosses json/yaml as an ISO 8601 string"
           "EpochMs", "[<EpochMs>] — an Instant field crosses json/yaml as integer epoch milliseconds"
           "EpochSec",

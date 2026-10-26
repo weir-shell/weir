@@ -265,6 +265,57 @@ let q = ["{\"items\": []}"] |> from json Page // generic: name the instance, Pag
   line above `type` binds to it), and the registry is
   POSITION-SCOPED — a registered name in the wrong position names
   its home (`'Tag' attaches to a union declaration`).
+  `[<Ord n>]` on a record FIELD or a union CASE gives it a position in
+  the type's ordering key [D:derived-ord]: the type then sorts
+  (`Seq.sort`, `sortBy` KEYS, `min`/`max`) and compares with
+  `<`/`>`/`<=`/`>=` by its numbered members in ascending `n` (a union
+  by case position, then payload; `None` before `Some`). The key is
+  the numbers, never the declaration order — reordering fields changes
+  nothing. UNNUMBERED record fields take no part: two values equal on
+  the key but different elsewhere are neither `<` nor `>` nor `==`,
+  `Seq.sort` keeps their input order and `min`/`max` return the first.
+  A union numbers every case or none; a position is held once (gaps
+  are fine). Every numbered member must itself order (scalars,
+  `Duration`/`Size`/`Instant`/`Uuid`, `Option` of those, other
+  numbered types) or the DECLARATION refuses naming the member; seqs,
+  Maps, Bytes, Secrets, functions and tuples cannot order.
+```weir
+type Pre =
+    | [<Ord 1>] Pre of string
+    | [<Ord 2>] Release
+
+type SemVer = {
+    [<Ord 1>] major: int
+    [<Ord 2>] minor: int
+    [<Ord 3>] patch: int
+    [<Ord 4>] pre: Pre
+    build: Option<string>
+}
+
+let versions = [{ major = 1; minor = 0; patch = 0; pre = Release; build = Some "b" }; { major = 1; minor = 0; patch = 0; pre = Pre "alpha"; build = None }; { major = 0; minor = 9; patch = 2; pre = Release; build = None }]
+let top = versions |> Seq.sort |> Seq.last
+print $"{top.major}.{top.minor}.{top.patch}"
+let older = top < { major = 2; minor = 0; patch = 0; pre = Release; build = None }
+print $"{older}"
+```
+```weir
+// the partial key: `note` is unnumbered, so two rows equal on `key` keep their input order
+type Row = { [<Ord 1>] key: int; note: string }
+let rows = [{ key = 2; note = "b" }; { key = 1; note = "y" }; { key = 1; note = "x" }] |> Seq.sort
+print (rows |> Seq.map (fun r -> r.note) |> Str.join ",")
+```
+```weir-error
+// a numbered field must order: a seq has no order, so the DECLARATION refuses
+type Run = { [<Ord 1>] name: string; [<Ord 2>] logs: seq<string> }
+```
+```weir-error
+// one member per position: two fields on [<Ord 1>] refuse, naming both
+type P = { [<Ord 1>] a: int; [<Ord 1>] b: int }
+```
+```weir-error
+// a union numbers every case or none: an unplaced case would have no position
+type U = [<Ord 1>] A | B
+```
 
 ```weir
 type Cli = {
@@ -1358,7 +1409,8 @@ print first
 ```
 - `Seq.last`/`Seq.tryLast` FORCE the whole source by necessity (an
   infinite source does not return); `Seq.rev`, `Seq.sort`/
-  `Seq.sortDescending` (key-less, Ord on the elements), and
+  `Seq.sortDescending` (key-less, Ord on the elements — scalars,
+  `Option`, `[<Ord n>]`-numbered types), and
   `Seq.countBy` join the forcing family — reversal, ordering, and
   counting need the whole input. `Seq.windowed n` is lazy (short
   source = empty seq, no partial window; n <= 0 raises). `Option.iter` runs a Some-only
@@ -1421,8 +1473,8 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   batching member); `except` (set difference, exclusions first);
   `replicate`; `initInfinite f` (F#'s: the endless `f 0, f 1, …`,
   lazy — the one infinite source; bound it with `take`/`takeWhile`/a
-  slice before forcing); `max`/`min`/`maxBy`/`minBy` (Ord; raise on empty; one
-  pass, no sort); `take` (`first` is retired [D:first-retired]). Sums: `Seq.sum`
+  slice before forcing); `max`/`min`/`maxBy`/`minBy` (Ord — scalars,
+  `Option`, `[<Ord n>]`-numbered types; raise on empty; one pass, no sort); `take` (`first` is retired [D:first-retired]). Sums: `Seq.sum`
   is `seq<int>`; `Float.sum`/`Size.sum`/`Duration.sum` (and their
   `average`s) own the other types — `Seq.average` alone crosses types
   (the mean of ints is a float). `Seq.filter` teaches `where`.
@@ -2064,9 +2116,11 @@ type Bad = C of int
   do seq, function and `Map` keys. The ORDER is deterministic: scalars
   as `Seq.sort` orders them, tuples element by element, records field
   by field in field-name order, union cases by case NAME (ordinal) then
-  payload (Bytes and Secret by content) — NOT F#'s declaration order:
-  a union value carries only its case name, and name order needs no
-  hidden state (`Error` sorts before `Ok`). Duplicate keys last-win.
+  payload (Bytes and Secret by content) — NOT F#'s declaration order
+  (an `[<Ord n>]`-numbered type SORTS by its key and is a Map key in
+  name order — the two agree on scalars only): a union value carries
+  only its case name, and name order needs no hidden state (`Error`
+  sorts before `Ok`). Duplicate keys last-win.
   `Map` surface: `ofPairs`
   (last-wins) / `pairs` / `keys` / `values` (key-sorted) / `get`
   (raises, naming the key — a non-string key as `show` renders it) /
@@ -2794,10 +2848,15 @@ print $"{fixed} {Path.isName fixed}"
 - Casing law: binding names start LOWERCASE (`let foo`, `fun x ->`);
   uppercase is types/modules/constructors. Record fields keep their
   names: `let level = cfg.LOG_LEVEL`.
-  No tuple ordering (sortBy/sortByDescending keys stay scalar).
-  Records remain the spelling for anything with NAMES. Prefix minus
+  No tuple ordering (a tuple sort key refuses) — name the parts in a
+  record and number them with `[<Ord n>]`. Records remain the spelling
+  for anything with NAMES. Prefix minus
   follows F#'s adjacency rule: `-n`, `2 * -3`, and `f -1` (passes -1
   as the ARGUMENT) are prefix; `x-1` and `x - 1` are subtraction.
+```weir-error
+// tuples have no order — name the parts in a record and number them with [<Ord n>]
+[(1, "b"); (2, "a")] |> Seq.sort |> Seq.iter (fun p -> print (show p))
+```
 - Element access: `xs[0]` (raises; = `Seq.item 0 xs`; F# 6 whitespace
   rule — `f [0]` WITH a space is applying a list) / `Seq.tryItem`
   (Option) / `Seq.skip`; `_[0]` is shorthand for `fun x -> x[0]`.
