@@ -1,6 +1,6 @@
 # PLAN: `semver` — the library's first module, ordered by `[<Ord>]` over a normalised prerelease key
 
-**Status: PROPOSED (2026-10-26) — sequenced after PLAN-derived-ord and PLAN-lib; implementation follows under the recommended rulings; user review pending.**
+**Status: BUILT (2026-10-26, branch feat/semver; module committed in /output/lib, untagged, unpushed) — R1–R8 as recommended; the module and its test landed in the library as the plan's source with the `[<Ord>]` lines in place and no stop-gap; the weir side is docs and ledger only. Session report at the end.**
 
 Siblings (parallel branches, planned the same day): PLAN-derived-ord
 (feat/derived-ord) owns the `[<Ord>]` attribute; PLAN-lib (feat/lib)
@@ -762,3 +762,115 @@ print (SemVer.toString (SemVer.bumpMinor latest))
 artefacts above — P1/P2 are copy, run, read the runner's output);
 +½ session if the stop-gap ships (R6) or the runner contract differs
 (P2). P0 is the reality check the dependency-gate rule demands.
+
+## Session report (2026-10-26, feat/semver)
+
+Executed under R1–R8 as recommended, on the feat/semver worktree
+(stacked on feat/lib on feat/derived-ord) with the binary published
+from it (`0.0.0-dev+c9e15ff`); the shipped v0.0.78 on PATH was used
+only to confirm the dependency (`weir check semver.weir` there:
+`9:3 unknown attribute 'Ord'`, `20:5 Expecting: ';', '*', '->' or '}'`).
+
+**P0 — gate.** Both session reports read. `[<Ord>]` sits on its own
+line above the union and above the multi-line record (the form
+PLAN-derived-ord's assembler fix admits); union payload strings order
+ordinally (the `beta.2 < beta.11`, `alpha.beta < beta` and
+`alpha.1 < alpha-1` pins hold); `<`, `Seq.sort`, `Seq.pairwise`+`<`,
+`Seq.min`/`max` all admit the record. The library is /output/lib
+(`main`): modules at the ROOT as `<name>.weir`, tests under
+`tests/<name>.weir` importing `"../<name>.weir"`, `tools/test.weir`
+the runner (exit 0 = pass — the plan's assumed contract, so `expect`
+needed no change).
+
+**P1/P2 — the library** (`/output/lib`, one commit `d991ca0` as queil,
+`semver: the first module — parse, order, bump`; no tag, no push):
+`semver.weir` (153 lines: `[<Ord>] Pre`, `[<Ord>] SemVer`, the four
+key constants, seven private helpers, nine signed `///`-documented
+members: `parse`, `tryParse`, `toString`, `build`, `isPrerelease`,
+`core`, `bumpMajor`, `bumpMinor`, `bumpPatch` — every impl `let pure`),
+`tests/semver.weir` (the plan's test; `Seq.sort`/`<`/`min`/`max` over
+the derived order, 12 round-trips, 19 byte-pinned refusals), and the
+README row (`semver | v0.1.0 | …`, CONTRIBUTING's PR rule). Verbatim:
+
+- `weir check semver.weir` → rc 0; `weir fmt --check semver.weir` → rc 0;
+  `weir check --can semver.weir` → `mutations: terminates: fail × 12
+  semver.weir:36:13, 39:39, 40:14, 42:12, 55:16, 62:38, 63:14, 64:12,
+  70:26, 71:59, 89:12, 96:21` and nothing else (R8's receipt).
+- `weir check tests/semver.weir` → rc 0; `weir fmt --check
+  tests/semver.weir` → rc 0; `weir tests/semver.weir` → `semver: ok`, rc 0.
+- `weir tools/test.weir` (from the root and from /tmp) → `weir
+  0.0.0-dev+c9e15ff`, six `ok` lines (check/fmt/self-contained/test-for
+  on the module, check/run on the test), `ok: 1 modules`, rc 0.
+- The `(pure)` badge, read through `weir lsp` (a stdio JSON-RPC
+  `textDocument/hover` on each signature line): all nine members hover
+  as `<name> : <sig>  (pure)`; `Pre` hovers `[<Ord>] Pre of string |
+  Release` and `SemVer` `[<Ord>] { major: int; minor: int; patch: int;
+  pre: Pre }`, each followed by its `///` doc.
+
+**P4 — the vendoring proof, offline.** The plan's P4 wanted `weir add
+module semver@v0.1.0` in a scratch project; the tag does not exist, so
+the same path ran through the raw-root form the e2e battery uses: a
+`python3 -m http.server` over /output/lib, `git init`, then `weir add
+module http://127.0.0.1:<port>/ --path semver.weir --as semver` →
+`added module semver (12f0656c9346…, 11 member(s)) from
+http://127.0.0.1:<port>/semver.weir` / `import it:  import "weir:semver"
+as Semver`; the lock holds the URL and sha256 at schemaVersion 1. In
+that project: the docs/tooling.md example VERBATIM (`git tag` over
+`v1.9.0 v1.10.0 v1.11.0-rc.1 junk`) → `1.11.0`, rc 0; `check --can` on
+it carries the module's twelve `fail`s at
+`.weir/modules/semver.weir:36:13, …`; the test with its import line
+rewritten to `weir:semver` → `semver: ok`, rc 0; `weir verify` →
+`module semver: ok`. By hand only — the library has no CI step for
+it (its CI is the runner), and the weir battery cannot depend on a path
+outside the repo.
+
+**P3 — this repo.** docs/tooling.md "The library": the example as a
+`text` fence after the module-list sentence (tooling.md is not in
+ci/skill-doc.sh's list, and the tag it vendors does not exist yet; no
+comment in the page — the plan placed none); DECISIONS `lib-semver`;
+CHANGELOG `## v0.0.79` `### Added`; dev/plans/README.md BUILT; this
+report. No weir code changed.
+
+### Deviations from the plan
+
+1. **The test lives at `tests/semver.weir`, not `semver.test.weir`
+   beside the module** — PLAN-lib's layout; the import is
+   `"../semver.weir"`.
+2. **A weir CHANGELOG line exists** (the brief asked for one under
+   `## v0.0.79`; the plan said "no weir CHANGELOG line" because the
+   binary is unchanged). The library keeps no CHANGELOG (PLAN-lib
+   non-goal), so the line here is the one record a user sees.
+3. **The DECISIONS row's "found on the way" tail** drops the record-
+   position parse error (it is [D:derived-ord]'s, fixed there) and
+   keeps the `function`-under-`let pure` friction, which still stands
+   (R7: logged in dev/NOTES-agent.md `## friction` by the planning
+   commit; the module spells `fun k -> match k with`). Not fixed here.
+4. **The README row** was added to the library commit (CONTRIBUTING:
+   "the PR adds a row"); the plan's file list did not name it.
+5. **`add` derives the alias `Semver`**, so its import-it line says
+   `as Semver`; the docs and the test import `as SemVer` — the alias
+   is the author's, and both work. Noted, not a change.
+
+### Gates
+
+- `dotnet build src/Weir/Weir.fsproj -c Debug` — 0 errors;
+  `dotnet test tests/Weir.Tests/Weir.Tests.fsproj -c Debug` — Passed
+  2594 / Failed 0 (a sanity run; no src change).
+- `ci/decision-keys.weir` — 823 rows, every [D:key] resolves.
+- `ci/commit-area.weir --range main..HEAD` — run after the commit;
+  result in the session's hand-off.
+- The library: runner green, test green alone, vendoring proof green
+  (above).
+
+### Follow-ups
+
+- **The tag.** The user tags `v0.1.0` in /output/lib and pushes; until
+  then `weir add module semver@v0.1.0` answers 404 at
+  `api.github.com/repos/weir-shell/lib/commits/v0.1.0`.
+- **The live probe.** ci/e2e.sh's `[D:lib-short-name]` host probe
+  (`nosuch@v0` → the URL named) can become the positive path
+  (`semver@v0.1.0` → `added module semver`) once the tag exists; not
+  done now.
+- **R7's checker bug** (`function | Regex …` under `let pure` misread as
+  a command head) — a one-line fix in the purity walk, in weir, its own
+  commit.

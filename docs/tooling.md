@@ -639,6 +639,28 @@ Every library module is a single file with no imports, because a
 vendored module can't import another vendored module yet (above).
 The module list and the versioning rule are in the repo's README.
 
+The first module is `semver`: parse, order and bump a version, with
+`[<Ord>]` on the parsed record so `Seq.sort`, `<` and `Seq.max` follow
+the spec's precedence. Vendored as above and used from a release
+script:
+
+```text
+import "weir:semver" as SemVer
+
+let strip t = if Str.startsWith "v" t then t[1..] else t
+let latest =
+    git tag
+    |> Seq.map strip
+    |> Seq.choose SemVer.tryParse
+    |> Seq.where (fun v -> not (SemVer.isPrerelease v))
+    |> Seq.max
+print (SemVer.toString (SemVer.bumpMinor latest))
+```
+
+`strip` is the consumer's leniency — the `v` of a git tag — named
+where it lives; the module has none (`v1.2.3`, whitespace and `1.2`
+are refusals, and `tryParse` turns each into `None`).
+
 To update, run `add` again. It overwrites the file and prints the
 old and new sha, and you review the change in the vendored file's
 diff. For a module with imports it prints the old and new sha of each
