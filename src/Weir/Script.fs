@@ -3323,6 +3323,8 @@ type StmtDiag =
       // "imported here"). Both default to None (single-file).
       File: string option
       Note: (int * int * string) option
+      // related sites in the SAME file as the primary [D:diagnostic-tags]
+      Related: (int * int * string) list
       // the runner prints warnings even when the discard gate then
       // errors (standing behavior) — they travel with the diag
       Warnings: (int * int * string) list }
@@ -3747,6 +3749,7 @@ let rec private checkStatementCore
           Message = terr.Message
           File = None
           Note = None
+          Related = []
           Warnings = [] }
 
     let warningsOf te =
@@ -3842,6 +3845,7 @@ let rec private checkStatementCore
                              $"unknown command '{prog}' — not found on PATH{others}. weir resolves command names before running: install the tool, or, if it only exists when the script runs, name it at run time — `let tool = \"{prog}\"` then `^$tool`")
                   File = None
                   Note = None
+                  Related = []
                   Warnings = [] }
         | _ -> None
 
@@ -3908,6 +3912,7 @@ let rec private checkStatementCore
                       Message = cleanParseDump ll f.Message
                       File = None
                       Note = None
+                      Related = []
                       Warnings = [] }
         | Ok(SType decl) ->
             // a local declaration takes its name from a transitive type
@@ -4051,14 +4056,15 @@ let rec private checkStatementCore
                 // types flow into the implementation's checking; the
                 // exported scheme is the signature's (plus the
                 // implementation's constraint residue)
+                // the signature line rides as related [D:diagnostic-tags]
                 let sigErrAt (span: Span) msg =
-                    Error(
-                        typed
-                            StmtTag.Let
-                            { Span = span
-                              Message = msg
-                              Origin = None }
-                    )
+                    Error
+                        { typed
+                              StmtTag.Let
+                              { Span = span
+                                Message = msg
+                                Origin = None } with
+                            Related = [ sd.Line, sd.Col, $"the signature declares {formatTy sd.Ty}" ] }
 
                 match Check.checkBinderName nameSpan name with
                 | Error terr -> Error(typed StmtTag.Let terr)
@@ -4295,6 +4301,7 @@ let rec private checkStatementCore
                       // point at this level's import; the outermost (entry)
                       // level runs last, so its note (in the entry file) wins
                       Note = Some(importLine, importCol, "imported here")
+                      Related = []
                       Warnings = [] }
                 | None ->
                     { PhysLine = importLine
@@ -4307,6 +4314,7 @@ let rec private checkStatementCore
                       Message = e.Message
                       File = None
                       Note = None
+                      Related = []
                       Warnings = [] }
 
             let stmtErr msg =
@@ -4434,6 +4442,7 @@ let checkStatement
                       Message = message
                       File = None
                       Note = None
+                      Related = []
                       Warnings = [] }
             | None ->
                 match st.Kind with
@@ -4463,7 +4472,15 @@ type UnusedFinding =
     { ULine: int
       UCol: int
       UEndCol: int
-      UMessage: string }
+      UMessage: string
+      // the rebinding site of the shadow variant [D:diagnostic-tags]
+      URelated: (int * int * string) list }
+
+/// the bare `_` binder's message — the one unused-binding variant that is
+/// misnamed, not unnecessary: the structured marker tag consumers test
+/// against [D:diagnostic-tags]
+let bareDiscardMessage =
+    "a bare '_' binder discards its value anonymously — name the discard (let _r = …) so the intent survives a grep"
 
 type UnusedTracker() =
     // pending top-level binders: name -> (physLine, physCol, physEndCol, used)
@@ -4473,9 +4490,6 @@ type UnusedTracker() =
 
     let plainMsg (n: string) =
         $"'{n}' is bound but never used — read it, or name it '_{n}' to keep it deliberately"
-
-    let bareMsg =
-        "a bare '_' binder discards its value anonymously — name the discard (let _r = …) so the intent survives a grep"
 
     member _.Poison() = poisoned <- true
 
@@ -4494,7 +4508,8 @@ type UnusedTracker() =
                 { ULine = l
                   UCol = c
                   UEndCol = max (c + 1) ec
-                  UMessage = if u.UBareWildcard then bareMsg else plainMsg u.UName }
+                  UMessage = if u.UBareWildcard then bareDiscardMessage else plainMsg u.UName
+                  URelated = [] }
 
     /// register a top-level binder; an unread pending binder of the
     /// same name errors at the earlier binder (the shadow rule —
@@ -4511,7 +4526,8 @@ type UnusedTracker() =
                        UCol = oc
                        UEndCol = oe
                        UMessage =
-                         $"'{name}' is bound but never used before being rebound at line {l} — read it, or name it '_{name}' to keep it deliberately" }
+                         $"'{name}' is bound but never used before being rebound at line {l} — read it, or name it '_{name}' to keep it deliberately"
+                       URelated = [ l, c, $"'{name}' is rebound here" ] }
              | _ -> ())
 
             pending[name] <- (l, c, max (c + 1) ec, false)
@@ -4576,7 +4592,8 @@ type UnusedTracker() =
                               if isModule then
                                   $"'{name}' is bound but never used — an unsigned module member is private dead code: use it, export it with a signature (let {name} : …), or name it '_{name}'"
                               else
-                                  plainMsg name } ]
+                                  plainMsg name
+                            URelated = [] } ]
 
             (List.ofSeq found) @ flushed |> List.sortBy (fun f -> f.ULine, f.UCol)
 
@@ -5904,7 +5921,13 @@ type Diagnostic =
       EndCol: int option
       Severity: string // "error" | "warning"
       Code: string
-      Message: string }
+      Message: string
+      // related sites (file, line, col, message) — the signature a
+      // mismatch is measured against, the import an imported error
+      // came through, the rebinding that shadows an unread binder
+      // [D:diagnostic-tags]; additive, so every consumer stays
+      // position-identical [D:one-pipeline]
+      Related: (string * int * int * string) list }
 
 let private codeOf (parse: bool) (msg: string) : string =
     if parse then
@@ -5976,6 +5999,22 @@ let writeDiag (w: System.Text.Json.Utf8JsonWriter) (d: Diagnostic) =
     w.WriteString("severity", d.Severity)
     w.WriteString("code", d.Code)
     w.WriteString("message", d.Message)
+
+    // additive [D:diagnostic-tags]: present only when there is a site
+    if not d.Related.IsEmpty then
+        w.WritePropertyName "related"
+        w.WriteStartArray()
+
+        for (rf, rl, rc, rm) in d.Related do
+            w.WriteStartObject()
+            w.WriteString("file", rf)
+            w.WriteNumber("line", rl)
+            w.WriteNumber("col", rc)
+            w.WriteString("message", rm)
+            w.WriteEndObject()
+
+        w.WriteEndArray()
+
     w.WriteEndObject()
 
 // doc-comment alignment lint [D:doc-comments]: a `///` attaches to the
@@ -6020,6 +6059,7 @@ let private docMisalignments (path: string) (lines: string list) : Diagnostic li
                                    EndCol = None
                                    Severity = "error"
                                    Code = "doc-align"
+                                   Related = []
                                    Message =
                                      $"this /// doc sits at column {di + 1}, but the declaration it documents is at column {anchor + 1} — a doc aligns with what it describes" }
                  | None -> ())
@@ -6120,6 +6160,7 @@ let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) li
                   EndCol = Some(c2 + 1)
                   Severity = "error"
                   Code = "schema"
+                  Related = []
                   Message = msg }
 
             match loadSchema name with
@@ -6519,6 +6560,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
           EndCol = None
           Severity = "error"
           Code = "sig"
+          Related = []
           Message = msg }
 
     let scriptDir =
@@ -6946,6 +6988,7 @@ let sigCmdDiagnostics
                           EndCol = Some(c2 + 1)
                           Severity = sev
                           Code = "sig"
+                          Related = []
                           Message = msg }
 
                     // did-you-mean over the spellings the convention takes
@@ -7433,6 +7476,7 @@ let continuedCommandDiagnostics
           EndCol = Some h.CEndCol
           Severity = "warning"
           Code = "continued-command"
+          Related = []
           Message = h.CMessage })
 
 // ---- signature-driven argument completion [D:sig-arg-complete] -------------
@@ -9938,6 +9982,7 @@ let private initError (file: string) (line: int) (col: int) (endCol: int option)
       EndCol = endCol
       Severity = "error"
       Code = code
+      Related = []
       Message = msg }
 
 let splitInit (file: string) (lines: string list) : InitSplit * Diagnostic list =
@@ -10061,6 +10106,7 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
           EndCol = d.PhysEnd |> Option.map snd
           Severity = "error"
           Code = codeOf d.Parse d.Message
+          Related = d.Related |> List.map (fun (l, c, m) -> d.File |> Option.defaultValue file, l, c, m)
           Message = d.Message }
 
     let assembleOrReport (numbered: (int * string) list) (into: ResizeArray<Diagnostic>) =
@@ -10216,6 +10262,7 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                         diags.Add
                             { d' with
                                 Code = "session-names-declaration"
+                                Related = []
                                 EndLine = Some d'.Line
                                 EndCol = Some(d'.Col + n.Length)
                                 Message = sessionDeclRefMessage n }
@@ -10562,6 +10609,7 @@ let effectBeforeArgs (path: string) (stmts: (LogicalLine * CheckedKind) list) : 
                   EndCol = Some(if el = l then max (c + 1) ec else ec)
                   Severity = "warning"
                   Code = "effect-before-args"
+                  Related = []
                   Message = $"{what} runs before '{loadName}' (line {loadLine}) — {consequence}" }))
 
 // the recovery pass [D:block-recovery], tooling-only: an errored
@@ -10693,6 +10741,7 @@ let analyzeLinesAs
                   EndCol = None
                   Severity = "error"
                   Code = "layout"
+                  Related = []
                   Message = message }
 
             match misaligned.Value with
@@ -10737,6 +10786,7 @@ let analyzeLinesAs
                   EndCol = None
                   Severity = "warning"
                   Code = "warning"
+                  Related = []
                   Message = wm }
 
         let mutable tenv =
@@ -10871,6 +10921,7 @@ let analyzeLinesAs
                       EndCol = Some(wc + prog.Length)
                       Severity = "warning"
                       Code = "cmd-not-found"
+                      Related = []
                       Message =
                         (match Map.tryFind prog Builtins.bareAliasHomes with
                          | Some home ->
@@ -10908,6 +10959,7 @@ let analyzeLinesAs
                                EndCol = None
                                Severity = "error"
                                Code = "dup-type"
+                               Related = []
                                Message =
                                  if viaImport then
                                      $"type '{decl.Name}' is already provided by the import at line {firstLine}; rename one"
@@ -10961,6 +11013,7 @@ let analyzeLinesAs
                                EndCol = None
                                Severity = "error"
                                Code = "module-declares-only"
+                               Related = []
                                Message = msg }
                      | None -> ())
 
@@ -11138,6 +11191,11 @@ let analyzeLinesAs
                           EndCol = d.PhysEnd |> Option.map snd
                           Severity = "error"
                           Code = codeOf d.Parse d.Message
+                          // the note's site rides as related too [D:diagnostic-tags]
+                          Related =
+                            (d.Related
+                             |> List.map (fun (l, c, m) -> d.File |> Option.defaultValue path, l, c, m))
+                            @ (d.Note |> Option.map (fun (nl, nc, nmsg) -> path, nl, nc, nmsg) |> Option.toList)
                           Message = d.Message }
 
                 (match d.Note with
@@ -11150,6 +11208,7 @@ let analyzeLinesAs
                            EndCol = None
                            Severity = "note"
                            Code = "imported-here"
+                           Related = [ d.File |> Option.defaultValue path, d.PhysLine, d.PhysCol, d.Message ]
                            Message = nmsg }
                  | None -> ())
 
@@ -11173,6 +11232,7 @@ let analyzeLinesAs
                        EndCol = None
                        Severity = "error"
                        Code = "missing-implementation"
+                       Related = []
                        Message = $"signature without implementation — no 'let {name} … = …' follows in this module" }
 
              let attaches = docAttachments rawLines
@@ -11188,6 +11248,10 @@ let analyzeLinesAs
                            EndCol = None
                            Severity = "error"
                            Code = "doc-on-implementation"
+                           Related =
+                             (match Map.tryFind name sc.SigLines with
+                              | Some sl -> [ path, sl, 1, "the doc's one home" ]
+                              | None -> [])
                            Message =
                              $"'{name}' is signed, and its /// doc belongs on the signature — move it above 'let {name} : …' (one doc home)" }
                  | None -> ()
@@ -11214,6 +11278,7 @@ let analyzeLinesAs
                    EndCol = Some f.UEndCol
                    Severity = "error"
                    Code = "unused-binding"
+                   Related = f.URelated |> List.map (fun (l, c, m) -> path, l, c, m)
                    Message = f.UMessage })
 
         // the re-enumeration warning lands on the second and later
@@ -11228,6 +11293,7 @@ let analyzeLinesAs
                   EndCol = Some f.REndCol
                   Severity = "warning"
                   Code = "re-enumeration"
+                  Related = []
                   Message = f.RMessage })
 
         // the newTempDir footgun [D:newtempdir-lint] lands on the delete
@@ -11241,6 +11307,7 @@ let analyzeLinesAs
                   EndCol = Some f.TEndCol
                   Severity = "warning"
                   Code = "temp-dir-cleanup"
+                  Related = []
                   Message = f.TMessage })
 
         // effects before the CLI parse [D:effect-before-args]: the entry

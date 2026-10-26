@@ -110,6 +110,46 @@ a -32803 error whose message is the reason, rename after it erroring
 the same way, and references on a 20k-line file under the 2 s
 tripwire. No nvim rig: nvim is not installed in this container, so the
 e2e speaks the shapes and the unit pins hold the resolution.
+## The editor session fills out — outline, folding, hints, links, tags (2026-10-26)
+
+PLAN-lsp-editor-polish P1+P2 (rows [D:inlay-hints],
+[D:document-symbols], [D:diagnostic-tags], [D:folding-ranges],
+[D:document-links], [D:no-code-lens]). Same shape as every existing
+request: a pure function beside `hoverAt`, a thin handler, unit pins
+through the function, a wire probe. Every function reads the one
+cached analysis; the cache entry grew two lazies (the file's `///`
+attachments and its `#sig` table) so hover, symbols and links share
+them instead of recomputing per request.
+
+What the implementation found that the plan did not say:
+
+- The checker cannot type `let f x y = x + y` on its own
+  (bidirectional: a bare param has no type until a concrete call pins
+  it), so every fixture that wants parameter hints uses something
+  like `Str.length x + y`. Not a hint gap — the statement fails and
+  partial truth applies.
+- The return hint sits BEFORE the `=` with right padding, not after
+  the last parameter: two hints at one position (the param's own and
+  the return) render as `y: int: int`. `let f = fun x -> …` has no
+  `=` between the last param and the body and gets no return hint.
+- An inner `let g y = …` is a function like a top-level one — its
+  params and return hint, no `g: int -> int` arrow after the name —
+  so hint == hover holds (the hover shows the annotated signature).
+- A failed signed implementation must not double as an orphan
+  signature: the textual fallback symbol counts as the
+  implementation, and the sig attaches to it.
+- `KType`'s validator binder is a mangled name (`Email#2`); the
+  outline reads the user's binder off `decl.Validate.Binder`.
+- The hover's `  (pure)` badge is residue, not signature: the
+  detail == hover pin strips it.
+- `weir run` does not exist — `weir <file>` runs — so `weir.run`
+  sends the bare file.
+- The module-loader channel (`ImportError`) carries no `Related`; a
+  module's sig-line related shows when the module file is analyzed
+  directly (open in the editor or checked itself), which the dedup in
+  `refreshAll` already prefers (the richer span wins). The import
+  line related and the note's error-site related ride the import
+  channel's `Note`, so they show either way.
 
 ## The cleanup shim is sh; a dead stderr never aborts (2026-10-19)
 

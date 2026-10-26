@@ -647,6 +647,17 @@ else:
     expect(envh == "env : seq<string * string>", f"env key hovers its schema type, not _nv: {envh!r}")
     ph = hover_at(INIT_URI, 5, 5, 31)  # on the 'prompt' key
     expect(ph and ph.startswith("prompt : string"), f"prompt key hovers its schema forms, not _rompt: {ph!r}")
+    # inlay hints anchor on the RAW lines [D:inlay-hints]: a #session field
+    # is rewritten to `let _nv = v` for the checker, and that binder is
+    # nobody's — no hint lands on a field line
+    sendI({"jsonrpc": "2.0", "id": 32, "method": "textDocument/inlayHint",
+           "params": {"textDocument": {"uri": INIT_URI},
+                      "range": {"start": {"line": 0, "character": 0}, "end": {"line": 7, "character": 0}}}})
+    m = readI()
+    while m.get("id") != 32:
+        m = readI()
+    field_hints = [h for h in (m["result"] or []) if h["position"]["line"] in (4, 5)]
+    expect(field_hints == [], f"no inlay hint on a #session field line: {field_hints}")
     sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
            "params": {"textDocument": {"uri": INIT_URI},
                       "contentChanges": [{"text": '#init\nlet greeter () = "> "\n\n#session {\n    prompt = gr\n}\n'}]}})
@@ -1293,5 +1304,156 @@ m = read7()
 while m.get("id") != 11:
     m = read7()
 send7({"jsonrpc": "2.0", "method": "exit", "params": {}}); p7.wait(timeout=5)
+
+# ---- editor polish [PLAN-lsp-editor-polish] -------------------------
+# folding, symbols, links, inlay hints, diagnostic tags + related — each
+# gated on what the client DECLARED at initialize, so this session
+# declares the lot (VS Code's shape) and sends initializationOptions
+td8 = tempfile.mkdtemp()
+os.makedirs(os.path.join(td8, ".weir", "sigs"))
+lib8 = os.path.join(td8, "lib.weir")
+LIB8_GOOD = "module Lib\n\nlet double : int -> int\n\nlet double n = n * 2\n"
+LIB8_BAD = "module Lib\n\nlet double : int -> int\n\nlet double n = show n\n"
+open(lib8, "w").write(LIB8_GOOD)
+open(os.path.join(td8, ".weir", "sigs", "mytool.weir"), "w").write(
+    'module Mytool\nlet version = "mytool 1.0"\ntype Cmd = {\n    dryRun: bool\n}\n')
+ent8 = os.path.join(td8, "main.weir")
+ENTRY8 = ('#sig mytool\nimport "./lib.weir" as Lib\n\ntype Cfg = { Host: string; Port: int }\n'
+          'let f x y = Str.length x + y\nlet st = mytool --dry-run\n'
+          'print (show (f "a" 2, st))\n')
+open(ent8, "w").write(ENTRY8)
+p8 = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+PROCS.append(p8)
+def send8(o):
+    b = json.dumps(o).encode()
+    p8.stdin.write(f"Content-Length: {len(b)}\r\n\r\n".encode() + b); p8.stdin.flush()
+def read8():
+    length = None
+    while True:
+        line = p8.stdout.readline().strip()
+        if line.startswith(b"Content-Length:"): length = int(line.split(b":")[1])
+        elif line == b"": break
+    return json.loads(p8.stdout.read(length))
+def req8(i, method, params):
+    send8({"jsonrpc": "2.0", "id": i, "method": method, "params": params})
+    m = read8()
+    while m.get("id") != i:
+        m = read8()
+    return m["result"]
+def publishes8(uri):
+    for _ in range(8):
+        m = read8()
+        if m.get("method") == "textDocument/publishDiagnostics" and nuri(m["params"]["uri"]) == nuri(uri):
+            return m["params"]["diagnostics"]
+    expect(False, f"no diagnostics published for {uri}")
+send8({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+    "capabilities": {"textDocument": {
+        "publishDiagnostics": {"tagSupport": {"valueSet": [1, 2]}, "relatedInformation": True},
+        "documentSymbol": {"hierarchicalDocumentSymbolSupport": True}}},
+    "initializationOptions": {"inlayHints": {"bindingTypes": False}}}})
+init8 = read8()
+caps8 = init8["result"]["capabilities"]
+expect(caps8.get("foldingRangeProvider") is True and caps8.get("documentSymbolProvider") is True
+       and caps8.get("documentLinkProvider") == {"resolveProvider": False}
+       and caps8.get("inlayHintProvider") == {"resolveProvider": False},
+       f"polish capabilities: {caps8}")
+# tags [D:diagnostic-tags]: the unread binder is Unnecessary (1) — in a
+# clean file (any errored statement silences the unused check)
+tags_uri = furi(os.path.join(td8, "tags.weir"))
+send8({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": tags_uri, "text": 'let unused = 1\nprint "x"\n'}}})
+ub = [d for d in publishes8(tags_uri) if d["code"] == "unused-binding"]
+expect(ub and ub[0].get("tags") == [1], f"unused-binding carries tags [1]: {ub}")
+ent8_uri = furi(ent8)
+lib8_uri = furi(lib8)
+send8({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": ent8_uri, "text": ENTRY8}}})
+publishes8(ent8_uri)
+def collect8(uris):
+    got = {}
+    for _ in range(12):
+        m = read8()
+        if m.get("method") == "textDocument/publishDiagnostics":
+            got[nuri(m["params"]["uri"])] = m["params"]["diagnostics"]
+        if all(nuri(u) in got for u in uris):
+            return got
+    expect(False, f"publishes missing for {uris}: {list(got)}")
+# the module is OPEN too, under the client's spelling (Windows: as_uri's
+# drive case, not the server's) — the links probe below asserts exactly
+# that an open target answers with it [D:lsp-uri-spelling]
+send8({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": lib8_uri, "text": LIB8_GOOD}}})
+collect8([lib8_uri, ent8_uri])
+# folding on the tokens FIXTURE, under the latency bound [D:folding-ranges]
+fold_uri = furi(os.path.join(td8, "fold.weir"))
+send8({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": fold_uri, "text": FIXTURE}}})
+publishes8(fold_uri)
+t0 = time.monotonic()
+folds = req8(2, "textDocument/foldingRange", {"textDocument": {"uri": fold_uri}})
+elapsed = (time.monotonic() - t0) * 1000
+triples = {(f["startLine"], f["endLine"], f.get("kind")) for f in folds}
+expect((1, 3, None) in triples and (4, 5, None) in triples, f"the let body and the if body fold: {sorted(triples)}")
+expect(elapsed < 500, f"folding latency {elapsed:.0f}ms exceeds the bound")
+# symbols: names + kinds, hierarchical (the record's fields are children)
+syms = req8(3, "textDocument/documentSymbol", {"textDocument": {"uri": ent8_uri}})
+expect([(sy["name"], sy["kind"]) for sy in syms] ==
+       [("mytool", 11), ("Lib", 2), ("Cfg", 23), ("f", 12), ("st", 13)],
+       f"outline names and kinds: {[(sy['name'], sy['kind']) for sy in syms]}")
+cfg = [sy for sy in syms if sy["name"] == "Cfg"][0]
+expect([c["name"] for c in cfg.get("children", [])] == ["Host", "Port"], f"hierarchical children: {cfg}")
+expect(cfg["selectionRange"]["start"] == {"line": 3, "character": 5}, f"selection on the type name: {cfg}")
+# links: the import path to lib.weir, the #sig tool to its sig file
+links = req8(4, "textDocument/documentLink", {"textDocument": {"uri": ent8_uri}})
+targets = [l["target"] for l in links]
+expect(any(t.endswith("/lib.weir") for t in targets) and any(t.endswith("/mytool.weir") for t in targets),
+       f"links resolve to the module and the sig file: {links}")
+expect(any(l["target"] == lib8_uri for l in links), f"an open target rides the client's spelling: {links}")
+# inlay hints: initializationOptions turned binder hints OFF — only the
+# parameter hints (Kind 2) remain; a didChangeConfiguration turns them on
+rng = {"start": {"line": 0, "character": 0}, "end": {"line": 8, "character": 0}}
+hs = req8(5, "textDocument/inlayHint", {"textDocument": {"uri": ent8_uri}, "range": rng})
+expect(hs and all(h["kind"] == 2 for h in hs) and [h["label"] for h in hs] == [": string", ": int"],
+       f"param hints only, with bindingTypes off: {hs}")
+expect(hs[0]["position"] == {"line": 4, "character": 7}, f"0-based position after the param: {hs[0]}")
+send8({"jsonrpc": "2.0", "method": "workspace/didChangeConfiguration",
+       "params": {"settings": {"weir": {"inlayHints": {"bindingTypes": True}}}}})
+hs = req8(6, "textDocument/inlayHint", {"textDocument": {"uri": ent8_uri}, "range": rng})
+labels = [(h["position"]["line"], h["label"], h["kind"]) for h in hs]
+expect((4, ": int", 1) in labels and any(l == 5 and k == 1 for l, _, k in labels),
+       f"return + binder hints after the configuration change: {labels}")
+# the range filter: lines 4..4 only
+hs = req8(7, "textDocument/inlayHint", {"textDocument": {"uri": ent8_uri},
+                                         "range": {"start": {"line": 4, "character": 0}, "end": {"line": 4, "character": 0}}})
+expect(hs and {h["position"]["line"] for h in hs} == {4}, f"hints honour the range: {hs}")
+# related [R13]: the module OPEN with a sig mismatch — its direct analysis
+# relates the error to the signature line; the entry's imported-here
+# note (still published) relates to the module's error site
+open(lib8, "w").write(LIB8_BAD)
+send8({"jsonrpc": "2.0", "method": "textDocument/didChange",
+       "params": {"textDocument": {"uri": lib8_uri, "version": 2}, "contentChanges": [{"text": LIB8_BAD}]}})
+got = collect8([lib8_uri, ent8_uri])
+mm = [d for d in got[nuri(lib8_uri)] if "does not match its signature" in d["message"]]
+expect(mm and any(r["message"].startswith("the signature declares") and r["location"]["range"]["start"]["line"] == 2
+                  for r in mm[0].get("relatedInformation", [])),
+       f"a sig mismatch relates to its signature line: {mm}")
+note = [d for d in got[nuri(ent8_uri)] if d["code"] == "imported-here"]
+expect(note and note[0].get("relatedInformation")
+       and nuri(note[0]["relatedInformation"][0]["location"]["uri"]) == nuri(lib8_uri),
+       f"the imported-here note relates to the module site: {note}")
+# the module CLOSED (the bad file stays on disk): its error now comes
+# through the import channel, published on its own uri, related to the
+# entry's import line
+send8({"jsonrpc": "2.0", "method": "textDocument/didClose", "params": {"textDocument": {"uri": lib8_uri}}})
+got = collect8([lib8_uri, ent8_uri])
+mm = [d for d in got[nuri(lib8_uri)] if "does not match its signature" in d["message"]]
+expect(mm and any(nuri(r["location"]["uri"]) == nuri(ent8_uri) and r["message"] == "imported here"
+                  for r in mm[0].get("relatedInformation", [])),
+       f"the module error relates to the import line: {mm}")
+send8({"jsonrpc": "2.0", "id": 9, "method": "shutdown", "params": {}})
+m = read8()
+while m.get("id") != 9:
+    m = read8()
+send8({"jsonrpc": "2.0", "method": "exit", "params": {}}); p8.wait(timeout=5)
 
 print("lsp-e2e: all probes green")

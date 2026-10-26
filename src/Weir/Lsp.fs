@@ -182,18 +182,23 @@ let tokenLegend = [| "weirCommandHead"; "weirArgv"; "weirSplice" |]
 // request (a 20k-line file, seconds each). Keyed by file and init mode,
 // hit only on the exact same lines; every document event (open, change,
 // close) drops it all, so an edited module reaches its importers.
-let private analysisCache =
-    Collections.Generic.Dictionary<
-        struct (bool * string),
-        string list *
-        (Script.Diagnostic list *
+// the entry carries the file's `///` attachments and `#sig` table as
+// lazies: hover, symbols and links read them per request, and each is
+// O(lines) (the sig table reads sig files from disk)
+type private Analysis =
+    { Result:
+        Script.Diagnostic list *
         (Script.LogicalLine * Script.CheckedStatement) list *
         TypeEnv *
         Script.LogicalLine list *
-        (Script.LogicalLine * Script.CheckedStatement) list)
-     >()
+        (Script.LogicalLine * Script.CheckedStatement) list
+      Docs: Lazy<Script.DocAttach list>
+      Sigs: Lazy<Script.SigInfo list> }
 
-let private analyzeCachedAs (asInit: bool) (path: string) (lines: string list) =
+let private analysisCache =
+    Collections.Generic.Dictionary<struct (bool * string), string list * Analysis>()
+
+let private analysisEntry (asInit: bool) (path: string) (lines: string list) : Analysis =
     let key = struct (asInit, path)
 
     let hit =
@@ -205,15 +210,56 @@ let private analyzeCachedAs (asInit: bool) (path: string) (lines: string list) =
     match hit with
     | Some r -> r
     | None ->
-        let r = Script.analyzeLinesAs asInit path lines
+        let r =
+            { Result = Script.analyzeLinesAs asInit path lines
+              Docs = lazy (Script.docAttachments lines)
+              Sigs = lazy (Script.sigInfosForFile path lines) }
+
         lock analysisCache (fun () -> analysisCache[key] <- (lines, r))
         r
 
+let private analyzeCachedAs (asInit: bool) (path: string) (lines: string list) =
+    (analysisEntry asInit path lines).Result
+
 let analyzeCached (path: string) (lines: string list) = analyzeCachedAs false path lines
+
+let private docAttachmentsCached (path: string) (lines: string list) =
+    (analysisEntry false path lines).Docs.Force()
+
+let private sigInfosCached (path: string) (lines: string list) =
+    (analysisEntry false path lines).Sigs.Force()
 
 /// drop every cached analysis — a document changed [D:lsp-analysis-cache]
 let dropAnalyses () =
     lock analysisCache (fun () -> analysisCache.Clear())
+
+/// the synthetic-span rule [D:semantic-tokens], one check for tokens,
+/// hints, links and symbols: the logical slice [startCol, startCol+len)
+/// sits verbatim at its translated physical home — Some (1-based line,
+/// col) — else None, so nothing anchors on inserted join/wrap text.
+/// Compared against the RAW buffer lines, never effectiveLines: an init
+/// file's rewritten `#session` field (`let _nv = v`, [D:init-marker])
+/// is no binder of the user's.
+let verbatimAt (raw: string[]) (ll: Script.LogicalLine) (startCol: int) (len: int) : (int * int) option =
+    if len > 0 && startCol >= 1 && startCol - 1 + len <= ll.Text.Length then
+        let l1, c1 = Script.translate ll startCol
+        let l2, c2 = Script.translate ll (startCol + len - 1)
+
+        if l1 = l2 && c2 = c1 + len - 1 && l1 >= 1 && l1 <= raw.Length then
+            let phys = raw[l1 - 1]
+
+            if
+                c1 >= 1
+                && c1 - 1 + len <= phys.Length
+                && phys.Substring(c1 - 1, len) = ll.Text.Substring(startCol - 1, len)
+            then
+                Some(l1, c1)
+            else
+                None
+        else
+            None
+    else
+        None
 
 /// (0-based line, 0-based startChar, length, tokenType), sorted by
 /// position — the raw form the LSP delta encoding rides on.
@@ -227,19 +273,9 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
     // spans anchored on inserted join/wrap text emit nothing rather
     // than a mislocated token
     let emitSpan (ll: Script.LogicalLine) (startCol: int) (len: int) (ty: int) =
-        if len > 0 && startCol >= 1 && startCol - 1 + len <= ll.Text.Length then
-            let l1, c1 = Script.translate ll startCol
-            let l2, c2 = Script.translate ll (startCol + len - 1)
-
-            if l1 = l2 && c2 = c1 + len - 1 && l1 >= 1 && l1 <= lineArr.Length then
-                let phys = lineArr[l1 - 1]
-
-                if
-                    c1 >= 1
-                    && c1 - 1 + len <= phys.Length
-                    && phys.Substring(c1 - 1, len) = ll.Text.Substring(startCol - 1, len)
-                then
-                    out.Add(l1 - 1, c1 - 1, len, ty)
+        match verbatimAt lineArr ll startCol len with
+        | Some(l1, c1) -> out.Add(l1 - 1, c1 - 1, len, ty)
+        | None -> ()
 
     let charAt (ll: Script.LogicalLine) (col: int) =
         if col >= 1 && col <= ll.Text.Length then
@@ -1186,7 +1222,7 @@ let definitionTarget
                 teOf chk
                 |> Option.bind (cmdSurfaceAt jcol)
                 |> Option.bind (fun (prog, progCol, words) ->
-                    Script.sigInfosForFile path lines
+                    sigInfosCached path lines
                     |> List.tryFind (fun si -> si.Tool = prog)
                     |> Option.bind (fun si ->
                         if progCol <= jcol && jcol < progCol + prog.Length then
@@ -2225,7 +2261,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             teOf chk
             |> Option.bind (cmdSurfaceAt jcol)
             |> Option.bind (fun (prog, progCol, words) ->
-                Script.sigInfosForFile path lines
+                sigInfosCached path lines
                 |> List.tryFind (fun si -> si.Tool = prog)
                 |> Option.map (fun si -> si, prog, progCol, words))
 
@@ -2252,7 +2288,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                     let fdoc =
                         typeSiteIn sigStmts rn (Some f)
                         |> Option.bind (fun (dl, dc, _) ->
-                            Script.docAttachments sigLines
+                            docAttachmentsCached si.SigPath sigLines
                             |> List.tryPick (fun d ->
                                 if d.Line = dl && d.Col = dc then
                                     Some(reflowDoc d.Doc)
@@ -2377,7 +2413,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
 
         // the `///` doc: at the cursor for a declaration site
         let sourceDoc =
-            Script.docAttachments lines
+            docAttachmentsCached path lines
             |> List.tryPick (fun d ->
                 if d.Line = line && d.Col <= col && col < d.Col + d.Len then
                     Some(reflowDoc d.Doc)
@@ -2394,10 +2430,10 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 definitionTarget path lines line col
                 |> Option.bind (fun (fileOpt, dl, dc, _) ->
                     (match fileOpt with
-                     | None -> Some lines
-                     | Some f -> Script.targetSourceLines f)
-                    |> Option.bind (fun docSrc ->
-                        Script.docAttachments docSrc
+                     | None -> Some(path, lines)
+                     | Some f -> Script.targetSourceLines f |> Option.map (fun ls -> f, ls))
+                    |> Option.bind (fun (docPath, docSrc) ->
+                        docAttachmentsCached docPath docSrc
                         |> List.tryPick (fun d ->
                             if d.Line = dl && d.Col = dc then
                                 Some(reflowDoc d.Doc)
@@ -2433,6 +2469,693 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
 /// (imports and signatures resolve relative to the real path, so the
 /// handler serves hoverAt)
 let hoverType (lines: string list) (line: int) (col: int) : string option = hoverAt "hover" lines line col
+
+// ---- editor polish: the pure functions [PLAN-lsp-editor-polish] ----
+// Each reads the one cached analysis and answers through the verbatim
+// rule; the handlers in `run` only decode params and write JSON.
+
+type InlayHintOptions =
+    { BindingTypes: bool
+      ParameterTypes: bool
+      PipelineTypes: bool
+      MaxLabel: int }
+
+/// the defaults [D:inlay-hints]: binder, parameter and return types on,
+/// pipeline-stage types off, labels cut at 40 chars
+let defaultInlayOptions =
+    { BindingTypes = true
+      ParameterTypes = true
+      PipelineTypes = false
+      MaxLabel = 40 }
+
+type InlayHint =
+    { Line: int // 1-based physical insertion point
+      Col: int
+      Label: string // ": seq<int>"
+      Tooltip: string option // the full type when Label is truncated
+      Kind: int // 1 = Type, 2 = Parameter
+      PaddingLeft: bool
+      PaddingRight: bool }
+
+/// the `weir.inlayHints` settings object → options; an absent or
+/// malformed key keeps its default [D:inlay-hints]
+let inlayOptionsOf (json: JsonElement) : InlayHintOptions =
+    let flag (k: string) (d: bool) =
+        match tryProp k json with
+        | Some v when v.ValueKind = JsonValueKind.True -> true
+        | Some v when v.ValueKind = JsonValueKind.False -> false
+        | _ -> d
+
+    { BindingTypes = flag "bindingTypes" defaultInlayOptions.BindingTypes
+      ParameterTypes = flag "parameterTypes" defaultInlayOptions.ParameterTypes
+      PipelineTypes = flag "pipelineTypes" defaultInlayOptions.PipelineTypes
+      MaxLabel =
+        jNum "maxLabelLength" json
+        |> Option.filter (fun n -> n > 0)
+        |> Option.defaultValue defaultInlayOptions.MaxLabel }
+
+// a sentinel type variable (`__hole…`, `__…`) is the checker's, not the
+// user's [D:user-language-messages] — nothing renders it
+let private hasSentinel (ty: Ty) =
+    Types.tyVars ty |> Set.exists (fun v -> v.StartsWith "__")
+
+// the lambda chain a `let f a b = …` desugars to: the last param's span
+// and the body's (return) type
+let rec private lastParam (te: Check.TypedExpr) : (Span * Ty) option =
+    match te.Kind with
+    | Check.TELambda(_, pspan, body) ->
+        (match body.Kind with
+         | Check.TELambda _ -> lastParam body
+         | _ -> Some(pspan, body.Ty))
+    | _ -> None
+
+/// inlay hints for the physical lines [fromLine, toLine] (1-based)
+/// [D:inlay-hints]: a binder's type after the binder, a parameter's
+/// after the parameter (Kind 2), a function's return type before its
+/// `=`, each the type hover shows there — never on a signed member (the
+/// signature is the annotation [D:module-signatures]), never on `()`,
+/// `_` or a pattern binder, never off a sentinel type, and only where
+/// the word sits verbatim at its physical home (verbatimAt). A failed
+/// statement hints nothing; its neighbours still do.
+let inlayHintsFor
+    (opts: InlayHintOptions)
+    (path: string)
+    (lines: string list)
+    (fromLine: int)
+    (toLine: int)
+    : InlayHint list =
+    let _, stmts, _, _, _ = analyzeCached path lines
+    let raw = List.toArray lines
+    let out = ResizeArray<InlayHint>()
+
+    let signed =
+        stmts
+        |> List.choose (fun (_, c) ->
+            match c.Kind with
+            | Script.KSig(n, _) -> Some n
+            | _ -> None)
+        |> Set.ofList
+
+    // the viewport filter runs before any walk: a statement is visible
+    // when its physical lines overlap the range
+    let overlaps (ll: Script.LogicalLine) =
+        let last = ll.Segments |> List.fold (fun m (_, pl, _) -> max m pl) ll.Head
+        last >= fromLine && ll.Head <= toLine
+
+    // R2: a long label is cut with a trailing `…`, the full type rides
+    // in the tooltip; an untruncated label carries none
+    let place (line: int) (col: int) (ty: Ty) (kind: int) (padLeft: bool) (padRight: bool) =
+        if not (hasSentinel ty) then
+            let full = formatTy ty
+
+            let label, tip =
+                if full.Length > opts.MaxLabel then
+                    ": " + full.Substring(0, opts.MaxLabel - 1) + "…", Some full
+                else
+                    ": " + full, None
+
+            out.Add
+                { Line = line
+                  Col = col
+                  Label = label
+                  Tooltip = tip
+                  Kind = kind
+                  PaddingLeft = padLeft
+                  PaddingRight = padRight }
+
+    // after the word at the logical column, when it is verbatim there
+    let afterWord (ll: Script.LogicalLine) (jcol: int) (word: string) (ty: Ty) (kind: int) =
+        if word <> "()" && word <> "_" then
+            match verbatimAt raw ll jcol word.Length with
+            | Some(l, c) -> place l (c + word.Length) ty kind false false
+            | None -> ()
+
+    // the return type sits before the `=` that follows the last param
+    // (so it never collides with that param's own hint); `let f = fun…`
+    // has no such `=` and gets no return hint
+    let returnHint (ll: Script.LogicalLine) (te: Check.TypedExpr) (bodyStart: int) =
+        if opts.BindingTypes then
+            match lastParam te with
+            | Some(pspan, ret) ->
+                let eq = ll.Text.IndexOf('=', pspan.End.Col - 1)
+
+                if eq >= 0 && eq + 1 < bodyStart then
+                    match verbatimAt raw ll (eq + 1) 1 with
+                    | Some(l, c) -> place l c ret 1 false true
+                    | None -> ()
+            | None -> ()
+
+    let rec walk (ll: Script.LogicalLine) (te: Check.TypedExpr) =
+        match te.Kind with
+        | Check.TELet(name, nameSpan, value, body) ->
+            (match value.Kind with
+             // an inner function: its params and return ride the lambda
+             // walk, as a top-level function's do
+             | Check.TELambda _ -> returnHint ll value (lambdaBodyStart value)
+             | _ -> if opts.BindingTypes then afterWord ll nameSpan.Start.Col name value.Ty 1)
+
+            walk ll value
+            walk ll body
+        | Check.TELambda(p, pspan, body) ->
+            (match te.Ty with
+             | TFun(dom, _) when opts.ParameterTypes -> afterWord ll pspan.Start.Col p dom 2
+             | _ -> ())
+
+            walk ll body
+        // a multi-line pipeline's stage shows its type at the stage's
+        // line end (opt-in: noise in a long chain); a single-line pipe
+        // would land mid-line and gets nothing
+        | Check.TEPipe(arg, fn) ->
+            (if opts.PipelineTypes then
+                 let la, _ = Script.translate ll arg.Span.Start.Col
+                 let lf, _ = Script.translate ll fn.Span.Start.Col
+
+                 if lf <> la && lf >= 1 && lf <= raw.Length then
+                     let code = (Script.stripComment raw[lf - 1]).TrimEnd()
+                     place lf (code.Length + 1) te.Ty 1 true false)
+
+            walk ll arg
+            walk ll fn
+        | _ ->
+            for c in Check.childExprs te do
+                walk ll c
+
+    // the innermost lambda body's start: the `=` must precede it
+    and lambdaBodyStart (te: Check.TypedExpr) =
+        match te.Kind with
+        | Check.TELambda(_, _, body) -> lambdaBodyStart body
+        | _ -> te.Span.Start.Col
+
+    for (ll, chk) in stmts |> List.filter (fun (ll, _) -> overlaps ll) do
+        match chk.Kind with
+        | Script.KLet(name, _, _) when Set.contains name signed -> ()
+        | Script.KLet(name, sch, te) ->
+            (match te.Kind with
+             | Check.TELambda _ -> returnHint ll te (lambdaBodyStart te)
+             | _ ->
+                 if opts.BindingTypes then
+                     binderCol name ll.Text |> Option.iter (fun jc -> afterWord ll jc name sch.Ty 1))
+
+            walk ll te
+        | Script.KLetPat(pat, schemes, te) ->
+            if opts.BindingTypes then
+                for n, span in Check.patNameSpans pat do
+                    schemes
+                    |> List.tryFind (fun (sn, _) -> sn = n)
+                    |> Option.iter (fun (_, sc) -> afterWord ll span.Start.Col n sc.Ty 1)
+
+            walk ll te
+        // the `validate s =` binder is the payload [D:validated-types]
+        | Script.KType(decl, Some(_, te)) ->
+            (match decl.Validate, decl.Body with
+             | Some v, Ast.DUnion [ (_, Some payload, _) ] when opts.BindingTypes ->
+                 (match v.Binder.PKind with
+                  | Ast.PVar n -> afterWord ll v.Binder.PSpan.Start.Col n payload 1
+                  | _ -> ())
+             | _ -> ())
+
+            walk ll te
+        | Script.KType _
+        | Script.KSig _
+        | Script.KModule _
+        | Script.KImport _ -> ()
+        | Script.KCmd te
+        | Script.KExpr te -> walk ll te
+
+    out |> Seq.sortBy (fun h -> h.Line, h.Col) |> List.ofSeq
+
+// ---- document symbols [D:document-symbols] ----------------------
+
+type DocSymbol =
+    { Name: string
+      Detail: string option
+      Kind: int // LSP SymbolKind
+      Range: int * int * int * int // 1-based physical (l1, c1, l2, c2), c2 past the last char
+      Selection: int * int * int * int
+      Children: DocSymbol list }
+
+/// the outline [D:document-symbols]: one symbol per declaration-shaped
+/// statement (module header, import, `#sig`, type with its members,
+/// let with its nested functions, pattern-let binders), a signature
+/// attached to its implementation (R4), a textual fallback for a
+/// failed `let`/`type` (R5). A let's detail is the hover's first line
+/// (sigOrFlat), so outline and hover never disagree.
+let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
+    let _, stmts, _, lls, _ = analyzeCached path lines
+    let raw = List.toArray lines
+
+    let lineLen (l: int) =
+        if l >= 1 && l <= raw.Length then raw[l - 1].Length else 0
+
+    let lastLine (ll: Script.LogicalLine) =
+        ll.Segments |> List.fold (fun m (_, pl, _) -> max m pl) ll.Head
+
+    let rangeOf (ll: Script.LogicalLine) =
+        let l2 = lastLine ll
+        ll.Head, 1, l2, lineLen l2 + 1
+
+    let lineRange (l: int) = l, 1, l, lineLen l + 1
+
+    // the name's own span when verbatim, else the statement's first
+    // column (a selection must sit inside its range)
+    let selAt (ll: Script.LogicalLine) (jcol: int option) (len: int) =
+        match jcol |> Option.bind (fun jc -> verbatimAt raw ll jc len) with
+        | Some(l, c) -> l, c, l, c + len
+        | None -> ll.Head, 1, ll.Head, 1
+
+    let sym name detail kind range sel children =
+        { Name = name
+          Detail = detail
+          Kind = kind
+          Range = range
+          Selection = sel
+          Children = children }
+
+    let isFun (ty: Ty) =
+        match ty with
+        | TFun _ -> true
+        | _ -> false
+
+    // nested functions as children (inner value lets are not) [R5]
+    let rec nestedFns (ll: Script.LogicalLine) (te: Check.TypedExpr) : DocSymbol list =
+        match te.Kind with
+        | Check.TELet(n, nspan, value, body) when
+            (match value.Kind with
+             | Check.TELambda _ -> true
+             | _ -> false)
+            ->
+            let l1, c1 = Script.translate ll nspan.Start.Col
+            let l2, c2 = Script.translate ll (max nspan.Start.Col (value.Span.End.Col - 1))
+
+            let sel =
+                match verbatimAt raw ll nspan.Start.Col n.Length with
+                | Some(l, c) -> l, c, l, c + n.Length
+                | None -> l1, c1, l1, c1
+
+            sym
+                n
+                (Some(sigOrFlat n (lambdaParamNames value) value.Ty))
+                12
+                (l1, c1, l2, c2 + 1)
+                sel
+                (nestedFns ll value)
+            :: nestedFns ll body
+        | _ -> Check.childExprs te |> List.collect (nestedFns ll)
+
+    // a member word after the declaration's first `=` (typeSiteIn's rule)
+    let memberSym (ll: Script.LogicalLine) (eq: int) (word: string) (detail: string option) (kind: int) =
+        let jc = wordFind word ll.Text (if eq >= 0 then eq else 0) ll.Text.Length
+
+        let sel = selAt ll jc word.Length
+        let l, _, _, _ = sel
+        sym word detail kind (lineRange l) sel []
+
+    // signatures attach to the implementation below them [R4]: the impl
+    // symbol's range starts at the sig line, its detail is the declared
+    // type; an orphan keeps its own symbol
+    let sigs =
+        stmts
+        |> List.choose (fun (ll, c) ->
+            match c.Kind with
+            | Script.KSig(n, ms) -> Some(n, (ll, ms))
+            | _ -> None)
+        |> Map.ofList
+
+    let checkedHeads = stmts |> List.map (fun (ll, _) -> ll.Head) |> Set.ofList
+
+    // a failed statement that reads as a declaration keeps a textual
+    // symbol (no detail) until recovery lands [R5]; a signature above
+    // it still attaches
+    let fallback =
+        lls
+        |> List.filter (fun ll -> not (Set.contains ll.Head checkedHeads))
+        |> List.choose (fun ll ->
+            let m =
+                Text.RegularExpressions.Regex.Match(ll.Text, @"^\s*(let|type)\s+(?:pure\s+)?([A-Za-z_][A-Za-z0-9_']*)")
+
+            if m.Success then
+                let name = m.Groups[2].Value
+                let kind = if m.Groups[1].Value = "let" then 13 else 23
+                let l1, c1, l2, c2 = rangeOf ll
+
+                let range =
+                    match Map.tryFind name sigs with
+                    | Some(sll, _) when kind = 13 && sll.Head < ll.Head -> sll.Head, 1, l2, c2
+                    | _ -> l1, c1, l2, c2
+
+                Some(sym name None kind range (selAt ll (Some(m.Groups[2].Index + 1)) name.Length) [])
+            else
+                None)
+
+    let implemented =
+        (stmts
+         |> List.choose (fun (_, c) ->
+             match c.Kind with
+             | Script.KLet(n, _, _) -> Some n
+             | _ -> None))
+        @ (fallback |> List.filter (fun f -> f.Kind = 13) |> List.map (fun f -> f.Name))
+        |> Set.ofList
+
+    let fromStmts =
+        stmts
+        |> List.collect (fun (ll, chk) ->
+            match chk.Kind with
+            | Script.KModule(name, kwSpan) ->
+                [ sym
+                      (name |> Option.defaultValue "module")
+                      (Some "module header")
+                      2
+                      (rangeOf ll)
+                      (selAt ll (Some kwSpan.Start.Col) "module".Length)
+                      [] ]
+            | Script.KImport lm ->
+                let q1 = ll.Text.IndexOf '"'
+                let q2 = (if q1 >= 0 then ll.Text.IndexOf('"', q1 + 1) else -1)
+
+                let written =
+                    if q1 >= 0 && q2 > q1 then
+                        Some(ll.Text.Substring(q1, q2 - q1 + 1))
+                    else
+                        None
+
+                let aliasCol = wordFind lm.Alias ll.Text (max 0 q2) ll.Text.Length
+
+                let sel =
+                    match aliasCol with
+                    | Some _ -> selAt ll aliasCol lm.Alias.Length
+                    | None -> selAt ll (if q1 >= 0 then Some(q1 + 1) else None) (q2 - q1 + 1)
+
+                [ sym lm.Alias written 2 (rangeOf ll) sel [] ]
+            | Script.KType(decl, validator) ->
+                let eq = ll.Text.IndexOf '='
+
+                let detail =
+                    match decl.Params with
+                    | [] -> None
+                    | ps -> Some("<" + (ps |> List.map (fun p -> "'" + p) |> String.concat ", ") + ">")
+
+                let members, kind =
+                    match decl.Body with
+                    | Ast.DRecord fields ->
+                        fields |> List.map (fun (f, ty, _) -> memberSym ll eq f (Some(formatTy ty)) 8), 23
+                    | Ast.DUnion cases ->
+                        cases
+                        |> List.map (fun (c, payload, _) -> memberSym ll eq c (payload |> Option.map formatTy) 22),
+                        10
+
+                let validate =
+                    match validator, decl.Validate, decl.Body with
+                    | Some _, Some v, Ast.DUnion [ (_, Some payload, _) ] ->
+                        let vcol = wordFind "validate" ll.Text (max 0 eq) ll.Text.Length
+                        let sel = selAt ll vcol "validate".Length
+                        let l, _, _, _ = sel
+
+                        let detail =
+                            match v.Binder.PKind with
+                            | Ast.PVar b -> Some $"{b}: {formatTy payload}"
+                            | _ -> None
+
+                        [ sym "validate" detail 6 (lineRange l) sel [] ]
+                    | _ -> []
+
+                [ sym
+                      decl.Name
+                      detail
+                      kind
+                      (rangeOf ll)
+                      (selAt ll (wordFind decl.Name ll.Text 0 (if eq >= 0 then eq else ll.Text.Length)) decl.Name.Length)
+                      (members @ validate) ]
+            | Script.KLet(name, sch, te) ->
+                let ps = lambdaParamNames te
+                let kind = if isFun sch.Ty || not ps.IsEmpty then 12 else 13
+                let l1, c1, l2, c2 = rangeOf ll
+
+                let range, detail =
+                    match Map.tryFind name sigs with
+                    | Some(sll, ms) when sll.Head < ll.Head -> (sll.Head, 1, l2, c2), sigOrFlat name ps ms.Ty
+                    | _ -> (l1, c1, l2, c2), sigOrFlat name ps sch.Ty
+
+                [ sym name (Some detail) kind range (selAt ll (binderCol name ll.Text) name.Length) (nestedFns ll te) ]
+            | Script.KLetPat(pat, schemes, _) ->
+                Check.patNameSpans pat
+                |> List.sortBy (fun (_, sp) -> sp.Start.Col)
+                |> List.map (fun (n, sp) ->
+                    let detail =
+                        schemes |> List.tryPick (fun (sn, sc) -> if sn = n then Some(formatTy sc.Ty) else None)
+
+                    sym n detail 13 (rangeOf ll) (selAt ll (Some sp.Start.Col) n.Length) [])
+            | Script.KSig(name, ms) when not (Set.contains name implemented) ->
+                [ sym
+                      name
+                      (Some "signature — no implementation")
+                      (if isFun ms.Ty then 12 else 13)
+                      (rangeOf ll)
+                      (selAt ll (binderCol name ll.Text) name.Length)
+                      [] ]
+            | Script.KSig _
+            | Script.KCmd _
+            | Script.KExpr _ -> [])
+
+    // `#sig` heads are no statements: read off the sig table
+    let sigHeads =
+        sigInfosCached path lines
+        |> List.choose (fun si ->
+            if si.DeclLine >= 1 && si.DeclLine <= raw.Length then
+                let line = raw[si.DeclLine - 1]
+                let i = line.IndexOf si.Tool
+                let l = si.DeclLine
+
+                let dir =
+                    try
+                        IO.Path.GetDirectoryName path
+                    with _ ->
+                        ""
+
+                let rel =
+                    if String.IsNullOrEmpty dir then
+                        si.SigPath
+                    else
+                        try
+                            IO.Path.GetRelativePath(dir, si.SigPath)
+                        with _ ->
+                            si.SigPath
+
+                Some(
+                    sym
+                        si.Tool
+                        (Some rel)
+                        11
+                        (lineRange l)
+                        (if i >= 0 then (l, i + 1, l, i + 1 + si.Tool.Length) else (l, 1, l, 1))
+                        []
+                )
+            else
+                None)
+
+    fromStmts @ fallback @ sigHeads
+    |> List.sortBy (fun s ->
+        let l, c, _, _ = s.Range
+        l, c)
+
+// ---- folding ranges [D:folding-ranges] --------------------------
+
+/// 1-based (start, end, kind) with kind ∈ comment | imports | None,
+/// whole lines [D:folding-ranges]: an assembled statement over ≥2
+/// physical lines, inner blocks by indentation, match arms (a `|` line
+/// to the line before the next arm or the block end), `///` and `//`
+/// runs (never merged, never inside district content [D:content-bytes]),
+/// `import` and `#sig` runs. The textual rules run over the raw lines,
+/// so a buffer that fails assembly still folds.
+let foldingRangesFor (path: string) (lines: string list) : (int * int * string option) list =
+    let _, _, _, lls, _ = analyzeCached path lines
+    let raw = List.toArray lines
+    let n = raw.Length
+    let mask = Script.districtContentMask lines
+    let out = ResizeArray<int * int * string option>()
+    let blank (l: int) = raw[l - 1].Trim() = ""
+    let indentOf (l: int) = raw[l - 1].Length - raw[l - 1].TrimStart().Length
+    let codeOf (l: int) = (Script.stripComment raw[l - 1]).TrimStart()
+
+    // trailing blank lines never fold
+    let trimEnd (s: int) (e: int) =
+        let mutable e = min e n
+
+        while e > s && blank e do
+            e <- e - 1
+
+        e
+
+    let add (s: int) (e: int) (kind: string option) =
+        let e = trimEnd s e
+
+        if e > s then
+            out.Add(s, e, kind)
+
+    // rule 1: the assembled statement
+    for ll in lls do
+        let last = ll.Segments |> List.fold (fun m (_, pl, _) -> max m pl) ll.Head
+
+        if last > ll.Head && ll.Head >= 1 && last <= n then
+            add ll.Head last None
+
+    // rules 2–3 over every line (a deeper block belongs to the line
+    // above it; blank lines are transparent)
+    for i in 1..n do
+        if not (blank i) then
+            let ind = indentOf i
+            let mutable j = i + 1
+
+            while j <= n && blank j do
+                j <- j + 1
+
+            if j <= n && indentOf j > ind then
+                let mutable e = j
+                let mutable k = j + 1
+
+                while k <= n && (blank k || indentOf k > ind) do
+                    if not (blank k) then
+                        e <- k
+
+                    k <- k + 1
+
+                add i e None
+
+            // rule 3: a match arm (never a pipe stage, never district
+            // content where `|` is a block scalar)
+            let code = codeOf i
+
+            if
+                not mask[i - 1]
+                && code.StartsWith "|"
+                && not (code.StartsWith "|>")
+                && not (code.StartsWith "||")
+            then
+                let mutable e = i
+                let mutable k = i + 1
+                let mutable stop = false
+
+                while not stop && k <= n do
+                    if blank k then
+                        k <- k + 1
+                    elif indentOf k > ind then
+                        e <- k
+                        k <- k + 1
+                    else
+                        stop <- true
+
+                add i e None
+
+    // rule 4: comment runs, `///` and `//` apart
+    let kindOf (l: int) =
+        if mask[l - 1] || blank l then
+            0
+        elif raw[l - 1].TrimStart().StartsWith "///" then
+            1
+        elif Script.classifyLine raw[l - 1] = Script.LineKind.CommentOnly then
+            2
+        else
+            0
+
+    let mutable runStart = 0
+    let mutable runKind = 0
+
+    for i in 1 .. n + 1 do
+        let k = if i <= n then kindOf i else 0
+
+        if k <> runKind then
+            if runKind <> 0 then
+                add runStart (i - 1) (Some "comment")
+
+            runStart <- i
+            runKind <- k
+
+    // rule 5: `import` and `#sig` runs
+    let importish (l: int) =
+        let t = raw[l - 1]
+        t.StartsWith "import " || t.StartsWith "#sig "
+
+    let mutable s = 0
+
+    for i in 1 .. n + 1 do
+        if i <= n && importish i then
+            if s = 0 then
+                s <- i
+        else
+            if s > 0 then
+                add s (i - 1) (Some "imports")
+
+            s <- 0
+
+    out
+    |> Seq.groupBy (fun (s, e, _) -> s, e)
+    |> Seq.map (fun ((s, e), g) -> s, e, (g |> Seq.tryPick (fun (_, _, k) -> k)))
+    |> Seq.sortBy (fun (s, e, _) -> s, -e)
+    |> List.ofSeq
+
+// ---- document links [D:document-links] --------------------------
+
+/// (line, startCol, len, targetPath, tooltip), 1-based
+/// [D:document-links]: resolved targets only — an import's path to the
+/// module file, a `schema=` name to the vendored file, a `#sig` tool
+/// (and its path override) to the signature file. A target the
+/// checker could not resolve gets no link; the diagnostic says why.
+let documentLinksFor (path: string) (lines: string list) : (int * int * int * string * string) list =
+    let _, stmts, _, _, _ = analyzeCached path lines
+    let raw = List.toArray lines
+    let out = ResizeArray<int * int * int * string * string>()
+
+    for (ll, chk) in stmts do
+        match chk.Kind with
+        | Script.KImport lm ->
+            let q1 = ll.Text.IndexOf '"'
+            let q2 = (if q1 >= 0 then ll.Text.IndexOf('"', q1 + 1) else -1)
+
+            if q1 >= 0 && q2 > q1 + 1 then
+                verbatimAt raw ll (q1 + 2) (q2 - q1 - 1)
+                |> Option.iter (fun (l, c) -> out.Add(l, c, q2 - q1 - 1, lm.AbsPath, lm.AbsPath))
+        | _ ->
+            let rec walk (te: Check.TypedExpr) =
+                (match te.Kind with
+                 | Check.TEYaml(_, Some name, _) ->
+                     let idx = ll.Text.IndexOf("schema=" + name)
+
+                     if idx >= 0 then
+                         match Script.resolveSchemaFile path name with
+                         | Ok(_, file) ->
+                             verbatimAt raw ll (idx + "schema=".Length + 1) name.Length
+                             |> Option.iter (fun (l, c) -> out.Add(l, c, name.Length, file, file))
+                         | Error _ -> ()
+                 | _ -> ())
+
+                for c in Check.childExprs te do
+                    walk c
+
+            teOf chk |> Option.iter walk
+
+    for si in sigInfosCached path lines do
+        if si.DeclLine >= 1 && si.DeclLine <= raw.Length then
+            let m =
+                Text.RegularExpressions.Regex.Match(raw[si.DeclLine - 1], "^\\s*#sig\\s+(\\S+)(?:\\s+\"([^\"]*)\")?")
+
+            if m.Success && m.Groups[1].Value = si.Tool then
+                out.Add(si.DeclLine, m.Groups[1].Index + 1, m.Groups[1].Length, si.SigPath, si.SigPath)
+
+                if m.Groups[2].Success && m.Groups[2].Length > 0 then
+                    out.Add(si.DeclLine, m.Groups[2].Index + 1, m.Groups[2].Length, si.SigPath, si.SigPath)
+
+    out |> Seq.sortBy (fun (l, c, _, _, _) -> l, c) |> List.ofSeq
+
+// ---- diagnostic tags [D:diagnostic-tags] ------------------------
+
+/// LSP DiagnosticTag values for a diagnostic: Unnecessary (1) on an
+/// unread binder — never the bare `_` discard, which is misnamed, not
+/// unnecessary — and on an unreachable arm. Nothing is Deprecated: the
+/// retired-name teachings are hard errors, not deprecations.
+let diagnosticTags (d: Script.Diagnostic) : int list =
+    match d.Code with
+    | "unused-binding" when d.Message <> Script.bareDiscardMessage -> [ 1 ]
+    | "unreachable-arm" -> [ 1 ]
+    | _ -> []
 
 // ---- the server ---------------------------------------------------
 
@@ -2566,6 +3289,39 @@ let run (debug: bool) : int =
     // qualified spelling out of a bare-name teaching [D:bare-partition]
     let lastPublished = Collections.Generic.Dictionary<string, Script.Diagnostic list>()
 
+    // what the client declared at initialize [D:diagnostic-tags]: tags
+    // and related information go out only when it asked for them; the
+    // outline is hierarchical only when it can show one
+    let mutable clientTags: Set<int> = Set.empty
+    let mutable clientRelated = false
+    let mutable hierarchicalSymbols = false
+    // the inlay hint options, from initializationOptions and every
+    // didChangeConfiguration [D:inlay-hints]; editors that send nothing
+    // keep the defaults
+    let mutable inlayOptions = defaultInlayOptions
+
+    // the client's own spelling when the file is an open doc
+    // [D:lsp-uri-spelling]; pathToUri serves only files it never named
+    let uriFor (file: string) =
+        docs.Keys
+        |> Seq.tryFind (fun k -> uriToPath k = file)
+        |> Option.defaultValue (pathToUri file)
+
+    let writeRange0 (w: Text.Json.Utf8JsonWriter) (l1: int) (c1: int) (l2: int) (c2: int) =
+        w.WritePropertyName "range"
+        w.WriteStartObject()
+        w.WritePropertyName "start"
+        w.WriteStartObject()
+        w.WriteNumber("line", l1)
+        w.WriteNumber("character", c1)
+        w.WriteEndObject()
+        w.WritePropertyName "end"
+        w.WriteStartObject()
+        w.WriteNumber("line", l2)
+        w.WriteNumber("character", c2)
+        w.WriteEndObject()
+        w.WriteEndObject()
+
     let publishFor (uri: string) (diags: Script.Diagnostic list) =
         lastPublished[uri] <- diags
 
@@ -2607,6 +3363,34 @@ let run (debug: bool) : int =
                 w.WriteString("code", d.Code)
                 w.WriteString("source", "weir")
                 w.WriteString("message", d.Message)
+
+                let tags = diagnosticTags d |> List.filter (fun t -> Set.contains t clientTags)
+
+                if not tags.IsEmpty then
+                    w.WritePropertyName "tags"
+                    w.WriteStartArray()
+
+                    for t in tags do
+                        w.WriteNumberValue t
+
+                    w.WriteEndArray()
+
+                if clientRelated && not d.Related.IsEmpty then
+                    w.WritePropertyName "relatedInformation"
+                    w.WriteStartArray()
+
+                    for (rf, rl, rc, rm) in d.Related do
+                        w.WriteStartObject()
+                        w.WritePropertyName "location"
+                        w.WriteStartObject()
+                        w.WriteString("uri", uriFor rf)
+                        writeRange0 w (rl - 1) (rc - 1) (rl - 1) rc
+                        w.WriteEndObject()
+                        w.WriteString("message", rm)
+                        w.WriteEndObject()
+
+                    w.WriteEndArray()
+
                 w.WriteEndObject()
 
             w.WriteEndArray()
@@ -2770,6 +3554,38 @@ let run (debug: bool) : int =
                             with _ ->
                                 ())
 
+                        let textDocCaps = jObj "capabilities" ps |> Option.bind (jObj "textDocument")
+
+                        textDocCaps
+                        |> Option.bind (jObj "publishDiagnostics")
+                        |> Option.iter (fun pd ->
+                            clientRelated <-
+                                (match tryProp "relatedInformation" pd with
+                                 | Some v -> v.ValueKind = JsonValueKind.True
+                                 | None -> false)
+
+                            clientTags <-
+                                jObj "tagSupport" pd
+                                |> Option.bind (tryProp "valueSet")
+                                |> Option.filter (fun v -> v.ValueKind = JsonValueKind.Array)
+                                |> Option.map (fun v ->
+                                    v.EnumerateArray()
+                                    |> Seq.filter (fun e -> e.ValueKind = JsonValueKind.Number)
+                                    |> Seq.map (fun e -> e.GetInt32())
+                                    |> Set.ofSeq)
+                                |> Option.defaultValue Set.empty)
+
+                        hierarchicalSymbols <-
+                            textDocCaps
+                            |> Option.bind (jObj "documentSymbol")
+                            |> Option.bind (tryProp "hierarchicalDocumentSymbolSupport")
+                            |> Option.map (fun v -> v.ValueKind = JsonValueKind.True)
+                            |> Option.defaultValue false
+
+                        jObj "initializationOptions" ps
+                        |> Option.bind (jObj "inlayHints")
+                        |> Option.iter (fun j -> inlayOptions <- inlayOptionsOf j)
+
                         idStr
                         |> Option.iter (fun id ->
                             respond id (fun w ->
@@ -2779,7 +3595,7 @@ let run (debug: bool) : int =
                                 // <tag>+<hash>, all JSON-safe chars, so the placeholder
                                 // splice needs no escaping.
                                 w.WriteRawValue(
-                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"referencesProvider":true,"documentHighlightProvider":true,"renameProvider":{"prepareProvider":true},"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":[".","-"]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir","version":"__WEIR_VERSION__"}}"""
+                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"referencesProvider":true,"documentHighlightProvider":true,"renameProvider":{"prepareProvider":true},"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":[".","-"]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true},"foldingRangeProvider":true,"documentSymbolProvider":true,"documentLinkProvider":{"resolveProvider":false},"inlayHintProvider":{"resolveProvider":false}},"serverInfo":{"name":"weir","version":"__WEIR_VERSION__"}}"""
                                         .Replace("__WEIR_VERSION__", Weir.Version.current)
                                 )))
                     | "initialized" -> ()
@@ -3475,6 +4291,170 @@ let run (debug: bool) : int =
                             | _ ->
                                 w.WriteStartArray()
                                 w.WriteEndArray()
+
+                        idStr |> Option.iter (fun id -> respond id writeResult)
+                    | "workspace/didChangeConfiguration" ->
+                        // the whole `weir` section arrives [D:inlay-hints]
+                        jObj "settings" ps
+                        |> Option.bind (jObj "weir")
+                        |> Option.bind (jObj "inlayHints")
+                        |> Option.iter (fun j -> inlayOptions <- inlayOptionsOf j)
+                    | "textDocument/foldingRange" ->
+                        let writeResult (w: Text.Json.Utf8JsonWriter) =
+                            match docOf () with
+                            | Some(uri, text) ->
+                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                w.WriteStartArray()
+
+                                for (s, e, kind) in foldingRangesFor (uriToPath uri) lines do
+                                    w.WriteStartObject()
+                                    w.WriteNumber("startLine", s - 1)
+                                    w.WriteNumber("endLine", e - 1)
+
+                                    match kind with
+                                    | Some k -> w.WriteString("kind", k)
+                                    | None -> ()
+
+                                    w.WriteEndObject()
+
+                                w.WriteEndArray()
+                            | None -> w.WriteNullValue()
+
+                        idStr |> Option.iter (fun id -> respond id writeResult)
+                    | "textDocument/documentSymbol" ->
+                        let writeResult (w: Text.Json.Utf8JsonWriter) =
+                            match docOf () with
+                            | Some(uri, text) ->
+                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let syms = documentSymbolsFor (uriToPath uri) lines
+
+                                let rec writeSymbol (sy: DocSymbol) =
+                                    let l1, c1, l2, c2 = sy.Range
+                                    let s1, t1, s2, t2 = sy.Selection
+                                    w.WriteStartObject()
+                                    w.WriteString("name", sy.Name)
+
+                                    match sy.Detail with
+                                    | Some d -> w.WriteString("detail", d)
+                                    | None -> ()
+
+                                    w.WriteNumber("kind", sy.Kind)
+                                    writeRange0 w (l1 - 1) (c1 - 1) (l2 - 1) (c2 - 1)
+                                    w.WritePropertyName "selectionRange"
+                                    w.WriteStartObject()
+                                    w.WritePropertyName "start"
+                                    w.WriteStartObject()
+                                    w.WriteNumber("line", s1 - 1)
+                                    w.WriteNumber("character", t1 - 1)
+                                    w.WriteEndObject()
+                                    w.WritePropertyName "end"
+                                    w.WriteStartObject()
+                                    w.WriteNumber("line", s2 - 1)
+                                    w.WriteNumber("character", t2 - 1)
+                                    w.WriteEndObject()
+                                    w.WriteEndObject()
+
+                                    if not sy.Children.IsEmpty then
+                                        w.WritePropertyName "children"
+                                        w.WriteStartArray()
+
+                                        for c in sy.Children do
+                                            writeSymbol c
+
+                                        w.WriteEndArray()
+
+                                    w.WriteEndObject()
+
+                                // the flat form for a client without
+                                // hierarchy support: children flattened,
+                                // containerName = the parent
+                                let rec writeFlat (container: string option) (sy: DocSymbol) =
+                                    let l1, c1, l2, c2 = sy.Range
+                                    w.WriteStartObject()
+                                    w.WriteString("name", sy.Name)
+                                    w.WriteNumber("kind", sy.Kind)
+                                    w.WritePropertyName "location"
+                                    w.WriteStartObject()
+                                    w.WriteString("uri", uri)
+                                    writeRange0 w (l1 - 1) (c1 - 1) (l2 - 1) (c2 - 1)
+                                    w.WriteEndObject()
+
+                                    match container with
+                                    | Some c -> w.WriteString("containerName", c)
+                                    | None -> ()
+
+                                    w.WriteEndObject()
+
+                                    for c in sy.Children do
+                                        writeFlat (Some sy.Name) c
+
+                                w.WriteStartArray()
+
+                                for sy in syms do
+                                    if hierarchicalSymbols then
+                                        writeSymbol sy
+                                    else
+                                        writeFlat None sy
+
+                                w.WriteEndArray()
+                            | None -> w.WriteNullValue()
+
+                        idStr |> Option.iter (fun id -> respond id writeResult)
+                    | "textDocument/documentLink" ->
+                        let writeResult (w: Text.Json.Utf8JsonWriter) =
+                            match docOf () with
+                            | Some(uri, text) ->
+                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                w.WriteStartArray()
+
+                                for (l, c, len, target, tip) in documentLinksFor (uriToPath uri) lines do
+                                    w.WriteStartObject()
+                                    writeRange0 w (l - 1) (c - 1) (l - 1) (c - 1 + len)
+                                    w.WriteString("target", uriFor target)
+                                    w.WriteString("tooltip", tip)
+                                    w.WriteEndObject()
+
+                                w.WriteEndArray()
+                            | None -> w.WriteNullValue()
+
+                        idStr |> Option.iter (fun id -> respond id writeResult)
+                    | "textDocument/inlayHint" ->
+                        let writeResult (w: Text.Json.Utf8JsonWriter) =
+                            let range =
+                                jObj "range" ps
+                                |> Option.bind (fun r ->
+                                    match jObj "start" r, jObj "end" r with
+                                    | Some st, Some en ->
+                                        match jNum "line" st, jNum "line" en with
+                                        | Some a, Some b -> Some(a + 1, b + 1)
+                                        | _ -> None
+                                    | _ -> None)
+
+                            match docOf (), range with
+                            | Some(uri, text), Some(fromLine, toLine) ->
+                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                w.WriteStartArray()
+
+                                for h in inlayHintsFor inlayOptions (uriToPath uri) lines fromLine toLine do
+                                    w.WriteStartObject()
+                                    w.WritePropertyName "position"
+                                    w.WriteStartObject()
+                                    w.WriteNumber("line", h.Line - 1)
+                                    w.WriteNumber("character", h.Col - 1)
+                                    w.WriteEndObject()
+                                    w.WriteString("label", h.Label)
+                                    w.WriteNumber("kind", h.Kind)
+
+                                    match h.Tooltip with
+                                    | Some t -> w.WriteString("tooltip", t)
+                                    | None -> ()
+
+                                    w.WriteBoolean("paddingLeft", h.PaddingLeft)
+                                    w.WriteBoolean("paddingRight", h.PaddingRight)
+                                    w.WriteEndObject()
+
+                                w.WriteEndArray()
+                            | _ -> w.WriteNullValue()
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "" when (tryProp "result" msg).IsSome || (tryProp "error" msg).IsSome -> () // a client response

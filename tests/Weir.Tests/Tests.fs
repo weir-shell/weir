@@ -11927,6 +11927,452 @@ let lspRenameTests =
               Expect.isGreaterThan statements 200 "the corpus has statements"
           } ]
 
+// ---- editor polish [PLAN-lsp-editor-polish]: inlay hints, symbols,
+// folding, links, tags — unit pins through the pure functions
+let lspPolishTests =
+    let hints lines = Weir.Lsp.inlayHintsFor Weir.Lsp.defaultInlayOptions "hints" lines 1 1000
+
+    let brief (h: Weir.Lsp.InlayHint) = h.Line, h.Col, h.Label, h.Kind
+
+    // a project tree: a module, a sig, a vendored schema, the entry
+    let withPolishTree (f: string -> string list -> string -> string -> string -> unit) =
+        let td = tempPath "weir-polish"
+
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(td, ".weir", "sigs")) |> ignore
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(td, ".weir", "schemas")) |> ignore
+        let lib = System.IO.Path.Combine(td, "lib.weir")
+
+        System.IO.File.WriteAllLines(
+            lib,
+            [| "module Lib"
+               ""
+               "/// doubles a number"
+               "let double : int -> int"
+               ""
+               "let double n = n * 2" |]
+        )
+
+        let sigp = System.IO.Path.Combine(td, ".weir", "sigs", "mytool.weir")
+
+        System.IO.File.WriteAllLines(
+            sigp,
+            [| "module Mytool"
+               "let version = \"mytool 1.0\""
+               "let exhaustive = true"
+               "type Cmd = {"
+               "    /// run without side effects"
+               "    dryRun: bool"
+               "}" |]
+        )
+
+        let schema = System.IO.Path.Combine(td, ".weir", "schemas", "six.json")
+
+        System.IO.File.WriteAllText(
+            schema,
+            """{ "type": "object", "properties": { "a": { "type": "integer" } }, "additionalProperties": false }"""
+        )
+
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(td, ".weir", "lock.json"),
+            """{ "artifacts": [ { "kind": "schema", "name": "six", "url": "https://example.com/six.json", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "path": "schemas/six.json" } ] }"""
+        )
+
+        let entry = System.IO.Path.Combine(td, "main.weir")
+
+        let entryLines =
+            [ "#sig mytool"
+              "module Main"
+              "import \"./lib.weir\" as Lib"
+              ""
+              "/// the config"
+              "type Cfg = { Host: string; Port: int }"
+              ""
+              "type Verdict ="
+              "    | Good"
+              "    | Bad of int"
+              ""
+              "type Email = Email of string"
+              "    validate s ="
+              "        if not (Str.contains \"@\" s) then fail \"no\""
+              ""
+              "/// doubles twice"
+              "let quad : int -> int"
+              "let quad n = Lib.double (Lib.double n)"
+              ""
+              "let answer : int"
+              "let answer = 42"
+              ""
+              "let orphan : string"
+              ""
+              "let pair : int * int"
+              "let pair = 1, 2"
+              ""
+              "let outer : int -> int"
+              "let outer x ="
+              "    let inner y = y + x"
+              "    inner 1"
+              ""
+              "let broken : int"
+              "let broken = 1 + \"a\"" ]
+
+        try
+            f entry entryLines lib sigp schema
+        finally
+            System.IO.Directory.Delete(td, true)
+
+    testList
+        "LSP editor polish [PLAN-lsp-editor-polish]"
+        [ test "inlay hints: a value let shows its type after the binder [D:inlay-hints]" {
+              Expect.equal
+                  (hints [ "let x = [1]" ])
+                  [ { Line = 1
+                      Col = 6
+                      Label = ": seq<int>"
+                      Tooltip = None
+                      Kind = 1
+                      PaddingLeft = false
+                      PaddingRight = false } ]
+                  ""
+          }
+          test "inlay hints: a function hints each param (Kind 2) and the return before `=`" {
+              let hs = hints [ "let f x y = Str.length x + y"; "print (show (f \"a\" 2))" ]
+
+              Expect.equal
+                  (hs |> List.map brief)
+                  [ (1, 8, ": string", 2); (1, 10, ": int", 2); (1, 11, ": int", 1) ]
+                  "two param hints, one return hint"
+
+              Expect.isTrue (hs |> List.last).PaddingRight "the return hint pads before the ="
+          }
+          test "inlay hints: inner let and a lambda param over ls [D:inlay-hints]" {
+              let lines =
+                  [ "let go () ="
+                    "    let xs = ls"
+                    "    xs |> Seq.iter (fun r -> print r.name)"
+                    "go ()" ]
+
+              Expect.equal
+                  (hints lines |> List.map brief)
+                  [ (1, 11, ": unit", 1); (2, 11, ": seq<FileRow>", 1); (3, 26, ": FileRow", 2) ]
+                  ""
+          }
+          test "inlay hints: a signed module member gets no hint at all [D:module-signatures]" {
+              Expect.equal
+                  (hints [ "module M"; "let double : int -> int"; "let double n = n * 2"; "let v : int"; "let v = 1" ])
+                  []
+                  "the signature is the annotation"
+          }
+          test "inlay hints: a broken statement hints nothing, its neighbours still do (partial truth)" {
+              Expect.equal
+                  (hints [ "let a = 1 + \"s\""; "let b = 2"; "print (show b)" ] |> List.map brief)
+                  [ (2, 6, ": int", 1) ]
+                  ""
+          }
+          test "inlay hints: the range excludes a statement outside it (range discipline)" {
+              let lines = [ "let a = 1"; "let b = \"s\""; "print $\"{a}{b}\"" ]
+
+              Expect.equal
+                  (Weir.Lsp.inlayHintsFor Weir.Lsp.defaultInlayOptions "hints" lines 2 2 |> List.map brief)
+                  [ (2, 6, ": string", 1) ]
+                  ""
+          }
+          test "inlay hints: a long type truncates at MaxLabel with the full type as tooltip [R2]" {
+              let lines =
+                  [ "let r = {| ip = \"1\"; name = \"n\"; port = 1; zone = \"z\"; host = \"h\" |}"
+                    "print (show r)" ]
+
+              let full = Weir.Lsp.hoverType lines 1 5 |> Option.get
+              let full = full.Substring("r : ".Length)
+              Expect.isGreaterThan full.Length 40 "the fixture is long"
+
+              match hints lines with
+              | [ h ] ->
+                  Expect.equal h.Label (": " + full.Substring(0, 39) + "…") "cut with an ellipsis"
+                  Expect.equal h.Tooltip (Some full) "the full type rides in the tooltip"
+              | other -> failtest $"one hint expected: {other}"
+          }
+          test "inlay hints: a multi-line let hints on the binder's physical line (verbatim anchor)" {
+              Expect.equal
+                  (hints [ "let x ="; "    [1; 2]"; "print (show x)" ] |> List.map brief)
+                  [ (1, 6, ": seq<int>", 1) ]
+                  ""
+          }
+          test "inlay hints: a rewritten #session field is no binder — no hint (verbatim against RAW lines) [D:init-marker]" {
+              let lines =
+                  [ "#init"; "let p () = \"> \""; ""; "#session {"; "    prompt = p"; "}" ]
+
+              let hs = hints lines
+              Expect.isFalse (hs |> List.exists (fun h -> h.Line = 5)) $"no hint on the field line: {hs}"
+              Expect.equal (hs |> List.map brief) [ (2, 10, ": string", 1) ] "the declaration still hints"
+          }
+          test "inlay hints: pipeline-stage hints are off by default, opt-in on multi-line chains only [R1]" {
+              let lines =
+                  [ "let n ="
+                    "    [1; 2]"
+                    "    |> Seq.map (fun i -> i + 1)"
+                    "    |> Seq.length"
+                    "let m = [1] |> Seq.length"
+                    "print $\"{n + m}\"" ]
+
+              Expect.isFalse
+                  (hints lines |> List.exists (fun h -> h.PaddingLeft))
+                  "no stage hints by default"
+
+              let on =
+                  Weir.Lsp.inlayHintsFor
+                      { Weir.Lsp.defaultInlayOptions with
+                          PipelineTypes = true }
+                      "hints"
+                      lines
+                      1
+                      100
+
+              Expect.equal
+                  (on |> List.filter (fun h -> h.PaddingLeft) |> List.map brief)
+                  [ (3, 32, ": seq<int>", 1); (4, 18, ": int", 1) ]
+                  "each multi-line stage at its line end; the single-line pipe gets nothing"
+          }
+          test "invariant: hint == hover at the same binder" {
+              let lines =
+                  [ "let f x y = Str.length x + y"
+                    "let go () ="
+                    "    let xs = ls"
+                    "    xs |> Seq.iter (fun r -> print r.name)"
+                    "print (show (f \"a\" 2))"
+                    "go ()" ]
+
+              for h in hints lines do
+                  if not h.PaddingRight then
+                      // the hint sits after the word; hover on the word's last char
+                      let hover = Weir.Lsp.hoverType lines h.Line (h.Col - 1) |> Option.get
+                      let hover = hover.Split('\n').[0]
+                      let ty = h.Label.Substring 2
+
+                      Expect.isTrue
+                          (hover = ty || hover.EndsWith(" : " + ty))
+                          $"hint {h.Label} at {h.Line}:{h.Col} vs hover {hover}"
+          }
+          test "inlayOptionsOf: absent keys keep the defaults, present ones override" {
+              let j = System.Text.Json.JsonDocument.Parse("""{"bindingTypes":false,"maxLabelLength":12}""")
+
+              Expect.equal
+                  (Weir.Lsp.inlayOptionsOf j.RootElement)
+                  { Weir.Lsp.defaultInlayOptions with
+                      BindingTypes = false
+                      MaxLabel = 12 }
+                  ""
+
+              Expect.equal
+                  (Weir.Lsp.inlayOptionsOf (System.Text.Json.JsonDocument.Parse("{}").RootElement))
+                  Weir.Lsp.defaultInlayOptions
+                  "empty = defaults"
+          }
+          test "document symbols: the outline of a module [D:document-symbols]" {
+              withPolishTree (fun entry lines _ _ _ ->
+                  let syms = Weir.Lsp.documentSymbolsFor entry lines
+                  let names = syms |> List.map (fun s -> s.Name, s.Kind)
+
+                  Expect.equal
+                      names
+                      [ ("mytool", 11)
+                        ("Main", 2)
+                        ("Lib", 2)
+                        ("Cfg", 23)
+                        ("Verdict", 10)
+                        ("Email", 10)
+                        ("quad", 12)
+                        ("answer", 13)
+                        ("orphan", 13)
+                        ("pair", 13)
+                        ("outer", 12)
+                        ("broken", 13) ]
+                      "names and kinds, in file order"
+
+                  let by n = syms |> List.find (fun s -> s.Name = n)
+                  Expect.equal (by "mytool").Detail (Some(System.IO.Path.Combine(".weir", "sigs", "mytool.weir"))) "the sig file, relative"
+                  Expect.equal (by "Main").Detail (Some "module header") ""
+                  Expect.equal (by "Lib").Detail (Some "\"./lib.weir\"") "the path as written"
+
+                  Expect.equal
+                      ((by "Cfg").Children |> List.map (fun c -> c.Name, c.Kind, c.Detail))
+                      [ ("Host", 8, Some "string"); ("Port", 8, Some "int") ]
+                      "record fields"
+
+                  Expect.equal
+                      ((by "Verdict").Children |> List.map (fun c -> c.Name, c.Kind, c.Detail))
+                      [ ("Good", 22, None); ("Bad", 22, Some "int") ]
+                      "union cases"
+
+                  Expect.equal
+                      ((by "Email").Children |> List.map (fun c -> c.Name, c.Kind))
+                      [ ("Email", 22); ("validate", 6) ]
+                      "the validate block is a method"
+
+                  // R4: the signature attaches — the range starts at the sig line
+                  let q = by "quad"
+                  let l1, _, l2, _ = q.Range
+                  Expect.equal (l1, l2) (17, 18) "sig line .. impl line"
+                  Expect.equal q.Selection (18, 5, 18, 9) "the binder on the impl line"
+                  Expect.equal q.Detail (Some "quad (n: int) : int") "the declared type, annotated"
+                  // an orphan keeps its own symbol
+                  Expect.equal (by "orphan").Detail (Some "signature — no implementation") ""
+                  // R5: a nested function is a child; the broken let is a textual fallback
+                  Expect.equal
+                      ((by "outer").Children |> List.map (fun c -> c.Name, c.Kind, c.Detail))
+                      [ ("inner", 12, Some "inner (y: int) : int") ]
+                      ""
+
+                  Expect.equal (by "broken").Detail None "no detail for a failed statement"
+                  // invariant: detail == hover's first line for the lets
+                  for n in [ "quad"; "answer"; "pair"; "outer" ] do
+                      let s = by n
+                      let _, _, l2, _ = s.Range
+                      let sl, sc, _, _ = s.Selection
+                      let hover = Weir.Lsp.hoverAt entry lines sl sc |> Option.get
+                      // the purity badge is hover residue, not the signature
+                      let first = hover.Split('\n').[0].Replace("  (pure)", "")
+                      Expect.equal (Some first) s.Detail $"detail == hover for {n} (line {l2})")
+          }
+          test "document symbols: a script's value let, pattern let and nested function" {
+              let lines =
+                  [ "let answer = 42"
+                    "let a, b = 1, \"s\""
+                    "let outer x ="
+                    "    let inner y = y + x"
+                    "    let k = 1"
+                    "    inner k"
+                    "print $\"{answer + a + outer 1}{b}\"" ]
+
+              let syms = Weir.Lsp.documentSymbolsFor "syms" lines
+
+              Expect.equal
+                  (syms |> List.map (fun s -> s.Name, s.Kind, s.Detail, s.Range))
+                  [ ("answer", 13, Some "answer : int", (1, 1, 1, 16))
+                    ("a", 13, Some "int", (2, 1, 2, 18))
+                    ("b", 13, Some "string", (2, 1, 2, 18))
+                    ("outer", 12, Some "outer (x: int) : int", (3, 1, 6, 12)) ]
+                  ""
+
+              Expect.equal
+                  ((syms |> List.last).Children |> List.map (fun c -> c.Name, c.Kind, c.Range, c.Selection))
+                  [ ("inner", 12, (4, 9, 4, 24), (4, 9, 4, 14)) ]
+                  "the inner function only — the inner value let is not a symbol"
+          }
+          test "folding ranges: statements, arms, comment runs, imports, districts [D:folding-ranges]" {
+              let lines =
+                  [ "/// doc one"
+                    "/// doc two"
+                    "// plain one"
+                    "// plain two"
+                    "import \"./a.weir\" as A"
+                    "import \"./b.weir\" as B"
+                    "import \"./c.weir\" as C"
+                    "let v ="
+                    "    match 1 with"
+                    "    | 1 ->"
+                    "        print \"one\""
+                    "    | _ ->"
+                    "        print \"other\""
+                    "let y = yaml"
+                    "    a:"
+                    "      b: 1"
+                    "    c: 2"
+                    "let h = <<<"
+                    "    // not a comment"
+                    "    // nor this"
+                    ""
+                    "print $\"{v}{show y}{h}\"" ]
+
+              let folds = Weir.Lsp.foldingRangesFor "fold" lines
+
+              Expect.equal
+                  folds
+                  [ (1, 2, Some "comment")
+                    (3, 4, Some "comment")
+                    (5, 7, Some "imports")
+                    (8, 13, None)
+                    (10, 11, None)
+                    (12, 13, None)
+                    (14, 17, None)
+                    (15, 16, None)
+                    (18, 20, None) ]
+                  "two comment folds (never merged), one imports fold, statement + arm folds, the yaml map, the heredoc with no comment fold inside"
+          }
+          test "folding ranges: a buffer that breaks assembly still folds by indentation" {
+              let lines =
+                  [ "let go = 1 > 0"
+                    "if go then !"
+                    "let v ="
+                    "    match 1 with"
+                    "    | 1 -> 1"
+                    "    | _ -> 2"
+                    "print $\"{v}\"" ]
+
+              let folds = Weir.Lsp.foldingRangesFor "fold" lines
+              Expect.contains folds (3, 6, None) "the indented block folds"
+          }
+          test "document links: import, #sig and schema= resolve; missing targets link nothing [D:document-links]" {
+              withPolishTree (fun entry lines lib sigp schema ->
+                  let links = Weir.Lsp.documentLinksFor entry lines
+
+                  Expect.equal
+                      (links |> List.map (fun (l, c, len, target, _) -> l, c, len, target))
+                      [ (1, 6, 6, sigp); (3, 9, 10, lib) ]
+                      "the #sig tool word and the quoted import path"
+
+                  // a yaml schema= on the entry: the vendored file
+                  let yl =
+                      [ "let d = yaml schema=six"; "    a: 1"; "let e = yaml schema=ghost"; "    a: 1"; "print $\"{show d}{show e}\"" ]
+
+                  System.IO.File.WriteAllLines(entry, yl)
+                  let ylinks = Weir.Lsp.documentLinksFor entry yl
+                  Expect.equal (ylinks |> List.map (fun (l, c, len, t, _) -> l, c, len, t)) [ (1, 21, 3, schema) ] "the vendored schema only"
+                  // a missing import: no link
+                  let ml = [ "import \"./nope.weir\" as N"; "print \"x\"" ]
+                  Expect.equal (Weir.Lsp.documentLinksFor entry ml) [] "an unresolved import links nothing")
+          }
+          test "diagnostic tags: unused-binding is Unnecessary, the bare `_` variant is not; unreachable-arm is [D:diagnostic-tags]" {
+              let tagsOf lines =
+                  diagsIn "t.weir" lines |> List.map (fun d -> d.Code, Weir.Lsp.diagnosticTags d)
+
+              Expect.equal (tagsOf [ "let x = 1" ]) [ ("unused-binding", [ 1 ]) ] "an unread binder"
+
+              Expect.equal
+                  (tagsOf [ "let go () ="; "    let _ = 1"; "    ()"; "go ()" ])
+                  [ ("unused-binding", []) ]
+                  "the bare _ discard is misnamed, not unnecessary"
+
+              Expect.exists
+                  (tagsOf [ "let v = match 1 with | _ -> 1 | 2 -> 2"; "print (show v)" ])
+                  (fun (c, t) -> c = "unreachable-arm" && t = [ 1 ])
+                  "an unreachable arm"
+          }
+          test "related information: a sig mismatch points at the signature line; the shadow variant at the rebinding [D:diagnostic-tags]" {
+              let ds =
+                  diagsIn "m.weir" [ "module M"; "let f : int -> int"; "let f n = show n" ]
+
+              let mismatch = ds |> List.find (fun d -> d.Message.Contains "does not match its signature")
+              Expect.equal mismatch.Related [ ("m.weir", 2, 5, "the signature declares int -> int") ] ""
+
+              let shadow =
+                  diagsIn "s.weir" [ "let x = 1"; "let x = 2"; "print (show x)" ]
+                  |> List.find (fun d -> d.Code = "unused-binding")
+
+              Expect.equal shadow.Related [ ("s.weir", 2, 5, "'x' is rebound here") ] ""
+          }
+          test "related information: a module error carries its import line; the imported-here note carries the error site (R13, additive)" {
+              withPolishTree (fun entry lines lib _ _ ->
+                  System.IO.File.WriteAllLines(lib, [| "module Lib"; ""; "let double : int -> int"; ""; "let double n = show n" |])
+                  let script = [ "import \"./lib.weir\" as Lib"; "print (show (Lib.double 1))" ]
+                  System.IO.File.WriteAllLines(entry, script)
+                  let ds = diagsIn entry script
+                  let primary = ds |> List.find (fun d -> d.File = lib)
+                  Expect.equal primary.Related [ (entry, 1, 8, "imported here") ] "the import line"
+                  let note = ds |> List.find (fun d -> d.Code = "imported-here")
+                  Expect.equal note.Related [ (lib, primary.Line, primary.Col, primary.Message) ] "the error site"
+                  Expect.equal note.Line 1 "the note is still published (R13)")
+          } ]
+
 let semanticTokenTests =
     testList
         "Semantic tokens"
@@ -35505,6 +35951,7 @@ let allTests =
           blockRecoveryTests
           lspCrossFileTests
           lspRenameTests
+          lspPolishTests
           letBindingHoverTests
           purityBadgeTests
           pureRegionTests

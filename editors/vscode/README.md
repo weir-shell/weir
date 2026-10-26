@@ -15,6 +15,18 @@ This extension gives you:
 - **Highlighting** — weir's one novel boundary, command versus
   expression, colored from the parse: command heads as callables,
   argv as inert words, splice islands as code
+- **Outline and folding** — types with their fields and cases,
+  functions with their nested functions, imports and signatures;
+  folds for statements, blocks, match arms, comment and import runs
+- **Inlay hints** — the inferred type after each binder and
+  parameter, the return type before a function's `=`; each class is
+  a setting under `weir.inlayHints`, long types show in full in the
+  hint's tooltip
+- **Links** — click an import path, a `schema=` name or a `#sig` tool
+  to open the module, the vendored schema or the signature file
+- **Run and check buttons** — `weir: Run script`, `Check script` and
+  `Check script (--can)` in the command palette and the editor title,
+  running the same weir binary the server uses in a `weir` terminal
 
 ## Requires weir
 

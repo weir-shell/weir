@@ -29,6 +29,34 @@
 - **Go to definition on a `within` or `until` binder's use** jumped to
   a same-named top-level binding (or nowhere) — the two binders now
   carry their spans, so the use inside the scope lands on the binder.
+- **The editor session fills out: outline, folding, inlay hints,
+  links.** `weir lsp` now answers document symbols (types with their
+  fields and cases, functions with their nested functions, imports and
+  `#sig` lines; a signature and its implementation are one entry, and
+  a `let`/`type` that failed to check still shows by name), folding
+  ranges (multi-line statements, indented blocks, match arms, `///`
+  and `//` runs, import runs), inlay hints (the inferred type after
+  each binder and parameter, the return type before a function's `=`;
+  none on signed module members; long types cut at 40 characters with
+  the full type in the tooltip; each class a setting, sent as
+  `initializationOptions` or `workspace/didChangeConfiguration`;
+  multi-line pipeline stages opt-in) and document links (import paths,
+  `schema=` names, `#sig` tools — resolved targets only). Hints and
+  outline details are the hover's own text, and nothing lands on a
+  rewritten `#session` field.
+- **Diagnostic tags and related information.** An unread binder is
+  tagged unnecessary (editors fade it; the bare `_` discard is not —
+  it is misnamed, not unnecessary), so is an unreachable arm. An
+  implementation that mismatches its signature points at the
+  signature line, an imported module's error at the import, a
+  shadowed unread binder at its rebinding — as LSP related
+  information when the editor declares it, and as a `related` array in
+  `weir check --json`. The `imported-here` note is still published.
+- **VS Code: run and check buttons.** `weir: Run script`, `Check
+  script` and `Check script (--can)` in the command palette and as
+  editor-title buttons, running the same binary the language server
+  uses in a reused `weir` terminal; `weir.inlayHints.*` settings. No
+  code lens: the server never runs anything.
 
 ## v0.0.78
 
