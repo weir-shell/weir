@@ -1039,6 +1039,12 @@ let renameRoundTrip (sample: int option) (path: string) (lines: string list) : s
                 |> Option.map (fun nn -> l, c, old, nn, Weir.Lsp.renameFor path lines l c nn, Weir.Lsp.occurrencesFor path lines l c))
 
     for l, c, old, nn, rename, before in planned do
+        // a `_`-led target is always refused: the table it would be checked
+        // against hides `_` binders, so a capture there could not be seen
+        match Weir.Lsp.renameFor path lines l c ("_" + nn) with
+        | Error _ -> ()
+        | Ok _ -> violations.Add $"{path}:{l}:{c} rename '{old}' -> '_{nn}' was not refused"
+
         match rename with
         | Error m -> violations.Add $"{path}:{l}:{c} rename '{old}' -> '{nn}' refused: {m}"
         | Ok edits ->

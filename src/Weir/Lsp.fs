@@ -1694,6 +1694,12 @@ let renameFor
 
             match Check.checkBinderName noSpan newName with
             | Error e -> Error e.Message
+            | Ok() when not (Check.occurrenceName newName) ->
+                // the collision rule reads the occurrence table, and the table
+                // tracks no `_`-led name: a rename onto one could capture a
+                // binding silently, so it is refused [D:lsp-rename]
+                Error
+                    $"'{newName}' starts with '_', and weir tracks no occurrence of a '_'-led name — a rename onto one cannot be checked for a clash; pick a name without the leading '_'"
             | Ok() ->
                 match collision with
                 | Some c ->

@@ -11787,6 +11787,13 @@ let lspRenameTests =
                   (Error "'print' is not bound in this file — a builtin or an imported name renames where it is defined")
                   "builtin"
 
+              // a `_`-led new name: the occurrence table hides `_` binders, so
+              // a clash with one is invisible — refused rather than guessed
+              Expect.equal
+                  (ren 4 5 "_r")
+                  (Error "'_r' starts with '_', and weir tracks no occurrence of a '_'-led name — a rename onto one cannot be checked for a clash; pick a name without the leading '_'")
+                  "underscore target"
+
               Expect.equal
                   (ren 5 14 "q")
                   (Error "'Lib.f' is not bound in this file — a builtin or an imported name renames where it is defined")

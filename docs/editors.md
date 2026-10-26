@@ -35,8 +35,10 @@ In any editor with LSP support you get:
   or refused, and the refusal says why: the cursor is not on a value
   bound in this file (builtins, imported members, record fields,
   union cases and type names do not rename), a statement in the
-  name's scope has an error, the new name is not a binder name, or
-  the new name is already visible in that scope. Init files and
+  name's scope has an error, the new name is not a binder name or
+  starts with `_` (a `_`-led binder is deliberately unused, so weir
+  tracks no uses of it and could not see a clash), or the new name is
+  already visible in that scope. Init files and
   signature files do not rename. Other files that import a renamed
   member show the breakage as diagnostics on their next refresh.
 - **Completion** of module members (type `Lib.` to list them), and of
