@@ -7572,6 +7572,134 @@ let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
     let free = walk te
     free, List.ofSeq found
 
+// ---- occurrences [D:lsp-rename] -------------------------------------
+// The one scope walk the editor's references, highlight and rename read
+// (bindingUsage's sibling: the same forms bind, the same patNameSpans
+// leaves). Every user-named use carries the binder that owns it — the
+// innermost enclosing binding form, as the checker scoped it — and
+// every local binder site is listed once; a free name is TopLevel (a
+// statement above binds it, or nothing in the file does).
+
+type Binder =
+    | Local of Span
+    | TopLevel of string
+
+type Occurrence =
+    { Name: string
+      Span: Span
+      Binder: Binder
+      IsBinderSite: bool }
+
+/// a name the editor may show: a user spelling no desugar introduced
+/// (`_chain`, `|print`, the `_.field` wildcard, `()`)
+let occurrenceName (n: string) : bool =
+    isUserName n && not (n.StartsWith "_") && not (n.StartsWith "|")
+
+let occurrences (te: TypedExpr) : Occurrence list =
+    let found = ResizeArray<Occurrence>()
+
+    let site (n: string, sp: Span) =
+        if occurrenceName n then
+            found.Add
+                { Name = n
+                  Span = sp
+                  Binder = Local sp
+                  IsBinderSite = true }
+
+    let bindPat (pat: Pattern) (scope: Map<string, Span>) =
+        patNameSpans pat
+        |> List.fold
+            (fun s (n, sp) ->
+                site (n, sp)
+                Map.add n sp s)
+            scope
+
+    let rec walk (scope: Map<string, Span>) (te: TypedExpr) : unit =
+        match te.Kind with
+        | TEVar n when occurrenceName n ->
+            found.Add
+                { Name = n
+                  Span = te.Span
+                  Binder =
+                    (match Map.tryFind n scope with
+                     | Some sp -> Local sp
+                     | None -> TopLevel n)
+                  IsBinderSite = false }
+        | TELet(n, ns, v, b) ->
+            walk scope v
+            site (n, ns)
+            walk (Map.add n ns scope) b
+        | TELetPat(pat, v, b) ->
+            walk scope v
+            walk (bindPat pat scope) b
+        | TELambda(p, ps, b) ->
+            site (p, ps)
+            walk (Map.add p ps scope) b
+        | TELambdaPat(pat, b) -> walk (bindPat pat scope) b
+        | TEMatch(s, arms) ->
+            walk scope s
+
+            for pat, g, b in arms do
+                let s2 = bindPat pat scope
+                g |> Option.iter (walk s2)
+                walk s2 b
+        | TERetry(_, o, w, b, u) ->
+            walk scope o
+            w |> Option.iter (walk scope)
+            walk scope b
+
+            u
+            |> Option.iter (fun ((n, ns), pred) ->
+                site (n, ns)
+                walk (Map.add n ns scope) pred)
+        | TEWithin(_, binder, a, o, b) ->
+            a |> Option.iter (walk scope)
+            o |> Option.iter (walk scope)
+
+            walk
+                (match binder with
+                 | Some(n, ns) ->
+                     site (n, ns)
+                     Map.add n ns scope
+                 | None -> scope)
+                b
+        | TEYaml(tpl, _, _) -> walkTpl scope tpl
+        | _ -> childExprs te |> List.iter (walk scope)
+
+    and walkTpl (scope: Map<string, Span>) (tpl: TypedYamlTpl) : unit =
+        match tpl with
+        | TYtScalar _
+        | TYtBlock _
+        | TYtDrop _ -> ()
+        | TYtSplice e -> walk scope e
+        | TYtSeq(items, _) ->
+            for item in items do
+                match item with
+                | TYtItem t -> walkTpl scope t
+                | TYtDropItem(t, _) -> walkTpl scope t
+                | TYtForItems(binder, src, body) ->
+                    walk scope src
+                    let s2 = bindPat binder scope
+
+                    for i in body do
+                        walkTpl s2 (TYtSeq([ i ], Unchecked.defaultof<Ast.Span>))
+        | TYtMap(entries, _) ->
+            for entry in entries do
+                match entry with
+                | TYtPair(TYtKeyLit _, v) -> walkTpl scope v
+                | TYtPair(TYtKeySplice k, v) ->
+                    walk scope k
+                    walkTpl scope v
+                | TYtForEntries(binder, src, body) ->
+                    walk scope src
+                    let s2 = bindPat binder scope
+
+                    for e in body do
+                        walkTpl s2 (TYtMap([ e ], Unchecked.defaultof<Ast.Span>))
+
+    walk Map.empty te
+    List.ofSeq found |> List.distinct
+
 let typecheckWith
     (env: TypeEnv)
     (expr: Expr)

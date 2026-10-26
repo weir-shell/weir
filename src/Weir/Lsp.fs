@@ -707,71 +707,24 @@ let private binderCol (name: string) (text: string) : int option =
     let eq = text.IndexOf '='
     wordFind name text 0 (if eq >= 0 then eq else text.Length)
 
-// pattern binders in scope, each at its own PSpan
-let rec private patScope (p: Ast.Pattern) (scope: Map<string, Span>) : Map<string, Span> =
-    match p.PKind with
-    | Ast.PVar n -> Map.add n p.PSpan scope
-    | Ast.PTuple ps -> ps |> List.fold (fun s q -> patScope q s) scope
-    | Ast.PRecord fields -> fields |> List.fold (fun s (_, q) -> patScope q s) scope
-    | Ast.PCase(_, Some inner, _) -> patScope inner scope
-    | _ -> scope
-
-// lexical resolution for local binders [PLAN-diagnostics-arc C]: find
-// the use (the TEVar at the column) while carrying the enclosing
-// binder scope — innermost wins. Returns Some(Some span) = locally
-// bound there; Some None = use found, top-level territory; None = the
-// use is not in this subtree.
-let rec private localDef
-    (scope: Map<string, Span>)
-    (name: string)
-    (jcol: int)
-    (te: Check.TypedExpr)
-    : Span option option =
-    match te.Kind with
-    | Check.TEVar n when n = name && te.Span.Start.Col <= jcol && jcol < te.Span.End.Col -> Some(Map.tryFind name scope)
-    | Check.TELet(n, nspan, tv, body) ->
-        (match localDef scope name jcol tv with
-         | Some r -> Some r
-         | None -> localDef (Map.add n nspan scope) name jcol body)
-    | Check.TELetPat(pat, tv, body) ->
-        (match localDef scope name jcol tv with
-         | Some r -> Some r
-         | None -> localDef (patScope pat scope) name jcol body)
-    | Check.TELambda(p, pspan, body) -> localDef (Map.add p pspan scope) name jcol body
-    | Check.TELambdaPat(pat, body) -> localDef (patScope pat scope) name jcol body
-    | Check.TEMatch(scrut, arms) ->
-        (match localDef scope name jcol scrut with
-         | Some r -> Some r
-         | None ->
-             arms
-             |> List.tryPick (fun (p, guard, body) ->
-                 let s2 = patScope p scope
-
-                 let inGuard =
-                     match guard with
-                     | Some g -> localDef s2 name jcol g
-                     | None -> None
-
-                 match inGuard with
-                 | Some r -> Some r
-                 | None -> localDef s2 name jcol body))
-    | Check.TEWithin(_, binder, arg, opts, body) ->
-        (match Option.toList arg @ Option.toList opts |> List.tryPick (localDef scope name jcol) with
-         | Some r -> Some r
-         | None ->
-             let s2 =
-                 match binder with
-                 | Some(n, bspan) -> Map.add n bspan scope
-                 | None -> scope
-
-             localDef s2 name jcol body)
-    | Check.TERetry(_, opts, watch, body, until) ->
-        (match opts :: Option.toList watch @ [ body ] |> List.tryPick (localDef scope name jcol) with
-         | Some r -> Some r
-         | None ->
-             until
-             |> Option.bind (fun ((n, bspan), pred) -> localDef (Map.add n bspan scope) name jcol pred))
-    | _ -> Check.childExprs te |> List.tryPick (localDef scope name jcol)
+// lexical resolution for local binders [PLAN-diagnostics-arc C]: the
+// use (the TEVar at the column) and the binder the checker's scoping
+// gave it — one walk, Check.occurrences [D:lsp-rename]. Returns
+// Some(Some span) = locally bound there; Some None = use found,
+// top-level territory; None = the use is not in this subtree.
+let private localDef (name: string) (jcol: int) (te: Check.TypedExpr) : Span option option =
+    Check.occurrences te
+    |> List.filter (fun o ->
+        o.Name = name
+        && not o.IsBinderSite
+        && o.Span.Start.Col <= jcol
+        && jcol < o.Span.End.Col)
+    |> List.sortBy (fun o -> o.Span.End.Col - o.Span.Start.Col)
+    |> List.tryHead
+    |> Option.map (fun o ->
+        match o.Binder with
+        | Check.Local sp -> Some sp
+        | Check.TopLevel _ -> None)
 
 /// hover text at (1-based physical line, col), or None. Pure — the
 /// handler and the unit pins share this. Type first, then the `///`
@@ -1314,7 +1267,7 @@ let definitionTarget
                             // (params, inner lets, pattern payload binders);
                             // the top-level scan is the fallback
                             // [PLAN-diagnostics-arc C]
-                            match teOf chk |> Option.bind (localDef Map.empty n jcol) with
+                            match teOf chk |> Option.bind (localDef n jcol) with
                             | Some(Some bspan) ->
                                 let pl, pc = Script.translate useLl bspan.Start.Col
                                 Some(None, pl, pc, n.Length)
@@ -1412,6 +1365,171 @@ let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int
     |> Option.bind (function
         | None, pl, pc, len -> Some(pl, pc, len)
         | _ -> None)
+
+// ---- references, highlight, rename [D:lsp-rename] -------------------
+// One table per request: every occurrence in the file keyed by the
+// binder that owns it. Inside a statement Check.occurrences decides
+// (the checker's own scoping); across statements a free name belongs
+// to the last top-level binder above it — there is no `let rec`, so a
+// use inside a binder's own statement is the previous binder's — and
+// a signed member's signature line is a site of the same binder.
+// A name no statement binds (a builtin, an imported member) keys to
+// the file-less TopKey: references and highlight still list its uses
+// in this file; rename refuses it.
+
+type private BinderKey =
+    // statement index + the binder's span in that statement's joined text
+    | LocalKey of int * Span
+    // name + the index of the binding statement; -1 = not bound in this file
+    | TopKey of string * int
+
+type private FileOcc =
+    { OName: string
+      Key: BinderKey
+      OBinderSite: bool
+      // 1-based physical line and column, the name's own characters —
+      // the `$`/`$@` sigil and a `(x)`'s parens ride on the node's span
+      // but are not the name
+      OLine: int
+      OCol: int
+      // statement index, for the scope-extent walk
+      OStmt: int }
+
+let private fileOccurrences (stmts: (Script.LogicalLine * Script.CheckedStatement) list) : FileOcc list =
+    let arr = List.toArray stmts
+    let lastTop = Collections.Generic.Dictionary<string, int>()
+    let found = ResizeArray<FileOcc>()
+
+    let isSigOf (n: string) (j: int) =
+        match (snd arr[j]).Kind with
+        | Script.KSig(bn, _) -> bn = n
+        | _ -> false
+
+    for i in 0 .. arr.Length - 1 do
+        let ll, chk = arr[i]
+
+        // the name's own characters inside the span: a word-bounded
+        // search of the joined text, mapped back to physical
+        let locate (name: string) (sp: Span) =
+            let lo = max 0 (sp.Start.Col - 1)
+            let hi = min ll.Text.Length (max (sp.End.Col - 1) (lo + name.Length))
+
+            wordFind name ll.Text lo hi
+            |> Option.map (fun jc ->
+                let pl, pc = Script.translate ll jc
+                pl, pc)
+
+        let add (name: string) (key: BinderKey) (site: bool) (pos: (int * int) option) =
+            pos
+            |> Option.iter (fun (pl, pc) ->
+                found.Add
+                    { OName = name
+                      Key = key
+                      OBinderSite = site
+                      OLine = pl
+                      OCol = pc
+                      OStmt = i })
+
+        let topKey (n: string) =
+            match lastTop.TryGetValue n with
+            | true, j -> TopKey(n, j)
+            | _ -> TopKey(n, -1)
+
+        // uses first: a free name in this statement is the binder above
+        teOf chk
+        |> Option.iter (fun te ->
+            for o in Check.occurrences te do
+                let key =
+                    match o.Binder with
+                    | Check.Local sp -> LocalKey(i, sp)
+                    | Check.TopLevel n -> topKey n
+
+                add o.Name key o.IsBinderSite (locate o.Name o.Span))
+
+        // then this statement's own top-level binder sites
+        let siteOf (ll: Script.LogicalLine) (n: string) =
+            binderCol n ll.Text |> Option.map (Script.translate ll)
+
+        let bound =
+            match chk.Kind with
+            | Script.KLet(n, _, _) ->
+                // the implementation of a signed member shares its sig's key
+                let key =
+                    match lastTop.TryGetValue n with
+                    | true, j when isSigOf n j -> TopKey(n, j)
+                    | _ -> TopKey(n, i)
+
+                add n key true (siteOf ll n)
+                [ n, key ]
+            | Script.KSig(n, _) ->
+                add n (TopKey(n, i)) true (siteOf ll n)
+                [ n, TopKey(n, i) ]
+            | Script.KLetPat(pat, _, _) ->
+                Check.patNameSpans pat
+                |> List.filter (fun (n, _) -> Check.occurrenceName n)
+                |> List.map (fun (n, sp) ->
+                    add n (TopKey(n, i)) true (locate n sp)
+                    n, TopKey(n, i))
+            | _ -> []
+
+        for n, key in bound do
+            match key with
+            | TopKey(_, j) -> lastTop[n] <- j
+            | LocalKey _ -> ()
+
+    List.ofSeq found
+
+/// the occurrence under the cursor (physical 1-based line, col), with
+/// the whole file's table
+let private occurrenceAt
+    (path: string)
+    (lines: string list)
+    (line: int)
+    (col: int)
+    : (FileOcc list * FileOcc) option =
+    let _, stmts, _, _ = analyzeCached path lines
+    let table = fileOccurrences stmts
+
+    table
+    |> List.tryFind (fun o -> o.OLine = line && o.OCol <= col && col < o.OCol + o.OName.Length)
+    |> Option.map (fun o -> table, o)
+
+/// every occurrence of the binder at the cursor, as (physLine, physCol,
+/// len, isBinderSite) sorted by position; None when the cursor is on no
+/// name. Pure — the references and highlight handlers and the unit pins
+/// share it.
+let occurrencesFor (path: string) (lines: string list) (line: int) (col: int) : (int * int * int * bool) list option =
+    occurrenceAt path lines line col
+    |> Option.map (fun (table, o) ->
+        table
+        |> List.filter (fun x -> x.Key = o.Key)
+        |> List.map (fun x -> x.OLine, x.OCol, x.OName.Length, x.OBinderSite)
+        |> List.distinct
+        |> List.sort)
+
+/// textDocument/references: (physLine, physCol, len) per occurrence;
+/// `includeDeclaration` keeps or drops the binder sites
+let referencesFor
+    (path: string)
+    (lines: string list)
+    (line: int)
+    (col: int)
+    (includeDeclaration: bool)
+    : (int * int * int) list option =
+    occurrencesFor path lines line col
+    |> Option.map (
+        List.choose (fun (l, c, len, site) ->
+            if site && not includeDeclaration then
+                None
+            else
+                Some(l, c, len))
+    )
+
+/// textDocument/documentHighlight: (physLine, physCol, len, kind) with
+/// kind 3 (Write) at binder sites and 2 (Read) at uses
+let documentHighlightFor (path: string) (lines: string list) (line: int) (col: int) : (int * int * int * int) list option =
+    occurrencesFor path lines line col
+    |> Option.map (List.map (fun (l, c, len, site) -> l, c, len, (if site then 3 else 2)))
 
 // the within form answers [D:within-kinds] — one table, three
 // consumers. The kind hovers its doc + binds/consumes nature; the
@@ -2136,6 +2254,22 @@ let hoverType (lines: string list) (line: int) (col: int) : string option = hove
 // --debug [D:lsp-uri-spelling]: method dispatch and every publish to
 // stderr — editors surface server stderr (VS Code: the Output panel),
 // so the next blink-class mystery is a log read, not a rebuild
+// a one-line `range` property from 1-based physical (line, col, len)
+let private writeRange (w: Text.Json.Utf8JsonWriter) (pl: int) (pc: int) (len: int) =
+    w.WritePropertyName "range"
+    w.WriteStartObject()
+    w.WritePropertyName "start"
+    w.WriteStartObject()
+    w.WriteNumber("line", pl - 1)
+    w.WriteNumber("character", pc - 1)
+    w.WriteEndObject()
+    w.WritePropertyName "end"
+    w.WriteStartObject()
+    w.WriteNumber("line", pl - 1)
+    w.WriteNumber("character", pc - 1 + len)
+    w.WriteEndObject()
+    w.WriteEndObject()
+
 let run (debug: bool) : int =
     let stdin' = Console.OpenStandardInput()
     let docs = Collections.Generic.Dictionary<string, string>()
@@ -2460,7 +2594,7 @@ let run (debug: bool) : int =
                                 // <tag>+<hash>, all JSON-safe chars, so the placeholder
                                 // splice needs no escaping.
                                 w.WriteRawValue(
-                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":[".","-"]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir","version":"__WEIR_VERSION__"}}"""
+                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"referencesProvider":true,"documentHighlightProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":[".","-"]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"weir","version":"__WEIR_VERSION__"}}"""
                                         .Replace("__WEIR_VERSION__", Weir.Version.current)
                                 )))
                     | "initialized" -> ()
@@ -2674,20 +2808,56 @@ let run (debug: bool) : int =
 
                                     w.WriteStartObject()
                                     w.WriteString("uri", targetUri)
-                                    w.WritePropertyName "range"
-                                    w.WriteStartObject()
-                                    w.WritePropertyName "start"
-                                    w.WriteStartObject()
-                                    w.WriteNumber("line", pl - 1)
-                                    w.WriteNumber("character", pc - 1)
+                                    writeRange w pl pc len
                                     w.WriteEndObject()
-                                    w.WritePropertyName "end"
-                                    w.WriteStartObject()
-                                    w.WriteNumber("line", pl - 1)
-                                    w.WriteNumber("character", pc - 1 + len)
-                                    w.WriteEndObject()
-                                    w.WriteEndObject()
-                                    w.WriteEndObject()
+                                | None -> w.WriteNullValue()
+                            | _ -> w.WriteNullValue()
+
+                        idStr |> Option.iter (fun id -> respond id writeResult)
+                    | "textDocument/references" ->
+                        let includeDeclaration =
+                            jObj "context" ps
+                            |> Option.bind (tryProp "includeDeclaration")
+                            |> Option.map (fun v -> v.ValueKind <> JsonValueKind.False)
+                            |> Option.defaultValue true
+
+                        let writeResult (w: Text.Json.Utf8JsonWriter) =
+                            match docOf (), posOf () with
+                            | Some(uri, text), Some(line, col) ->
+                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+
+                                match referencesFor (uriToPath uri) lines line col includeDeclaration with
+                                | Some occs ->
+                                    w.WriteStartArray()
+
+                                    for pl, pc, len in occs do
+                                        w.WriteStartObject()
+                                        w.WriteString("uri", uri)
+                                        writeRange w pl pc len
+                                        w.WriteEndObject()
+
+                                    w.WriteEndArray()
+                                | None -> w.WriteNullValue()
+                            | _ -> w.WriteNullValue()
+
+                        idStr |> Option.iter (fun id -> respond id writeResult)
+                    | "textDocument/documentHighlight" ->
+                        let writeResult (w: Text.Json.Utf8JsonWriter) =
+                            match docOf (), posOf () with
+                            | Some(uri, text), Some(line, col) ->
+                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+
+                                match documentHighlightFor (uriToPath uri) lines line col with
+                                | Some occs ->
+                                    w.WriteStartArray()
+
+                                    for pl, pc, len, kind in occs do
+                                        w.WriteStartObject()
+                                        writeRange w pl pc len
+                                        w.WriteNumber("kind", kind)
+                                        w.WriteEndObject()
+
+                                    w.WriteEndArray()
                                 | None -> w.WriteNullValue()
                             | _ -> w.WriteNullValue()
 

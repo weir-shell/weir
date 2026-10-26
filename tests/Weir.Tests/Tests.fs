@@ -11604,6 +11604,167 @@ let schemaHoverTests =
                   Expect.equal (Weir.Lsp.definitionTarget entry ln 1 22) None "no file to open")
           } ]
 
+let lspRenameTests =
+    let refs (lines: string list) (line: int) (col: int) =
+        Weir.Lsp.referencesFor "refs" lines line col true
+
+    testList
+        "References, highlight, rename [D:lsp-rename]"
+        [ test "referencesFor: a top-level binder owns its uses up to the next rebinding; a param shadows inside its lambda" {
+              let lines =
+                  [ "let x = 1"
+                    "print (show x)"
+                    "let x = 2"
+                    "print (show x)"
+                    "let f x = x + 1"
+                    "print (show (f x))"
+                    "// x in a comment" ]
+
+              Expect.equal (refs lines 1 5) (Some [ (1, 5, 1); (2, 13, 1) ]) "the first x: its let and the use before the rebinding"
+              Expect.equal (refs lines 4 13) (Some [ (3, 5, 1); (4, 13, 1); (6, 16, 1) ]) "the second x: never the first's"
+              Expect.equal (refs lines 5 11) (Some [ (5, 7, 1); (5, 11, 1) ]) "inside f: the param's set only"
+              Expect.equal (refs lines 6 16) (Some [ (3, 5, 1); (4, 13, 1); (6, 16, 1) ]) "outside f: the top-level's"
+              Expect.equal (refs lines 7 4) None "a comment is no occurrence"
+
+              Expect.equal
+                  (Weir.Lsp.referencesFor "refs" lines 1 5 false)
+                  (Some [ (2, 13, 1) ])
+                  "includeDeclaration=false drops the binder site"
+
+              Expect.equal
+                  (Weir.Lsp.documentHighlightFor "refs" lines 1 5)
+                  (Some [ (1, 5, 1, 3); (2, 13, 1, 2) ])
+                  "highlight: Write at the binder, Read at the use"
+          }
+          test "referencesFor: interpolation holes, heredocs, argv splices and splats — sigil-stripped columns" {
+              let lines =
+                  [ "let s = \"v\""
+                    "let xs = [\"a\"]"
+                    "echo $s $@xs (s) $\"{s}\""
+                    "let h = $<<<"
+                    "    {s}"
+                    "    >>>"
+                    "let h2 = $$<<<"
+                    "    $s ${s}"
+                    "    >>>"
+                    "print h"
+                    "print h2" ]
+
+              Expect.equal
+                  (refs lines 1 5)
+                  (Some [ (1, 5, 1); (3, 7, 1); (3, 15, 1); (3, 21, 1); (5, 6, 1); (8, 6, 1); (8, 10, 1) ])
+                  "$s names the s after the sigil; (s) the s inside the parens; every hole counts"
+
+              Expect.equal (refs lines 2 5) (Some [ (2, 5, 2); (3, 11, 2) ]) "$@xs names the xs after the sigil"
+          }
+          test "referencesFor: yaml district splices, key splices and for binders" {
+              let lines =
+                  [ "let name = \"n\""
+                    "let items = [1; 2]"
+                    "let pairs = [(\"k\", 1)]"
+                    "let y = yaml"
+                    "    kind: $name"
+                    "    $name: 1"
+                    "    list:"
+                    "        for i in items"
+                    "            - $i"
+                    "    labels:"
+                    "        for (k, v) in pairs"
+                    "            $k: $v"
+                    "    e: $(name)"
+                    "y |> to yaml |> print" ]
+
+              Expect.equal
+                  (refs lines 1 5)
+                  (Some [ (1, 5, 4); (5, 12, 4); (6, 6, 4); (13, 10, 4) ])
+                  "value splice, key splice and $(expr) splice"
+
+              Expect.equal (refs lines 9 16) (Some [ (8, 13, 1); (9, 16, 1) ]) "the sequence for binder and its item"
+              Expect.equal (refs lines 11 14) (Some [ (11, 14, 1); (12, 14, 1) ]) "the map for's tuple binder and its key"
+          }
+          test "referencesFor: pattern binders — let-tuple, case payload, lambda tuple, for tuple, regex captures" {
+              let lines =
+                  [ "type V = | Push of int | Pop"
+                    "let (a, b) = (1, 2)"
+                    "print (show (a + b))"
+                    "match Push 1 with"
+                    "| Push n -> print (show n)"
+                    "| Pop -> ()"
+                    "let g = fun (k, v) -> show k + show v"
+                    "print (g (1, 2))"
+                    "for (k, v) in [(1, 2)] do"
+                    "    print (show (k + v))"
+                    "match \"a=1\" with"
+                    "| Regex @\"(\\w+)=(\\d+)\" (key, num) -> print $\"{key}{num}\""
+                    "| _ -> ()" ]
+
+              Expect.equal (refs lines 2 6) (Some [ (2, 6, 1); (3, 14, 1) ]) "let (a, b): a"
+              Expect.equal (refs lines 5 8) (Some [ (5, 8, 1); (5, 25, 1) ]) "| Push n: n"
+              Expect.equal (refs lines 7 14) (Some [ (7, 14, 1); (7, 28, 1) ]) "fun (k, v): k"
+              Expect.equal (refs lines 9 6) (Some [ (9, 6, 1); (10, 18, 1) ]) "for (k, v): k — not the lambda's k"
+              Expect.equal (refs lines 12 25) (Some [ (12, 25, 3); (12, 47, 3) ]) "a regex capture binder"
+          }
+          test "referencesFor: `with` source counts, `_.field` is silent, a builtin lists this file's uses (R2)" {
+              let lines =
+                  [ "type R = { a: int }"
+                    "let r = { a = 1 }"
+                    "let r2 = { r with a = 2 }"
+                    "print (show r2.a)"
+                    "[r] |> Seq.map _.a |> Seq.iter print" ]
+
+              Expect.equal (refs lines 2 5) (Some [ (2, 5, 1); (3, 12, 1); (5, 2, 1) ]) "the update's source is a use"
+              Expect.equal (refs lines 5 16) None "_.a: the wildcard is no name"
+              Expect.equal (refs lines 4 1) (Some [ (4, 1, 5); (5, 32, 5) ]) "print: no binder here, the uses still list"
+              Expect.equal (refs lines 5 8) (Some [ (5, 8, 7) ]) "Seq.map likewise"
+              Expect.equal (refs lines 4 16) None "a field is no occurrence"
+          }
+          test "referencesFor: within/until binders, and a signed member's signature line" {
+              let within = [ "let d = \"top\""; "within tmp d"; "    print d"; "print d" ]
+              Expect.equal (refs within 2 12) (Some [ (2, 12, 1); (3, 11, 1) ]) "the within binder's scope"
+              Expect.equal (refs within 1 5) (Some [ (1, 5, 1); (4, 7, 1) ]) "the top-level d outside it"
+
+              let m = [ "module"; "/// doc"; "let f : int -> int"; "let f x = x + 1"; "let g = f 2"; "let _ = g" ]
+              Expect.equal (refs m 3 5) (Some [ (3, 5, 1); (4, 5, 1); (5, 9, 1) ]) "from the sig: sig, impl, use"
+              Expect.equal (refs m 5 9) (Some [ (3, 5, 1); (4, 5, 1); (5, 9, 1) ]) "from the use: the same set"
+          }
+          test "corpus: bindingUsage's free set equals occurrences' TopLevel set, statement by statement" {
+              let root = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..")
+
+              let files =
+                  [ "examples"; "ci"; "tools" ]
+                  |> List.collect (fun d ->
+                      System.IO.Directory.GetFiles(System.IO.Path.Combine(root, d), "*.weir") |> Array.toList)
+
+              Expect.isGreaterThan files.Length 20 "the corpus is there"
+              let mutable statements = 0
+
+              for f in files do
+                  let lines = System.IO.File.ReadAllLines f |> Array.toList
+                  let _, stmts, _, _ = Weir.Script.analyzeLines f lines
+
+                  for _, chk in stmts do
+                      match chk.Kind with
+                      | Weir.Script.KLet(_, _, te)
+                      | Weir.Script.KLetPat(_, _, te)
+                      | Weir.Script.KCmd te
+                      | Weir.Script.KExpr te ->
+                          statements <- statements + 1
+                          let free, _ = Weir.Check.bindingUsage te
+
+                          let top =
+                              Weir.Check.occurrences te
+                              |> List.choose (fun o ->
+                                  match o.Binder with
+                                  | Weir.Check.TopLevel n -> Some n
+                                  | Weir.Check.Local _ -> None)
+                              |> Set.ofList
+
+                          Expect.equal top (Set.filter Weir.Check.occurrenceName free) $"{f}: the two walks agree"
+                      | _ -> ()
+
+              Expect.isGreaterThan statements 200 "the corpus has statements"
+          } ]
+
 let semanticTokenTests =
     testList
         "Semantic tokens"
@@ -35181,6 +35342,7 @@ let allTests =
           semanticTokenTests
           blockRecoveryTests
           lspCrossFileTests
+          lspRenameTests
           letBindingHoverTests
           purityBadgeTests
           pureRegionTests
