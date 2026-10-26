@@ -10564,13 +10564,43 @@ let effectBeforeArgs (path: string) (stmts: (LogicalLine * CheckedKind) list) : 
                   Code = "effect-before-args"
                   Message = $"{what} runs before '{loadName}' (line {loadLine}) — {consequence}" }))
 
+// the recovery pass [D:block-recovery], tooling-only: an errored
+// statement is re-checked once for its tree, so the editor keeps
+// answering inside it. The diagnostic stays the first pass's; the
+// binder schemes are the hole schemes the Error branch binds, so the
+// partial's kind and its env agree
+let private recoverStatement (tenv: TypeEnv) (holeScheme: Scheme) (stmt: Stmt) : CheckedKind option =
+    let recovered (e: Expr) =
+        Check.typecheckRecovering tenv e |> Option.map fst
+
+    match stmt with
+    | SLet(name, e) -> recovered e |> Option.map (fun te -> KLet(name, holeScheme, te))
+    | SLetPat(pat, e) ->
+        recovered e
+        |> Option.map (fun te -> KLetPat(pat, Check.patNameSpans pat |> List.map (fun (n, _) -> n, holeScheme), te))
+    | SCmd e -> recovered e |> Option.map KCmd
+    // statement position demands unit — checkStatementCore's arming
+    | SExpr e -> recovered (Check.armTail e) |> Option.map KExpr
+    | SType _
+    | SSig _
+    | SModule _
+    | SImport _ -> None
+
 /// analyzeLines, with `asInit` forcing the init-file reading (the LSP's
-/// canonical init path, marked or not [D:init-marker])
+/// canonical init path, marked or not [D:init-marker]). The fifth
+/// product is the partials [D:block-recovery]: statements that did NOT
+/// check, with their recovered trees — never among `stmts`, so every
+/// diagnostic consumer sees exactly the checked ones
 let analyzeLinesAs
     (asInit: bool)
     (path: string)
     (rawLines: string list)
-    : Diagnostic list * (LogicalLine * CheckedStatement) list * TypeEnv * LogicalLine list =
+    : Diagnostic list *
+      (LogicalLine * CheckedStatement) list *
+      TypeEnv *
+      LogicalLine list *
+      (LogicalLine * CheckedStatement) list
+    =
     // an #init-marked file checks as the init it is [D:init-marker]:
     // directives rewritten for the full-file pass (hover, completion,
     // statement errors), its declarations are session exports — the
@@ -10683,10 +10713,11 @@ let analyzeLinesAs
      diags0 |> ignore)
 
     match Some logicalLines with
-    | None -> [], [], typeEnv0, []
+    | None -> [], [], typeEnv0, [], []
     | Some logicalLines ->
         let diags = ResizeArray<Diagnostic>()
         let stmts = ResizeArray<LogicalLine * CheckedStatement>()
+        let partials = ResizeArray<LogicalLine * CheckedStatement>()
         // first declaration per type name: line * came-from-import
         // [D:dup-type-decl]
         let declaredTypes = System.Collections.Generic.Dictionary<string, int * bool>()
@@ -11040,8 +11071,26 @@ let analyzeLinesAs
                                       Implemented = bound |> List.fold (fun st n -> Set.add n st) sc.Implemented }
                       | _ -> ())
 
+                     // the tree, against the env the statement checked in;
+                     // its env is the hole-bound one below. A budget failure
+                     // is not paid twice [D:budget-stop-first]
+                     let recovered =
+                         if Check.isBudgetMessage d.Message then
+                             None
+                         else
+                             recoverStatement tenv holeScheme stmt
+
                      for n in bound do
                          tenv <- bindValue n holeScheme tenv
+
+                     recovered
+                     |> Option.iter (fun kind ->
+                         partials.Add(
+                             ll,
+                             { Kind = kind
+                               Env = tenv
+                               Warnings = [] }
+                         ))
                  | Error _ ->
                      // a statement that does not parse still names its
                      // binder [D:parse-error-binds]: harvested lexically, a
@@ -11217,7 +11266,8 @@ let analyzeLinesAs
          |> List.filter (fun d -> not (initMarked && d.Code = "unused-binding"))),
         List.ofSeq stmts,
         typeEnv0,
-        logicalLines
+        logicalLines,
+        List.ofSeq partials
 
 let analyzeLines (path: string) (rawLines: string list) =
     analyzeLinesAs false path rawLines
@@ -11291,7 +11341,7 @@ let checkOnly (json: bool) (path: string) : int =
         Console.Error.WriteLine $"weir: {msg}"
         2
     | Ok rawLines ->
-        let diags, stmts, _, _ = analyzeLines path rawLines
+        let diags, stmts, _, _, _ = analyzeLines path rawLines
         printDiags json (not (List.isEmpty stmts)) diags
 
         if diags |> List.exists (fun d -> d.Severity = "error") then

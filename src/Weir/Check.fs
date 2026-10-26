@@ -113,6 +113,9 @@ and TypedKind =
     | TEStr of string
     | TEBool of bool
     | TEUnit
+    // the recovery pass's stand-in for a block element that failed to
+    // check [D:block-recovery] — tooling-only, so eval never sees one
+    | TEHole of Span
     | TEVar of string
     | TELet of name: string * nameSpan: Span * value: TypedExpr * body: TypedExpr
     | TELambda of param: string * paramSpan: Span * body: TypedExpr
@@ -561,7 +564,12 @@ type private Ctx =
       // by the vars that can decide them; the open set (by creation
       // order: span + operand/result types) is stranded at the boundary
       mutable Adds: Map<string, (int * (unit -> Result<unit, TypeError>)) list>
-      mutable AddsOpen: Map<int, Span * Ty list> }
+      mutable AddsOpen: Map<int, Span * Ty list>
+      // block-level recovery [D:block-recovery]: Some = a failed block
+      // element becomes a hole (recorded here with its span) and the
+      // block continues; None = the failure propagates, as every
+      // reporting consumer needs
+      mutable Recovered: (TypeError * Span) list option }
 
 // exhaustion carries whether type size is actually in evidence — the
 // message must not claim "your type grew too large" merely because the
@@ -587,7 +595,8 @@ let private newCtx () =
       PendingPrints = []
       HoleDefaulted = []
       Adds = Map.empty
-      AddsOpen = Map.empty }
+      AddsOpen = Map.empty
+      Recovered = None }
 
 let private freshName (ctx: Ctx) (prefix: string) : string =
     ctx.Fresh <- ctx.Fresh + 1
@@ -3538,6 +3547,60 @@ let private createRef (env: TypeEnv) (span: Span) (written: string) : Result<Typ
               Span = span }
     | _ -> err span $"unreachable: '{written}' is no validated type"
 
+// block-level recovery [D:block-recovery]: in recovery mode a failed
+// block element is recorded and replaced by a hole of the type the
+// position demands (unit in statement position, a fresh hole var as a
+// let value), so the enclosing block types on; outside recovery mode
+// the failure propagates unchanged
+let private holeNode (span: Span) (ty: Ty) : TypedExpr =
+    { Kind = TEHole span; Ty = ty; Span = span }
+
+let private holeVar (ctx: Ctx) : Ty = TVar(freshName ctx "__hole")
+
+// `ty` is a thunk: a fresh hole var minted outside recovery mode would
+// shift every later var's name, and some messages render them
+let private recoverAt
+    (ctx: Ctx)
+    (span: Span)
+    (ty: unit -> Ty)
+    (r: Result<TypedExpr, TypeError>)
+    : Result<TypedExpr, TypeError> =
+    match r, ctx.Recovered with
+    | Error e, Some seen ->
+        ctx.Recovered <- Some((e, span) :: seen)
+        Ok(holeNode span (ty ()))
+    | _ -> r
+
+// a hole-bound binder's scheme: ∀h.h on a hole var, so later uses stay
+// silent under the existing hole convention [PLAN-diagnostics-arc B6]
+let private holeScheme (ctx: Ctx) : Scheme =
+    match holeVar ctx with
+    | TVar v as ty ->
+        { Forall = Set.singleton v
+          Cs = Map.empty
+          Ty = ty
+          RowOrigins = Map.empty
+          HoleDefaults = [] }
+    | _ -> failwith "unreachable: holeVar is a var"
+
+let rec private patBinderNames (p: Pattern) : string list =
+    match p.PKind with
+    | PVar n -> [ n ]
+    | _ -> patChildren p |> List.collect patBinderNames
+
+// the ELetPat flavour: every binder leaf takes the hole scheme
+let private recoverLetPat
+    (ctx: Ctx)
+    (pat: Pattern)
+    (span: Span)
+    (r: Result<(string * Scheme) list * TypedExpr, TypeError>)
+    : Result<(string * Scheme) list * TypedExpr, TypeError> =
+    match r, ctx.Recovered with
+    | Error e, Some seen ->
+        ctx.Recovered <- Some((e, span) :: seen)
+        Ok(patBinderNames pat |> List.map (fun n -> n, holeScheme ctx), holeNode span (holeVar ctx))
+    | _ -> r
+
 let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     match expr.Kind with
     // a failure as a value [D:try-form]: Option, or Result carrying the message
@@ -3868,22 +3931,27 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
         result {
             let! tfirst =
-                // a diverging head's 'a meets the unit demand
-                // [D:fail-bottom] — the taught `fail "x" ; 0` stays legal
-                if divergesTo first then
-                    check ctx env first TUnit
-                else
-                    infer ctx env first
+                result {
+                    let! tfirst =
+                        // a diverging head's 'a meets the unit demand
+                        // [D:fail-bottom] — the taught `fail "x" ; 0` stays legal
+                        if divergesTo first then
+                            check ctx env first TUnit
+                        else
+                            infer ctx env first
 
-            match resolve ctx tfirst.Ty with
-            | TUnit ->
-                let! trest = infer ctx env rest
+                    match resolve ctx tfirst.Ty with
+                    | TUnit -> return tfirst
+                    | ty -> return! err first.Span (seqUnitError first ty)
+                }
+                |> recoverAt ctx first.Span (fun () -> TUnit)
 
-                return
-                    { Kind = TESeq(tfirst, trest)
-                      Ty = trest.Ty
-                      Span = expr.Span }
-            | ty -> return! err first.Span (seqUnitError first ty)
+            let! trest = infer ctx env rest
+
+            return
+                { Kind = TESeq(tfirst, trest)
+                  Ty = trest.Ty
+                  Span = expr.Span }
         }
     | EVar(("print" | "printerr" | "|print") as pname) when isPrintFamily env pname ->
         // Bare-value position (e.g. Seq.iter print): defer like a splice
@@ -4021,8 +4089,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             err expr.Span $"unbound variable '{name}'{hint}"
     | ELet(name, nameSpan, value, body) ->
         result {
-            do! checkBinderName expr.Span name
-            let! tvalue = infer ctx env value
+            let! tvalue =
+                result {
+                    do! checkBinderName expr.Span name
+                    return! infer ctx env value
+                }
+                |> recoverAt ctx value.Span (fun () -> holeVar ctx)
+
             let valueTy = finalTy ctx tvalue.Ty
 
             let scheme = generalizeLet ctx env valueTy
@@ -4045,26 +4118,30 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         }
     | ELetPat(pat, value, body) ->
         result {
-            // binder judged first: casing/refutability errors beat any
-            // error inside the value (the binder is what the user wrote) —
-            // unless a case in it needs the value's type to resolve
-            let! shape, binds, tvalue =
-                if binderNeedsValueType env pat then
-                    result {
-                        let! tvalue = infer ctx env value
-                        let! shape, binds = binderShapeAt ctx env (Some tvalue.Ty) pat
-                        return shape, binds, tvalue
-                    }
-                else
-                    result {
-                        let! shape, binds = binderShape ctx env pat
-                        let! tvalue = infer ctx env value
-                        return shape, binds, tvalue
-                    }
+            let! schemes, tvalue =
+                result {
+                    // binder judged first: casing/refutability errors beat any
+                    // error inside the value (the binder is what the user wrote) —
+                    // unless a case in it needs the value's type to resolve
+                    let! shape, binds, tvalue =
+                        if binderNeedsValueType env pat then
+                            result {
+                                let! tvalue = infer ctx env value
+                                let! shape, binds = binderShapeAt ctx env (Some tvalue.Ty) pat
+                                return shape, binds, tvalue
+                            }
+                        else
+                            result {
+                                let! shape, binds = binderShape ctx env pat
+                                let! tvalue = infer ctx env value
+                                return shape, binds, tvalue
+                            }
 
-            do! bind ctx env pat.PSpan shape tvalue.Ty
+                    do! bind ctx env pat.PSpan shape tvalue.Ty
 
-            let schemes = binds |> List.map (generalizeBinding ctx env)
+                    return binds |> List.map (generalizeBinding ctx env), tvalue
+                }
+                |> recoverLetPat ctx pat value.Span
 
             let! tbody =
                 infer
@@ -6683,21 +6760,26 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
 
         result {
             let! tfirst =
-                // the infer twin's diverging-head carve [D:fail-bottom]
-                if divergesTo first then
-                    check ctx env first TUnit
-                else
-                    infer ctx env first
+                result {
+                    let! tfirst =
+                        // the infer twin's diverging-head carve [D:fail-bottom]
+                        if divergesTo first then
+                            check ctx env first TUnit
+                        else
+                            infer ctx env first
 
-            match resolve ctx tfirst.Ty with
-            | TUnit ->
-                let! trest = check ctx env rest expected
+                    match resolve ctx tfirst.Ty with
+                    | TUnit -> return tfirst
+                    | ty -> return! err first.Span (seqUnitError first ty)
+                }
+                |> recoverAt ctx first.Span (fun () -> TUnit)
 
-                return
-                    { Kind = TESeq(tfirst, trest)
-                      Ty = trest.Ty
-                      Span = expr.Span }
-            | ty -> return! err first.Span (seqUnitError first ty)
+            let! trest = check ctx env rest expected
+
+            return
+                { Kind = TESeq(tfirst, trest)
+                  Ty = trest.Ty
+                  Span = expr.Span }
         }
     | EOpValue op, expected ->
         // the check-mode twin [D:operator-values]: the pushed domain
@@ -6741,8 +6823,13 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
         err expr.Span $"expected {formatTy t}, got a function"
     | ELet(name, nameSpan, value, body), _ ->
         result {
-            do! checkBinderName expr.Span name
-            let! tvalue = infer ctx env value
+            let! tvalue =
+                result {
+                    do! checkBinderName expr.Span name
+                    return! infer ctx env value
+                }
+                |> recoverAt ctx value.Span (fun () -> holeVar ctx)
+
             let valueTy = finalTy ctx tvalue.Ty
 
             let scheme = generalizeLet ctx env valueTy
@@ -7295,6 +7382,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEStr _
     | TEBool _
     | TEUnit
+    | TEHole _
     | TEVar _
     | TEEnvLoad _
     | TEArgsLoad _
@@ -7499,6 +7587,30 @@ let typecheckWith
 
 let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     typecheckWith env expr |> Result.map (fun (te, _, _, _) -> te)
+
+/// the recovery pass [D:block-recovery]: a tree for a statement that
+/// already failed to check, with each failed block element a hole, and
+/// the failures caught (first first). None when nothing recovers — the
+/// failure is the statement's own expression, or the budget. The
+/// boundary checks run only for the tree's sake: their failures are
+/// not this pass's to report.
+let typecheckRecovering (env: TypeEnv) (expr: Expr) : (TypedExpr * (TypeError * Span) list) option =
+    let env =
+        { withAnonDefs env expr with
+            AnonLitDefs = System.Collections.Generic.Dictionary() }
+
+    let ctx = { newCtx () with Recovered = Some [] }
+
+    try
+        match infer ctx env expr with
+        | Error _ -> None
+        | Ok te ->
+            let generic = tyVars (finalTy ctx te.Ty) - envFreeVars ctx env
+            resolvePendingSplices ctx env generic |> ignore
+            let te = finalizeExpr ctx te
+            Some(te, ctx.Recovered |> Option.defaultValue [] |> List.rev)
+    with BudgetExceeded _ ->
+        None
 
 // what a binder pattern is, in words — the shape a payload failed to fit
 let private binderWord (p: Pattern) : string =

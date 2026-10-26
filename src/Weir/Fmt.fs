@@ -689,7 +689,7 @@ let formatSource (path: string) (text: string) : Result<string list * bool, stri
     // parse decides whether it is a script fmt may rewrite — a parse
     // error in this file (an import's is its own) refuses, located
     let parseError () =
-        let diags, _, _, _ = Script.analyzeLines path lines
+        let diags, _, _, _, _ = Script.analyzeLines path lines
 
         diags
         |> List.tryFind (fun d -> d.File = path && d.Code = "parse" && d.Severity = "error")

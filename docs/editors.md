@@ -9,6 +9,11 @@ In any editor with LSP support you get:
 
 - **Diagnostics as you type.** The same checks weir makes before
   running a script, over the whole file, on every keystroke.
+- **Inside a statement with an error**, the other lines keep their
+  hover and go to definition; the bad line itself shows nothing. A
+  type recovered past the error can be more general than the fixed
+  code's, and a name whose value failed to check (and anything typed
+  from it) shows nothing until the error is fixed.
 - **Hover.** Types and `///` docs for bindings, builtins, record
   fields and union cases, including ones from other files and
   imports. On a command declared with `#sig`, hover shows its

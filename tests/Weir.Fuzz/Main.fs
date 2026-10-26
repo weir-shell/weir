@@ -69,7 +69,7 @@ type SpanVerdict =
     | SpanMiss of string
 
 let spanSoundCore (injected: string list) (physLine: int) (extent: int) : SpanVerdict =
-    let diags, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" injected
+    let diags, _, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" injected
 
     match diags |> List.filter (fun d -> d.Severity = "error") with
     | [] -> SpanNoDiag $"no diagnostic for a bad token at line {physLine}"
@@ -157,6 +157,27 @@ let private totalityCore (timeoutMs: int) (label: string) (work: unit -> unit) :
     with :? AggregateException as ae ->
         Error(sprintf "%s THREW %s: %s" label (ae.InnerException.GetType().Name) ae.InnerException.Message)
 
+// the recovery pass's laws [D:block-recovery], on one input: a partial
+// is never a stmt, never comes without an error, and the diagnostics do
+// not depend on the pass (a second analysis says the same) — pinned
+// structurally trivial, so it stays trivial
+let private recoveryLaws (lines: string list) =
+    let diags, stmts, _, _, partials = Weir.Script.analyzeLines "fuzz.weir" lines
+
+    let heads (xs: (Weir.Script.LogicalLine * _) list) =
+        xs |> List.map (fun (ll, _) -> ll.Head) |> Set.ofList
+
+    if not (Set.isEmpty (Set.intersect (heads stmts) (heads partials))) then
+        failtestf "a partial is also a stmt\non:\n%s" (showProgram lines)
+
+    if not partials.IsEmpty && not (diags |> List.exists (fun d -> d.Severity = "error")) then
+        failtestf "a partial without an error diagnostic\non:\n%s" (showProgram lines)
+
+    let diags2, _, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" lines
+
+    if diags <> diags2 then
+        failtestf "diagnostics changed between two analyses of one text\non:\n%s" (showProgram lines)
+
 // assembler/parser/checker totality on one input, with a hang bound
 let private totality (lines: string list) =
     match totalityCore 5000 "check pipeline" (fun () -> Weir.Script.analyzeLines "fuzz.weir" lines |> ignore) with
@@ -174,7 +195,7 @@ let private totality (lines: string list) =
 let private depthDiagnoses (label: string) (line: string) =
     let work =
         System.Threading.Tasks.Task.Run(fun () ->
-            let diags, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" [ line ]
+            let diags, _, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" [ line ]
             diags)
 
     let finished =
@@ -197,7 +218,7 @@ let private depthDiagnoses (label: string) (line: string) =
 let private diagnosesWithinBound (label: string) (boundMs: int) (lines: string list) =
     let work =
         System.Threading.Tasks.Task.Run(fun () ->
-            let diags, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" lines
+            let diags, _, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" lines
             diags)
 
     let finished =
@@ -437,6 +458,18 @@ let tests =
               totality (Mutate.swapLines rnd lines)
               totality (Mutate.deleteLine rnd (Mutate.perturbIndent rnd lines))
               totality (Mutate.swapLines rnd (Mutate.duplicateLine rnd lines))
+
+          // the recovery pass rides totality (the pass runs inside analyzeLines,
+          // so a throw there is a totality failure) and keeps its laws on the
+          // same inputs — the mutated neighbors are where the errors are
+          testPropertyWithConfig cfg "block recovery: partials never stmts, never without an error, never changing diagnostics"
+          <| fun (p: Program) (NonNegativeInt s) ->
+              let rnd = Random s
+              let lines = renderPlain p
+              recoveryLaws lines
+              recoveryLaws (Mutate.deleteLine rnd lines)
+              recoveryLaws (Mutate.swapLines rnd lines)
+              recoveryLaws (Mutate.deleteLine rnd (Mutate.perturbIndent rnd lines))
 
           // the depth axis runs SEQUENCED [D:fuzz-depth-sequenced]: each
           // case is a CPU- and allocation-heavy pass bounded by wall clock,

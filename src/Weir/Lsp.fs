@@ -181,7 +181,15 @@ let tokenLegend = [| "weirCommandHead"; "weirArgv"; "weirSplice" |]
 // hit only on the exact same lines; every document event (open, change,
 // close) drops it all, so an edited module reaches its importers.
 let private analysisCache =
-    Collections.Generic.Dictionary<struct (bool * string), string list * (Script.Diagnostic list * (Script.LogicalLine * Script.CheckedStatement) list * TypeEnv * Script.LogicalLine list)>()
+    Collections.Generic.Dictionary<
+        struct (bool * string),
+        string list *
+        (Script.Diagnostic list *
+        (Script.LogicalLine * Script.CheckedStatement) list *
+        TypeEnv *
+        Script.LogicalLine list *
+        (Script.LogicalLine * Script.CheckedStatement) list)
+     >()
 
 let private analyzeCachedAs (asInit: bool) (path: string) (lines: string list) =
     let key = struct (asInit, path)
@@ -208,7 +216,7 @@ let dropAnalyses () =
 /// (0-based line, 0-based startChar, length, tokenType), sorted by
 /// position — the raw form the LSP delta encoding rides on.
 let semanticTokensFor (lines: string list) : (int * int * int * int) list =
-    let _, stmts, _, _ = analyzeCached "tokens" lines
+    let _, stmts, _, _, _ = analyzeCached "tokens" lines
     let lineArr = List.toArray lines
     let out = ResizeArray<int * int * int * int>()
 
@@ -512,13 +520,13 @@ let private analyze (uri: string) (text: string) =
     // init it is [D:init-marker] — the shared path, so the editor reports
     // exactly what `weir check` and the loader do (checkInit [D:repl-init]),
     // the missing marker included
-    let diags, stmts, env0, lls =
+    let diags, stmts, env0, lls, partials =
         if canonical || Script.isInitMarked raw then
             analyzeCachedAs true path raw
         else
             analyzeCached path raw
 
-    diags, stmts, env0, lls
+    diags, stmts, env0, lls, partials
 
 // is a physical line (0-based) inside a yaml block? Its nearest less
 // indented line above is a yaml district marker, or is itself inside one
@@ -547,6 +555,17 @@ let private logicalAt (lls: Script.LogicalLine list) (line: int) (col: int) =
                 Some(ll, js + (col - 1 - indent) + 1)
             else
                 None))
+
+// the statements the editor answers from [D:block-recovery]: the
+// checked ones and the partials (errored, with a recovered tree), in
+// file order — diagnostics never read this union
+let private withPartials
+    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (partials: (Script.LogicalLine * Script.CheckedStatement) list)
+    =
+    match partials with
+    | [] -> stmts
+    | _ -> stmts @ partials |> List.sortBy (fun (ll, _) -> ll.Head)
 
 // physical (1-based line, 1-based col) -> logical (LogicalLine, 1-based joined col)
 let private toLogical (stmts: (Script.LogicalLine * Script.CheckedStatement) list) (line: int) (col: int) =
@@ -587,6 +606,15 @@ let private nodeAt (te: TypedExpr) (col: int) : TypedExpr option =
             Check.childExprs node |> List.fold go best
 
     go None te
+
+// is the (logical) column inside a recovered hole [D:block-recovery]
+let private inHole (chk: Script.CheckedStatement) (col: int) : bool =
+    let rec go (te: TypedExpr) =
+        match te.Kind with
+        | Check.TEHole sp -> sp.Start.Col <= col && col < sp.End.Col
+        | _ -> Check.childExprs te |> List.exists go
+
+    teOf chk |> Option.map go |> Option.defaultValue false
 
 // ---- go-to-definition v1 [D:lsp-requests]: top-level bindings only,
 // null otherwise (params/match binders/block-lets carry no binder
@@ -852,7 +880,7 @@ let rec private innerLetSig (name: string) (jcol: int) (te: Check.TypedExpr) : s
 let private targetStmts (absPath: string) =
     Script.targetSourceLines absPath
     |> Option.map (fun lines ->
-        let _, stmts, _, _ = analyzeCached absPath lines
+        let _, stmts, _, _, _ = analyzeCached absPath lines
         lines, stmts)
 
 // the KType declaring `tyName` among `stmts` — file-agnostic so the
@@ -1073,7 +1101,7 @@ let definitionTarget
     (line: int)
     (col: int)
     : (string option * int * int * int) option =
-    let _, stmts, _, _ = analyzeCached path lines
+    let _, stmts, _, _, partials = analyzeCached path lines
 
     let imports =
         stmts
@@ -1160,7 +1188,9 @@ let definitionTarget
         | Some c -> Some c
         | None -> Check.childExprs te |> List.tryPick (matchCaseAt jcol)
 
-    toLogical stmts line col
+    toLogical (withPartials stmts partials) line col
+    // inside a hole there is nothing to jump from [D:block-recovery]
+    |> Option.filter (fun (_, chk, jcol) -> not (inHole chk jcol))
     |> Option.bind (fun (useLl, chk, jcol) ->
         match chk.Kind with
         | Script.KImport lm ->
@@ -1677,9 +1707,12 @@ let private schemaHover (path: string) (name: string) : string option =
 /// site for a usage / field / case reference (definitionFor) [Group 1a],
 /// else the builtin's [D:builtin-docs].
 let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string option =
-    let _, stmts, _, _ = analyzeCached path lines
+    let _, stmts, _, _, partials = analyzeCached path lines
 
-    match toLogical stmts line col with
+    match toLogical (withPartials stmts partials) line col with
+    // a hole has no type to show [D:block-recovery] — null, the honest
+    // answer [D:hover-silence]
+    | Some(_, chk, jcol) when inHole chk jcol -> None
     | Some(ll, chk, jcol) when
         not (inStringOrComment lines line col)
         && (formWordHover chk.Env ll.Text jcol).IsSome
@@ -1955,7 +1988,14 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 match chk.Kind with
                 // a top-level let hovers as its annotated signature, on the
                 // binder name only — never a fallback for an unresolved spot
-                | Script.KLet(name, sch, te) when word = Some name ->
+                // a partial's own binder is hole-bound [D:block-recovery]:
+                // its type is not known until the statement checks
+                | Script.KLet(name, sch, te) when
+                    word = Some name
+                    && (match sch.Ty with
+                        | TVar v -> not (v.StartsWith "__hole")
+                        | _ -> true)
+                    ->
                     // the purity badge, display stage of [D:pure]: the
                     // rare pure function is surfaced; effectful stays
                     // the unbadged norm (weir is effect-normal), and a
@@ -2057,6 +2097,11 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 | Some d, Some v -> Some(d + "\n\n" + v)
                 | None, v -> v
                 | d, None -> d
+
+        // a hole-descended type (a use of a binder whose value failed)
+        // hovers nothing [D:block-recovery]: the hole convention's var
+        // would render, and no type is the honest answer
+        let ty = ty |> Option.filter (fun t -> not (t.Contains "'__hole"))
 
         match ty, doc with
         | Some t, Some d -> Some(t + "\n\n" + d) // type FIRST, then the doc
@@ -2251,7 +2296,7 @@ let run (debug: bool) : int =
             // still analyze and publish; the request-level guard is only
             // the backstop
             try
-                let diags, _, _, _ = analyze kv.Key kv.Value
+                let diags, _, _, _, _ = analyze kv.Key kv.Value
 
                 for d in diags do
                     // publish under the client's own URI string when the
@@ -2672,11 +2717,12 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf (), posOf () with
                             | Some(uri, text), Some(line, col) ->
-                                let _, stmts, env0, allLls = analyze uri text
+                                let _, stmts, env0, allLls, partials = analyze uri text
 
                                 // env in scope: after the last statement above the line
+                                // (a partial's env is its hole-bound one [D:block-recovery])
                                 let env =
-                                    stmts
+                                    withPartials stmts partials
                                     |> List.filter (fun (ll, _) -> ll.Head < line)
                                     |> List.tryLast
                                     |> Option.map (fun (_, c) -> c.Env)

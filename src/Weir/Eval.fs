@@ -5656,6 +5656,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEStr s -> VStr s
     | TEBool b -> VBool b
     | TEUnit -> VUnit
+    // recovery is tooling-only [D:block-recovery]: no hole reaches eval
+    | TEHole _ -> failwith "unreachable: a recovered tree is never evaluated"
     | TEVar name ->
         match Map.tryFind name env with
         | Some v ->

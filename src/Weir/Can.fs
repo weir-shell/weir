@@ -714,7 +714,7 @@ let run (json: bool) (strict: bool) (path: string) : int =
         eprintfn $"weir: {msg}"
         2
     | Ok rawLines ->
-        let diags, pairs, _, _ = analyzeLines path rawLines
+        let diags, pairs, _, _, _ = analyzeLines path rawLines
 
         if diags |> List.exists (fun d -> d.Severity = "error") then
             printDiags json (not (List.isEmpty pairs)) diags

@@ -726,7 +726,7 @@ let saveQualify =
                     "}"
                     "let _r1 = sample |> from json Root |> _.items |> Seq.map _.name |> Seq.length" ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "saved.weir" saved
+              let diags, _, _, _, _ = Weir.Script.analyzeLines "saved.weir" saved
               Expect.isEmpty diags (sprintf "saved script checks clean; diags: %A" diags)
           } ]
 
@@ -828,6 +828,6 @@ let tableInferRules =
                   @ (decl.Split '\n' |> List.ofArray)
                   @ [ "let _r = sample |> from table Pod |> Seq.map (fun p -> p.name) |> Seq.length" ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "drafted.weir" saved
+              let diags, _, _, _, _ = Weir.Script.analyzeLines "drafted.weir" saved
               Expect.isEmpty diags (sprintf "the draft must check and read; diags: %A" diags)
           } ]

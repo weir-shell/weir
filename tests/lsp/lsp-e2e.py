@@ -884,6 +884,80 @@ _dt = _time.monotonic() - _t0
 expect(m["params"]["diagnostics"] == [], f"the fix must clear: {m['params']}")
 expect(_dt < 0.5, f"recheck must republish within 500ms, took {_dt:.3f}s")
 
+# ---- block-level recovery [D:block-recovery] -------------------------
+# the receipt: a multi-line let with one bad inner line, then statements
+# using it. The three consumers still agree on the ONE error (the
+# recovery pass reports nothing of its own); hover above and below the
+# bad line both answer, definition inside jumps, a position in the hole
+# is null, and the open publishes exactly once (the squiggle-blink pin's
+# shape)
+_rf = os.path.join(_pd, "receipt.weir")
+_rtext = ("let sub a b =\n"
+          "    let total = a * b\n"
+          "    let bad = total + \"x\"\n"
+          "    let doubled = total * 2\n"
+          "    print (show doubled)\n"
+          "    doubled\n"
+          "\n"
+          "let r = sub 1 2\n"
+          "print (show r)\n")
+open(_rf, "w").write(_rtext)
+rj = json.loads(subprocess.run([BIN, "check", "--json", _rf],
+                               capture_output=True, text=True).stdout)
+expect(len(rj) == 1 and rj[0]["line"] == 3,
+       f"check --json must report the one inner error: {rj}")
+rj_rows = [(d["code"], d["line"], d["col"]) for d in rj]
+rout = subprocess.run([BIN, _rf], capture_output=True, text=True).stderr
+mr = _re.match(r"^" + _re.escape(_rf) + r":(\d+):(\d+): ", rout)
+expect(mr and (int(mr.group(1)), int(mr.group(2))) == rj_rows[0][1:],
+       f"runner and check --json must agree on the receipt's error: {rout!r} vs {rj_rows}")
+
+r5uri = furi(_rf)
+_t0 = _time.monotonic()
+send5({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": r5uri, "text": _rtext}}})
+send5({"jsonrpc": "2.0", "id": 81, "method": "textDocument/hover",
+       "params": {"textDocument": {"uri": r5uri}, "position": {"line": 1, "character": 8}}})
+r_pubs = []
+m = read5()
+while m.get("id") != 81:
+    if m.get("method") == "textDocument/publishDiagnostics" and nuri(m["params"]["uri"]) == nuri(r5uri):
+        if not r_pubs:
+            _dt = _time.monotonic() - _t0
+        r_pubs.append(m["params"]["diagnostics"])
+    m = read5()
+expect(len(r_pubs) == 1, f"the open must publish exactly once: {len(r_pubs)}")
+expect(sorted((d["code"], d["range"]["start"]["line"] + 1, d["range"]["start"]["character"] + 1)
+              for d in r_pubs[0]) == sorted(rj_rows),
+       f"LSP and check --json must agree on the receipt's error: {r_pubs[0]} vs {rj_rows}")
+expect(_dt < 0.5, f"the recovery pass must stay inside the recheck budget, took {_dt:.3f}s")
+expect(m["result"] and "total : int" in m["result"]["contents"]["value"],
+       f"hover above the bad line must answer: {m}")
+send5({"jsonrpc": "2.0", "id": 82, "method": "textDocument/hover",
+       "params": {"textDocument": {"uri": r5uri}, "position": {"line": 3, "character": 18}}})
+m = read5()
+while m.get("id") != 82:
+    m = read5()
+expect(m["result"] and "int" in m["result"]["contents"]["value"],
+       f"hover below the bad line must answer: {m}")
+send5({"jsonrpc": "2.0", "id": 83, "method": "textDocument/hover",
+       "params": {"textDocument": {"uri": r5uri}, "position": {"line": 2, "character": 14}}})
+m = read5()
+while m.get("id") != 83:
+    m = read5()
+expect(m.get("result") is None, f"a position inside the hole must answer null: {m}")
+send5({"jsonrpc": "2.0", "id": 84, "method": "textDocument/definition",
+       "params": {"textDocument": {"uri": r5uri}, "position": {"line": 3, "character": 18}}})
+m = read5()
+while m.get("id") != 84:
+    m = read5()
+loc = m.get("result")
+expect(loc and loc["range"]["start"] == {"line": 1, "character": 8},
+       f"definition inside the broken statement must jump to the binder above the bad line: {m}")
+send5({"jsonrpc": "2.0", "method": "textDocument/didClose",
+       "params": {"textDocument": {"uri": r5uri}}})
+sys.stderr.write(f"lsp-e2e: receipt open->publish {_dt*1000:.0f}ms (recovery pass included)\n")
+
 # ---- formatting: wired and answering [D:testing-residue] -------------
 # a misformatted doc gets ONE whole-document TextEdit whose newText is
 # fmt's output; a canonical doc gets an empty edit list
