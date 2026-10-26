@@ -1,6 +1,6 @@
 # PLAN: LSP recovery + rename — typed trees for broken statements, and the park opens
 
-**Status: DRAFT** (2026-10-26) — awaiting rulings
+**Status: RULED** (user, 2026-10-26) — R1–R8 all as recommended; see Rulings.
 
 ## The receipt
 
@@ -468,7 +468,9 @@ pattern), the Fuzz project for properties.
 - Any runner/REPL/`weir check` behaviour change; any grammar or
   editor-extension change.
 
-## Rulings needed
+## Rulings
+
+All eight ruled as recommended (user, 2026-10-26): R1 first error only, everywhere; R2 references/highlight list this file's uses, rename refused; R3 exported members rename single-file; R4 conservative collision rule; R5 rename refuses under partials, references answer what is visible; R6 init-marked and sig files refuse rename; R7 comments and docs untouched; R8 `TEHole`.
 
 - **R1 — the recovery pass's further errors.** Inference continues past
   the first inner error and may find more. Publish them in the LSP (as
