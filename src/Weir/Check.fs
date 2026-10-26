@@ -790,16 +790,37 @@ let private strandedMessage (cls: Cls) : string =
 let builtinTypeNames: System.Collections.Concurrent.ConcurrentDictionary<string, byte> =
     System.Collections.Concurrent.ConcurrentDictionary<string, byte>()
 
+// a declared type's ordering key [D:derived-ord]: the `[<Ord n>]`
+// members by ascending n — empty when nothing is numbered, so the
+// type does not order
+let private ordKeyOf (def: TypeDef) : string list =
+    match def with
+    | Record d -> d.OrdKey
+    | Union d -> d.OrdKey
+
 let private ordDeclared (env: TypeEnv) (n: string) : bool =
     match typeDefFor env n with
-    | Some(Record d) -> d.Ord
-    | Some(Union d) -> d.Ord
+    | Some def -> not (ordKeyOf def).IsEmpty
     | None -> false
 
+let private defParams (def: TypeDef) : string list =
+    match def with
+    | Record d -> d.Params
+    | Union d -> d.Params
+
+// the key's member types, under the declaration's own parameters: a
+// record's numbered fields (the unnumbered ones take no part — the
+// partial-key law [D:derived-ord]), a union's payloads (every case is
+// numbered or none)
+let private ordKeyTys (def: TypeDef) : Ty list =
+    match def with
+    | Record d -> d.OrdKey |> List.map (fun f -> d.Fields |> List.find (fst >> (=) f) |> snd)
+    | Union d -> d.Cases |> List.choose snd
+
 // the derived-ordering law [D:derived-ord]: an ordered member is a
-// scalar of the Ord set, an `Option` of one, another `[<Ord>]` type
-// (a self-reference admits through `seen`, as Eq's decompose does), or
-// a type parameter (the use decides, with the argument concrete);
+// scalar of the Ord set, an `Option` of one, another ordered type (a
+// self-reference admits through `seen`, as Eq's decompose does), or a
+// type parameter (the use decides, with the argument concrete);
 // anything else is the offender — the innermost one, so a message can
 // name the repair
 let rec private ordOffender (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Ty option =
@@ -823,19 +844,14 @@ let rec private ordOffender (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Ty opt
             let seen = Set.add key seen
 
             match typeDefFor env n with
-            | Some(Record def) when def.Ord ->
-                def.Fields
-                |> List.tryPick (fun (_, ft) -> ordOffender env seen (substParams def.Params targs ft))
-            | Some(Union def) when def.Ord ->
-                def.Cases
-                |> List.tryPick (fun (_, payload) ->
-                    payload
-                    |> Option.bind (fun pt -> ordOffender env seen (substParams def.Params targs pt)))
+            | Some def when not (ordKeyOf def).IsEmpty ->
+                ordKeyTys def
+                |> List.tryPick (fun mt -> ordOffender env seen (substParams (defParams def) targs mt))
             | _ -> Some ty
     | _ -> Some ty
 
-// a record or union the author declared — the one kind of type a
-// `[<Ord>]` repair can name (not a built-in or prelude type, not an
+// a record or union the author declared — the one kind of type an
+// `[<Ord n>]` repair can name (not a built-in or prelude type, not an
 // anonymous shape)
 let private authorDeclared (env: TypeEnv) (n: string) : string option =
     if n.StartsWith "{|" || builtinTypeNames.ContainsKey n then
@@ -852,18 +868,18 @@ let private authorDeclared (env: TypeEnv) (n: string) : string option =
 let private ordTail (env: TypeEnv) (atUse: bool) (offender: Ty) : string =
     match offender with
     | TNamed(n, _) when n.StartsWith "{|" ->
-        "an anonymous record has no order; declare the shape as a record and give it [<Ord>]"
+        "an anonymous record has no order; declare the shape as a record and number its fields with [<Ord n>]"
     | TNamed(n, _) when (authorDeclared env n).IsSome ->
         if atUse then
-            $"add [<Ord>] above `type {n}` to order it by its {(authorDeclared env n).Value} in declaration order"
+            $"number its {(authorDeclared env n).Value} with [<Ord n>] to order it"
         else
-            $"add [<Ord>] above `type {n}` to order it too"
-    | TTuple _ -> "tuples have no order; name the parts in a record and give it [<Ord>]"
+            $"number its {(authorDeclared env n).Value} with [<Ord n>] to order it too"
+    | TTuple _ -> "tuples have no order; name the parts in a record and number them with [<Ord n>]"
     | _ ->
         if atUse then
-            "keys are int, float, string, bool, Duration, Size, Instant, Uuid, an Option of those, or a type declared with [<Ord>]"
+            "keys are int, float, string, bool, Duration, Size, Instant, Uuid, an Option of those, or a record or union numbered with [<Ord n>]"
         else
-            "only int, float, string, bool, Duration, Size, Instant, Uuid, an Option of those, and [<Ord>] types order"
+            "only int, float, string, bool, Duration, Size, Instant, Uuid, an Option of those, and records or unions numbered with [<Ord n>] order"
 
 let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
     if Set.isEmpty sch.Forall then
@@ -1064,10 +1080,17 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p0: Pending) (ty0: Ty) : Result<un
             // [D:uuid] — byte order, which is time order for v7
             | Cls.Ord, (TInt | TFloat | TStr | TBool | TDur | TSize | TInstant | TUuid) -> true
             // `Option` orders by its content, `None` first; a declared
-            // record or union only under `[<Ord>]` — opt-in, because
-            // declaration order becomes semantics [D:derived-ord]
+            // record or union only through its `[<Ord n>]` key — the
+            // numbered members, never the declaration [D:derived-ord]
             | Cls.Ord, TNamed("Option", [ t ]) -> ok seen t
-            | Cls.Ord, TNamed(n, targs) when ordDeclared env n -> decompose n targs
+            | Cls.Ord, TNamed(n, targs) when ordDeclared env n ->
+                let key = formatTy t
+
+                seen.Contains key
+                || (let def = (typeDefFor env n).Value
+
+                    ordKeyTys def
+                    |> List.forall (fun mt -> ok (Set.add key seen) (substParams (defParams def) targs mt)))
             | Cls.Ord, _ -> false
             // vars and row vars are consumed by the outer match arms, and
             // Render by its delegation; the compiler cannot see that
@@ -1688,7 +1711,7 @@ let rec private typeBinOp
     | ("*" | "/"), TInt, TInt -> Ok(TInt)
     | (">" | "<" | ">=" | "<="), TInt, TInt -> Ok TBool
     | ("&&" | "||"), TBool, TBool -> Ok TBool
-    // an `[<Ord>]` type compares with its own kind [D:derived-ord] — a
+    // an ordered type compares with its own kind [D:derived-ord] — a
     // declared type is a quantity by declaration (the Instant side of
     // the Instant/Uuid split); an unknown other side binds to it, the
     // scalar defaulting arms' shape
@@ -1699,13 +1722,13 @@ let rec private typeBinOp
     | (">" | "<" | ">=" | "<="), (TNamed(n, _) as a), (TNamed(m, _) as b) when n = m && ordDeclared env n ->
         bind ctx env r.Span a b |> Result.map (fun () -> TBool)
     | (">" | "<" | ">=" | "<="), (TNamed(n, _) as a), b when ordDeclared env n -> mismatch r.Span a b
-    // the author's own record or union without the attribute names the
+    // the author's own record or union without a key names the
     // repair; the prelude's (Option) and anonymous shapes keep the bare
     // refusal
     | (">" | "<" | ">=" | "<="), (TNamed(n, _) as a), _ when (authorDeclared env n).IsSome ->
         err
             opSpan
-            $"operator '{op}' is not defined for {formatTy a} — add [<Ord>] above `type {n}` to compare by its {(authorDeclared env n).Value} in declaration order"
+            $"operator '{op}' is not defined for {formatTy a} — number its {(authorDeclared env n).Value} with [<Ord n>] to compare it"
     // no operator here is defined for these on the left, whatever the
     // right side is — say so before any operand mismatch
     | _, ((TNamed _ | TSeq _ | TTuple _ | TUnit) as a), _ ->
@@ -5639,7 +5662,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                               Params = []
                               Fields = List.sortBy fst flds
                               Attrs = Map.empty
-                              Ord = false
+                              OrdKey = []
                               Docs = Map.empty }
 
                     Types.pushAnonDef name flds
@@ -7292,7 +7315,7 @@ let anonDefs (expr: Expr) : (string * TypeDef) list =
                            Params = []
                            Fields = List.sortBy fst fields
                            Attrs = Map.empty
-                           Ord = false
+                           OrdKey = []
                            Docs = Map.empty }
          | _ -> ())
 
@@ -7312,7 +7335,7 @@ let private pendingAnonRecords () : (string * TypeDef) list =
               Params = []
               Fields = List.sortBy fst fields
               Attrs = Map.empty
-              Ord = false
+              OrdKey = []
               Docs = Map.empty })
 
 let private withDefList (env: TypeEnv) (defs: (string * TypeDef) list) : TypeEnv =
@@ -8295,14 +8318,14 @@ let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPo
            | None -> None
            | Some _ -> Some "takes no argument"),
            [ CasePos ])
-          // the derived ordering [D:derived-ord]: argless, on the
-          // declaration — order is the declaration's, so the attribute
-          // sits where the order is written
+          // the derived ordering [D:derived-ord]: a position per field
+          // or case — the key is written on its members, so reordering
+          // a declaration cannot change it
           "Ord",
           ((function
-           | None -> None
-           | Some _ -> Some "takes no argument"),
-           [ RecordDeclPos; UnionDeclPos ]) ]
+           | Some(AInt n) when n >= 1L -> None
+           | _ -> Some "expects a positive int, e.g. [<Ord 1>]"),
+           [ FieldPos; CasePos ]) ]
         // the codec attributes [D:wire-codecs], one per Codec case — the
         // registry is derived, so it cannot drift from the union
         @ (allCodecs
@@ -8425,6 +8448,34 @@ let private validateFieldCodec (field: string) (fty: Ty) (specs: AttrSpec list) 
                     a.ASpan
                     $"[<{a.AName}>] encodes {formatTy (codecTy c)} (or Option/seq of it), but field '{field}' is {formatTy fty}{hint}"
 
+// the `[<Ord n>]` key of a declaration's members [D:derived-ord]: the
+// numbered names by ascending n, each position held once — two members
+// on one position refuse at the second, naming both
+let private ordKey
+    (owner: string)
+    (kind: string)
+    (members: (string * AttrSpec list) list)
+    : Result<(string * int64 * Span) list, TypeError> =
+    let numbered =
+        members
+        |> List.choose (fun (m, specs) ->
+            specs
+            |> List.tryPick (fun a ->
+                match a.AName, a.AArg with
+                | "Ord", Some(AInt n) -> Some(m, n, a.ASpan)
+                | _ -> None))
+
+    let rec go (seen: Map<int64, string>) items =
+        match items with
+        | [] -> Ok(numbered |> List.sortBy (fun (_, n, _) -> n))
+        | (m, n, span) :: rest ->
+            match Map.tryFind n seen with
+            | Some first ->
+                err span $"[<Ord {n}>] on '{owner}': {kind}s '{first}' and '{m}' share position {n} — number each {kind} once"
+            | None -> go (Map.add n m seen) rest
+
+    go Map.empty numbered
+
 let private validateFieldAttrs (_: string) (field: string, fty: Ty, specs: AttrSpec list) =
     validateAttrsAt FieldPos $"field '{field}'" specs
     |> Result.bind (fun () -> validateFieldCodec field fty specs)
@@ -8533,9 +8584,8 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                     match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
                     | Some dup -> return! err decl.Span $"duplicate field '{dup}'"
                     | None ->
-                        // [<Ord>] attaches to a record declaration
-                        // [D:derived-ord]; every other registered name
-                        // teaches its home [D:attr-positions]
+                        // no registered attribute attaches to a record
+                        // declaration [D:attr-positions] — each teaches its home
                         do! validateAttrsAt RecordDeclPos $"record '{decl.Name}'" decl.Attrs
 
                         let plain = fields |> List.map (fun (n, t, _) -> n, t)
@@ -8554,7 +8604,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                                     Some(n, specs |> List.map (fun a -> a.AName, a.AArg)))
                             |> Map.ofList
 
-                        let isOrd = decl.Attrs |> List.exists (fun a -> a.AName = "Ord")
+                        let! ordered = ordKey decl.Name "field" (fields |> List.map (fun (f, _, specs) -> f, specs))
 
                         let def =
                             Record
@@ -8562,7 +8612,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                                   Params = decl.Params
                                   Fields = plain
                                   Attrs = attrs
-                                  Ord = isOrd
+                                  OrdKey = ordered |> List.map (fun (f, _, _) -> f)
                                   // the runner enriches this from the `///` docs
                                   // after checkDecl [D:doc-help]
                                   Docs = Map.empty }
@@ -8571,21 +8621,48 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                             { env with
                                 Types = Map.add decl.Name def env.Types }
 
-                        // every field must itself order, or the DECLARATION
-                        // refuses naming it — never a sort site
-                        // [D:derived-ord]; the def is registered first so
-                        // a self-typed field admits
+                        // a numbered field must itself order, or the
+                        // DECLARATION refuses naming it — never a sort site
+                        // [D:derived-ord]; an unnumbered field takes no part
+                        // (the partial-key law) and is unconstrained; the def
+                        // is registered first so a self-typed field admits
                         do!
-                            if isOrd then
-                                allOk plain (fun (f, ft) ->
-                                    match ordOffender env' Set.empty ft with
-                                    | None -> Ok()
-                                    | Some off ->
+                            allOk ordered (fun (f, n, span) ->
+                                let ft = plain |> List.find (fst >> (=) f) |> snd
+
+                                match ordOffender env' Set.empty ft with
+                                | None -> Ok()
+                                | Some off ->
+                                    err
+                                        span
+                                        $"[<Ord {n}>] on '{decl.Name}': field '{f}' is {formatTy ft}, which cannot be ordered — {ordTail env' false off}")
+
+                        // a runtime record value carries only its record
+                        // name, and the key comes from a per-process
+                        // registry keyed by that name [D:derived-ord] — so
+                        // an ordered record one checker can see under the
+                        // same name (an import moved to its qualified key,
+                        // [D:qualified-type-names]) must agree on the key
+                        do!
+                            if ordered.IsEmpty then
+                                Ok()
+                            else
+                                let key = ordered |> List.map (fun (f, _, _) -> f)
+
+                                env.Types
+                                |> Map.tryPick (fun k d ->
+                                    match d with
+                                    | Record d when
+                                        k <> decl.Name && d.Name = decl.Name && not d.OrdKey.IsEmpty && d.OrdKey <> key
+                                        ->
+                                        Some(k, d.OrdKey)
+                                    | _ -> None)
+                                |> function
+                                    | Some(other, otherKey) ->
                                         err
                                             decl.Span
-                                            $"[<Ord>] on '{decl.Name}': field '{f}' is {formatTy ft}, which cannot be ordered — {ordTail env' false off}")
-                            else
-                                Ok()
+                                            $"""[<Ord n>] on '{decl.Name}': the imported record '{other}' is ordered by {String.concat ", " otherKey} — a value carries only its record name, so two ordered records named '{decl.Name}' must agree on the key; rename it"""
+                                    | None -> Ok()
 
                         return env'
                 }
@@ -8627,7 +8704,23 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                                 | "Tag", Some(AStr s) -> Some s
                                 | _ -> None)
 
-                        let isOrd = decl.Attrs |> List.exists (fun a -> a.AName = "Ord")
+                        let! ordered = ordKey decl.Name "case" (cases |> List.map (fun (c, _, specs) -> c, specs))
+
+                        // every case numbered or none [D:derived-ord] — an
+                        // unplaced case would have no position
+                        do!
+                            if ordered.IsEmpty || ordered.Length = cases.Length then
+                                Ok()
+                            else
+                                let unplaced =
+                                    cases
+                                    |> List.find (fun (c, _, _) ->
+                                        not (ordered |> List.exists (fun (c', _, _) -> c' = c)))
+                                    |> fun (c, _, _) -> c
+
+                                err
+                                    decl.Span
+                                    $"[<Ord n>] on '{decl.Name}': case '{unplaced}' has no position — number every case or none"
 
                         let caseAttr name (specs: AttrSpec list) =
                             specs |> List.tryFind (fun a -> a.AName = name)
@@ -8762,7 +8855,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                                     decl.Validate
                                     |> Option.map (fun _ ->
                                         $"{decl.Name}#{System.Threading.Interlocked.Increment &validatorSeq}")
-                                  Ord = isOrd
+                                  OrdKey = ordered |> List.map (fun (c, _, _) -> c)
                                   Docs = Map.empty }
 
                         let env' =
@@ -8773,16 +8866,15 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                         // refuses naming the case [D:derived-ord]; a tuple
                         // payload is a tuple, refused like any
                         do!
-                            if isOrd then
-                                allOk cases (fun (c, payload, _) ->
-                                    match payload |> Option.bind (ordOffender env' Set.empty) with
-                                    | None -> Ok()
-                                    | Some off ->
-                                        err
-                                            decl.Span
-                                            $"[<Ord>] on '{decl.Name}': case '{c}' carries {formatTy payload.Value}, which cannot be ordered — {ordTail env' false off}")
-                            else
-                                Ok()
+                            allOk ordered (fun (c, n, span) ->
+                                let payload = cases |> List.pick (fun (c', p, _) -> if c' = c then Some p else None)
+
+                                match payload |> Option.bind (ordOffender env' Set.empty) with
+                                | None -> Ok()
+                                | Some off ->
+                                    err
+                                        span
+                                        $"[<Ord {n}>] on '{decl.Name}': case '{c}' carries {formatTy payload.Value}, which cannot be ordered — {ordTail env' false off}")
 
                         // the collision law [D:derived-ord]: a runtime union
                         // value carries only its case name, and the case
@@ -8793,8 +8885,10 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                         // the same name is a REPL redeclaration, which
                         // replaces [D:dup-type-decl]
                         do!
-                            if isOrd then
-                                let ordered (d: UnionDef) = d.Ord || d.Name = "Option"
+                            if ordered.IsEmpty then
+                                Ok()
+                            else
+                                let orderedUnion (d: UnionDef) = not d.OrdKey.IsEmpty || d.Name = "Option"
 
                                 cases
                                 |> List.tryPick (fun (c, _, _) ->
@@ -8802,7 +8896,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                                     |> Map.tryPick (fun key d ->
                                         match d with
                                         | Union d when
-                                            key <> decl.Name && ordered d && d.Cases |> List.exists (fun (c', _) -> c' = c)
+                                            key <> decl.Name && orderedUnion d && d.Cases |> List.exists (fun (c', _) -> c' = c)
                                             ->
                                             Some(c, d.Name)
                                         | _ -> None))
@@ -8810,10 +8904,8 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                                     | Some(c, other) ->
                                         err
                                             decl.Span
-                                            $"[<Ord>] on '{decl.Name}': case '{c}' is also a case of the ordered union '{other}' — a value carries only its case name, so two ordered unions cannot share one; rename it"
+                                            $"[<Ord n>] on '{decl.Name}': case '{c}' is also a case of the ordered union '{other}' — a value carries only its case name, so two ordered unions cannot share one; rename it"
                                     | None -> Ok()
-                            else
-                                Ok()
 
                         let ctorTy payload =
                             match payload with

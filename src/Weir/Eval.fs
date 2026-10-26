@@ -2195,45 +2195,61 @@ let private instantShift (a: int64) (d: int64) : Value =
 
 // ---- the derived ordering [D:derived-ord] ---------------------------------
 
-/// case -> (ordered union, index): a runtime union value carries only
-/// its case name, so an `[<Ord>]` union's case index lives here, filled
-/// when its `type` statement runs (the validators precedent) and seeded
-/// with Option's F# order, `None` first. The checker's collision law
-/// keeps two visible ordered unions from sharing a case name; the one
-/// pair it cannot see (two modules with no import between them) trips
-/// the registration below, never a silent misorder
+/// case -> (ordered union, position): a runtime union value carries
+/// only its case name, so an ordered union's `[<Ord n>]` positions live
+/// here, filled when its `type` statement runs (the validators
+/// precedent) and seeded with Option's F# order, `None` first. The
+/// checker's collision law keeps two visible ordered unions from
+/// sharing a case name; the one pair it cannot see (two modules with
+/// no import between them) trips the registration below, never a
+/// silent misorder
 let private ordCases =
-    System.Collections.Concurrent.ConcurrentDictionary<string, string * int>(
-        dict [ "None", ("Option", 0); "Some", ("Option", 1) ]
+    System.Collections.Concurrent.ConcurrentDictionary<string, string * int64>(
+        dict [ "None", ("Option", 0L); "Some", ("Option", 1L) ]
     )
 
-let registerOrdCases (typeName: string) (cases: string list) : unit =
-    cases
-    |> List.iteri (fun i c ->
-        match ordCases.TryGetValue c with
-        | true, (owner, j) when owner <> typeName && j <> i ->
-            unreachable
-                $"case '{c}' is registered to the ordered union '{owner}' at index {j}, and '{typeName}' declares it at index {i}"
-        | _ -> ordCases[c] <- (typeName, i))
+/// record name -> the `[<Ord n>]` fields by ascending n: a record value
+/// carries its fields in declaration order and its name, never the
+/// key, so the key lives here under the same law as the cases; two
+/// records of one name with different keys trip, never misorder
+let private ordFields = System.Collections.Concurrent.ConcurrentDictionary<string, string list>()
 
-/// the REPL replacing a type [D:dup-type-decl] drops its cases, so a
-/// redeclaration with other case names does not leave stale entries
-let forgetOrdCases (typeName: string) : unit =
+let registerOrdCases (typeName: string) (cases: (string * int64) list) : unit =
+    for (c, n) in cases do
+        match ordCases.TryGetValue c with
+        | true, (owner, m) when owner <> typeName && m <> n ->
+            unreachable
+                $"case '{c}' is registered to the ordered union '{owner}' at position {m}, and '{typeName}' declares it at position {n}"
+        | _ -> ordCases[c] <- (typeName, n)
+
+let registerOrdFields (typeName: string) (key: string list) : unit =
+    match ordFields.TryGetValue typeName with
+    | true, other when other <> key ->
+        unreachable
+            $"""record '{typeName}' is registered with the ordering key {String.concat ", " other}, and a declaration keys it by {String.concat ", " key}"""
+    | _ -> ordFields[typeName] <- key
+
+/// the REPL replacing a type [D:dup-type-decl] drops its entries, so a
+/// redeclaration with other cases or another key leaves nothing stale
+let forgetOrd (typeName: string) : unit =
     for KeyValue(c, (owner, _)) in ordCases |> Seq.toList do
         if owner = typeName then
             ordCases.TryRemove c |> ignore
 
-let private ordCaseIndex (name: string) (case: string) : int =
+    ordFields.TryRemove typeName |> ignore
+
+let private ordCaseIndex (name: string) (case: string) : int64 =
     match ordCases.TryGetValue case with
     | true, (_, i) -> i
     | _ -> unreachable $"the checker admits '{name}' only on an ordered union, and '{case}' is a case of none"
 
 /// the order the class admits [D:derived-ord]: scalars as before, a
-/// record by its fields POSITIONALLY in carried order (two values of
-/// one declared record always carry source order [D:record-order]), a
-/// union by case index then payload. Iterative like Equals and
-/// CompareTo [D:eq-depth]: pairs queue in lexicographic order, the first
-/// nonzero answer ends the walk; the scalar path allocates nothing
+/// record by its `[<Ord n>]` fields in ascending n (the unnumbered
+/// take no part, so two values equal on the key compare 0 — sorts keep
+/// their input order, min/max the first), a union by case position
+/// then payload. Iterative like Equals and CompareTo [D:eq-depth]:
+/// pairs queue in key order, the first nonzero answer ends the walk;
+/// the scalar path allocates nothing
 let orderCompare (name: string) (a: Value) (b: Value) : int =
     let scalar (a: Value) (b: Value) : int voption =
         match a, b with
@@ -2263,12 +2279,19 @@ let orderCompare (name: string) (a: Value) (b: Value) : int =
             | ValueSome r -> result <- r
             | ValueNone ->
                 match x, y with
-                | VRecord(_, f1), VRecord(_, f2) ->
-                    if f1.Length <> f2.Length || List.exists2 (fun (n1, _) (n2, _) -> n1 <> n2) f1 f2 then
-                        unreachable $"'{name}' compares two values of one declared record, and these carry different fields"
+                | VRecord(rn, f1), VRecord(_, f2) ->
+                    let key =
+                        match ordFields.TryGetValue rn with
+                        | true, key -> key
+                        | _ -> unreachable $"the checker admits '{name}' only on an ordered record, and '{rn}' has no key"
+
+                    let field (fs: (string * Value) list) f =
+                        match fs |> List.tryFind (fst >> (=) f) with
+                        | Some(_, v) -> v
+                        | None -> unreachable $"'{name}' compares two values of the record '{rn}', and one carries no field '{f}'"
 
                     // children go on in reverse, so the first pops first
-                    List.zip (List.map snd f1) (List.map snd f2) |> List.rev |> List.iter pending.Push
+                    key |> List.rev |> List.iter (fun f -> pending.Push(field f1 f, field f2 f))
                 | VUnion(c1, p1), VUnion(c2, p2) ->
                     result <- compare (ordCaseIndex name c1) (ordCaseIndex name c2)
 
@@ -2345,7 +2368,7 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "<", VInt a, VInt b -> VBool(a < b)
     | ">=", VInt a, VInt b -> VBool(a >= b)
     | "<=", VInt a, VInt b -> VBool(a <= b)
-    // an `[<Ord>]` record or union compares in declaration order
+    // an ordered record or union compares by its `[<Ord n>]` key
     // [D:derived-ord]
     | ">", ((VRecord _ | VUnion _) as a), b -> VBool(orderCompare op a b > 0)
     | "<", ((VRecord _ | VUnion _) as a), b -> VBool(orderCompare op a b < 0)
@@ -7408,6 +7431,13 @@ let constructorValues (cases: (string * Ty option * AttrSpec list) list) : (stri
         | None -> case, VUnion(case, None)
         | Some _ -> case, VBuiltin(fun v -> VUnion(case, Some v)))
 
+let private ordPosition (specs: AttrSpec list) : int64 option =
+    specs
+    |> List.tryPick (fun a ->
+        match a.AName, a.AArg with
+        | "Ord", Some(AInt n) -> Some n
+        | _ -> None)
+
 /// a `type` declaration run [D:validated-types]: its constructors bind in
 /// `env`, and a validated type's `create` — the validator, then the case
 /// around the payload as given — registers under the declaration's id, where
@@ -7425,10 +7455,24 @@ let declare (env: Env) (decl: Decl) (validator: (string * TypedExpr) option) : E
 
     match decl.Body with
     | DUnion cases ->
-        // an ordered union's case indices register here [D:derived-ord]
-        // — the attribute is the declaration's own spelling of the fact
-        if decl.Attrs |> List.exists (fun a -> a.AName = "Ord") then
-            registerOrdCases decl.Name (cases |> List.map (fun (c, _, _) -> c))
+        // an ordered union's case positions register here [D:derived-ord]
+        // — the `[<Ord n>]` on each case is the declaration's own
+        // spelling of the fact
+        registerOrdCases
+            decl.Name
+            (cases |> List.choose (fun (c, _, specs) -> ordPosition specs |> Option.map (fun n -> c, n)))
 
         constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) env
-    | DRecord _ -> env
+    | DRecord fields ->
+        // an ordered record's key registers here [D:derived-ord]: the
+        // numbered fields by ascending n
+        let key =
+            fields
+            |> List.choose (fun (f, _, specs) -> ordPosition specs |> Option.map (fun n -> f, n))
+            |> List.sortBy snd
+            |> List.map fst
+
+        if not key.IsEmpty then
+            registerOrdFields decl.Name key
+
+        env

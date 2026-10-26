@@ -30,7 +30,7 @@ let fileRow: RecordDef =
           "hidden", TBool
           "path", TStr ]
       Attrs = Map.empty
-      Ord = false
+      OrdKey = []
       Docs = Map.empty }
 
 // the row's kind axis [D:filerow]: module names are load-bearing
@@ -45,7 +45,7 @@ let fileKind: UnionDef =
       CaseWires = Map.empty
       OtherCase = None
       Validated = None
-      Ord = false
+      OrdKey = []
       Docs = Map.empty }
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
@@ -521,7 +521,7 @@ let completedDef: RecordDef =
       Params = []
       Fields = [ "exitCode", TInt; "stdout", TSeq TStr; "stderr", TSeq TStr ]
       Attrs = Map.empty
-      Ord = false
+      OrdKey = []
       Docs = Map.empty }
 
 // completedWith is the shared body; completed is the empty overlay and
@@ -3688,7 +3688,7 @@ let envVarDef: RecordDef =
       Params = []
       Fields = [ "name", TStr; "value", TStr ]
       Attrs = Map.empty
-      Ord = false
+      OrdKey = []
       Docs = Map.empty }
 
 // Env.fromFile parses the dotenv subset only: KEY=VALUE, optional
@@ -8286,7 +8286,7 @@ let attrDocs: Map<string, string> =
           "Other",
           "[<Other>] — the open-world fallback case: wire tags matching no declared case land here (carries the raw tag as a string, or nothing)"
           "Ord",
-          "[<Ord>] — the type orders by its fields (record) or cases then payload (union) in declaration order: sort, min/max, sortBy keys and < > <= >= admit it"
+          "[<Ord n>] — a position in the type's ordering key, on a record field or a union case: the type then sorts, min/max-es, keys sortBy and compares with < > <= >= by its numbered members in ascending n (a union by case position, then payload). Unnumbered record fields take no part: two values equal on the key but different elsewhere are neither < nor > nor ==; Seq.sort keeps their input order, min/max return the first"
           "Iso8601", "[<Iso8601>] — an Instant field crosses json/yaml as an ISO 8601 string"
           "EpochMs", "[<EpochMs>] — an Instant field crosses json/yaml as integer epoch milliseconds"
           "EpochSec",

@@ -813,13 +813,25 @@ let private localDef (name: string) (jcol: int) (te: Check.TypedExpr) : Span opt
 /// signature — so "type first" holds at the field/case/type positions
 /// too [D:doc-comments].
 let private declHover (decl: Ast.Decl) (word: string) : string option =
-    // an ordered type shows its attribute [D:derived-ord] — the hover
-    // carries the fact the fields alone cannot
-    let ordPrefix =
-        if decl.Attrs |> List.exists (fun a -> a.AName = "Ord") then
-            "[<Ord>] "
-        else
-            ""
+    // an ordered type shows its key in order, a numbered member its
+    // position [D:derived-ord] — the hover carries the fact the members'
+    // types alone cannot
+    let ordPos (specs: Ast.AttrSpec list) =
+        specs
+        |> List.tryPick (fun a ->
+            match a.AName, a.AArg with
+            | "Ord", Some(Types.AInt n) -> Some n
+            | _ -> None)
+
+    let orderedBy (members: (string * Ast.AttrSpec list) list) =
+        match members |> List.choose (fun (m, specs) -> ordPos specs |> Option.map (fun n -> m, n)) with
+        | [] -> ""
+        | key -> "  (ordered by " + (key |> List.sortBy snd |> List.map fst |> String.concat ", ") + ")"
+
+    let withPos (specs: Ast.AttrSpec list) (sig': string) =
+        match ordPos specs with
+        | Some n -> $"[<Ord {n}>] {sig'}"
+        | None -> sig'
 
     match decl.Body with
     | Ast.DRecord fields ->
@@ -829,10 +841,10 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
                 |> List.map (fun (n, ty, _) -> $"{n}: {formatTy ty}")
                 |> String.concat "; "
 
-            Some $"{ordPrefix}{{ {body} }}"
+            Some($"{{ {body} }}" + orderedBy (fields |> List.map (fun (n, _, specs) -> n, specs)))
         else
             fields
-            |> List.tryPick (fun (n, ty, _) -> if n = word then Some(formatTy ty) else None)
+            |> List.tryPick (fun (n, ty, specs) -> if n = word then Some(withPos specs (formatTy ty)) else None)
     | Ast.DUnion cases ->
         let caseSig (n, tyO) =
             match tyO with
@@ -852,14 +864,14 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
                 |> Option.defaultValue ""
 
             Some(
-                ordPrefix
-                + tagPrefix
+                tagPrefix
                 + (cases |> List.map (fun (n, tyO, _) -> caseSig (n, tyO)) |> String.concat " | ")
+                + orderedBy (cases |> List.map (fun (n, _, specs) -> n, specs))
                 + validated
             )
         else
             cases
-            |> List.tryPick (fun (n, tyO, _) -> if n = word then Some(caseSig (n, tyO)) else None)
+            |> List.tryPick (fun (n, tyO, specs) -> if n = word then Some(withPos specs (caseSig (n, tyO))) else None)
 
 /// a keyword, an operator, punctuation, whitespace, or the wildcard `_`
 /// hovers as nothing — never the enclosing node's type [D:hover-silence].

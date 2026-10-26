@@ -6200,79 +6200,97 @@ echo "e2e ok: no tuple ordering (divergence-pinned)"
 
 rm -rf "$tudir"
 
-# --- derived Ord [D:derived-ord]: [<Ord>] orders a record or union by
-# declaration — the SemVer receipt by bytes, check-first on an unordered
-# field, the tuple teaching, fmt on the own-line attribute, the code
+# --- derived Ord [D:derived-ord]: [<Ord n>] on fields and cases orders a
+# record or union by the numbered members — the SemVer receipt by bytes
+# (with an unnumbered field that takes no part), check-first on an
+# unordered numbered field, the key laws, the tuple teaching, fmt, the
+# code; and the assembler reading through an own-line attribute above a
+# multi-line record (the error is the registry's, never a parse error)
 
 oddir=$(mkweirtmp)
 
 cat > "$oddir/semver.weir" <<'WEOF'
-[<Ord>]
-type Pre = Pre of string | Release
+type Pre =
+    | [<Ord 1>] Pre of string
+    | [<Ord 2>] Release
 
-[<Ord>]
 type SemVer = {
-    major: int
-    minor: int
-    patch: int
-    pre: Pre
+    [<Ord 1>] major: int
+    [<Ord 2>] minor: int
+    [<Ord 3>] patch: int
+    [<Ord 4>] pre: Pre
+    build: Option<string>
 }
 
-let versions = [{ major = 1; minor = 0; patch = 0; pre = Release }; { major = 1; minor = 0; patch = 0; pre = Pre "alpha" }; { major = 0; minor = 9; patch = 2; pre = Release }]
+let versions = [{ major = 1; minor = 0; patch = 0; pre = Release; build = Some "b" }; { major = 1; minor = 0; patch = 0; pre = Pre "alpha"; build = None }; { major = 0; minor = 9; patch = 2; pre = Release; build = None }; { major = 1; minor = 0; patch = 0; pre = Release; build = Some "a" }]
 let top = versions |> Seq.sort |> Seq.last
-print $"{top.major}.{top.minor}.{top.patch}"
-print $"{top < { major = 2; minor = 0; patch = 0; pre = Release }}"
+print $"{top.major}.{top.minor}.{top.patch} {show top.build}"
+print $"{top < { major = 2; minor = 0; patch = 0; pre = Release; build = None }}"
 versions |> Seq.sortBy (fun v -> v.pre) |> Seq.map (fun v -> show v.pre) |> Seq.iter print
 WEOF
 out=$(cd "$oddir" && $BIN semver.weir 2>&1)
-expected=$'1.0.0\ntrue\nPre "alpha"\nRelease\nRelease'
+expected=$'1.0.0 Some "a"\ntrue\nPre "alpha"\nRelease\nRelease\nRelease'
 [ "$out" = "$expected" ] || fail "derived Ord: the SemVer script's bytes: $out"
-echo "e2e ok: derived Ord — the SemVer receipt sorts, picks the top, compares (bytes)"
-$BIN fmt --check "$oddir/semver.weir" >/dev/null 2>&1 || fail "fmt must accept [<Ord>] on its own line above a multi-line record"
-echo "e2e ok: derived Ord — fmt --check accepts the own-line attribute above type"
+echo "e2e ok: derived Ord — the SemVer receipt sorts by its key (build takes no part, sort stable), picks the top, compares (bytes)"
+$BIN fmt --check "$oddir/semver.weir" >/dev/null 2>&1 || fail "fmt must accept [<Ord n>] on fields of a multi-line record and on own-line cases"
+echo "e2e ok: derived Ord — fmt --check accepts the numbered members"
 
 cat > "$oddir/ordseq.weir" <<'WEOF'
 printerr "must-not-run"
 
-[<Ord>]
-type Run = { name: string; logs: seq<string> }
+type Run = { [<Ord 1>] name: string; [<Ord 2>] logs: seq<string> }
 WEOF
 errout=$($BIN "$oddir/ordseq.weir" 2>&1 || true)
-echo "$errout" | grep -qF "[<Ord>] on 'Run': field 'logs' is seq<string>, which cannot be ordered" || fail "an unordered field must refuse at the declaration: $errout"
+echo "$errout" | grep -qF "[<Ord 2>] on 'Run': field 'logs' is seq<string>, which cannot be ordered" || fail "an unordered numbered field must refuse at the declaration: $errout"
 echo "$errout" | grep -qF "must-not-run" && fail "check-first violated: the effect ran"
-echo "e2e ok: derived Ord — an unordered field refuses at CHECK, named, zero effects"
+echo "e2e ok: derived Ord — an unordered numbered field refuses at CHECK, named, zero effects"
+
+errout=$($BIN -e 'type R = { [<Ord 1>] a: int; [<Ord 1>] b: int }' 2>&1) && fail "a shared position must reject"
+echo "$errout" | grep -qF "[<Ord 1>] on 'R': fields 'a' and 'b' share position 1 — number each field once" || fail "a shared position names both fields: $errout"
+errout=$($BIN -e 'type U = [<Ord 1>] A | B' 2>&1) && fail "a half-numbered union must reject"
+echo "$errout" | grep -qF "[<Ord n>] on 'U': case 'B' has no position — number every case or none" || fail "a half-numbered union names the unplaced case: $errout"
+errout=$($BIN -e '[<Ord>] type R = { a: int }' 2>&1) && fail "Ord on a declaration must reject"
+echo "$errout" | grep -qF "'Ord' attaches to a record field or a union case, not a record declaration" || fail "the declaration position teaches the homes: $errout"
+echo "e2e ok: derived Ord — the key laws refuse: shared position, half-numbered union, declaration position"
 
 errout=$($BIN -e '[(1, 2)] |> Seq.sortBy (fun x -> x)' 2>&1 || true)
-echo "$errout" | grep -qF "tuples have no order; name the parts in a record and give it [<Ord>]" || fail "the tuple teaching: $errout"
+echo "$errout" | grep -qF "tuples have no order; name the parts in a record and number them with [<Ord n>]" || fail "the tuple teaching: $errout"
 echo "e2e ok: derived Ord — the tuple refusal names the record spelling"
 
-printf '[<Ord>]\ntype R = { a: int }\nls |> Seq.sort |> Seq.length |> print\n' > "$oddir/code.weir"
+printf 'type R = { [<Ord 1>] a: int }\nls |> Seq.sort |> Seq.length |> print\n' > "$oddir/code.weir"
 out=$($BIN check --json "$oddir/code.weir" || true)
 echo "$out" | grep -qF '"code":"unsortable-key"' || fail "check --json keeps the unsortable-key code: $out"
 echo "e2e ok: derived Ord — check --json codes the refusal unsortable-key"
 
-# x imports: a module's [<Ord>] type sorts and compares in the importer
+# the assembler reads through an own-line attribute above a MULTI-LINE
+# record body: the refusal is the registry's position teaching, located
+# on the attribute, not a parse error on the first field
+printf '[<Tag "kind">]\ntype R = {\n    a: int\n    b: int\n}\nprint "x"\n' > "$oddir/attrrec.weir"
+errout=$($BIN "$oddir/attrrec.weir" 2>&1) && fail "Tag above a record must reject"
+echo "$errout" | grep -qF "'Tag' attaches to a union declaration, not a record declaration" || fail "an own-line attribute above a multi-line record reaches the registry: $errout"
+echo "$errout" | grep -qF "attrrec.weir:1:3" || fail "the refusal is located on the attribute line: $errout"
+echo "e2e ok: an own-line attribute above a multi-line record body assembles — the error is the registry's"
+
+# x imports: a module's ordered type sorts and compares in the importer
 cat > "$oddir/verlib.weir" <<'WEOF'
 module
-[<Ord>]
-type Ver = { major: int; minor: int }
+type Ver = { [<Ord 1>] major: int; [<Ord 2>] minor: int }
 let mk : int -> int -> Ver
 let mk a b = { major = a; minor = b }
 WEOF
 cat > "$oddir/usever.weir" <<'WEOF'
 import "./verlib.weir" as V
-let xs = [V.mk 2 0; V.mk 1 9] |> Seq.sort
+let xs = [V.mk 2 0; V.mk 1 9; { major = 1; minor = 2 }] |> Seq.sort
 print (show xs)
-print (show (V.mk 1 0 < V.mk 1 1))
+print (show (V.mk 1 0 < { major = 1; minor = 1 }))
 WEOF
 out=$(cd "$oddir" && $BIN usever.weir 2>&1)
-expect "derived Ord x imports: a module's [<Ord>] record sorts in the importer" "[{ major = 1; minor = 9 }; { major = 2; minor = 0 }]" "$out"
+expect "derived Ord x imports: a module's ordered record sorts in the importer, with the importer's own literal" "[{ major = 1; minor = 2 }; { major = 1; minor = 9 }; { major = 2; minor = 0 }]" "$out"
 expect "derived Ord x imports: Lib.T values compare" "true" "$out"
 
-# x validate: an [<Ord>] validated type orders by its payload
+# x validate: an ordered validated type orders by its payload
 cat > "$oddir/ordval.weir" <<'WEOF'
-[<Ord>]
-type Port = Port of int
+type Port = [<Ord 1>] Port of int
     validate n = if n < 1 then fail "a port is positive"
 print (show ([Port.create 8080; Port.create 22] |> Seq.sort))
 WEOF

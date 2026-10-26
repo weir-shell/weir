@@ -97,25 +97,26 @@ let pins =
           Same
 
       // --- derived Ord [D:derived-ord]: F# derives structural comparison
-      // in declaration order on every record and union; weir derives
-      // the same order only under [<Ord>] ---
+      // in declaration order on every record and union; weir derives an
+      // order only from [<Ord n>] positions — numbered in declaration
+      // order here, so the two agree ---
       pinT
-          "derived Ord: a record list sorts (weir under [<Ord>], F# by default)"
-          "[<Ord>]\ntype V = { major: int; minor: int }\nlet _r = [{ major = 2; minor = 0 }; { major = 1; minor = 9 }] |> Seq.sort\n"
+          "derived Ord: a record list sorts (weir by [<Ord n>], F# by default)"
+          "type V = { [<Ord 1>] major: int; [<Ord 2>] minor: int }\nlet _r = [{ major = 2; minor = 0 }; { major = 1; minor = 9 }] |> Seq.sort\n"
           "type V = { major: int; minor: int }\nlet _r = [{ major = 2; minor = 0 }; { major = 1; minor = 9 }] |> Seq.sort\n"
           Same
       pinT
-          "derived Ord: min of a union list (case index, then payload)"
-          "[<Ord>]\ntype P = Pre of string | Release\nlet _r = [Release; Pre \"a\"] |> Seq.min\n"
+          "derived Ord: min of a union list (case position, then payload)"
+          "type P = [<Ord 1>] Pre of string | [<Ord 2>] Release\nlet _r = [Release; Pre \"a\"] |> Seq.min\n"
           "type P = Pre of string | Release\nlet _r = [Release; Pre \"a\"] |> Seq.min\n"
           Same
       pinT
           "derived Ord: < on two records"
-          "[<Ord>]\ntype V = { major: int; minor: int }\nlet _b = { major = 1; minor = 0 } < { major = 1; minor = 1 }\n"
+          "type V = { [<Ord 1>] major: int; [<Ord 2>] minor: int }\nlet _b = { major = 1; minor = 0 } < { major = 1; minor = 1 }\n"
           "type V = { major: int; minor: int }\nlet _b = { major = 1; minor = 0 } < { major = 1; minor = 1 }\n"
           Same
       pin
-          "derived Ord is opt-in: F# orders an un-attributed record, weir refuses"
+          "derived Ord is opt-in: F# orders an unnumbered record, weir refuses"
           "type V = { major: int; minor: int }\nlet _r = [{ major = 2; minor = 0 }] |> Seq.sort\n"
           (Diverges "derived-ord-explicit")
 

@@ -2556,7 +2556,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
         if movedImport.IsSome then
             Console.WriteLine $"type {decl.Name} declared; the imported {decl.Name} is now {movedImport.Value}"
         elif Map.containsKey decl.Name state.TypeEnv.Types then
-            Eval.forgetOrdCases decl.Name
+            Eval.forgetOrd decl.Name
             Console.WriteLine $"type {decl.Name} redeclared; earlier values keep the old shape"
         else
             Console.WriteLine $"type {decl.Name} declared"
