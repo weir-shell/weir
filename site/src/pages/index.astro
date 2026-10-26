@@ -123,9 +123,10 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
       <h1>For scripts that became tools.</h1>
       <p class="what">weir is a typed shell-scripting language.</p>
       <p class="sub">
-        Commands, pipes and files, like a shell — the whole file
-        checked before anything runs. One native binary — LSP,
-        REPL, and formatter built in.
+        Commands, pipes and files, like a shell. Types, records and
+        pattern matching, like F#. The whole file is checked before
+        anything runs. One native binary for Linux, macOS and
+        Windows, with the REPL, formatter and LSP built in.
       </p>
     </div>
     <div class="hero-demo">
@@ -135,9 +136,9 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
         <pre class="report">{heroOut}</pre>
       </figure>
       <p class="hero-caption">
-        Declare the shape; <code>from json</code> parses a file or a
-        tool's output into it — and the typed value crosses back into
-        a real command's argv as exactly one word.
+        Declare the shape, parse a file or a tool's output into it,
+        and hand the value to a real command. It arrives as exactly
+        one argument, never split, never glued.
       </p>
     </div>
     <div class="hero-install">
@@ -169,16 +170,17 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     <div class="feature-prose">
       <h2>The check reaches past your code</h2>
       <p>
-        This script has three mistakes, and none of them are weir: a
-        tool's flag, checked against a generated signature
-        (<code>weir add sig bicep</code>); a manifest's key, checked
-        against a vendored schema (<code>weir add schema</code>); and
-        a program name, checked against your PATH. One report, every
-        finding located — and nothing ran.
+        Three mistakes here, and none of them is weir syntax: a
+        misspelled <code>bicep</code> flag, a typo in a Kubernetes
+        key, and a command that isn't installed. The flag is checked
+        against a generated signature (<code>weir add sig bicep</code>),
+        the key against a vendored schema (<code>weir add schema</code>),
+        the command against your PATH. One report, each finding on
+        its line, and nothing ran.
       </p>
       <p class="fine">
-        Nothing on this page is a mock-up — every quoted output comes
-        from running the shipped binary, verified in CI.
+        Nothing on this page is a mock-up. Every quoted output comes
+        from running the shipped binary, and CI checks it still does.
       </p>
     </div>
     <div class="feature-demo">
@@ -192,13 +194,13 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
 
   <section class="feature">
     <div class="feature-prose">
-      <h2>A real CLI, free</h2>
+      <h2>A real CLI, for free</h2>
       <p>
-        Declare the shape; the interface is derived. The
-        <code>///</code> docs become the help text, so you cannot
-        forget to update <code>--help</code> — and unknown flags,
-        missing requireds and bad values arrive together, in one
-        error, before any effect.
+        Declare a record and the flags follow. The <code>///</code>
+        comments become the help text, so <code>--help</code> can't
+        drift from the code. Unknown flags, missing values and bad
+        values are reported together, in one message, before the
+        script does anything.
       </p>
     </div>
     <div class="feature-demo">
@@ -210,15 +212,15 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     </div>
   </section>
 
-  <h2>Two ingredients, removed</h2>
+  <h2>Two bash habits, gone</h2>
   <p>
-    Two bash mechanisms wreck machines. One is an unquoted variable
-    <em>splitting</em> into words — still quoted away by hand in
-    production, as pgpool did to an <code>rm -rf</code> in a
-    node-recovery script in <a href="https://github.com/pgpool/pgpool2/commit/58446a6">September
-    2025</a>, a maintainer catching it before it fired. The other is a
-    path <em>glued</em> from pieces that came apart; Valve shipped that
-    in 2015, and it wiped real drives:
+    Two shell mechanisms keep wrecking machines. One is an unquoted
+    variable <em>splitting</em> into words; it is still being quoted
+    away by hand, as pgpool did to an <code>rm -rf</code> in
+    <a href="https://github.com/pgpool/pgpool2/commit/58446a6">September
+    2025</a>, caught in review. The other is a path <em>glued</em>
+    from pieces that came apart. Valve shipped that in 2015, and it
+    wiped real drives:
   </p>
   <div class="hero-band">
     <div class="hero-pair">
@@ -227,9 +229,9 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
         <Code code={steamBash} lang="bash" themes={queilThemes} defaultColor={false} />
         <p class="hero-caption">
           When the folder moved, <code>&#36;(…)</code> came back
-          <em>empty</em> — <code>"$STEAMROOT/"*</code> became
-          <code>/*</code>, and the last line deleted everything users
-          owned, <a href="https://github.com/ValveSoftware/steam-for-linux/issues/3671">mounted
+          <em>empty</em>, <code>"$STEAMROOT/"*</code> became
+          <code>/*</code>, and the last line deleted everything the
+          user owned, <a href="https://github.com/ValveSoftware/steam-for-linux/issues/3671">mounted
           backup drives included</a>.
         </p>
       </div>
@@ -244,9 +246,10 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     </div>
   </div>
   <p>
-    Weir removes both ingredients: a spliced value is always exactly
-    one argv word, and gluing is unrepresentable — neither failure is
-    a mistake weir detects, both are sentences weir cannot say.
+    weir removes both: a spliced value is always exactly one argument,
+    and gluing pieces into one word is not something you can write.
+    These aren't mistakes weir catches. They are sentences it cannot
+    say.
   </p>
 
   <section class="feature">
@@ -254,9 +257,10 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
       <h2>See what a script can do before you run it</h2>
       <p>
         Command names are literal and nothing expands inside argv, so
-        a script's reach is statically knowable —
-        <code>weir check --can</code> reports it, with a source line
-        for every claim.
+        a script's reach can be read off the source. Useful for your
+        own scripts; more useful for someone else's.
+        <code>weir check --can</code> lists it, with a line number for
+        every claim.
       </p>
     </div>
     <div class="feature-demo">
@@ -267,32 +271,32 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     </div>
   </section>
 
-  <h2>What falls out</h2>
+  <h2>Also in the box</h2>
   <ul class="falls-out">
     <li>
       <a href="/docs/guide/#scoped-resources-within-and-always"><code>within proc</code></a> —
-      a background process gets a scope, never a <code>&amp;</code>;
-      the tree is killed and reaped on every exit.
+      a background process gets a scope instead of an <code>&amp;</code>;
+      the whole tree is killed and reaped however the scope ends.
     </li>
     <li>
       <a href="/docs/guide/#secrets-tokens-that-cannot-leak-into-logs"><code>Secret</code></a> —
       a token that cannot reach a log line, a shown record, or the
-      wire; <code>Secret.reveal</code> is the only exit, so the audit
-      is the call sites.
+      wire. <code>Secret.reveal</code> is the only way out, so auditing
+      is grepping for it.
     </li>
     <li>
       <a href="/docs/guide/#retrying-and-polling"><code>retry</code> and <code>poll</code></a> —
-      bounded loops (the one that runs until stopped is
-      <code>repeat</code>, which finishes its iteration on Ctrl+C), and
-      <code>watch=</code> fails the wait the moment the child dies,
-      with its last output.
+      bounded loops; <code>repeat</code> is the one that runs until
+      stopped, and finishes its iteration on Ctrl+C.
+      <code>watch=</code> fails a wait the moment the child dies, with
+      its last output.
     </li>
     <li>
       <a href="/docs/guide/#exit-codes-from-command-to-value">exit codes as data</a> —
-      <code>| complete</code> and <code>| succeeds</code> make a
-      command's outcome a value, and <code>Seq.exactlyOne</code> says
-      <em>one line</em> where <code>head</code> would silently accept
-      two.
+      <code>| complete</code> and <code>| succeeds</code> turn a
+      command's outcome into a value, and <code>Seq.exactlyOne</code>
+      means <em>one line</em> where <code>head -1</code> would quietly
+      take the first of two.
     </li>
     <li>
       <a href="/docs/guide/#scoped-resources-within-and-always"><code>within lock</code></a> —
@@ -301,43 +305,25 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     </li>
     <li>
       <a href="/docs/tooling/#yaml-schemas">the <code>yaml</code> block</a> —
-      splices are nodes, never text, so YAML injection is
-      unrepresentable — the argv law, one format over.
+      splices are nodes, never text, so YAML injection can't be
+      written. The same rule as argv, one format over.
     </li>
   </ul>
 
-  <h2>Why not the alternatives</h2>
+  <h2>Why another one</h2>
   <p>
-    In the author's words: <strong>bash</strong> has no types — a
-    misspelled command, an unset variable, a value that splits into two
-    words all wait until the shell reaches that line, mid-run.
-    <strong>PowerShell</strong> compounds its
-    quirks at tool scale and is not typed where it counts.
-    <strong>F# scripts</strong> had the types — weir is F#-shaped
-    because they were closest — but not the start-up time, the
-    caching, or identical behaviour across Linux CI and macOS/Windows
-    dev machines. <strong>Nushell</strong> is nice, but its type
-    system is still being worked out. Weir selects from F#, which
-    works, and adds the shell-specific parts.
-  </p>
-
-  <h2>Provenance</h2>
-  <p>
-    weir was written almost entirely by an AI agent, directed by one
-    person through plans, reviews and rulings — about two months,
-    part time. That is a statement about economics, not capability.
-    What makes it checkable rather than a claim: every fenced example
-    in the docs executes in CI (error demos must <em>fail</em>); an
-    F# fidelity oracle referees every divergence claim; an external
-    referee pushes 103 hostile payloads through PyYAML and
-    Python's <code>json</code>; and five adversarial reviews sit,
-    findings and all, in the
-    <a href="https://github.com/weir-shell/weir/blob/main/docs/DECISIONS.md">public ledger</a>.
-  </p>
-  <p>
-    <strong>Don't trust it; check it.</strong> <code>git clone</code>
-    and <code>./ci/local.sh</code> run the whole battery. The longer
-    story is <a href="/docs/method/">The method</a>.
+    I wanted a fast, typed, functional, cross-platform scripting
+    language for devops and daily tasks, and kept not finding it.
+    <strong>bash</strong> has no types: a misspelled command, an unset
+    variable, a value that splits in two all wait until the shell
+    reaches that line, mid-run. <strong>PowerShell</strong> is typed
+    where it's convenient and not where it counts, and its quirks
+    compound as scripts grow. <strong>F# scripts</strong> had the
+    types and the ergonomics I liked (weir's syntax comes from there),
+    but not the start-up time, and not the same behaviour on a Linux
+    CI runner and a Windows laptop. <strong>Nushell</strong> is nice,
+    but its type system is still settling. weir keeps the parts of F#
+    that work for scripting, drops the rest, and adds the shell.
   </p>
 
   <h2>Learn more</h2>
@@ -346,6 +332,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     <li><a href="/reference/">The reference</a> — the language and every module.</li>
     <li><a href="/showcase/">The showcase</a> — one script touring the whole language, CI-run.</li>
     <li><a href="/docs/coming-from/">Coming from bash, PowerShell, Python…</a></li>
+    <li><a href="/docs/method/">How it was built</a> — and how to check it yourself: <code>git clone</code>, then <code>./ci/local.sh</code>.</li>
     <li><a href="/changelog/">Changelog</a></li>
   </ul>
 </Base>
@@ -386,6 +373,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     background: var(--code-bg);
     border: 1px solid var(--border);
     border-radius: 8px;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
@@ -457,6 +445,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
      defaults to min-width: auto, which clipped snippets on phones */
   .feature-demo { margin-top: var(--space-3); min-width: 0; }
   .feature-prose { min-width: 0; }
+  .feature-prose h2 { margin-top: var(--space-4); }
   .feature-demo .astro-code { font-size: 0.85rem; }
   .hero-band {
     width: min(72rem, calc(100vw - 2.5rem));

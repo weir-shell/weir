@@ -10,6 +10,8 @@ const { title, toc, search = true } = Astro.props;
 // resolved tag (WEIR_RELEASE_TAG), never hardcoded — absent on local
 // builds, so dev pages show no version rather than a wrong one
 const releaseTag = process.env.WEIR_RELEASE_TAG || "";
+const path = Astro.url.pathname;
+const current = (href) => (path === href || path.startsWith(href) ? "page" : undefined);
 // toc: optional [{ depth, slug, text }] — when present the page gets an
 // always-visible (sticky) side navigation; below 1100px it yields to
 // the one-column flow
@@ -38,7 +40,7 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta name="twitter:card" content="summary_large_image" />
-    <link rel="preload" href="/fonts/iosevka-aile-light.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/iosevka-aile-regular.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/iosevka-term-ext-regular.woff2" as="font" type="font/woff2" crossorigin />
     <script is:inline>
       // theme before first paint [D:queil-theme]: stored choice wins,
@@ -156,9 +158,18 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
         background: var(--bg);
         color: var(--fg);
         /* dense technical prose: taller leading than display text wants */
-        font: 300 16px/1.7 "Iosevka Aile", system-ui, -apple-system, "Segoe UI", sans-serif;
+        font: 400 16px/1.7 "Iosevka Aile", system-ui, -apple-system, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
       }
+      ::selection { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+      :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       header {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        background: color-mix(in srgb, var(--bg) 88%, transparent);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
         border-bottom: 1px solid var(--border);
         padding: 0.75rem 1.25rem;
         display: flex;
@@ -251,11 +262,17 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
         line-height: 1.4;
       }
       #theme-toggle:hover { color: var(--accent); border-color: var(--accent); }
-      header nav a { color: var(--muted); text-decoration: none; margin-right: 1rem; }
+      header nav a { color: var(--muted); text-decoration: none; margin-right: 1rem; padding: 0.2rem 0; }
       header nav a:hover { color: var(--accent); }
+      header nav a[aria-current] {
+        color: var(--fg);
+        font-weight: 600;
+        box-shadow: inset 0 -2px 0 var(--b2);
+      }
       /* the measure: 65–70 characters — readability beats width, and it
          matters more the denser the content */
       main { max-width: 68ch; margin: 0 auto; padding: 3rem 1.25rem 5rem; }
+      :target, [id] { scroll-margin-top: 4.5rem; }
       /* the side navigation: sticky, scrolls its own overflow, never
          the page's. The measure is untouched — the grid centers the
          pair, and narrow viewports fall back to one column. */
@@ -269,9 +286,9 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
       .with-toc main { margin: 0; max-width: 68ch; padding: 2rem 0 4rem; }
       .toc {
         position: sticky;
-        top: 0;
+        top: 3.6rem;
         align-self: start;
-        max-height: 100vh;
+        max-height: calc(100vh - 3.6rem);
         overflow-y: auto;
         padding: 2rem 0.25rem 2rem 0;
         font-size: var(--text-sm);
@@ -284,8 +301,19 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
       .toc ul { list-style: none; margin: 0; padding: 0; }
       .toc li { margin: 0.15rem 0; }
       .toc li.d3 { padding-left: 0.9rem; }
-      .toc a { color: var(--muted); text-decoration: none; display: block; }
-      .toc a:hover { color: var(--accent); }
+      .toc ul { border-left: 1px solid var(--border); }
+      .toc li { margin: 0; }
+      .toc a {
+        color: var(--muted);
+        text-decoration: none;
+        display: block;
+        padding: 0.18rem 0 0.18rem 0.85rem;
+        margin-left: -1px;
+        border-left: 1px solid transparent;
+      }
+      .toc li.d3 { padding-left: 0; }
+      .toc li.d3 a { padding-left: 1.75rem; }
+      .toc a:hover { color: var(--accent); border-left-color: var(--accent); }
       /* the mobile stand-in: same links, a collapsed block above the
          content — the sticky aside has no room below the breakpoint */
       .toc-mobile { display: none; }
@@ -306,14 +334,21 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
         .toc-mobile li.d3 { padding-left: 0.9rem; }
         .toc-mobile a { color: var(--muted); text-decoration: none; display: block; padding: 0.25rem 0; }
       }
-      main a { color: var(--accent); }
+      main a {
+        color: var(--accent);
+        text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
+        text-underline-offset: 0.18em;
+        text-decoration-thickness: 1px;
+      }
+      main a:hover { text-decoration-color: currentColor; }
       /* the ONE code treatment — inline spans, blocks, install rows all
          bound their code the same way: tinted, hairline-bordered, padded.
          Highlighted blocks carry their theme background inline, which
          wins over this tint; the border still bounds them. */
       pre {
         padding: 0.9rem 1.1rem;
-        border-radius: 6px;
+        border-radius: 8px;
+        box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
         overflow-x: auto;   /* long weir lines SCROLL, never wrap or bleed */
         max-width: 100%;
         font-size: var(--text-sm);
@@ -339,17 +374,46 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
         border-radius: 4px;
         font-size: 0.85em;
       }
-      h1, h2, h3 { line-height: 1.25; font-weight: 400; }
-      h1 { font-size: var(--text-2xl); }
+      h1, h2, h3 { line-height: 1.25; font-weight: 600; letter-spacing: -0.01em; }
+      h1 { font-size: var(--text-2xl); margin-bottom: var(--space-3); }
       /* the h2 triplet marker RETIRED [D:hero-2]: at 3px-bar scale it
          read as a malformed logo beside every heading — the h1
          underline and the hero mark carry the hues alone */
-      h2 { font-size: var(--text-xl); margin-top: var(--space-6); border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+      h2 { font-size: var(--text-xl); margin: var(--space-6) 0 var(--space-3); }
+      h2 + p, h3 + p { margin-top: 0; }
       main a:hover { color: var(--b2); }
-      h3 { font-size: var(--text-lg); }
-      table { border-collapse: collapse; display: block; overflow-x: auto; }
-      th, td { border: 1px solid var(--border); padding: 0.35rem 0.65rem; }
-      blockquote { margin: 0; padding-left: 1rem; border-left: 3px solid var(--border); color: var(--muted); }
+      h3 { font-size: var(--text-lg); margin-top: var(--space-5); }
+      hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
+      table { border-collapse: collapse; display: block; overflow-x: auto; font-size: var(--text-sm); }
+      th, td { border: 1px solid var(--border); padding: 0.4rem 0.7rem; text-align: left; vertical-align: top; }
+      th { background: var(--code-bg); font-weight: 600; }
+      tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--code-bg) 55%, transparent); }
+      blockquote {
+        margin: var(--space-3) 0;
+        padding: 0.6rem 1rem;
+        border-left: 3px solid var(--b2);
+        border-radius: 0 6px 6px 0;
+        background: var(--code-bg);
+        color: var(--fg);
+      }
+      blockquote p { margin: 0.3rem 0; }
+      footer {
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: var(--text-sm);
+      }
+      .foot-in {
+        max-width: 68ch;
+        margin: 0 auto;
+        padding: var(--space-4) 1.25rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1.5rem;
+        align-items: center;
+      }
+      .foot-in nav { display: flex; gap: 1.25rem; margin-left: auto; }
+      .foot-in a { color: var(--muted); text-decoration: none; }
+      .foot-in a:hover { color: var(--accent); }
     </style>
   </head>
   <body>
@@ -361,13 +425,13 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
           <rect class="b3" x="52" y="80" width="56" height="12" rx="6" />
         </svg>weir</a>
       <nav id="site-nav">
-        <a href="/docs/install/">Install</a>
-        <a href="/docs/guide/">Guide</a>
-        <a href="/reference/">Reference</a>
-        <a href="/docs/tooling/">Tooling</a>
-        <a href="/docs/coming-from/">Coming from…</a>
-        <a href="/showcase/">Showcase</a>
-        <a href="/changelog/">Changelog</a>
+        <a href="/docs/install/" aria-current={current("/docs/install/")}>Install</a>
+        <a href="/docs/guide/" aria-current={current("/docs/guide/")}>Guide</a>
+        <a href="/reference/" aria-current={current("/reference/")}>Reference</a>
+        <a href="/docs/tooling/" aria-current={current("/docs/tooling/")}>Tooling</a>
+        <a href="/docs/coming-from/" aria-current={current("/docs/coming-from/")}>Coming from…</a>
+        <a href="/showcase/" aria-current={current("/showcase/")}>Showcase</a>
+        <a href="/changelog/" aria-current={current("/changelog/")}>Changelog</a>
       </nav>
       <div class="nav-right">
         <Search />
@@ -427,5 +491,15 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
         </main>
       )
     }
+    <footer data-pagefind-ignore>
+      <div class="foot-in">
+        <span>weir · Apache-2.0</span>
+        <nav>
+          <a href="https://github.com/weir-shell/weir">GitHub</a>
+          <a href="/changelog/">Changelog</a>
+          <a href="https://queil.net">queil.net</a>
+        </nav>
+      </div>
+    </footer>
   </body>
 </html>
