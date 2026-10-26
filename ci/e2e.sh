@@ -17145,7 +17145,7 @@ out=$($BIN check "$bbdir/sur.weir" 2>&1) && fail "a surrogate escape must not ch
 echo "$out" | grep -qF "sur.weir:2:" || fail "the surrogate refusal is located: $out"
 echo "$out" | grep -qF "is a UTF-16 surrogate, not a character" || fail "the surrogate refusal teaches: $out"
 out=$($BIN "$bbdir/sur.weir" 2>&1) && fail "a surrogate escape must not run"
-echo "$out" | grep -qF "ok" && fail "a parse error runs nothing: $out"
+echo "$out" | grep -qxF "ok" && fail "a parse error runs nothing: $out"
 echo "e2e ok: \\e and \\u{…} escapes decode in plain and interpolated strings; a surrogate refuses at parse [D:string-escapes]"
 # a | line count error renders its argv as data [D:error-data-escape]: the
 # newline in printf's argument is \x0a, never a raw line break
