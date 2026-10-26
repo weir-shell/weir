@@ -153,7 +153,8 @@
     "compile": "tsc --noEmit -p ./ && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --minify",
     "watch": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --watch",
     "vscode:prepublish": "npm run compile",
-    "package": "vsce package"
+    "package": "vsce package",
+    "test": "esbuild ./src/shell.ts --outfile=out/shell.mjs --format=esm --platform=node && node --test test/shell.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

@@ -5,6 +5,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
+import { quoteForShell } from "./shell";
 import { LanguageClient, TransportKind } from "vscode-languageclient/node";
 
 let client: LanguageClient | undefined;
@@ -86,8 +87,6 @@ export function activate(context: vscode.ExtensionContext): void {
   // server-side execution: the server never evaluates
   let terminal: vscode.Terminal | undefined;
 
-  const quote = (s: string): string => `"${s.replace(/"/g, '\\"')}"`;
-
   const inTerminal = async (args: string[]): Promise<void> => {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document.languageId !== "weir") {
@@ -105,9 +104,24 @@ export function activate(context: vscode.ExtensionContext): void {
       terminal = vscode.window.createTerminal("weir");
     }
     terminal.show(true);
-    terminal.sendText(
-      [quote(resolved), ...args, quote(editor.document.uri.fsPath)].join(" ")
+    const argv = [...args, editor.document.uri.fsPath];
+    const integration = terminal.shellIntegration;
+    if (integration) {
+      // no shell string at all: the terminal hands the program its argv,
+      // so the shell never re-parses the path
+      integration.executeCommand(resolved, argv);
+      return;
+    }
+    const words = [resolved, ...argv].map((w) =>
+      quoteForShell(w, process.platform)
     );
+    if (words.some((w) => w === null)) {
+      void vscode.window.showErrorMessage(
+        "weir: this file's path holds characters the shell could run — use a terminal with shell integration, or run weir from a shell yourself"
+      );
+      return;
+    }
+    terminal.sendText(words.join(" "));
   };
 
   context.subscriptions.push(
