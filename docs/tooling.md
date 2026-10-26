@@ -51,7 +51,11 @@ usage: weir                                    the REPL
   on PATH is only a warning here (when you run the script, it's an
   error), so you can work on scripts for tools you haven't installed.
   `--json` prints the same diagnostics as JSON, for other tools and
-  AI agents to read.
+  AI agents to read. A diagnostic that has a related site — the
+  signature an implementation mismatches, the import an imported
+  error came through, the rebinding that shadows an unread binder —
+  carries it in a `related` array of `{file, line, col, message}`;
+  the key is absent otherwise.
 - `weir check --can script.weir` — list what the script can run,
   read, write and connect to, with a `file:line` for each item. This
   is what the script *could* do, not what it will do, so a branch

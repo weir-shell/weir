@@ -50,6 +50,32 @@ In any editor with LSP support you get:
 - **Formatting**, with the same output as `weir fmt`. Your editor's
   tab settings are ignored on purpose, so an editor set to 2 spaces
   still produces standard 4-space weir.
+- **Outline** (document symbols): types with their fields and cases,
+  functions with their nested functions, imports and `#sig` lines. A
+  signature and its implementation are one entry.
+- **Folding** for multi-line statements, indented blocks, match arms,
+  comment runs and import runs.
+- **Inlay hints** showing the inferred type after each binder and
+  parameter, and a function's return type before its `=`. Signed
+  module members get none (the signature is the annotation). Long
+  types are cut at 40 characters; the full type is in the hint's
+  tooltip. Each class can be turned off (see below).
+- **Links** on import paths, `schema=` names and `#sig` tools, to the
+  module, the vendored schema and the signature file. Only resolved
+  targets are links; a missing one has a diagnostic instead.
+- **Unused binders fade** and an error on a signed implementation
+  points at its signature line, in editors that show diagnostic tags
+  and related information.
+
+Inlay hints are configured through `initializationOptions` (VS Code
+sends the `weir.inlayHints.*` settings for you). The object is
+`{ "inlayHints": { "bindingTypes": true, "parameterTypes": true,
+"pipelineTypes": false, "maxLabelLength": 40 } }`; a key you leave out
+keeps its default, and the server also reads the same object under
+`settings.weir.inlayHints` on `workspace/didChangeConfiguration`.
+`pipelineTypes` shows each stage's type at the end of its line in a
+multi-line `|>` chain; it is off by default because in a long chain
+every stage's type is interesting once and noise forever.
 
 weir scripts often have no extension (they start with
 `#!/usr/bin/env weir`), so each setup below recognizes weir files both
@@ -78,8 +104,14 @@ vim.filetype.add {
 vim.lsp.config('weir', {
   cmd = { 'weir', 'lsp' },
   filetypes = { 'weir' },
+  -- optional: the inlay hint settings (these are the defaults)
+  init_options = {
+    inlayHints = { bindingTypes = true, parameterTypes = true, pipelineTypes = false, maxLabelLength = 40 },
+  },
 })
 vim.lsp.enable 'weir'
+-- inlay hints are opt-in on the Neovim side
+vim.lsp.inlay_hint.enable(true)
 
 -- comment + indent, matching `weir fmt`
 vim.api.nvim_create_autocmd('FileType', {
