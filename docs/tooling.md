@@ -530,11 +530,14 @@ path of the file inside it. (GitLab groups can nest, so weir can't
 guess where the repo name ends. Marking it explicitly also means one
 syntax works for every host.)
 
-The `@ref` is required: a tag, branch or commit sha. weir resolves it
-to the **full commit sha** and records that in the URL stored in the
-lock, so `restore` downloads exactly what you reviewed. This short
-form works for `github.com` and `gitlab.com`. For any other host,
-give the full raw URL:
+The `@ref` is required: a tag, branch or the full commit sha. weir
+resolves it to the **full commit sha** by listing the repo's refs the
+way `git ls-remote` does (git's own protocol — no API, no token for a
+public repo, no rate limit) and records that sha in the URL stored in
+the lock, so `restore` downloads exactly what you reviewed. A tag or
+branch the repo does not have is refused with a link to its tags page.
+This short form works for `github.com` and `gitlab.com`. For any
+other host, give the full raw URL:
 
 ```text
 weir add module https://raw.githubusercontent.com/org/repo/<sha>/lib/retry.weir --as retry
@@ -685,8 +688,9 @@ before running anything.
 For a private repo, set `WEIR_TOKEN_GITHUB_COM` or
 `WEIR_TOKEN_GITLAB_COM`. Only `add` and `restore` need the token;
 using the committed file doesn't. Tokens are read from the
-environment and never stored. GitHub answers 404 for a private repo
-when no token is given, so weir's not-found error mentions the token.
+environment and never stored. A private repo without a token answers
+401 on the ref listing and 404 on the file, so weir's error mentions
+the token on both.
 
 Modules aren't signed. You decide to trust a module by reviewing its
 code. From then on, the lock holds its hash, and your repo's history

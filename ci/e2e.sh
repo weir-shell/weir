@@ -14293,19 +14293,26 @@ printf 'import "sib.weir" as A\nprint (A.s ())\n' > "$amdir/proj/r1a.weir"
 printf 'import "sibnoext" as B\nprint (B.s ())\n' > "$amdir/proj/r1b.weir"
 [ "$(cd "$amdir/proj" && $BIN r1a.weir)" = "sibling" ] || fail "R1: bare-with-extension must stay file-relative"
 [ "$(cd "$amdir/proj" && $BIN r1b.weir)" = "sibling" ] || fail "R1: bare-no-extension must stay file-relative"
-# the live shorthand chain (ref→sha→raw fetch→validation): a real repo
-# file that is not a module — the refusal proves the bytes arrived.
-# Tolerates the shared-IP rate limit; CI passes WEIR_TOKEN_GITHUB_COM.
+# the live shorthand chain (ref listing→sha→raw fetch→validation): a
+# real repo file that is not a module — the refusal proves the bytes
+# arrived. The ref resolves over git's own advertisement, no API rate
+# limit [D:ref-resolve-smart-http]; CI passes WEIR_TOKEN_GITHUB_COM so
+# the authenticated listing is the path exercised there.
 lout=$(cd "$amdir/proj" && $BIN add module "github.com/weir-shell/weir//ci/release-published.weir@v0.0.5" --as relpub 2>&1 || true)
-echo "$lout" | grep -q "is not a module" || echo "$lout" | grep -qE "rate limit|answered 403" || fail "live shorthand chain: $lout"
+echo "$lout" | grep -q "is not a module" || fail "live shorthand chain: $lout"
 # the library's host, live [D:lib-short-name]: the expansion reached
-# api.github.com for weir-shell/lib at the tag and the default --as was
-# derived (the handler got past the name checks) — a 404 and a
-# rate-limit 403 both name the URL, so one assertion covers either
+# weir-shell/lib's listing and the default --as was derived (the handler
+# got past the name checks) — a tag the library does not have is named
+# with the tags page [D:ref-resolve-smart-http]
 llout=$(cd "$amdir/proj" && $BIN add module nosuch@v0 2>&1 || true)
-echo "$llout" | grep -q "api.github.com/repos/weir-shell/lib/commits/v0" || fail "live library host probe: $llout"
+echo "$llout" | grep -qF "no tag or branch 'v0' at github.com/weir-shell/lib — the tags: https://github.com/weir-shell/lib/tags" || fail "live library host probe: $llout"
+# the positive resolve, live: the library's v0.1.0 tag lists, so the
+# output names the raw URL at a full sha (whether the add then succeeds
+# is the library's layout at that tag — the resolve is what this pins)
+lpout=$(cd "$amdir/proj" && $BIN add module semver@v0.1.0 2>&1 || true)
+echo "$lpout" | grep -qE "raw.githubusercontent.com/weir-shell/lib/[0-9a-f]{40}/modules/semver.weir" || fail "live library tag resolve: $lpout"
 kill $amsrv 2>/dev/null || true
-echo "e2e ok: add module (vendor, walk-import root+subdir, --can at the module's line, tamper→repair, re-add sha pair, the teaches, R1 negative pins, the library spelling's refusals, live shorthand + library host)"
+echo "e2e ok: add module (vendor, walk-import root+subdir, --can at the module's line, tamper→repair, re-add sha pair, the teaches, R1 negative pins, the library spelling's refusals, live shorthand + library host + library tag)"
 
 # ---- weir add module: a module's closure [D:add-module-closure] ----------
 # a module with relative imports vendors with them, fetched at one commit:

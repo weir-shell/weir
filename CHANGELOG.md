@@ -114,7 +114,6 @@
   record's unnumbered `build` field — kept, rendered back, ignored for
   precedence. Every member is `let pure`. See docs/tooling.md "The
   library".
-
 - **`Completed.ok`.** `cmd | complete` now carries `ok`, exactly
   `exitCode == 0` — the `| succeeds` law as a field — so
   `let r = … | complete` then `if r.ok then …` reads. It leads the
@@ -123,6 +122,18 @@
   reads the code.
 
 ### Changed
+
+- **`weir add module` resolves a tag or branch without the host's
+  API.** The `github.com/…` and `gitlab.com/…` short forms (and the
+  bare library name) now read the repo's ref list the way `git
+  ls-remote` does — git's own protocol, served by every host, no token
+  for a public repo and no API rate limit, so a shared CI address can
+  no longer hit GitHub's 60-requests-an-hour budget. An annotated tag
+  resolves to its commit. The lock still holds the raw URL at the full
+  sha; `restore` and `verify` are unchanged. A tag or branch the repo
+  does not have now says so and links the tags page (`no tag or branch
+  'v0' at github.com/weir-shell/lib — the tags: …`); a `@sha` must be
+  the full 40 hex digits (a prefix was the API's lookup).
 
 - **Receipts are read-only (breaking).** `Completed`, `FileRow` and
   `HttpResponse` — the records only the runtime mints (`| complete`,

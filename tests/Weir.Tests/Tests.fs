@@ -15704,6 +15704,83 @@ let libSpecTests =
           test "an expansion never re-expands" { passes (expand "semver@v0.1.0").Source } ]
 
 
+let refListingTests =
+    // [D:ref-resolve-smart-http]: the ref→sha step is a pure parse of
+    // git's own advertisement plus a pure pick — every arm pinned here;
+    // the fetch behind it is the live e2e probe's
+    let pkt (s: string) =
+        let body = System.Text.Encoding.UTF8.GetBytes(s + "\n")
+        System.Text.Encoding.ASCII.GetBytes(sprintf "%04x" (body.Length + 4)) |> Array.append <| body
+
+    let adv (lines: string list) =
+        Array.concat (
+            [ pkt "# service=git-upload-pack"; System.Text.Encoding.ASCII.GetBytes "0000" ]
+            @ (lines |> List.map pkt)
+            @ [ System.Text.Encoding.ASCII.GetBytes "0000" ]
+        )
+
+    let shaA = String.replicate 40 "a"
+    let shaB = String.replicate 40 "b"
+    let shaC = String.replicate 40 "c"
+
+    let parse bytes =
+        match Weir.Contracts.parseRefListing bytes with
+        | Ok refs -> refs
+        | Error e -> failtest $"must parse: {e}"
+
+    testList
+        "ref listing [D:ref-resolve-smart-http]"
+        [ test "the GitHub shape: service line, flush, HEAD with its NUL capability list, heads and tags" {
+              let refs =
+                  parse (
+                      adv
+                          [ shaA + " HEAD\000multi_ack thin-pack side-band symref=HEAD:refs/heads/main agent=git/github"
+                            shaA + " refs/heads/main"
+                            shaB + " refs/heads/feat/lib"
+                            shaC + " refs/tags/v0.1.0" ]
+                  )
+
+              Expect.equal
+                  refs
+                  [ shaA, "HEAD"; shaA, "refs/heads/main"; shaB, "refs/heads/feat/lib"; shaC, "refs/tags/v0.1.0" ]
+                  "sha/refname pairs, the capabilities dropped"
+          }
+          test "an annotated tag lists the tag object and its peeled commit" {
+              let refs = parse (adv [ shaA + " HEAD\000caps"; shaB + " refs/tags/v1"; shaC + " refs/tags/v1^{}" ])
+              Expect.equal refs [ shaA, "HEAD"; shaB, "refs/tags/v1"; shaC, "refs/tags/v1^{}" ] "both lines kept"
+          }
+          test "a flush-only body lists nothing" {
+              Expect.equal (parse (System.Text.Encoding.ASCII.GetBytes "0000")) [] "no refs"
+              Expect.equal (parse [||]) [] "empty"
+          }
+          test "garbage is not an advertisement" {
+              for body in
+                  [ System.Text.Encoding.UTF8.GetBytes "<!DOCTYPE html><html>…"
+                    System.Text.Encoding.ASCII.GetBytes "0010abc"
+                    System.Text.Encoding.ASCII.GetBytes("0040" + shaA)
+                    adv [ "not a sha at all, just prose" ]
+                    adv [ shaA + "refs/heads/nospace" ] ] do
+                  match Weir.Contracts.parseRefListing body with
+                  | Error _ -> ()
+                  | Ok refs -> failtest $"'{System.Text.Encoding.UTF8.GetString body}' must refuse, got {refs}"
+          }
+          test "pick: the peeled commit beats the tag object beats the branch" {
+              let refs =
+                  [ shaA, "refs/heads/v1"; shaB, "refs/tags/v1"; shaC, "refs/tags/v1^{}"; shaA, "refs/heads/main" ]
+
+              Expect.equal (Weir.Contracts.pickRef refs "v1") (Some shaC) "peeled"
+              Expect.equal (Weir.Contracts.pickRef (refs |> List.filter (fun (_, n) -> n <> "refs/tags/v1^{}")) "v1") (Some shaB) "the tag object (a lightweight tag)"
+              Expect.equal (Weir.Contracts.pickRef [ shaA, "refs/heads/v1" ] "v1") (Some shaA) "the branch"
+              Expect.equal (Weir.Contracts.pickRef refs "main") (Some shaA) "a branch by name"
+          }
+          test "pick: a full 40-hex sha is its own answer, with or without a listing; a missing name is None" {
+              Expect.equal (Weir.Contracts.pickRef [] shaB) (Some shaB) "no listing needed"
+              Expect.equal (Weir.Contracts.pickRef [ shaA, "refs/heads/main" ] shaB) (Some shaB) "not looked up"
+              Expect.equal (Weir.Contracts.pickRef [ shaA, "refs/heads/main" ] "v0") None "missing"
+              Expect.equal (Weir.Contracts.pickRef [] "0123abcd") None "a sha prefix is not a ref"
+          } ]
+
+
 let vendorClosureTests =
     // [D:add-module-closure]: the closure walk, its refusals, the layout,
     // the lock round-trip, per-file confinement and weir: resolution order
@@ -37122,6 +37199,7 @@ let allTests =
           lockfileSymlinkConfinementTests
           vendorClosureTests
           libSpecTests
+          refListingTests
           moduleSignatureTests
           qualifiedTypeNameTests
           qualifiedCasePatternTests
