@@ -13767,9 +13767,17 @@ let quickFixTests =
 
               Expect.equal (f.Title, f.Edits) ("Replace with 'Short'", [ edit 2 7 2 12 "Short" ]) "the attribute"
 
-              // a command head (the warning carries the typo unquoted)
+              // a command head (the warning carries the typo unquoted); the
+              // suggestion comes from the machine's PATH, so the pin reads it
+              // from the message rather than naming one
+              let target =
+                  diagsOf "q.weir" [ "ecoh hi" ]
+                  |> List.tryPick (fun d -> if d.Code = "cmd-not-found" then Weir.Types.didYouMeanTarget d.Message else None)
+                  |> Option.map snd
+                  |> Option.defaultWith (fun () -> failtest "no did-you-mean on the command head")
+
               let f = fixes "q.weir" [ "ecoh hi" ] "cmd-not-found"
-              Expect.equal (f.Title, f.Edits) ("Replace with 'echo'", [ edit 1 1 1 5 "echo" ]) "the command"
+              Expect.equal (f.Title, f.Edits) ($"Replace with '{target}'", [ edit 1 1 1 5 target ]) "the command"
           }
           test "Replace with 'X': an unknown flag replaces the word; no span, no fix" {
               withSig (fun entry ->
@@ -13794,8 +13802,9 @@ let quickFixTests =
 
               // the same teaching on a command head (a bare statement, so
               // the qualified member is then the discard lesson — fixFor)
-              let f = fixFor "q.weir" [ "where" ] "cmd-not-found"
-              Expect.equal (f.Title, f.Edits, f.Family) ("Qualify: Seq.where", [ edit 1 1 1 6 "Seq.where" ], Some "qualify") ""
+              // `sortBy`, not `where`: where.exe is a program on Windows
+              let f = fixFor "q.weir" [ "sortBy" ] "cmd-not-found"
+              Expect.equal (f.Title, f.Edits, f.Family) ("Qualify: Seq.sortBy", [ edit 1 1 1 7 "Seq.sortBy" ], Some "qualify") ""
           }
           test "Add missing arms: one line per case under the arms, or appended on a single line" {
               let f =
