@@ -813,6 +813,14 @@ let private localDef (name: string) (jcol: int) (te: Check.TypedExpr) : Span opt
 /// signature — so "type first" holds at the field/case/type positions
 /// too [D:doc-comments].
 let private declHover (decl: Ast.Decl) (word: string) : string option =
+    // an ordered type shows its attribute [D:derived-ord] — the hover
+    // carries the fact the fields alone cannot
+    let ordPrefix =
+        if decl.Attrs |> List.exists (fun a -> a.AName = "Ord") then
+            "[<Ord>] "
+        else
+            ""
+
     match decl.Body with
     | Ast.DRecord fields ->
         if word = decl.Name then
@@ -821,7 +829,7 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
                 |> List.map (fun (n, ty, _) -> $"{n}: {formatTy ty}")
                 |> String.concat "; "
 
-            Some $"{{ {body} }}"
+            Some $"{ordPrefix}{{ {body} }}"
         else
             fields
             |> List.tryPick (fun (n, ty, _) -> if n = word then Some(formatTy ty) else None)
@@ -844,7 +852,8 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
                 |> Option.defaultValue ""
 
             Some(
-                tagPrefix
+                ordPrefix
+                + tagPrefix
                 + (cases |> List.map (fun (n, tyO, _) -> caseSig (n, tyO)) |> String.concat " | ")
                 + validated
             )

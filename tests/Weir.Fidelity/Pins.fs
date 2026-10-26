@@ -96,6 +96,29 @@ let pins =
           "let r = [1] |> Seq.sortBy (fun n -> fun x -> x + n)\n"
           Same
 
+      // --- derived Ord [D:derived-ord]: F# derives structural comparison
+      // in declaration order on every record and union; weir derives
+      // the same order only under [<Ord>] ---
+      pinT
+          "derived Ord: a record list sorts (weir under [<Ord>], F# by default)"
+          "[<Ord>]\ntype V = { major: int; minor: int }\nlet _r = [{ major = 2; minor = 0 }; { major = 1; minor = 9 }] |> Seq.sort\n"
+          "type V = { major: int; minor: int }\nlet _r = [{ major = 2; minor = 0 }; { major = 1; minor = 9 }] |> Seq.sort\n"
+          Same
+      pinT
+          "derived Ord: min of a union list (case index, then payload)"
+          "[<Ord>]\ntype P = Pre of string | Release\nlet _r = [Release; Pre \"a\"] |> Seq.min\n"
+          "type P = Pre of string | Release\nlet _r = [Release; Pre \"a\"] |> Seq.min\n"
+          Same
+      pinT
+          "derived Ord: < on two records"
+          "[<Ord>]\ntype V = { major: int; minor: int }\nlet _b = { major = 1; minor = 0 } < { major = 1; minor = 1 }\n"
+          "type V = { major: int; minor: int }\nlet _b = { major = 1; minor = 0 } < { major = 1; minor = 1 }\n"
+          Same
+      pin
+          "derived Ord is opt-in: F# orders an un-attributed record, weir refuses"
+          "type V = { major: int; minor: int }\nlet _r = [{ major = 2; minor = 0 }] |> Seq.sort\n"
+          (Diverges "derived-ord-explicit")
+
       // --- exit (F#-parity) ---
       pin "exit is F#'s exit (statement position)" "let _go () = exit 3\n" Same
 

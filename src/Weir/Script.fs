@@ -1297,6 +1297,23 @@ let private bufStartsWith (b: PendBuf) (prefix: string) : bool =
 
         ok)
 
+// a declaration's buffer may carry its own-line attribute list ahead of
+// `type` (the attr-only join, [D:attr-positions]) — the record-body
+// district reads through it [D:derived-ord]
+let private bufIsTypeDecl (b: PendBuf) : bool =
+    bufStartsWith b "type "
+    || (bufStartsWith b "[<"
+        && (let mutable i = 2
+            let mutable found = false
+
+            while not found && i < b.Sb.Length do
+                if bufStartsWithAt b i ">] type " then
+                    found <- true
+
+                i <- i + 1
+
+            found))
+
 // the buffer's last segment (after the last sibling sentinel), O(segment)
 // via the tracked LastSegStart — the proc/serve binder-head scan reads
 // this instead of LastIndexOf over the whole growing text [D:assemble-quadratic]
@@ -1469,7 +1486,7 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
 
         let braceOpen (p: Pend) =
             match p.Brackets with
-            | ('{', line, _) :: _ when bufStartsWith p.Buf "type " ->
+            | ('{', line, _) :: _ when bufIsTypeDecl p.Buf ->
                 Error $"line {line}: this record type's {{ is still open when the statement ends — close the brace"
             | ('{', line, _) :: _ ->
                 Error $"line {line}: this record literal's {{ is still open when the statement ends — close the brace"
@@ -1696,7 +1713,7 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                             // below read the pending buffer's tracked
                                             // last-non-white index — no full-text TrimEnd per
                                             // line [D:assemble-quadratic]
-                                            let isTypeDecl = bufStartsWith p.Buf "type "
+                                            let isTypeDecl = bufIsTypeDecl p.Buf
 
                                             // the separator goes before an entry-start line,
                                             // never before a value continuation — a field's

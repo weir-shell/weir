@@ -6200,6 +6200,87 @@ echo "e2e ok: no tuple ordering (divergence-pinned)"
 
 rm -rf "$tudir"
 
+# --- derived Ord [D:derived-ord]: [<Ord>] orders a record or union by
+# declaration — the SemVer receipt by bytes, check-first on an unordered
+# field, the tuple teaching, fmt on the own-line attribute, the code
+
+oddir=$(mkweirtmp)
+
+cat > "$oddir/semver.weir" <<'WEOF'
+[<Ord>]
+type Pre = Pre of string | Release
+
+[<Ord>]
+type SemVer = {
+    major: int
+    minor: int
+    patch: int
+    pre: Pre
+}
+
+let versions = [{ major = 1; minor = 0; patch = 0; pre = Release }; { major = 1; minor = 0; patch = 0; pre = Pre "alpha" }; { major = 0; minor = 9; patch = 2; pre = Release }]
+let top = versions |> Seq.sort |> Seq.last
+print $"{top.major}.{top.minor}.{top.patch}"
+print $"{top < { major = 2; minor = 0; patch = 0; pre = Release }}"
+versions |> Seq.sortBy (fun v -> v.pre) |> Seq.map (fun v -> show v.pre) |> Seq.iter print
+WEOF
+out=$(cd "$oddir" && $BIN semver.weir 2>&1)
+expected=$'1.0.0\ntrue\nPre "alpha"\nRelease\nRelease'
+[ "$out" = "$expected" ] || fail "derived Ord: the SemVer script's bytes: $out"
+echo "e2e ok: derived Ord — the SemVer receipt sorts, picks the top, compares (bytes)"
+$BIN fmt --check "$oddir/semver.weir" >/dev/null 2>&1 || fail "fmt must accept [<Ord>] on its own line above a multi-line record"
+echo "e2e ok: derived Ord — fmt --check accepts the own-line attribute above type"
+
+cat > "$oddir/ordseq.weir" <<'WEOF'
+printerr "must-not-run"
+
+[<Ord>]
+type Run = { name: string; logs: seq<string> }
+WEOF
+errout=$($BIN "$oddir/ordseq.weir" 2>&1 || true)
+echo "$errout" | grep -qF "[<Ord>] on 'Run': field 'logs' is seq<string>, which cannot be ordered" || fail "an unordered field must refuse at the declaration: $errout"
+echo "$errout" | grep -qF "must-not-run" && fail "check-first violated: the effect ran"
+echo "e2e ok: derived Ord — an unordered field refuses at CHECK, named, zero effects"
+
+errout=$($BIN -e '[(1, 2)] |> Seq.sortBy (fun x -> x)' 2>&1 || true)
+echo "$errout" | grep -qF "tuples have no order; name the parts in a record and give it [<Ord>]" || fail "the tuple teaching: $errout"
+echo "e2e ok: derived Ord — the tuple refusal names the record spelling"
+
+printf '[<Ord>]\ntype R = { a: int }\nls |> Seq.sort |> Seq.length |> print\n' > "$oddir/code.weir"
+out=$($BIN check --json "$oddir/code.weir" || true)
+echo "$out" | grep -qF '"code":"unsortable-key"' || fail "check --json keeps the unsortable-key code: $out"
+echo "e2e ok: derived Ord — check --json codes the refusal unsortable-key"
+
+# x imports: a module's [<Ord>] type sorts and compares in the importer
+cat > "$oddir/verlib.weir" <<'WEOF'
+module
+[<Ord>]
+type Ver = { major: int; minor: int }
+let mk : int -> int -> Ver
+let mk a b = { major = a; minor = b }
+WEOF
+cat > "$oddir/usever.weir" <<'WEOF'
+import "./verlib.weir" as V
+let xs = [V.mk 2 0; V.mk 1 9] |> Seq.sort
+print (show xs)
+print (show (V.mk 1 0 < V.mk 1 1))
+WEOF
+out=$(cd "$oddir" && $BIN usever.weir 2>&1)
+expect "derived Ord x imports: a module's [<Ord>] record sorts in the importer" "[{ major = 1; minor = 9 }; { major = 2; minor = 0 }]" "$out"
+expect "derived Ord x imports: Lib.T values compare" "true" "$out"
+
+# x validate: an [<Ord>] validated type orders by its payload
+cat > "$oddir/ordval.weir" <<'WEOF'
+[<Ord>]
+type Port = Port of int
+    validate n = if n < 1 then fail "a port is positive"
+print (show ([Port.create 8080; Port.create 22] |> Seq.sort))
+WEOF
+out=$(cd "$oddir" && $BIN ordval.weir 2>&1)
+expect "derived Ord x validate: a validated type orders by its payload" "[Port 22; Port 8080]" "$out"
+
+rm -rf "$oddir"
+
 # --- literal patterns + () thunks (2026-07-21) ------------------------
 
 ldir=$(mkweirtmp)

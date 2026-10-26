@@ -72,5 +72,5 @@ token — no position sweep required; the exclusion is this sentence.
 | classes × splices | NEW — a constrained helper's result in a command splice |
 | classes × pmap | NEW (e2e) — constrained closure across workers; erasure means nothing crosses threads but values |
 | classes × districts/assembler | N/A — classes are checker-only; no line-shape surface |
-| Ord × decomposition | EXISTS — tripwire (B) |
+| Ord × decomposition | AMENDED [D:derived-ord] — under `[<Ord>]` records/unions decompose (derivedOrdTests: declaration law, admission, runtime, Tag/validate/json/with/anon/imports/REPL/Map-keys/floats cells); the tripwire (B) holds for un-attributed types |
 | Show/Eq shared var | EXISTS — B battery (strictest class decides) |

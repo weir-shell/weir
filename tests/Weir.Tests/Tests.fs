@@ -6423,6 +6423,368 @@ let genericsTests =
           } ]
 
 
+// the derived-ordering fixtures [D:derived-ord]: a check env and a
+// value env built from the same declarations, so a union's case index
+// registers as a script's `type` statement would
+let private ordDecls =
+    [ "[<Ord>] type Pre = Pre of string | Release"
+      "[<Ord>] type SemVer = { major: int; minor: int; patch: int; pre: Pre }"
+      "[<Ord>] type OrdP = { a: int; b: string }"
+      "[<Ord>] type OrdU = OA | OB of int"
+      "[<Ord>] type OrdBox<'a> = { v: 'a }"
+      "[<Ord>] type OrdTree = Leaf | Node of OrdTree"
+      "[<Ord>] type OrdF = { x: float }"
+      "[<Ord>] type OrdK = { z: int; a: int }"
+      "[<Ord>] type OrdV = { major: int; minor: int }"
+      "[<Ord>] type OrdDep = { replicas: int }"
+      "[<Ord; Tag \"kind\">] type OrdTagged = Ping | Deployment of OrdDep"
+      "type Plain = { p: int }"
+      "type PlainU = PA | PB" ]
+
+let private ordEnv = ordDecls |> List.fold (fun e d -> declare d e) env
+
+let private ordValueEnv =
+    ordDecls |> List.fold (fun ve d -> Weir.Eval.declare ve (parseDecl d) None) valueEnv
+
+let private runOrd input =
+    match typecheck ordEnv (parse input) with
+    | Ok te -> eval ordValueEnv te
+    | Error terr -> failtest (formatError terr)
+
+let private ordShow input expected =
+    Expect.equal (runOrd $"show ({input})") (VStr expected) $"eval of '{input}'"
+
+let private ordDeclMsg input = (declErr input ordEnv).Message
+let private ordErrMsg input = (checkErrUnder ordEnv input).Message
+
+// the property's shape: F#'s derived comparison on this record IS the
+// derived order (declaration order, None first, cases by index), so
+// `compare` referees orderCompare in-process
+type FxU =
+    | FA
+    | FB of int
+
+type Fx =
+    { fa: int
+      fs: string
+      fo: int option
+      fu: FxU }
+
+let private fxNorm (r: Fx) =
+    { r with
+        fs = (if isNull r.fs then "" else r.fs) }
+
+let private fxValue (r: Fx) : Value =
+    VRecord(
+        "Fx",
+        [ "fa", VInt(int64 r.fa)
+          "fs", VStr r.fs
+          "fo",
+          (match r.fo with
+           | None -> VUnion("None", None)
+           | Some n -> VUnion("Some", Some(VInt(int64 n))))
+          "fu",
+          (match r.fu with
+           | FA -> VUnion("FA", None)
+           | FB n -> VUnion("FB", Some(VInt(int64 n)))) ]
+    )
+
+let derivedOrdTests =
+    let cmp = Weir.Eval.orderCompare "sort"
+    let onlyTail =
+        "only int, float, string, bool, Duration, Size, Instant, Uuid, an Option of those, and [<Ord>] types order"
+
+    let keysTail =
+        "keys are int, float, string, bool, Duration, Size, Instant, Uuid, an Option of those, or a type declared with [<Ord>]"
+
+    let tupleTail = "tuples have no order; name the parts in a record and give it [<Ord>]"
+
+    testList
+        "Derived Ord [D:derived-ord]"
+        [ // ---- the declaration law ----
+          test "[<Ord>] on a record and a union sets the def's flag; fields and cases unchanged" {
+              match Map.tryFind "OrdP" ordEnv.Types, Map.tryFind "OrdU" ordEnv.Types with
+              | Some(Record r), Some(Union u) ->
+                  Expect.isTrue r.Ord "record"
+                  Expect.equal (List.map fst r.Fields) [ "a"; "b" ] "fields"
+                  Expect.isTrue u.Ord "union"
+                  Expect.equal (List.map fst u.Cases) [ "OA"; "OB" ] "cases"
+              | other -> failtest $"expected the defs, got {other}"
+
+              match Map.tryFind "Plain" ordEnv.Types with
+              | Some(Record r) -> Expect.isFalse r.Ord "no attribute, no order"
+              | other -> failtest $"expected a record def, got {other}"
+          }
+          test "an Option field, a nested [<Ord>] field and a self-typed payload admit" {
+              ordEnv
+              |> declare "[<Ord>] type OrdOpt = { o: Option<int>; p: Option<OrdP>; s: SemVer }"
+              |> ignore
+          }
+          test "every refused member kind names the field and its repair (byte-pinned)" {
+              let field f ty tail =
+                  $"[<Ord>] on 'R': field '{f}' is {ty}, which cannot be ordered — {tail}"
+
+              Expect.equal (ordDeclMsg "[<Ord>] type R = { name: string; logs: seq<string> }") (field "logs" "seq<string>" onlyTail) "seq"
+              Expect.equal (ordDeclMsg "[<Ord>] type R = { m: Map<string, int> }") (field "m" "Map<string, int>" onlyTail) "Map"
+              Expect.equal (ordDeclMsg "[<Ord>] type R = { b: Bytes }") (field "b" "Bytes" onlyTail) "Bytes"
+              Expect.equal (ordDeclMsg "[<Ord>] type R = { s: Secret }") (field "s" "Secret" onlyTail) "Secret"
+              Expect.equal (ordDeclMsg "[<Ord>] type R = { f: int -> int }") (field "f" "int -> int" onlyTail) "function"
+              Expect.equal (ordDeclMsg "[<Ord>] type R = { u: unit }") (field "u" "unit" onlyTail) "unit"
+              Expect.equal (ordDeclMsg "[<Ord>] type R = { t: int * string }") (field "t" "int * string" tupleTail) "tuple"
+
+              Expect.equal
+                  (ordDeclMsg "[<Ord>] type R = { p: Plain }")
+                  (field "p" "Plain" "add [<Ord>] above `type Plain` to order it too")
+                  "a record without the attribute"
+
+              Expect.equal
+                  (ordDeclMsg "[<Ord>] type R = { u: PlainU }")
+                  (field "u" "PlainU" "add [<Ord>] above `type PlainU` to order it too")
+                  "a union without the attribute"
+
+              Expect.equal
+                  (ordDeclMsg "[<Ord>] type R = { o: Option<seq<int>> }")
+                  (field "o" "Option<seq<int>>" onlyTail)
+                  "the innermost offender decides the tail"
+
+              Expect.equal
+                  (ordDeclMsg "[<Ord>] type R = C of int * string | D")
+                  $"[<Ord>] on 'R': case 'C' carries int * string, which cannot be ordered — {tupleTail}"
+                  "a tuple payload"
+          }
+          test "the collision law: two ordered unions may not share a case name (Option's included)" {
+              Expect.equal
+                  (ordDeclMsg "[<Ord>] type R = None | X")
+                  "[<Ord>] on 'R': case 'None' is also a case of the ordered union 'Option' — a value carries only its case name, so two ordered unions cannot share one; rename it"
+                  "the prelude's Option"
+
+              Expect.equal
+                  (ordDeclMsg "[<Ord>] type R = X | OA")
+                  "[<Ord>] on 'R': case 'OA' is also a case of the ordered union 'OrdU' — a value carries only its case name, so two ordered unions cannot share one; rename it"
+                  "a user union"
+
+              // without the attribute the name is free — only ordered
+              // unions register
+              ordEnv |> declare "type Free = OA | X" |> ignore
+              ordEnv |> declare "[<Ord>] type AlsoFree = PA | Y" |> ignore
+          }
+          test "the attribute's own laws: position, duplicate, argument" {
+              Expect.equal
+                  (ordDeclMsg "type R = { [<Ord>] a: int }")
+                  "'Ord' attaches to a record declaration or a union declaration, not a record field"
+                  "wrong position names the home"
+
+              Expect.equal (ordDeclMsg "[<Ord; Ord>] type R = { a: int }") "duplicate attribute 'Ord' on record 'R'" "duplicate"
+              Expect.equal (ordDeclMsg "[<Ord 1>] type R = { a: int }") "'Ord' takes no argument" "argument"
+          }
+          // ---- admission at the use ----
+          test "sort, sortDescending, sortBy keys, min/max and the By twins admit an [<Ord>] record" {
+              ordShow "[{ a = 2; b = \"x\" }; { a = 1; b = \"y\" }] |> Seq.sort" "[{ a = 1; b = \"y\" }; { a = 2; b = \"x\" }]"
+              ordShow "[{ a = 1; b = \"y\" }; { a = 2; b = \"x\" }] |> Seq.sortDescending" "[{ a = 2; b = \"x\" }; { a = 1; b = \"y\" }]"
+
+              let pairs = "[(\"x\", { a = 2; b = \"a\" }); (\"y\", { a = 1; b = \"z\" })]"
+              Expect.equal (runOrd $"{pairs} |> Seq.sortBy snd |> Seq.head |> fst") (VStr "y") "sortBy"
+              Expect.equal (runOrd $"{pairs} |> Seq.sortByDescending snd |> Seq.head |> fst") (VStr "x") "sortByDescending"
+              Expect.equal (runOrd $"{pairs} |> Seq.minBy snd |> fst") (VStr "y") "minBy"
+              Expect.equal (runOrd $"{pairs} |> Seq.maxBy snd |> fst") (VStr "x") "maxBy"
+              ordShow "[{ a = 2; b = \"x\" }; { a = 1; b = \"y\" }] |> Seq.min" "{ a = 1; b = \"y\" }"
+              ordShow "[{ a = 2; b = \"x\" }; { a = 1; b = \"y\" }] |> Seq.max" "{ a = 2; b = \"x\" }"
+          }
+          test "the SemVer receipt: a record holding a union sorts, Seq.last picks the top, < compares" {
+              let versions =
+                  "[{ major = 1; minor = 0; patch = 0; pre = Release }; { major = 1; minor = 0; patch = 0; pre = Pre \"alpha\" }; { major = 0; minor = 9; patch = 2; pre = Release }]"
+
+              ordShow
+                  $"{versions} |> Seq.sort |> Seq.map (fun v -> $\"{{v.major}}.{{v.minor}}.{{v.patch}}-{{show v.pre}}\")"
+                  "[\"0.9.2-Release\"; \"1.0.0-Pre \\\"alpha\\\"\"; \"1.0.0-Release\"]"
+
+              Expect.equal (runOrd $"({versions} |> Seq.sort |> Seq.last).major") (VInt 1L) "last"
+              Expect.equal (runOrd "Pre \"alpha\" < Release") (VBool true) "a union orders as it lists its cases"
+              Expect.equal (runOrd "Pre \"b\" > Pre \"a\"") (VBool true) "then by payload"
+
+              Expect.equal
+                  (runOrd $"({versions} |> Seq.sort |> Seq.last) < {{ major = 2; minor = 0; patch = 0; pre = Release }}")
+                  (VBool true)
+                  "a record < a record"
+          }
+          test "Option orders everywhere, None first; < on it stays refused (B38)" {
+              expectValue "show ([Some 1; None; Some 0] |> Seq.sort)" (VStr "[None; Some 0; Some 1]")
+              expectValue "[Some \"b\"; None] |> Seq.sortBy (fun o -> o) |> Seq.head |> show" (VStr "None")
+              Expect.equal (checkErr "Some 1 < None").Message "operator '<' is not defined for Option<int>" ""
+          }
+          test "a generic [<Ord>] type is conditional: admits at int, refuses at a function naming the key" {
+              ordShow "[{ v = 1 }; { v = 0 }] |> Seq.sort |> Seq.head" "{ v = 0 }"
+              let m = ordErrMsg "[{ v = print }] |> Seq.sort |> Seq.length"
+              Expect.stringStarts m "cannot sort by this key: OrdBox<" "names the key"
+              Expect.stringEnds m keysTail "the admitted set"
+          }
+          test "the constraint rides a generic helper and a row var, and discharges at an [<Ord>] record" {
+              Expect.equal
+                  (runOrd "let best xs = xs |> Seq.max in (best [{ a = 1; b = \"a\" }; { a = 3; b = \"b\" }]).a")
+                  (VInt 3L)
+                  "a generic helper (pipe)"
+
+              Expect.equal
+                  (runOrd "let bykey k xs = xs |> Seq.sortBy k in [{ a = 3; b = \"b\" }; { a = 1; b = \"a\" }] |> bykey (fun r -> r) |> Seq.head |> fun r -> r.a")
+                  (VInt 1L)
+                  "the precedent's shape, at a record"
+
+              Expect.equal (runOrd "let best xs = Seq.max xs in best [1; 3]") (VInt 3L) "a generic helper (application, ints)"
+
+              Expect.equal
+                  (runOrd "let good r = [1; 2] |> Seq.sortBy (fun _ -> r) in good { a = 1; b = \"\" } |> Seq.length")
+                  (VInt 2L)
+                  "the Ord x rows pin's shape, admitting at an [<Ord>] record"
+          }
+          test "the four operators on two [<Ord>] values; a mismatch; an unknown side binds" {
+              Expect.equal (runOrd "{ a = 1; b = \"b\" } < { a = 1; b = \"c\" }") (VBool true) "<"
+              Expect.equal (runOrd "{ a = 2; b = \"a\" } > { a = 1; b = \"z\" }") (VBool true) "> (first field decides)"
+              Expect.equal (runOrd "{ a = 1; b = \"a\" } <= { a = 1; b = \"a\" }") (VBool true) "<="
+              Expect.equal (runOrd "{ a = 1; b = \"a\" } >= { a = 1; b = \"b\" }") (VBool false) ">="
+              Expect.equal (runOrd "OA < OB 0 && OB 1 < OB 2") (VBool true) "union: index, then payload"
+              Expect.equal (ordErrMsg "{ a = 1; b = \"\" } < 2") "expected OrdP, got int" "a mismatch"
+              Expect.equal (runOrd "let f x = x < { a = 1; b = \"\" } in f { a = 0; b = \"\" }") (VBool true) "x binds"
+          }
+          // ---- refusals at the use (byte-pinned) ----
+          test "a key without the attribute names the repair; a tuple the record spelling; the rest the set" {
+              Expect.equal
+                  (ordErrMsg "[{ p = 1 }] |> Seq.sort |> Seq.length")
+                  "cannot sort by this key: Plain cannot be ordered — add [<Ord>] above `type Plain` to order it by its fields in declaration order"
+                  "a record"
+
+              Expect.equal
+                  (ordErrMsg "[PA; PB] |> Seq.max |> show")
+                  "cannot sort by this key: PlainU cannot be ordered — add [<Ord>] above `type PlainU` to order it by its cases in declaration order"
+                  "a union, through max"
+
+              Expect.equal
+                  (checkErr "[(1, 2)] |> Seq.sortBy (fun x -> x) |> Seq.length").Message
+                  $"cannot sort by this key: int * int cannot be ordered — {tupleTail}"
+                  "a tuple key"
+
+              Expect.equal
+                  (checkErr "ls |> Seq.sort |> Seq.length").Message
+                  $"cannot sort by this key: FileRow cannot be ordered — {keysTail}"
+                  "a built-in record: no attribute to add, so the set"
+
+              Expect.equal
+                  (checkErr "[{| a = 1 |}] |> Seq.sort |> Seq.length").Message
+                  "cannot sort by this key: {| a: int |} cannot be ordered — an anonymous record has no order; declare the shape as a record and give it [<Ord>]"
+                  "an anonymous record"
+
+              Expect.stringEnds (checkErr "ls |> Seq.sortBy (fun f -> fun x -> x) |> Seq.length").Message keysTail "a function key"
+          }
+          test "the operators on a type without the attribute teach it; strings and Option keep the bare refusal" {
+              Expect.equal
+                  (ordErrMsg "{ p = 1 } < { p = 2 }")
+                  "operator '<' is not defined for Plain — add [<Ord>] above `type Plain` to compare by its fields in declaration order"
+                  "a record"
+
+              Expect.equal
+                  (ordErrMsg "PA >= PB")
+                  "operator '>=' is not defined for PlainU — add [<Ord>] above `type PlainU` to compare by its cases in declaration order"
+                  "a union"
+
+              Expect.equal (checkErr "\"a\" < \"b\"").Message "operator '<' is not defined for string" "strings"
+              Expect.equal (checkErr "[1] < [2]").Message "operator '<' is not defined for seq<int>" "seqs"
+          }
+          // ---- the runtime ----
+          test "orderCompare: records positionally, first difference decides, equal prefixes fall through" {
+              let r a b = VRecord("OrdP", [ "a", VInt a; "b", VStr b ])
+              Expect.equal (cmp (r 1L "z") (r 2L "a")) -1 "first field"
+              Expect.equal (cmp (r 1L "a") (r 1L "b")) -1 "second field"
+              Expect.equal (cmp (r 1L "a") (r 1L "a")) 0 "equal"
+              Expect.equal (cmp (r 3L "a") (r 2L "z")) 1 "greater"
+          }
+          test "orderCompare: unions by case index then payload; None before Some; nested through a record" {
+              Expect.isTrue (ordValueEnv.ContainsKey "OA") "the fixture env registered its unions"
+              Expect.isTrue (cmp (VUnion("OA", None)) (VUnion("OB", Some(VInt 0L))) < 0) "index"
+              Expect.isTrue (cmp (VUnion("OB", Some(VInt 2L))) (VUnion("OB", Some(VInt 1L))) > 0) "payload"
+              Expect.isTrue (cmp (VUnion("None", None)) (VUnion("Some", Some(VInt -5L))) < 0) "None first"
+
+              let v (pre: Value) =
+                  VRecord("SemVer", [ "major", VInt 1L; "minor", VInt 0L; "patch", VInt 0L; "pre", pre ])
+
+              Expect.isTrue (cmp (v (VUnion("Pre", Some(VStr "alpha")))) (v (VUnion("Release", None))) < 0) "record > union > payload"
+          }
+          test "a self-recursive [<Ord>] value 100k deep compares without overflowing [D:eq-depth]" {
+              let deep n =
+                  Seq.fold (fun acc _ -> VUnion("Node", Some acc)) (VUnion("Leaf", None)) (seq { 1..n })
+
+              Expect.equal (cmp (deep 100000) (deep 100001)) -1 "the shorter chain reaches Leaf first"
+              Expect.equal (cmp (deep 100000) (deep 100000)) 0 "equal chains"
+          }
+          test "the registry overwrites on a same-named redeclaration (the REPL's replace)" {
+              Weir.Eval.registerOrdCases "ReplR" [ "RA"; "RB" ]
+              Expect.isTrue (cmp (VUnion("RA", None)) (VUnion("RB", None)) < 0) "declared order"
+              Weir.Eval.forgetOrdCases "ReplR"
+              Weir.Eval.registerOrdCases "ReplR" [ "RB"; "RA" ]
+              Expect.isTrue (cmp (VUnion("RA", None)) (VUnion("RB", None)) > 0) "reversed"
+              Weir.Eval.forgetOrdCases "ReplR"
+          }
+          test "sortBy with equal [<Ord>] keys keeps input order (stable, like sortByDescending's pin)" {
+              ordShow
+                  "[(\"b\", 1); (\"a\", 1); (\"c\", 0)] |> Seq.sortBy (fun (_, k) -> { a = k; b = \"\" }) |> Seq.map fst"
+                  "[\"c\"; \"b\"; \"a\"]"
+          }
+          // ---- composition cells ----
+          test "x [<Tag>]: a tagged [<Ord>] union sorts and still crosses the wire" {
+              ordShow "[Deployment { replicas = 1 }; Ping] |> Seq.sort" "[Ping; Deployment ({ replicas = 1 })]"
+
+              Expect.equal
+                  (runOrd "[Deployment { replicas = 1 }; Ping] |> Seq.sort |> to json |> Seq.head")
+                  (VStr "[{\"kind\":\"Ping\"},{\"kind\":\"Deployment\",\"replicas\":1}]")
+                  "the wire reads the tag, the order reads the declaration"
+          }
+          test "x from json: wire order is source order, so the read record sorts by declaration" {
+              ordShow
+                  "[\"[{\\\"minor\\\": 1, \\\"major\\\": 2}, {\\\"minor\\\": 9, \\\"major\\\": 1}]\"] |> from json seq<OrdV> |> Seq.sort"
+                  "[{ major = 1; minor = 9 }; { major = 2; minor = 1 }]"
+          }
+          test "x record update: `with` keeps the field's position, so the order is stable" {
+              ordShow
+                  "let v = { major = 1; minor = 5 } in [{ v with major = 2 }; { v with minor = 0 }; v] |> Seq.sort"
+                  "[{ major = 1; minor = 0 }; { major = 1; minor = 5 }; { major = 2; minor = 5 }]"
+          }
+          test "x Map keys: an [<Ord>] record keys a Map in name order while it sorts in declaration order (R8)" {
+              ordShow "Map.ofPairs [({ z = 1; a = 2 }, \"x\"); ({ z = 2; a = 1 }, \"y\")]" "map [({ z = 2; a = 1 }, \"y\"); ({ z = 1; a = 2 }, \"x\")]"
+              ordShow "[{ z = 1; a = 2 }; { z = 2; a = 1 }] |> Seq.sort" "[{ z = 1; a = 2 }; { z = 2; a = 1 }]"
+          }
+          test "x floats: an [<Ord>] record with a float field orders; == on it still refuses" {
+              ordShow "[{ x = 2.5 }; { x = 1.5 }] |> Seq.sort" "[{ x = 1.5 }; { x = 2.5 }]"
+              Expect.stringContains (ordErrMsg "{ x = 1.0 } == { x = 1.0 }") "it holds a float" ""
+          }
+          test "the attribute's doc hovers, and a declared type's hover carries the attribute" {
+              Expect.stringStarts (Map.find "Ord" Weir.Builtins.attrDocs) "[<Ord>] — the type orders by its fields" "attrDocs"
+
+              match Weir.Lsp.hoverType [ "[<Ord>]"; "type P = { a: int; b: string }"; "print \"x\"" ] 2 6 with
+              | Some h -> Expect.stringStarts h "[<Ord>] { a: int; b: string }" "the record hover"
+              | None -> failtest "no hover on the record name"
+
+              match Weir.Lsp.hoverType [ "[<Ord>]"; "type U = A | B of int"; "print \"x\"" ] 2 6 with
+              | Some h -> Expect.stringStarts h "[<Ord>] A | B of int" "the union hover"
+              | None -> failtest "no hover on the union name"
+          }
+          // ---- the property: F#'s derived comparison referees ----
+          testProperty "orderCompare is total, antisymmetric, transitive, zero exactly at equality, and F#'s compare" (fun (a: Fx) (b: Fx) (c: Fx) ->
+              Weir.Eval.registerOrdCases "FxU" [ "FA"; "FB" ]
+              let a, b, c = fxNorm a, fxNorm b, fxNorm c
+              let va, vb, vc = fxValue a, fxValue b, fxValue c
+              let ab, ba, bc, ac = cmp va vb, cmp vb va, cmp vb vc, cmp va vc
+
+              sign ab = -(sign ba)
+              && (not (ab <= 0 && bc <= 0) || ac <= 0)
+              && ((ab = 0) = (va = vb))
+              && ((ab = 0) = (a = b))
+              && sign ab = sign (compare a b))
+          testProperty "Seq.sort's order is sorted, a permutation of its input, and F#'s List.sort" (fun (xs: Fx list) ->
+              Weir.Eval.registerOrdCases "FxU" [ "FA"; "FB" ]
+              let xs = xs |> List.map fxNorm
+              let sorted = xs |> List.map fxValue |> List.sortWith cmp
+
+              sorted |> List.pairwise |> List.forall (fun (x, y) -> cmp x y <= 0)
+              && sorted = (xs |> List.sort |> List.map fxValue)) ]
+
 let attributeTests =
     testList
         "Attributes"
@@ -18483,7 +18845,7 @@ let typeClassBTests =
 
               Expect.stringContains
                   (formatError terr)
-                  "cannot be ordered — keys are int, float, string, bool, Duration, Size, Instant, or Uuid"
+                  "cannot be ordered — keys are int, float, string, bool, Duration, Size, Instant, Uuid, an Option of those, or a type declared with [<Ord>]"
                   ""
           }
           test "Ord: function key rejects" {
@@ -32528,6 +32890,7 @@ let argsHelpTests =
           CaseWires = Map.empty
           OtherCase = None
           Validated = None
+          Ord = false
           Docs = Map.ofList docs }
 
     let record (name: string) fields docs : RecordDef =
@@ -32535,6 +32898,7 @@ let argsHelpTests =
           Params = []
           Fields = fields
           Attrs = Map.empty
+          Ord = false
           Docs = Map.ofList docs }
 
     let withEntry (f: unit -> 'a) : 'a =
@@ -36377,6 +36741,7 @@ let allTests =
           stringTests
           genericsTests
           attributeTests
+          derivedOrdTests
           typedArgvTests
           chooseTests
           bracketContinuationTests

@@ -2193,6 +2193,94 @@ let private unitDiv (what: string) (a: int64) (b: int64) : int64 =
 let private instantShift (a: int64) (d: int64) : Value =
     VInstant(checkInstant "Instant arithmetic" (checkedUnit "Instant" (fun () -> Checked.(+) a d)))
 
+// ---- the derived ordering [D:derived-ord] ---------------------------------
+
+/// case -> (ordered union, index): a runtime union value carries only
+/// its case name, so an `[<Ord>]` union's case index lives here, filled
+/// when its `type` statement runs (the validators precedent) and seeded
+/// with Option's F# order, `None` first. The checker's collision law
+/// keeps two visible ordered unions from sharing a case name; the one
+/// pair it cannot see (two modules with no import between them) trips
+/// the registration below, never a silent misorder
+let private ordCases =
+    System.Collections.Concurrent.ConcurrentDictionary<string, string * int>(
+        dict [ "None", ("Option", 0); "Some", ("Option", 1) ]
+    )
+
+let registerOrdCases (typeName: string) (cases: string list) : unit =
+    cases
+    |> List.iteri (fun i c ->
+        match ordCases.TryGetValue c with
+        | true, (owner, j) when owner <> typeName && j <> i ->
+            unreachable
+                $"case '{c}' is registered to the ordered union '{owner}' at index {j}, and '{typeName}' declares it at index {i}"
+        | _ -> ordCases[c] <- (typeName, i))
+
+/// the REPL replacing a type [D:dup-type-decl] drops its cases, so a
+/// redeclaration with other case names does not leave stale entries
+let forgetOrdCases (typeName: string) : unit =
+    for KeyValue(c, (owner, _)) in ordCases |> Seq.toList do
+        if owner = typeName then
+            ordCases.TryRemove c |> ignore
+
+let private ordCaseIndex (name: string) (case: string) : int =
+    match ordCases.TryGetValue case with
+    | true, (_, i) -> i
+    | _ -> unreachable $"the checker admits '{name}' only on an ordered union, and '{case}' is a case of none"
+
+/// the order the class admits [D:derived-ord]: scalars as before, a
+/// record by its fields POSITIONALLY in carried order (two values of
+/// one declared record always carry source order [D:record-order]), a
+/// union by case index then payload. Iterative like Equals and
+/// CompareTo [D:eq-depth]: pairs queue in lexicographic order, the first
+/// nonzero answer ends the walk; the scalar path allocates nothing
+let orderCompare (name: string) (a: Value) (b: Value) : int =
+    let scalar (a: Value) (b: Value) : int voption =
+        match a, b with
+        | VInt x, VInt y -> ValueSome(compare x y)
+        | VStr x, VStr y -> ValueSome(System.String.CompareOrdinal(x, y))
+        | VBool x, VBool y -> ValueSome(compare x y)
+        | VFloat x, VFloat y -> ValueSome(compare x y)
+        | VDur x, VDur y -> ValueSome(compare x y)
+        | VInstant x, VInstant y -> ValueSome(compare x y)
+        // Guid's CompareTo is field-wise unsigned, which is big-endian byte
+        // order [D:uuid] — the canonical text's order too
+        | VUuid x, VUuid y -> ValueSome(compare x y)
+        | VSize x, VSize y -> ValueSome(compare x y)
+        | _ -> ValueNone
+
+    match scalar a b with
+    | ValueSome r -> r
+    | ValueNone ->
+        let pending = System.Collections.Generic.Stack<Value * Value>()
+        pending.Push(a, b)
+        let mutable result = 0
+
+        while result = 0 && pending.Count > 0 do
+            let x, y = pending.Pop()
+
+            match scalar x y with
+            | ValueSome r -> result <- r
+            | ValueNone ->
+                match x, y with
+                | VRecord(_, f1), VRecord(_, f2) ->
+                    if f1.Length <> f2.Length || List.exists2 (fun (n1, _) (n2, _) -> n1 <> n2) f1 f2 then
+                        unreachable $"'{name}' compares two values of one declared record, and these carry different fields"
+
+                    // children go on in reverse, so the first pops first
+                    List.zip (List.map snd f1) (List.map snd f2) |> List.rev |> List.iter pending.Push
+                | VUnion(c1, p1), VUnion(c2, p2) ->
+                    result <- compare (ordCaseIndex name c1) (ordCaseIndex name c2)
+
+                    if result = 0 then
+                        match p1, p2 with
+                        | Some px, Some py -> pending.Push(px, py)
+                        | None, None -> ()
+                        | _ -> unreachable $"'{name}': case '{c1}' both carries and does not carry a payload"
+                | v, _ -> unreachable $"the checker rejects '{name}' keys of {formatValue v}"
+
+        result
+
 let private binOp (op: string) (l: Value) (r: Value) : Value =
     match op, l, r with
     | "+", VInt a, VInt b -> checkedInt (fun () -> Checked.(+) a b)
@@ -2257,6 +2345,12 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "<", VInt a, VInt b -> VBool(a < b)
     | ">=", VInt a, VInt b -> VBool(a >= b)
     | "<=", VInt a, VInt b -> VBool(a <= b)
+    // an `[<Ord>]` record or union compares in declaration order
+    // [D:derived-ord]
+    | ">", ((VRecord _ | VUnion _) as a), b -> VBool(orderCompare op a b > 0)
+    | "<", ((VRecord _ | VUnion _) as a), b -> VBool(orderCompare op a b < 0)
+    | ">=", ((VRecord _ | VUnion _) as a), b -> VBool(orderCompare op a b >= 0)
+    | "<=", ((VRecord _ | VUnion _) as a), b -> VBool(orderCompare op a b <= 0)
     | "==", a, b -> VBool(a = b)
     | "<>", a, b -> VBool(a <> b)
     | _ -> unreachable $"the checker rejects '{op}' on {formatValue l} and {formatValue r}"
@@ -7330,5 +7424,11 @@ let declare (env: Env) (decl: Decl) (validator: (string * TypedExpr) option) : E
     | _ -> ()
 
     match decl.Body with
-    | DUnion cases -> constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) env
+    | DUnion cases ->
+        // an ordered union's case indices register here [D:derived-ord]
+        // — the attribute is the declaration's own spelling of the fact
+        if decl.Attrs |> List.exists (fun a -> a.AName = "Ord") then
+            registerOrdCases decl.Name (cases |> List.map (fun (c, _, _) -> c))
+
+        constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) env
     | DRecord _ -> env
