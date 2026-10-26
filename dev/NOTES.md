@@ -298,8 +298,8 @@ attribute sits above a record `type` any more, so the fix is pinned
 by an e2e cell whose `[<Tag "kind">]` above a multi-line record must
 reach the registry's position teaching, located on the attribute,
 rather than a parse error on the first field.
-## The official module library (2026-10-26)
 
+## The official module library (2026-10-26)
 
 Two halves, one plan (PLAN-lib). The repo `weir-shell/lib` holds the
 modules the project stands behind — one `module` file per name at the

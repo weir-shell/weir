@@ -24,6 +24,7 @@ usage: weir                                    the REPL
        weir add schema <url> --as <name>       fetch an external contract, lock it
        weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it
        weir add module <url> [--path <file>] --as <name>  the raw-URL form (--path: the URL is the root)
+       weir add module <name>@<tag> [--as <name>]      an official library module (github.com/weir-shell/lib)
        weir gen types --schema <name>          generate weir types from a locked schema
        weir restore                            re-materialize the lock's artifacts
        weir verify                             vendored contracts vs the lock
