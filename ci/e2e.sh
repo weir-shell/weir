@@ -14241,7 +14241,22 @@ printf '\n/// third\nlet bye : string -> string\nlet bye n = $"bye {n}"\n' >> "$
 ( cd "$amdir/proj" && $BIN add module "sr.ht/a/b//x.weir@v1" --as x 2>&1 || true ) | grep -q "unknown host 'sr.ht'" || fail "unknown-host teach"
 ( cd "$amdir/proj" && $BIN add module "http://127.0.0.1:$amport/greet.weir" --as seq 2>&1 || true ) | grep -q "a builtin module — pick another --as" || fail "builtin alias refusal"
 printf 'import "weir:nope" as N\nprint "x"\n' > "$amdir/proj/missing.weir"
-( cd "$amdir/proj" && $BIN missing.weir 2>&1 || true ) | grep -q "no vendored module 'nope'" || fail "missing-vendored teach"
+( cd "$amdir/proj" && $BIN missing.weir 2>&1 || true ) | grep -q "no vendored module 'nope'.*weir add module nope@<tag>" || fail "missing-vendored teach names the library spelling first"
+# the library's short spelling [D:lib-short-name]: the refusals are
+# offline (the pure expansion never reaches the host), and a refused
+# add writes nothing
+libtree=$(cd "$amdir/proj" && find .weir -type f -exec sha256sum {} + | sort | sha256sum)
+rc=0; libout=$(cd "$amdir/proj" && $BIN add module semver 2>&1) || rc=$?
+[ "$rc" -eq 1 ] || fail "the no-tag refusal exits 1 (got $rc): $libout"
+echo "$libout" | grep -q "has no @tag" || fail "bare name without @tag: $libout"
+echo "$libout" | grep -qF "weir add module semver@v0.1.0" || fail "the no-tag refusal names the spelling: $libout"
+[ "$(cd "$amdir/proj" && find .weir -type f -exec sha256sum {} + | sort | sha256sum)" = "$libtree" ] || fail "a refused bare add must write nothing"
+( cd "$amdir/proj" && $BIN add module semver.weir@v1 2>&1 || true ) | grep -q "is not a library module name" || fail "bare name that is not a name"
+( cd "$amdir/proj" && $BIN add module retry@v0.1.0 2>&1 || true ) | grep -q "derives the alias 'Retry', a builtin module — pick another --as" || fail "bare name deriving a builtin alias (R2)"
+( cd "$amdir/proj" && $BIN add module semver@v0.1.0 --path x.weir 2>&1 || true ) | grep -q "\-\-path goes with a raw root URL" || fail "--path on the bare form hits the existing refusal"
+rc=0; libout=$(cd "$amdir/proj" && $BIN add module "github.com/acme/lib//x.weir@v1" 2>&1) || rc=$?
+[ "$rc" -eq 2 ] || fail "the long form without --as is still usage, exit 2 (got $rc): $libout"
+echo "$libout" | grep -qF "weir add module <name>@<tag> [--as <name>]" || fail "usage names the library line: $libout"
 printf 'import "weir:../evil" as E\nprint "x"\n' > "$amdir/proj/evil.weir"
 ( cd "$amdir/proj" && $BIN evil.weir 2>&1 || true ) | grep -q "names a vendored module, never a path" || fail "weir: path-shape refusal"
 # R1's negative pins: both pre-existing bare spellings stay file-relative
@@ -14256,8 +14271,14 @@ printf 'import "sibnoext" as B\nprint (B.s ())\n' > "$amdir/proj/r1b.weir"
 # Tolerates the shared-IP rate limit; CI passes WEIR_TOKEN_GITHUB_COM.
 lout=$(cd "$amdir/proj" && $BIN add module "github.com/weir-shell/weir//ci/release-published.weir@v0.0.5" --as relpub 2>&1 || true)
 echo "$lout" | grep -q "is not a module" || echo "$lout" | grep -qE "rate limit|answered 403" || fail "live shorthand chain: $lout"
+# the library's host, live [D:lib-short-name]: the expansion reached
+# api.github.com for weir-shell/lib at the tag and the default --as was
+# derived (the handler got past the name checks) — a 404 and a
+# rate-limit 403 both name the URL, so one assertion covers either
+llout=$(cd "$amdir/proj" && $BIN add module nosuch@v0 2>&1 || true)
+echo "$llout" | grep -q "api.github.com/repos/weir-shell/lib/commits/v0" || fail "live library host probe: $llout"
 kill $amsrv 2>/dev/null || true
-echo "e2e ok: add module (vendor, walk-import root+subdir, --can at the module's line, tamper→repair, re-add sha pair, the teaches, R1 negative pins, live shorthand)"
+echo "e2e ok: add module (vendor, walk-import root+subdir, --can at the module's line, tamper→repair, re-add sha pair, the teaches, R1 negative pins, the library spelling's refusals, live shorthand + library host)"
 
 # ---- weir add module: a module's closure [D:add-module-closure] ----------
 # a module with relative imports vendors with them, fetched at one commit:

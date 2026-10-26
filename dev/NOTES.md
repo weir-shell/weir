@@ -299,6 +299,47 @@ by an e2e cell whose `[<Tag "kind">]` above a multi-line record must
 reach the registry's position teaching, located on the attribute,
 rather than a parse error on the first field.
 
+## The official module library (2026-10-26)
+
+Two halves, one plan (PLAN-lib). The repo `weir-shell/lib` holds the
+modules the project stands behind — one `module` file per name at the
+root, self-contained, signed exports with `///` docs, a test per
+module, a weir-written runner (`tools/test.weir`) in CI, whole-repo
+`v0.x` tags. And the binary gains one spelling: `weir add module
+<name>@<tag>`. A spec with no `/` is a library name; it expands to
+`github.com/weir-shell/lib//<name>.weir@<tag>` in a pure
+`Contracts.libSpec` that runs before `resolveModuleSpec`, so the lock,
+`verify`, `restore` and the `weir:` import never see the short form —
+the entry is the raw URL at the full sha, as for the long spelling
+([D:lib-short-name]).
+
+`--as` derives from the name on the bare form and still overrides.
+The handler's guard used to require `--as` in every shape; it now
+admits a bare spec with no flags (or `--path` alone) only when the
+spec is library-shaped, so the long form without `--as` still falls
+to usage. A name whose alias is a builtin module (`retry` → `Retry`)
+hits the existing refusal, which already says "pick another --as" —
+the fix that works on the bare form too; CONTRIBUTING forbids
+publishing such a name, so the case is a user typing a name the
+library does not have.
+
+The host is fixed. A fork or a mirror is spelled with the long form at
+no loss, and a registry setting is the manifest/MVS question
+(DESIGN-external-contracts, customer three), not a flag to pre-empt
+it. The price is that the positive path has no offline e2e: the
+github arm has no seam, so the deterministic pin is the unit list on
+`libSpec` and the behavioural one is a live probe (`nosuch@v0` must
+reach `api.github.com/repos/weir-shell/lib/commits/v0`), beside the
+existing live shorthand probe. Bundling modules into the binary is a
+stated non-goal: zero-setup would buy little while every script pins
+by sha anyway, and the library is young enough that shapes will move
+between tags.
+
+The library's self-contained bar is the vendoring boundary stated as
+a rule: a vendored module cannot `weir:`-import another, so a library
+module imports nothing. The runner greps for `import ` so an author
+learns it in the lib's CI, not at a user's `add`.
+
 ## The cleanup shim is sh; a dead stderr never aborts (2026-10-19)
 
 Round 5 (black box) found round 4's cleanup process group

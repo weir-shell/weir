@@ -5210,7 +5210,7 @@ let rec loadModuleCachedWith
             let n = path.Substring 5
 
             stmt
-                $"no vendored module '{quoteData n}' ({quoteData absPath}) — vendor it: weir add module <host>/<org>/<repo>//<file>@<ref> --as {quoteData n} (a generated types module lands here via: weir gen types --schema {quoteData n})"
+                $"no vendored module '{quoteData n}' ({quoteData absPath}) — vendor it: weir add module {quoteData n}@<tag> (an official library module), or <host>/<org>/<repo>//<file>@<ref> --as {quoteData n} (a generated types module lands here via: weir gen types --schema {quoteData n})"
         else
             stmt $"cannot resolve import: no file at {quoteData absPath}"
     | IUnreadable reason -> stmt $"cannot read import {quoteData absPath}: {quoteData reason}"
