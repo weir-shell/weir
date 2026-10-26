@@ -434,8 +434,8 @@ print $"{bad}"
 
 `Args.load` and `Env.load` parse the payload as they would a plain
 field (an `int` for `Small of int`), then validate; a refusal joins the
-load's one error, naming the flag (`--to: not an email: x`) or the
-variable. A `[<Default>]` literal is validated the same way, and
+load's one error, naming the flag (`Args.load`'s usage error,
+`mail.weir: --to: not an email: x`, exit 2) or the variable. A `[<Default>]` literal is validated the same way, and
 `--help` shows the type's name as the flag's value (`--to <Email>`).
 
 ## Anonymous shapes at the boundary

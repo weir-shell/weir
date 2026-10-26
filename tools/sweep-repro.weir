@@ -872,7 +872,7 @@ let b31Help = <<<
 let b31 d =
     let rN = runArgs d (put d "b31-name.weir" b31Name) ["--name=x"]
     let rH = checkW (put d "b31-help.weir" b31Help)
-    let taught = prints "x" rN || (codeOf rN == 1 && (errOf rN |> Str.contains "--name x"))
+    let taught = prints "x" rN || (codeOf rN == 2 && (errOf rN |> Str.contains "--name x"))
     failing [ ("--name=x neither accepted nor taught", taught); ("help: bool field checks clean", codeOf rH == 1) ]
 
 // ---- B32: weir fmt --check with no script -----------------------------------

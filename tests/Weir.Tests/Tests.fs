@@ -27561,7 +27561,7 @@ let validatedTypeTests =
                   [ "v.weir",
                     cli
                     @ [ "let c = Args.load Cli |> try result"
-                        expectErr "c" "\"Args.load Cli: --recipient: not an email: x; --cc: not an email: y\"" ] ]
+                        expectErr "c" "\"v.weir: --recipient: not an email: x\\nv.weir: --cc: not an email: y\\n  -r, --recipient <Email>     required\\n  -c, --cc <Email>            optional\\nrun 'v.weir --help' for usage\"" ] ]
                   "v.weir"
                   [ "--recipient"; "x"; "--cc"; "y" ]
                   "a bad flag names it"
@@ -27571,7 +27571,7 @@ let validatedTypeTests =
                     email
                     @ [ "type Cli = { [<Default \"bad\">] sender: Email }"
                         "let c = Args.load Cli |> try result"
-                        expectErr "c" "\"Args.load Cli: --sender: not an email: bad\"" ] ]
+                        expectErr "c" "\"v.weir: --sender: not an email: bad\\n  -s, --sender <Email>        default: bad\\nrun 'v.weir --help' for usage\"" ] ]
                   "v.weir"
                   []
                   "a Default literal validates"
@@ -27645,7 +27645,7 @@ let validatedTypeTests =
                     strict
                     @ [ "type Cli = { port: Option<Strict> }"
                         "let c = Args.load Cli |> try result"
-                        expectErr "c" "\"Args.load Cli: --port: ran on 3\"" ] ]
+                        expectErr "c" "\"v.weir: --port: ran on 3\\n  -p, --port <Strict>         optional\\nrun 'v.weir --help' for usage\"" ] ]
                   "v.weir"
                   [ "--port"; "3" ]
                   "Args: a present Option field runs create"
@@ -27682,7 +27682,7 @@ let validatedTypeTests =
                   [ "v.weir",
                     admin
                     @ [ "let c = Args.load Cli |> try result"
-                        expectErr "c" "\"Args.load Cli: --port: 0 is no port; --spare: not privileged: 8080\"" ] ]
+                        expectErr "c" "\"v.weir: --port: 0 is no port\\nv.weir: --spare: not privileged: 8080\\n  -p, --port <Admin>          required\\n  -s, --spare <Admin>         optional\\nrun 'v.weir --help' for usage\"" ] ]
                   "v.weir"
                   [ "--port"; "0"; "--spare"; "8080" ]
                   "nested: the inner create runs first, then the outer"
@@ -30995,6 +30995,412 @@ let argsSecretEchoTests =
                     "| Ok _ -> exit 4" ]
 
               Expect.equal (runArgs plain [ "-n=8" ]) 0 "a plain field still teaches with its value"
+          } ]
+
+// --help over case and type docs, the argv usage error, the bare-field
+// hint, and effects before the CLI parse [D:help-case-docs]
+// [D:args-usage-error] [D:effect-before-args]. Sequenced: help and the
+// usage error name the entry script (the ambient Session.EntryPath), and
+// Script.run sets it
+let argsHelpTests =
+    let union (name: string) cases docs : UnionDef =
+        { Name = name
+          Params = []
+          Cases = cases
+          Tag = None
+          CaseWires = Map.empty
+          OtherCase = None
+          Validated = None
+          Docs = Map.ofList docs }
+
+    let record (name: string) fields docs : RecordDef =
+        { Name = name
+          Params = []
+          Fields = fields
+          Attrs = Map.empty
+          Docs = Map.ofList docs }
+
+    let withEntry (f: unit -> 'a) : 'a =
+        let prior = Weir.Session.EntryPath
+        Weir.Session.EntryPath <- "/scripts/j3.weir"
+
+        try
+            f ()
+        finally
+            Weir.Session.EntryPath <- prior
+
+    let help target argv =
+        withEntry (fun () -> Weir.Eval.argvUsage target argv)
+
+    let usageErr target argv =
+        withEntry (fun () ->
+            try
+                Weir.Eval.argvLoadWith target argv |> ignore
+                failtest "must refuse"
+            with :? Weir.Eval.ArgsUsageError as e ->
+                e.Message)
+
+    let mode =
+        union
+            "Mode"
+            [ "Pub", None; "Sub", None ]
+            [ "Pub", "publishes a single message from prompt"
+              "Sub", "subscribes with a handler" ]
+
+    let cliOf (u: UnionDef) fields docs =
+        record "Cli" (fields @ [ "mode", TNamed(u.Name, []) ]) docs
+
+    let j3 = Weir.Check.ArgsShared(cliOf mode [] [], "mode", mode, Map.empty)
+
+    let deployArgs =
+        record "DeployArgs" [ "env", TStr ] [ "env", "target env"; "", "Ships builds." ]
+
+    let cmd =
+        union "Cmd" [ "Deploy", Some(TNamed("DeployArgs", [])); "Status", None ] [ "Status", "show status" ]
+
+    let cmdUnion = Weir.Check.ArgsUnion(cmd, Map.ofList [ "Deploy", deployArgs ])
+
+    let runCapture (lines: string list) (args: string list) : int * string =
+        let path = tempPath "weir-args-help" + ".weir"
+        System.IO.File.WriteAllLines(path, lines)
+        let out = new System.IO.StringWriter()
+        let prior = System.Console.Out
+        System.Console.SetOut out
+
+        try
+            let code = Weir.Script.run path args
+            // line-ending-neutral: Console.Out writes CRLF on Windows
+            code, out.ToString().Replace("\r\n", "\n")
+        finally
+            System.Console.SetOut prior
+            System.IO.File.Delete path
+
+    testSequenced
+    <| testList
+        "Args help, usage errors, field hint, effect before args"
+        [ test "--help: case docs beside the commands, no empty section, no empty usage slot [D:help-case-docs]" {
+              Expect.equal
+                  (help j3 [ "--help" ])
+                  (String.concat
+                      "\n"
+                      [ "usage: j3.weir <command>"
+                        "commands:"
+                        "  pub   publishes a single message from prompt"
+                        "  sub   subscribes with a handler" ])
+                  "the j3 shape"
+
+              Expect.equal
+                  (help j3 [ "pub"; "--help" ])
+                  "usage: j3.weir pub\n\npublishes a single message from prompt"
+                  "the case doc is the case-scoped description"
+          }
+          test "--help: globals keep their section and slot; a doc-less case shows the bare token [D:help-case-docs]" {
+              let m = union "Mode" [ "Pub", None; "Sub", None ] [ "Pub", "publish" ]
+              let cli = cliOf m [ "verbose", TBool ] [ "verbose", "talk more"; "", "The tool." ]
+              let target = Weir.Check.ArgsShared(cli, "mode", m, Map.empty)
+
+              Expect.equal
+                  (help target [ "--help" ])
+                  (String.concat
+                      "\n"
+                      [ "usage: j3.weir [global flags] <command>"
+                        ""
+                        "The tool."
+                        ""
+                        "global options:"
+                        "  -v, --verbose               talk more"
+                        "commands:"
+                        "  pub   publish"
+                        "  sub" ])
+                  "globals, the program description, a bare case"
+          }
+          test "--help: a flags-only record, with and without a description [D:help-case-docs]" {
+              let plain = record "Cli" [ "clean", TBool ] [ "clean", "clean first" ]
+
+              Expect.equal
+                  (help (Weir.Check.ArgsRecord plain) [ "--help" ])
+                  "usage: j3.weir [flags]\n  -c, --clean                 clean first"
+                  "unchanged without a type doc"
+
+              let described = { plain with Docs = plain.Docs |> Map.add "" "Cleans.\nThoroughly." }
+
+              Expect.equal
+                  (help (Weir.Check.ArgsRecord described) [ "--help" ])
+                  "usage: j3.weir [flags]\n\nCleans.\nThoroughly.\n\n  -c, --clean                 clean first"
+                  "the first paragraph under the usage line"
+          }
+          test "--help: a payload case — its flags block, and the payload's doc when the case has none [D:help-case-docs]" {
+              Expect.equal
+                  (help cmdUnion [ "--help" ])
+                  (String.concat
+                      "\n"
+                      [ "usage: j3.weir <command> [flags]"
+                        "commands:"
+                        "  deploy   Ships builds."
+                        "  status   show status"
+                        "deploy flags:"
+                        "  -e, --env <string>          required — target env" ])
+                  "top-level"
+
+              Expect.equal
+                  (help cmdUnion [ "deploy"; "--help" ])
+                  "usage: j3.weir deploy [flags]\n\nShips builds.\n\ndeploy flags:\n  -e, --env <string>          required — target env"
+                  "case-scoped: the payload doc"
+
+              let caseDoc = { cmd with Docs = cmd.Docs |> Map.add "Deploy" "ship it" }
+
+              Expect.stringStarts
+                  (help (Weir.Check.ArgsUnion(caseDoc, Map.ofList [ "Deploy", deployArgs ])) [ "deploy"; "--help" ])
+                  "usage: j3.weir deploy [flags]\n\nship it\n"
+                  "the case doc wins"
+          }
+          test "usage error: missing and unknown commands carry the commands list; a did-you-mean replaces it [D:args-usage-error]" {
+              let listed =
+                  "  pub   publishes a single message from prompt\n  sub   subscribes with a handler\n"
+
+              Expect.equal
+                  (usageErr j3 [])
+                  ("j3.weir: missing command — one of:\n" + listed + "run 'j3.weir --help' for usage")
+                  "missing"
+
+              Expect.equal
+                  (usageErr j3 [ "pbu" ])
+                  "j3.weir: unknown command 'pbu'. Did you mean 'pub'?\nrun 'j3.weir --help' for usage"
+                  "did-you-mean"
+
+              Expect.equal
+                  (usageErr j3 [ "zzzz" ])
+                  ("j3.weir: unknown command 'zzzz' — one of:\n" + listed + "run 'j3.weir --help' for usage")
+                  "unknown, no suggestion"
+
+              Expect.equal
+                  (usageErr (Weir.Check.ArgsUnion(mode, Map.empty)) [])
+                  ("j3.weir: missing command — one of:\n" + listed + "run 'j3.weir --help' for usage")
+                  "the bare-union twin"
+          }
+          test "usage error: one line per problem, the named flags' help lines, one problem per refused flag [D:args-usage-error]" {
+              let def = record "Cli" [ "retries", TInt; "target", TStr ] []
+
+              Expect.equal
+                  (usageErr (Weir.Check.ArgsRecord def) [ "--bogus"; "--retries"; "x" ])
+                  (String.concat
+                      "\n"
+                      [ "j3.weir: unknown flag '--bogus'"
+                        "j3.weir: --retries is not an int ('x')"
+                        "j3.weir: missing required flag '--target'"
+                        "  -r, --retries <int>         required"
+                        "  -t, --target <string>       required"
+                        "run 'j3.weir --help' for usage" ])
+                  "scan order then fills; a refused value is not also missing"
+
+              Expect.equal
+                  (usageErr cmdUnion [ "deploy" ])
+                  "j3.weir: missing required flag '--env'\n  -e, --env <string>          required — target env\nrun 'j3.weir deploy --help' for usage"
+                  "a case's problem points at the case's help"
+
+              Expect.equal
+                  (usageErr j3 [ "--mode"; "pub" ])
+                  "j3.weir: unknown flag '--mode' — the command is written bare, without a flag: 'j3.weir pub'\nrun 'j3.weir pub --help' for usage"
+                  "the command slot is no flag"
+          }
+          test "usage error: a run exits 2 with no weir location; try still captures it [D:args-usage-error]" {
+              let script =
+                  [ "type Mode ="
+                    "    /// publishes a single message from prompt"
+                    "    | Pub"
+                    "    | Sub"
+                    "type Cli = { mode: Mode }"
+                    "let args = Args.load Cli"
+                    "print $\"{args}\"" ]
+
+              let code, _ = runCapture script []
+              Expect.equal code 2 "a usage error exits 2"
+
+              let caught =
+                  [ "type Mode ="
+                    "    /// publishes a single message from prompt"
+                    "    | Pub"
+                    "    | Sub"
+                    "type Cli = { mode: Mode }"
+                    "match Args.load Cli |> try result with"
+                    "| Error m when Str.contains \"pub   publishes a single message from prompt\" m && not (Str.contains \"Args.load\" m) -> exit 0"
+                    "| Error m -> fail m"
+                    "| Ok _ -> exit 4" ]
+
+              let code, _ = runCapture caught []
+              Expect.equal code 0 "the case doc reached the run's UnionDef; try captured the usage text"
+          }
+          test "--help over a run: the type doc's first paragraph, the case docs [D:help-case-docs]" {
+              let script =
+                  [ "/// My great tool for doing nothing"
+                    "/// (still the first paragraph)"
+                    "///"
+                    "/// hover-only"
+                    "type Mode ="
+                    "    /// publishes"
+                    "    | Pub"
+                    "    | Sub"
+                    "let args = Args.load Mode"
+                    "print $\"{args}\"" ]
+
+              let code, out = runCapture script [ "--help" ]
+              Expect.equal code 0 "--help exits 0"
+
+              Expect.stringContains
+                  out
+                  "<command>\n\nMy great tool for doing nothing\n(still the first paragraph)\n\ncommands:\n  pub   publishes\n  sub\n"
+                  "the description block and the commands"
+
+              Expect.isFalse (out.Contains "hover-only") "the rest of the doc is hover-only"
+          }
+          test "field hint: a bound value, a load target, a bare record; a module member follows" {
+              let msgOf lines =
+                  (firstErrorIn "h.weir" lines).Message
+
+              Expect.equal
+                  (msgOf
+                      [ "type Mode = Pub | Sub"
+                        "type Cli = { mode: Mode }"
+                        "let args = Args.load Cli"
+                        "match mode with"
+                        "| Pub -> print \"p\""
+                        "| Sub -> print \"s\"" ])
+                  "unbound 'mode' — did you mean 'args.mode'? ('mode' is a field of 'Cli')"
+                  "a bound value of the record: confident, File.mode dropped"
+
+              Expect.equal
+                  (msgOf
+                      [ "type Mode = Pub | Sub"
+                        "type Cli = { mode: Mode }"
+                        "print $\"{mode}\""
+                        "let args = Args.load Cli"
+                        "print $\"{args}\"" ])
+                  "unbound 'mode' — it is a field of 'Cli': load it first ('let cli = Args.load Cli') and write 'cli.mode'; or did you mean 'File.mode'?"
+                  "a load target with no value yet"
+
+              Expect.equal
+                  (msgOf [ "type Cfg = { PORT: int }"; "print (show PORT)"; "let e = Env.load Cfg"; "print $\"{e}\"" ])
+                  "unbound 'PORT' — it is a field of 'Cfg': load it first ('let env = Env.load Cfg') and write 'env.PORT'"
+                  "the Env.load twin"
+
+              Expect.equal
+                  (msgOf
+                      [ "type Mode = Pub | Sub"
+                        "type Cli = { mode: Mode }"
+                        "print $\"{mode}\""
+                        "let args ="
+                        "    Args.load"
+                        "        Cli"
+                        "print $\"{args}\"" ])
+                  "unbound 'mode' — it is a field of 'Cli': load it first ('let cli = Args.load Cli') and write 'cli.mode'; or did you mean 'File.mode'?"
+                  "a multi-line Args.load call is read off the parsed statement"
+
+              Expect.equal
+                  (msgOf [ "type Cfg = { mode: string }"; "print mode"; "print \"Args.load Cfg\"" ])
+                  "unbound 'mode' — it is a field of 'Cfg' — write 'x.mode' on a 'Cfg' value; or did you mean 'File.mode'?"
+                  "text in a string is no load"
+
+              Expect.equal
+                  (msgOf [ "type Cfg = { mode: string }"; "print mode" ])
+                  "unbound 'mode' — it is a field of 'Cfg' — write 'x.mode' on a 'Cfg' value; or did you mean 'File.mode'?"
+                  "a declared record, nothing loaded"
+
+              Expect.equal
+                  (msgOf [ "print (show mode)" ])
+                  "'mode' is module-qualified; use 'File.mode'"
+                  "no record field: the module member as before"
+
+              Expect.equal
+                  (msgOf [ "print (show name)" ])
+                  "unbound variable 'name'"
+                  "a prelude record's field (FileRow.name) never answers"
+          }
+          test "effect before args: writes, commands, network and scopes warn; reads, print, functions and wrappers do not [D:effect-before-args]" {
+              let warns lines =
+                  diagsIn "e.weir" lines
+                  |> List.filter (fun d -> d.Code = "effect-before-args")
+                  |> List.map (fun d -> d.Line, d.Col, d.Severity)
+
+              let cli = "type Cli = { n: Option<int> }"
+              let load = "let cli = Args.load Cli"
+              let usage = "print $\"{cli}\""
+
+              Expect.equal
+                  (warns [ cli; "Dir.create \"x\""; load; usage ])
+                  [ 2, 1, "warning" ]
+                  "a filesystem write"
+
+              let msg =
+                  diagsIn "e.weir" [ cli; "Dir.create \"x\""; load; usage ]
+                  |> List.find (fun d -> d.Code = "effect-before-args")
+                  |> fun d -> d.Message
+
+              Expect.equal
+                  msg
+                  "'Dir.create' runs before 'Args.load Cli' (line 3) — on --help or a bad argument it still runs; load the arguments first"
+                  "the message names the effect and the load line"
+
+              Expect.equal (warns [ cli; load; "Dir.create \"x\""; usage ]) [] "after the load: silent"
+              Expect.equal (warns [ cli; "git status"; load; usage ]) [ 2, 1, "warning" ] "a statement command"
+
+              Expect.equal
+                  (warns [ cli; "let r = git status | complete"; load; "print $\"{cli} {r.exitCode}\"" ])
+                  [ 2, 9, "warning" ]
+                  "a reified command, at its program"
+
+              Expect.equal
+                  (warns [ cli; "let fs = git ls-files"; load; "print $\"{cli} {fs |> Seq.length}\"" ])
+                  []
+                  "a lazy command let spawns nothing"
+
+              Expect.equal
+                  (warns [ cli; "let r = Http.send (Http.get \"http://localhost:1\")"; load; "print $\"{cli} {r.status}\"" ])
+                  [ 2, 9, "warning" ]
+                  "the network"
+
+              Expect.equal
+                  (warns [ cli; "if not (Dir.exists \"x\") then Dir.create \"x\""; load; usage ])
+                  [ 2, 30, "warning" ]
+                  "a branch's write still runs on --help"
+
+              Expect.equal
+                  (warns [ cli; "within tmp d"; "    print d"; load; usage ])
+                  [ 2, 1, "warning" ]
+                  "a within tmp before the load"
+
+              Expect.equal
+                  (warns
+                      [ cli
+                        "let h = Path.stateHome ()"
+                        "let e = Env.get \"HOME\""
+                        "print h"
+                        "printerr \"starting\""
+                        "let setup () = Dir.create \"x\""
+                        load
+                        "print $\"{cli} {e}\""
+                        "setup ()" ])
+                  []
+                  "reads, console output and a function definition"
+
+              Expect.equal
+                  (warns [ cli; "within tmp d"; "    let cli = Args.load Cli"; "    print $\"{cli} {d}\"" ])
+                  []
+                  "a within wrapping the load"
+
+              Expect.equal
+                  (warns [ cli; "Dir.create \"x\""; "let go () ="; "    let cli = Args.load Cli"; "    print $\"{cli}\""; "go ()" ])
+                  []
+                  "a load only inside a function: the order is a runtime fact"
+
+              Expect.equal
+                  (warns [ "type Cfg = { HOME: string }"; "File.write \"x\" [\"a\"]"; "let c = Env.load Cfg"; "print c.HOME" ])
+                  [ 2, 1, "warning" ]
+                  "Env.load is a parse point too"
+
+              Expect.equal
+                  (warns [ "module"; "type Cli = { n: Option<int> }"; "let f : unit -> unit"; "let f () = Dir.create \"x\"" ])
+                  []
+                  "a module never judges"
           } ]
 
 // the third hunt's behaviour fixes, pinned at their seams; the signal and
@@ -34313,6 +34719,7 @@ let allTests =
           hunt3r7Tests
           hunt3r5SafetyTests
           argsSecretEchoTests
+          argsHelpTests
           hunt3BehaviorTests
           hunt3r5FormatTests
           hunt3r6FormatTests

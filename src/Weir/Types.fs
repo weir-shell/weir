@@ -614,7 +614,8 @@ type RecordDef =
       // field -> the `///` doc's first line, the derived --help text
       // [D:doc-help]. `--help` reads this instead of the retired
       // [<Doc>] attribute; hover still reads the full doc out-of-band.
-      // Same check-time-erased nature as Attrs.
+      // Same check-time-erased nature as Attrs. The key "" holds the
+      // type's own doc, its first paragraph [D:help-case-docs].
       Docs: Map<string, string> }
 
 /// The wire-key attribute's single reader [D:wire-keys]: a field
@@ -709,7 +710,11 @@ type UnionDef =
       // declares `validate` — the id keys the runtime's derived
       // `create`, which every wire boundary runs (one per checked
       // declaration, so two imports' same-named types never share one)
-      Validated: string option }
+      Validated: string option
+      // case -> the `///` doc's first line, a subcommand's --help text,
+      // and "" -> the type's own doc [D:help-case-docs]; check-time-erased
+      // like RecordDef.Docs
+      Docs: Map<string, string> }
 
 /// the variable a validated type's derived `create` evaluates through
 /// [D:validated-types]: the prefix plus the declaration's id — `|` makes
@@ -787,6 +792,10 @@ type TypeEnv =
       PlanRefused: Map<string, string>
       Modules: Map<string, Map<string, Scheme>>
       Types: Map<string, TypeDef>
+      // the record types the file passes to a typed boundary — type name
+      // -> "Args.load"/"Env.load" — so an unbound field name can teach
+      // loading it. Empty outside a file check/run.
+      LoadTargets: Map<string, string>
       // imported modules [D:modules-v1]: alias -> each type that module
       // declares -> its key in `Types`. The key is the plain name while
       // no other import declares that name, else the qualified one
