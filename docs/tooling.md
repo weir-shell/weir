@@ -612,14 +612,14 @@ import "weir:retry" as Retry
 
 Modules the weir project itself maintains live in one repo,
 [github.com/weir-shell/lib](https://github.com/weir-shell/lib), one
-file per module at its root. A bare name vendors one of them:
+file per module under `modules/`. A bare name vendors one of them:
 
 ```text
 weir add module semver@v0.1.0
 ```
 
 This is the same as
-`weir add module github.com/weir-shell/lib//semver.weir@v0.1.0 --as semver`:
+`weir add module github.com/weir-shell/lib//modules/semver.weir@v0.1.0 --as semver`:
 the name is the file and the import alias, and `--as` renames it as
 usual (`weir add module semver@v0.1.0 --as sv` gives `import
 "weir:sv" as Sv`). Everything after the spelling is the ordinary

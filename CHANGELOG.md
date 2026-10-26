@@ -98,7 +98,7 @@
   module.** A bare name resolves to
   [github.com/weir-shell/lib](https://github.com/weir-shell/lib) —
   `weir add module semver@v0.1.0` is `weir add module
-  github.com/weir-shell/lib//semver.weir@v0.1.0 --as semver`, and
+  github.com/weir-shell/lib//modules/semver.weir@v0.1.0 --as semver`, and
   `--as` still renames. The lock, `verify` and `restore` see the raw
   URL at the full sha, as for the long spelling. The `@tag` is
   required: `weir add module semver` refuses and names the spelling.

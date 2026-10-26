@@ -1012,7 +1012,7 @@ let libSpec (spec: string) : Result<LibSpec option, string> =
                 Some
                     { Name = name
                       Tag = tag
-                      Source = $"{libRepo}//{name}.weir@{tag}" }
+                      Source = $"{libRepo}//modules/{name}.weir@{tag}" }
             )
 
 let resolveModuleSpec (spec: string) (entryPath: string option) : Result<ResolvedModuleSource, string> =

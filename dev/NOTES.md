@@ -307,7 +307,7 @@ root, self-contained, signed exports with `///` docs, a test per
 module, a weir-written runner (`tools/test.weir`) in CI, whole-repo
 `v0.x` tags. And the binary gains one spelling: `weir add module
 <name>@<tag>`. A spec with no `/` is a library name; it expands to
-`github.com/weir-shell/lib//<name>.weir@<tag>` in a pure
+`github.com/weir-shell/lib//modules/<name>.weir@<tag>` in a pure
 `Contracts.libSpec` that runs before `resolveModuleSpec`, so the lock,
 `verify`, `restore` and the `weir:` import never see the short form —
 the entry is the raw URL at the full sha, as for the long spelling

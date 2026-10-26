@@ -15674,13 +15674,13 @@ let libSpecTests =
                   (expand "semver@v0.1.0")
                   { Name = "semver"
                     Tag = "v0.1.0"
-                    Source = "github.com/weir-shell/lib//semver.weir@v0.1.0" }
+                    Source = "github.com/weir-shell/lib//modules/semver.weir@v0.1.0" }
                   "the expansion"
           }
           test "any ref the shorthand accepts is accepted (R4); underscores and digits are name characters" {
               Expect.equal (expand "semver@main").Tag "main" "a branch"
               Expect.equal (expand "semver@0123abcd").Tag "0123abcd" "a sha prefix"
-              Expect.equal (expand "a_b2@v1").Source "github.com/weir-shell/lib//a_b2.weir@v1" "a_b2"
+              Expect.equal (expand "a_b2@v1").Source "github.com/weir-shell/lib//modules/a_b2.weir@v1" "a_b2"
           }
           test "no @tag refuses naming the spelling" {
               for spec in [ "semver"; "semver@" ] do
