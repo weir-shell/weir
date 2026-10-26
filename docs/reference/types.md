@@ -225,7 +225,7 @@ let e = Email "x" // 'Email' is validated — build it with Email.create (it rai
 
 - **Reading is public.** Patterns destructure the value anywhere —
   `match`, `let (Email raw) = e`, `let f (Email raw) = …`, bare or
-  qualified ([Patterns](patterns.md#validated-types)).
+  qualified ([Patterns](patterns.md#matching-validated-types)).
 - **Single-case only.** A union of several cases composes validated
   payloads (`type Contact = Mail of Email | Call of Phone` can only be
   built from valid values) and needs no validator of its own; so does
@@ -245,7 +245,7 @@ let e = Email "x" // 'Email' is validated — build it with Email.create (it rai
 - **Every boundary runs it.** `from json`/`jsonl`/`yaml`/`toml`,
   `Args.load` and `Env.load` read the payload and then validate,
   failing with the field path, flag or variable
-  ([Adapters](adapters.md#validated-types)); `to json`/`to yaml`
+  ([Adapters](adapters.md#validated-types-at-the-boundaries)); `to json`/`to yaml`
   write the payload. `show`, interpolation and `==` treat the value as
   any single-case union. `Args.load` and `Env.load` refuse a validated
   field over an optional payload (`Port of Option<int>`): one flag or
