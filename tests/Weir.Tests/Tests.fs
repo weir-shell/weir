@@ -36774,6 +36774,175 @@ let replImportTests =
                       Expect.contains offers "G.greet" "Tab completes the member"))
           } ]
 
+// ---- receipts [D:receipts-read-only]: Completed.ok, and the three
+// runtime-minted records refusing a literal and an update ----------------
+let receiptTests =
+    let completedLiteral =
+        "a Completed is what '| complete' returns — run a command to get one (sh -c \"exit 3\" | complete); a function over its fields takes any record with them, so a test can pass {| exitCode = 3 |}"
+
+    let fileRowLiteral =
+        "a FileRow is what 'ls', 'Dir.stat' and 'File.stat' return — stat a path to get one (File.stat \"a.txt\"); a function over its fields takes any record with them, so a test can pass {| name = \"a.txt\"; path = \"a.txt\" |}"
+
+    let httpResponseLiteral =
+        "an HttpResponse is what 'Http.send' returns — send a request to get one (Http.get url |> Http.send); a function over its fields takes any record with them, so a test can pass {| status = 200 |}"
+
+    let completedUpdate =
+        "a Completed is read-only — it reports a run that happened (ok follows exitCode), so no field changes after the fact; to carry different values build a record of your own, {| exitCode = 3 |}"
+
+    let fileRowUpdate =
+        "a FileRow is read-only — it reports a path as it was seen, so no field changes after the fact; to carry different values build a record of your own, {| name = \"a.txt\"; path = \"a.txt\" |}"
+
+    let httpResponseUpdate =
+        "an HttpResponse is read-only — it reports a response that arrived, so no field changes after the fact; to carry different values build a record of your own, {| status = 200 |}"
+
+    let refuses (lines: string list) (expected: string) (label: string) =
+        let e = firstErrorIn "receipt.weir" lines
+        Expect.equal e.Message expected label
+
+    testList
+        "receipts"
+        [ test "ok is exitCode == 0, exactly — the succeeds law as a field" {
+              skipOnWindows ()
+
+              let okOf src =
+                  match runReal src with
+                  | VRecord("Completed", fields) -> Weir.Eval.recGet "ok" fields, Weir.Eval.recGet "exitCode" fields
+                  | v -> failtest $"unexpected: {formatValue v}"
+
+              Expect.equal (okOf "sh -c \"exit 0\" | complete") (VBool true, VInt 0L) "exit 0"
+              Expect.equal (okOf "sh -c \"exit 3\" | complete") (VBool false, VInt 3L) "exit 3"
+              // grep's no-match is a meaningful 1: ok is false, the code reads it
+              Expect.equal (okOf "grep nomatch /etc/hosts | complete") (VBool false, VInt 1L) "grep's 1"
+          }
+          test "ok leads the record: show and to json carry it (the REPL echo is pinned in e2e)" {
+              skipOnWindows ()
+
+              Expect.equal
+                  (runReal "show $(sh -c \"exit 3\" | complete)")
+                  (VStr "{ ok = false; exitCode = 3; stdout = []; stderr = [] }")
+                  "show"
+
+              Expect.equal
+                  (runReal "sh -c \"exit 3\" | complete |> to json" |> forceSeq)
+                  [ VStr "{\"ok\":false,\"exitCode\":3,\"stdout\":[],\"stderr\":[]}" ]
+                  "to json"
+          }
+          test "every receipt is a registered prelude record" {
+              let strict, _ = Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+
+              for KeyValue(name, r) in Weir.Types.receipts do
+                  match Map.tryFind name strict.Types with
+                  | Some(Weir.Types.Record def) ->
+                      let fields = def.Fields |> List.map fst |> Set.ofList
+                      Expect.isTrue (Set.isSubset (Set.ofList r.Derived) fields) $"{name}: derived fields are fields"
+                  | other -> failtest $"{name}: expected a prelude record, got {other}"
+          }
+          test "a receipt literal is refused, naming where the value comes from" {
+              refuses
+                  [ "let r = { exitCode = 3; stdout = []; stderr = [] }"; "print (show r.exitCode)" ]
+                  completedLiteral
+                  "the bare literal without the derived field"
+
+              refuses
+                  [ "let r = { ok = false; exitCode = 3; stdout = []; stderr = [] }"; "print (show r.exitCode)" ]
+                  completedLiteral
+                  "the bare literal with it"
+
+              refuses
+                  [ "let r = Completed { exitCode = 3; stdout = []; stderr = [] }"; "print (show r.exitCode)" ]
+                  completedLiteral
+                  "the named literal"
+
+              refuses
+                  [ "let r = { name = \"a\"; kind = Regular; target = None; bytes = 0 B; modified = Instant.now (); path = \"a\" }"
+                    "print r.name" ]
+                  fileRowLiteral
+                  "FileRow, bare"
+
+              refuses
+                  [ "let r = FileRow { name = \"a\"; kind = Regular; target = None; bytes = 0 B; modified = Instant.now (); hidden = false; path = \"a\" }"
+                    "print r.name" ]
+                  fileRowLiteral
+                  "FileRow, named"
+
+              refuses
+                  [ "let r = HttpResponse { status = 200; headers = []; body = [] }"; "print (show r.status)" ]
+                  httpResponseLiteral
+                  "HttpResponse, named"
+
+              // the refusal is located on the literal
+              let e = firstErrorIn "receipt.weir" [ "let r = Completed { exitCode = 3; stdout = []; stderr = [] }"; "print (show r.exitCode)" ]
+              Expect.equal (e.Line, e.Col) (1, 9) "caret on the literal"
+          }
+          test "a same-shaped record the author declares wins; HttpServerResponse's bare literal is no longer ambiguous" {
+              cleanIn
+                  "receipt.weir"
+                  [ "type Run = { exitCode: int; stdout: seq<string>; stderr: seq<string> }"
+                    "let r = { exitCode = 3; stdout = []; stderr = [] }"
+                    "print (show r.exitCode)" ]
+                  "the user's record"
+
+              cleanIn
+                  "receipt.weir"
+                  [ "let r = { status = 200; headers = []; body = Text \"x\" }"; "print (show r.status)" ]
+                  "the server response, the one a script writes"
+          }
+          test "a receipt update is refused — the record is read-only" {
+              refuses
+                  [ "let r = sh -c \"exit 3\" | complete"; "let s = { r with exitCode = 0 }"; "print (show s.exitCode)" ]
+                  completedUpdate
+                  "Completed"
+
+              refuses
+                  [ "let r = ls |> Seq.head"; "let s = { r with hidden = true }"; "print s.name" ]
+                  fileRowUpdate
+                  "FileRow"
+
+              refuses
+                  [ "let r = Http.get \"http://h\" |> Http.send"; "let s = { r with status = 1 }"; "print (show s.status)" ]
+                  httpResponseUpdate
+                  "HttpResponse"
+
+              // a nested path reaching a receipt is the same write
+              refuses
+                  [ "let r = sh -c \"exit 3\" | complete"
+                    "let w = {| inner = r |}"
+                    "let s = { w with inner.exitCode = 0 }"
+                    "print (show s.inner.exitCode)" ]
+                  completedUpdate
+                  "nested path"
+
+              let e = firstErrorIn "receipt.weir" [ "let r = sh -c \"exit 3\" | complete"; "let s = { r with exitCode = 0 }"; "print (show s.exitCode)" ]
+              Expect.equal (e.Line, e.Col) (2, 11) "caret on the source"
+          }
+          test "a function over the fields is row-typed: it takes the anonymous record the message names, and a real Completed" {
+              skipOnWindows ()
+              Expect.equal (runReal "let f { exitCode = c } = c in f {| exitCode = 3 |}") (VInt 3L) "the message's example"
+              Expect.equal (runReal "let f { exitCode = c } = c in f $(sh -c \"exit 3\" | complete)") (VInt 3L) "a real receipt"
+              // why the example carries no `[]`: an anonymous literal is
+              // ground-typed [D:anon-literals]
+              let e =
+                  firstErrorIn
+                      "receipt.weir"
+                      [ "let f { exitCode = c } = c"; "print (show (f {| exitCode = 3; stdout = []; stderr = [] |}))" ]
+
+              Expect.stringContains e.Message "not fully known at the literal" "the empty-seq spelling is refused at the literal"
+          }
+          test "a row-typed updater that reaches a receipt only at its call is refused at run time, same words" {
+              skipOnWindows ()
+
+              match runReal "let bump r = { r with exitCode = 0 } in bump {| exitCode = 3 |}" with
+              | VRecord(_, fields) -> Expect.equal (Weir.Eval.recGet "exitCode" fields) (VInt 0L) "an ordinary record updates"
+              | v -> failtest $"unexpected: {formatValue v}"
+
+              let raised =
+                  Expect.throwsC
+                      (fun () -> runReal "let bump r = { r with exitCode = 0 } in bump $(sh -c \"exit 3\" | complete)" |> ignore)
+                      id
+
+              Expect.equal raised.Message completedUpdate "the receipt refuses"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -36969,6 +37138,7 @@ let allTests =
           fmtTests
           paramSugarTests
           showTests
+          receiptTests
           seqAccessTests
           sequencingTests
           siblingSentinelTests

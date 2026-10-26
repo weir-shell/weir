@@ -1038,7 +1038,7 @@ and `succeeds`, a plain yes/no, discards it.
 | form | output | result |
 |---|---|---|
 | `cmd \| succeeds` | silent | `bool` (`exitCode == 0`, exactly) |
-| `cmd \| complete` | captured | `{ exitCode; stdout; stderr }` |
+| `cmd \| complete` | captured | `{ ok; exitCode; stdout; stderr }` — `ok` is `exitCode == 0` |
 | `cmd \| orFail "msg"` | streams | unit; raises `msg (exit N)` on nonzero |
 | `cmd \| exitCode` | streams | the code as `int`; never raises |
 | `cmd \| line` | captured | the one trimmed stdout line, a `string`; raises on nonzero or 0-or-2+ lines |
