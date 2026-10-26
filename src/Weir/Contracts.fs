@@ -934,10 +934,11 @@ let private hostToken (host: string) : string option =
     | "" -> None
     | t -> Some t
 
-/// GitHub answers 404 (not 403) for private-without-auth — the hint
-/// must fire on both, or every private repo reads as a typo
+/// a private repo without a token reads as 404 on a raw fetch, 401 on
+/// the ref listing (both hosts), 403 elsewhere — the hint fires on all
+/// three, or every private repo reads as a typo
 let hintPrivate (host: string) (e: string) : string =
-    if e.Contains "answered 404" || e.Contains "answered 403" then
+    if e.Contains "answered 404" || e.Contains "answered 403" || e.Contains "answered 401" then
         e + $" — or the repo is private: set {hostTokenVar host}"
     else
         e
@@ -953,13 +954,6 @@ type ResolvedModuleSource =
       Root: (string * string) option }
 
 let private uaHeader = [ "User-Agent", "weir/" + Version.current ]
-
-let private shaFrom (field: string) (bytes: byte[]) : string option =
-    try
-        use doc = Text.Json.JsonDocument.Parse bytes
-        Some(doc.RootElement.GetProperty(field).GetString())
-    with _ ->
-        None
 
 /// a `--path` entry, relative to a raw root URL [D:add-module-closure]:
 /// confineUnder's lexical rule against a stand-in root — not empty, not
@@ -1014,6 +1008,67 @@ let libSpec (spec: string) : Result<LibSpec option, string> =
                       Tag = tag
                       Source = $"{libRepo}//modules/{name}.weir@{tag}" }
             )
+
+// ref → sha over git's own ref advertisement [D:ref-resolve-smart-http]:
+// every git host serves `<repo>.git/info/refs?service=git-upload-pack`
+// (what `git ls-remote` reads) — no token for a public repo, no API rate
+// limit, one shape for both hosts. The raw-file URL is still per host,
+// so the host list stays closed.
+
+let private fullSha (s: string) : bool =
+    s.Length = 40 && s |> Seq.forall Uri.IsHexDigit
+
+/// (sha, refname) pairs from a smart-HTTP ref advertisement: pkt-line
+/// framed (4 hex digits of self-inclusive length, `0000` a flush), the
+/// `# service=` line skipped, the first ref line's `\0` and capability
+/// list dropped. Error: not an advertisement.
+let parseRefListing (bytes: byte[]) : Result<(string * string) list, string> =
+    let pktLen (pos: int) : int option =
+        if pos + 4 > bytes.Length then
+            None
+        else
+            let s = Text.Encoding.ASCII.GetString(bytes, pos, 4)
+
+            if s |> Seq.forall Uri.IsHexDigit then
+                Some(Convert.ToInt32(s, 16))
+            else
+                None
+
+    let rec go (pos: int) (acc: (string * string) list) =
+        if pos >= bytes.Length then
+            Ok(List.rev acc)
+        else
+            match pktLen pos with
+            | None -> Error $"not a pkt-line at byte {pos}"
+            | Some 0 -> go (pos + 4) acc
+            | Some len when len < 4 || pos + len > bytes.Length -> Error $"a pkt-line length past the body at byte {pos}"
+            | Some len ->
+                let line = Text.Encoding.UTF8.GetString(bytes, pos + 4, len - 4).TrimEnd('\n')
+
+                if line.StartsWith "#" then
+                    go (pos + len) acc
+                else
+                    let payload =
+                        match line.IndexOf '\000' with
+                        | -1 -> line
+                        | i -> line.Substring(0, i)
+
+                    if payload.Length > 41 && payload[40] = ' ' && fullSha (payload.Substring(0, 40)) then
+                        go (pos + len) ((payload.Substring(0, 40), payload.Substring 41) :: acc)
+                    else
+                        Error $"not a ref line: {quoteData payload}"
+
+    go 0 []
+
+/// the sha a ref name resolves to: a 40-hex name is its own sha (no
+/// listing needed); otherwise refs/tags/<name>^{} (an annotated tag's
+/// peeled commit) over refs/tags/<name> over refs/heads/<name>
+let pickRef (refs: (string * string) list) (name: string) : string option =
+    if fullSha name then
+        Some name
+    else
+        [ $"refs/tags/{name}^{{}}"; $"refs/tags/{name}"; $"refs/heads/{name}" ]
+        |> List.tryPick (fun r -> refs |> List.tryFind (fun (_, n) -> n = r) |> Option.map fst)
 
 let resolveModuleSpec (spec: string) (entryPath: string option) : Result<ResolvedModuleSource, string> =
     if spec.StartsWith "http://" || spec.StartsWith "https://" then
@@ -1078,55 +1133,69 @@ let resolveModuleSpec (spec: string) (entryPath: string option) : Result<Resolve
                         let host = left.Substring(0, k)
                         let repo = left.Substring(k + 1)
 
+                        // the listing carries the Basic pair git over HTTPS
+                        // sends for the host [D:ref-resolve-smart-http]; the
+                        // raw fetch keeps the host's own header
+                        let listAuth (user: string) =
+                            match hostToken host with
+                            | Some t ->
+                                [ "Authorization",
+                                  "Basic " + Convert.ToBase64String(Text.Encoding.UTF8.GetBytes(user + ":" + t)) ]
+                            | None -> []
+
+                        // one path per host: list, pick, then the host's raw URL
+                        // at the sha; a full sha skips the listing
+                        let hostArm
+                            (listHdrs: (string * string) list)
+                            (rawBase: string -> string)
+                            (rawAuth: (string * string) list)
+                            (tagsUrl: string)
+                            =
+                            let sha =
+                                match pickRef [] refName with
+                                | Some sha -> Ok sha
+                                | None ->
+                                    let url = $"https://{host}/{repo}.git/info/refs?service=git-upload-pack"
+
+                                    match fetchBytesWith (uaHeader @ listHdrs) url with
+                                    | Error e -> Error(hintPrivate host $"listing refs: {e}")
+                                    | Ok(bytes, _) ->
+                                        match parseRefListing bytes with
+                                        | Error _ -> Error $"unexpected answer listing refs at {quoteData url}"
+                                        | Ok refs ->
+                                            match pickRef refs refName with
+                                            | Some sha -> Ok sha
+                                            | None ->
+                                                Error
+                                                    $"no tag or branch '{quoteData refName}' at {host}/{repo} — the tags: {tagsUrl}"
+
+                            sha
+                            |> Result.map (fun sha ->
+                                let b = rawBase sha
+
+                                { Url = b + path
+                                  Sha = Some sha
+                                  FetchHeaders = uaHeader @ rawAuth
+                                  Host = Some host
+                                  Root = Some(b, path) })
+
                         match host with
                         | "github.com" ->
-                            let apiAuth =
-                                match hostToken host with
-                                | Some t -> [ "Authorization", "Bearer " + t ]
-                                | None -> []
-
-                            let api = $"https://api.github.com/repos/{repo}/commits/{refName}"
-
-                            (match
-                                fetchBytesWith (uaHeader @ [ "Accept", "application/vnd.github+json" ] @ apiAuth) api
-                             with
-                             | Error e -> Error(hintPrivate host $"resolving @{quoteData refName}: {e}")
-                             | Ok(bytes, _) ->
-                                 match shaFrom "sha" bytes with
-                                 | None -> Error $"unexpected answer resolving @{quoteData refName} at {quoteData api}"
-                                 | Some sha ->
-                                     let rawAuth =
-                                         match hostToken host with
-                                         | Some t -> [ "Authorization", "token " + t ]
-                                         | None -> []
-
-                                     Ok
-                                         { Url = $"https://raw.githubusercontent.com/{repo}/{sha}/{path}"
-                                           Sha = Some sha
-                                           FetchHeaders = uaHeader @ rawAuth
-                                           Host = Some host
-                                           Root = Some($"https://raw.githubusercontent.com/{repo}/{sha}/", path) })
+                            hostArm
+                                (listAuth "x-access-token")
+                                (fun sha -> $"https://raw.githubusercontent.com/{repo}/{sha}/")
+                                (match hostToken host with
+                                 | Some t -> [ "Authorization", "token " + t ]
+                                 | None -> [])
+                                $"https://github.com/{repo}/tags"
                         | "gitlab.com" ->
-                            let auth =
-                                match hostToken host with
-                                | Some t -> [ "PRIVATE-TOKEN", t ]
-                                | None -> []
-
-                            let api =
-                                $"https://gitlab.com/api/v4/projects/{Uri.EscapeDataString repo}/repository/commits/{Uri.EscapeDataString refName}"
-
-                            (match fetchBytesWith (uaHeader @ auth) api with
-                             | Error e -> Error(hintPrivate host $"resolving @{quoteData refName}: {e}")
-                             | Ok(bytes, _) ->
-                                 match shaFrom "id" bytes with
-                                 | None -> Error $"unexpected answer resolving @{quoteData refName} at {quoteData api}"
-                                 | Some sha ->
-                                     Ok
-                                         { Url = $"https://gitlab.com/{repo}/-/raw/{sha}/{path}"
-                                           Sha = Some sha
-                                           FetchHeaders = uaHeader @ auth
-                                           Host = Some host
-                                           Root = Some($"https://gitlab.com/{repo}/-/raw/{sha}/", path) })
+                            hostArm
+                                (listAuth "oauth2")
+                                (fun sha -> $"https://gitlab.com/{repo}/-/raw/{sha}/")
+                                (match hostToken host with
+                                 | Some t -> [ "PRIVATE-TOKEN", t ]
+                                 | None -> [])
+                                $"https://gitlab.com/{repo}/-/tags"
                         | h ->
                             Error
                                 $"unknown host '{quoteData h}' — the shorthand knows github.com and gitlab.com; any other host takes the full raw URL: weir add module https://… --as <name>"

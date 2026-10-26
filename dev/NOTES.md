@@ -1,5 +1,46 @@
 # Spike Notes
 
+## Refs over smart HTTP — the ref→sha step leaves the host's API (2026-10-26)
+
+The one network step `weir add module`'s shorthand made before the
+raw fetch was host-specific REST: GitHub's `commits/{ref}` for `sha`,
+GitLab's for `id`. It was also the one rate-limited step — 60 requests
+an hour per IP unauthenticated on GitHub, shared across every CI runner
+behind one address — which is why the e2e battery tolerated `rate
+limit|answered 403` on its live probe and CI handed the probe a token.
+
+The user's ruling: git already has a host-agnostic answer. Every git
+host serves the ref advertisement at
+`<repo>.git/info/refs?service=git-upload-pack` — the request behind
+`git ls-remote` — with no token for a public repo and no API budget.
+The body is pkt-line framed (four hex digits of self-inclusive length,
+`0000` a flush), one `<sha> <refname>` per line after the `# service=`
+line, the first ref line carrying a NUL and the capability list. An
+annotated tag lists twice: `refs/tags/v1` is the tag object,
+`refs/tags/v1^{}` the peeled commit, and the raw URL wants the commit —
+so the pick order is the peel, then the tag, then the branch; a full
+40-hex sha needs no listing at all. Two pure functions carry that
+(`parseRefListing`, `pickRef`) and the two host arms collapse into one
+path parameterized by the listing auth (the Basic pair git itself
+sends: `x-access-token` on GitHub, `oauth2` on GitLab), the raw base
+and the tags page ([D:ref-resolve-smart-http]).
+
+What the ruling did not move: the raw-file URL is still per host, so
+the host list stays github.com/gitlab.com; the lock holds the raw URL
+at the full sha as before, so `restore` and `verify` never notice.
+Two things changed shape at the edges. Both hosts answer 401, not 404,
+for a repo that does not exist or is private without a token, so the
+private-repo hint fires on 401 too. And a short sha prefix, which the
+API would look up, has no home in a listing — the message says "no tag
+or branch" and the docs say the full sha.
+
+The by-hand check found the library and the binary disagreeing on
+layout: weir-shell/lib at v0.1.0 keeps `semver.weir` at the repo root
+while the bare-name expansion reads `//modules/<name>.weir`. The tag
+resolves (the listing step works); the raw fetch 404s. The e2e pins
+the resolve — the raw URL naming a 40-hex sha — not the add, so the
+cell holds either way the layout is settled.
+
 ## Block-level recovery — the editor keeps answering inside a broken statement (2026-10-26)
 
 The receipt: a module's 17-line `let sub … =` with one type error on

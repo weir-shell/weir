@@ -327,8 +327,9 @@ jobs:
       - name: e2e battery (${{ matrix.shard }})
         env:
           E2E_SHARD: ${{ matrix.shard }}
-          # the add-module live cell resolves a ref via api.github.com —
-          # authenticated, so shared runner IPs cannot rate-limit it
+          # the add-module live cells list refs over git smart HTTP (no
+          # API rate limit); the token rides so the authenticated listing
+          # is the path exercised here
           WEIR_TOKEN_GITHUB_COM: ${{ github.token }}
         run: |
           # per-check cost report (ci/e2e-timing.py); pipefail keeps e2e's exit
