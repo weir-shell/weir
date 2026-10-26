@@ -1,6 +1,6 @@
 # PLAN: derived Ord — `[<Ord>]` orders a record or union by declaration order
 
-**Status: PROPOSED (2026-10-26)** — implementation follows on this branch under the recommended rulings; user review pending.
+**Status: BUILT (2026-10-26, branch feat/derived-ord) — all four phases under the recommended rulings R1–R10; session report at the end.**
 
 ## The receipt
 
@@ -587,3 +587,126 @@ key in name order — the two agree on scalars only)".
   (orthogonal: the wire reads the tag/payload, the order reads the
   declaration) vs refuse as [D:validated-types] does for `[<Tag>]`.
   *Recommend allow; both pinned as composition cells.*
+
+## Session report (2026-10-26)
+
+Executed under R1–R10 as recommended; every phase landed in one
+session, two commits (the feature with its pins and the DECISIONS row;
+then the docs and ledger).
+
+- **P0 — the declaration law.** `attrRegistry` gains `Ord` (argless,
+  RecordDeclPos + UnionDeclPos — the first RecordDeclPos host).
+  `RecordDef.Ord`/`UnionDef.Ord` (11 construction sites, not 15: the
+  Script/Eval `{ … with Docs }` copies need nothing). One predicate,
+  `ordOffender env seen ty : Ty option` (the innermost offender),
+  reused by `checkDecl`, the Ord `Describe`, and the declaration
+  messages; `ordTail` renders the repair per offender; `authorDeclared`
+  decides whether a repair may name an attribute. The def is
+  registered in a local env BEFORE the member law runs, so a
+  self-typed payload (`Node of OrdTree`) admits through `seen`. The
+  collision law scans `env.Types` for ordered unions (Option counted
+  by name — it is ordered by the solver's arm, not the attribute) and
+  skips the key equal to the declaring name (the REPL's replace).
+- **P1 — admission.** `demand`: `Option<t>` → `ok t`; an `[<Ord>]`
+  TNamed → the existing `decompose` (so generic `[<Ord>]` types are
+  conditional, R5, and vars pend as Eq's do). `typeBinOp`: five arms
+  before the `TNamed … not defined` catch-all — Ord×TVar and
+  TVar×Ord bind and retry, Ord×same-name binds the args and types
+  bool, Ord×other is the mismatch, un-attributed author type teaches
+  the repair; Option/strings/seqs/prelude types keep the bare refusal
+  (B38 byte-pinned unchanged).
+- **P2 — runtime.** `Eval.orderCompare` (public; Builtins' six
+  `scalarCompare` call sites moved to it — Eval compiles first, and
+  `binOp` needs it): scalar fast path, then a work-list; records zip
+  positionally with an `unreachable` on a field-name mismatch; unions
+  by `ordCases` index then payload. `ordCases` is a
+  ConcurrentDictionary seeded `None → 0, Some → 1`;
+  `registerOrdCases` (same owner or same index overwrites, different
+  owner + different index is the tripwire) runs from `Eval.declare`
+  when the Decl carries `Ord`; `forgetOrdCases` runs from the REPL's
+  redeclare path, so a replaced union leaves no stale entries. Four
+  `binOp` arms.
+- **P3 — surfaces + ledger.** `attrDocs` line; `declHover` prefixes
+  `[<Ord>] ` on both record and union hovers (unit-pinned via
+  `hoverType`); SKILL (attributes bullet + the two fences, the
+  `Seq.sort` and `max`/`min` parentheticals, the Map clause, the
+  casing-law line + fence); reference types.md (Records, Unions,
+  Option, Constraints — four fences) and lexical.md; LEXICON's Ord
+  sentence; DECISIONS `derived-ord`; CHANGELOG `## v0.0.79`
+  (`### Added` + `### Fixed`); NOTES story; PRODUCT-MATRIX's "Ord ×
+  decomposition" cell amended.
+- **Pins.** `derivedOrdTests` (25 tests: declaration law with every
+  refused kind byte-pinned, collision law, attribute laws, admission
+  incl. the SemVer receipt, Option, generic Box, generic helper + the
+  rows pin's shape, the four operators, use-site refusals byte-pinned,
+  `orderCompare` records/unions/nested/100k-deep, registry overwrite,
+  stability, and the composition cells: Tag, from json, `with`, Map
+  keys (R8), floats, hover); two FsCheck properties over a generated
+  `Fx` record (total/antisymmetric/transitive/zero-iff-equal/equals
+  F#'s `compare`; sort sorted + permutation + equals `List.sort`) —
+  the suite's first `testProperty`. The key-tail byte-pin amended.
+  e2e: eight cells (SemVer bytes with the own-line attribute above a
+  MULTI-LINE record, fmt --check, check-first on a seq field, tuple
+  teaching, `check --json` → `unsortable-key`, imports ×2, validate).
+  Fidelity: 3 `Same` + 1 `Diverges "derived-ord-explicit"` with its
+  divergences.md row.
+
+### Deviations from the plan
+
+1. **The repair tail never names a type the author cannot edit.** The
+   plan's `ls |> Seq.sort` pin expected "add [<Ord>] above `type
+   FileRow`"; FileRow is a built-in record with no declaration in the
+   script. Built-in and prelude types (`builtinTypeNames`, which
+   Prelude.extend already fills with every type at prelude close) get
+   the admitted-set tail; an anonymous record gets "declare the shape
+   as a record and give it [<Ord>]". `builtinTypeNames`' definition
+   moved up the file unchanged so the helpers can read it.
+2. **The parser needed nothing; the ASSEMBLER did.** The brief's "an
+   attribute line above a record `type` is a parse error today" held
+   only for a multi-line record body: the attr-only join produces a
+   buffer starting `[<Ord>] type R = {`, and the record-body district
+   keyed on `bufStartsWith "type "`, so the fields below were read as
+   a literal's continuation. `Script.bufIsTypeDecl` reads through the
+   join (two call sites); CHANGELOG `### Fixed` carries it. The
+   one-line form always worked (the shipped binary reaches the
+   position teaching).
+3. **`Option` is ordered by the solver, not by attributing the prelude**:
+   the prelude declares `Some of 'a | None`, so the attribute would
+   order `Some` first; the registry seeds `None → 0, Some → 1` and the
+   collision law counts Option by name.
+4. **The REPL forgets, `declare` does not purge**: a purge in `declare`
+   keyed by type name would drop a same-named module type's entries
+   ([D:qualified-type-names]); the REPL is the one place a type is
+   replaced, so `forgetOrdCases` runs there.
+5. **ci/timing.sh has no sort tripwire** — noted, no budget added.
+6. **`site/src/data/reference.json` unchanged**: `docs-json` dumps
+   `builtinDocs`, not `attrDocs`; the e2e currency gate agrees.
+7. **One pin reshaped**: the plan's "[<Ord>] through a row var" cell
+   is pinned in the existing "Ord x rows" pin's shape (a plain param
+   discharging to an `[<Ord>]` record, now admitting). A
+   field-accessed row-typed key inside an EXPRESSION-level `let … in`
+   strands ("an ordering requirement on a type nothing determines")
+   on the shipped binary too — a pre-existing inner-let
+   generalisation limit, out of scope; the top-level `let` form
+   admits. Logged here, not fixed.
+
+### Gates
+
+- `dotnet test tests/Weir.Tests/Weir.Tests.fsproj -c Debug` —
+  Passed 2588 / Failed 0.
+- `dotnet test tests/Weir.Fidelity/Weir.Fidelity.fsproj` — Passed 198
+  / Skipped 1 (pre-existing) / Failed 0.
+- `dotnet publish src/Weir -c Release -r linux-x64` (in-worktree);
+  `ci/skill-doc.sh` — all 375 blocks hold; `ci/decision-keys.weir` —
+  every [D:key] resolves; `tools/dead-privates.weir` — 0 unreferenced;
+  `tools/dx-message-census.weir` — at baseline (32/41).
+- `dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj` (WEIR_BIN set) —
+  Passed 51 / Failed 0.
+- `WEIR_BIN=… ci/e2e.sh` — stops at the pre-existing RLIMIT_NPROC cell
+  ("a thread the limit refuses …", line ~4476) on this shared
+  container: under its `ulimit -u`, even `timeout 5 true` dies and
+  the shipped v0.0.78 binary fails identically (the limit counts the
+  uid's tasks host-wide, `ps` sees one namespace). Everything before
+  it: 299 ok. With that one block disabled in an untracked copy, the
+  whole battery: 1101 ok, 0 FAIL, rc=0 — the eight derived-Ord cells
+  and the reference-json currency gate among them.

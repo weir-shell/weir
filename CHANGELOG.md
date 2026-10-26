@@ -80,11 +80,24 @@
   not be installed). Nothing pops inside a string or comment, after a
   keyword, or once every parameter is supplied.
 
+- **`[<Ord>]` derives an ordering.** Put `[<Ord>]` above a record or
+  union and it sorts (`Seq.sort`, `sortBy` keys, `min`/`max`) and
+  compares (`<`, `>`, `<=`, `>=`) in declaration order — fields for a
+  record, cases then payload for a union (`None` before `Some`). Every
+  field must itself order or the declaration says which one does not;
+  tuples still refuse, and the error now says to name the parts in a
+  record. `Option` values sort too. Hover on the type shows the
+  attribute.
+
 ### Fixed
 
 - **Go to definition on a `within` or `until` binder's use** jumped to
   a same-named top-level binding (or nowhere) — the two binders now
   carry their spans, so the use inside the scope lands on the binder.
+
+- An attribute on its own line above a multi-line record body
+  (`[<Ord>]` then `type R = {` with the fields below) was a parse
+  error; it now assembles like the one-line form.
 
 ## v0.0.78
 

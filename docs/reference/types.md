@@ -157,6 +157,22 @@ are read at check time and have no effect at runtime. A field whose
 JSON/YAML key is not a legal identifier gives the key with
 `[<Wire "key">]`.
 
+A record sorts and compares once `[<Ord>]` is written above its
+declaration ([Constraints](#constraints)): the order is by the fields
+in declaration order, so the first field decides and the next breaks
+ties. Every field must itself order (a scalar, `Duration`/`Size`/
+`Instant`/`Uuid`, an `Option` of one, another `[<Ord>]` type), or the
+declaration refuses, naming the field.
+
+```weir
+[<Ord>]
+type SemVer = { major: int; minor: int; patch: int }
+
+let top = [{ major = 1; minor = 0; patch = 0 }; { major = 0; minor = 9; patch = 2 }] |> Seq.sort |> Seq.last
+print $"{top.major}.{top.minor}.{top.patch}"
+print $"{top < { major = 2; minor = 0; patch = 0 }}"
+```
+
 ## Unions
 
 Each case can carry a payload; a payload of several values is a
@@ -174,6 +190,19 @@ let v = Pass 12
 match v with
 | Pass n -> print $"{n}"
 | Fail -> print "no"
+```
+
+`[<Ord>]` above a union orders its values by case, in the order the
+cases are written, then by payload — `Pre "alpha" < Release` below.
+A tuple payload (`C of int * string`) cannot order; name the parts in
+a record.
+
+```weir
+[<Ord>]
+type Pre = Pre of string | Release
+
+print $"{Pre "alpha" < Release}"
+print (show ([Release; Pre "b"; Pre "a"] |> Seq.sort))
 ```
 
 ## Validated types
@@ -260,7 +289,13 @@ let e = Email "x" // 'Email' is validated — build it with Email.create (it rai
 `Some x` / `None` represent a value that may be missing. The `try`
 functions return them (`Seq.tryFind`, `Str.tryToInt`,
 `Bytes.tryFromBase64`), and you handle them with `match` or the
-`Option` module (`defaultValue`, `map`, `orFail`).
+`Option` module (`defaultValue`, `map`, `orFail`). `Option` values
+order, `None` first, so they sort and can be fields of an `[<Ord>]`
+record:
+
+```weir
+print (show ([Some 2; None; Some 1] |> Seq.sort))
+```
 
 ## `Map`
 
@@ -367,4 +402,15 @@ error suggests `Float.near`.
 ```weir
 let same x y = x == y
 print $"{same 1 1} {same "a" "b"}"
+```
+
+Ordering is the one constraint you opt into for your own types: a
+record or union sorts (`Seq.sort`, `sortBy` keys, `min`/`max`) and
+compares (`<`, `>`, `<=`, `>=`) only with `[<Ord>]` above its
+declaration, because the declaration order then becomes the order.
+Scalars, `Option` and `[<Ord>]` types order; tuples do not — name the
+parts in a record and give it `[<Ord>]`:
+
+```weir-error
+[(1, "b"); (2, "a")] |> Seq.sort |> Seq.iter (fun p -> print (show p)) // tuples have no order
 ```
