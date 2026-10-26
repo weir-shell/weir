@@ -3227,9 +3227,15 @@ let printResult (v: Eval.Value) =
 // Classification is the parser's mode decision alone (SCmd vs SExpr) — no
 // name lookup, no type direction; the removed form-2 exemption (bare
 // sh/cmd applications) must not creep back in here.
+// the uncalled-function tail — fixOf reads it back [D:structured-fixes]
+let callItTail = " — that is the function itself, not its result: call it with ()"
+
 let discardError (ty: Ty) : string option =
     match ty with
     | TUnit -> None
+    // a unit -> X value as a statement is a function nobody called
+    // [D:structured-fixes]: the lesson is the call, not the binding
+    | TFun(TUnit, _) as ty -> Some $"this statement computes a {formatTy ty} and discards it{callItTail}"
     // a hole-typed statement descends from an already-reported failed
     // let — silent, not a second complaint [PLAN-diagnostics-arc B6]
     | TVar v when v.StartsWith "__hole" -> None
@@ -5913,6 +5919,21 @@ let entryContext (env: TypeEnv) (lines: string list) : TypeEnv * string option =
 // reports every independent error. Codes are seeded from the message
 // families (structured codes at error origin are the parked upgrade).
 
+// a machine-applicable repair [D:structured-fixes]: 1-based physical
+// positions in Diagnostic.File, end-exclusive, every edit relative to
+// the unedited text; Family keys the editor's source.fixAll grouping
+type FixEdit =
+    { Line: int
+      Col: int
+      EndLine: int
+      EndCol: int
+      NewText: string }
+
+type Fix =
+    { Title: string
+      Edits: FixEdit list
+      Family: string option }
+
 type Diagnostic =
     { File: string
       Line: int
@@ -5927,7 +5948,8 @@ type Diagnostic =
       // came through, the rebinding that shadows an unread binder
       // [D:diagnostic-tags]; additive, so every consumer stays
       // position-identical [D:one-pipeline]
-      Related: (string * int * int * string) list }
+      Related: (string * int * int * string) list
+      Fix: Fix option }
 
 let private codeOf (parse: bool) (msg: string) : string =
     if parse then
@@ -5960,6 +5982,284 @@ let private codeOf (parse: bool) (msg: string) : string =
         "undetermined-type"
     else
         "check"
+
+// Replace with 'X' [D:structured-fixes]: the typo named by a did-you-mean
+// message, located inside the span's own text; a span that does not
+// carry the typo verbatim gets no fix
+let private replaceWithFix (spanText: string) (msg: string) (line: int) (col: int) : Fix option =
+    match didYouMeanTarget msg with
+    | Some(typo, suggestion) ->
+        let m =
+            Text.RegularExpressions.Regex.Match(
+                spanText,
+                @"(?<![\w-])" + Text.RegularExpressions.Regex.Escape typo + @"(?![\w-])"
+            )
+
+        if m.Success then
+            Some
+                { Title = $"Replace with '{suggestion}'"
+                  Edits =
+                    [ { Line = line
+                        Col = col + m.Index
+                        EndLine = line
+                        EndCol = col + m.Index + typo.Length
+                        NewText = suggestion } ]
+                  Family = None }
+        else
+            None
+    | None -> None
+
+// the fix inverse [D:structured-fixes]: the one conversion point reads a
+// repair back out of (code, message, span) — each message's inverse
+// lives beside its producer (didYouMeanTarget, qualifyTarget, the
+// tails). `lines` is the raw physical text of the diagnostic's own file
+// (empty when the diagnostic points into another file), read for the
+// edits that need the source's shape: indents, the words under the span
+let fixOf
+    (lines: string[])
+    (code: string)
+    (msg: string)
+    (line: int)
+    (col: int)
+    (endLine: int option)
+    (endCol: int option)
+    : Fix option =
+    let lineText (l: int) =
+        if l >= 1 && l <= lines.Length then lines[l - 1] else ""
+
+    let insertAt l c text =
+        { Line = l
+          Col = c
+          EndLine = l
+          EndCol = c
+          NewText = text }
+
+    let one title edits =
+        Some
+            { Title = title
+              Edits = edits
+              Family = None }
+
+    let indentOf (s: string) = s.Length - s.TrimStart().Length
+
+    // the span's own text when it sits on one line
+    let spanText =
+        match endLine, endCol with
+        | Some el, Some ec when el = line && ec > col && ec - 1 <= (lineText line).Length ->
+            Some((lineText line).Substring(col - 1, ec - col))
+        | _ -> None
+
+    // the rest of the span's last line past the span: blank or a comment
+    // means the span closes its line
+    let closesLine (el: int) (ec: int) =
+        let t = lineText el
+        let after = (if ec - 1 <= t.Length then t.Substring(ec - 1) else "").TrimStart()
+        after = "" || after.StartsWith "//"
+
+    let placeholder = "fail \"todo\""
+
+    match code with
+    | "unused-binding" ->
+        let m =
+            Text.RegularExpressions.Regex.Match(msg, @"^'([^']+)' is bound but never used")
+
+        if m.Success then
+            one $"Rename to '_{m.Groups[1].Value}'" [ insertAt line col "_" ]
+        else
+            None
+    | "lowercase-binding" ->
+        let name =
+            match spanText with
+            | Some t -> t
+            | None ->
+                let t = lineText line
+
+                let m =
+                    Text.RegularExpressions.Regex.Match(t.Substring(min t.Length (col - 1)), @"^[A-Za-z_][\w']*")
+
+                if m.Success then m.Value else ""
+
+        if name.Length > 0 && Char.IsUpper name[0] then
+            // an all-caps name lowercases whole; otherwise the first letter
+            let renamed =
+                if name |> Seq.forall (fun c -> not (Char.IsLower c)) then
+                    name.ToLowerInvariant()
+                else
+                    string (Char.ToLowerInvariant name[0]) + name.Substring 1
+
+            one
+                $"Rename to '{renamed}'"
+                [ { Line = line
+                    Col = col
+                    EndLine = line
+                    EndCol = col + name.Length
+                    NewText = renamed } ]
+        else
+            None
+    | "non-exhaustive" ->
+        match endLine, endCol with
+        | Some el, Some ec ->
+            let missing =
+                let m =
+                    Text.RegularExpressions.Regex.Match(msg, @"^match is not exhaustive; missing: (.+)$")
+
+                if m.Success then
+                    // split on top-level commas: a tuple witness keeps its own
+                    let parts = ResizeArray<string>()
+                    let cur = Text.StringBuilder()
+                    let mutable depth = 0
+
+                    for ch in m.Groups[1].Value do
+                        match ch with
+                        | '('
+                        | '[' ->
+                            depth <- depth + 1
+                            cur.Append ch |> ignore
+                        | ')'
+                        | ']' ->
+                            depth <- depth - 1
+                            cur.Append ch |> ignore
+                        | ',' when depth = 0 ->
+                            parts.Add(cur.ToString().Trim())
+                            cur.Clear() |> ignore
+                        | _ -> cur.Append ch |> ignore
+
+                    parts.Add(cur.ToString().Trim())
+                    parts |> Seq.filter (fun p -> p <> "") |> List.ofSeq
+                elif msg.EndsWith "needs a catch-all pattern" then
+                    [ "_" ]
+                else
+                    []
+
+            if missing.IsEmpty then
+                None
+            else
+                let arms = missing |> List.map (fun c -> $"| {c} -> {placeholder}")
+
+                let title =
+                    (if missing.Length = 1 then
+                         "Add missing arm: "
+                     else
+                         "Add missing arms: ")
+                    + String.concat ", " missing
+
+                // the first arm's indent: the first line in the span whose
+                // code starts with '|' (a nested match's arms come later)
+                let armIndent =
+                    [ line..el ]
+                    |> List.tryPick (fun l ->
+                        let t = lineText l
+
+                        if t.TrimStart().StartsWith "|" then
+                            Some(indentOf t)
+                        else
+                            None)
+
+                match armIndent with
+                | Some i when el > line && closesLine el ec ->
+                    let pad = String(' ', i)
+
+                    one
+                        title
+                        [ insertAt
+                              el
+                              ((lineText el).Length + 1)
+                              (arms |> List.map (fun a -> "\n" + pad + a) |> String.concat "") ]
+                | _ -> one title [ insertAt el ec (arms |> List.map (fun a -> " " + a) |> String.concat "") ]
+        | _ -> None
+    | "check" when msg.StartsWith "an if without an else" ->
+        match endLine, endCol with
+        | Some el, Some ec ->
+            let before =
+                (lineText line).Substring(0, min (lineText line).Length (col - 1)).TrimEnd()
+
+            if before.EndsWith "then" then
+                // `if c then x` — the else rides the same line
+                one "Add else" [ insertAt el ec $" else {placeholder}" ]
+            else
+                // the then-branch on its own lines: the else aligns with
+                // the line that opened it
+                [ line - 1 .. -1 .. 1 ]
+                |> List.tryFind (fun l -> (stripComment (lineText l)).TrimEnd().EndsWith "then")
+                |> Option.bind (fun l ->
+                    let pad = String(' ', indentOf (lineText l))
+                    one "Add else" [ insertAt el ((lineText el).Length + 1) $"\n{pad}else {placeholder}" ])
+        | _ -> None
+    | "discard" when msg.EndsWith callItTail ->
+        match spanText, endLine, endCol with
+        // a name (or dotted member) alone — anything else would need parens
+        | Some t, Some el, Some ec when Text.RegularExpressions.Regex.IsMatch(t, @"^[A-Za-z_][\w.']*$") ->
+            one $"Call it: {t} ()" [ insertAt el ec " ()" ]
+        | _ -> None
+    | "check" when msg.EndsWith Check.orFailTail ->
+        match endLine, endCol with
+        | Some el, Some ec ->
+            let before =
+                (lineText line).Substring(0, min (lineText line).Length (col - 1)).TrimEnd()
+
+            let opensRhs =
+                before = ""
+                || (before.EndsWith "="
+                    && not (
+                        before.EndsWith "=="
+                        || before.EndsWith "<="
+                        || before.EndsWith ">="
+                        || before.EndsWith "!="
+                    ))
+                || [ "then"; "else"; "->"; "("; "["; "|>"; ","; ";"; "{" ]
+                   |> List.exists before.EndsWith
+
+            let t = lineText el
+            let after = (if ec - 1 <= t.Length then t.Substring(ec - 1) else "").TrimStart()
+
+            let closes =
+                after = "" || [ ")"; "]"; "}"; "//"; ";"; "," ] |> List.exists after.StartsWith
+
+            // a span that is itself parenthesised takes the pipe inside
+            let parenthesised =
+                match spanText with
+                | Some t when t.StartsWith "(" && t.EndsWith ")" ->
+                    let mutable depth = 0
+                    let mutable closesEarly = false
+
+                    t
+                    |> Seq.iteri (fun i ch ->
+                        if ch = '(' then
+                            depth <- depth + 1
+                        elif ch = ')' then
+                            depth <- depth - 1
+
+                            if depth = 0 && i < t.Length - 1 then
+                                closesEarly <- true)
+
+                    not closesEarly
+                | _ -> false
+
+            if parenthesised then
+                one "Unwrap with |> orFail" [ insertAt el (ec - 1) " |> orFail" ]
+            elif opensRhs && closes then
+                one "Unwrap with |> orFail" [ insertAt el ec " |> orFail" ]
+            else
+                // mid-expression: parenthesised, so the pipe binds to the
+                // value alone
+                one "Unwrap with |> orFail" [ insertAt line col "("; insertAt el ec " |> orFail)" ]
+        | _ -> None
+    | _ ->
+        match Check.qualifyTarget msg with
+        | Some(bare, qualified) ->
+            Some
+                { Title = $"Qualify: {qualified}"
+                  Edits =
+                    [ { Line = line
+                        Col = col
+                        EndLine = line
+                        EndCol = col + bare.Length
+                        NewText = qualified } ]
+                  Family = Some "qualify" }
+        | None ->
+            match spanText with
+            | Some t -> replaceWithFix t msg line col
+            | None -> None
 
 // AOT-safe JSON writing: Utf8JsonWriter (reflection-free, the write
 // twin of the JsonDocument reader) — escaping is the library's job,
@@ -6014,6 +6314,27 @@ let writeDiag (w: System.Text.Json.Utf8JsonWriter) (d: Diagnostic) =
             w.WriteEndObject()
 
         w.WriteEndArray()
+    // the repair, when one is known [D:structured-fixes] — additive
+    match d.Fix with
+    | Some fix ->
+        w.WritePropertyName "fix"
+        w.WriteStartObject()
+        w.WriteString("title", fix.Title)
+        w.WritePropertyName "edits"
+        w.WriteStartArray()
+
+        for e in fix.Edits do
+            w.WriteStartObject()
+            w.WriteNumber("line", e.Line)
+            w.WriteNumber("col", e.Col)
+            w.WriteNumber("endLine", e.EndLine)
+            w.WriteNumber("endCol", e.EndCol)
+            w.WriteString("newText", e.NewText)
+            w.WriteEndObject()
+
+        w.WriteEndArray()
+        w.WriteEndObject()
+    | None -> ()
 
     w.WriteEndObject()
 
@@ -6060,6 +6381,16 @@ let private docMisalignments (path: string) (lines: string list) : Diagnostic li
                                    Severity = "error"
                                    Code = "doc-align"
                                    Related = []
+                                   Fix =
+                                     Some
+                                         { Title = "Align doc comment"
+                                           Edits =
+                                             [ { Line = k + 1
+                                                 Col = 1
+                                                 EndLine = k + 1
+                                                 EndCol = di + 1
+                                                 NewText = String(' ', anchor) } ]
+                                           Family = Some "doc-align" }
                                    Message =
                                      $"this /// doc sits at column {di + 1}, but the declaration it documents is at column {anchor + 1} — a doc aligns with what it describes" }
                  | None -> ())
@@ -6161,6 +6492,7 @@ let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) li
                   Severity = "error"
                   Code = "schema"
                   Related = []
+                  Fix = None
                   Message = msg }
 
             match loadSchema name with
@@ -6561,6 +6893,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
           Severity = "error"
           Code = "sig"
           Related = []
+          Fix = None
           Message = msg }
 
     let scriptDir =
@@ -6989,6 +7322,10 @@ let sigCmdDiagnostics
                           Severity = sev
                           Code = "sig"
                           Related = []
+                          Fix =
+                            (let s0 = max 0 (min ll.Text.Length (sp.Start.Col - 1))
+                             let s1 = max s0 (min ll.Text.Length (sp.End.Col - 1))
+                             replaceWithFix (ll.Text.Substring(s0, s1 - s0)) msg l1 c1)
                           Message = msg }
 
                     // did-you-mean over the spellings the convention takes
@@ -7477,6 +7814,7 @@ let continuedCommandDiagnostics
           Severity = "warning"
           Code = "continued-command"
           Related = []
+          Fix = None
           Message = h.CMessage })
 
 // ---- signature-driven argument completion [D:sig-arg-complete] -------------
@@ -9983,6 +10321,7 @@ let private initError (file: string) (line: int) (col: int) (endCol: int option)
       Severity = "error"
       Code = code
       Related = []
+      Fix = None
       Message = msg }
 
 let splitInit (file: string) (lines: string list) : InitSplit * Diagnostic list =
@@ -10098,15 +10437,28 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
     // imports resolve against the init file's real location [D:init-import]
     let importer = fileImportLoader mkR (importAnchor file)
 
+    let ownLines = List.toArray lines
+
     let stmtDiag (d: StmtDiag) =
+        let code = codeOf d.Parse d.Message
+
         { File = d.File |> Option.defaultValue file
           Line = d.PhysLine
           Col = d.PhysCol
           EndLine = d.PhysEnd |> Option.map fst
           EndCol = d.PhysEnd |> Option.map snd
           Severity = "error"
-          Code = codeOf d.Parse d.Message
           Related = d.Related |> List.map (fun (l, c, m) -> d.File |> Option.defaultValue file, l, c, m)
+          Code = code
+          Fix =
+            fixOf
+                (if d.File.IsSome then [||] else ownLines)
+                code
+                d.Message
+                d.PhysLine
+                d.PhysCol
+                (d.PhysEnd |> Option.map fst)
+                (d.PhysEnd |> Option.map snd)
           Message = d.Message }
 
     let assembleOrReport (numbered: (int * string) list) (into: ResizeArray<Diagnostic>) =
@@ -10263,6 +10615,7 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                             { d' with
                                 Code = "session-names-declaration"
                                 Related = []
+                                Fix = None
                                 EndLine = Some d'.Line
                                 EndCol = Some(d'.Col + n.Length)
                                 Message = sessionDeclRefMessage n }
@@ -10610,6 +10963,7 @@ let effectBeforeArgs (path: string) (stmts: (LogicalLine * CheckedKind) list) : 
                   Severity = "warning"
                   Code = "effect-before-args"
                   Related = []
+                  Fix = None
                   Message = $"{what} runs before '{loadName}' (line {loadLine}) — {consequence}" }))
 
 // the recovery pass [D:block-recovery], tooling-only: an errored
@@ -10680,6 +11034,7 @@ let analyzeLinesAs
     let rawLines =
         if initMarked then stripInitDirectives rawLines else rawLines
 
+    let rawArr = List.toArray rawLines
     let body, bodyOffset, sigDecls = scriptBody rawLines
     let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
 
@@ -10742,6 +11097,7 @@ let analyzeLinesAs
                   Severity = "error"
                   Code = "layout"
                   Related = []
+                  Fix = None
                   Message = message }
 
             match misaligned.Value with
@@ -10787,6 +11143,7 @@ let analyzeLinesAs
                   Severity = "warning"
                   Code = "warning"
                   Related = []
+                  Fix = None
                   Message = wm }
 
         let mutable tenv =
@@ -10911,6 +11268,15 @@ let analyzeLinesAs
                              |> Seq.filter Types.isUserName
                              |> Seq.filter (fun n -> n.Length > 0 && System.Char.IsLower n[0])))
 
+                let msg =
+                    match Map.tryFind prog Builtins.bareAliasHomes with
+                    | Some home ->
+                        $"'{prog}' is a bare module member, not a program — spell it '{home}.{prog}' (bare names live in the REPL session)"
+                    | None when prog.StartsWith "~/" ->
+                        $"no executable at {prog} — weir resolves commands at check time; the script runs once it exists"
+                    | None ->
+                        $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed"
+
                 diags.Add
                     { File = path
                       Line = wl
@@ -10922,14 +11288,8 @@ let analyzeLinesAs
                       Severity = "warning"
                       Code = "cmd-not-found"
                       Related = []
-                      Message =
-                        (match Map.tryFind prog Builtins.bareAliasHomes with
-                         | Some home ->
-                             $"'{prog}' is a bare module member, not a program — spell it '{home}.{prog}' (bare names live in the REPL session)"
-                         | None when prog.StartsWith "~/" ->
-                             $"no executable at {prog} — weir resolves commands at check time; the script runs once it exists"
-                         | None ->
-                             $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed") }
+                      Fix = fixOf rawArr "cmd-not-found" msg wl wc (Some wl) (Some(wc + prog.Length))
+                      Message = msg }
 
             match checkStatement true sigState assumeResolver analyzeImport tenv ll with
             | Ok chk ->
@@ -10960,6 +11320,7 @@ let analyzeLinesAs
                                Severity = "error"
                                Code = "dup-type"
                                Related = []
+                               Fix = None
                                Message =
                                  if viaImport then
                                      $"type '{decl.Name}' is already provided by the import at line {firstLine}; rename one"
@@ -11014,6 +11375,7 @@ let analyzeLinesAs
                                Severity = "error"
                                Code = "module-declares-only"
                                Related = []
+                               Fix = None
                                Message = msg }
                      | None -> ())
 
@@ -11023,7 +11385,8 @@ let analyzeLinesAs
                          Some
                              { sc with
                                  Pending = Map.add name sd sc.Pending
-                                 Signed = Set.add name sc.Signed }
+                                 Signed = Set.add name sc.Signed
+                                 SigLines = Map.add name sd.Line sc.SigLines }
                  | Some sc, KLet(name, _, _) ->
                      if Set.contains name sc.Signed then
                          sigImplLines.Add(name, ll.Head)
@@ -11183,6 +11546,8 @@ let analyzeLinesAs
                 // PhysLine/Col into that other file; its Note is the "imported
                 // here" pointer at the import line in this file
                 if not echoesFailedImport then
+                    let code = codeOf d.Parse d.Message
+
                     diags.Add
                         { File = d.File |> Option.defaultValue path
                           Line = d.PhysLine
@@ -11190,12 +11555,21 @@ let analyzeLinesAs
                           EndLine = d.PhysEnd |> Option.map fst
                           EndCol = d.PhysEnd |> Option.map snd
                           Severity = "error"
-                          Code = codeOf d.Parse d.Message
                           // the note's site rides as related too [D:diagnostic-tags]
                           Related =
                             (d.Related
                              |> List.map (fun (l, c, m) -> d.File |> Option.defaultValue path, l, c, m))
                             @ (d.Note |> Option.map (fun (nl, nc, nmsg) -> path, nl, nc, nmsg) |> Option.toList)
+                          Code = code
+                          Fix =
+                            fixOf
+                                (if d.File.IsSome then [||] else rawArr)
+                                code
+                                d.Message
+                                d.PhysLine
+                                d.PhysCol
+                                (d.PhysEnd |> Option.map fst)
+                                (d.PhysEnd |> Option.map snd)
                           Message = d.Message }
 
                 (match d.Note with
@@ -11209,6 +11583,7 @@ let analyzeLinesAs
                            Severity = "note"
                            Code = "imported-here"
                            Related = [ d.File |> Option.defaultValue path, d.PhysLine, d.PhysCol, d.Message ]
+                           Fix = None
                            Message = nmsg }
                  | None -> ())
 
@@ -11233,6 +11608,25 @@ let analyzeLinesAs
                        Severity = "error"
                        Code = "missing-implementation"
                        Related = []
+                       Fix =
+                         // under the signature's last physical line (an
+                         // indented continuation belongs to it)
+                         (let mutable last = sd.Line
+
+                          while last < rawArr.Length
+                                && rawArr[last].Trim() <> ""
+                                && Char.IsWhiteSpace(rawArr[last].[0]) do
+                              last <- last + 1
+
+                          Some
+                              { Title = "Add a stub implementation"
+                                Edits =
+                                  [ { Line = last
+                                      Col = (if last <= rawArr.Length then rawArr[last - 1].Length else 0) + 1
+                                      EndLine = last
+                                      EndCol = (if last <= rawArr.Length then rawArr[last - 1].Length else 0) + 1
+                                      NewText = $"\nlet {name} = fail \"todo\"" } ]
+                                Family = None })
                        Message = $"signature without implementation — no 'let {name} … = …' follows in this module" }
 
              let attaches = docAttachments rawLines
@@ -11252,6 +11646,33 @@ let analyzeLinesAs
                              (match Map.tryFind name sc.SigLines with
                               | Some sl -> [ path, sl, 1, "the doc's one home" ]
                               | None -> [])
+                           Fix =
+                             // two edits against the unedited text: the doc run
+                             // leaves the implementation, lands above the sig
+                             (let first = max 1 (d.Line - List.length d.Doc)
+                              let run = [ first .. d.Line - 1 ] |> List.map (fun l -> rawArr[l - 1])
+
+                              match Map.tryFind name sc.SigLines with
+                              | Some sigLine when
+                                  run.Length = List.length d.Doc
+                                  && run |> List.forall isDocLine
+                                  && sigLine < first
+                                  ->
+                                  Some
+                                      { Title = "Move doc to the signature"
+                                        Edits =
+                                          [ { Line = sigLine
+                                              Col = 1
+                                              EndLine = sigLine
+                                              EndCol = 1
+                                              NewText = (run |> List.map (fun l -> l + "\n") |> String.concat "") }
+                                            { Line = first
+                                              Col = 1
+                                              EndLine = d.Line
+                                              EndCol = 1
+                                              NewText = "" } ]
+                                        Family = None }
+                              | _ -> None)
                            Message =
                              $"'{name}' is signed, and its /// doc belongs on the signature — move it above 'let {name} : …' (one doc home)" }
                  | None -> ()
@@ -11279,6 +11700,7 @@ let analyzeLinesAs
                    Severity = "error"
                    Code = "unused-binding"
                    Related = f.URelated |> List.map (fun (l, c, m) -> path, l, c, m)
+                   Fix = fixOf rawArr "unused-binding" f.UMessage f.ULine f.UCol (Some f.ULine) (Some f.UEndCol)
                    Message = f.UMessage })
 
         // the re-enumeration warning lands on the second and later
@@ -11294,6 +11716,7 @@ let analyzeLinesAs
                   Severity = "warning"
                   Code = "re-enumeration"
                   Related = []
+                  Fix = None
                   Message = f.RMessage })
 
         // the newTempDir footgun [D:newtempdir-lint] lands on the delete
@@ -11308,6 +11731,7 @@ let analyzeLinesAs
                   Severity = "warning"
                   Code = "temp-dir-cleanup"
                   Related = []
+                  Fix = None
                   Message = f.TMessage })
 
         // effects before the CLI parse [D:effect-before-args]: the entry

@@ -150,6 +150,47 @@ What the implementation found that the plan did not say:
   `refreshAll` already prefers (the richer span wins). The import
   line related and the note's error-site related ride the import
   channel's `Note`, so they show either way.
+## Quick fixes — the repair rides the diagnostic (2026-10-26)
+
+PLAN-lsp-editor-polish Feature 7 (P3). The editor had one code-action
+family, built in the handler by a regex over the published messages.
+Nothing structured existed: `codeOf` prefix-matches messages and the
+checker's `TypeError` is `{ Span; Message; Origin }` with the suggestion
+baked into the text. R6 ruled the shape: `Fix` (title, edits, family)
+on `Script.Diagnostic`, computed at the one conversion point —
+`fixOf` beside `codeOf` — from code, message, span and the file's raw
+lines, with each message's inverse living beside its producer
+(`Types.didYouMeanTarget` next to `didYouMean`, `Check.qualifyTarget`
+next to the module-qualified arm, the two new teaching tails). Where a
+Script.fs producer already holds the data it attaches the fix
+directly (doc-align, the doc move, the stub, the sig flag typo).
+`check --json` prints `fix` when present; the LSP handler became a
+serialiser over a pure `codeActionsFor`.
+
+Three things the fixtures taught:
+
+- A payload case cannot be added as `| Push ->` ("'Push' carries int;
+  add a pattern for it"), and the message listed bare names. The
+  message now names the arm to write (`missing: Push _`) — the
+  tuple witnesses already did (`(None, Some _)`) — so the inserted arm
+  is the message's own text and no fix needs the type.
+- `|> orFail` appended to a span inside a binop rebinds the pipe to the
+  whole left side (`x + f s |> orFail` is `(x + f s) |> orFail`); the
+  fix parenthesises unless the span is a whole right-hand side or
+  already parenthesised (then the pipe goes inside). The binop
+  mismatch is its own producer (Check.fs's `typeBinOp` arm), so the
+  teaching rides both it and `mismatch`.
+- The invariant "a fix fixes" (apply, re-analyze, the code is gone,
+  nothing new) holds for every fix but one: Rename to 'foo' is
+  binder-only, so a use becomes the next diagnostic (unbound) — stated
+  in the pin. The call-it fix on a `unit -> int` thunk likewise hands
+  the author the discard teaching next; the pin uses `unit -> unit`.
+
+Not now, as planned: `re-enumeration`, export-with-signature, the
+retired-member renames (their message formats vary per entry — the
+`TypeError` upgrade's customer), the structural rewrites. `codeActionsFor`
+takes no URI: the edits are keyed by the document the diagnostics were
+published for, which the handler knows.
 
 ## The cleanup shim is sh; a dead stderr never aborts (2026-10-19)
 

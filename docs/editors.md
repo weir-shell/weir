@@ -66,6 +66,13 @@ In any editor with LSP support you get:
 - **Unused binders fade** and an error on a signed implementation
   points at its signature line, in editors that show diagnostic tags
   and related information.
+- **Quick fixes.** A lightbulb on the diagnostics weir can repair:
+  replace a misspelled name with the one it meant, qualify a bare
+  module member (and all of them at once), add the missing match
+  arms or a missing `else` (with a `fail "todo"` body), rename an
+  unused binder to `_name`, lowercase a binder, align or move a
+  `///` doc, call an uncalled function, unwrap an `Option`/`Result`
+  with `|> orFail`, and stub a signature's implementation.
 
 Inlay hints are configured through `initializationOptions` (VS Code
 sends the `weir.inlayHints.*` settings for you). The object is

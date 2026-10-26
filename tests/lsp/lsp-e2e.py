@@ -109,6 +109,66 @@ send({"jsonrpc": "2.0", "method": "textDocument/didChange",
 diag = read_msg()
 expect(diag["params"]["diagnostics"] == [], "diagnostics should clear")
 
+# quick fixes [D:structured-fixes]: the code action reads the published
+# set, carries its diagnostic, and applying its edit clears the publish;
+# the edit is the one `check --json` prints as `fix` (parity)
+QF_TEXT = 'let count = 1\nprint $"{cont}"\n'
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI}, "contentChanges": [{"text": QF_TEXT}]}})
+diag = read_msg()
+expect([d["code"] for d in diag["params"]["diagnostics"]] == ["unbound"], f"the typo diag: {diag}")
+send({"jsonrpc": "2.0", "id": 90, "method": "textDocument/codeAction",
+      "params": {"textDocument": {"uri": URI},
+                 "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 5}},
+                 "context": {"diagnostics": []}}})
+acts = read_msg()["result"]
+expect([a["title"] for a in acts] == ["Replace with 'count'"], f"quick fix titles: {acts}")
+expect(acts[0]["kind"] == "quickfix" and [d["code"] for d in acts[0]["diagnostics"]] == ["unbound"],
+       f"the action carries its diagnostic: {acts[0]}")
+qf_edits = acts[0]["edit"]["changes"][URI]
+
+def apply_edits(text, edits):
+    lines = text.split("\n")
+    def off(pos):
+        return sum(len(l) + 1 for l in lines[:pos["line"]]) + pos["character"]
+    for e in sorted(edits, key=lambda e: (e["range"]["start"]["line"], e["range"]["start"]["character"]), reverse=True):
+        text = text[:off(e["range"]["start"])] + e["newText"] + text[off(e["range"]["end"]):]
+    return text
+
+fixed = apply_edits(QF_TEXT, qf_edits)
+expect(fixed == 'let count = 1\nprint $"{count}"\n', f"applied edit: {fixed!r}")
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI}, "contentChanges": [{"text": fixed}]}})
+diag = read_msg()
+expect(diag["params"]["diagnostics"] == [], f"the fix clears the publish: {diag}")
+_qf = tempfile.mkdtemp()
+_qfp = os.path.join(_qf, "qf.weir")
+with open(_qfp, "w") as fh:
+    fh.write(QF_TEXT)
+_qfj = json.loads(subprocess.run([BIN, "check", "--json", _qfp], capture_output=True, text=True).stdout)
+expect(len(_qfj) == 1 and "fix" in _qfj[0], f"check --json carries the fix: {_qfj}")
+_qfe = [{"range": {"start": {"line": e["line"] - 1, "character": e["col"] - 1},
+                   "end": {"line": e["endLine"] - 1, "character": e["endCol"] - 1}}, "newText": e["newText"]}
+        for e in _qfj[0]["fix"]["edits"]]
+expect(_qfe == qf_edits and _qfj[0]["fix"]["title"] == acts[0]["title"],
+       f"check --json's fix is the LSP's edit: {_qfj[0]['fix']} vs {qf_edits}")
+# the qualify family keeps its two actions (quickfix + source.fixAll)
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": 'let xs = [1; 2]\nlet ys = xs |> where (fun x -> x > 1)\nprint $"{ys |> Seq.length}"\n'}]}})
+read_msg()
+send({"jsonrpc": "2.0", "id": 91, "method": "textDocument/codeAction",
+      "params": {"textDocument": {"uri": URI},
+                 "range": {"start": {"line": 0, "character": 0}, "end": {"line": 3, "character": 0}},
+                 "context": {"diagnostics": []}}})
+acts = read_msg()["result"]
+expect([(a["title"], a["kind"]) for a in acts] == [("Qualify: Seq.where", "quickfix"), ("Qualify all bare names in file", "source.fixAll")],
+       f"the qualify actions: {acts}")
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": 'let files = [1; 2]\n\nprint $"{files |> Seq.length}"\n'}]}})
+expect(read_msg()["params"]["diagnostics"] == [], "back to the clean doc")
+
 # init.weir carries init-only directives (#session/#alias) the script
 # checker does not know — the LSP must not flag them (the col-0 #session
 # was reported as "expecting identifier"). A real declaration error still

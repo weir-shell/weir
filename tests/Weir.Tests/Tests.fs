@@ -13639,6 +13639,352 @@ let blockRecoveryTests =
               Expect.isEmpty partials "a burnt recovery yields no tree"
           } ]
 
+let quickFixTests =
+    let diagsOf path (lines: string list) =
+        let ds, _, _, _, _ = Weir.Script.analyzeLines path lines
+        ds
+
+    // every edit is against the unedited text [D:structured-fixes], so
+    // they apply last-first
+    let applyEdits (lines: string list) (edits: Weir.Script.FixEdit list) : string list =
+        let arr = List.toArray lines
+
+        let offset (l: int) (c: int) =
+            let mutable o = 0
+
+            for i in 0 .. l - 2 do
+                o <- o + arr[i].Length + 1
+
+            o + c - 1
+
+        let mutable t = String.concat "\n" lines
+
+        for e in edits |> List.sortByDescending (fun e -> e.Line, e.Col) do
+            t <-
+                t.Substring(0, offset e.Line e.Col)
+                + e.NewText
+                + t.Substring(offset e.EndLine e.EndCol)
+
+        t.Split('\n') |> Array.toList
+
+    let fixFor path lines (code: string) : Weir.Script.Fix =
+        match diagsOf path lines |> List.tryFind (fun d -> d.Code = code) with
+        | Some d ->
+            match d.Fix with
+            | Some f -> f
+            | None -> failtest $"no fix on {code}: {d.Message}"
+        | None -> failtest $"no {code} diagnostic: {diagsOf path lines |> List.map _.Message}"
+
+    let edit l c el ec (text: string) : Weir.Script.FixEdit =
+        { Line = l
+          Col = c
+          EndLine = el
+          EndCol = ec
+          NewText = text }
+
+    // the invariant: a fix fixes — the code is gone and nothing NEW errors
+    let fixes path lines (code: string) : Weir.Script.Fix =
+        let before = diagsOf path lines
+        let f = fixFor path lines code
+        let after = diagsOf path (applyEdits lines f.Edits)
+
+        Expect.isFalse
+            (after |> List.exists (fun d -> d.Code = code))
+            $"{f.Title}: {code} must be gone, got {after |> List.map _.Message}"
+
+        for d in after do
+            Expect.isTrue
+                (before |> List.exists (fun b -> b.Message = d.Message))
+                $"{f.Title}: a new diagnostic appeared [{d.Code}] {d.Message}"
+
+        f
+
+    let todo = "fail \"todo\""
+
+    // a #sig'd tool on disk, its script path only (never written)
+    let withSig (f: string -> unit) =
+        let td = tempPath "weir-qfix"
+        let sigs = System.IO.Path.Combine(td, ".weir", "sigs")
+        System.IO.Directory.CreateDirectory sigs |> ignore
+
+        System.IO.File.WriteAllLines(
+            System.IO.Path.Combine(sigs, "mytool.weir"),
+            [| "module Mytool"
+               "let version = \"mytool 1.0\""
+               "let exhaustive = true"
+               "type Cmd = {"
+               "    /// run without side effects"
+               "    dryRun: bool"
+               "}" |]
+        )
+
+        try
+            f (System.IO.Path.Combine(td, "main.weir"))
+        finally
+            System.IO.Directory.Delete(td, true)
+
+    testList
+        "Quick fixes [D:structured-fixes]"
+        [ test "Replace with 'X': every did-you-mean site replaces the typo inside its span" {
+              let f = fixes "q.weir" [ "let count = 1"; "print $\"{cont}\"" ] "unbound"
+              Expect.equal f.Title "Replace with 'count'" ""
+              Expect.equal f.Edits [ edit 2 10 2 14 "count" ] "the variable"
+              Expect.equal f.Family None "no family"
+
+              let f =
+                  fixes "q.weir" [ "type C = { Host: string }"; "let c = { Host = \"h\" }"; "print c.Hots" ] "check"
+
+              Expect.equal (f.Title, f.Edits) ("Replace with 'Host'", [ edit 3 9 3 13 "Host" ]) "the field"
+
+              let f =
+                  fixes
+                      "q.weir"
+                      [ "type C = { Host: string }"
+                        "let c = { Host = \"h\" }"
+                        "let d = { c with Hots = \"x\" }"
+                        "print d.Host" ]
+                      "check"
+
+              Expect.equal (f.Title, f.Edits) ("Replace with 'Host'", [ edit 3 18 3 22 "Host" ]) "the record update"
+
+              let f =
+                  fixes
+                      "q.weir"
+                      [ "type V = Pull | Push of int"
+                        "let v = Pull"
+                        "let k = match v with | Pul -> 1 | _ -> 0"
+                        "print $\"{k}\"" ]
+                      "check"
+
+              Expect.equal (f.Title, f.Edits) ("Replace with 'Pull'", [ edit 3 24 3 27 "Pull" ]) "the case"
+
+              // the attribute's span covers its argument: only the name moves
+              let f =
+                  fixes
+                      "q.weir"
+                      [ "type Cli = {"; "    [<Shrot \"n\">]"; "    name: string"; "}"; "let cli = Args.load Cli"; "print cli.name" ]
+                      "check"
+
+              Expect.equal (f.Title, f.Edits) ("Replace with 'Short'", [ edit 2 7 2 12 "Short" ]) "the attribute"
+
+              // a command head (the warning carries the typo unquoted); the
+              // suggestion comes from the machine's PATH, so the pin reads it
+              // from the message rather than naming one
+              let target =
+                  diagsOf "q.weir" [ "ecoh hi" ]
+                  |> List.tryPick (fun d -> if d.Code = "cmd-not-found" then Weir.Types.didYouMeanTarget d.Message else None)
+                  |> Option.map snd
+                  |> Option.defaultWith (fun () -> failtest "no did-you-mean on the command head")
+
+              let f = fixes "q.weir" [ "ecoh hi" ] "cmd-not-found"
+              Expect.equal (f.Title, f.Edits) ($"Replace with '{target}'", [ edit 1 1 1 5 target ]) "the command"
+          }
+          test "Replace with 'X': an unknown flag replaces the word; no span, no fix" {
+              withSig (fun entry ->
+                  let f = fixes entry [ "#sig mytool"; "mytool --dry-rnu" ] "sig"
+                  Expect.equal (f.Title, f.Edits) ("Replace with '--dry-run'", [ edit 2 8 2 17 "--dry-run" ]) "")
+
+              Expect.equal
+                  (Weir.Script.fixOf [||] "unbound" "unbound variable 'cont'. Did you mean 'count'?" 2 10 None None)
+                  None
+                  "a did-you-mean without a span offers nothing"
+
+              Expect.equal (Weir.Types.didYouMeanTarget "unbound variable 'cont'") None "no tail, no target"
+          }
+          test "Qualify: the bare-name teaching, family 'qualify'" {
+              let lines =
+                  [ "let xs = [1; 2]"; "let ys = xs |> where (fun x -> x > 1)"; "print $\"{ys |> Seq.length}\"" ]
+
+              let f = fixes "q.weir" lines "parse"
+              Expect.equal f.Title "Qualify: Seq.where" ""
+              Expect.equal f.Edits [ edit 2 16 2 21 "Seq.where" ] ""
+              Expect.equal f.Family (Some "qualify") ""
+
+              // the same teaching on a command head (a bare statement, so
+              // the qualified member is then the discard lesson — fixFor)
+              // `sortBy`, not `where`: where.exe is a program on Windows
+              let f = fixFor "q.weir" [ "sortBy" ] "cmd-not-found"
+              Expect.equal (f.Title, f.Edits, f.Family) ("Qualify: Seq.sortBy", [ edit 1 1 1 7 "Seq.sortBy" ], Some "qualify") ""
+          }
+          test "Add missing arms: one line per case under the arms, or appended on a single line" {
+              let f =
+                  fixes
+                      "q.weir"
+                      [ "type V = Pull | Push of int | Stop"; "let v = Stop"; "let k ="; "    match v with"; "    | Stop -> 0"; "print $\"{k}\"" ]
+                      "non-exhaustive"
+
+              Expect.equal f.Title "Add missing arms: Pull, Push _" "a payload case names its pattern"
+              Expect.equal f.Edits [ edit 5 16 5 16 $"\n    | Pull -> {todo}\n    | Push _ -> {todo}" ] ""
+
+              let f =
+                  fixes
+                      "q.weir"
+                      [ "type V = Pull | Push of int"; "let v = Push 1"; "let k = match v with | Pull -> 0"; "print $\"{k}\"" ]
+                      "non-exhaustive"
+
+              Expect.equal (f.Title, f.Edits) ("Add missing arm: Push _", [ edit 3 33 3 33 $" | Push _ -> {todo}" ]) "single line"
+
+              let f =
+                  fixes "q.weir" [ "let n = 3"; "let k ="; "    match n with"; "    | 1 -> 0"; "print $\"{k}\"" ] "non-exhaustive"
+
+              Expect.equal (f.Title, f.Edits) ("Add missing arm: _", [ edit 4 13 4 13 $"\n    | _ -> {todo}" ]) "catch-all"
+
+              let f =
+                  fixes
+                      "q.weir"
+                      [ "let p = (true, 1)"; "let k ="; "    match p with"; "    | (true, _) -> 0"; "print $\"{k}\"" ]
+                      "non-exhaustive"
+
+              Expect.equal (f.Title, f.Edits) ("Add missing arm: (false, _)", [ edit 4 21 4 21 $"\n    | (false, _) -> {todo}" ]) "a tuple witness is one arm"
+          }
+          test "Add else: on the if's line, or aligned under the line that opened the branch" {
+              let f = fixes "q.weir" [ "let c = true"; "let x = if c then 1"; "print $\"{x}\"" ] "check"
+              Expect.equal (f.Title, f.Edits) ("Add else", [ edit 2 20 2 20 $" else {todo}" ]) ""
+
+              let f =
+                  fixes "q.weir" [ "let c = true"; "let x ="; "    if c then"; "        1"; "print $\"{x}\"" ] "check"
+
+              Expect.equal (f.Title, f.Edits) ("Add else", [ edit 4 10 4 10 $"\n    else {todo}" ]) ""
+          }
+          test "Rename to '_x': every named unused variant; the bare '_' and fixAll never" {
+              let f = fixes "q.weir" [ "let tmp = 1"; "print \"x\"" ] "unused-binding"
+              Expect.equal (f.Title, f.Edits, f.Family) ("Rename to '_tmp'", [ edit 1 5 1 5 "_" ], None) ""
+
+              let f = fixes "q.weir" [ "let a = 1"; "let a = 2"; "print $\"{a}\"" ] "unused-binding"
+              Expect.equal (f.Title, f.Edits) ("Rename to '_a'", [ edit 1 5 1 5 "_" ]) "the shadow variant"
+
+              match diagsOf "q.weir" [ "let _ = 1"; "print \"x\"" ] with
+              | [ d ] -> Expect.equal d.Fix None "a bare '_' is misnamed, not unused"
+              | ds -> failtest $"{ds}"
+          }
+          test "Rename to 'foo': the binder only (its uses are the next diagnostic)" {
+              let f = fixFor "q.weir" [ "let Foo = 1"; "print $\"{Foo}\"" ] "lowercase-binding"
+              Expect.equal (f.Title, f.Edits) ("Rename to 'foo'", [ edit 1 5 1 8 "foo" ]) ""
+
+              let after = diagsOf "q.weir" (applyEdits [ "let Foo = 1"; "print $\"{Foo}\"" ] f.Edits)
+              Expect.isFalse (after |> List.exists (fun d -> d.Code = "lowercase-binding")) "the code is gone"
+              Expect.equal (after |> List.map _.Code) [ "unbound" ] "the use is now the lesson"
+
+              let f = fixFor "q.weir" [ "let FOO = 1"; "print $\"{FOO}\"" ] "lowercase-binding"
+              Expect.equal f.Title "Rename to 'foo'" "all-caps lowercases whole"
+          }
+          test "Align doc comment: the /// line takes the declaration's indent, family 'doc-align'" {
+              let f = fixes "q.weir" [ "/// doc for f"; "  /// second"; "let f x = x + 1"; "print $\"{f 1}\"" ] "doc-align"
+              Expect.equal (f.Title, f.Edits, f.Family) ("Align doc comment", [ edit 2 1 2 3 "" ], Some "doc-align") ""
+          }
+          test "Move doc to the signature: two edits against the unedited text" {
+              let lines = [ "module"; "let f : int -> int"; "/// the doc"; "let f x = x + 1" ]
+              let f = fixes "lib.weir" lines "doc-on-implementation"
+              Expect.equal f.Title "Move doc to the signature" ""
+              Expect.equal f.Edits [ edit 2 1 2 1 "/// the doc\n"; edit 3 1 4 1 "" ] ""
+              Expect.equal (applyEdits lines f.Edits) [ "module"; "/// the doc"; "let f : int -> int"; "let f x = x + 1" ] ""
+          }
+          test "Add a stub implementation under the signature" {
+              let f = fixes "lib.weir" [ "module"; "let g : string" ] "missing-implementation"
+              Expect.equal (f.Title, f.Edits) ("Add a stub implementation", [ edit 2 15 2 15 $"\nlet g = {todo}" ]) ""
+          }
+          test "Call it: a unit -> X statement names the function, not its result [D:structured-fixes]" {
+              Expect.equal
+                  (Weir.Script.discardError (TFun(TUnit, TInt)))
+                  (Some
+                      "this statement computes a unit -> int and discards it — that is the function itself, not its result: call it with ()")
+                  "the teaching"
+
+              let f = fixes "q.weir" [ "let helper () = print \"x\""; "helper" ] "discard"
+              Expect.equal (f.Title, f.Edits) ("Call it: helper ()", [ edit 2 7 2 7 " ()" ]) ""
+
+              // only a plain name takes the call; a branch would need parens
+              match diagsOf "q.weir" [ "let h () = 1"; "let c = true"; "if c then h else h" ] with
+              | [ d ] -> Expect.equal d.Fix None "no fix on a compound"
+              | ds -> failtest $"{ds}"
+          }
+          test "Unwrap with |> orFail: the Option/Result mismatch teaches the unwrap, placed where the pipe binds" {
+              Expect.equal
+                  (checkErr "Str.length (Seq.tryHead [\"a\"])").Message
+                  "expected string, got Option<string> — `|> orFail` unwraps it (raising on None/Error)"
+                  "the teaching"
+
+              Expect.equal
+                  (checkErr "Str.length (Seq.tryHead [1])").Message
+                  "expected string, got Option<int>"
+                  "a different payload is not an unwrap away"
+
+              // a parenthesised span takes the pipe inside
+              let f = fixes "q.weir" [ "let n = Str.length (Seq.tryHead [\"a\"])"; "print $\"{n}\"" ] "check"
+              Expect.equal (f.Title, f.Edits) ("Unwrap with |> orFail", [ edit 1 38 1 38 " |> orFail" ]) ""
+
+              // mid-expression: parenthesised so the pipe binds to the value
+              let f = fixes "q.weir" [ "let x = 1"; "let n = x + Seq.tryHead [1]"; "print $\"{n}\"" ] "check"
+              Expect.equal f.Edits [ edit 2 13 2 13 "("; edit 2 28 2 28 " |> orFail)" ] ""
+
+              // a whole right-hand side appends
+              let f = fixes "q.weir" [ "let s = \"a\""; "let n = if true then s else Seq.tryHead [s]"; "print $\"{n}\"" ] "check"
+              Expect.equal f.Edits [ edit 2 44 2 44 " |> orFail" ] ""
+          }
+          test "codeActionsFor: a quickfix per fix in range, one source.fixAll per family [D:structured-fixes]" {
+              let lines =
+                  [ "let xs = [1; 2]"
+                    "let a = xs |> where (fun x -> x > 1)"
+                    "let b = xs |> where (fun x -> x > 0)"
+                    "let Foo = 1"
+                    "print $\"{a |> Seq.length} {b |> Seq.length}\"" ]
+
+              let diags = diagsOf "q.weir" lines
+              let acts = Weir.Lsp.codeActionsFor diags None
+
+              Expect.equal
+                  (acts |> List.map (fun a -> a.Title, a.Kind))
+                  [ "Qualify: Seq.where", "quickfix"
+                    "Qualify: Seq.where", "quickfix"
+                    "Rename to 'foo'", "quickfix"
+                    "Qualify all bare names in file", "source.fixAll" ]
+                  "whole file"
+
+              let all = acts |> List.find (fun a -> a.Kind = "source.fixAll")
+              Expect.equal (all.Diagnostics |> List.map _.Line) [ 2; 3 ] "fixAll carries every member"
+              Expect.equal all.Edits [ edit 2 15 2 20 "Seq.where"; edit 3 15 3 20 "Seq.where" ] ""
+              Expect.equal (acts[0].Diagnostics |> List.map _.Code) [ "parse" ] "a quickfix carries its diagnostic"
+
+              Expect.equal
+                  (Weir.Lsp.codeActionsFor diags (Some(4, 4)) |> List.map _.Title)
+                  [ "Rename to 'foo'"; "Qualify all bare names in file" ]
+                  "the range filters quickfixes; fixAll stays whole-file"
+
+              // the doc-align family; the _-rename has none (R8)
+              let acts =
+                  Weir.Lsp.codeActionsFor
+                      (diagsOf "q.weir" [ "  /// a"; "let f x = x"; "  /// b"; "let g x = x"; "print $\"{f 1 + g 1}\"" ])
+                      None
+
+              Expect.equal (acts |> List.map _.Title) [ "Align doc comment"; "Align doc comment"; "Align all doc comments in file" ] ""
+
+              let acts = Weir.Lsp.codeActionsFor (diagsOf "q.weir" [ "let a = 1"; "let b = 2"; "print \"x\"" ]) None
+              Expect.equal (acts |> List.map (fun a -> a.Title, a.Kind)) [ "Rename to '_a'", "quickfix"; "Rename to '_b'", "quickfix" ] ""
+          }
+          test "parity: check --json's fix is the LSP's edit [D:one-pipeline]" {
+              let diags = diagsOf "q.weir" [ "let count = 1"; "print $\"{cont}\"" ]
+              let d = List.exactlyOne diags
+              use doc = System.Text.Json.JsonDocument.Parse(Weir.Script.jsonBuild (fun w -> Weir.Script.writeDiag w d))
+              let fix = doc.RootElement.GetProperty "fix"
+              Expect.equal (fix.GetProperty("title").GetString()) "Replace with 'count'" ""
+
+              let fromJson =
+                  [ for e in fix.GetProperty("edits").EnumerateArray() ->
+                        edit
+                            (e.GetProperty("line").GetInt32())
+                            (e.GetProperty("col").GetInt32())
+                            (e.GetProperty("endLine").GetInt32())
+                            (e.GetProperty("endCol").GetInt32())
+                            (e.GetProperty("newText").GetString()) ]
+
+              Expect.equal fromJson (Weir.Lsp.codeActionsFor diags None |> List.head).Edits ""
+
+              // no fix, no key
+              let d = List.exactlyOne (diagsOf "q.weir" [ "let n = 1 + \"a\""; "print $\"{n}\"" ])
+              use doc = System.Text.Json.JsonDocument.Parse(Weir.Script.jsonBuild (fun w -> Weir.Script.writeDiag w d))
+              Expect.isFalse (doc.RootElement.TryGetProperty("fix") |> fst) ""
+          } ]
+
 let multilineLambdaTests =
     testList
         "Multiline lambdas"
@@ -35949,6 +36295,7 @@ let allTests =
           multilineLambdaTests
           semanticTokenTests
           blockRecoveryTests
+          quickFixTests
           lspCrossFileTests
           lspRenameTests
           lspPolishTests
