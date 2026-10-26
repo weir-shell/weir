@@ -1,6 +1,6 @@
 # PLAN: derived Ord — `[<Ord>]` orders a record or union by declaration order
 
-**Status: BUILT (2026-10-26, branch feat/derived-ord) — all four phases under the recommended rulings R1–R10; session report at the end.**
+**Status: BUILT, then AMENDED (2026-10-26, branch feat/derived-ord) — built under R1–R10 as a type-level `[<Ord>]`; the user's ruling the same day replaced it with per-field / per-case `[<Ord n>]` before it shipped. The body below is the original plan and its session report; the amendment at the end is what landed.**
 
 ## The receipt
 
@@ -710,3 +710,73 @@ then the docs and ledger).
   it: 299 ok. With that one block disabled in an untracked copy, the
   whole battery: 1101 ok, 0 FAIL, rc=0 — the eight derived-Ord cells
   and the reference-json currency gate among them.
+
+## Amendment (2026-10-26, user ruling)
+
+**What changed.** The type-level `[<Ord>]` is removed — deleted, not
+deprecated; it never shipped. The only form is `[<Ord n>]` on a RECORD
+FIELD or a UNION CASE: one positive int argument, registry positions
+FieldPos + CasePos (the `[<Short "c">]` shape). A type with any
+`[<Ord n>]` is Ord; its key is the numbered members by ascending `n`,
+the next number breaking ties; gaps are allowed, equal `n` within one
+type refuses at the declaration naming both members, `0` refuses at
+the registry (`'Ord' expects a positive int, e.g. [<Ord 1>]`), a
+negative is not an attribute literal. Declaration order means nothing.
+
+**Why.** With the order read off the declaration, reordering a
+record's fields for readability silently changed program behaviour —
+the attribute flagged the trap without removing it. A spelled position
+is reorder-immune: moving or adding a field cannot change the key.
+
+**The laws that follow.**
+
+- Records: UNNUMBERED fields are not part of the order (the partial-key
+  law — SemVer's build metadata is the customer) and are unconstrained;
+  a numbered field's type must order or the declaration refuses, naming
+  the field and its position (the existing refusal, re-targeted to the
+  attribute's span).
+- Unions: every case numbered or none — a half-numbered union refuses
+  naming an unplaced case; a numbered case's payload must order.
+- Equality stays whole-value: two records equal on the key but
+  different elsewhere are neither `<` nor `>` nor `==`; `Seq.sort` is
+  stable so they keep input order; `min`/`max` return the first.
+  Stated once in the attribute's doc and in SKILL.md; pinned.
+- `Option` stays Ord by the solver's arm (unchanged).
+
+**What moved in the code.** `RecordDef.Ord: bool`/`UnionDef.Ord: bool`
+became `OrdKey: string list` (the key in order; empty = not ordered).
+`checkDecl` gained `ordKey` (collects positions, refuses a shared one)
+and the all-or-none union law; the member law runs over the numbered
+members only; `ordOffender`/`demand` decompose through the key
+(`ordKeyTys`), not every field. The runtime can no longer zip record
+fields positionally — the carried order is not the key — so Eval
+gained a record registry (`ordFields: name -> key`) beside the case
+registry, both filled from `Eval.declare` and storing the LISTED
+positions; `forgetOrd` drops both on the REPL's replace. A record
+collision law joined the union one: a numbered record may not share
+its name with a visible numbered record of a different key (a local
+declaration beside an import of the same name). Hover: the type shows
+`(ordered by a, b)`, a member its `[<Ord n>]`. Messages: "number its
+fields with [<Ord n>]" replaces "add [<Ord>] above `type X`"; the
+tuple teaching says "name the parts in a record and number them".
+[D:record-order] stands whole again (order carried, never semantic).
+
+**Pins re-pointed.** derivedOrdTests rewritten to the new spelling
+plus: the key laws (shared position on fields and on cases,
+half-numbered union, zero / no argument / a string, twice on one
+field, both declaration positions), reorder immunity (`OrdRev`), the
+partial-key law (operators, stable sort both ways, min/max first, the
+key still decides, `==` whole-value), the record collision law, the
+registries' listed positions and tripwires, hover on type / numbered
+field / unnumbered field / case. Fidelity's three `Same` pins and the
+`Diverge` row re-spelled. e2e: the SemVer cell carries an unnumbered
+`build` field and pins the stable order by bytes; a key-laws cell; the
+assembler fix is pinned by `[<Tag "kind">]` above a multi-line record
+reaching the registry's teaching at `file:1:3`, never a parse error.
+SKILL.md: the bullet, the SemVer fence (with `build`), a partial-key
+`weir` fence, `weir-error` fences for an unordered numbered field, a
+shared position and a half-numbered union.
+
+**Follow-up.** /output/lib/semver.weir uses the type-level form and no
+longer checks; a separate agent rewrites it.
+

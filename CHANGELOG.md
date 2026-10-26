@@ -80,14 +80,19 @@
   not be installed). Nothing pops inside a string or comment, after a
   keyword, or once every parameter is supplied.
 
-- **`[<Ord>]` derives an ordering.** Put `[<Ord>]` above a record or
-  union and it sorts (`Seq.sort`, `sortBy` keys, `min`/`max`) and
-  compares (`<`, `>`, `<=`, `>=`) in declaration order — fields for a
-  record, cases then payload for a union (`None` before `Some`). Every
-  field must itself order or the declaration says which one does not;
-  tuples still refuse, and the error now says to name the parts in a
-  record. `Option` values sort too. Hover on the type shows the
-  attribute.
+- **`[<Ord n>]` derives an ordering.** Number a record's fields or a
+  union's cases with `[<Ord n>]` and the type sorts (`Seq.sort`,
+  `sortBy` keys, `min`/`max`) and compares (`<`, `>`, `<=`, `>=`) by
+  the numbered members in ascending `n` — a union by case position,
+  then payload. The key is the numbers, never the declaration order,
+  so reordering fields cannot change a sort. Unnumbered record fields
+  take no part (two values equal on the key but different elsewhere
+  are neither `<` nor `>` nor `==`; sorts keep their input order); a
+  union numbers every case or none. A numbered member must itself
+  order or the declaration says which one does not; tuples still
+  refuse, and the error now says to name the parts in a record and
+  number them. `Option` values sort too. Hover on the type shows the
+  key in order, on a member its position.
 
 ### Fixed
 
@@ -96,8 +101,9 @@
   carry their spans, so the use inside the scope lands on the binder.
 
 - An attribute on its own line above a multi-line record body
-  (`[<Ord>]` then `type R = {` with the fields below) was a parse
-  error; it now assembles like the one-line form.
+  (`[<Tag "kind">]` then `type R = {` with the fields below) was a
+  parse error on the first field; it now assembles like the one-line
+  form, so the error is the attribute's own.
 
 ## v0.0.78
 

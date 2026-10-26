@@ -83,9 +83,10 @@ the type contains a function or a seq, anywhere, recursively
 contains a function; seqs *do* show (rendered lossily, truncated) —
 wider than Eq by exactly the seq rule, but the same *kind* of failable
 constraint. **Ord** — int, float, string, bool, Duration, Size,
-Instant, Uuid, plus `Option` of those and `[<Ord>]`-declared
-records/unions (declaration order, opt-in [D:derived-ord]); no tuple
-ordering — narrower than both. [D:inferred-type-classes]
+Instant, Uuid, plus `Option` of those and records/unions whose
+fields/cases carry `[<Ord n>]` positions (ascending `n`, opt-in
+[D:derived-ord]); no tuple ordering — narrower than both.
+[D:inferred-type-classes]
 
 **Constraint.** A demand attached to a type variable — "this must be
 equatable". weir infers constraints (from `==`, `show`, `Seq.sortBy`)
