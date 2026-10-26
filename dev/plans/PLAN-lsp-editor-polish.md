@@ -1,6 +1,6 @@
 # PLAN: LSP editor polish — the "sweet" editor session
 
-**Status: DRAFT** (2026-10-26) — awaiting rulings
+**Status: RULED** (user, 2026-10-26) — R1–R13 all as recommended; see Rulings. Sequenced after PLAN-lsp-recovery-rename.
 
 Sibling: PLAN-lsp-recovery-rename (parallel branch) owns block-level
 error recovery, binder spans for every binding form, references,
@@ -670,7 +670,9 @@ the resolved binary path quoted. README feature list; docs/editors.md
 (the "In any editor" list gains outline, folding, inlay hints, links,
 signature help, quick fixes; a note on `init_options` for Neovim).
 
-## Rulings needed
+## Rulings
+
+All thirteen ruled as recommended (user, 2026-10-26): R1 binder/param/return hints on, pipeline off, none on signed members; R2 truncate at 40 + tooltip; R3 initializationOptions; R4 sig lines attach to the implementation; R5 nested functions as children, textual fallback for failed statements; R6 structured `Fix`/`Related` on Script.Diagnostic, in `check --json`; R7 `fail "todo"`; R8 fixAll = qualify + doc-align only; R9 both checker teachings ride; R10 typed-flags-only; R11 `(` and space; R12 no code lens; R13 additive relatedInformation.
 
 - **R1 — inlay hint set and defaults.** Binder types, parameter types
   and return types on by default; pipeline-stage types off; no hints at
