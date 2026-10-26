@@ -870,7 +870,7 @@ let closers (text: string) : string =
         match stack with
         | ('"' | '$') :: rest ->
             if c = '\\' && i + 1 < text.Length then
-                i <- i + 1
+                i <- Scan.escapeEnd text i
             elif c = '"' then
                 stack <- rest
             elif c = '{' && List.head stack = '$' then
@@ -2688,8 +2688,9 @@ let private interpMasks (line: string) : bool[] * bool[] =
             str[i] <- true
 
             if c = '\\' && i + 1 < line.Length then
-                mark i (i + 1)
-                i <- i + 1
+                let e = Scan.escapeEnd line i
+                mark i e
+                i <- e
             elif c = '"' then
                 stack <- rest
             elif c = '{' && List.head stack = '$' then
@@ -3087,6 +3088,7 @@ let promptStatusDomain (dom: Ty) : bool =
             match f, t with
             | "ok", (TBool | TVar _) -> true
             | "exit", (TNamed("Option", [ TInt ]) | TNamed("Option", [ TVar _ ]) | TVar _) -> true
+            | "duration", (TDur | TVar _) -> true
             | _ -> false)
     | _ -> false
 
@@ -4064,10 +4066,35 @@ let rec private checkStatementCore
                     match Check.typecheckAgainstSig tenv sd.Ty e with
                     | Error(Check.SigBody terr) -> typedOrMissing StmtTag.Let terr
                     | Error(Check.SigShape(implTy, span)) ->
+                        // a body ending in a command returns its output
+                        // where the signature says unit [D:module-signatures]
+                        let rec result (t: Ty) =
+                            match t with
+                            | TFun(_, r) -> result r
+                            | t -> t
+
+                        let rec endsInCommand (x: Expr) =
+                            match x.Kind with
+                            | ELambda(_, _, b)
+                            | ELambdaPat(_, b)
+                            | ELet(_, _, _, b)
+                            | ELetPat(_, _, b)
+                            | ESeq(_, b) -> endsInCommand b
+                            | ECmd _ -> true
+                            | EPipe(_, stage) -> (match stage.Kind with ECmd _ -> true | _ -> false)
+                            | _ -> false
+
+                        let hint =
+                            match result sd.Ty, result implTy with
+                            | TUnit, TSeq TStr when endsInCommand e ->
+                                " — its last line is a command, so it returns the command's output (seq<string>); end the body with `()`"
+                            | _ -> ""
+
                         sigErrAt
                             span
                             ($"the implementation of '{name}' does not match its signature: "
-                             + $"the signature (line {sd.Line}) declares {formatTy sd.Ty}, but the implementation is {formatTy implTy}")
+                             + $"the signature (line {sd.Line}) declares {formatTy sd.Ty}, but the implementation is {formatTy implTy}"
+                             + hint)
                     | Error(Check.SigPinned(v, pinnedTy, span)) ->
                         sigErrAt
                             span
@@ -10309,7 +10336,7 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                                         (valCol ll.Head "prompt")
                                         None
                                         "session-type"
-                                        $"prompt expects a string, a unit -> string, or a PromptStatus -> string function (ok + a bare command's exit code), got {formatTy ty}"
+                                        $"prompt expects a string, a unit -> string, or a PromptStatus -> string function (ok, a bare command's exit code, the entry's duration), got {formatTy ty}"
                                 )
                         | _ ->
                             diags.Add(

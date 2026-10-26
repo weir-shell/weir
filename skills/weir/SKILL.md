@@ -414,6 +414,10 @@ echo --flag="quoted v" // the quoted part would be its own argument; quote the w
 - Literal patterns work (`| 0 ->`, `| "yes" ->`, `| () ->`, nested in
   constructors) but int/string literals NEVER complete a match alone —
   add a `_`/var arm or it is a hard error. Guards remain legal.
+- Ordinary and `$"…"` strings escape `\"` `\\` `\n` `\t`, `\e` (ESC,
+  for terminal sequences) and `\u{1F600}` (1–6 hex digits, one code
+  point; a surrogate or a value past 10FFFF is a parse error)
+  [D:string-escapes]; any other backslash is a parse error.
 - Raw strings, F#'s two kinds, both SINGLE-LINE: `@"..."` verbatim
   (backslashes literal; `""` = one embedded quote) and `"""..."""`
   (no escapes at all; bare `"` fine inside), and the RAW INTERPOLATED
@@ -451,7 +455,10 @@ print $"""tok {s}"""
   (and Python's `(?P<x>...)`) REJECT: weir names captures at the BINDER, not in the pattern
   (lookbehind `(?<=`/`(?<!` is fine). Groups bind as STRINGS;
   convert in the arm. Regex arms never complete a match. Computed
-  hashing/encoding: `Str.sha256` (lowercase hex of UTF-8 bytes),
+  hashing/encoding: `Str.sha256` (lowercase hex of UTF-8 bytes;
+  `Str.sha1`/`Bytes.sha1`/`File.sha1` the same shape, for protocols
+  that name SHA-1 — git ids, legacy checksums — never for security
+  [D:sha1]),
   `Str.toBase64` (one unwrapped line), `Str.fromBase64` /
   `Str.tryFromBase64` (raise/None on malformed AND on non-text bytes —
   NUL included: a NUL-bearing decode is binary, and binary's home is
@@ -528,6 +535,11 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
 "weir-7d9f   1/1   Running   0   12m" |> Str.fields |> Seq.item 1 |> print
 ```
 
+  `Str.rreplace pat rep s : string` rewrites every regex match
+  [D:str-rreplace] — in `rep`, `$1`/`${1}` is a group, `$0` the whole
+  match, `$$` a literal `$`; any other `$` and a group the pattern
+  lacks raise (no `${name}` — no named groups). `Str.replace` is
+  LITERAL text, never a regex.
   `Str.rsplit pat s : seq<string>` splits on every regex match —
   `Str.split`'s empties law (adjacent matches and edges yield `""`),
   capture groups never add pieces; a bad pattern raises like the
@@ -2799,7 +2811,11 @@ print $"{fixed} {Path.isName fixed}"
   start len` takes one byte's window). String positions and widths —
   slices, `Str.length`/`sub`/`tryIndexOf`/`padLeft`/`padRight` — count
   Unicode code points [D:str-code-points]: `Str.length "a😀b"` is 3 and
-  no cut splits an emoji. FROM-THE-END is `^n` (F#'s
+  no cut splits an emoji. `Str.width s : int` is the TERMINAL COLUMNS
+  instead [D:str-width] — wide CJK/fullwidth/emoji 2, combining marks,
+  controls and escape sequences (SGR colour) 0, an emoji sequence (ZWJ,
+  VS16, flag) one glyph: `Str.width "a😀b"` is 4. Align printed text
+  with it (`Str.replicate (w - Str.width s) " "`), not `padLeft`. FROM-THE-END is `^n` (F#'s
   spelling, `^n` = length − n) — `xs[^1]` is the last element, and it
   works as a slice bound too: `xs[..^2]` is all-but-last, `xs[^2..]` the
   last two, `xs[^3..^1]` both ends from the end. A `^`-bound resolves
@@ -3189,7 +3205,7 @@ not the teaching.
 - `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move` `stat`
 - `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
 - `Env`: `fromFile` `get` `getOr` `load` `need` `ofPairs` `pair` `vars`
-- `File`: `append` `copy` `delete` `exists` `isExecutable` `mode` `move` `read` `readBytes` `readFrom` `readSecret` `sha256` `size` `stat` `write` `writeAtomic` `writeBytes` — `mode` is the permissions as `Some "rwxr-xr-x"` (`None` on Windows); `stat` is one path's `FileRow` (a symlink describes the link itself); `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity], and refuses a FIFO (use `write`) [D:fifo-ops-polled] — the temp file is born with that mode, so a 0600 file's new content is never readable wider [D:private-temp]
+- `File`: `append` `copy` `delete` `exists` `isExecutable` `mode` `move` `read` `readBytes` `readFrom` `readSecret` `sha1` `sha256` `size` `stat` `write` `writeAtomic` `writeBytes` — `mode` is the permissions as `Some "rwxr-xr-x"` (`None` on Windows); `stat` is one path's `FileRow` (a symlink describes the link itself); `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity], and refuses a FIFO (use `write`) [D:fifo-ops-polled] — the temp file is born with that mode, so a 0600 file's new content is never readable wider [D:private-temp]
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Uuid`: `fromBytes` `instant` `max` `nil` `ns` `parse` `toBytes` `toString` `tryParse` `v4` `v5` `v7` `v7At` `version`
@@ -3205,7 +3221,7 @@ not the teaching.
 - `Net`: `portOpen`
 - `Result`: `defaultValue` `isOk` `map` `toOption` — what `e |> try result` gives (`Ok v` / `Error msg`)
 - `Option`: `bind` `defaultValue` `defaultWith` `flatten` `iter` `map` `orElse` `orElseWith` — `bind` chains lookups that may each fail (`f` returns an Option; no nesting); `flatten` collapses `Option<Option<T>>`
-- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `isName` `newTempDir` `normalize` `stateHome` `stem` `tempRoot` `toName` `under` — `isName` is true for one file name valid on Linux, macOS and Windows; `toName` turns any text into one; `normalize` resolves `.`/`..` in the path TEXT (no filesystem, no symlinks; use it where `under` refuses a path that leaves its base); `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`) — home is `$HOME` verbatim when set, the OS lookup when unset, and an empty HOME raises [D:home-verbatim]; HOME and `XDG_*` are read through a `within env` overlay [D:home-overlay]; in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to
+- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `isName` `newTempDir` `normalize` `stateHome` `stem` `tempRoot` `toName` `under` `which` — `isName` is true for one file name valid on Linux, macOS and Windows; `toName` turns any text into one; `which name : Option<string>` is the full path of the program a command head would run, found as the spawn finds it: on the PATH the command runs with (a `within env` overlay's included [D:overlay-path]) and PATHEXT on Windows; a name with a `/` answers itself when the file exists; an ambient read (readonly admits it, pure refuses) [D:path-which]; `normalize` resolves `.`/`..` in the path TEXT (no filesystem, no symlinks; use it where `under` refuses a path that leaves its base); `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`) — home is `$HOME` verbatim when set, the OS lookup when unset, and an empty HOME raises [D:home-verbatim]; HOME and `XDG_*` are read through a `within env` overlay [D:home-overlay]; in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to
 - `Poll`: `defaults`
 - `Plan`: `apply` `isEmpty` `ops` `preview` — the value a `plan` block yields: `ops` the recorded `Op`s, `preview` one line each, `apply` performs them in order
 - `Proc`: `pid` `running` `stop` `tail` `wait`
@@ -3216,9 +3232,9 @@ not the teaching.
 - `Term`: `width` `title` — `Term.width () : int`, the terminal columns queried live; falls back to 80 when there is no terminal (piped/redirected), so it never raises. The `tput cols` primitive. `Term.title : string -> unit` sets the window title (an OSC 0 to stdout, or stderr when only that is a terminal; `Console.Title` on Windows); controls, escapes and bidi controls in the text are dropped and it is capped at 256 code points; with no terminal it does nothing. A console write: `pure` and `readonly` refuse it. Call it from the init.weir `prompt` function to keep the title current.
 - `Self`: `prompt`, everywhere — writes its message to stderr and reads one stdin line (raises at end of input); and `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `initInfinite` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`
-- `Bytes`: `fromBase64` `fromHex` `hmacSha256` `length` `sha256` `sub` `toBase64` `toHex` `tryFromBase64`
+- `Bytes`: `fromBase64` `fromHex` `hmacSha256` `length` `sha1` `sha256` `sub` `toBase64` `toHex` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
-- `Str`: `contains` `endsWith` `fields` `fromBase64` `isEmpty` `isMatch` `join` `length` `nonEmpty` `padLeft` `padRight` `replace` `replicate` `rmatch` `rmatchAll` `rsplit` `rsplitOnce` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `tryRsplitOnce` `trySplitOnce` `tryToInt` `fromUtf8`
+- `Str`: `contains` `endsWith` `fields` `fromBase64` `isEmpty` `isMatch` `join` `length` `nonEmpty` `padLeft` `padRight` `replace` `replicate` `rmatch` `rmatchAll` `rreplace` `rsplit` `rsplitOnce` `sha1` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `tryRsplitOnce` `trySplitOnce` `tryToInt` `fromUtf8` `width`
 
 Bare builtins and the prelude types (a union lists its cases, the
 constructors; a record its fields), kept honest by a unit test against
@@ -3242,6 +3258,7 @@ the checker's own environment [D:surface-gate] — same contract as above:
 - type `Poll`: { `timeout` `interval` }
 - type `Repeat`: { `interval` `timeout` }
 - type `PromptStatus`: { `ok` `exit` }
+- type `PromptStatus`: { `ok` `exit` `duration` }
 - type `Result`: `Ok` `Error`
 - type `Retry`: { `attempts` `delay` `timeout` }
 - type `ServerConfig`: { `port` `maxConcurrent` `bodyTimeout` `maxBody` }

@@ -613,7 +613,8 @@ let private oneLine (prog: string) (argv: string list) (lines: seq<string>) : Va
     match List.ofSeq lines with
     | [ one ] -> VStr(one.Trim())
     | ls ->
-        let shown = Proc.showArgv (prog :: argv)
+        // the argv is data: a newline in it renders escaped [D:error-data-escape]
+        let shown = quoteData (Proc.showArgv (prog :: argv))
         failwith $"'{shown} | line' expected exactly one line of output, got {List.length ls}"
 
 let private linedWith (overlay: (string * string) list) : Value =
@@ -819,6 +820,115 @@ let private rsplitImpl: Value =
                     }
                 )
             | _ -> unreachable "the checker rejects 'rsplit' on these arguments"))
+
+// rreplace [D:str-rreplace]: replace every regex match, the r-family's
+// pattern-first shape. The replacement is weir's own small language,
+// not .NET's: `$1`/`${1}` a group, `$0` the whole match, `$$` one `$`.
+// Anything else after a `$` raises — .NET's `$&`/`$_`/`$+` would be a
+// second dialect, and `${name}` has no group to name [D:no-named-groups]
+// — and a group past the pattern's count raises before any match runs.
+type private ReplPart =
+    | RLit of string
+    | RGroup of int
+
+let private parseReplacement (groups: int) (rep: string) : ReplPart list =
+    let parts = ResizeArray<ReplPart>()
+    let lit = System.Text.StringBuilder()
+
+    let group (g: int) (shown: string) =
+        if g > groups then
+            let has =
+                match groups with
+                | 0 -> "has no groups"
+                | 1 -> "has 1 group"
+                | n -> $"has {n} groups"
+
+            failwith $"rreplace: the replacement refers to {shown}, but the pattern {has}"
+
+        if lit.Length > 0 then
+            parts.Add(RLit(lit.ToString()))
+            lit.Clear() |> ignore
+
+        parts.Add(RGroup g)
+
+    let lone () =
+        failwith "rreplace: a '$' in the replacement starts a group — write $1 or ${1} for a group, $0 for the whole match, $$ for a literal '$'"
+
+    let mutable i = 0
+
+    while i < rep.Length do
+        let c = rep[i]
+
+        if c <> '$' then
+            lit.Append c |> ignore
+            i <- i + 1
+        elif i + 1 >= rep.Length then
+            lone ()
+        elif rep[i + 1] = '$' then
+            lit.Append '$' |> ignore
+            i <- i + 2
+        elif System.Char.IsAsciiDigit rep[i + 1] then
+            let mutable j = i + 1
+
+            while j < rep.Length && System.Char.IsAsciiDigit rep[j] do
+                j <- j + 1
+
+            let digits = rep.Substring(i + 1, j - i - 1)
+
+            match System.Int32.TryParse digits with
+            | true, g -> group g $"${digits}"
+            | _ -> group System.Int32.MaxValue $"${digits}"
+
+            i <- j
+        elif rep[i + 1] = '{' then
+            match rep.IndexOf('}', i + 2) with
+            | -1 -> failwith "rreplace: '${' in the replacement needs its closing '}', as in ${1}"
+            | close ->
+                let name = rep.Substring(i + 2, close - i - 2)
+
+                if name <> "" && name |> Seq.forall System.Char.IsAsciiDigit then
+                    match System.Int32.TryParse name with
+                    | true, g -> group g $"${{{name}}}"
+                    | _ -> group System.Int32.MaxValue $"${{{name}}}"
+                else
+                    failwith
+                        $"rreplace: '${{{quoteData name}}}' names a group, but weir patterns have no named groups — refer to it by position, ${{1}} for the first"
+
+                i <- close + 1
+        else
+            lone ()
+
+    if lit.Length > 0 then
+        parts.Add(RLit(lit.ToString()))
+
+    List.ofSeq parts
+
+let private rreplaceImpl: Value =
+    VBuiltin(fun patV ->
+        VBuiltin(fun repV ->
+            VBuiltin(fun subjectV ->
+                match patV, repV, subjectV with
+                | VStr pat, VStr rep, VStr s ->
+                    let re = compiledOrRaise pat
+                    let parts = parseReplacement (re.GetGroupNumbers().Length - 1) rep
+                    let sb = System.Text.StringBuilder()
+                    let mutable pos = 0
+                    let mutable m = Check.regexGuarded pat s (fun () -> re.Match s)
+
+                    while m.Success do
+                        sb.Append(s, pos, m.Index - pos) |> ignore
+
+                        for p in parts do
+                            match p with
+                            | RLit t -> sb.Append t |> ignore
+                            | RGroup g -> sb.Append m.Groups[g].Value |> ignore
+
+                        pos <- m.Index + m.Length
+                        m <- Check.regexGuarded pat s m.NextMatch
+
+                    sb.Append(s, pos, s.Length - pos) |> ignore
+                    VStr(sb.ToString())
+                | _ -> unreachable "the checker rejects 'rreplace' on these arguments")))
 
 // Path.glob [D:path-glob] — the standard subset (`*` within-segment,
 // `**` cross-segment, `?`, `[abc]`/`[!abc]`), bash's laws: `*` never
@@ -3060,20 +3170,29 @@ let private strMembers: (string * Ty * Value) list =
       "join", TFun(TStr, TFun(TSeq TStr, TStr)), joinImpl
       "replace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), replaceImpl
       "length", TFun(TStr, TInt), strLenImpl
+      // terminal columns [D:str-width]: the REPL prompt's own width table
+      "width", TFun(TStr, TInt), VBuiltin(function VStr s -> VInt(int64 (CellWidth.ofString s)) | v -> unreachable $"the checker rejects 'Str.width' on {formatValue v}")
       "sub", TFun(TInt, TFun(TInt, TFun(TStr, TStr))), substringImpl
       "replicate", TFun(TInt, TFun(TStr, TStr)), strReplicateImpl
       "padLeft", TFun(TInt, TFun(TStr, TStr)), padImpl "padLeft" CodePoints.padLeft
       "padRight", TFun(TInt, TFun(TStr, TStr)), padImpl "padRight" CodePoints.padRight
       "toInt", TFun(TStr, TInt), toIntImpl
       "tryToInt", TFun(TStr, TNamed("Option", [ TInt ])), tryToIntImpl
-      // sha256 only [D:encoding-law]: md5 is broken (offering it invites
-      // its use), sha1 deprecated, sha512 has no receipt — one member,
-      // one algorithm, more on receipt. Lowercase hex = sha256sum parity
-      // (the tool it replaces).
+      // sha256 and sha1 [D:encoding-law] [D:sha1]: md5 is broken
+      // (offering it invites its use), sha512 has no receipt; sha1 is
+      // here for the protocols that name it (git object ids, legacy
+      // checksums), never as a security hash. Lowercase hex =
+      // sha256sum/sha1sum parity (the tools they replace).
       "sha256",
       TFun(TStr, TStr),
       str1 "sha256" (fun s ->
           System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes s)
+          |> Array.map (fun b -> b.ToString "x2")
+          |> String.concat "")
+      "sha1",
+      TFun(TStr, TStr),
+      str1 "sha1" (fun s ->
+          System.Security.Cryptography.SHA1.HashData(System.Text.Encoding.UTF8.GetBytes s)
           |> Array.map (fun b -> b.ToString "x2")
           |> String.concat "")
       // unwrapped by construction — GNU base64 wraps at 76 cols (the -w0
@@ -3127,7 +3246,8 @@ let private strMembers: (string * Ty * Value) list =
       "isMatch", TFun(TStr, TFun(TStr, TBool)), isMatchImpl
       "rmatch", TFun(TStr, TFun(TStr, TNamed("Option", [ TSeq TStr ]))), rmatchImpl
       "rmatchAll", TFun(TStr, TFun(TStr, TSeq(TSeq TStr))), rmatchAllImpl
-      "rsplit", TFun(TStr, TFun(TStr, TSeq TStr)), rsplitImpl ]
+      "rsplit", TFun(TStr, TFun(TStr, TSeq TStr)), rsplitImpl
+      "rreplace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), rreplaceImpl ]
 
 // Path — string surgery over paths, System.IO.Path underneath.
 // extension keeps the dot and is "" when there is none; dir is "" at
@@ -3418,6 +3538,18 @@ let private pathMembers: (string * Ty * Value) list =
       "toName", TFun(TStr, TStr), str1 "toName" pathToName
       "under", TFun(TStr, TFun(TStr, TStr)), pathUnderImpl
       "glob", TFun(TStr, TSeq TStr), globImpl
+      // the program a command head would run [D:path-which]: the spawn's
+      // own lookup, on the PATH the command runs with (the `within env`
+      // layers [D:overlay-path]), PATHEXT on Windows
+      "which",
+      TFun(TStr, TNamed("Option", [ TStr ])),
+      VBuiltin(fun v ->
+          match v with
+          | VStr prog ->
+              match Extern.which (Proc.spawnPairs None []) prog with
+              | Some full -> VUnion("Some", Some(VStr full))
+              | None -> VUnion("None", None)
+          | v -> unreachable $"the checker rejects 'Path.which' on {formatValue v}")
       // home + XDG dirs [D:path-home] — the typed replacement for `~`/`$HOME`
       // (weir expands nothing in argv): `cat $"{Path.home ()}/.bashrc"`
       "home", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(homeDir ()))
@@ -4484,6 +4616,25 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                           |> String.concat ""))
               )
           | v -> unreachable $"the checker rejects 'File.sha256' on {formatValue v}")
+      "sha1",
+      // streamed like File.sha256 [D:sha1]
+      TFun(TStr, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolveFs p
+              PlanMode.checkRead "File.sha1" r
+              readGuard "File.sha1" r
+
+              VStr(
+                  ioGuarded "File.sha1" r (fun () ->
+                      // a FIFO is cut as File.read's is [D:fifo-ops-polled]
+                      withReadStream r (fun fs ->
+                          System.Security.Cryptography.SHA1.HashData fs
+                          |> Array.map (fun x -> x.ToString "x2")
+                          |> String.concat ""))
+              )
+          | v -> unreachable $"the checker rejects 'File.sha1' on {formatValue v}")
       "delete",
       TFun(TStr, TUnit),
       VBuiltin(fun v ->
@@ -4807,6 +4958,17 @@ let private bytesMembers: (string * Ty * Value) list =
                   |> String.concat ""
               )
           | v -> unreachable $"the checker rejects 'Bytes.sha256' on {formatValue v}")
+      "sha1",
+      TFun(TBytes, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VBytes b ->
+              VStr(
+                  System.Security.Cryptography.SHA1.HashData b
+                  |> Array.map (fun x -> x.ToString "x2")
+                  |> String.concat ""
+              )
+          | v -> unreachable $"the checker rejects 'Bytes.sha1' on {formatValue v}")
       "length",
       TFun(TBytes, TSize),
       VBuiltin(fun v ->
@@ -7257,9 +7419,15 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "Join a sequence of strings with a separator." (Some "Str.join \",\" [\"a\"; \"b\"]") None
            |> named [ "sep"; "xs" ])
           "Str.replace",
-          bd "Replace every occurrence of a substring." (Some "Str.replace \"a\" \"b\" \"aba\"") None
+          bd "Replace every occurrence of a substring. The text is literal, not a regex (Str.rreplace takes a pattern)." (Some "Str.replace \"a\" \"b\" \"aba\"") None
           |> named [ "old"; "new"; "s" ]
           "Str.length", (bd "The number of characters (Unicode code points)." (Some "Str.length \"abc\"") None |> named [ "s" ])
+          "Str.width",
+          (bd
+              "The number of terminal columns the string takes when printed: two for a wide character (Chinese, Japanese, Korean, fullwidth forms, emoji), none for a combining mark, a zero-width or control character, or an escape sequence such as a colour, one for the rest. An emoji built from several code points (a family joined by zero-width joiners, a flag) counts once. Use it to pad or align text you print; Str.length counts code points instead."
+              (Some "Str.width \"日本\"")
+              None
+           |> named [ "s" ])
           "Str.sub",
           (bd "A substring by start index and length, both in characters (code points)." (Some "Str.sub 0 2 \"abc\"") None
            |> named [ "start"; "len"; "s" ])
@@ -7288,8 +7456,14 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "s" ])
           "Str.sha256",
           (bd
-              "The SHA-256 digest of the string's UTF-8 bytes, as lowercase hex (same output as sha256sum). Only SHA-256 is available for now."
+              "The SHA-256 digest of the string's UTF-8 bytes, as lowercase hex (same output as sha256sum)."
               (Some "Str.sha256 \"hello\"")
+              None
+           |> named [ "s" ])
+          "Str.sha1",
+          (bd
+              "The SHA-1 digest of the string's UTF-8 bytes, as lowercase hex (same output as sha1sum). SHA-1 is broken for security; use it only where a protocol names it (git object ids, legacy checksums), and Str.sha256 otherwise."
+              (Some "Str.sha1 \"hello\"")
               None
            |> named [ "s" ])
           "Str.toBase64",
@@ -7346,6 +7520,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Str.rsplit @\"\\s*,\\s*\" \"a , b,c\" |> Seq.freeze")
               None
           |> named [ "pattern"; "s" ]
+          "Str.rreplace",
+          bd
+              "Replace every regex match. In the replacement, $1 (or ${1}) is a group, $0 the whole match, and $$ a literal $; any other $ raises, as does a group the pattern does not have. Str.replace is the literal form."
+              (Some "Str.rreplace @\"(\\w+)@(\\w+)\" \"$2 at $1\" \"me@host\"")
+              None
+          |> named [ "pattern"; "replacement"; "s" ]
 
           // ---- Path (pure string ops; glob touches the filesystem) ----
           "Path.dir",
@@ -7405,6 +7585,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Path.glob \"*.nope123\" |> Seq.freeze")
               None
           |> named [ "pattern" ]
+          "Path.which",
+          bd
+              "The full path of the program a command name would run, as Some path, or None when there is none. It looks the name up the way weir does when it runs a command: on the PATH the command would run with, including one set by `within env PATH=…`, and through PATHEXT on Windows. A name with a / in it is checked as a path."
+              (Some "Path.which \"sh\"")
+              None
+          |> named [ "name" ]
           "Path.home",
           (bd
               "The user's home directory: `$HOME` as set (even if that directory is missing), the OS lookup when it is unset; raises when there is none (an empty `$HOME`). Has no side effects. In a command line, a typed `~` means this path; in an expression, build paths with `$\"{Path.home ()}/.bashrc\"`."
@@ -7536,6 +7722,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "File.sha256",
           (bd
               "The SHA-256 digest of a file's bytes, as lowercase hex (same output as sha256sum). The file is streamed, never loaded into memory whole."
+              None
+              None
+           |> named [ "path" ])
+          "File.sha1",
+          (bd
+              "The SHA-1 digest of a file's bytes, as lowercase hex (same output as sha1sum). The file is streamed, never loaded into memory whole. SHA-1 is broken for security; use it only where a protocol names it, and File.sha256 otherwise."
               None
               None
            |> named [ "path" ])
@@ -7819,6 +8011,9 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "b" ])
           "Bytes.sha256",
           (bd "The SHA-256 digest of the bytes, as lowercase hex (same output as sha256sum)." None None
+           |> named [ "b" ])
+          "Bytes.sha1",
+          (bd "The SHA-1 digest of the bytes, as lowercase hex (same output as sha1sum). For protocols that name SHA-1; Bytes.sha256 otherwise." None None
            |> named [ "b" ])
           "Bytes.length", (bd "The byte count as a Size." None None |> named [ "b" ])
           "Bytes.fromHex",
@@ -8322,7 +8517,7 @@ let private chainLinedImpl =
     chainBuiltin (fun specs ->
         match List.ofSeq (Proc.chainLinesOf specs) with
         | [ one ] -> VStr(one.Trim())
-        | ls -> failwith $"'{chainShown specs} | line' expected exactly one line of output, got {List.length ls}")
+        | ls -> failwith $"'{quoteData (chainShown specs)} | line' expected exactly one line of output, got {List.length ls}")
 
 let private chainTextedImpl =
     chainBuiltin (fun specs -> wholeText (Proc.chainLinesOf specs))

@@ -73,7 +73,7 @@ too, as `pwd` sees `within cd`, and so do `Path.home`, the XDG helpers
 (`Path.configHome` and the rest) and a typed `~`; after it, they read
 the unchanged process environment. A command started in the block is
 looked up on the overlay's `PATH` when it sets one, as the child would
-look it up — a `^$tool` head included. Nested overlays combine, with inner values winning, and an
+look it up — a `^$tool` head included, and `Path.which`. Nested overlays combine, with inner values winning, and an
 env given directly on a capture (`$e(...)`) wins over any enclosing
 `within env`:
 

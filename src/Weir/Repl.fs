@@ -15,9 +15,10 @@ let private defaultPrompt = "weir> "
 // the declarations bind, so it can call the init's own functions.
 // The PromptStatus argument [D:red-prompt] [D:prompt-status-arg]:
 // ok is the tint (true when the last entry ran clean), exit a bare
-// command's nonzero code — a custom prompt owns its colors, so the
-// status arrives as data instead of a paint.
-let mutable private promptProvider: ((bool * int option) -> string) option = None
+// command's nonzero code, duration the last entry's wall time — a
+// custom prompt owns its colors, so the status arrives as data instead
+// of a paint.
+let mutable private promptProvider: ((bool * int option * int64) -> string) option = None
 
 // the prompt in effect for the entry being read; sanitized text (SGR
 // allowed), its visible width, and a same-width continuation prompt.
@@ -27,50 +28,11 @@ let mutable private prompt = "weir> "
 let mutable private promptWidth = 6
 let mutable private promptWarned = false
 
-/// terminal cell width of one rune — the wcwidth ranges, approximated:
-/// zero for combining marks and format characters (ZWJ and friends),
-/// two for the CJK blocks, fullwidth forms, and the emoji planes, one
-/// otherwise. Terminals disagree at the edges (VS16-promoted dingbats);
-/// the unambiguous ranges cover prompts in practice.
-let private runeWidth (r: System.Text.Rune) =
-    match System.Text.Rune.GetUnicodeCategory r with
-    | Globalization.UnicodeCategory.NonSpacingMark
-    | Globalization.UnicodeCategory.EnclosingMark
-    | Globalization.UnicodeCategory.Format -> 0
-    | _ ->
-        let cp = r.Value
-
-        let wide =
-            (cp >= 0x1100 && cp <= 0x115F) // Hangul Jamo
-            || (cp >= 0x2E80 && cp <= 0x303E) // CJK radicals, punctuation
-            || (cp >= 0x3041 && cp <= 0x33FF) // kana, CJK symbols
-            || (cp >= 0x3400 && cp <= 0x4DBF) // CJK ext A
-            || (cp >= 0x4E00 && cp <= 0x9FFF) // CJK unified
-            || (cp >= 0xA000 && cp <= 0xA4CF) // Yi
-            || (cp >= 0xAC00 && cp <= 0xD7A3) // Hangul syllables
-            || (cp >= 0xF900 && cp <= 0xFAFF) // CJK compatibility
-            || (cp >= 0xFE30 && cp <= 0xFE4F) // CJK compat forms
-            || (cp >= 0xFF00 && cp <= 0xFF60) // fullwidth forms
-            || (cp >= 0xFFE0 && cp <= 0xFFE6)
-            || (cp >= 0x1F300 && cp <= 0x1F9FF) // emoji
-            || (cp >= 0x1FA00 && cp <= 0x1FAFF)
-            || (cp >= 0x20000 && cp <= 0x3FFFD) // CJK ext B+
-
-        if wide then 2 else 1
-
 /// display width of a prompt: terminal cells once escape sequences are
 /// dropped — rune-aware, so CJK and emoji count their two cells and
-/// combining marks count none [D:session-prompt]
-let private visibleWidth (s: string) =
-    let stripped =
-        System.Text.RegularExpressions.Regex.Replace(s, "\x1b\\[[0-9;:?]*[A-Za-z]", "")
-
-    let mutable w = 0
-
-    for r in stripped.EnumerateRunes() do
-        w <- w + runeWidth r
-
-    w
+/// combining marks count none [D:session-prompt]; the one width table
+/// Str.width reads too [D:str-width]
+let private visibleWidth (s: string) = CellWidth.ofString s
 
 /// the width seam for tests [D:session-prompt] (as parseAliasLineForTest is)
 let visibleWidthForTest = visibleWidth
@@ -152,13 +114,20 @@ let mutable private lastErrored = false
 // tint is
 let mutable private lastExit: int option = None
 
+// the duration twin [D:prompt-duration]: the last entry's wall time in
+// ms, from submit to the next prompt (0 before the first entry). A
+// blank or comment-only entry starts no clock, so it leaves the last
+// duration in place, as it leaves the tint
+let mutable private lastDurationMs = 0L
+let mutable private entryStarted: int64 option = None
+
 let private computePrompt () =
     match promptProvider with
     | None -> defaultPrompt
     | Some _ when Console.IsInputRedirected -> defaultPrompt
     | Some f ->
         try
-            f (not lastErrored, lastExit) |> sanitizePromptForTest
+            f (not lastErrored, lastExit, lastDurationMs) |> sanitizePromptForTest
         with
         | Eval.ExitRequest _ -> reraise ()
         | :? Session.Interrupted -> defaultPrompt
@@ -4093,7 +4062,22 @@ let rec private loop (state: State) =
         fun n -> Map.tryFind n state.Aliases |> Option.map (fun a -> (a.Exe, a.Prefix))
     currentVals.Value <- state.Values
 
-    match readInput () with
+    match entryStarted with
+    | Some t ->
+        lastDurationMs <- int64 (Diagnostics.Stopwatch.GetElapsedTime t).TotalMilliseconds
+        entryStarted <- None
+    | None -> ()
+
+    let entry = readInput ()
+
+    if
+        not (isNull entry)
+        && entry.Split '\n'
+           |> Array.exists (fun l -> Script.classifyLine l = Script.LineKind.Code)
+    then
+        entryStarted <- Some(Diagnostics.Stopwatch.GetTimestamp())
+
+    match entry with
     | null -> ()
     | line when
         line.Split '\n'
@@ -4723,14 +4707,17 @@ let private loadInit (baseState: State) : State =
                         let f = Eval.eval venv te
 
                         promptProvider <-
-                            Some(fun (ok, exit) ->
+                            Some(fun (ok, exit, durationMs) ->
                                 let ex =
                                     match exit with
                                     | Some n -> Eval.VUnion("Some", Some(Eval.VInt(int64 n)))
                                     | None -> Eval.VUnion("None", None)
 
                                 let st =
-                                    Eval.VRecord("PromptStatus", [ "ok", Eval.VBool ok; "exit", ex ])
+                                    Eval.VRecord(
+                                        "PromptStatus",
+                                        [ "ok", Eval.VBool ok; "exit", ex; "duration", Eval.VDur durationMs ]
+                                    )
 
                                 match Eval.apply f st with
                                 | Eval.VStr s -> s
@@ -4758,6 +4745,9 @@ let private loadInit (baseState: State) : State =
               Aliases = aliasMap }
 
 let run () =
+    // the waiting indicator draws in the REPL only [D:waiting-repl-only]
+    Waiting.enabled <- true
+
     if not Console.IsInputRedirected then
         setupLineEditor ()
 

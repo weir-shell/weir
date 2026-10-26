@@ -980,7 +980,10 @@ base64 that doesn't decode to text (a PNG's bytes aren't a string,
 and you'd rather hear about it than get garbage).
 `Str.tryFromBase64` returns an `Option` instead, for input from an
 API or anyone you don't trust. `Str.sha256` hashes the UTF-8 bytes
-and returns lowercase hex, the same as `sha256sum`.
+and returns lowercase hex, the same as `sha256sum`. `Str.sha1` (and
+`Bytes.sha1`, `File.sha1`) does the same with SHA-1, like `sha1sum`,
+for protocols that call for it, such as git object ids. SHA-1 is not
+safe as a security hash.
 
 A ConfigMap needs YAML block scalars. After a `key: |` (or `|-`)
 header, the indented content is taken literally: `$VAR` and `for`
@@ -1276,6 +1279,16 @@ Str.rmatchAll @"let (\w+) = (\d+)" src
 |> Seq.map (fun g -> Str.join "=" g)
 |> Seq.distinct
 |> Seq.iter print
+```
+
+To rewrite every match, use `Str.rreplace pattern replacement s`. In
+the replacement, `$1` (or `${1}`, when a digit follows) is a capture
+group, `$0` the whole match, and `$$` a literal `$`. A `$` followed by
+anything else is an error, and so is a group the pattern doesn't
+have. `Str.replace` is the literal version, with no regex:
+
+```weir
+"me@host, you@box" |> Str.rreplace @"(\w+)@(\w+)" "$2 at $1" |> print
 ```
 
 If a command can print structured output, use that instead:

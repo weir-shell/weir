@@ -51,6 +51,13 @@
           "pointer": null
         },
         {
+          "name": "sha1",
+          "signature": "Bytes.sha1 (b: Bytes) : string",
+          "summary": "The SHA-1 digest of the bytes, as lowercase hex (same output as sha1sum). For protocols that name SHA-1; Bytes.sha256 otherwise.",
+          "example": null,
+          "pointer": null
+        },
+        {
           "name": "sha256",
           "signature": "Bytes.sha256 (b: Bytes) : string",
           "summary": "The SHA-256 digest of the bytes, as lowercase hex (same output as sha256sum).",
@@ -443,6 +450,13 @@
           "name": "readSecret",
           "signature": "File.readSecret (path: string) : Secret",
           "summary": "Read a file\u0027s whole content as a Secret, for example a secret mounted into a container. Trailing newlines are removed.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "sha1",
+          "signature": "File.sha1 (path: string) : string",
+          "summary": "The SHA-1 digest of a file\u0027s bytes, as lowercase hex (same output as sha1sum). The file is streamed, never loaded into memory whole. SHA-1 is broken for security; use it only where a protocol names it, and File.sha256 otherwise.",
           "example": null,
           "pointer": null
         },
@@ -1073,6 +1087,13 @@
           "signature": "Path.under (base: string) (name: string) : string",
           "summary": "Join a name onto base, normalize, and raise if the result ends up outside base. The check is by whole path segments, so uploads-evil is not inside uploads. Use combine for paths you control and under for paths you do not (such as user input). It works on the text only and never touches the disk or follows symlinks. An absolute or Windows-style name is rejected on every platform.",
           "example": "Path.under (Path.tempRoot ()) \u0022a/b\u0022",
+          "pointer": null
+        },
+        {
+          "name": "which",
+          "signature": "Path.which (name: string) : Option\u003Cstring\u003E",
+          "summary": "The full path of the program a command name would run, as Some path, or None when there is none. It looks the name up the way weir does when it runs a command: on the PATH the command would run with, including one set by \u0060within env PATH=\u2026\u0060, and through PATHEXT on Windows. A name with a / in it is checked as a path.",
+          "example": "Path.which \u0022sh\u0022",
           "pointer": null
         }
       ]
@@ -1896,7 +1917,7 @@
         {
           "name": "replace",
           "signature": "Str.replace (old: string) (new: string) (s: string) : string",
-          "summary": "Replace every occurrence of a substring.",
+          "summary": "Replace every occurrence of a substring. The text is literal, not a regex (Str.rreplace takes a pattern).",
           "example": "Str.replace \u0022a\u0022 \u0022b\u0022 \u0022aba\u0022",
           "pointer": null
         },
@@ -1922,6 +1943,13 @@
           "pointer": null
         },
         {
+          "name": "rreplace",
+          "signature": "Str.rreplace (pattern: string) (replacement: string) (s: string) : string",
+          "summary": "Replace every regex match. In the replacement, $1 (or ${1}) is a group, $0 the whole match, and $$ a literal $; any other $ raises, as does a group the pattern does not have. Str.replace is the literal form.",
+          "example": "Str.rreplace @\u0022(\\w\u002B)@(\\w\u002B)\u0022 \u0022$2 at $1\u0022 \u0022me@host\u0022",
+          "pointer": null
+        },
+        {
           "name": "rsplit",
           "signature": "Str.rsplit (pattern: string) (s: string) : seq\u003Cstring\u003E",
           "summary": "Split on every regex match. As with split, empty pieces are kept (adjacent matches, or a match at either end, produce \u0022\u0022). Capture groups do not add extra pieces.",
@@ -1936,9 +1964,16 @@
           "pointer": null
         },
         {
+          "name": "sha1",
+          "signature": "Str.sha1 (s: string) : string",
+          "summary": "The SHA-1 digest of the string\u0027s UTF-8 bytes, as lowercase hex (same output as sha1sum). SHA-1 is broken for security; use it only where a protocol names it (git object ids, legacy checksums), and Str.sha256 otherwise.",
+          "example": "Str.sha1 \u0022hello\u0022",
+          "pointer": null
+        },
+        {
           "name": "sha256",
           "signature": "Str.sha256 (s: string) : string",
-          "summary": "The SHA-256 digest of the string\u0027s UTF-8 bytes, as lowercase hex (same output as sha256sum). Only SHA-256 is available for now.",
+          "summary": "The SHA-256 digest of the string\u0027s UTF-8 bytes, as lowercase hex (same output as sha256sum).",
           "example": "Str.sha256 \u0022hello\u0022",
           "pointer": null
         },
@@ -2066,6 +2101,13 @@
           "signature": "Str.tryToInt (s: string) : Option\u003Cint\u003E",
           "summary": "Parse an int as an Option, None when it is not a number.",
           "example": "Str.tryToInt \u002242\u0022",
+          "pointer": null
+        },
+        {
+          "name": "width",
+          "signature": "Str.width (s: string) : int",
+          "summary": "The number of terminal columns the string takes when printed: two for a wide character (Chinese, Japanese, Korean, fullwidth forms, emoji), none for a combining mark, a zero-width or control character, or an escape sequence such as a colour, one for the rest. An emoji built from several code points (a family joined by zero-width joiners, a flag) counts once. Use it to pad or align text you print; Str.length counts code points instead.",
+          "example": "Str.width \u0022\u65E5\u672C\u0022",
           "pointer": null
         }
       ]
@@ -2932,6 +2974,10 @@
         {
           "name": "exit",
           "type": "Option\u003Cint\u003E"
+        },
+        {
+          "name": "duration",
+          "type": "Duration"
         }
       ]
     },
