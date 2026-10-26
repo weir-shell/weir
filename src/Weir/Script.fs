@@ -10569,22 +10569,28 @@ let effectBeforeArgs (path: string) (stmts: (LogicalLine * CheckedKind) list) : 
 // answering inside it. The diagnostic stays the first pass's; the
 // binder schemes are the hole schemes the Error branch binds, so the
 // partial's kind and its env agree
-let private recoverStatement (tenv: TypeEnv) (holeScheme: Scheme) (stmt: Stmt) : CheckedKind option =
-    let recovered (e: Expr) =
-        Check.typecheckRecovering tenv e |> Option.map fst
+let private recoverStatement
+    (tenv: TypeEnv)
+    (holeScheme: Scheme)
+    (stmt: Stmt)
+    : CheckedKind option * bool =
+    let recovered (e: Expr) (wrap: Check.TypedExpr -> CheckedKind) =
+        match Check.typecheckRecovering tenv e with
+        | Check.RecoveredExpr(te, _) -> Some(wrap te), false
+        | Check.NoRecovery -> None, false
+        | Check.RecoveryBudgetExhausted -> None, true
 
     match stmt with
-    | SLet(name, e) -> recovered e |> Option.map (fun te -> KLet(name, holeScheme, te))
+    | SLet(name, e) -> recovered e (fun te -> KLet(name, holeScheme, te))
     | SLetPat(pat, e) ->
-        recovered e
-        |> Option.map (fun te -> KLetPat(pat, Check.patNameSpans pat |> List.map (fun (n, _) -> n, holeScheme), te))
-    | SCmd e -> recovered e |> Option.map KCmd
+        recovered e (fun te -> KLetPat(pat, Check.patNameSpans pat |> List.map (fun (n, _) -> n, holeScheme), te))
+    | SCmd e -> recovered e KCmd
     // statement position demands unit — checkStatementCore's arming
-    | SExpr e -> recovered (Check.armTail e) |> Option.map KExpr
+    | SExpr e -> recovered (Check.armTail e) KExpr
     | SType _
     | SSig _
     | SModule _
-    | SImport _ -> None
+    | SImport _ -> None, false
 
 /// analyzeLines, with `asInit` forcing the init-file reading (the LSP's
 /// canonical init path, marked or not [D:init-marker]). The fifth
@@ -11074,9 +11080,9 @@ let analyzeLinesAs
                      // the tree, against the env the statement checked in;
                      // its env is the hole-bound one below. A budget failure
                      // is not paid twice [D:budget-stop-first]
-                     let recovered =
+                     let recovered, recoveryBudget =
                          if Check.isBudgetMessage d.Message then
-                             None
+                             None, false
                          else
                              recoverStatement tenv holeScheme stmt
 
@@ -11091,6 +11097,12 @@ let analyzeLinesAs
                                Env = tenv
                                Warnings = [] }
                          ))
+
+                     // a spent recovery budget stops the fold exactly as a
+                     // published budget diagnostic does [D:budget-stop-first]:
+                     // one burn bounds the file, not one burn per statement
+                     if recoveryBudget then
+                         budgetStop <- true
                  | Error _ ->
                      // a statement that does not parse still names its
                      // binder [D:parse-error-binds]: harvested lexically, a

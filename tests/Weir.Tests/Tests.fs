@@ -12824,6 +12824,32 @@ let blockRecoveryTests =
               Expect.equal (partials |> List.map (fun (ll, _) -> ll.Head)) [ 1 ] "recovered"
               Expect.equal (Weir.Lsp.hoverType pat 4 17) (Some "int") "the earlier leaf answers"
               Expect.equal (Weir.Lsp.hoverType pat 5 17) None "a hole-bound leaf's use: null"
+          }
+          test "a recovery burn stops the fold: one budget bounds the file [D:budget-stop-first]" {
+              // the recovery pass is armed with a fresh budget; a statement
+              // whose first error is cheap but whose block burns must not
+              // let every such statement pay a burn of its own
+              let burn (b: int) =
+                  [ $"let f{b} x ="
+                    "    let bad = 1 + \"x\""
+                    "    let g0 y = (y, y)"
+                    "    let g1 y = g0 (g0 y)"
+                    "    let g2 y = g1 (g1 y)"
+                    "    let g3 y = g2 (g2 y)"
+                    "    let g4 y = g3 (g3 y)"
+                    "    let g5 y = g4 (g4 y)"
+                    "    let v = g5 1"
+                    "    print (show bad)"
+                    "    print (show v)"
+                    "    x" ]
+
+              let diags, _, _, _, partials =
+                  Weir.Script.analyzeLines "burn.weir" (burn 0 @ burn 1 @ [ "let later = 1 + \"y\"" ])
+
+              let errors = diags |> List.filter (fun d -> d.Severity = "error")
+              Expect.equal (errors |> List.map (fun d -> d.Line)) [ 2 ] "the first statement's own error, then the stop"
+              Expect.isFalse (Weir.Check.isBudgetMessage errors.Head.Message) "the published error is the cheap one"
+              Expect.isEmpty partials "a burnt recovery yields no tree"
           } ]
 
 let multilineLambdaTests =

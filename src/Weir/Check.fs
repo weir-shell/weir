@@ -7588,13 +7588,23 @@ let typecheckWith
 let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     typecheckWith env expr |> Result.map (fun (te, _, _, _) -> te)
 
+/// what a recovery pass produced [D:block-recovery]: a tree, nothing to
+/// recover, or a spent budget. The pass is armed with a fresh budget, so
+/// a caller folding over many statements MUST stop that fold on
+/// RecoveryBudgetExhausted — otherwise one exhaustion per statement
+/// multiplies across the file [D:budget-stop-first].
+type RecoveryResult =
+    | RecoveredExpr of TypedExpr * (TypeError * Span) list
+    | NoRecovery
+    | RecoveryBudgetExhausted
+
 /// the recovery pass [D:block-recovery]: a tree for a statement that
 /// already failed to check, with each failed block element a hole, and
-/// the failures caught (first first). None when nothing recovers — the
-/// failure is the statement's own expression, or the budget. The
-/// boundary checks run only for the tree's sake: their failures are
-/// not this pass's to report.
-let typecheckRecovering (env: TypeEnv) (expr: Expr) : (TypedExpr * (TypeError * Span) list) option =
+/// the failures caught (first first). NoRecovery when nothing recovers —
+/// the failure is the statement's own expression. The boundary checks
+/// run only for the tree's sake: their failures are not this pass's to
+/// report.
+let typecheckRecovering (env: TypeEnv) (expr: Expr) : RecoveryResult =
     let env =
         { withAnonDefs env expr with
             AnonLitDefs = System.Collections.Generic.Dictionary() }
@@ -7603,14 +7613,14 @@ let typecheckRecovering (env: TypeEnv) (expr: Expr) : (TypedExpr * (TypeError * 
 
     try
         match infer ctx env expr with
-        | Error _ -> None
+        | Error _ -> NoRecovery
         | Ok te ->
             let generic = tyVars (finalTy ctx te.Ty) - envFreeVars ctx env
             resolvePendingSplices ctx env generic |> ignore
             let te = finalizeExpr ctx te
-            Some(te, ctx.Recovered |> Option.defaultValue [] |> List.rev)
+            RecoveredExpr(te, ctx.Recovered |> Option.defaultValue [] |> List.rev)
     with BudgetExceeded _ ->
-        None
+        RecoveryBudgetExhausted
 
 // what a binder pattern is, in words — the shape a payload failed to fit
 let private binderWord (p: Pattern) : string =
