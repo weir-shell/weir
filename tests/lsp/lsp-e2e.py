@@ -1378,6 +1378,12 @@ def collect8(uris):
         if all(nuri(u) in got for u in uris):
             return got
     expect(False, f"publishes missing for {uris}: {list(got)}")
+# the module is OPEN too, under the client's spelling (Windows: as_uri's
+# drive case, not the server's) — the links probe below asserts exactly
+# that an open target answers with it [D:lsp-uri-spelling]
+send8({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": lib8_uri, "text": LIB8_GOOD}}})
+collect8([lib8_uri, ent8_uri])
 # folding on the tokens FIXTURE, under the latency bound [D:folding-ranges]
 fold_uri = furi(os.path.join(td8, "fold.weir"))
 send8({"jsonrpc": "2.0", "method": "textDocument/didOpen",
@@ -1424,8 +1430,8 @@ expect(hs and {h["position"]["line"] for h in hs} == {4}, f"hints honour the ran
 # relates the error to the signature line; the entry's imported-here
 # note (still published) relates to the module's error site
 open(lib8, "w").write(LIB8_BAD)
-send8({"jsonrpc": "2.0", "method": "textDocument/didOpen",
-       "params": {"textDocument": {"uri": lib8_uri, "text": LIB8_BAD}}})
+send8({"jsonrpc": "2.0", "method": "textDocument/didChange",
+       "params": {"textDocument": {"uri": lib8_uri, "version": 2}, "contentChanges": [{"text": LIB8_BAD}]}})
 got = collect8([lib8_uri, ent8_uri])
 mm = [d for d in got[nuri(lib8_uri)] if "does not match its signature" in d["message"]]
 expect(mm and any(r["message"].startswith("the signature declares") and r["location"]["range"]["start"]["line"] == 2
