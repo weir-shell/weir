@@ -115,6 +115,28 @@
   precedence. Every member is `let pure`. See docs/tooling.md "The
   library".
 
+- **`Completed.ok`.** `cmd | complete` now carries `ok`, exactly
+  `exitCode == 0` — the `| succeeds` law as a field — so
+  `let r = … | complete` then `if r.ok then …` reads. It leads the
+  record (`{ ok; exitCode; stdout; stderr }`) in `show`, the REPL echo
+  and `to json`. A tool whose nonzero codes mean something (grep's 1)
+  reads the code.
+
+### Changed
+
+- **Receipts are read-only (breaking).** `Completed`, `FileRow` and
+  `HttpResponse` — the records only the runtime mints (`| complete`,
+  `ls`/`Dir.stat`/`File.stat`, `Http.send`) — can no longer be written
+  as a record literal (`{ exitCode = 3; … }`, `Completed { … }`) or
+  changed with `{ r with … }`. Each is a check error naming where the
+  value comes from and the anonymous record a test passes instead (a
+  function over the fields is row-typed, so `{| exitCode = 3 |}` works).
+  A script that built a `Completed` by hand breaks here: run a command
+  (`sh -c "exit 3" | complete`) or pass an anonymous record. A row-typed
+  updater applied to a receipt raises at run time with the same message.
+  Side effect: a bare `{ status = …; headers = …; body = … }` literal now
+  resolves to `HttpServerResponse` instead of reporting an ambiguity
+  with `HttpResponse`.
 ### Fixed
 
 - **Go to definition on a `within` or `until` binder's use** jumped to

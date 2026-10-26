@@ -519,10 +519,16 @@ let private toListImpl: Value =
 let completedDef: RecordDef =
     { Name = "Completed"
       Params = []
-      Fields = [ "exitCode", TInt; "stdout", TSeq TStr; "stderr", TSeq TStr ]
+      // ok leads [D:record-order], the verdict before the detail — it is
+      // exitCode == 0 exactly (`| succeeds`'s law), derived at the one
+      // construction funnel so no receipt can carry both [D:receipts-read-only]
+      Fields = [ "ok", TBool; "exitCode", TInt; "stdout", TSeq TStr; "stderr", TSeq TStr ]
       Attrs = Map.empty
       OrdKey = []
       Docs = Map.empty }
+
+let completedOf (code: int) (stdout: seq<string>) (stderr: seq<string>) : Value =
+    recordOf completedDef [ VBool(code = 0); VInt(int64 code); VSeq(stdout |> Seq.map VStr); VSeq(stderr |> Seq.map VStr) ]
 
 // completedWith is the shared body; completed is the empty overlay and
 // completedEnv the env-sigil desugar target — the cmd/cmdEnv pattern.
@@ -538,7 +544,7 @@ let private completedWith (overlay: (string * string) list) : Value =
 
                 // lazy views over the capture buffer [D:capture-buffer]
                 // — decode per pull, stable on re-enumeration
-                recordOf completedDef [ VInt(int64 code); VSeq(stdout |> Seq.map VStr); VSeq(stderr |> Seq.map VStr) ]
+                completedOf code stdout stderr
             | _ -> unreachable "the checker rejects 'completed' on these arguments"))
 
 let private completedImpl: Value = completedWith []
@@ -684,7 +690,7 @@ let private completedWithIn (overlay: (string * string) list) : Value =
                     let code, out, err =
                         Proc.completeWith overlay (Proc.specProg prog) argv (Some input)
 
-                    recordOf completedDef [ VInt(int64 code); VSeq(out |> Seq.map VStr); VSeq(err |> Seq.map VStr) ]
+                    completedOf code out err
                 | _ -> unreachable "the checker rejects 'completedIn' on these arguments")))
 
 let private succeededWithIn (overlay: (string * string) list) : Value =
@@ -7941,8 +7947,8 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Http.header",
           (bd
               "The first value of a response header, or None when it is missing. Header names match case-insensitively, as HTTP requires, so ETag and etag are the same header. For headers that can repeat (Set-Cookie), use Http.headerAll."
-              (Some "(HttpResponse { status = 200; headers = [(\"ETag\", \"abc\")]; body = [\"\"] }) |> Http.header \"etag\"")
               None
+              (Some "After a send: `let r = Http.get url |> Http.send`, then `r |> Http.header \"etag\"`. An HttpResponse only comes from a send, so code that reads headers takes the response it was given rather than building one.")
            |> named [ "name"; "resp" ])
           "Http.headerAll",
           (bd
@@ -8216,9 +8222,9 @@ let builtinDocs: Map<string, BuiltinDoc> =
           // key (+ Env/In twins), mapped back by reifierSurface below. ----
           "complete",
           bd
-              "Run the command (or pipeline) and capture everything as a `Completed` record: its exit code, stdout and stderr. A nonzero exit does not raise."
+              "Run the command (or pipeline) and capture everything as a `Completed` record: ok (exitCode == 0), its exit code, stdout and stderr. A nonzero exit does not raise."
               None
-              (Some "Use it when you need the exit code and the output together: `let r = git push | complete`, then read `r.exitCode`, `r.stdout`, `r.stderr`.")
+              (Some "Use it when you need the exit code and the output together: `let r = git push | complete`, then `if r.ok then …` or read `r.exitCode`, `r.stdout`, `r.stderr`.")
           "succeeds",
           bd
               "Run the command and return true if it exited 0. Its output is discarded."
@@ -8252,7 +8258,11 @@ let builtinDocs: Map<string, BuiltinDoc> =
 
           // ---- types: a hover renders the structure; the value here is
           // when you get one ----
-          "Completed", bd "A finished command: exitCode, stdout, stderr. You get one from `| complete`." None None
+          "Completed",
+          bd
+              "A finished command: ok, exitCode, stdout, stderr. ok is exitCode == 0; a tool whose nonzero codes mean something (grep's 1) reads the code. You get one from `| complete`, and only from there: it is a receipt of a run, so a literal or `{ r with … }` is refused."
+              None
+              None
           "FileRow",
           bd
               "A directory entry, as returned by `ls`. Fields: name; kind (Regular, Directory or Symlink); target (Some link target for a symlink, None otherwise; no File.* function gives you this); bytes (0 B for a directory); modified (the last-write time as an Instant, which does not change after you read it; tables show it as relative time, show prints ISO); hidden; and path. `ls` lists files and subdirectories sorted by name, case-sensitively with uppercase first, regardless of locale. Use name for matching and display and path when calling File.* functions. Less common details are separate functions rather than fields, such as File.mode for permissions."
@@ -8483,7 +8493,7 @@ let private chainBuiltin (k: Proc.Spec list -> Value) : Value =
 let private chainCompletedImpl =
     chainBuiltin (fun specs ->
         let code, stdout, stderr = Proc.chainCompletedOf specs
-        recordOf completedDef [ VInt(int64 code); VSeq(stdout |> Seq.map VStr); VSeq(stderr |> Seq.map VStr) ])
+        completedOf code stdout stderr)
 
 let private chainSucceededImpl =
     chainBuiltin (fun specs ->

@@ -66,8 +66,9 @@ single string, use `cmd | text` (all of stdout) or `cmd | line`
 `set -e` is always on and has no name. A nonzero exit raises an error
 (once the command's output has been read to the end) and stops the script,
 pointing at the failing line. To inspect a failure instead, turn it
-into data: `cmd | complete` gives `{ exitCode; stdout; stderr }`. That
-record is also how you get at stderr where bash would use `2>&1`.
+into data: `cmd | complete` gives `{ ok; exitCode; stdout; stderr }`
+(`ok` is `exitCode == 0`). That record is also how you get at stderr
+where bash would use `2>&1`.
 
 ```weir-error
 // set -e is unconditional and unnamed: a nonzero exit raises

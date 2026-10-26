@@ -5973,6 +5973,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
             (fun acc (path, tval) ->
                 let rec go (v: Value) (path: string list) : Value =
                     match v, path with
+                    // a row-typed updater learns its source is a receipt
+                    // only here [D:receipts-read-only] — the checker's
+                    // refusal, repeated where the value is known
+                    | VRecord(n, _), _ when isReceipt n -> failwith (receiptUpdateMsg n)
                     // recSet replaces in place [D:record-order]: an
                     // updated field keeps its position, never moves
                     | VRecord(n, fs), [ f ] -> VRecord(n, recSet f (eval env tval) fs)

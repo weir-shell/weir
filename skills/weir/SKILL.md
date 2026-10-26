@@ -1655,6 +1655,19 @@ print x
 let found = grep -c NOPE_XYZ /etc/hostname | succeeds
 let detail = grep -c NOPE_XYZ /etc/hostname | complete
 print (if found then "?" else $"no match is false; code {detail.exitCode}")
+// r.ok is the same law as a field: exitCode == 0
+let r = sh -c "exit 3" | complete
+if r.ok then print "clean" else print $"failed with {r.exitCode}"
+let codeOf { exitCode = c } = c
+print (show (codeOf {| exitCode = 3 |}))
+```
+
+```weir-error
+// a receipt is minted, never written: a Completed literal asserts a run
+// that never happened — the error names '| complete' and the anonymous
+// record a row-typed function takes instead
+let r = { exitCode = 3; stdout = []; stderr = [] }
+print (show r.exitCode)
 ```
 
 ```weir
@@ -1946,8 +1959,16 @@ within tmp d
   (`then` ends the argv only there — quote `"then"` to pass the word;
   the checker demands bool, so a bare streaming chain errors naming
   it). Bind first when the verdict is used twice.
-  Full inspection: `cmd | complete` gives a `Completed` record, `{ exitCode; stdout;
-  stderr }`; a COMPUTED argv splats into the chain —
+  Full inspection: `cmd | complete` gives a `Completed` record, `{ ok; exitCode;
+  stdout; stderr }` — `ok` is `exitCode == 0` (the `succeeds` law), so `if
+  r.ok then …` reads; a tool whose nonzero codes mean something (grep's 1)
+  reads the code. RECEIPTS ARE READ-ONLY [D:receipts-read-only]:
+  `Completed`, `FileRow` (`ls`/`Dir.stat`/`File.stat`) and `HttpResponse`
+  (`Http.send`) are minted by the runtime only — a record literal (bare or
+  `Completed { … }`) or a `{ r with … }` is a check error naming where the
+  value comes from; a function over their fields is row-typed, so a test
+  passes an anonymous record (`{| exitCode = 3 |}`). A COMPUTED argv
+  splats into the chain —
   `$author(git commit-tree $@argv | complete) |> _.stdout` (literal
   head, splatted argv, sigil env; works with every reifier,
   value-headed and interior lines too — except `exec`, which refuses a
@@ -3303,7 +3324,7 @@ the checker's own environment [D:surface-gate] — same contract as above:
 
 - bare builtins: `cd` `exit` `fail` `fst` `id` `ls` `not` `print` `printerr` `pwd` `show` `snd`
 - type `Auth`: `NoAuth` `Bearer` `Basic`
-- type `Completed`: { `exitCode` `stdout` `stderr` }
+- type `Completed`: { `ok` `exitCode` `stdout` `stderr` }
 - type `EnvVar`: { `name` `value` }
 - type `FileKind`: `Regular` `Directory` `Symlink`
 - type `FileChunk`: { `lines` `next` }

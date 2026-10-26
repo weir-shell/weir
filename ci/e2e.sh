@@ -591,6 +591,24 @@ expect "POSIX one-liner via the external shell" '["a"; "b"]' "$out"
 out=$($BIN -e 'sh -c "exit 7" | complete |> _.exitCode')
 expect "sh lines can complete now (old builtin boundary gone)" "7 : int" "$out"
 
+# Completed.ok is exitCode == 0 exactly [D:receipts-read-only] — the
+# succeeds law as a field, over the codes the suite already reads
+okdir=$(mkweirtmp)
+cat > "$okdir/ok.weir" <<'WEOF'
+for c in [0; 1; 3; 130] do
+    let r = sh -c $"exit {c}" | complete
+    print $"{r.exitCode}:{r.ok}:{r.ok == (r.exitCode == 0)}"
+WEOF
+out=$(cd "$okdir" && $BIN ok.weir 2>&1) || fail "Completed.ok fixture must run: $out"
+[ "$out" = "0:true:true
+1:false:true
+3:false:true
+130:false:true" ] || fail "Completed.ok is exitCode == 0 over 0/1/3/130: $out"
+out=$($BIN -e 'sh -c "exit 3" | complete |> to json')
+expect "to json of a Completed carries ok" '["{\"ok\":false,\"exitCode\":3,\"stdout\":[],\"stderr\":[]}"] : seq<string>' "$out"
+rm -rf "$okdir"
+echo "e2e ok: Completed.ok == (exitCode == 0) over 0/1/3/130; to json carries it"
+
 # ---- command chaining [D:cmd-chaining]: bash &&/|| as `| and` / `| or` ----
 out=$($BIN -e "sh -c 'exit 0' | and echo yes")
 expect "| and runs the right on success" "yes" "$out"
@@ -4673,6 +4691,8 @@ WEOF
     ciout=$(printf 'SLEEP 700\nSEND sh %s/t.sh\\r\nSLEEP 400\nSEND let r = $(sh %s/t.sh | complete)\\r\nSLEEP 500\nSEND print (r.stdout |> Seq.head)\\r\nSLEEP 300\nSEND #quit\\r\n' "$cidir" "$cidir" | python3 "$ptyrun" 10 "$BIN")
     echo "$ciout" | grep -qF "IS-TTY" || fail "a bare REPL statement inherits the terminal (isatty true): $ciout"
     echo "$ciout" | grep -qF "IS-PIPE" || fail "the captured form still pipes and its value is intact: $ciout"
+    # the echo of a bound Completed leads with ok [D:receipts-read-only]
+    echo "$ciout" | grep -qF "r = { ok = true; exitCode = 0;" || fail "the REPL echo of a Completed shows ok: $ciout"
     cout2=$(printf 'SLEEP 400\n' | python3 "$ptyrun" 6 "$BIN" -e "sh $cidir/c.sh" 2>/dev/null || true)
     printf 'print "before"\nsh %s/c.sh\nprint "after"\n' "$cidir" > "$cidir/ord.weir"
     sout2=$(printf 'SLEEP 400\n' | python3 "$ptyrun" 8 "$BIN" "$cidir/ord.weir")
@@ -13412,7 +13432,10 @@ class H(http.server.BaseHTTPRequestHandler):
         if self.path == '/ct':
             body = (self.headers.get('Content-Type', 'NONE') + '|').encode() + body
         code = 404 if self.path == '/missing' else int(self.headers.get('X-Want-Status', '200'))
-        self.send_response(code); self.end_headers(); self.wfile.write(body)
+        self.send_response(code)
+        if self.path == '/hdr':
+            self.send_header('ETag', 'W/1'); self.send_header('Set-Cookie', 'a=1'); self.send_header('Set-Cookie', 'b=2')
+        self.end_headers(); self.wfile.write(body)
     do_GET = do_POST = do_PUT = _h
     def log_message(self, *a): pass
 socketserver.TCPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
@@ -13468,11 +13491,15 @@ WEOF
     out=$($BIN "$hdir/fetch.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "fetch/send failed: $out"; }
     echo "$out" | grep -qF "send-binds=404" || { kill $hsrv 2>/dev/null || true; fail "send must BIND a 404: $out"; }
     # the header accessors [D:http-dx]: case-insensitive first hit,
-    # multiplicity in wire order
-    hdrout=$($BIN -e 'let r = HttpResponse { status = 200; headers = [("ETag", "W/1"); ("Set-Cookie", "a=1"); ("set-cookie", "b=2")]; body = [""] }
+    # multiplicity in wire order — over a real response (/hdr sends the
+    # three headers), since an HttpResponse is a receipt [D:receipts-read-only]
+    cat > "$hdir/hdr.weir" <<WEOF
+let r = Http.get "http://127.0.0.1:$hport/hdr" |> Http.send
 print (show (r |> Http.header "etag"))
 print (show (r |> Http.header "absent"))
-r |> Http.headerAll "SET-COOKIE" |> Seq.iter print' 2>&1) || { kill $hsrv 2>/dev/null || true; fail "header accessors failed: $hdrout"; }
+r |> Http.headerAll "SET-COOKIE" |> Seq.iter print
+WEOF
+    hdrout=$($BIN "$hdir/hdr.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "header accessors failed: $hdrout"; }
     echo "$hdrout" | grep -qF 'Some "W/1"' || { kill $hsrv 2>/dev/null || true; fail "Http.header must hit case-insensitively: $hdrout"; }
     echo "$hdrout" | grep -qF 'None' || { kill $hsrv 2>/dev/null || true; fail "Http.header must miss as None: $hdrout"; }
     echo "$hdrout" | grep -qF 'a=1' && echo "$hdrout" | grep -qF 'b=2' || { kill $hsrv 2>/dev/null || true; fail "Http.headerAll must keep both cookies: $hdrout"; }

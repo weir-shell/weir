@@ -4472,6 +4472,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let namedRecord (typeName: string) (fields: (string * Span * Expr) list) =
                     result {
                         do! commaBetweenFields fields
+                        // a receipt is minted, never written [D:receipts-read-only]
+                        do! (if isReceipt typeName then err expr.Span (receiptLiteralMsg typeName) else Ok())
 
                         let def =
                             match typeDefFor env typeName with
@@ -5497,6 +5499,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     | [] -> infer ctx env value
                     | (field, fieldSpan) :: rest ->
                         match resolve ctx ty with
+                        // a receipt is read-only [D:receipts-read-only]; a
+                        // row-typed source meets one only at its call, so
+                        // eval's TEUpdate arm repeats this refusal
+                        | TNamed(typeName, _) when isReceipt typeName -> err subjectSpan (receiptUpdateMsg typeName)
                         | TNamed(typeName, targs) ->
                             match typeDefFor env typeName with
                             | Some(Record def) ->
@@ -5579,15 +5585,35 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // form has its own spelling [D:anon-literals], and a
                 // same-shaped hidden def must not make a declared
                 // record look ambiguous
+                // a receipt is never a candidate [D:receipts-read-only]: a
+                // user record of the same shape wins outright, and a literal
+                // of the receipt's shape (its derived fields optional)
+                // gets the provenance teaching below
                 let candidates =
                     env.Types
                     |> Map.toList
                     |> List.choose (fun (tn, def) ->
                         match def with
-                        | Record r when isUserName tn && Set.ofList (List.map fst r.Fields) = names -> Some(tn, r)
+                        | Record r when
+                            isUserName tn
+                            && not (isReceipt tn)
+                            && Set.ofList (List.map fst r.Fields) = names
+                            ->
+                            Some(tn, r)
                         | _ -> None)
 
+                let receiptShaped =
+                    receipts
+                    |> Map.toList
+                    |> List.tryFind (fun (tn, r) ->
+                        match Map.tryFind tn env.Types with
+                        | Some(Record def) ->
+                            let all = def.Fields |> List.map fst |> Set.ofList
+                            Set.isSubset names all && Set.isSubset (Set.difference all (Set.ofList r.Derived)) names
+                        | _ -> false)
+
                 match candidates with
+                | [] when receiptShaped.IsSome -> return! err expr.Span (receiptLiteralMsg (fst receiptShaped.Value))
                 | [ key, def ] ->
                     let targs = def.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
 

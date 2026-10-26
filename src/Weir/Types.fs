@@ -7,6 +7,61 @@ module Weir.Types
 let isUserName (n: string) =
     n.Length > 0 && (System.Char.IsLetter n[0] || n[0] = '_')
 
+// Receipt records [D:receipts-read-only]: only the runtime mints these
+// (`| complete`, `ls`/`Dir.stat`/`File.stat`, `Http.send`), so a literal
+// asserts a run that never happened and an update rewrites one — and a
+// derived field (Completed.ok) could contradict its source. Both forms
+// are refused, each naming where the value comes from and the
+// anonymous-record escape a row-typed function takes. Per type: the
+// derived fields (a literal missing only those is still the receipt's
+// shape, so it gets the teaching rather than the generic no-such-record
+// error), the provenance sentence, what the record reports, and a
+// ground-typed anonymous example ([D:anon-literals] refuses `[]`).
+type Receipt =
+    { Article: string
+      Derived: string list
+      Source: string
+      Reports: string
+      Anon: string }
+
+let receipts: Map<string, Receipt> =
+    Map
+        [ "Completed",
+          { Article = "a"
+            Derived = [ "ok" ]
+            Source = "a Completed is what '| complete' returns — run a command to get one (sh -c \"exit 3\" | complete)"
+            Reports = "a run that happened (ok follows exitCode)"
+            Anon = "{| exitCode = 3 |}" }
+          "FileRow",
+          { Article = "a"
+            Derived = [ "hidden" ]
+            Source =
+              "a FileRow is what 'ls', 'Dir.stat' and 'File.stat' return — stat a path to get one (File.stat \"a.txt\")"
+            Reports = "a path as it was seen"
+            Anon = "{| name = \"a.txt\"; path = \"a.txt\" |}" }
+          "HttpResponse",
+          { Article = "an"
+            Derived = []
+            Source = "an HttpResponse is what 'Http.send' returns — send a request to get one (Http.get url |> Http.send)"
+            Reports = "a response that arrived"
+            Anon = "{| status = 200 |}" } ]
+
+let isReceipt (typeName: string) = Map.containsKey typeName receipts
+
+/// the literal refusal (bare, named, or a bare literal that is the
+/// receipt's shape minus its derived fields)
+let receiptLiteralMsg (typeName: string) =
+    let r = receipts[typeName]
+
+    $"{r.Source}; a function over its fields takes any record with them, so a test can pass {r.Anon}"
+
+/// the copy-and-update refusal; the same text at run time when a
+/// row-typed updater reaches a receipt only at its call
+let receiptUpdateMsg (typeName: string) =
+    let r = receipts[typeName]
+
+    $"{r.Article} {typeName} is read-only — it reports {r.Reports}, so no field changes after the fact; to carry different values build a record of your own, {r.Anon}"
+
 // Parse/decode error excerpt [D:excerpt]: a builtin that embeds the
 // caller's whole input in its error turns a 500KB invalid input into
 // ~500KB of stderr (a log flood, printing the prefix of whatever

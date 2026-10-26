@@ -638,8 +638,8 @@
           "name": "header",
           "signature": "Http.header (name: string) (resp: HttpResponse) : Option\u003Cstring\u003E",
           "summary": "The first value of a response header, or None when it is missing. Header names match case-insensitively, as HTTP requires, so ETag and etag are the same header. For headers that can repeat (Set-Cookie), use Http.headerAll.",
-          "example": "(HttpResponse { status = 200; headers = [(\u0022ETag\u0022, \u0022abc\u0022)]; body = [\u0022\u0022] }) |\u003E Http.header \u0022etag\u0022",
-          "pointer": null
+          "example": null,
+          "pointer": "After a send: \u0060let r = Http.get url |\u003E Http.send\u0060, then \u0060r |\u003E Http.header \u0022etag\u0022\u0060. An HttpResponse only comes from a send, so code that reads headers takes the response it was given rather than building one."
         },
         {
           "name": "headerAll",
@@ -2296,7 +2296,7 @@
     {
       "name": "Completed",
       "signature": null,
-      "summary": "A finished command: exitCode, stdout, stderr. You get one from \u0060| complete\u0060.",
+      "summary": "A finished command: ok, exitCode, stdout, stderr. ok is exitCode == 0; a tool whose nonzero codes mean something (grep\u0027s 1) reads the code. You get one from \u0060| complete\u0060, and only from there: it is a receipt of a run, so a literal or \u0060{ r with \u2026 }\u0060 is refused.",
       "example": null,
       "pointer": null
     },
@@ -2331,9 +2331,9 @@
     {
       "name": "complete",
       "signature": null,
-      "summary": "Run the command (or pipeline) and capture everything as a \u0060Completed\u0060 record: its exit code, stdout and stderr. A nonzero exit does not raise.",
+      "summary": "Run the command (or pipeline) and capture everything as a \u0060Completed\u0060 record: ok (exitCode == 0), its exit code, stdout and stderr. A nonzero exit does not raise.",
       "example": null,
-      "pointer": "Use it when you need the exit code and the output together: \u0060let r = git push | complete\u0060, then read \u0060r.exitCode\u0060, \u0060r.stdout\u0060, \u0060r.stderr\u0060."
+      "pointer": "Use it when you need the exit code and the output together: \u0060let r = git push | complete\u0060, then \u0060if r.ok then \u2026\u0060 or read \u0060r.exitCode\u0060, \u0060r.stdout\u0060, \u0060r.stderr\u0060."
     },
     {
       "name": "exec",
@@ -2623,6 +2623,10 @@
       "name": "Completed",
       "kind": "record",
       "fields": [
+        {
+          "name": "ok",
+          "type": "bool"
+        },
         {
           "name": "exitCode",
           "type": "int"

@@ -203,7 +203,7 @@ only get the exit status, and is discarded by `succeeds`:
 | form | output | result |
 |---|---|---|
 | `cmd \| succeeds` | silent | `bool` — `exitCode == 0`, exactly |
-| `cmd \| complete` | captured | `{ exitCode; stdout; stderr }` |
+| `cmd \| complete` | captured | `{ ok; exitCode; stdout; stderr }` — `ok` is `exitCode == 0`, exactly |
 | `cmd \| orFail "msg"` | streams | unit; raises `msg (exit N)` on nonzero |
 | `cmd \| exitCode` | streams | the code as `int`; never raises |
 | `cmd \| line` | captured | the one trimmed stdout line, a `string`; raises on nonzero or 0-or-2+ lines |
@@ -213,6 +213,24 @@ only get the exit status, and is discarded by `succeeds`:
 ```weir
 let r = sh -c "echo out; exit 3" | complete
 print $"exit {r.exitCode}, said {r.stdout |> Seq.head}"
+if r.ok then print "clean" else print "a tool whose nonzero codes mean something reads the code"
+```
+
+A `Completed` is a receipt: only `| complete` makes one. Writing one as
+a record literal, or changing one with `{ r with … }`, is a check error
+that names where the value comes from — the same rule holds for
+`FileRow` (from `ls`, `Dir.stat`, `File.stat`) and `HttpResponse` (from
+`Http.send`). A function over the record's fields is row-typed, so a
+test hands it an anonymous record with the fields it reads:
+
+```weir
+let codeOf { exitCode = c } = c
+print (show (codeOf {| exitCode = 3 |}))
+```
+
+```weir-error
+let r = { exitCode = 3; stdout = []; stderr = [] }
+print (show r.exitCode)
 ```
 
 A reifier can also follow a whole chain, `a | b | c | line`. The
