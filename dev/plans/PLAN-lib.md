@@ -170,7 +170,7 @@ let libRepo = "github.com/weir-shell/lib"
 type LibSpec =
     { Name: string          // the module and the default --as
       Tag: string
-      Source: string }      // "github.com/weir-shell/lib//<name>.weir@<tag>"
+      Source: string }      // "github.com/weir-shell/lib//modules/<name>.weir@<tag>"
 
 /// Ok None: not library-shaped (has a `/` or `:`) — the caller passes
 /// the spec through unchanged. Ok (Some s): expanded. Error: library-
@@ -368,7 +368,7 @@ one local repo.
 `vendorClosureTests` ~13813, `[D:lib-short-name]`):
 
 - `semver@v0.1.0` → `Some { Name = "semver"; Tag = "v0.1.0"; Source =
-  "github.com/weir-shell/lib//semver.weir@v0.1.0" }`.
+  "github.com/weir-shell/lib//modules/semver.weir@v0.1.0" }`.
 - `semver@main`, `semver@0123abcd` → Some (R4); `a_b2@v1` → Some.
 - `semver`, `semver@` → Error containing "has no @tag" and the spelling
   `weir add module semver@v0.1.0`.
@@ -458,7 +458,7 @@ one.
   form; "Remote modules" gains a subsection `### The library` after
   the `import "weir:retry"` paragraph (~597): the spelling
   (`weir add module semver@v0.1.0`, "the same as
-  `github.com/weir-shell/lib//semver.weir@v0.1.0 --as semver`"), the tag
+  `github.com/weir-shell/lib//modules/semver.weir@v0.1.0 --as semver`"), the tag
   rule (a tag, never a branch to track — the lock holds the SHA either
   way), `--as` to rename, and the bar in one sentence: every library
   module is a single file with no imports, because a vendored module
@@ -484,7 +484,7 @@ one.
 **DECISIONS row (append; key `lib-short-name`):**
 
 ```text
-| lib-short-name | 2026-10-26 | THE OFFICIAL MODULE LIBRARY AND ITS SPELLING — `weir add module <name>@<tag>` (a spec with no `/`) is SUGAR for `github.com/weir-shell/lib//<name>.weir@<tag> --as <name>`, expanded by a pure `Contracts.libSpec` in front of `resolveModuleSpec`; the lock, `verify`, `restore` and `weir:` never see the short form (the entry is the raw URL at the full SHA, as for the long spelling). The exact-version law stands: no `@tag` refuses naming the spelling (no latest, no ranges); any ref the shorthand accepts is accepted (the SHA is what locks). `--as` is OPTIONAL on the bare form only (the name IS the module) and still overrides; a derived alias that is a builtin module refuses as before, so the library never publishes `retry`/`graph`/`tree`/`poll`/`log`. The host is FIXED — a configurable registry is the manifest/MVS design's question, not a flag. THE LIBRARY (weir-shell/lib): one `module` file per name at the repo root, SELF-CONTAINED (no imports — a vendored module cannot `weir:`-import another until [DESIGN-external-contracts] customer three lands), signed exports with `///` docs, `let pure` where possible, a test per module and a weir-written runner (tools/test.weir) in CI; whole-repo `v0.x` tags. Bundling modules into the binary is a stated NON-GOAL (pinning beats zero-setup while the library is young). Pins: libSpecTests (expansion, refusals, pass-through, no re-expansion); e2e the four refusals offline, the host probe live. | NOTES "The official module library"; PLAN-lib |
+| lib-short-name | 2026-10-26 | THE OFFICIAL MODULE LIBRARY AND ITS SPELLING — `weir add module <name>@<tag>` (a spec with no `/`) is SUGAR for `github.com/weir-shell/lib//modules/<name>.weir@<tag> --as <name>`, expanded by a pure `Contracts.libSpec` in front of `resolveModuleSpec`; the lock, `verify`, `restore` and `weir:` never see the short form (the entry is the raw URL at the full SHA, as for the long spelling). The exact-version law stands: no `@tag` refuses naming the spelling (no latest, no ranges); any ref the shorthand accepts is accepted (the SHA is what locks). `--as` is OPTIONAL on the bare form only (the name IS the module) and still overrides; a derived alias that is a builtin module refuses as before, so the library never publishes `retry`/`graph`/`tree`/`poll`/`log`. The host is FIXED — a configurable registry is the manifest/MVS design's question, not a flag. THE LIBRARY (weir-shell/lib): one `module` file per name at the repo root, SELF-CONTAINED (no imports — a vendored module cannot `weir:`-import another until [DESIGN-external-contracts] customer three lands), signed exports with `///` docs, `let pure` where possible, a test per module and a weir-written runner (tools/test.weir) in CI; whole-repo `v0.x` tags. Bundling modules into the binary is a stated NON-GOAL (pinning beats zero-setup while the library is young). Pins: libSpecTests (expansion, refusals, pass-through, no re-expansion); e2e the four refusals offline, the host probe live. | NOTES "The official module library"; PLAN-lib |
 ```
 
 ## Rulings
