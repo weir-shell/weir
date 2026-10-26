@@ -87,12 +87,16 @@ def run_script(path):
         if done:
             reaped = True
             break
+    drain_end = time.time() + 2
     try:
-        while True:
+        while time.time() < drain_end:
             r, _, _ = select.select([fd], [], [], 0.1)
             if not r:
                 break
-            out += os.read(fd, 65536)
+            c = os.read(fd, 65536)
+            if not c:
+                break
+            out += c
     except OSError:
         pass
     os.close(fd)
