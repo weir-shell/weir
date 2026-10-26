@@ -107,6 +107,14 @@ skill lines and targeted hints).
   `readonlyExpr`, fuzz `SDeterministic`->`SReadonly`.
 
 ## friction
+- 2026-10-26 | PLAN-semver | a `function | Regex @"…" n -> n | x -> x`
+  lambda inside a `let pure` body is refused as "this 'pure' block
+  forbids effects, but this runs a command" (caret on `function`); the
+  same lambda spelled `fun x -> match x with …` passes. The purity walk
+  reads the implicit-match form as a command head. Workaround used in
+  the module: the `fun`/`match` spelling. Repro: `weir -e 'let pure f k
+  = k |> Seq.map (function | Regex @"^#(a)$" n -> n | x -> x) |>
+  Str.join "."'` + `print (f ["#a"; "b"])`.
 - 2026-10-03 | init.weir load errors attribute to the wrong physical
   line: a `+`-led continuation parse error inside a prompt function
   (the `+` lines were block siblings by the layout law) reported at

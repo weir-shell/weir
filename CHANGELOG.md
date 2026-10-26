@@ -105,6 +105,16 @@
   The missing-module error for `import "weir:x"` now names the bare
   spelling first.
 
+- **The library's first module, `semver`.** `weir add module
+  semver@v0.1.0` vendors Semantic Versioning 2.0.0: `parse`/`tryParse`,
+  `toString`, `isPrerelease`, `core` and the three bumps, with
+  `[<Ord n>]` on the parsed record's key so `Seq.sort`, `<` and
+  `Seq.max` follow the spec's precedence (`1.0.0-alpha < 1.0.0-alpha.1
+  < 1.0.0-beta.11 < 1.0.0`, `1.9.0 < 1.10.0`); build metadata is the
+  record's unnumbered `build` field — kept, rendered back, ignored for
+  precedence. Every member is `let pure`. See docs/tooling.md "The
+  library".
+
 ### Fixed
 
 - **Go to definition on a `within` or `until` binder's use** jumped to
