@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.0.78
 
 Many of the changes and fixes below were found porting starship to weir.
 
@@ -255,6 +255,11 @@ Many of the changes and fixes below were found porting starship to weir.
 
 ### Fixed
 
+- **A signal no longer leaves a `within proc` scratch directory
+  behind.** A second SIGTERM arriving while parallel `within proc` arms
+  were starting could leave a `weir-proc-…` directory holding only
+  `err.log` in the temp dir; both log files are now created with the
+  directory, before any teardown can sweep it.
 - **An imported union's case binds in `let` and parameter patterns.**
   `let (Ghost g) = ghost` and `let f (Ghost y) = y`, with `Ghost` from an
   imported module, failed with "binding names start lowercase"; they now
