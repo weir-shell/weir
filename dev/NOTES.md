@@ -191,6 +191,45 @@ retired-member renames (their message formats vary per entry — the
 `TypeError` upgrade's customer), the structural rewrites. `codeActionsFor`
 takes no URI: the edits are keyed by the document the diagnostics were
 published for, which the handler knows.
+## Signature help — the textual spine (2026-10-26)
+
+PLAN-lsp-editor-polish, feature 6 (P4). The editor answered hover,
+completion, definition, tokens; a space after `Seq.fold` showed
+nothing. Signature help fires mid-typing, when the statement is usually
+broken, so the typed tree cannot be the base: `signatureHelpAt` reads
+the statement prefix textually — `statementUpTo`, extracted from the
+completion handler's repair path (the containing logical line, else the
+physical lines from the nearest column-0 head assembled the REPL's way)
+and now shared — and scans it at the cursor's bracket depth for the
+innermost flat application. The head resolves in the env in scope; the
+label is the hover's own annotated signature, composed once in
+`Types.signatureParts` so each `(p: t)` group's offsets ride with the
+text. When the statement does check, the TEVar at the head's column
+gives the instantiated type (`Seq.fold (f: int -> int -> int)`).
+Command position goes through `Complete.commandArgvAt` and the sig
+file: the typed line normalised, one parameter per flag, the field's
+`///` via `sigFlagDoc` (hover's read, extracted) — no spawn, so the
+`mytool` fixture (not installed) answers.
+
+What the probes taught:
+- The assembler trims a line's trailing whitespace, so the logical text
+  cannot tell `Seq.fold f` from `Seq.fold f ` — and the space IS the
+  trigger. The physical prefix restores it before the scan.
+- `inStringOrComment` reads a cursor at the end of the text as "in the
+  comment" (`col - 1 >= stripped.Length` is true one past the end). A
+  hover never lands there; every space trigger does. Signature help got
+  its own gate (`typingInStringOrComment`: a `//` comment's span only)
+  rather than a change under hover.
+- Union cases sit in `env.Values`, so the "is it a user let" branch
+  cannot be a guard — the KLet lookup falls through to the case lookup.
+- `let add a b = a + b` does not infer in a script ("pipe data in or use
+  concrete values"); the plan's fixture reads `a + b + 0`.
+- An uninstantiated generic through the typed tree spells the checker's
+  fresh names (`'a1 -> 'a2 -> 'a1`) — hover's spelling too, so the pins
+  assert the groups' shape, not the var names.
+
+Out of scope, as ruled: form keys (`retry times=`), reifier messages,
+`|` chaining, record literals, lambdas — null, never a guess.
 
 ## The cleanup shim is sh; a dead stderr never aborts (2026-10-19)
 

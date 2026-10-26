@@ -616,6 +616,43 @@ let private toLogical (stmts: (Script.LogicalLine * Script.CheckedStatement) lis
             else
                 None))
 
+/// the statement open at the cursor, cut there, with the env it checks
+/// in: (env, text before the cursor, text after). The containing logical
+/// line when assembly holds; else the statement still open at the cursor
+/// broke assembly (a lambda's `(` across lines), so no logical line holds
+/// it — its physical lines from the nearest column-0 head above (a `|`
+/// line continues) assemble up to the cursor the REPL's way. Shared by
+/// completion and signature help [D:signature-help]
+let private statementUpTo
+    (env: TypeEnv)
+    (lls: Script.LogicalLine list)
+    (lines: string[])
+    (line: int)
+    (col: int)
+    : (TypeEnv * string * string) option =
+    match logicalAt lls line col with
+    | Some(ll, jcol) ->
+        let cut = min (max 0 (jcol - 1)) ll.Text.Length
+        Some(env, ll.Text.Substring(0, cut), ll.Text.Substring cut)
+    | None when line - 1 < lines.Length ->
+        let lineText = lines[line - 1]
+        let upto = lineText.Substring(0, min (col - 1) lineText.Length)
+
+        let isHead (l: string) =
+            l.Trim() <> "" && not (Char.IsWhiteSpace l[0]) && not (l.StartsWith "|")
+
+        let mutable start = line - 1
+
+        while start > 0 && not (isHead lines[start]) do
+            start <- start - 1
+
+        let stmtLines = [ for i in start .. line - 2 -> lines[i] ] @ [ upto ]
+
+        match Script.entryContext env stmtLines with
+        | ctxEnv, Some stmt -> Some(ctxEnv, stmt, "")
+        | _, None -> None
+    | None -> None
+
 let private teOf (chk: Script.CheckedStatement) =
     match chk.Kind with
     | Script.KType _
@@ -1020,24 +1057,25 @@ let rec private cmdSurfaceAt (jcol: int) (te: Check.TypedExpr) : (string * int *
 /// non-dash word): (record name, field, field type, sig lines, sig stmts)
 // the record a line's flags live in: the longest run of leading sub
 // words, kebab-joined — the checker's own rule [D:scoped-sigs]
-let private sigRecordFor (si: Script.SigInfo) (words: (string * Span) list) : string option =
+let private sigRecordFor (si: Script.SigInfo) (words: string list) : (string * int) option =
     match Map.tryFind "" si.SubRecords with
-    | Some rn -> Some rn
+    | Some rn -> Some(rn, 0)
     | None ->
         let run =
             words
-            |> List.skipWhile (fun (w, _) -> w.StartsWith "-")
-            |> List.takeWhile (fun (w, _) -> not (w.StartsWith "-"))
+            |> List.skipWhile (fun w -> w.StartsWith "-")
+            |> List.takeWhile (fun w -> not (w.StartsWith "-"))
             |> List.truncate 4
-            |> List.map fst
 
         [ List.length run .. -1 .. 1 ]
-        |> List.tryPick (fun n -> Map.tryFind (String.concat "-" (run |> List.truncate n)) si.SubRecords)
+        |> List.tryPick (fun n ->
+            Map.tryFind (String.concat "-" (run |> List.truncate n)) si.SubRecords
+            |> Option.map (fun rn -> rn, n))
 
-let private sigFlagField (si: Script.SigInfo) (words: (string * Span) list) (w: string) =
+let private sigFlagField (si: Script.SigInfo) (words: string list) (w: string) =
     let rn =
         match sigRecordFor si words with
-        | Some rn -> Some rn
+        | Some(rn, _) -> Some rn
         | None ->
             // a sub-less line on a scoped sig: the flag lives in every
             // case that carries it — the first record holding the field
@@ -1073,6 +1111,24 @@ let private sigFlagField (si: Script.SigInfo) (words: (string * Span) list) (w: 
                         let fty = rd.Fields |> List.pick (fun (fn, t) -> if fn = f then Some t else None)
                         rn, f, fty, sigLines, sigStmts)
                 | _ -> None)))
+
+/// a signed flag's `///` doc, read at its field's declaration in the sig
+/// file — hover and signature help share the read
+let private sigFlagDoc
+    (sigPath: string)
+    (rn: string)
+    (f: string)
+    (sigLines: string list)
+    (sigStmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    : string option =
+    typeSiteIn sigStmts rn (Some f)
+    |> Option.bind (fun (dl, dc, _) ->
+        docAttachmentsCached sigPath sigLines
+        |> List.tryPick (fun d ->
+            if d.Line = dl && d.Col = dc then
+                Some(reflowDoc d.Doc)
+            else
+                None))
 
 /// definition site for the identifier at (1-based physical line, col):
 /// Some (target file or None for this one, physLine, physCol,
@@ -1234,7 +1290,7 @@ let definitionTarget
                                     w.StartsWith "-" && sp.Start.Col <= jcol && jcol < sp.End.Col)
                             with
                             | Some(w, _) ->
-                                sigFlagField si words w
+                                sigFlagField si (List.map fst words) w
                                 |> Option.bind (fun (rn, f, _, _, sigStmts) ->
                                     typeSiteIn sigStmts rn (Some f)
                                     |> Option.map (fun (pl, pc, len) -> Some si.SigPath, pl, pc, len))
@@ -1245,8 +1301,8 @@ let definitionTarget
                                 words
                                 |> List.tryFind (fun (w, sp) ->
                                     not (w.StartsWith "-") && sp.Start.Col <= jcol && jcol < sp.End.Col)
-                                |> Option.bind (fun _ -> sigRecordFor si words)
-                                |> Option.bind (fun rn ->
+                                |> Option.bind (fun _ -> sigRecordFor si (List.map fst words))
+                                |> Option.bind (fun (rn, _) ->
                                     targetStmts si.SigPath
                                     |> Option.bind (fun (_, sigStmts) ->
                                         typeSiteIn sigStmts rn None
@@ -2283,19 +2339,8 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             |> Option.bind (fun (si, _, _, words) ->
                 words
                 |> List.tryFind (fun (w, sp) -> w.StartsWith "-" && sp.Start.Col <= jcol && jcol < sp.End.Col)
-                |> Option.bind (fun (w, _) -> sigFlagField si words w)
-                |> Option.map (fun (rn, f, fty, sigLines, sigStmts) ->
-                    let fdoc =
-                        typeSiteIn sigStmts rn (Some f)
-                        |> Option.bind (fun (dl, dc, _) ->
-                            docAttachmentsCached si.SigPath sigLines
-                            |> List.tryPick (fun d ->
-                                if d.Line = dl && d.Col = dc then
-                                    Some(reflowDoc d.Doc)
-                                else
-                                    None))
-
-                    formatTy fty, fdoc))
+                |> Option.bind (fun (w, _) -> sigFlagField si (List.map fst words) w)
+                |> Option.map (fun (rn, f, fty, sigLines, sigStmts) -> formatTy fty, sigFlagDoc si.SigPath rn f sigLines sigStmts))
 
         let ty =
             (sigHead |> Option.map fst)
@@ -3205,6 +3250,379 @@ let codeActionsFor (diags: Script.Diagnostic list) (range: (int * int) option) :
               Edits = members |> List.collect (fun (_, _, f) -> f.Edits) })
 
     quick @ all
+// ---- signature help [D:signature-help] ----------------------------
+// fires mid-typing, when the statement is usually broken — so the
+// statement prefix is read textually (the spine at the cursor's paren
+// depth) and the typed tree, when it exists, only sharpens the types.
+// Flat calls only (the stated subset of [D:path-param-completion]);
+// null over a guess everywhere [D:hover-silence]
+
+type SigHelp =
+    { Label: string
+      Doc: string option
+      // [start, end) offsets in Label and the per-parameter doc
+      Params: (int * int * string option) list
+      Active: int option }
+
+// the atoms of a statement prefix at its innermost open bracket depth,
+// each with its offset — quotes and brackets are one atom (the argv
+// tokenizer's rule), whitespace splits at depth 0, a sibling separator
+// or newline starts over; a just-opened bracket with nothing inside is
+// an atom in progress of the enclosing level
+let private spineAtoms (text: string) : (string * int) list =
+    let opens = Collections.Generic.Stack<int>()
+    let mutable quote = ' '
+    let mutable i = 0
+
+    while i < text.Length do
+        let c = text[i]
+
+        if quote <> ' ' then
+            if c = '\\' && quote = '"' then i <- i + 1
+            elif c = quote then quote <- ' '
+        elif c = '"' || c = '\'' then
+            quote <- c
+        elif c = '(' || c = '[' || c = '{' then
+            opens.Push i
+        elif (c = ')' || c = ']' || c = '}') && opens.Count > 0 then
+            opens.Pop() |> ignore
+
+        i <- i + 1
+
+    // an unclosed quote: the cursor sits in a string
+    if quote <> ' ' then
+        []
+    else
+        let groupFrom, pseudo =
+            if opens.Count > 0 && text.Substring(opens.Peek() + 1).Trim() = "" then
+                let o = opens.Pop()
+                (if opens.Count > 0 then opens.Peek() + 1 else 0), Some o
+            else
+                (if opens.Count > 0 then opens.Peek() + 1 else 0), None
+
+        let stop = match pseudo with Some o -> o | None -> text.Length
+        let out = ResizeArray<string * int>()
+        let mutable start = -1
+        let mutable depth = 0
+        let mutable quote = ' '
+        let mutable j = groupFrom
+
+        let flush (upTo: int) =
+            if start >= 0 then
+                out.Add(text.Substring(start, upTo - start), start)
+                start <- -1
+
+        while j < stop do
+            let c = text[j]
+
+            if quote <> ' ' then
+                if c = '\\' && quote = '"' then j <- j + 1
+                elif c = quote then quote <- ' '
+            elif c = '"' || c = '\'' then
+                (if start < 0 then start <- j)
+                quote <- c
+            elif c = '(' || c = '[' || c = '{' then
+                (if start < 0 then start <- j)
+                depth <- depth + 1
+            elif c = ')' || c = ']' || c = '}' then
+                depth <- max 0 (depth - 1)
+            elif depth = 0 && (c = Parser.sibSep || c = '\n') then
+                flush j
+                out.Clear()
+            elif depth = 0 && Char.IsWhiteSpace c then
+                flush j
+            elif start < 0 then
+                start <- j
+
+            j <- j + 1
+
+        flush stop
+        pseudo |> Option.iter (fun o -> out.Add("(", o))
+        List.ofSeq out
+
+// inStringOrComment's twin for a TYPING position: the cursor at a
+// line's end (where the space trigger lands) is code, not a comment —
+// only a `//` comment's own span is one
+let private typingInStringOrComment (lines: string list) (line: int) (col: int) : bool =
+    if line < 1 || line > List.length lines then
+        false
+    else
+        let text = List.item (line - 1) lines
+        let cut = Scan.commentAt text
+
+        (col >= 1 && col <= text.Length && (Script.inStringMask text)[col - 1])
+        || (cut >= 0 && col - 1 >= cut)
+
+let private isOperatorAtom (a: string) =
+    a <> "" && a |> Seq.forall (fun c -> "+-*/<>=|&!@^%:~?,;".Contains c)
+
+let private isHeadWord (a: string) =
+    Text.RegularExpressions.Regex.IsMatch(a, @"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
+    && not (Parser.keywords.Contains a)
+
+/// signature help at (1-based physical line, col): one signature, its
+/// parameters' label offsets and docs, and the active parameter —
+/// None when nothing honest can be said. Pure — the handler and the
+/// unit pins share this. The null path (a string or comment, no
+/// head) runs before any walk: the space trigger is chatty.
+let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) : SigHelp option =
+    if typingInStringOrComment lines line col then
+        None
+    else
+        let _, stmts, env0, lls, _ = analyzeCached path lines
+
+        // env in scope: after the last statement above the line
+        let env =
+            stmts
+            |> List.filter (fun (ll, _) -> ll.Head < line)
+            |> List.tryLast
+            |> Option.map (fun (_, c) -> c.Env)
+            |> Option.defaultValue env0
+
+        let docAt (src: string list) (dl: int) (dc: int) =
+            Script.docAttachments src
+            |> List.tryPick (fun d ->
+                if d.Line = dl && d.Col = dc then
+                    Some(reflowDoc d.Doc)
+                else
+                    None)
+
+        // ---- command position [D:sig-arg-complete]: the typed line
+        // normalised — head, its case words, one parameter per flag
+        // present — docs from the sig's ///; the sig file alone, no
+        // spawn ([D:sig-dynamic-complete] is the REPL's)
+        let commandHelp (ctxEnv: TypeEnv) (pre: string) : SigHelp option =
+            Complete.commandArgvAt ctxEnv pre
+            |> Option.bind (fun (head, argText) ->
+                Script.sigInfosForFile path lines
+                |> List.tryFind (fun si -> si.Tool = head)
+                |> Option.bind (fun si ->
+                    let before, cur = Script.SigComplete.split argText
+                    let words = before @ (if cur = "" then [] else [ cur ])
+                    let isFlag (w: string) = w.Length > 1 && w[0] = '-'
+
+                    let subRun =
+                        match sigRecordFor si words with
+                        | Some(_, n) ->
+                            words
+                            |> List.skipWhile isFlag
+                            |> List.takeWhile (isFlag >> not)
+                            |> List.truncate n
+                        | None -> []
+
+                    // (word index, group text, field type, doc) per flag the sig knows
+                    let flags =
+                        words
+                        |> List.mapi (fun i w -> i, w)
+                        |> List.choose (fun (i, w) ->
+                            if isFlag w then
+                                sigFlagField si words w
+                                |> Option.map (fun (rn, f, fty, sigLines, sigStmts) ->
+                                    let spelled = w.Split('=')[0]
+
+                                    let group =
+                                        match fty with
+                                        | TBool -> spelled
+                                        | _ -> $"{spelled} <{formatTy fty}>"
+
+                                    i, group, fty, sigFlagDoc si.SigPath rn f sigLines sigStmts)
+                            else
+                                None)
+
+                    if flags.IsEmpty then
+                        None
+                    else
+                        let sb = Text.StringBuilder(head)
+
+                        for s in subRun do
+                            sb.Append(' ').Append(s) |> ignore
+
+                        let ps =
+                            flags
+                            |> List.map (fun (_, group, _, doc) ->
+                                sb.Append ' ' |> ignore
+                                let start = sb.Length
+                                sb.Append group |> ignore
+                                start, sb.Length, doc)
+
+                        let paramOf (wi: int) =
+                            flags |> List.tryFindIndex (fun (i, _, _, _) -> i = wi)
+
+                        let lastBefore = before.Length - 1
+
+                        let active =
+                            if cur <> "" && isFlag cur then
+                                paramOf (words.Length - 1)
+                            elif cur = "" then
+                                (if lastBefore >= 0 && isFlag before[lastBefore] then paramOf lastBefore else None)
+                            else
+                                // a value word: its flag's, when the flag takes one
+                                flags
+                                |> List.tryFind (fun (i, _, fty, _) ->
+                                    i = lastBefore && fty <> TBool && not (words[i].Contains '='))
+                                |> Option.bind (fun (i, _, _, _) -> paramOf i)
+
+                        Some
+                            { Label = sb.ToString()
+                              Doc = None
+                              Params = ps
+                              Active = active }))
+
+        // ---- expression application: the head's names, type and doc
+        let resolveHead (head: string) : (string list * Ty * string option) option =
+            let schemeTy () =
+                match Map.tryFind head env.Values with
+                | Some sch -> Some sch.Ty
+                | None ->
+                    match head.Split '.' with
+                    | [| m; mem |] ->
+                        Map.tryFind m env.Modules
+                        |> Option.bind (Map.tryFind mem)
+                        |> Option.map (fun s -> s.Ty)
+                    | _ -> None
+
+            match Map.tryFind head Builtins.builtinDocs with
+            | Some d when not d.Params.IsEmpty ->
+                schemeTy () |> Option.map (fun ty -> d.Params, ty, Some(Builtins.renderBuiltinDoc d))
+            | Some _ -> None
+            | None ->
+                match head.Split '.' with
+                | [| alias; mem |] ->
+                    // a module member: params off the module's typed body, the
+                    // doc at its declaration in the module file [D:lsp-cross-file]
+                    stmts
+                    |> List.tryPick (fun (_, c) ->
+                        match c.Kind with
+                        | Script.KImport lm when lm.Alias = alias -> Some lm
+                        | _ -> None)
+                    |> Option.bind (fun lm ->
+                        lm.Body
+                        |> List.tryPick (function
+                            | _, Script.CLet(bn, te) when bn = mem -> Some te
+                            | _ -> None)
+                        |> Option.map (fun te ->
+                            let doc =
+                                targetStmts lm.AbsPath
+                                |> Option.bind (fun (mlines, mstmts) ->
+                                    letSiteIn mstmts None mem |> Option.bind (fun (dl, dc, _) -> docAt mlines dl dc))
+
+                            lambdaParamNames te, te.Ty, doc))
+                | _ ->
+                    // a top-level function of this file: the last binder above
+                    let userLet =
+                        stmts
+                        |> List.filter (fun (ll, _) -> ll.Head < line)
+                        |> List.rev
+                        |> List.tryPick (fun (_, c) ->
+                            match c.Kind with
+                            | Script.KLet(n, sch, te) when n = head -> Some(lambdaParamNames te, sch.Ty)
+                            | _ -> None)
+                        |> Option.map (fun (ps, ty) ->
+                            let doc =
+                                letSiteIn stmts (Some line) head |> Option.bind (fun (dl, dc, _) -> docAt lines dl dc)
+
+                            ps, ty, doc)
+
+                    // a union case: one parameter, the payload
+                    let unionCase () =
+                        env.Types
+                        |> Map.tryPick (fun tn def ->
+                            match def with
+                            | Union d ->
+                                d.Cases
+                                |> List.tryPick (fun (c, payload) ->
+                                    match payload with
+                                    | Some pty when c = head ->
+                                        let doc =
+                                            typeSiteIn stmts tn (Some head)
+                                            |> Option.bind (fun (dl, dc, _) -> docAt lines dl dc)
+
+                                        Some([ "value" ], TFun(pty, TNamed(tn, [])), doc)
+                                    | _ -> None)
+                            | _ -> None)
+
+                    userLet |> Option.orElseWith unionCase
+
+        let expressionHelp (pre: string) : SigHelp option =
+            // `|` command chaining answers nothing in v1
+            match Complete.lastStage pre with
+            | Some _ -> None
+            | None ->
+                let atoms = spineAtoms pre
+
+                let sepIdx =
+                    atoms
+                    |> List.tryFindIndexBack (fun (a, _) -> isOperatorAtom a || Parser.keywords.Contains a)
+
+                let piped =
+                    match sepIdx with
+                    | Some i -> fst atoms[i] = "|>"
+                    | None -> false
+
+                match List.skip (sepIdx |> Option.map ((+) 1) |> Option.defaultValue 0) atoms with
+                | (head, headAt) :: args when isHeadWord head ->
+                    let inAtom = pre.Length > 0 && not (Char.IsWhiteSpace pre[pre.Length - 1])
+
+                    if inAtom && args.IsEmpty then
+                        None // still typing the head
+                    else
+                        resolveHead head
+                        |> Option.bind (fun (ps, schemeTy, doc) ->
+                            // the typed tree, when the statement checks: the
+                            // instantiated type at the head replaces the scheme
+                            let ty =
+                                toLogical stmts line col
+                                |> Option.bind (fun (_, chk, _) -> teOf chk)
+                                |> Option.bind (fun te ->
+                                    let rec find (n: TypedExpr) =
+                                        match n.Kind with
+                                        | Check.TEVar v when v = head && n.Span.Start.Col = headAt + 1 -> Some n.Ty
+                                        | _ -> Check.childExprs n |> List.tryPick find
+
+                                    find te)
+                                |> Option.defaultValue schemeTy
+
+                            let label, parts = formatSignatureParts head ps ty
+                            let n = parts.Length
+                            let supplied = if inAtom then args.Length - 1 else args.Length
+
+                            if n = 0 || supplied >= n then
+                                None
+                            else
+                                let ps =
+                                    parts
+                                    |> List.mapi (fun i (p, s, e) ->
+                                        // the pipe rule: the piped value fills the LAST
+                                        // parameter (the `|>` twin of Complete.lastStage)
+                                        let pdoc =
+                                            if piped && i = n - 1 then
+                                                Some $"{p} — filled by the piped value"
+                                            else
+                                                None
+
+                                        s, e, pdoc)
+
+                                Some
+                                    { Label = label
+                                      Doc = doc
+                                      Params = ps
+                                      Active = Some supplied })
+                | _ -> None
+
+        statementUpTo env lls (Array.ofList lines) line col
+        |> Option.bind (fun (ctxEnv, pre, _) ->
+            // the assembler trims a line's trailing whitespace; the space
+            // the cursor follows is the trigger itself, so it is restored
+            let pre =
+                let phys = List.item (line - 1) lines
+                let typed = phys.Substring(0, min (col - 1) phys.Length)
+
+                if typed <> "" && Char.IsWhiteSpace typed[typed.Length - 1] && not (pre.EndsWith " ") then
+                    pre + " "
+                else
+                    pre
+
+            commandHelp ctxEnv pre |> Option.orElseWith (fun () -> expressionHelp pre))
 
 // ---- the server ---------------------------------------------------
 
@@ -3644,7 +4062,7 @@ let run (debug: bool) : int =
                                 // <tag>+<hash>, all JSON-safe chars, so the placeholder
                                 // splice needs no escaping.
                                 w.WriteRawValue(
-                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"referencesProvider":true,"documentHighlightProvider":true,"renameProvider":{"prepareProvider":true},"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":[".","-"]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true},"foldingRangeProvider":true,"documentSymbolProvider":true,"documentLinkProvider":{"resolveProvider":false},"inlayHintProvider":{"resolveProvider":false}},"serverInfo":{"name":"weir","version":"__WEIR_VERSION__"}}"""
+                                    """{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll"]},"definitionProvider":true,"referencesProvider":true,"documentHighlightProvider":true,"renameProvider":{"prepareProvider":true},"signatureHelpProvider":{"triggerCharacters":["("," "],"retriggerCharacters":[" "]},"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":[".","-"]},"semanticTokensProvider":{"legend":{"tokenTypes":["weirCommandHead","weirArgv","weirSplice"],"tokenModifiers":[]},"full":true},"foldingRangeProvider":true,"documentSymbolProvider":true,"documentLinkProvider":{"resolveProvider":false},"inlayHintProvider":{"resolveProvider":false}},"serverInfo":{"name":"weir","version":"__WEIR_VERSION__"}}"""
                                         .Replace("__WEIR_VERSION__", Weir.Version.current)
                                 )))
                     | "initialized" -> ()
@@ -4077,39 +4495,10 @@ let run (debug: bool) : int =
                                 // repair [D:entry-complete]
                                 let repaired =
                                     if word.Contains '.' then
-                                        match logicalAt allLls line col with
-                                        | Some(ll, jcol) ->
-                                            let cut = min (max 0 (jcol - 1)) ll.Text.Length
-                                            let pre = ll.Text.Substring(0, cut)
-
-                                            if pre.EndsWith word then
-                                                Script.repairedFields env pre (ll.Text.Substring cut)
-                                            else
-                                                None
-                                        | None when line - 1 < lines.Length ->
-                                            // the statement still open at the cursor
-                                            // broke assembly (a lambda's `(` across
-                                            // lines), so no logical line holds it:
-                                            // assemble its physical lines up to the
-                                            // cursor the REPL's way — from the nearest
-                                            // column-0 head above (a `|` line continues)
-                                            let isHead (l: string) =
-                                                l.Trim() <> ""
-                                                && not (Char.IsWhiteSpace l[0])
-                                                && not (l.StartsWith "|")
-
-                                            let mutable start = line - 1
-
-                                            while start > 0 && not (isHead lines[start]) do
-                                                start <- start - 1
-
-                                            let stmtLines =
-                                                [ for i in start .. line - 2 -> lines[i] ] @ [ upto ]
-
-                                            match Script.entryContext env stmtLines with
-                                            | ctxEnv, Some stmt -> Script.repairedFields ctxEnv stmt ""
-                                            | _, None -> None
-                                        | None -> None
+                                        match statementUpTo env allLls lines line col with
+                                        | Some(ctxEnv, pre, post) when pre.EndsWith word ->
+                                            Script.repairedFields ctxEnv pre post
+                                        | _ -> None
                                     else
                                         None
 
@@ -4497,6 +4886,43 @@ let run (debug: bool) : int =
                                     w.WriteEndObject()
 
                                 w.WriteEndArray()
+                            | _ -> w.WriteNullValue()
+
+                        idStr |> Option.iter (fun id -> respond id writeResult)
+                    | "textDocument/signatureHelp" ->
+                        let writeResult (w: Text.Json.Utf8JsonWriter) =
+                            match docOf (), posOf () with
+                            | Some(uri, text), Some(line, col) ->
+                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+
+                                match signatureHelpAt (uriToPath uri) lines line col with
+                                | Some sh ->
+                                    w.WriteStartObject()
+                                    w.WritePropertyName "signatures"
+                                    w.WriteStartArray()
+                                    w.WriteStartObject()
+                                    w.WriteString("label", sh.Label)
+                                    sh.Doc |> Option.iter (fun d -> w.WriteString("documentation", d))
+                                    w.WritePropertyName "parameters"
+                                    w.WriteStartArray()
+
+                                    for s, e, d in sh.Params do
+                                        w.WriteStartObject()
+                                        w.WritePropertyName "label"
+                                        w.WriteStartArray()
+                                        w.WriteNumberValue s
+                                        w.WriteNumberValue e
+                                        w.WriteEndArray()
+                                        d |> Option.iter (fun d -> w.WriteString("documentation", d))
+                                        w.WriteEndObject()
+
+                                    w.WriteEndArray()
+                                    w.WriteEndObject()
+                                    w.WriteEndArray()
+                                    w.WriteNumber("activeSignature", 0)
+                                    sh.Active |> Option.iter (fun a -> w.WriteNumber("activeParameter", a))
+                                    w.WriteEndObject()
+                                | None -> w.WriteNullValue()
                             | _ -> w.WriteNullValue()
 
                         idStr |> Option.iter (fun id -> respond id writeResult)

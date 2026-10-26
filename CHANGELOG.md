@@ -74,6 +74,16 @@
   ()"), and a mismatch where the value is an `Option<T>`/`Result<T, _>`
   of the wanted `T` names the unwrap (`|> orFail`). A non-exhaustive
   match now names a payload case as the pattern to write (`Push _`).
+- **Signature help in the editor.** A space or `(` after a function
+  shows `Seq.fold (f: 'a -> 'b -> 'a) (init: 'a) (xs: seq<'b>) : 'a`
+  with the parameter you are on highlighted and the `///` or builtin
+  doc below; in a `|>` stage the last parameter is marked as filled by
+  the piped value. A function of your own shows the names from its
+  definition, an imported one the names from its module. After a
+  command declared with `#sig`, the flags you have typed show what each
+  takes and means, read from the signature file alone (the tool need
+  not be installed). Nothing pops inside a string or comment, after a
+  keyword, or once every parameter is supplied.
 
 ## v0.0.78
 
