@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.0.79
+
+### Added
+
+- **The editor keeps working inside a broken statement.** A type
+  error on one line of a multi-line `let` no longer blanks hover and
+  go to definition for the whole statement: the lines above and below
+  the bad one answer as before, the bad line shows nothing, and a
+  name whose value failed (and anything typed from it) shows nothing
+  until it is fixed. `weir check`, the runner and the REPL report
+  exactly what they did before — the recovery is the editor's only.
+
 ## v0.0.78
 
 Many of the changes and fixes below were found porting starship to weir.

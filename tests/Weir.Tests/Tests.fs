@@ -165,7 +165,7 @@ let private yamlErr lines' =
     | Ok d -> failtest $"expected an error, got {d}"
 
 let private diagsIn file (lines: string list) =
-    let ds, _, _, _ = Weir.Script.analyzeLines file lines
+    let ds, _, _, _, _ = Weir.Script.analyzeLines file lines
     ds
 
 let private errorsIn file lines =
@@ -12715,6 +12715,143 @@ let semanticTokenTests =
                   "outer sigil head/argv, splice delimiters, inner sigil head/argv"
           } ]
 
+let blockRecoveryTests =
+    // the receipt shape [D:block-recovery]: a multi-line let with one bad
+    // inner line, then statements using it
+    let receipt =
+        [ "let sub a b ="
+          "    let total = a * b"
+          "    let bad = total + \"x\""
+          "    let doubled = total * 2"
+          "    print (show bad)"
+          "    print (show doubled)"
+          "    doubled"
+          ""
+          "let r = sub 1 2"
+          "print (show r)" ]
+
+    testList
+        "Block-level recovery [D:block-recovery]"
+        [ test "the receipt: one error at the bad line, the statement is a partial, never a stmt" {
+              let diags, stmts, _, _, partials = Weir.Script.analyzeLines "t.weir" receipt
+
+              Expect.equal
+                  (diags |> List.map (fun d -> d.Line, d.Col, d.Code, d.Message))
+                  [ 3, 23, "check", "expected int, got string" ]
+                  "exactly the first pass's one error"
+
+              Expect.equal (stmts |> List.map (fun (ll, _) -> ll.Head)) [ 9; 10 ] "the errored statement is no stmt"
+              Expect.equal (partials |> List.map (fun (ll, _) -> ll.Head)) [ 1 ] "…it is a partial"
+
+              match partials with
+              | [ (_, { Kind = Weir.Script.KLet("sub", sch, _); Env = env }) ] ->
+                  Expect.isTrue
+                      (match sch.Ty with
+                       | TVar v -> v.StartsWith "__hole"
+                       | _ -> false)
+                      "the partial's binder scheme is the hole scheme"
+
+                  Expect.isTrue (env.Values.ContainsKey "sub") "its env is the hole-bound one"
+              | other -> failtest $"expected the KLet partial, got {other}"
+          }
+          test "hover inside the broken statement: siblings above and below answer, the bad line and its binder do not" {
+              let h l c = Weir.Lsp.hoverType receipt l c
+              Expect.equal (h 2 9) (Some "total : int") "the inner binder above the bad line"
+              Expect.equal (h 2 17) (Some "int") "a use above"
+              Expect.equal (h 4 9) (Some "doubled : int") "the inner binder below the bad line"
+              Expect.equal (h 4 19) (Some "int") "a use below"
+              Expect.equal (h 7 5) (Some "int") "the block's tail"
+              Expect.equal (h 3 15) None "inside the hole: null"
+              Expect.equal (h 3 17) None "inside the hole, the operator: null"
+              Expect.equal (h 3 9) None "the hole-bound binder: null"
+              Expect.equal (h 5 17) None "a use of the hole-bound binder: null"
+              Expect.equal (h 1 5) None "the partial's own top-level binder: null (its type is unknown)"
+              Expect.equal (h 9 9) None "a later use of the partial's binder: null (hole-descended)"
+          }
+          test "definition inside the broken statement jumps; from inside the hole it does not" {
+              Expect.equal (Weir.Lsp.definitionFor receipt 4 19) (Some(2, 9, 5)) "a use below the bad line -> the binder above it"
+              Expect.equal (Weir.Lsp.definitionFor receipt 6 17) (Some(4, 9, 7)) "a use -> a binder below the bad line"
+              Expect.equal (Weir.Lsp.definitionFor receipt 2 17) (Some(1, 9, 1)) "a param use -> the param"
+              Expect.equal (Weir.Lsp.definitionFor receipt 3 15) None "inside the hole: null"
+          }
+          test "a statement whose body is one failing expression stays treeless (no false tree)" {
+              let _, stmts, _, _, partials =
+                  Weir.Script.analyzeLines "t.weir" [ "let x = 1 + \"a\""; "print (show x)" ]
+
+              Expect.equal (stmts |> List.map (fun (ll, _) -> ll.Head)) [ 2 ] "the later statement checks"
+              Expect.isEmpty partials "nothing to recover"
+          }
+          test "both twins and all three arms: a checked lambda body, a sequenced element, a pattern let" {
+              // the check twin: the lambda is checked against the pushed domain
+              let lam =
+                  [ "let ys ="
+                    "    [1; 2] |> Seq.map (fun x ->"
+                    "        let y = x * 2"
+                    "        let bad = y + \"a\""
+                    "        y + 1)"
+                    "print (show ys)" ]
+
+              let diags, _, _, _, partials = Weir.Script.analyzeLines "t.weir" lam
+              Expect.equal (diags |> List.map (fun d -> d.Line, d.Severity)) [ 4, "error" ] "one error"
+              Expect.equal (partials |> List.map (fun (ll, _) -> ll.Head)) [ 1 ] "recovered through the check twin"
+              Expect.equal (Weir.Lsp.hoverType lam 5 9) (Some "int") "the line below the bad one answers"
+
+              // a sequenced element (unit position) fails: hole, the block continues
+              let seqEl =
+                  [ "let go ="
+                    "    let a = 1"
+                    "    print \"x\" |> Seq.length"
+                    "    print (show a)"
+                    "go" ]
+
+              let diags, _, _, _, partials = Weir.Script.analyzeLines "t.weir" seqEl
+              Expect.equal (diags |> List.map (fun d -> d.Line, d.Severity)) [ 3, "error" ] "one error"
+              Expect.equal (partials |> List.map (fun (ll, _) -> ll.Head)) [ 1 ] "recovered"
+              Expect.equal (Weir.Lsp.hoverType seqEl 4 17) (Some "int") "the line below answers"
+              Expect.equal (Weir.Lsp.hoverType seqEl 3 7) None "inside the hole: null"
+
+              // a pattern let fails: every leaf is hole-bound
+              let pat =
+                  [ "let go ="
+                    "    let (p, q) = (1, \"a\")"
+                    "    let (m, n) = p + \"a\""
+                    "    print (show p)"
+                    "    print (show m)"
+                    "go" ]
+
+              let diags, _, _, _, partials = Weir.Script.analyzeLines "t.weir" pat
+              Expect.equal (diags |> List.map (fun d -> d.Line, d.Severity)) [ 3, "error" ] "one error"
+              Expect.equal (partials |> List.map (fun (ll, _) -> ll.Head)) [ 1 ] "recovered"
+              Expect.equal (Weir.Lsp.hoverType pat 4 17) (Some "int") "the earlier leaf answers"
+              Expect.equal (Weir.Lsp.hoverType pat 5 17) None "a hole-bound leaf's use: null"
+          }
+          test "a recovery burn stops the fold: one budget bounds the file [D:budget-stop-first]" {
+              // the recovery pass is armed with a fresh budget; a statement
+              // whose first error is cheap but whose block burns must not
+              // let every such statement pay a burn of its own
+              let burn (b: int) =
+                  [ $"let f{b} x ="
+                    "    let bad = 1 + \"x\""
+                    "    let g0 y = (y, y)"
+                    "    let g1 y = g0 (g0 y)"
+                    "    let g2 y = g1 (g1 y)"
+                    "    let g3 y = g2 (g2 y)"
+                    "    let g4 y = g3 (g3 y)"
+                    "    let g5 y = g4 (g4 y)"
+                    "    let v = g5 1"
+                    "    print (show bad)"
+                    "    print (show v)"
+                    "    x" ]
+
+              let diags, _, _, _, partials =
+                  Weir.Script.analyzeLines "burn.weir" (burn 0 @ burn 1 @ [ "let later = 1 + \"y\"" ])
+
+              let errors = diags |> List.filter (fun d -> d.Severity = "error")
+              Expect.equal (errors |> List.map (fun d -> d.Line)) [ 2 ] "the first statement's own error, then the stop"
+              Expect.isFalse (Weir.Check.isBudgetMessage errors.Head.Message) "the published error is the cheap one"
+              Expect.isEmpty partials "a burnt recovery yields no tree"
+          } ]
+
 let multilineLambdaTests =
     testList
         "Multiline lambdas"
@@ -16344,7 +16481,7 @@ let assemblyRecoveryTests =
     testList
         "Assembly recovery (tooling)"
         [ test "a broken line yields its diag AND later statements still analyze" {
-              let diags, stmts, _, _ =
+              let diags, stmts, _, _, _ =
                   Weir.Script.analyzeLines
                       "t.weir"
                       [ "type T = { A: int }"
@@ -16361,7 +16498,7 @@ let assemblyRecoveryTests =
               Expect.isTrue (stmts |> List.exists (fun (_, c) -> c.Env.Types.ContainsKey "T")) "types survive"
           }
           test "a misaligned field is one located diag — re-indented, its closer still closes [D:field-alignment]" {
-              let diags, _, _, _ =
+              let diags, _, _, _, _ =
                   Weir.Script.analyzeLines
                       "t.weir"
                       [ "type Cfg = { host: string; port: int }"
@@ -35024,6 +35161,7 @@ let allTests =
           statementLetTests
           multilineLambdaTests
           semanticTokenTests
+          blockRecoveryTests
           lspCrossFileTests
           letBindingHoverTests
           purityBadgeTests

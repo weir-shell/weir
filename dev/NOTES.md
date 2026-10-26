@@ -1,5 +1,59 @@
 # Spike Notes
 
+## Block-level recovery — the editor keeps answering inside a broken statement (2026-10-26)
+
+The receipt: a module's 17-line `let sub … =` with one type error on
+line 81 lost hover and go-to-definition on every line 74–90. The LSP's
+typed knowledge is per top-level statement, and a statement that fails
+to check yields `Error d` and no tree. The editor spends most of its
+time in exactly this state.
+
+The shape (PLAN-lsp-recovery-rename, Part A; R1 and R8 as recommended):
+a second pass, not a changed first pass. `checkStatement` stays as it
+is for the runner, the REPL, `-e`, modules and `weir check`. Only
+`analyzeLinesAs`'s Error branch — after the diagnostic is recorded and
+the statement's names hole-bound — re-checks the statement once with
+`Ctx.Recovered = Some []`. In that mode the ESeq, ELet and ELetPat arms
+(the infer and check twins; the check twin has no ELetPat arm, the
+default falls to infer) catch a failed child: record `(error, span)`,
+substitute a `TEHole` node of the type the position demands (unit in
+statement position; a fresh `__hole` var as a let value, the binder
+bound to ∀h.h), continue the rest of the block. A failing child with no
+inner block of its own propagates to the nearest enclosing arm, which
+holes the whole construct — the granularity is a statement at any
+depth. A top-level statement whose body is one failing expression stays
+treeless (no false tree). Budget: a statement whose first pass hit the
+budget is not re-checked (one burn bounds the file, as before); a budget
+raise inside the recovery pass yields no tree.
+
+What the diagnostic consumers see: nothing new. The partials are the
+fifth product of `analyzeLinesAs`, never among `stmts`, so
+`schemaDiagnostics`, the trackers, Can's `ofChecked` and the REPL's
+`#save` are unchanged by the type, and the one-pipeline parity probe
+(check --json = runner = didOpen) now runs the receipt-shaped file too.
+The recovery pass's further errors are never published (they are mostly
+echoes of the hole). The partial's own binder carries the hole scheme in
+its `KLet`, so hovering it is null — the same answer later statements
+get for a use of it; a sibling line inside the statement hovers its
+real type.
+
+The LSP: `toLogical` and the completion-env scan read `stmts ∪
+partials` in file order; a position inside a hole span answers null for
+hover and definition; a hole-descended type (`'__hole…` in the
+rendering) hovers null instead of leaking the convention's var — which
+also closes the pre-existing leak where a later use of a top-level
+hole-bound name hovered `'__hole1`.
+
+Measured: the receipt file analyses in ~4.5 ms per pass on the JIT
+build with the recovery pass included (20 analyses: 92 ms); over the
+wire the open→publish of the receipt file lands well inside the 500 ms
+recheck budget on AOT (the e2e prints the number). The recovery pass
+costs one extra statement check per erroring statement per cache miss.
+
+FS0025 listed one exhaustive matcher for the new case (Eval); Purity,
+Can, Script and the LSP walks reach holes through wildcard arms or
+`childExprs`, which is where the one-line `TEHole` entry lives.
+
 ## The cleanup shim is sh; a dead stderr never aborts (2026-10-19)
 
 Round 5 (black box) found round 4's cleanup process group

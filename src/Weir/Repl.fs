@@ -3829,7 +3829,7 @@ let private candidateErrors (stmts: DistillStmt list) : Script.Diagnostic list =
     if List.isEmpty lines then
         []
     else
-        let diags, _, _, _ = Script.analyzeLines "#save" lines
+        let diags, _, _, _, _ = Script.analyzeLines "#save" lines
         diags |> List.filter (fun d -> d.Severity = "error" || namesSessionIt d)
 
 // protect a self-contained-but-unused binder [D:repl-save]: the
