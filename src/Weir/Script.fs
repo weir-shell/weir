@@ -4996,11 +4996,6 @@ let private helperAtImport (name: string) (h: string) =
 let private commandAtImport (why: string) =
     $"a module 'let' cannot run a command at import: {why}"
 
-/// the module's command-reaching functions and lazy command values so
-/// far, in declaration order
-let private moduleCommandHelpers (lets: (string * Check.TypedExpr) list) : Map<string, int> =
-    lets |> List.fold (fun m (n, te) -> Check.recordCommandBinding m n te) Map.empty
-
 // a source file's read, once into a result: an entry script or an import
 // that is missing, a directory, unreadable or not a regular file (a device
 // that never ends) is a weir-worded refusal, never a raw .NET exception
@@ -5258,9 +5253,12 @@ let rec loadModuleCachedWith
                     // [D:unused-bindings]: signed members exempt at flush
                     let moduleUnused = UnusedTracker()
 
+                    // helpers: the module's command-reaching functions and
+                    // lazy command values so far, in declaration order
                     let rec go
                         (tenv: TypeEnv)
                         (sc: SigContext)
+                        (helpers: Map<string, int>)
                         (implLines: (string * int) list)
                         (accBody: (LogicalLine * CheckedStmt) list)
                         (stmts: LogicalLine list)
@@ -5282,14 +5280,6 @@ let rec loadModuleCachedWith
                                           Message = d.Message }
                                 | None -> at d.PhysLine d.PhysCol d.Message
                             | Ok chk ->
-                                let helpers =
-                                    accBody
-                                    |> List.rev
-                                    |> List.choose (function
-                                        | _, CLet(n, t) -> Some(n, t)
-                                        | _ -> None)
-                                    |> moduleCommandHelpers
-
                                 let eagerHelper =
                                     match chk.Kind with
                                     | KLet(_, _, te)
@@ -5303,8 +5293,9 @@ let rec loadModuleCachedWith
                                     | _ -> None
 
                                 match chk.Kind with
-                                | KType(decl, validator) -> go chk.Env sc implLines ((ll, CType(decl, validator)) :: accBody) tail
-                                | KImport lm -> go chk.Env sc implLines ((ll, CImport lm) :: accBody) tail
+                                | KType(decl, validator) ->
+                                    go chk.Env sc helpers implLines ((ll, CType(decl, validator)) :: accBody) tail
+                                | KImport lm -> go chk.Env sc helpers implLines ((ll, CImport lm) :: accBody) tail
                                 | KSig(name, sd) ->
                                     // the sig binds nothing yet [D:module-signatures];
                                     // the paired implementation is the value
@@ -5314,7 +5305,7 @@ let rec loadModuleCachedWith
                                             Signed = Set.add name sc.Signed
                                             SigLines = Map.add name sd.Line sc.SigLines }
 
-                                    go chk.Env sc' implLines accBody tail
+                                    go chk.Env sc' helpers implLines accBody tail
                                 | KLet _
                                 | KLetPat _ when runsNow.IsSome -> at ll.Head 1 (commandAtImport runsNow.Value)
                                 | KLet(name, _, _) when eagerHelper.IsSome -> at ll.Head 1 (helperAtImport name eagerHelper.Value)
@@ -5332,7 +5323,14 @@ let rec loadModuleCachedWith
                                             implLines
 
                                     moduleUnused.Feed ll chk
-                                    go chk.Env sc' implLines' ((ll, CLet(name, te)) :: accBody) tail
+
+                                    go
+                                        chk.Env
+                                        sc'
+                                        (Check.recordCommandBinding helpers name te)
+                                        implLines'
+                                        ((ll, CLet(name, te)) :: accBody)
+                                        tail
                                 | KLetPat(pat, schemes, te) ->
                                     let sc' =
                                         { sc with
@@ -5340,7 +5338,7 @@ let rec loadModuleCachedWith
                                                 schemes |> List.fold (fun s (n, _) -> Set.add n s) sc.Implemented }
 
                                     moduleUnused.Feed ll chk
-                                    go chk.Env sc' implLines ((ll, CLetPat(pat, te)) :: accBody) tail
+                                    go chk.Env sc' helpers implLines ((ll, CLetPat(pat, te)) :: accBody) tail
                                 | KModule _ -> at ll.Head 1 "a file has at most one 'module' marker, and it comes first"
                                 | KCmd _
                                 | KExpr _ ->
@@ -5349,7 +5347,7 @@ let rec loadModuleCachedWith
                                         1
                                         "a module declares only — 'type' and 'let', no commands or bare expressions"
 
-                    match go baseTenv SigContext.empty [] [] rest with
+                    match go baseTenv SigContext.empty Map.empty [] [] rest with
                     | Error e -> Error e
                     | Ok(finalTenv, sc, implLines, moduleBody) ->
                         // sig without impl = check error at the sig
