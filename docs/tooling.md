@@ -24,7 +24,7 @@ usage: weir                                    the REPL
        weir add schema <url> --as <name>       fetch an external contract, lock it
        weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it
        weir add module <url> [--path <file>] --as <name>  the raw-URL form (--path: the URL is the root)
-       weir add module <name>@<tag> [--as <name>]      an official library module (github.com/weir-shell/lib)
+       weir add module <name>[@<tag>] [--as <name>]    an official library module (github.com/weir-shell/lib); no tag = latest
        weir gen types --schema <name>          generate weir types from a locked schema
        weir restore                            re-materialize the lock's artifacts
        weir verify                             vendored contracts vs the lock
@@ -90,8 +90,9 @@ These maintain the [`.weir/` tree](#project-layout-weir):
   and record it in the lock ([modules](#remote-modules)). From any
   other host: `weir add module <url> --as <name>` for one file, or
   `weir add module <root url> --path <file> --as <name>` for a file
-  and its imports. `weir add module <name>@<tag>` vendors a module of
-  the official library ([the library](#the-library)).
+  and its imports. `weir add module <name>` vendors a module of the
+  official library at its latest release, `<name>@v<x.y.z>` at one
+  ([the library](#the-library)).
 - `weir gen types --schema <name>` — generate weir `type` declarations
   from a locked schema into `.weir/types/<name>.weir`
   ([types from a schema](#types-from-a-schema)).
@@ -615,28 +616,39 @@ import "weir:retry" as Retry
 
 Modules the weir project itself maintains live in one repo,
 [github.com/weir-shell/lib](https://github.com/weir-shell/lib), one
-file per module under `modules/`. A bare name vendors one of them:
+file per module under `modules/`. A bare name vendors one of them at
+its latest release:
+
+```text
+weir add module semver
+```
+
+Each module is tagged on its own, `<name>/v<semver>` (`semver/v0.1.0`,
+`yaml/v0.2.3`): a tag names one module, and the tag list filtered to
+the module is its changelog. The bare add reads the repo's tag list
+and picks the highest stable `semver/v*` tag by semver precedence
+(a prerelease only when no stable tag exists), says which on stderr
+(`semver: latest is semver/v0.1.0`), and vendors it. To pin, spell
+the version with its `v`:
 
 ```text
 weir add module semver@v0.1.0
 ```
 
 This is the same as
-`weir add module github.com/weir-shell/lib//modules/semver.weir@v0.1.0 --as semver`:
+`weir add module github.com/weir-shell/lib//modules/semver.weir@semver/v0.1.0 --as semver`:
 the name is the file and the import alias, and `--as` renames it as
-usual (`weir add module semver@v0.1.0 --as sv` gives `import
-"weir:sv" as Sv`). Everything after the spelling is the ordinary
-`add` — the lock holds the raw URL at the full commit sha, and
-`verify` and `restore` can't tell the two spellings apart. A spec
-with a `/` is never read as a library name.
-
-The `@tag` is required; `weir add module semver` refuses and names
-the spelling. The library is tagged as a whole (`v0.1.0`, `v0.1.1`,
-…), so one tag pins every module, and there is no `latest` and no
-branch to track — point at a tag. (Any ref the long form takes works
-here too, a branch or a sha, since the lock holds the sha either
-way.) A name whose alias is a builtin module (`retry` → `Retry`) is
-refused as with `--as`; the library never publishes such a name.
+usual (`weir add module semver --as sv` gives `import "weir:sv" as
+Sv`). Everything after the resolve is the ordinary `add` — the lock
+holds the raw URL at the full commit sha (not the tag: a later `add`
+of the same spelling re-reads the tag list), and `verify` and
+`restore` can't tell the two spellings apart. A spec with a `/` is
+never read as a library name. `semver@0.1.0` (no `v`) and `semver@`
+are refused naming the spelling; a full 40-hex sha after the `@` is
+taken as is. There are no ranges and no branch to track: the latest
+release, or a tag. A name whose alias is a builtin module (`retry` →
+`Retry`) is refused as with `--as`; the library never publishes such
+a name.
 
 Every library module is a single file with no imports, because a
 vendored module can't import another vendored module yet (above).

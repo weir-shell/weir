@@ -445,13 +445,14 @@ let main argv =
                 | [ "--path"; p ] -> None, Some p
                 | _ -> None, None
 
-            // the library's short spelling expands here [D:lib-short-name];
-            // everything after sees the shorthand, as if typed
-            let spec, name, libError =
+            // the library's short spelling [D:lib-short-name] resolves through
+            // its own ref pick [D:lib-module-tags]; everything after the
+            // resolve sees the shorthand's result, as if typed
+            let lib, name, libError =
                 match Contracts.libSpec spec with
-                | Error e -> spec, "", Some e
-                | Ok None -> spec, (asName |> Option.defaultValue ""), None
-                | Ok(Some l) -> l.Source, (asName |> Option.defaultValue l.Name), None
+                | Error e -> None, "", Some e
+                | Ok None -> None, (asName |> Option.defaultValue ""), None
+                | Ok(Some l) -> Some l, (asName |> Option.defaultValue l.Name), None
 
             let weirDir =
                 match Contracts.findWeirDir "." with
@@ -595,7 +596,20 @@ let main argv =
                     Console.Error.WriteLine $"weir add module: {e}; nothing was written"
                     1
 
-                (match Contracts.resolveModuleSpec spec entryPath with
+                let resolved =
+                    match lib with
+                    | Some l ->
+                        Contracts.resolveLibSpec l entryPath
+                        |> Result.map (fun (src, picked) ->
+                            // a bare add says which tag it picked — the lock
+                            // holds the raw URL only [D:lib-module-tags]
+                            if l.Tag.IsNone then
+                                Console.Error.WriteLine $"{l.Name}: latest is {picked}"
+
+                            src)
+                    | None -> Contracts.resolveModuleSpec spec entryPath
+
+                (match resolved with
                  | Error e ->
                      Console.Error.WriteLine $"weir add module: {e}"
                      1
@@ -621,12 +635,12 @@ let main argv =
                      | Ok files -> addClosure src rawBase files)
         | "add" :: "module" :: _ ->
             Console.Error.WriteLine
-                "usage: weir add module <host>/<org>/<repo>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       weir add module <raw url> --as <name>                           one file, fetched verbatim\n       weir add module <raw root url> --path <file> --as <name>        the entry <file> under the root, with its imports\n       weir add module <name>@<tag> [--as <name>]                      an official library module (github.com/weir-shell/lib)\n       (an explicit @ref is required on the shorthand)"
+                "usage: weir add module <host>/<org>/<repo>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       weir add module <raw url> --as <name>                           one file, fetched verbatim\n       weir add module <raw root url> --path <file> --as <name>        the entry <file> under the root, with its imports\n       weir add module <name>[@<tag>] [--as <name>]                    an official library module (github.com/weir-shell/lib); no tag = the latest release\n       (an explicit @ref is required on the shorthand)"
 
             2
         | "add" :: _ ->
             Console.Error.WriteLine
-                "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig [--global] <tool>      generate a signature from the installed binary\n       weir add module <src>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       weir add module <raw url> [--path <file>] --as <name>   the raw-URL form (--path: the URL is the root)\n       weir add module <name>@<tag> [--as <name>]   an official library module (github.com/weir-shell/lib)"
+                "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig [--global] <tool>      generate a signature from the installed binary\n       weir add module <src>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       weir add module <raw url> [--path <file>] --as <name>   the raw-URL form (--path: the URL is the root)\n       weir add module <name>[@<tag>] [--as <name>]   an official library module (github.com/weir-shell/lib); no tag = the latest release"
 
             2
         | [ "restore" ] ->
@@ -883,7 +897,7 @@ let main argv =
                 + "       weir add schema <url> --as <name>       fetch an external contract, lock it\n"
                 + "       weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it\n"
                 + "       weir add module <url> [--path <file>] --as <name>  the raw-URL form (--path: the URL is the root)\n"
-                + "       weir add module <name>@<tag> [--as <name>]      an official library module (github.com/weir-shell/lib)\n"
+                + "       weir add module <name>[@<tag>] [--as <name>]    an official library module (github.com/weir-shell/lib); no tag = latest\n"
                 + "       weir gen types --schema <name>          generate weir types from a locked schema\n"
                 + "       weir restore                            re-materialize the lock's artifacts\n"
                 + "       weir verify                             vendored contracts vs the lock\n"

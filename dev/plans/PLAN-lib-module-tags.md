@@ -1,7 +1,8 @@
 # PLAN: per-module tags in the library, and the bare add picks the latest
 
-**Status: RULED** (user, 2026-10-27) — "I like that"; the open details
-below are assumed as stated, flagged for the user.
+**Status: BUILT** (2026-10-27) — ruled by the user ("I like that");
+the open details below were assumed as stated, flagged for the user.
+Session report at the end.
 
 ## The receipt
 
@@ -133,3 +134,34 @@ adding a lock field).
 - **P3 — the library**: README, CONTRIBUTING, `tools/tag-check.weir`
   and the workflow job; lib commit on main. Ledger: CHANGELOG,
   DECISIONS row, this plan BUILT with a session report.
+
+## Session report (2026-10-27)
+
+- P1: `Contracts.semverKey`, `semverCompare`, `latestModuleTag`;
+  `LibSpec` is `{ Name; Tag: string option }` (the `Source` field is
+  gone — `libSource name ref` builds the shorthand once the ref is
+  known, which is what "completed by the resolver" came to). Pins:
+  `libSpecTests` (three spellings, the empty `@`, the missing `v`,
+  the name rule, pass-through) and `semverTagTests` (§11's two
+  sequences sorted and pairwise, build ignored, non-versions refused,
+  mixed modules, prereleases, peeled pairs, non-version tags).
+- P2: `Contracts.resolveLibSpec` — a sha skips the listing, a version
+  resolves `refs/tags/<name>/<tag>` through `pickRef`, a bare name
+  takes `latestModuleTag`; the listing fetch is one `listRefs` shared
+  with the shorthand's host arm. The add prints `semver: latest is
+  semver/v0.1.0` on stderr for a bare add. Usage and `--help` read
+  `<name>[@<tag>]`; docs/tooling.md's block matches byte-for-byte.
+- The lock records nothing but the raw URL at the sha (no spec or
+  tag field exists in `LockEntry`), so the picked tag rides in the
+  add's printed line and nowhere else — no lock field was added.
+- P3 (lib, committed on main): README Versions, module table and
+  examples; CONTRIBUTING's release step; `tools/tag-check.weir`
+  (`--tag` or `GITHUB_REF_NAME` via `Env.need`); the `tag` job on
+  `*/v*` pushes. `weir tools/test.weir` green.
+- Not changed: the runner's missing-vendored teach still spells
+  `weir add module <name>@<tag>` (Script.fs; the bare form is now
+  the shorter teach — a follow-up).
+- Live e2e: the library is not retagged yet, so the positive cells
+  (`semver@v0.1.0`, the bare `semver`) fail until `semver/v0.1.0`
+  exists; the negative live cells (`nosuch@v0`, `nosuch`) and every
+  offline refusal pass.

@@ -31,8 +31,9 @@ stops being true fails the build.
   commit, into `.weir/modules/<name>/`; any other host: `weir add
   module <root url> --path <file> --as <name>` — a raw URL without
   `--path` is one file, fetched verbatim; an official library module
-  by bare name: `weir add module semver@v0.1.0` —
-  github.com/weir-shell/lib, tag required, `--as` optional), `weir restore` re-materializes the lock's files, `weir
+  by bare name: `weir add module semver` (its latest release, the
+  per-module tag `semver/v0.1.0`; `semver@v0.1.0` pins one) —
+  github.com/weir-shell/lib, `--as` optional), `weir restore` re-materializes the lock's files, `weir
   verify` diffs them against the lock (exit 1 on drift). See
   docs/tooling.md.
 - The whole file typechecks before ANY line runs. A check error = zero

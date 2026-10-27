@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.0.80
+
+### Added
+
+- **`weir add module semver` vendors the latest release.** The
+  official library tags each module on its own, `<name>/v<semver>`
+  (`semver/v0.1.0`), and a bare name picks the highest stable
+  `semver/v*` tag by semver precedence from the repo's own tag list
+  (a prerelease only when nothing stable exists) and says which on
+  stderr: `semver: latest is semver/v0.1.0`. `semver@v0.1.0` pins
+  one; a full sha after the `@` is taken as is. `semver@0.1.0` (no
+  `v`) and `semver@` are refused naming the spelling.
+
+### Changed
+
+- **`semver@v0.1.0` now means the tag `semver/v0.1.0`.** The
+  repo-wide tag spelling (`v0.1.0` on the whole library) no longer
+  resolves through the short form; the github shorthand and the
+  raw-URL form are unchanged, and the lock still holds the raw URL
+  at the full commit sha.
+
 ## v0.0.79
 
 ### Added

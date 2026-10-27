@@ -975,39 +975,148 @@ let private rootEntryPath (path: string) : Result<string, string> =
         | Ok _ -> Ok path
 
 // the official library's short spelling [D:lib-short-name]: a spec with
-// no `/` is `<name>@<tag>` and expands to the github shorthand at libRepo;
-// everything with a `/` is the existing grammar, untouched
+// no `/` is `<name>[@<tag>]` and expands to the github shorthand at
+// libRepo; everything with a `/` is the existing grammar, untouched. The
+// tag is per module, `<name>/v<semver>` [D:lib-module-tags]: `@v0.1.0`
+// names `semver/v0.1.0`, no tag means the latest stable one
 let libRepo = "github.com/weir-shell/lib"
 
 type LibSpec =
     { Name: string
-      Tag: string
-      Source: string }
+      // None: a bare name, the resolver picks the latest tag; Some: the
+      // version as typed (`v0.1.0`) or a full sha
+      Tag: string option }
+
+/// the shorthand a library spec expands to at a resolved ref: the
+/// per-module tag (`semver/v0.1.0`) or a sha
+let libSource (name: string) (ref: string) : string =
+    $"{libRepo}//modules/{name}.weir@{ref}"
+
+/// semver 2.0.0 precedence key [D:lib-module-tags]: `MAJOR.MINOR.PATCH
+/// [-pre][+build]` → (major, minor, patch, prerelease); build metadata is
+/// dropped; None when the text is not a version (a leading zero, a
+/// missing part, an empty identifier)
+let semverKey (v: string) : (int * int * int * string option) option =
+    let m =
+        Text.RegularExpressions.Regex.Match(
+            v,
+            @"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+        )
+
+    let numeric (s: string) = s |> Seq.forall Char.IsDigit
+
+    let part (i: int) =
+        match Int32.TryParse m.Groups[i].Value with
+        | true, n -> Some n
+        | _ -> None
+
+    if not m.Success then
+        None
+    else
+        let pre = if m.Groups[4].Success then Some m.Groups[4].Value else None
+
+        // a numeric prerelease identifier carries no leading zero
+        let preOk =
+            match pre with
+            | Some p -> p.Split '.' |> Array.forall (fun id -> not (numeric id && id.Length > 1 && id[0] = '0'))
+            | None -> true
+
+        match part 1, part 2, part 3 with
+        | Some ma, Some mi, Some pa when preOk -> Some(ma, mi, pa, pre)
+        | _ -> None
+
+/// semver 2.0.0 precedence over two keys [D:lib-module-tags]: the core
+/// numerically; a release above any prerelease of it; prerelease
+/// identifiers dot-wise — numeric before alphanumeric, numerically then
+/// ordinally, the longer list above its prefix
+let semverCompare (a: int * int * int * string option) (b: int * int * int * string option) : int =
+    let (ma, mia, pa, pra), (mb, mib, pb, prb) = a, b
+    let numeric (s: string) = s |> Seq.forall Char.IsDigit
+
+    let rec ids (xs: string list) (ys: string list) =
+        match xs, ys with
+        | [], [] -> 0
+        | [], _ -> -1
+        | _, [] -> 1
+        | x :: xs, y :: ys ->
+            let c =
+                match numeric x, numeric y with
+                // no leading zeros, so length then text is numeric order
+                | true, true -> compare (x.Length, x) (y.Length, y)
+                | true, false -> -1
+                | false, true -> 1
+                | false, false -> sign (String.CompareOrdinal(x, y))
+
+            if c <> 0 then c else ids xs ys
+
+    match compare (ma, mia, pa) (mb, mib, pb) with
+    | 0 ->
+        match pra, prb with
+        | None, None -> 0
+        | None, Some _ -> 1
+        | Some _, None -> -1
+        | Some x, Some y -> ids (List.ofArray (x.Split '.')) (List.ofArray (y.Split '.'))
+    | c -> c
+
+/// the module's latest tag in a ref listing [D:lib-module-tags]: the
+/// highest stable `refs/tags/<name>/v<semver>` by precedence, a
+/// prerelease only when no stable tag exists; (tag, sha) with the
+/// peeled `^{}` sha preferred as pickRef does. A tag whose version
+/// does not parse is not a candidate
+let latestModuleTag (refs: (string * string) list) (name: string) : (string * string) option =
+    let prefix = $"refs/tags/{name}/v"
+
+    let candidates =
+        refs
+        |> List.choose (fun (sha, r) ->
+            if r.StartsWith prefix then
+                let v = r.Substring prefix.Length
+                let peeled = v.EndsWith "^{}"
+                let v = if peeled then v.Substring(0, v.Length - 3) else v
+                semverKey v |> Option.map (fun k -> k, v, sha, peeled)
+            else
+                None)
+
+    let best (cs: _ list) =
+        cs
+        |> List.fold
+            (fun acc ((kc, _, _, pc) as c) ->
+                match acc with
+                | None -> Some c
+                | Some((ka, _, _, pa) as a) ->
+                    let d = semverCompare kc ka
+                    if d > 0 || (d = 0 && pc && not pa) then Some c else Some a)
+            None
+        |> Option.map (fun (_, v, sha, _) -> $"{name}/v{v}", sha)
+
+    match best (candidates |> List.filter (fun ((_, _, _, pre), _, _, _) -> pre.IsNone)) with
+    | Some t -> Some t
+    | None -> best candidates
 
 /// Ok None: not library-shaped (has a `/` or `:`) — the caller passes the
-/// spec through unchanged. Ok (Some s): expanded. Error: library-shaped
-/// but malformed; the message names the spelling.
+/// spec through unchanged. Ok (Some s): the name and the tag as typed, None
+/// for a bare name. Error: library-shaped but malformed; the message names
+/// the spelling.
 let libSpec (spec: string) : Result<LibSpec option, string> =
     if spec.IndexOfAny([| '/'; ':' |]) >= 0 then
         Ok None
     else
         let j = spec.LastIndexOf '@'
         let name = if j < 0 then spec else spec.Substring(0, j)
-        let tag = if j < 0 then "" else spec.Substring(j + 1)
+        let tag = if j < 0 then None else Some(spec.Substring(j + 1))
 
-        if tag = "" then
+        if not (plainName name) then
             Error
-                $"'{quoteData spec}' has no @tag — a library module is pinned by its release tag: weir add module {quoteData name}@v0.1.0 (the tags: https://{libRepo}/tags)"
-        elif not (plainName name) then
-            Error
-                $"'{quoteData spec}' is not a library module name — <name>@<tag>, the name a letter then letters/digits/_: weir add module semver@v0.1.0"
+                $"'{quoteData spec}' is not a library module name — <name>[@<tag>], the name a letter then letters/digits/_: weir add module semver@v0.1.0"
         else
-            Ok(
-                Some
-                    { Name = name
-                      Tag = tag
-                      Source = $"{libRepo}//modules/{name}.weir@{tag}" }
-            )
+            match tag with
+            | Some "" ->
+                Error
+                    $"'{quoteData spec}' has nothing after the @ — leave it off for the latest release (weir add module {quoteData name}) or name one: weir add module {quoteData name}@v0.1.0"
+            | Some t when (semverKey t).IsSome ->
+                Error
+                    $"'{quoteData spec}' spells the version without its v — the tag is {quoteData name}/v{quoteData t}: weir add module {quoteData name}@v{quoteData t}"
+            | _ -> Ok(Some { Name = name; Tag = tag })
 
 // ref → sha over git's own ref advertisement [D:ref-resolve-smart-http]:
 // every git host serves `<repo>.git/info/refs?service=git-upload-pack`
@@ -1070,6 +1179,29 @@ let pickRef (refs: (string * string) list) (name: string) : string option =
         [ $"refs/tags/{name}^{{}}"; $"refs/tags/{name}"; $"refs/heads/{name}" ]
         |> List.tryPick (fun r -> refs |> List.tryFind (fun (_, n) -> n = r) |> Option.map fst)
 
+/// a repo's ref advertisement, parsed [D:ref-resolve-smart-http]. The
+/// listing carries the Basic pair git over HTTPS sends for the host
+/// (`listUser` + the host's token); the raw fetch keeps the host's own
+/// header
+let private listRefs (host: string) (repo: string) (listUser: string) : Result<(string * string) list, string> =
+    let auth =
+        match hostToken host with
+        | Some t ->
+            [ "Authorization", "Basic " + Convert.ToBase64String(Text.Encoding.UTF8.GetBytes(listUser + ":" + t)) ]
+        | None -> []
+
+    let url = $"https://{host}/{repo}.git/info/refs?service=git-upload-pack"
+
+    match fetchBytesWith (uaHeader @ auth) url with
+    | Error e -> Error(hintPrivate host $"listing refs: {e}")
+    | Ok(bytes, _) ->
+        match parseRefListing bytes with
+        | Error _ -> Error $"unexpected answer listing refs at {quoteData url}"
+        | Ok refs -> Ok refs
+
+let private pathNeedsRawRoot =
+    "--path goes with a raw root URL (weir add module https://host/base/ --path lib/x.weir --as <name>); the shorthand already carries the path after // — <host>/<org>/<repo>//<path>@<ref>"
+
 let resolveModuleSpec (spec: string) (entryPath: string option) : Result<ResolvedModuleSource, string> =
     if spec.StartsWith "http://" || spec.StartsWith "https://" then
         // the explicit raw-URL form — any host, no expansion
@@ -1105,8 +1237,7 @@ let resolveModuleSpec (spec: string) (entryPath: string option) : Result<Resolve
                 let rootUrl = if spec.EndsWith "/" then spec else spec + "/"
                 src (Some(rootUrl, p)) (rootUrl + p))
     elif entryPath.IsSome then
-        Error
-            "--path goes with a raw root URL (weir add module https://host/base/ --path lib/x.weir --as <name>); the shorthand already carries the path after // — <host>/<org>/<repo>//<path>@<ref>"
+        Error pathNeedsRawRoot
     else
         match spec.IndexOf "//" with
         | -1 ->
@@ -1133,20 +1264,10 @@ let resolveModuleSpec (spec: string) (entryPath: string option) : Result<Resolve
                         let host = left.Substring(0, k)
                         let repo = left.Substring(k + 1)
 
-                        // the listing carries the Basic pair git over HTTPS
-                        // sends for the host [D:ref-resolve-smart-http]; the
-                        // raw fetch keeps the host's own header
-                        let listAuth (user: string) =
-                            match hostToken host with
-                            | Some t ->
-                                [ "Authorization",
-                                  "Basic " + Convert.ToBase64String(Text.Encoding.UTF8.GetBytes(user + ":" + t)) ]
-                            | None -> []
-
                         // one path per host: list, pick, then the host's raw URL
                         // at the sha; a full sha skips the listing
                         let hostArm
-                            (listHdrs: (string * string) list)
+                            (listUser: string)
                             (rawBase: string -> string)
                             (rawAuth: (string * string) list)
                             (tagsUrl: string)
@@ -1155,19 +1276,13 @@ let resolveModuleSpec (spec: string) (entryPath: string option) : Result<Resolve
                                 match pickRef [] refName with
                                 | Some sha -> Ok sha
                                 | None ->
-                                    let url = $"https://{host}/{repo}.git/info/refs?service=git-upload-pack"
-
-                                    match fetchBytesWith (uaHeader @ listHdrs) url with
-                                    | Error e -> Error(hintPrivate host $"listing refs: {e}")
-                                    | Ok(bytes, _) ->
-                                        match parseRefListing bytes with
-                                        | Error _ -> Error $"unexpected answer listing refs at {quoteData url}"
-                                        | Ok refs ->
-                                            match pickRef refs refName with
-                                            | Some sha -> Ok sha
-                                            | None ->
-                                                Error
-                                                    $"no tag or branch '{quoteData refName}' at {host}/{repo} — the tags: {tagsUrl}"
+                                    listRefs host repo listUser
+                                    |> Result.bind (fun refs ->
+                                        match pickRef refs refName with
+                                        | Some sha -> Ok sha
+                                        | None ->
+                                            Error
+                                                $"no tag or branch '{quoteData refName}' at {host}/{repo} — the tags: {tagsUrl}")
 
                             sha
                             |> Result.map (fun sha ->
@@ -1182,7 +1297,7 @@ let resolveModuleSpec (spec: string) (entryPath: string option) : Result<Resolve
                         match host with
                         | "github.com" ->
                             hostArm
-                                (listAuth "x-access-token")
+                                "x-access-token"
                                 (fun sha -> $"https://raw.githubusercontent.com/{repo}/{sha}/")
                                 (match hostToken host with
                                  | Some t -> [ "Authorization", "token " + t ]
@@ -1190,7 +1305,7 @@ let resolveModuleSpec (spec: string) (entryPath: string option) : Result<Resolve
                                 $"https://github.com/{repo}/tags"
                         | "gitlab.com" ->
                             hostArm
-                                (listAuth "oauth2")
+                                "oauth2"
                                 (fun sha -> $"https://gitlab.com/{repo}/-/raw/{sha}/")
                                 (match hostToken host with
                                  | Some t -> [ "PRIVATE-TOKEN", t ]
@@ -1199,6 +1314,42 @@ let resolveModuleSpec (spec: string) (entryPath: string option) : Result<Resolve
                         | h ->
                             Error
                                 $"unknown host '{quoteData h}' — the shorthand knows github.com and gitlab.com; any other host takes the full raw URL: weir add module https://… --as <name>"
+
+/// a library spec resolved [D:lib-module-tags]: a full sha skips the
+/// listing; a version names the tag `<name>/v<ver>`; a bare name takes
+/// `latestModuleTag` over the same listing. The ref picked rides back
+/// beside the source (`semver/v0.1.0`, or the sha) — the lock holds the
+/// raw URL only, so the add's printed line is where the tag shows
+let resolveLibSpec (l: LibSpec) (entryPath: string option) : Result<ResolvedModuleSource * string, string> =
+    let host, repo = libRepo.Substring(0, libRepo.IndexOf '/'), libRepo.Substring(libRepo.IndexOf '/' + 1)
+    let tagsUrl = $"https://{libRepo}/tags?q={l.Name}/"
+
+    let at (ref: string) =
+        resolveModuleSpec (libSource l.Name ref) None |> Result.map (fun src -> src, ref)
+
+    if entryPath.IsSome then
+        Error pathNeedsRawRoot
+    else
+        match l.Tag with
+        | Some t when fullSha t -> at t
+        | Some t ->
+            let tag = $"{l.Name}/{t}"
+
+            listRefs host repo "x-access-token"
+            |> Result.bind (fun refs ->
+                match pickRef refs tag with
+                | Some sha -> at sha |> Result.map (fun (src, _) -> src, tag)
+                | None ->
+                    Error
+                        $"no tag '{quoteData tag}' at {libRepo} — a library module is released as <name>/v<semver>; the tags: {tagsUrl}")
+        | None ->
+            listRefs host repo "x-access-token"
+            |> Result.bind (fun refs ->
+                match latestModuleTag refs l.Name with
+                | Some(tag, sha) -> at sha |> Result.map (fun (src, _) -> src, tag)
+                | None ->
+                    Error
+                        $"no {l.Name}/v* tag at {libRepo} — a library module is released as <name>/v<semver>; the tags: {tagsUrl}")
 
 /// the credential a re-fetch of a locked module carries — the same
 /// WEIR_TOKEN_<host> header `add module` sent, derived from the locked

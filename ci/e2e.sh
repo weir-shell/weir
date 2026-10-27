@@ -14271,19 +14271,24 @@ printf 'import "weir:nope" as N\nprint "x"\n' > "$amdir/proj/missing.weir"
 ( cd "$amdir/proj" && $BIN missing.weir 2>&1 || true ) | grep -q "no vendored module 'nope'.*weir add module nope@<tag>" || fail "missing-vendored teach names the library spelling first"
 # the library's short spelling [D:lib-short-name]: the refusals are
 # offline (the pure expansion never reaches the host), and a refused
-# add writes nothing
+# add writes nothing. The tag is per module [D:lib-module-tags]: an
+# empty @ and a version without its v name the spelling
 libtree=$(cd "$amdir/proj" && find .weir -type f -exec sha256sum {} + | sort | sha256sum)
-rc=0; libout=$(cd "$amdir/proj" && $BIN add module semver 2>&1) || rc=$?
-[ "$rc" -eq 1 ] || fail "the no-tag refusal exits 1 (got $rc): $libout"
-echo "$libout" | grep -q "has no @tag" || fail "bare name without @tag: $libout"
-echo "$libout" | grep -qF "weir add module semver@v0.1.0" || fail "the no-tag refusal names the spelling: $libout"
+rc=0; libout=$(cd "$amdir/proj" && $BIN add module semver@ 2>&1) || rc=$?
+[ "$rc" -eq 1 ] || fail "the empty-@ refusal exits 1 (got $rc): $libout"
+echo "$libout" | grep -q "has nothing after the @" || fail "empty @: $libout"
+echo "$libout" | grep -qF "weir add module semver@v0.1.0" || fail "the empty-@ refusal names the spelling: $libout"
+rc=0; libout=$(cd "$amdir/proj" && $BIN add module semver@0.1.0 2>&1) || rc=$?
+[ "$rc" -eq 1 ] || fail "the missing-v refusal exits 1 (got $rc): $libout"
+echo "$libout" | grep -qF "the tag is semver/v0.1.0" || fail "missing v names the tag: $libout"
+echo "$libout" | grep -qF "weir add module semver@v0.1.0" || fail "the missing-v refusal names the spelling: $libout"
 [ "$(cd "$amdir/proj" && find .weir -type f -exec sha256sum {} + | sort | sha256sum)" = "$libtree" ] || fail "a refused bare add must write nothing"
 ( cd "$amdir/proj" && $BIN add module semver.weir@v1 2>&1 || true ) | grep -q "is not a library module name" || fail "bare name that is not a name"
 ( cd "$amdir/proj" && $BIN add module retry@v0.1.0 2>&1 || true ) | grep -q "derives the alias 'Retry', a builtin module — pick another --as" || fail "bare name deriving a builtin alias (R2)"
 ( cd "$amdir/proj" && $BIN add module semver@v0.1.0 --path x.weir 2>&1 || true ) | grep -q "\-\-path goes with a raw root URL" || fail "--path on the bare form hits the existing refusal"
 rc=0; libout=$(cd "$amdir/proj" && $BIN add module "github.com/acme/lib//x.weir@v1" 2>&1) || rc=$?
 [ "$rc" -eq 2 ] || fail "the long form without --as is still usage, exit 2 (got $rc): $libout"
-echo "$libout" | grep -qF "weir add module <name>@<tag> [--as <name>]" || fail "usage names the library line: $libout"
+echo "$libout" | grep -qF "weir add module <name>[@<tag>] [--as <name>]" || fail "usage names the library line: $libout"
 printf 'import "weir:../evil" as E\nprint "x"\n' > "$amdir/proj/evil.weir"
 ( cd "$amdir/proj" && $BIN evil.weir 2>&1 || true ) | grep -q "names a vendored module, never a path" || fail "weir: path-shape refusal"
 # R1's negative pins: both pre-existing bare spellings stay file-relative
@@ -14303,16 +14308,23 @@ echo "$lout" | grep -q "is not a module" || fail "live shorthand chain: $lout"
 # the library's host, live [D:lib-short-name]: the expansion reached
 # weir-shell/lib's listing and the default --as was derived (the handler
 # got past the name checks) — a tag the library does not have is named
-# with the tags page [D:ref-resolve-smart-http]
+# with the per-module shape and the tags page filtered to the module
+# [D:lib-module-tags] [D:ref-resolve-smart-http]
 llout=$(cd "$amdir/proj" && $BIN add module nosuch@v0 2>&1 || true)
-echo "$llout" | grep -qF "no tag or branch 'v0' at github.com/weir-shell/lib — the tags: https://github.com/weir-shell/lib/tags" || fail "live library host probe: $llout"
-# the positive resolve, live: the library's v0.1.0 tag lists, so the
-# output names the raw URL at a full sha (whether the add then succeeds
-# is the library's layout at that tag — the resolve is what this pins)
+echo "$llout" | grep -qF "no tag 'nosuch/v0' at github.com/weir-shell/lib — a library module is released as <name>/v<semver>; the tags: https://github.com/weir-shell/lib/tags?q=nosuch/" || fail "live library host probe: $llout"
+llout=$(cd "$amdir/proj" && $BIN add module nosuch 2>&1 || true)
+echo "$llout" | grep -qF "no nosuch/v* tag at github.com/weir-shell/lib — a library module is released as <name>/v<semver>; the tags: https://github.com/weir-shell/lib/tags?q=nosuch/" || fail "live library bare probe: $llout"
+# the positive resolves, live: the library's semver/v0.1.0 tag lists, so
+# the output names the raw URL at a full sha (whether the add then
+# succeeds is the library's layout at that tag — the resolve is what
+# this pins); the bare add picks that tag and says so on stderr
 lpout=$(cd "$amdir/proj" && $BIN add module semver@v0.1.0 2>&1 || true)
 echo "$lpout" | grep -qE "raw.githubusercontent.com/weir-shell/lib/[0-9a-f]{40}/modules/semver.weir" || fail "live library tag resolve: $lpout"
+lpout=$(cd "$amdir/proj" && $BIN add module semver 2>&1 || true)
+echo "$lpout" | grep -qE "^semver: latest is semver/v[0-9]+\.[0-9]+\.[0-9]+" || fail "live library latest pick: $lpout"
+echo "$lpout" | grep -qE "raw.githubusercontent.com/weir-shell/lib/[0-9a-f]{40}/modules/semver.weir" || fail "live library latest resolve: $lpout"
 kill $amsrv 2>/dev/null || true
-echo "e2e ok: add module (vendor, walk-import root+subdir, --can at the module's line, tamper→repair, re-add sha pair, the teaches, R1 negative pins, the library spelling's refusals, live shorthand + library host + library tag)"
+echo "e2e ok: add module (vendor, walk-import root+subdir, --can at the module's line, tamper→repair, re-add sha pair, the teaches, R1 negative pins, the library spelling's refusals, live shorthand + library host + library tag + library latest)"
 
 # ---- weir add module: a module's closure [D:add-module-closure] ----------
 # a module with relative imports vendors with them, fetched at one commit:
