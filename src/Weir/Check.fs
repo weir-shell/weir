@@ -2587,11 +2587,9 @@ let checkBinderName (span: Span) (name: string) : Result<unit, TypeError> =
 
 // every imported type's key in this env — own and transitive alike
 // [D:transitive-types] [D:qualified-type-names]
-let private importedTypeKeys (env: TypeEnv) : Set<string> =
-    env.ModuleTypes
-    |> Map.toList
-    |> List.collect (snd >> Map.values >> List.ofSeq)
-    |> List.fold (fun acc k -> Set.add k acc) (env.TypeOrigins |> Map.keys |> Set.ofSeq)
+let private isImportedType (env: TypeEnv) (key: string) : bool =
+    Map.containsKey key env.TypeOrigins
+    || env.ModuleTypes |> Map.exists (fun _ owned -> owned |> Map.exists (fun _ k -> k = key))
 
 // an unbound name that is a field of a declared (or imported) record:
 // the repair it most likely needs, and whether it is confident (a value
@@ -2662,14 +2660,12 @@ and ctorOwnersAll (env: TypeEnv) (name: string) : string list =
         // (access is always qualified), so they are not candidates for this
         // name and must not make a local declaration look ambiguous — a type
         // reached only transitively [D:transitive-types] included
-        let imported = importedTypeKeys env
-
         let owners =
             env.Types
             |> Map.toList
             |> List.choose (fun (tn, d) ->
                 match d with
-                | Union u when not (imported.Contains tn) && u.Cases |> List.exists (fun (c, _) -> c = name) -> Some tn
+                | Union u when u.Cases |> List.exists (fun (c, _) -> c = name) && not (isImportedType env tn) -> Some tn
                 | _ -> None)
             |> List.sort
 
@@ -2679,13 +2675,11 @@ and ctorOwnersAll (env: TypeEnv) (name: string) : string list =
 // leaves out (their cases are not in scope bare), consulted only where
 // a pattern types its scrutinee [D:match-scrutinee-infer]
 let private importedCtorOwners (env: TypeEnv) (name: string) : string list =
-    let imported = importedTypeKeys env
-
     env.Types
     |> Map.toList
     |> List.choose (fun (tn, d) ->
         match d with
-        | Union u when imported.Contains tn && u.Cases |> List.exists (fun (c, _) -> c = name) -> Some tn
+        | Union u when u.Cases |> List.exists (fun (c, _) -> c = name) && isImportedType env tn -> Some tn
         | _ -> None)
 
 // the unions a bare case pattern can name with nothing typing the value:

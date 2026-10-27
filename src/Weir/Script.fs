@@ -53,8 +53,7 @@ let private docText (raw: string) : string =
 /// the documented name's (1-based col, len) on a declaration line: the
 /// identifier after `let`/`type`, after `|` (union case), or leading
 /// (a record field). None when the line has no such name.
-let private declName (raw: string) : (int * int) option =
-    let code = stripComment raw
+let private declName (code: string) : (int * int) option =
     let trimmed = code.TrimStart()
     let indent = code.Length - trimmed.Length
 
@@ -389,11 +388,6 @@ let armArrowIndex (s: string) : int option =
     if found >= 0 then Some found else None
 
 let classifyPiece (piece: string) : PieceClass =
-    let lastToken =
-        match piece.LastIndexOf ' ' with
-        | -1 -> piece
-        | i -> piece.Substring(i + 1)
-
     { Kind =
         if piece.StartsWith "|" then
             PieceKind.PipeHead
@@ -680,20 +674,19 @@ let opensIndentedBody (before: string) : bool =
 /// A line-end district marker of any kind — the mask below and the
 /// REPL share classifyPiece's marker rules through these predicates.
 let isMarkerPiece (piece: string) =
-    (classifyPiece piece).Marker <> MarkerKind.NoMarker
+    isYamlMarkerPiece piece || isHeredocMarkerPiece piece
 
 /// True for physical lines that are district content (deeper than an
 /// arming marker line) [D:content-bytes]: the byte-preserving passes —
 /// doc attachment, the doc-align lint, fmt's doc canonicalization —
 /// must neither read nor move them; content is bytes.
-let districtContentMask (lines: string list) : bool[] =
+let private districtContentMaskOf (lines: (string * string) list) : bool[] =
     let arr = List.toArray lines
     let mask = Array.create arr.Length false
     let mutable armed: int option = None // the marker line's indent
 
     for i in 0 .. arr.Length - 1 do
-        let raw = arr[i]
-        let code = stripComment raw
+        let raw, code = arr[i]
         let indent = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
 
         if raw.Trim() = "" then
@@ -713,6 +706,9 @@ let districtContentMask (lines: string list) : bool[] =
 
     mask
 
+let districtContentMask (lines: string list) : bool[] =
+    districtContentMaskOf (lines |> List.map (fun raw -> raw, stripComment raw))
+
 /// Pure pass: a contiguous run of `///` lines attaches to the
 /// declaration on the next code line; a blank or a plain `//` line
 /// breaks the run (the contiguity rule). An attribute-only line
@@ -727,11 +723,13 @@ let docAttachments (lines: string list) : DocAttach list =
     let mutable pending: string list = []
     let acc = System.Collections.Generic.List<DocAttach>()
 
-    let masked = districtContentMask lines
+    let stripped = lines |> List.map (fun raw -> raw, stripComment raw)
+    let masked = districtContentMaskOf stripped
 
-    lines
-    |> List.iteri (fun idx raw ->
+    stripped
+    |> List.iteri (fun idx (raw, code) ->
         let ln = idx + 1
+        let t = code.Trim()
 
         if masked[idx] then
             () // district content is bytes — never doc syntax [D:content-bytes]
@@ -741,15 +739,15 @@ let docAttachments (lines: string list) : DocAttach list =
             // pinning a core on a heavily documented module. Cons is O(1);
             // the run is reversed once at the single consumer (Doc below).
             pending <- docText raw :: pending
-        elif isAttributeOnlyLine raw then
+        elif t.StartsWith "[<" && t.EndsWith ">]" then
             ()
         elif raw.Trim() = "" then
             pending <- []
-        elif (stripComment raw).Trim() = "" then
+        elif t = "" then
             pending <- [] // a plain // comment-only line breaks contiguity
         else
             if not (List.isEmpty pending) then
-                match declName raw with
+                match declName code with
                 | Some(col, len) ->
                     acc.Add
                         { Line = ln
@@ -1445,34 +1443,38 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
     // --format=a//b — stays data). Skipped: yaml district content (bytes)
     // and comment-only lines (their class carries transparency semantics
     // a blanked line would lose — blankSinceHead is the difference)
+    // each line as (number, text, code): the text is the line as the
+    // joins see it, the code its comment-cut form (the cut is idempotent,
+    // so the code of a cut text is the text)
     let numbered =
         // the mask must see stripped heads (a commented district head
         // still opens its district), so the cut runs twice: once to
         // find the content regions, once — content excluded — for real.
         // TrimEnd only on actual cuts: untouched lines stay byte-equal
-        let mask = districtContentMask (numbered |> List.map (snd >> stripComment))
+        let stripped = numbered |> List.map (fun (n, raw) -> n, raw, stripComment raw)
+        let mask = districtContentMaskOf (stripped |> List.map (fun (_, _, code) -> code, code))
 
-        numbered
-        |> List.mapi (fun i (n, raw) ->
-            if (i < mask.Length && mask[i]) || (stripComment raw).Trim() = "" then
-                n, raw
+        stripped
+        |> List.mapi (fun i (n, raw, code) ->
+            if (i < mask.Length && mask[i]) || code.Trim() = "" then
+                n, raw, code
             else
-                n, stripComment raw)
+                n, code, code)
 
     // the retired ! districts get an explanatory error
     // [D:district-retirement] — checked up front over every non-content
     // line (yaml district bodies are bytes, never read:
     // districtContentMask)
     let retiredHit =
-        let mask = districtContentMask (numbered |> List.map snd)
+        let mask = districtContentMaskOf (numbered |> List.map (fun (_, text, code) -> text, code))
 
         numbered
-        |> List.mapi (fun i (n, raw) -> i, n, raw)
-        |> List.tryPick (fun (i, n, raw) ->
+        |> List.mapi (fun i (n, _, code) -> i, n, code)
+        |> List.tryPick (fun (i, n, code) ->
             if i < mask.Length && mask[i] then
                 None
             else
-                let t = (stripComment raw).TrimEnd()
+                let t = code.TrimEnd()
                 if t <> "" && retiredDistrictMarker t then Some n else None)
 
     match retiredHit with
@@ -1539,7 +1541,7 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
         let folded =
             numbered
             |> List.fold
-                (fun state (lineNo, raw) ->
+                (fun state (lineNo, raw, code) ->
                     match state with
                     | Error e -> Error e
                     | Ok _ when
@@ -1588,7 +1590,7 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                             // boundary produced still fires at close
                             | Some p -> Ok(Some p, acc, blankSinceHead)
                             | None -> Ok(None, acc, true)
-                        elif (stripComment raw).Trim() = "" then
+                        elif code.Trim() = "" then
                             // comment-only: transparent [D:comment-transparency] —
                             // except inside an active yaml district, where the
                             // line is bytes (`// x` in a block scalar is data)
@@ -1694,7 +1696,7 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                     // structure decisions read the stripped text;
                                     // yaml-district joins carry the raw bytes
                                     let rawPiece = raw.Substring indent
-                                    let piece = (stripComment raw).Substring indent
+                                    let piece = code.Substring indent
                                     let cls = classifyPiece piece
 
                                     let rec go (p: Pend) =
@@ -4996,11 +4998,6 @@ let private helperAtImport (name: string) (h: string) =
 let private commandAtImport (why: string) =
     $"a module 'let' cannot run a command at import: {why}"
 
-/// the module's command-reaching functions and lazy command values so
-/// far, in declaration order
-let private moduleCommandHelpers (lets: (string * Check.TypedExpr) list) : Map<string, int> =
-    lets |> List.fold (fun m (n, te) -> Check.recordCommandBinding m n te) Map.empty
-
 // a source file's read, once into a result: an entry script or an import
 // that is missing, a directory, unreadable or not a regular file (a device
 // that never ends) is a weir-worded refusal, never a raw .NET exception
@@ -5258,9 +5255,12 @@ let rec loadModuleCachedWith
                     // [D:unused-bindings]: signed members exempt at flush
                     let moduleUnused = UnusedTracker()
 
+                    // helpers: the module's command-reaching functions and
+                    // lazy command values so far, in declaration order
                     let rec go
                         (tenv: TypeEnv)
                         (sc: SigContext)
+                        (helpers: Map<string, int>)
                         (implLines: (string * int) list)
                         (accBody: (LogicalLine * CheckedStmt) list)
                         (stmts: LogicalLine list)
@@ -5282,14 +5282,6 @@ let rec loadModuleCachedWith
                                           Message = d.Message }
                                 | None -> at d.PhysLine d.PhysCol d.Message
                             | Ok chk ->
-                                let helpers =
-                                    accBody
-                                    |> List.rev
-                                    |> List.choose (function
-                                        | _, CLet(n, t) -> Some(n, t)
-                                        | _ -> None)
-                                    |> moduleCommandHelpers
-
                                 let eagerHelper =
                                     match chk.Kind with
                                     | KLet(_, _, te)
@@ -5303,8 +5295,9 @@ let rec loadModuleCachedWith
                                     | _ -> None
 
                                 match chk.Kind with
-                                | KType(decl, validator) -> go chk.Env sc implLines ((ll, CType(decl, validator)) :: accBody) tail
-                                | KImport lm -> go chk.Env sc implLines ((ll, CImport lm) :: accBody) tail
+                                | KType(decl, validator) ->
+                                    go chk.Env sc helpers implLines ((ll, CType(decl, validator)) :: accBody) tail
+                                | KImport lm -> go chk.Env sc helpers implLines ((ll, CImport lm) :: accBody) tail
                                 | KSig(name, sd) ->
                                     // the sig binds nothing yet [D:module-signatures];
                                     // the paired implementation is the value
@@ -5314,7 +5307,7 @@ let rec loadModuleCachedWith
                                             Signed = Set.add name sc.Signed
                                             SigLines = Map.add name sd.Line sc.SigLines }
 
-                                    go chk.Env sc' implLines accBody tail
+                                    go chk.Env sc' helpers implLines accBody tail
                                 | KLet _
                                 | KLetPat _ when runsNow.IsSome -> at ll.Head 1 (commandAtImport runsNow.Value)
                                 | KLet(name, _, _) when eagerHelper.IsSome -> at ll.Head 1 (helperAtImport name eagerHelper.Value)
@@ -5332,7 +5325,14 @@ let rec loadModuleCachedWith
                                             implLines
 
                                     moduleUnused.Feed ll chk
-                                    go chk.Env sc' implLines' ((ll, CLet(name, te)) :: accBody) tail
+
+                                    go
+                                        chk.Env
+                                        sc'
+                                        (Check.recordCommandBinding helpers name te)
+                                        implLines'
+                                        ((ll, CLet(name, te)) :: accBody)
+                                        tail
                                 | KLetPat(pat, schemes, te) ->
                                     let sc' =
                                         { sc with
@@ -5340,7 +5340,7 @@ let rec loadModuleCachedWith
                                                 schemes |> List.fold (fun s (n, _) -> Set.add n s) sc.Implemented }
 
                                     moduleUnused.Feed ll chk
-                                    go chk.Env sc' implLines ((ll, CLetPat(pat, te)) :: accBody) tail
+                                    go chk.Env sc' helpers implLines ((ll, CLetPat(pat, te)) :: accBody) tail
                                 | KModule _ -> at ll.Head 1 "a file has at most one 'module' marker, and it comes first"
                                 | KCmd _
                                 | KExpr _ ->
@@ -5349,7 +5349,7 @@ let rec loadModuleCachedWith
                                         1
                                         "a module declares only — 'type' and 'let', no commands or bare expressions"
 
-                    match go baseTenv SigContext.empty [] [] rest with
+                    match go baseTenv SigContext.empty Map.empty [] [] rest with
                     | Error e -> Error e
                     | Ok(finalTenv, sc, implLines, moduleBody) ->
                         // sig without impl = check error at the sig
@@ -6381,7 +6381,7 @@ let private docMisalignments (path: string) (lines: string list) : Diagnostic li
             runStart <- -1 // a blank / plain-// breaks the run — no attachment, no claim
         else
             (if runStart >= 0 then
-                 match declName raw with
+                 match declName (stripComment raw) with
                  | Some _ ->
                      let anchor = indent raw
 
@@ -10802,12 +10802,17 @@ let loadTargetsOf (tenv: TypeEnv) (lines: LogicalLine list) : Map<string, string
 
     lines
     |> List.collect (fun ll ->
-        match Parser.parseLine (assumeResolver tenv) ll.Text with
-        | Ok(SLet(_, e))
-        | Ok(SLetPat(_, e))
-        | Ok(SExpr e)
-        | Ok(SCmd e) -> walk e
-        | _ -> [])
+        // the field is read from the source, so a line without the word
+        // holds no load site — and no second parse of it
+        if not (ll.Text.Contains "load") then
+            []
+        else
+            match Parser.parseLine (assumeResolver tenv) ll.Text with
+            | Ok(SLet(_, e))
+            | Ok(SLetPat(_, e))
+            | Ok(SExpr e)
+            | Ok(SCmd e) -> walk e
+            | _ -> [])
     |> List.distinctBy fst
     |> Map.ofList
 

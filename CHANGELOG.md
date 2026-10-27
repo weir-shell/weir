@@ -11,6 +11,17 @@
   The answer is now one table lookup. A script importing the 6,400-line
   starship port goes from about 750 ms to about 400 ms before its first
   line runs; bare startup was and is about 12 ms.
+- **The check itself is leaner on large modules.** The module loader
+  re-derived its command-helper table from every earlier binding on
+  each statement; the assembler, the district mask and doc attachment
+  each rescanned every physical line for its comment several times;
+  the load-target scan re-parsed the whole file; constructor lookup
+  rebuilt the set of imported types per use; and the command grammar
+  rebuilt its resolver-independent parsers on every attempt. Each now
+  does its work once. Same diagnostics, same trees: the starship import
+  goes from about 400 ms to about 250 ms (CPU-pinned medians 373 → 254
+  ms), a direct check of its largest file from 147 ms to 95 ms; bare
+  startup stays about 12 ms.
 
 ## v0.0.80
 
