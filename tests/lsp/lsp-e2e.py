@@ -1387,6 +1387,38 @@ err = req7(9, "textDocument/rename", uri7, 0, 5, {"newName": "shout"})
 expect("error" in err and "'shout' is already used at line 4" in err["error"]["message"],
        f"a collision names its site: {err}")
 
+# members [D:lsp-rename-members]: a field renames its declaration word,
+# the literal key and the access; prepareRename answers the field's own
+# range; references lists the same sites; a row-typed access refuses
+uri8 = "file:///t%2Ddir/members.weir"
+doc8 = 'type Pkg = { id: string }\nlet p = { id = "a" }\nprint p.id\n'
+send7({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": uri8, "text": doc8}}})
+m = read7()
+while m.get("method") != "textDocument/publishDiagnostics" or m["params"]["uri"] != uri8:
+    m = read7()
+expect(m["params"]["diagnostics"] == [], f"the member fixture is clean: {m['params']}")
+pr = req7(20, "textDocument/prepareRename", uri8, 2, 9)["result"]
+expect(pr == {"range": {"start": {"line": 2, "character": 8}, "end": {"line": 2, "character": 10}},
+              "placeholder": "id"}, f"prepareRename on a field access: {pr}")
+re8 = req7(21, "textDocument/rename", uri8, 2, 9, {"newName": "key"})["result"]
+edits = re8["changes"][uri8]
+expect(sorted((e["range"]["start"]["line"], e["range"]["start"]["character"], e["newText"]) for e in edits)
+       == [(0, 13, "key"), (1, 10, "key"), (2, 8, "key")], f"a field renames its three sites: {edits}")
+refs = req7(22, "textDocument/references", uri8, 0, 13, {"context": {"includeDeclaration": False}})["result"]
+rows = sorted((r["range"]["start"]["line"], r["range"]["start"]["character"]) for r in refs)
+expect(rows == [(1, 10), (2, 8)], f"references on a field drop the declaration when asked: {rows}")
+err = req7(23, "textDocument/rename", uri8, 0, 13, {"newName": "Id"})
+expect("error" not in err and len(err["result"]["changes"][uri8]) == 3, f"a field takes either case: {err}")
+send7({"jsonrpc": "2.0", "method": "textDocument/didChange",
+       "params": {"textDocument": {"uri": uri8}, "contentChanges": [{"text": doc8 + "let label r = r.id\nprint (label p)\n"}]}})
+m = read7()
+while m.get("method") != "textDocument/publishDiagnostics" or m["params"]["uri"] != uri8:
+    m = read7()
+err = req7(24, "textDocument/prepareRename", uri8, 0, 13)
+expect("error" in err and err["error"]["code"] == -32803 and "`r.id` at line 4 is row-typed" in err["error"]["message"],
+       f"a row-typed access refuses the field rename, naming the site: {err}")
+
 # the 20k-line tripwire (the recheck-latency style): references is one
 # cache hit plus one occurrences walk over every statement — generous
 # bound on AOT, a regression to per-statement re-analysis would blow it

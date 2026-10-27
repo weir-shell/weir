@@ -27,20 +27,39 @@ In any editor with LSP support you get:
   file: every binder weir knows (top-level and block `let`s, params,
   pattern binders, `within`/`until` binders, yaml `for` binders), its
   uses in expressions, `$name` splices, `$@xs` splats, interpolation
-  holes and yaml districts. On a builtin or an imported member the
-  uses in this file are listed. Comments and strings are never
-  included.
+  holes and yaml districts; and every type, record field and union
+  case declared in the file — the declaration word, accesses
+  (`p.id`, `p.a.id`, `_.id`), literal keys, `with` updates, patterns,
+  construction, the `from json T` / `Env.load T` / `Args.load T`
+  slots and type references in other declarations. On a builtin or
+  an imported member the uses in this file are listed. Comments and
+  strings are never included; a row-typed access (`let label r =
+  r.id`) belongs to no named field and is not listed.
 - **Rename** (F2) of a value binder, with the same reach — the sig
-  line of a signed module member renames with it. Rename is complete
-  or refused, and the refusal says why: the cursor is not on a value
-  bound in this file (builtins, imported members, record fields,
-  union cases and type names do not rename), a statement in the
-  name's scope has an error, the new name is not a binder name or
-  starts with `_` (a `_`-led binder is deliberately unused, so weir
-  tracks no uses of it and could not see a clash), or the new name is
-  already visible in that scope. Init files and
-  signature files do not rename. Other files that import a renamed
-  member show the breakage as diagnostics on their next refresh.
+  line of a signed module member renames with it — and of a type, a
+  record field or a union case declared in the file, over the same
+  sites references lists. A field is a wire name: renaming it
+  renames what `from json`/`to json` read and write and the
+  `Args.load` flag or `Env.load` variable it derives, which is the
+  point when the wire is the truth; a `[<Wire "…">]` on the field
+  keeps its key, and its attribute line is untouched. Rename is
+  complete or refused, and the refusal says why: the cursor is not
+  on a value, a type, a field or a case declared in this file (a
+  builtin's field or case, an imported member — rename it in its
+  module), a statement in the name's scope has an error (for a
+  member: anywhere from its declaration to the end of the file), the
+  new name is not a binder name or starts with `_` (a `_`-led binder
+  is deliberately unused, so weir tracks no uses of it and could not
+  see a clash), or the new name is already visible in that scope. A
+  new field name must be no field or `[<Wire>]` key of its record and
+  no field word in the file; a new case name is uppercase and no case
+  of any visible union (a bare use could name either); a new type
+  name is uppercase and no visible type or module. A field accessed
+  through a row-typed function (`let label r = r.id`) refuses, naming
+  the site: the access could serve any record with that field, so
+  annotate the call or rename by hand. Init files and signature files
+  do not rename. Other files that import a renamed member show the
+  breakage as diagnostics on their next refresh.
 - **Completion** of module members (type `Lib.` to list them), and of
   the `within` kinds after `within `.
 - **Signature help.** A space or `(` after a function shows its

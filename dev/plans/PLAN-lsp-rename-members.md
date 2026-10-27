@@ -1,6 +1,6 @@
 # PLAN: rename members — types, record fields and union cases
 
-**Status: RULED** (user, 2026-10-27) — R1–R4 as recommended; see Rulings.
+**Status: BUILT** (2026-10-27, feat/lsp-rename-members) — R1–R4 as recommended; see Rulings and the session report.
 
 ## The receipt
 
@@ -212,3 +212,52 @@ to them).
   name changes), or rename (that is the point)? *Recommend: rename* —
   the derived name is the field's spelling; the user renaming the field
   is renaming the flag.
+
+## Session report (2026-10-27, feat/lsp-rename-members)
+
+Built as planned, P1–P3 in one pass; [D:lsp-rename-members] is the
+ledger row.
+
+- **The table.** `Lsp.memberOccurrences` returns the member table
+  (`FileOcc` rows keyed `MemberKey(typeKey, member option)`) and the
+  row sites; `fileOccurrences` = value table @ member table, so
+  `occurrencesFor`/`referencesFor`/`documentHighlightFor` serve
+  members with no handler change (a position is a value's before it is
+  a member's). `unionOf` moved out of `definitionTarget` to module
+  level — the one piece of resolution both walks share; the rest of
+  definitionTarget's arms are per-position lookups and stayed.
+- **Textual sites.** A field is the word before `:`, a case the word
+  after `|`, `=` or an attribute's `]`, a type reference any other word
+  match of a declared type outside string literals (`[<Wire "Pkg">]`
+  is masked), outside the type's parameters and not an imported
+  `Lib.T`'s member; the search stops at a `validate` keyword. A
+  module's `let f : T -> …` signature line is searched the same way
+  (not in the forms table; found while pinning modules).
+- **Deviations, stated.** (1) The row-typed message says "is row-typed
+  … any record with a field `id`" rather than the plan's "is a
+  row-typed access … with an `id`" — the article broke on `port`, and
+  the same message serves a row-typed record pattern (`fun { id = x }
+  -> x`). (2) The type-parameter collision rule was dropped: parameters
+  are spelled `'a` and a new type name must be uppercase, so the rule
+  could never fire. (3) A `_`-led new name is refused for values only:
+  `_id` is a legal field (a wire name — MongoDB's `_id`), so the fuzz
+  round trip applies the `_` check to value sites and
+  `binderSitesFor` now returns `(line, col, isValue)`. (4) The
+  collision walk for a field starts at the record's declaration
+  statement, so a field word in a declaration ABOVE it is not a
+  collision (the pin says so).
+- **Pins.** `lspRenameMemberTests` (9 tests): one per forms-table row,
+  `{ id = id }` key-only, nested paths both ways, anonymous
+  non-occurrence, the generic record, every refusal with its reason,
+  the `[<Wire>]` eval pin (`{"ID":"a"}` before and after), the
+  `binderSitesFor` shape; three [D:lsp-rename] pins updated to the new
+  behaviour. The fuzz round trip renames member declaration words with
+  a case-preserving fresh name. lsp-e2e.py gained member probes
+  (prepareRename on an access, the three-site WorkspaceEdit,
+  references without the declaration, either-case field, the row-typed
+  refusal over the wire).
+- **Gates.** unit 2679 green; decision-keys, dead-privates (0),
+  dx-message-census (32/41, at baseline) green on the published
+  binary; lsp-e2e green; a bash-framed wire probe confirmed the
+  WorkspaceEdit covers `type Pkg = { id: string }` / `{ id = "a" }` /
+  `p.id`.

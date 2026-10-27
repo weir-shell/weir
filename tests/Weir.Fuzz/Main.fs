@@ -1011,9 +1011,15 @@ let renameRoundTrip (sample: int option) (path: string) (lines: string list) : s
     let wordRe (w: string) =
         Text.RegularExpressions.Regex(@"(?<![\w])" + Text.RegularExpressions.Regex.Escape w + @"(?![\w])")
 
-    let fresh (len: int) =
+    // a type's or a case's fresh name keeps the uppercase initial; a
+    // field's and a value's follow the old spelling
+    let fresh (old: string) =
+        let len = old.Length
+
         [ 'q' .. 'z' ] @ [ 'a' .. 'p' ]
-        |> List.map (fun ch -> string ch + String('9', len - 1))
+        |> List.map (fun ch ->
+            string (if Char.IsUpper old[0] then Char.ToUpperInvariant ch else ch)
+            + String('9', len - 1))
         |> List.tryFind (fun cand -> not ((wordRe cand).IsMatch text) && not (Weir.Parser.isKeyword cand))
 
     let sites =
@@ -1029,21 +1035,25 @@ let renameRoundTrip (sample: int option) (path: string) (lines: string list) : s
     // one text per file, so the renamed texts must not evict it per binder
     let planned =
         sites
-        |> List.choose (fun (l, c) ->
+        |> List.choose (fun (l, c, isValue) ->
             match Weir.Lsp.prepareRenameFor path lines l c with
             | Error _ -> None
             | Ok(_, _, len) ->
                 let old = (List.item (l - 1) lines).Substring(c - 1, len)
 
-                fresh len
-                |> Option.map (fun nn -> l, c, old, nn, Weir.Lsp.renameFor path lines l c nn, Weir.Lsp.occurrencesFor path lines l c))
+                fresh old
+                |> Option.map (fun nn ->
+                    let rename = Weir.Lsp.renameFor path lines l c nn
+                    l, c, isValue, old, nn, rename, Weir.Lsp.occurrencesFor path lines l c))
 
-    for l, c, old, nn, rename, before in planned do
-        // a `_`-led target is always refused: the table it would be checked
-        // against hides `_` binders, so a capture there could not be seen
-        match Weir.Lsp.renameFor path lines l c ("_" + nn) with
-        | Error _ -> ()
-        | Ok _ -> violations.Add $"{path}:{l}:{c} rename '{old}' -> '_{nn}' was not refused"
+    for l, c, isValue, old, nn, rename, before in planned do
+        // a `_`-led target is always refused for a value: the table it
+        // would be checked against hides `_` binders, so a capture there
+        // could not be seen (a field may spell `_id` — the wire's name)
+        if isValue then
+            match Weir.Lsp.renameFor path lines l c ("_" + nn) with
+            | Error _ -> ()
+            | Ok _ -> violations.Add $"{path}:{l}:{c} rename '{old}' -> '_{nn}' was not refused"
 
         match rename with
         | Error m -> violations.Add $"{path}:{l}:{c} rename '{old}' -> '{nn}' refused: {m}"
@@ -1075,11 +1085,11 @@ let renameRoundTrip (sample: int option) (path: string) (lines: string list) : s
 let renameTests =
     testList
         "Rename round trip [D:lsp-rename]"
-        [ testPropertyWithConfig cfg "every value binder of a generated program renames without losing an occurrence" (fun (p: Program) ->
+        [ testPropertyWithConfig cfg "every value binder, type, field and case of a generated program renames without losing an occurrence" (fun (p: Program) ->
               match renameRoundTrip None "fuzz.weir" (renderPlain p) with
               | [] -> ()
               | vs -> failtest (String.concat "\n" vs))
-          test "every value binder of the repo corpus renames without losing an occurrence" {
+          test "every value binder, type, field and case of the repo corpus renames without losing an occurrence" {
               let root =
                   match Runner.repoRoot with
                   | Some r -> r

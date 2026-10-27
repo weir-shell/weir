@@ -1179,6 +1179,14 @@ let private schemaTokenAt (chk: Script.CheckedStatement) (text: string) (jcol: i
         | Check.TEYaml(_, Some name, _) when onSchemaToken name text jcol -> Some name
         | _ -> None)
 
+// the union declaring `ctor` among env.Types
+let private unionOf (env: TypeEnv) (ctor: string) =
+    env.Types
+    |> Map.tryPick (fun tn def ->
+        match def with
+        | Union d when d.Cases |> List.exists (fun (c, _) -> c = ctor) -> Some tn
+        | _ -> None)
+
 let definitionTarget
     (path: string)
     (lines: string list)
@@ -1221,13 +1229,6 @@ let definitionTarget
                     |> Option.map (fun (pl, pc, len) -> Some lm.AbsPath, pl, pc, len)
                 else
                     None)
-
-    let unionOf (env: TypeEnv) (ctor: string) =
-        env.Types
-        |> Map.tryPick (fun tn def ->
-            match def with
-            | Union d when d.Cases |> List.exists (fun (c, _) -> c = ctor) -> Some tn
-            | _ -> None)
 
     let recordHasField (env: TypeEnv) (recName: string) (field: string) =
         match Map.tryFind recName env.Types with
@@ -1497,6 +1498,9 @@ type private BinderKey =
     | LocalKey of int * Span
     // name + the index of the binding statement; -1 = not bound in this file
     | TopKey of string * int
+    // a type (None) or its record field / union case, by the type's env
+    // key [D:lsp-rename-members]
+    | MemberKey of string * string option
 
 type private FileOcc =
     { OName: string
@@ -1510,7 +1514,7 @@ type private FileOcc =
       // statement index, for the scope-extent walk
       OStmt: int }
 
-let private fileOccurrences (stmts: (Script.LogicalLine * Script.CheckedStatement) list) : FileOcc list =
+let private valueOccurrences (stmts: (Script.LogicalLine * Script.CheckedStatement) list) : FileOcc list =
     let arr = List.toArray stmts
     let lastTop = Collections.Generic.Dictionary<string, int>()
     let found = ResizeArray<FileOcc>()
@@ -1590,9 +1594,520 @@ let private fileOccurrences (stmts: (Script.LogicalLine * Script.CheckedStatemen
         for n, key in bound do
             match key with
             | TopKey(_, j) -> lastTop[n] <- j
-            | LocalKey _ -> ()
+            | LocalKey _
+            | MemberKey _ -> ()
 
     List.ofSeq found
+
+// ---- member occurrences [D:lsp-rename-members] -----------------------
+// The second table: every occurrence of a type, a record field or a
+// union case, keyed by the type's env key. Inside a statement the
+// typed tree resolves each use (a TEField's target type, a literal's
+// and an update's record type, a pattern's scrutinee type, the adapter
+// and load forms' type name); the declaration's own words are textual
+// — Ast.Decl carries no span per member or per type reference. A
+// field access whose target is a row variable serves any record with
+// that field, so it is no occurrence of a named one: it is listed
+// apart, and renaming a same-named field refuses naming it (R1).
+
+// string-literal positions of a joined line — the declaration searches
+// skip a `[<Wire "…">]` argument that spells a member or type name
+let private stringMask (text: string) : bool[] =
+    let m = Array.zeroCreate text.Length
+    let mutable inStr = false
+    let mutable i = 0
+
+    while i < text.Length do
+        let c = text[i]
+
+        if inStr then
+            m[i] <- true
+
+            if c = '\\' && i + 1 < text.Length then
+                m[i + 1] <- true
+                i <- i + 1
+            elif c = '"' then
+                inStr <- false
+        elif c = '"' then
+            inStr <- true
+            m[i] <- true
+
+        i <- i + 1
+
+    m
+
+// every word-bounded match of `name` in text[lo..hi) outside string
+// literals, 1-based cols
+let private wordFinds (name: string) (text: string) (mask: bool[]) (lo: int) (hi: int) : int list =
+    let rec go from acc =
+        match wordFind name text from hi with
+        | None -> List.rev acc
+        | Some jc -> go jc (if mask[jc - 1] then acc else jc :: acc)
+
+    go lo []
+
+// the index of the first non-blank char at or after idx / before idx
+let private nextIdx (text: string) (idx: int) : int option =
+    let mutable k = idx
+
+    while k < text.Length && (text[k] = ' ' || text[k] = '\t') do
+        k <- k + 1
+
+    if k < text.Length then Some k else None
+
+let private prevIdx (text: string) (idx: int) : int option =
+    let mutable k = idx - 1
+
+    while k >= 0 && (text[k] = ' ' || text[k] = '\t') do
+        k <- k - 1
+
+    if k >= 0 then Some k else None
+
+// the word (or dotted path) `name` followed by `=` (never `==`) in
+// text[lo..hi): a literal's or an update's key, never its value side —
+// `{ id = id }` renames the key only
+let private keyFind (name: string) (text: string) (lo: int) (hi: int) : int option =
+    let rec go from =
+        match wordFind name text from hi with
+        | None -> None
+        | Some jc ->
+            match nextIdx text (jc - 1 + name.Length) with
+            | Some k when text[k] = '=' && not (k + 1 < text.Length && text[k + 1] = '=') -> Some jc
+            | _ -> go jc
+
+    go lo
+
+// a word in a declaration's text that is a field (before `:`) or a
+// case (after `|`, `=` or an attribute's `]`) — the member words a
+// type-reference search skips
+let private isFieldWord (text: string) (jc: int) (len: int) =
+    match nextIdx text (jc - 1 + len) with
+    | Some k -> text[k] = ':'
+    | None -> false
+
+let private isCaseWord (text: string) (jc: int) =
+    match prevIdx text (jc - 1) with
+    | Some k -> text[k] = '|' || text[k] = '=' || text[k] = ']'
+    | None -> false
+
+// a declared member's type with the type's parameters bound to a use's
+// arguments — a generic record's field, a generic union's payload
+let private memberTy (pars: string list) (args: Ty list) (ty: Ty) : Ty =
+    let m = List.zip pars (List.truncate pars.Length args) |> Map.ofList
+
+    let rec go (t: Ty) =
+        match t with
+        | TVar v ->
+            (match Map.tryFind v m with
+             | Some r -> r
+             | None -> t)
+        | TFun(a, b) -> TFun(go a, go b)
+        | TSeq e -> TSeq(go e)
+        | TTuple ts -> TTuple(List.map go ts)
+        | TNamed(n, xs) -> TNamed(n, List.map go xs)
+        | TRowVar(r, fields) -> TRowVar(r, fields |> List.map (fun (f, ft) -> f, go ft))
+        | t -> t
+
+    if pars.Length = args.Length then go ty else ty
+
+let private plainName (key: string) =
+    match key.LastIndexOf '.' with
+    | -1 -> key
+    | i -> key.Substring(i + 1)
+
+// the first `ch` outside string literals
+let private firstUnmasked (ch: char) (text: string) (mask: bool[]) : int =
+    let mutable i = 0
+
+    while i < text.Length && (text[i] <> ch || mask[i]) do
+        i <- i + 1
+
+    if i < text.Length then i else -1
+
+/// the member table and the row sites — a field access the typed tree
+/// cannot pin to one record: name, physical line and col of the field
+/// word, and the access's spelling
+let private memberOccurrences
+    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    : FileOcc list * (string * int * int * string) list =
+    let arr = List.toArray stmts
+    let found = ResizeArray<FileOcc>()
+    let rows = ResizeArray<string * int * int * string>()
+    // the types this file has declared so far, for the textual search
+    let declared = ResizeArray<string>()
+
+    for i in 0 .. arr.Length - 1 do
+        let ll, chk = arr[i]
+        let env = chk.Env
+        let text = ll.Text
+
+        let add (name: string) (key: BinderKey) (site: bool) (jc: int option) =
+            jc
+            |> Option.iter (fun jc ->
+                let pl, pc = Script.translate ll jc
+
+                found.Add
+                    { OName = name
+                      Key = key
+                      OBinderSite = site
+                      OLine = pl
+                      OCol = pc
+                      OStmt = i })
+
+        let row (name: string) (jc: int) (display: string) =
+            let pl, pc = Script.translate ll jc
+            rows.Add(name, pl, pc, display)
+
+        let spanText (sp: Span) =
+            let lo = max 0 (sp.Start.Col - 1)
+            let hi = min text.Length (sp.End.Col - 1)
+            if hi > lo then text.Substring(lo, hi - lo) else ""
+
+        let inSpan (name: string) (sp: Span) =
+            let lo = max 0 (sp.Start.Col - 1)
+            wordFind name text lo (min text.Length (max (sp.End.Col - 1) (lo + name.Length)))
+
+        let recordOf (k: string) =
+            match Types.typeDefFor env k with
+            | Some(Record d) -> Some d
+            | _ -> None
+
+        let isAnon (k: string) = k.StartsWith "{|"
+
+        // the type word of an adapter or load form, keyed by the env
+        // key the node's type carries
+        let typeUse (key: string) (sp: Span) =
+            add (plainName key) (MemberKey(key, None)) false (inSpan (plainName key) sp)
+
+        // the record type behind a value's type: Some (key, def, args)
+        // for a named record (an anonymous one has no name to rename)
+        let recordTy (ty: Ty) =
+            match ty with
+            | TNamed(k, args) when not (isAnon k) -> recordOf k |> Option.map (fun d -> k, d, args)
+            | _ -> None
+
+        let fieldTyOf (d: RecordDef) (args: Ty list) (f: string) =
+            d.Fields |> List.tryFind (fst >> (=) f) |> Option.map (snd >> memberTy d.Params args)
+
+        // a field word resolved against the target's type: a named
+        // record's field is an occurrence; a row variable's is a row
+        // site; an anonymous record's is neither
+        let fieldAt (ty: Ty) (f: string) (jc: int option) (display: string) : Ty option =
+            match ty with
+            | TNamed(k, args) when isAnon k ->
+                recordOf k |> Option.bind (fun d -> fieldTyOf d args f)
+            | TNamed(k, args) ->
+                recordOf k
+                |> Option.bind (fun d ->
+                    if d.Fields |> List.exists (fst >> (=) f) then
+                        add f (MemberKey(k, Some f)) false jc
+                        fieldTyOf d args f
+                    else
+                        None)
+            | TRowVar(_, fields) ->
+                jc |> Option.iter (fun jc -> row f jc display)
+                fields |> List.tryFind (fst >> (=) f) |> Option.map snd
+            | _ ->
+                jc |> Option.iter (fun jc -> row f jc display)
+                None
+
+        let caseUse (key: string) (ctor: string) (jc: int option) = add ctor (MemberKey(key, Some ctor)) false jc
+
+        let payloadOf (d: UnionDef) (ctor: string) =
+            d.Cases |> List.tryPick (fun (c, p) -> if c = ctor then p else None)
+
+        // the union a bare case names, and its payload type for the use
+        let caseOf (ty: Ty option) (ctor: string) : (string * Ty option) option =
+            let viaTy =
+                match ty with
+                | Some(TNamed(k, args)) ->
+                    (match Types.typeDefFor env k with
+                     | Some(Union d) when d.Cases |> List.exists (fst >> (=) ctor) ->
+                         Some(k, payloadOf d ctor |> Option.map (memberTy d.Params args))
+                     | _ -> None)
+                | _ -> None
+
+            viaTy
+            |> Option.orElseWith (fun () ->
+                unionOf env ctor
+                |> Option.map (fun k ->
+                    let payload =
+                        match Map.tryFind k env.Types with
+                        | Some(Union d) -> payloadOf d ctor
+                        | _ -> None
+
+                    k, payload))
+
+        let rec walkPat (ty: Ty option) (p: Pattern) : unit =
+            match p.PKind with
+            | PCase(ctor, arg, None) ->
+                (match caseOf ty ctor with
+                 | Some(k, payload) ->
+                     caseUse k ctor (inSpan ctor p.PSpan)
+                     arg |> Option.iter (walkPat payload)
+                 | None -> arg |> Option.iter (walkPat None))
+            | PCase(ctor, arg, Some(alias, mspan)) ->
+                // an imported union's case [D:qualified-case-patterns]
+                let key =
+                    env.ModuleTypes
+                    |> Map.tryFind alias
+                    |> Option.bind (
+                        Map.tryPick (fun _ key ->
+                            match Map.tryFind key env.Types with
+                            | Some(Union d) when d.Cases |> List.exists (fst >> (=) ctor) -> Some key
+                            | _ -> None)
+                    )
+
+                let payload =
+                    key
+                    |> Option.bind (fun k -> caseOf (Some(TNamed(k, []))) ctor)
+                    |> Option.bind snd
+
+                key |> Option.iter (fun k -> caseUse k ctor (Some(mspan.End.Col + 1)))
+                arg |> Option.iter (walkPat payload)
+            | PRecord fields ->
+                for (f, fspan), sub in fields do
+                    let fty =
+                        match ty with
+                        | Some t -> fieldAt t f (inSpan f fspan) (spanText p.PSpan)
+                        | None ->
+                            inSpan f fspan |> Option.iter (fun jc -> row f jc (spanText p.PSpan))
+                            None
+
+                    walkPat fty sub
+            | PTuple ps ->
+                (match ty with
+                 | Some(TTuple ts) when ts.Length = ps.Length -> List.iter2 (fun t p -> walkPat (Some t) p) ts ps
+                 | _ -> ps |> List.iter (walkPat None))
+            | PSeqList ps ->
+                let e =
+                    match ty with
+                    | Some(TSeq e) -> Some e
+                    | _ -> None
+
+                ps |> List.iter (walkPat e)
+            | PCons(h, t) ->
+                (match ty with
+                 | Some(TSeq e) ->
+                     walkPat (Some e) h
+                     walkPat ty t
+                 | _ ->
+                     walkPat None h
+                     walkPat None t)
+            | _ -> patChildren p |> List.iter (walkPat None)
+
+        // the element a `for` binder takes from its source
+        let elemTy (ty: Ty) =
+            match ty with
+            | TSeq e -> Some e
+            | TNamed("Map", [ k; v ]) -> Some(TTuple [ k; v ])
+            | _ -> None
+
+        let rec walk (te: TypedExpr) : unit =
+            match te.Kind with
+            | TEField(target, f) ->
+                let lo = target.Span.End.Col - 1
+                let jc = wordFind f text lo (min text.Length (max (te.Span.End.Col - 1) (lo + 1 + f.Length)))
+                fieldAt target.Ty f jc (spanText te.Span) |> ignore
+                walk target
+            | TERecord(recName, fields) ->
+                (match recordTy te.Ty with
+                 | Some(k, _, _) ->
+                     let start = te.Span.Start.Col - 1
+                     let brace = text.IndexOf('{', start)
+
+                     // a named literal's record word before the `{`
+                     if brace > start then
+                         let plain = plainName recName
+                         add plain (MemberKey(k, None)) false (wordFind plain text start brace)
+
+                     let mutable prevEnd = (if brace >= 0 then brace else start)
+
+                     for f, v in fields |> List.sortBy (fun (_, v) -> v.Span.Start.Col) do
+                         add f (MemberKey(k, Some f)) false (keyFind f text prevEnd (v.Span.Start.Col - 1))
+                         prevEnd <- v.Span.End.Col - 1
+                 | None -> ())
+
+                fields |> List.iter (snd >> walk)
+            | TEUpdate(src, ups) ->
+                let mutable prevEnd = src.Span.End.Col - 1
+
+                for path, v in ups |> List.sortBy (fun (_, v) -> v.Span.Start.Col) do
+                    let pathText = String.concat "." path
+
+                    keyFind pathText text prevEnd (v.Span.Start.Col - 1)
+                    |> Option.iter (fun jc ->
+                        let display = $"{{ {spanText src.Span} with {pathText} = … }}"
+                        let mutable ty = Some src.Ty
+                        let mutable off = jc
+
+                        for seg in path do
+                            ty <-
+                                (match ty with
+                                 | Some t -> fieldAt t seg (Some off) display
+                                 | None ->
+                                     row seg off display
+                                     None)
+
+                            off <- off + seg.Length + 1)
+
+                    prevEnd <- v.Span.End.Col - 1
+
+                walk src
+                ups |> List.iter (snd >> walk)
+            | TEVar n when Types.isUserName n && not (n.Contains '.') && Char.IsUpper n[0] ->
+                caseOf None n |> Option.iter (fun (k, _) -> caseUse k n (inSpan n te.Span))
+            | TEMatch(s, arms) ->
+                walk s
+
+                for p, g, b in arms do
+                    walkPat (Some s.Ty) p
+                    g |> Option.iter walk
+                    walk b
+            | TELetPat(pat, v, b) ->
+                walkPat (Some v.Ty) pat
+                walk v
+                walk b
+            | TELambdaPat(pat, b) ->
+                walkPat
+                    (match te.Ty with
+                     | TFun(d, _) -> Some d
+                     | _ -> None)
+                    pat
+
+                walk b
+            | TEFrom _ ->
+                // the slot's env key, peeled from the adapter's type
+                let rec keyOf (ty: Ty) =
+                    match ty with
+                    | TFun(_, o) -> keyOf o
+                    | TSeq t
+                    | TNamed("Map", [ _; t ]) -> keyOf t
+                    | TNamed(k, _) -> Some k
+                    | _ -> None
+
+                keyOf te.Ty |> Option.iter (fun k -> typeUse k te.Span)
+            | TEFromYaml(tyName, _, _)
+            | TEFromToml(tyName, _) -> typeUse tyName te.Span
+            | TEEnvLoad(def, _) -> typeUse def.Name te.Span
+            | TEArgsLoad target ->
+                typeUse
+                    (match target with
+                     | ArgsRecord def -> def.Name
+                     | ArgsUnion(udef, _) -> udef.Name
+                     | ArgsShared(outer, _, _, _) -> outer.Name)
+                    te.Span
+            | TEYaml(tpl, _, _) -> walkTpl tpl
+            | _ -> childExprs te |> List.iter walk
+
+        and walkTpl (tpl: TypedYamlTpl) : unit =
+            match tpl with
+            | TYtScalar _
+            | TYtBlock _
+            | TYtDrop _ -> ()
+            | TYtSplice e -> walk e
+            | TYtSeq(items, _) ->
+                for item in items do
+                    match item with
+                    | TYtItem t -> walkTpl t
+                    | TYtDropItem(t, _) -> walkTpl t
+                    | TYtForItems(binder, src, body) ->
+                        walk src
+                        walkPat (elemTy src.Ty) binder
+
+                        for i in body do
+                            walkTpl (TYtSeq([ i ], Unchecked.defaultof<Ast.Span>))
+            | TYtMap(entries, _) ->
+                for entry in entries do
+                    match entry with
+                    | TYtPair(TYtKeyLit _, v) -> walkTpl v
+                    | TYtPair(TYtKeySplice k, v) ->
+                        walk k
+                        walkTpl v
+                    | TYtForEntries(binder, src, body) ->
+                        walk src
+                        walkPat (elemTy src.Ty) binder
+
+                        for e in body do
+                            walkTpl (TYtMap([ e ], Unchecked.defaultof<Ast.Span>))
+
+        // type references in a declaration's or a signature's text: every
+        // word match of a declared type outside the member words, the
+        // type's own parameters and an imported `Lib.T` spelling
+        let typeRefs (lo: int) (hi: int) (pars: string list) =
+            let mask = stringMask text
+
+            for t in declared do
+                if not (List.contains t pars) then
+                    for jc in wordFinds t text mask lo hi do
+                        let dotted = jc >= 2 && text[jc - 2] = '.'
+
+                        if not (dotted || isFieldWord text jc t.Length || isCaseWord text jc) then
+                            add t (MemberKey(t, None)) false (Some jc)
+
+        match chk.Kind with
+        | Script.KType(d, validator) ->
+            let mask = stringMask text
+
+            let eq = firstUnmasked '=' text mask
+
+            let bodyEnd =
+                match d.Validate with
+                | Some v -> v.Span.Start.Col - 1
+                | None -> text.Length
+
+            if not (declared.Contains d.Name) then
+                declared.Add d.Name
+
+            add d.Name (MemberKey(d.Name, None)) true (wordFinds d.Name text mask 0 (max eq 0) |> List.tryHead)
+
+            if eq >= 0 then
+                match d.Body with
+                | DRecord fields ->
+                    for f, _, _ in fields do
+                        add
+                            f
+                            (MemberKey(d.Name, Some f))
+                            true
+                            (wordFinds f text mask eq bodyEnd |> List.tryFind (fun jc -> isFieldWord text jc f.Length))
+                | DUnion cases ->
+                    for c, _, _ in cases do
+                        add
+                            c
+                            (MemberKey(d.Name, Some c))
+                            true
+                            (wordFinds c text mask eq bodyEnd |> List.tryFind (fun jc -> isCaseWord text jc))
+
+                typeRefs (eq + 1) bodyEnd d.Params
+
+            // `validate` binds the single case's payload [D:validated-types]
+            d.Validate
+            |> Option.iter (fun v ->
+                let payload =
+                    match d.Body with
+                    | DUnion [ _, p, _ ] -> p
+                    | _ -> None
+
+                walkPat payload v.Binder)
+
+            validator |> Option.iter (snd >> walk)
+        | Script.KSig _ ->
+            let mask = stringMask text
+
+            match firstUnmasked ':' text mask with
+            | -1 -> ()
+            | colon -> typeRefs (colon + 1) text.Length []
+        | Script.KLetPat(pat, _, te) ->
+            walkPat (Some te.Ty) pat
+            walk te
+        | _ -> teOf chk |> Option.iter walk
+
+    List.ofSeq found, List.ofSeq rows
+
+// one table per request: the value occurrences first — a position is
+// a value's before it is a member's — then the member occurrences
+let private fileOccurrences (stmts: (Script.LogicalLine * Script.CheckedStatement) list) : FileOcc list =
+    valueOccurrences stmts @ fst (memberOccurrences stmts)
 
 /// the occurrence under the cursor (physical 1-based line, col), with
 /// the whole file's table
@@ -1667,9 +2182,11 @@ let private isIdentName (n: string) =
     && (Char.IsLetter n[0] || n[0] = '_')
     && (n |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_'))
 
-/// the renamable binder at the cursor: the file's table, the occurrence
-/// under the cursor, and the binder's scope extent as statement indices
-/// (first, last inclusive) — or the refusal
+/// the renamable name at the cursor: the file's table, the occurrence
+/// under the cursor, and the scope extent as statement indices (first,
+/// last inclusive) — or the refusal. A value binder's occurrence wins
+/// the position; a member's answers when no value does
+/// [D:lsp-rename-members]
 let private renameTarget
     (path: string)
     (lines: string list)
@@ -1678,19 +2195,25 @@ let private renameTarget
     : Result<FileOcc list * FileOcc * (int * int), string> =
     let diags, stmts0, _, _, partials = analyzeCached path lines
     let stmts = withPartials stmts0 partials
-    let table = fileOccurrences stmts
+    let values = valueOccurrences stmts
+    let members, rowSites = memberOccurrences stmts
+    let table = values @ members
     let arr = List.toArray stmts
+
+    let under (o: FileOcc) =
+        o.OLine = line && o.OCol <= col && col < o.OCol + o.OName.Length
+
+    let errorFrom (firstLine: int) (lastLine: int) =
+        diags
+        |> List.tryFind (fun d -> d.Severity = "error" && d.File = path && d.Line >= firstLine && d.Line <= lastLine)
 
     if isSigFile path then
         Error "rename is not available in a signature file — its members are the contract a #sig reads by name"
     elif isReplInitPath path || Script.isInitMarked lines then
         Error "rename is not available in an init file — its #session and #alias lines bind names the loader owns"
     else
-        match
-            table
-            |> List.tryFind (fun o -> o.OLine = line && o.OCol <= col && col < o.OCol + o.OName.Length)
-        with
-        | None ->
+        match values |> List.tryFind under, members |> List.tryFind under with
+        | None, None ->
             let w =
                 if line >= 1 && line <= List.length lines then
                     wordAt (List.item (line - 1) lines) col
@@ -1700,11 +2223,10 @@ let private renameTarget
             match w with
             | Some "_" -> Error "'_' is the wildcard, not a name"
             | Some w when Parser.isKeyword w -> Error $"'{w}' is a keyword, not a name"
-            | Some w when Char.IsUpper w[0] ->
+            | _ ->
                 Error
-                    $"'{w}' is a type or a union case — only value bindings rename (fields, cases and type names are wire names)"
-            | _ -> Error "nothing to rename here — put the cursor on a value name bound in this file"
-        | Some o ->
+                    "nothing to rename here — put the cursor on a value, a type, a field or a case declared in this file"
+        | Some o, _ ->
             match o.Key with
             | TopKey(n, -1) ->
                 Error $"'{n}' is not bound in this file — a builtin or an imported name renames where it is defined"
@@ -1716,7 +2238,6 @@ let private renameTarget
                 // must not clash with; `next` the first statement past them
                 let first, last, next =
                     match key with
-                    | LocalKey(i, _) -> i, i, Some(i + 1)
                     | TopKey(n, j) ->
                         let rebinding =
                             table
@@ -1726,6 +2247,7 @@ let private renameTarget
                             |> List.tryHead
 
                         j, (rebinding |> Option.defaultValue (arr.Length - 1)), rebinding
+                    | _ -> o.OStmt, o.OStmt, Some(o.OStmt + 1)
 
                 // physical lines of the extent: the binder's statement head
                 // through the line before `next` (a statement that failed
@@ -1737,25 +2259,93 @@ let private renameTarget
                     | Some k when k < arr.Length -> (fst arr[k]).Head - 1
                     | _ -> List.length lines
 
-                let errorInScope =
-                    diags
-                    |> List.tryFind (fun d ->
-                        d.Severity = "error" && d.File = path && d.Line >= firstLine && d.Line <= lastLine)
-
-                match errorInScope with
+                match errorFrom firstLine lastLine with
                 | Some d ->
                     Error
                         $"a statement in '{o.OName}'s scope has an error at line {d.Line} — fix it first, so no use of the name is missed"
                 | None -> Ok(table, o, (first, last))
+        | None, Some o ->
+            let key, member_ =
+                match o.Key with
+                | MemberKey(k, m) -> k, m
+                | _ -> "", None
 
-/// every value binder site in the file as (physLine, physCol) — the
-/// round-trip property's walk (rename each, re-analyze, compare)
-let binderSitesFor (path: string) (lines: string list) : (int * int) list =
+            let env = (snd arr[arr.Length - 1]).Env
+
+            let kindWord =
+                match Types.typeDefFor env key with
+                | Some(Record _) -> "field"
+                | Some(Union _) -> "case"
+                | None -> "member"
+
+            let declIdx =
+                arr
+                |> Array.tryFindIndex (fun (_, c) ->
+                    match c.Kind with
+                    | Script.KType(d, _) -> d.Name = key
+                    | _ -> false)
+
+            match declIdx with
+            | Some first ->
+                // members are file-wide: the declaration through the end
+                match errorFrom (fst arr[first]).Head (List.length lines) with
+                | Some d ->
+                    Error $"a statement after '{key}'s declaration has an error at line {d.Line} — fix it first"
+                | None ->
+                    // a row-typed access of the field's name could serve
+                    // this record or any other — refused, naming the site (R1)
+                    let rowSite =
+                        match member_ with
+                        | Some f when kindWord = "field" ->
+                            rowSites
+                            |> List.filter (fun (n, _, _, _) -> n = f)
+                            |> List.sortBy (fun (_, l, c, _) -> l, c)
+                            |> List.tryHead
+                        | _ -> None
+
+                    match rowSite with
+                    | Some(f, l, _, display) ->
+                        Error
+                            $"`{display}` at line {l} is row-typed — it could serve `{key}` or any record with a field `{f}`; this rename cannot tell which, so it renames nothing. Annotate the call or rename by hand."
+                    | None -> Ok(table, o, (first, arr.Length - 1))
+            | None ->
+                let plain = plainName key
+
+                let importAlias =
+                    match key.Split '.' with
+                    | [| alias; _ |] -> Some alias
+                    | _ ->
+                        stmts
+                        |> List.tryPick (fun (_, c) ->
+                            match c.Kind with
+                            | Script.KImport lm when List.contains key lm.TypeNames -> Some lm.Alias
+                            | _ -> None)
+
+                match member_, importAlias with
+                | Some n, _ when builtinTypeNames.ContainsKey key ->
+                    Error $"'{n}' is a {kindWord} of the builtin {key} — nothing in this file declares it"
+                | None, _ when builtinTypeNames.ContainsKey key ->
+                    Error $"'{key}' is a builtin type — nothing in this file declares it"
+                | Some n, Some alias -> Error $"'{n}' is a {kindWord} of {alias}.{plain} — rename it in that module"
+                | None, Some alias -> Error $"'{plain}' is a type of {alias} — rename it in that module"
+                | _ ->
+                    Error
+                        "nothing to rename here — put the cursor on a value, a type, a field or a case declared in this file"
+
+/// every rename site in the file as (physLine, physCol, isValueBinder):
+/// value binder sites and member declaration words — the round-trip
+/// property's walk (rename each, re-analyze, compare)
+let binderSitesFor (path: string) (lines: string list) : (int * int * bool) list =
     let _, stmts, _, _, _ = analyzeCached path lines
 
     fileOccurrences stmts
     |> List.filter (fun o -> o.OBinderSite)
-    |> List.map (fun o -> o.OLine, o.OCol)
+    |> List.map (fun o ->
+        o.OLine,
+        o.OCol,
+        (match o.Key with
+         | MemberKey _ -> false
+         | _ -> true))
     |> List.distinct
     |> List.sort
 
@@ -1765,6 +2355,110 @@ let binderSitesFor (path: string) (lines: string list) : (int * int) list =
 let prepareRenameFor (path: string) (lines: string list) (line: int) (col: int) : Result<int * int * int, string> =
     renameTarget path lines line col
     |> Result.map (fun (_, o, _) -> o.OLine, o.OCol, o.OName.Length)
+
+// the new name of a type, a field or a case [D:lsp-rename-members]: a
+// field takes either case but no name or wire key of its record
+// ([D:wire-keys] refuses two fields on one key); a case is uppercase and
+// no case of any visible union ([D:ambiguous-ctor] would refuse its
+// bare use); a type is uppercase and no visible type or module; none
+// may be a same-kind member word anywhere in the extent
+let private memberNameCheck
+    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (table: FileOcc list)
+    (key: string)
+    (member_: string option)
+    (first: int)
+    (newName: string)
+    : Result<unit, string> =
+    let arr = List.toArray stmts
+    let env = (snd arr[arr.Length - 1]).Env
+    let def = Types.typeDefFor env key
+
+    let kindOf (k: string) =
+        match Types.typeDefFor env k with
+        | Some(Record _) -> "field"
+        | Some(Union _) -> "case"
+        | None -> "member"
+
+    let kind =
+        match member_, def with
+        | None, _ -> "type"
+        | Some _, _ -> kindOf key
+
+    let imports =
+        stmts
+        |> List.choose (fun (_, c) ->
+            match c.Kind with
+            | Script.KImport lm -> Some lm.Alias
+            | _ -> None)
+
+    // the same-kind member word in the extent
+    let used =
+        table
+        |> List.filter (fun x ->
+            x.OName = newName
+            && x.OStmt >= first
+            && (match x.Key with
+                | MemberKey(k, Some _) -> kind <> "type" && kindOf k = kind
+                | MemberKey(_, None) -> kind = "type"
+                | _ -> false))
+        |> List.sortBy (fun x -> x.OLine, x.OCol)
+        |> List.tryHead
+
+    let upper = Char.IsUpper newName[0]
+
+    match kind, def with
+    | "field", Some(Record d) ->
+        let wireOwner =
+            d.Attrs
+            |> Map.tryPick (fun f attrs ->
+                if Some f = member_ then
+                    None
+                else
+                    attrs
+                    |> List.tryPick (fun (a, arg) ->
+                        match a, arg with
+                        | "Wire", Some(AStr w) when w = newName -> Some f
+                        | _ -> None))
+
+        if d.Fields |> List.exists (fst >> (=) newName) then
+            Error $"'{newName}' is already a field of {key}"
+        else
+            match wireOwner with
+            | Some f -> Error $"'{newName}' is already a wire key of {key} (the field '{f}')"
+            | None ->
+                match used with
+                | Some c ->
+                    Error
+                        $"'{newName}' is already a field name at line {c.OLine}, column {c.OCol} — pick a name no field in this file uses"
+                | None -> Ok()
+    | "case", _ ->
+        if not upper then
+            Error $"'{newName}' is not a case name — case names start uppercase"
+        else
+            match unionOf env newName with
+            | Some u -> Error $"'{newName}' is already a case of {u} — a bare '{newName}' could name either"
+            | None ->
+                match used with
+                | Some c ->
+                    Error
+                        $"'{newName}' is already a case name at line {c.OLine}, column {c.OCol} — pick a name no case in this file uses"
+                | None -> Ok()
+    | "type", _ ->
+        if not upper then
+            Error $"'{newName}' is not a type name — type names start uppercase"
+        elif builtinTypeNames.ContainsKey newName then
+            Error $"'{newName}' is a builtin type — pick another name"
+        elif Map.containsKey newName env.Types then
+            Error $"'{newName}' is already a type visible here — pick another name"
+        elif Map.containsKey newName env.Modules || List.contains newName imports then
+            Error $"'{newName}' is a module name — pick another name"
+        else
+            match used with
+            | Some c ->
+                Error $"'{newName}' is already a type name at line {c.OLine}, column {c.OCol} — pick another name"
+            | None -> Ok()
+    | _ -> Error "nothing to rename here — put the cursor on a value, a type, a field or a case declared in this file"
 
 /// textDocument/rename: every edit as (physLine, physCol, len), sorted,
 /// or the refusal. Re-validates the position (a client may skip
@@ -1786,6 +2480,13 @@ let renameFor
         let envBefore =
             if first = 0 then env0 else (snd arr[first - 1]).Env
 
+        let edits () =
+            table
+            |> List.filter (fun x -> x.Key = o.Key)
+            |> List.map (fun x -> x.OLine, x.OCol, x.OName.Length)
+            |> List.distinct
+            |> List.sort
+
         let collision =
             table
             |> List.filter (fun x -> x.OName = newName && x.OStmt >= first && x.OStmt <= last)
@@ -1801,33 +2502,30 @@ let renameFor
         elif Parser.isKeyword newName then
             Error $"'{newName}' is a keyword, not a name"
         else
-            let noSpan =
-                { Start = { Line = 1; Col = 1 }
-                  End = { Line = 1; Col = 1 } }
+            match o.Key with
+            | MemberKey(key, member_) -> memberNameCheck stmts table key member_ first newName |> Result.map edits
+            | _ ->
+                let noSpan =
+                    { Start = { Line = 1; Col = 1 }
+                      End = { Line = 1; Col = 1 } }
 
-            match Check.checkBinderName noSpan newName with
-            | Error e -> Error e.Message
-            | Ok() when not (Check.occurrenceName newName) ->
-                // the collision rule reads the occurrence table, and the table
-                // tracks no `_`-led name: a rename onto one could capture a
-                // binding silently, so it is refused [D:lsp-rename]
-                Error
-                    $"'{newName}' starts with '_', and weir tracks no occurrence of a '_'-led name — a rename onto one cannot be checked for a clash; pick a name without the leading '_'"
-            | Ok() ->
-                match collision with
-                | Some c ->
+                match Check.checkBinderName noSpan newName with
+                | Error e -> Error e.Message
+                | Ok() when not (Check.occurrenceName newName) ->
+                    // the collision rule reads the occurrence table, and the table
+                    // tracks no `_`-led name: a rename onto one could capture a
+                    // binding silently, so it is refused [D:lsp-rename]
                     Error
-                        $"'{newName}' is already used at line {c.OLine}, column {c.OCol} — pick a name that is new in '{n}'s scope"
-                | None when Map.containsKey newName envBefore.Values ->
-                    Error
-                        $"'{newName}' is already bound here (a builtin, or a binding above line {(fst arr[first]).Head}) — pick a name that is new in '{n}'s scope"
-                | None ->
-                    table
-                    |> List.filter (fun x -> x.Key = o.Key)
-                    |> List.map (fun x -> x.OLine, x.OCol, x.OName.Length)
-                    |> List.distinct
-                    |> List.sort
-                    |> Ok)
+                        $"'{newName}' starts with '_', and weir tracks no occurrence of a '_'-led name — a rename onto one cannot be checked for a clash; pick a name without the leading '_'"
+                | Ok() ->
+                    match collision with
+                    | Some c ->
+                        Error
+                            $"'{newName}' is already used at line {c.OLine}, column {c.OCol} — pick a name that is new in '{n}'s scope"
+                    | None when Map.containsKey newName envBefore.Values ->
+                        Error
+                            $"'{newName}' is already bound here (a builtin, or a binding above line {(fst arr[first]).Head}) — pick a name that is new in '{n}'s scope"
+                    | None -> Ok(edits ()))
 
 // the within form answers [D:within-kinds] — one table, three
 // consumers. The kind hovers its doc + binds/consumes nature; the
