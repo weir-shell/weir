@@ -10800,12 +10800,17 @@ let loadTargetsOf (tenv: TypeEnv) (lines: LogicalLine list) : Map<string, string
 
     lines
     |> List.collect (fun ll ->
-        match Parser.parseLine (assumeResolver tenv) ll.Text with
-        | Ok(SLet(_, e))
-        | Ok(SLetPat(_, e))
-        | Ok(SExpr e)
-        | Ok(SCmd e) -> walk e
-        | _ -> [])
+        // the field is read from the source, so a line without the word
+        // holds no load site — and no second parse of it
+        if not (ll.Text.Contains "load") then
+            []
+        else
+            match Parser.parseLine (assumeResolver tenv) ll.Text with
+            | Ok(SLet(_, e))
+            | Ok(SLetPat(_, e))
+            | Ok(SExpr e)
+            | Ok(SCmd e) -> walk e
+            | _ -> [])
     |> List.distinctBy fst
     |> Map.ofList
 
