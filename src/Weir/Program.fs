@@ -604,7 +604,7 @@ let main argv =
                             // a bare add says which tag it picked — the lock
                             // holds the raw URL only [D:lib-module-tags]
                             if l.Tag.IsNone then
-                                Console.Error.WriteLine $"{l.Name}: latest is {picked}"
+                                Console.WriteLine $"{l.Name}: latest is {picked}"
 
                             src)
                     | None -> Contracts.resolveModuleSpec spec entryPath

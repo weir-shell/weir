@@ -39,7 +39,7 @@ Repo-wide `v*` tags retire (the existing `v0.1.0` becomes
 | `weir add module semver@<40-hex>` | the sha, as today — passes the listing |
 
 The `--as` name derives from the module name as today. A bare add
-PRINTS what it picked, on stderr with the other add messages:
+PRINTS what it picked, with the other add messages (stdout):
 `semver: latest is semver/v0.1.0`. The github shorthand
 (`<src>//<file>@<ref>`) and the raw-URL form are untouched: there
 "latest" is ambiguous (default branch or a tag) and the ref stays
@@ -149,7 +149,7 @@ adding a lock field).
   resolves `refs/tags/<name>/<tag>` through `pickRef`, a bare name
   takes `latestModuleTag`; the listing fetch is one `listRefs` shared
   with the shorthand's host arm. The add prints `semver: latest is
-  semver/v0.1.0` on stderr for a bare add. Usage and `--help` read
+  semver/v0.1.0` with its other messages (stdout) for a bare add. Usage and `--help` read
   `<name>[@<tag>]`; docs/tooling.md's block matches byte-for-byte.
 - The lock records nothing but the raw URL at the sha (no spec or
   tag field exists in `LockEntry`), so the picked tag rides in the

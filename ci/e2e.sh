@@ -14268,7 +14268,7 @@ printf '\n/// third\nlet bye : string -> string\nlet bye n = $"bye {n}"\n' >> "$
 ( cd "$amdir/proj" && $BIN add module "sr.ht/a/b//x.weir@v1" --as x 2>&1 || true ) | grep -q "unknown host 'sr.ht'" || fail "unknown-host teach"
 ( cd "$amdir/proj" && $BIN add module "http://127.0.0.1:$amport/greet.weir" --as seq 2>&1 || true ) | grep -q "a builtin module — pick another --as" || fail "builtin alias refusal"
 printf 'import "weir:nope" as N\nprint "x"\n' > "$amdir/proj/missing.weir"
-( cd "$amdir/proj" && $BIN missing.weir 2>&1 || true ) | grep -q "no vendored module 'nope'.*weir add module nope@<tag>" || fail "missing-vendored teach names the library spelling first"
+( cd "$amdir/proj" && $BIN missing.weir 2>&1 || true ) | grep -q "no vendored module 'nope'.*weir add module nope (an official library module, its latest release; @<tag> pins one)" || fail "missing-vendored teach names the library spelling first"
 # the library's short spelling [D:lib-short-name]: the refusals are
 # offline (the pure expansion never reaches the host), and a refused
 # add writes nothing. The tag is per module [D:lib-module-tags]: an
@@ -14317,10 +14317,11 @@ echo "$llout" | grep -qF "no nosuch/v* tag at github.com/weir-shell/lib — a li
 # the positive resolves, live: the library's semver/v0.1.0 tag lists, so
 # the output names the raw URL at a full sha (whether the add then
 # succeeds is the library's layout at that tag — the resolve is what
-# this pins); the bare add picks that tag and says so on stderr
+# this pins); the bare add picks that tag and says so
 lpout=$(cd "$amdir/proj" && $BIN add module semver@v0.1.0 2>&1 || true)
 echo "$lpout" | grep -qE "raw.githubusercontent.com/weir-shell/lib/[0-9a-f]{40}/modules/semver.weir" || fail "live library tag resolve: $lpout"
-lpout=$(cd "$amdir/proj" && $BIN add module semver 2>&1 || true)
+mkdir -p "$amdir/proj-latest"
+lpout=$(cd "$amdir/proj-latest" && $BIN add module semver 2>&1 || true)
 echo "$lpout" | grep -qE "^semver: latest is semver/v[0-9]+\.[0-9]+\.[0-9]+" || fail "live library latest pick: $lpout"
 echo "$lpout" | grep -qE "raw.githubusercontent.com/weir-shell/lib/[0-9a-f]{40}/modules/semver.weir" || fail "live library latest resolve: $lpout"
 kill $amsrv 2>/dev/null || true
