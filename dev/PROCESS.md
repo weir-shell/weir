@@ -464,14 +464,14 @@ CI derives the expected set from the diff's paths and fails on any
 mismatch, including a SUBSET (declaring `docs` while touching the
 parser is the exact lie the check exists to prevent); the failure
 prints the derived prefix, so the repair is a copy-paste. The path
-map's one copy lives in `ci/commit-area.sh` — this section documents
+map's one copy lives in `ci/commit-area.weir` — this section documents
 the shape, not the membership [D:commit-areas].
 
 The riding rule keeps feature commits one-line: if any `src/Weir`
 file moved, the area set is the src areas ONLY — tests, e2e/skill
 pins, docs, and ledger entries ride the feature they verify or
 record. A commit with no src changes derives from the non-src map
-(`ci` / `docs` / `ledger` / `tests`). Phase 0 measured why: 53 of 60
+(`ci` / `docs` / `editors` / `ledger` / `site` / `tests`). Phase 0 measured why: 53 of 60
 recent commits were multi-area under a naive map, because a feature's
 pins and rows land with it — the riding rule reflects how this
 project actually commits (one item, verified, recorded) instead of
