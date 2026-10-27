@@ -28517,7 +28517,19 @@ let serveTests =
     let limits (maxBody: int64) : Weir.Serve.Limits = { BodyTimeoutMs = 5000; MaxBody = maxBody }
 
     // serve `answer` on a fresh port for the duration of `f port`
+    // the suite runs in parallel on the thread pool and these clients
+    // block pool threads in Poll while Kestrel needs the same pool for
+    // the request delegate; a 2-core runner starts with two workers and
+    // grows by about one per second when starved, so a fast request can
+    // wait seconds for a thread and a timing bound reads that as the
+    // server's fault — a floor keeps the harness out of the measurement
+    let poolFloor =
+        lazy
+            (let w, io = System.Threading.ThreadPool.GetMinThreads()
+             System.Threading.ThreadPool.SetMinThreads(max w 32, max io 32) |> ignore)
+
     let serving (maxBody: int64) (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (f: int -> 'a) : 'a =
+        poolFloor.Force()
         let port = freePort ()
         let h = Weir.Serve.start port (limits maxBody)
 
