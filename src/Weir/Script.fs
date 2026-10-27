@@ -388,11 +388,6 @@ let armArrowIndex (s: string) : int option =
     if found >= 0 then Some found else None
 
 let classifyPiece (piece: string) : PieceClass =
-    let lastToken =
-        match piece.LastIndexOf ' ' with
-        | -1 -> piece
-        | i -> piece.Substring(i + 1)
-
     { Kind =
         if piece.StartsWith "|" then
             PieceKind.PipeHead
@@ -679,7 +674,7 @@ let opensIndentedBody (before: string) : bool =
 /// A line-end district marker of any kind — the mask below and the
 /// REPL share classifyPiece's marker rules through these predicates.
 let isMarkerPiece (piece: string) =
-    (classifyPiece piece).Marker <> MarkerKind.NoMarker
+    isYamlMarkerPiece piece || isHeredocMarkerPiece piece
 
 /// True for physical lines that are district content (deeper than an
 /// arming marker line) [D:content-bytes]: the byte-preserving passes —
