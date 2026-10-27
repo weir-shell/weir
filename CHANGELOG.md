@@ -22,6 +22,17 @@
   goes from about 400 ms to about 250 ms (CPU-pinned medians 373 → 254
   ms), a direct check of its largest file from 147 ms to 95 ms; bare
   startup stays about 12 ms.
+- **Imported modules check in parallel.** The import graph is read
+  before any module checks, and a module whose imports are done checks
+  on a worker thread (as many as processors, at most 8) while the
+  importing file's check walks toward its import line; each result
+  surfaces at that line in load order, so diagnostics are unchanged to
+  the byte (an 80-file parity corpus, the starship port checked 50
+  times). On a 15-core box the starship import goes from 263 ms to 215
+  ms (medians of 9); pinned to one core it is the sequential loader,
+  249 ms as before; bare startup stays about 12 ms. What remains is the
+  collector's: the workstation GC marks on one thread, and the module
+  checks spend most of their parallel phase stopped for it.
 
 ## v0.0.80
 

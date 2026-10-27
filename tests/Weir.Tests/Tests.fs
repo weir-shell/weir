@@ -37302,6 +37302,159 @@ let replImportTests =
 
 // ---- receipts [D:receipts-read-only]: Completed.ok, and the three
 // runtime-minted records refusing a literal and an update ----------------
+// the import DAG's siblings check on worker threads, reported in load
+// order [D:parallel-imports]: the diagnostics of a run are the sequential
+// loader's, whichever thread checked which module
+let parallelImportTests =
+    testSequenced
+    <| testList
+        "parallel imports"
+        [ let write (dir: string) (name: string) (lines: string list) =
+              let p = Path.Combine(dir, name)
+              File.WriteAllLines(p, lines)
+              p
+
+          let errorsOf (entry: string) =
+              let ds, _, _, _, _ = Weir.Script.analyzeLines entry (File.ReadAllLines entry |> List.ofArray)
+
+              ds
+              |> List.filter (fun d -> d.Severity = "error")
+              |> List.map (fun d -> d.File, d.Line, d.Col, d.Message)
+
+          let twoFailing (dir: string) =
+              let a = write dir "a.weir" [ "module A"; "let bad : int -> int"; "let bad n = show n" ]
+              let b = write dir "b.weir" [ "module B"; "let worse : int -> int"; "let worse n = n + \"x\"" ]
+
+              let entry =
+                  write
+                      dir
+                      "two.weir"
+                      [ "import \"./a.weir\" as A"
+                        "import \"./b.weir\" as B"
+                        "print (show (A.bad 1))"
+                        "print (show (B.worse 1))" ]
+
+              a, b, entry
+
+          test "two failing sibling modules report in load order, every run of 50" {
+              withTempDir "weir-par-two" (fun dir ->
+                  let a, b, entry = twoFailing dir
+                  let first = errorsOf entry
+                  Expect.equal (List.length first) 2 "both modules' errors surface (the fold recovers)"
+                  let (fa, la, _, ma), (fb, lb, _, mb) = first[0], first[1]
+                  Expect.equal (fa, la) (a, 3) "a's error first, at its site"
+                  Expect.stringContains ma "does not match its signature" "a's message"
+                  Expect.equal (fb, lb) (b, 3) "b's error second"
+                  Expect.equal mb "expected int, got string" "b's message"
+
+                  for i in 2..50 do
+                      Expect.equal (errorsOf entry) first $"run {i} reports the same diagnostics in the same order")
+          }
+          test "a slow earlier module keeps its place before a fast failing later one" {
+              withTempDir "weir-par-slow" (fun dir ->
+                  let slowLines =
+                      [ "module Slow" ]
+                      @ ([ 1..200 ] |> List.collect (fun i -> [ $"let f{i} : int -> int"; $"let f{i} n = n + {i}" ]))
+                      @ [ "let tail : int -> int"; "let tail n = show n" ]
+
+                  let slow = write dir "slow.weir" slowLines
+                  let fast = write dir "fast.weir" [ "module Fast"; "let worse : int -> int"; "let worse n = n + \"x\"" ]
+
+                  let entry =
+                      write
+                          dir
+                          "sf.weir"
+                          [ "import \"./slow.weir\" as S"
+                            "import \"./fast.weir\" as F"
+                            "print (show (S.tail 1))"
+                            "print (show (F.worse 1))" ]
+
+                  // diagnostics publish sorted by file, so the fast module's
+                  // line leads; the slow one's is there, at its own site
+                  let first = errorsOf entry
+                  let (f1, _, _, _), (f2, l2, _, _) = first[0], first[1]
+                  Expect.equal f1 fast "the fast module's error"
+                  Expect.equal (f2, l2) (slow, List.length slowLines) "the slow module's error, at its site"
+
+                  for i in 2..20 do
+                      Expect.equal (errorsOf entry) first $"run {i} reports the same diagnostics in the same order")
+          }
+          test "one worker is the sequential loader: the same diagnostics as the pool's" {
+              withTempDir "weir-par-one" (fun dir ->
+                  let _, _, entry = twoFailing dir
+                  let pooled = errorsOf entry
+                  let saved = Weir.Script.importWorkerBound
+                  Weir.Script.importWorkerBound <- 1
+
+                  try
+                      Expect.equal (errorsOf entry) pooled "the single-worker run"
+                  finally
+                      Weir.Script.importWorkerBound <- saved)
+          }
+          test "a cycle and a missing file keep the loader's messages" {
+              withTempDir "weir-par-cycle" (fun dir ->
+                  write dir "ca.weir" [ "module Ca"; "import \"./cb.weir\" as Cb"; "let x : int"; "let x = Cb.y" ] |> ignore
+                  let cb = write dir "cb.weir" [ "module Cb"; "import \"./ca.weir\" as Ca"; "let y : int"; "let y = Ca.x" ]
+                  let cyc = write dir "cyc.weir" [ "import \"./ca.weir\" as Ca"; "print (show Ca.x)" ]
+
+                  Expect.equal
+                      (errorsOf cyc)
+                      [ cb, 2, 8, "import cycle: ca.weir → cb.weir → ca.weir" ]
+                      "the cycle, at its closing edge"
+
+                  let miss = write dir "miss.weir" [ "import \"./nope.weir\" as N"; "print (show N.x)" ]
+                  let nope = Path.Combine(dir, "nope.weir")
+
+                  Expect.equal
+                      (errorsOf miss)
+                      [ miss, 1, 8, $"cannot resolve import: no file at {nope}" ]
+                      "the missing file, at the import line")
+          }
+          test "a diamond checks once: both importers share one module body" {
+              withTempDir "weir-par-diamond" (fun dir ->
+                  write dir "core.weir" [ "module Core"; "let one : int"; "let one = 1" ] |> ignore
+                  write dir "l.weir" [ "module L"; "import \"./core.weir\" as C"; "let a : int"; "let a = C.one" ] |> ignore
+                  write dir "r.weir" [ "module R"; "import \"./core.weir\" as C"; "let b : int"; "let b = C.one" ] |> ignore
+
+                  let entry =
+                      write
+                          dir
+                          "d.weir"
+                          [ "import \"./l.weir\" as L"
+                            "import \"./r.weir\" as R"
+                            "import \"./core.weir\" as C"
+                            "print (show (L.a + R.b + C.one))" ]
+
+                  let ds, stmts, _, _, _ = Weir.Script.analyzeLines entry (File.ReadAllLines entry |> List.ofArray)
+                  Expect.isEmpty ds "clean"
+
+                  let bodies =
+                      stmts
+                      |> List.collect (fun (_, c) ->
+                          match c.Kind with
+                          | Weir.Script.KImport lm ->
+                              (lm.Body
+                               |> List.choose (function
+                                   | _, Weir.Script.CImport inner -> Some inner.Body
+                                   | _ -> None))
+                              @ [ lm.Body ]
+                          | _ -> [])
+
+                  let coreBodies =
+                      bodies
+                      |> List.filter (fun b ->
+                          b
+                          |> List.exists (function
+                              | _, Weir.Script.CLet("one", _) -> true
+                              | _ -> false))
+
+                  Expect.equal (List.length coreBodies) 3 "core reached through L, R and directly"
+
+                  Expect.isTrue
+                      (coreBodies |> List.forall (fun b -> obj.ReferenceEquals(b, coreBodies[0])))
+                      "one checked body, replayed once [D:module-once]")
+          } ]
+
 let receiptTests =
     let completedLiteral =
         "a Completed is what '| complete' returns — run a command to get one (sh -c \"exit 3\" | complete); a function over its fields takes any record with them, so a test can pass {| exitCode = 3 |}"
@@ -37475,6 +37628,7 @@ let allTests =
         "Weir"
         [ portFindingsTests
           replImportTests
+          parallelImportTests
           hardeningTests
           teardownSeamTests
           hunt3BehaviourTests

@@ -5111,13 +5111,13 @@ let importSourceOverride: (string -> string list option) option ref = ref None
 // present-but-unreadable -> Error naming the path (a located
 // diagnostic, never a crash). The buffer override (LSP) is absent-or-present
 // by its own contract, so it maps to Ok.
-type private ImportRead =
+type internal ImportRead =
     | ISource of string list
     | IAbsent
     | IUnreadable of string
     | IBadUtf8 of line: int * col: int
 
-let private readImportSource (absPath: string) : ImportRead =
+let internal readImportSource (absPath: string) : ImportRead =
     match importSourceOverride.Value with
     | Some f ->
         match f absPath with
@@ -5135,9 +5135,228 @@ let private readImportSource (absPath: string) : ImportRead =
         | Error(IoFault m) -> IUnreadable m
         | Error(InvalidUtf8(l, c)) -> IBadUtf8(l, c)
 
+// one run's module loads [D:parallel-imports]: the per-key memo (real
+// path -> result) the loader always had, now shared by worker threads —
+// the import DAG is discovered before any module checks (discoverImports
+// below), and `Schedule` hands its acyclic modules to at most
+// `importWorkerBound` workers, each taking the ready module earliest in
+// load order. `Run` is the single-flight door every load goes through:
+// a module is claimed by whoever asks first (a worker, or the importer's
+// fold reaching its import line) and everyone else waits for that one
+// result, so a module checks exactly once and its Body is one object
+// [D:module-once]. Results surface at the import statement in load
+// order, so diagnostics are the sequential loader's to the byte. An
+// Error is remembered with the path it was reached by: a second site
+// spelling the path differently re-checks, as the sequential loader did.
+// a module's source as the check takes it, read and assembled once
+// [D:parallel-imports]: discovery reads a file for its import lines and
+// the check that follows takes the same body instead of reading again
+type internal PreparedSource =
+    { Read: ImportRead
+      // for ISource: the numbered body and its assembly
+      Body: ((int * string) list * Result<LogicalLine list, string>) option }
+
+let internal prepareSource (absPath: string) : PreparedSource =
+    let read = readImportSource absPath
+
+    match read with
+    | ISource rawLines ->
+        let body, bodyOffset, _ = scriptBody rawLines
+        let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
+
+        { Read = read
+          Body = Some(numbered, assemble numbered) } // raw lines: assemble classifies/strips internally [D:content-bytes]
+    | _ -> { Read = read; Body = None }
+
+type private LoadState =
+    | LPending
+    // the claiming thread's id: its own nested asks compute, every other
+    // thread waits on the event
+    | LRunning of System.Threading.ManualResetEventSlim * owner: int
+    | LDone of (unit -> Result<LoadedModule, ImportError>) * absPath: string
+
+// the worker bound: the processor count, capped at 8 — a prompt script
+// should not fan 64 threads, and past 8 a DAG rarely has that many ready
+// siblings; one processor is the sequential loader. Tests set it, never
+// a flag or an env var [D:parallel-imports]
+let mutable importWorkerBound = min 8 Environment.ProcessorCount
+
+type ModuleLoads() =
+    let gate = obj ()
+    let states = Collections.Generic.Dictionary<string, LoadState>()
+    // (key, absPath, deps, run) in load order; a worker takes the first
+    // still pending whose deps are all done
+    let plan = ResizeArray<string * string * string list * (unit -> Result<LoadedModule, ImportError>)>()
+    let sources = Collections.Generic.Dictionary<string, PreparedSource>()
+    let parentCwd = Session.Cwd()
+    let mutable active = 0
+
+    let isDone key =
+        match states.TryGetValue key with
+        | true, LDone _ -> true
+        | _ -> false
+
+    let pickable () =
+        plan
+        |> Seq.filter (fun (key, _, deps, _) ->
+            (match states.TryGetValue key with
+             | true, LPending -> true
+             | _ -> false)
+            && deps |> List.forall isDone)
+
+    let me () = Threading.Thread.CurrentThread.ManagedThreadId
+
+    // under the gate
+    let finish (key: string) (absPath: string) (result: unit -> Result<LoadedModule, ImportError>) =
+        match states.TryGetValue key with
+        | true, LRunning(ev, _) ->
+            states[key] <- LDone(result, absPath)
+            ev.Set()
+        | _ -> ()
+
+    let capture (compute: unit -> Result<LoadedModule, ImportError>) : unit -> Result<LoadedModule, ImportError> =
+        try
+            let r = compute ()
+            fun () -> r
+        with ex ->
+            let info = Runtime.ExceptionServices.ExceptionDispatchInfo.Capture ex
+
+            fun () ->
+                info.Throw()
+                Unchecked.defaultof<_>
+
+    // the worker claims at pick time (under the gate), so two workers never
+    // take one module; the load's own Run sees its thread as the owner and
+    // computes. A load that returns without passing Run (none does, by
+    // discovery's filter) is finished here all the same
+    member private this.Worker() =
+        Session.enterWorker parentCwd
+
+        try
+            let mutable go = true
+
+            while go do
+                let next =
+                    lock gate (fun () ->
+                        match pickable () |> Seq.tryHead with
+                        | Some(key, absPath, _, run) ->
+                            states[key] <- LRunning(new Threading.ManualResetEventSlim(false), me ())
+                            Some(key, absPath, run)
+                        | None ->
+                            active <- active - 1
+                            None)
+
+                match next with
+                | Some(key, absPath, run) ->
+                    let result = capture run
+
+                    lock gate (fun () ->
+                        finish key absPath result
+                        this.Pump())
+                | None -> go <- false
+        finally
+            Session.exitWorker ()
+
+    // under the gate: workers up to the bound while ready modules
+    // outnumber them. The reserved stack is the main thread's
+    // [D:block-width]; a refused thread leaves the rest to the askers
+    member private this.Pump() =
+        let ready = pickable () |> Seq.length
+        let mutable spawning = true
+
+        while spawning && active < min importWorkerBound ready do
+            let t = Threading.Thread((fun () -> this.Worker()), 256 * 1024 * 1024)
+            t.IsBackground <- true
+
+            try
+                t.Start()
+                active <- active + 1
+            with _ ->
+                spawning <- false
+
+    // discovery's read, kept for the check (the file read outside the gate;
+    // a race reads twice, harmlessly)
+    member internal this.Prepare(absPath: string) : PreparedSource =
+        match lock gate (fun () -> sources.TryGetValue absPath) with
+        | true, p -> p
+        | _ ->
+            let p = prepareSource absPath
+            lock gate (fun () -> sources[absPath] <- p)
+            p
+
+    // the check's read: discovery's if it prepared this path, else fresh
+    member internal this.TakeSource(absPath: string) : PreparedSource =
+        match
+            lock gate (fun () ->
+                match sources.TryGetValue absPath with
+                | true, p ->
+                    sources.Remove absPath |> ignore
+                    Some p
+                | _ -> None)
+        with
+        | Some p -> p
+        | None -> prepareSource absPath
+
+    member this.Schedule(nodes: (string * string * string list * (unit -> Result<LoadedModule, ImportError>)) list) =
+        lock gate (fun () ->
+            for (key, _, _, _) as node in nodes do
+                if not (states.ContainsKey key) then
+                    states[key] <- LPending
+                    plan.Add node
+
+            this.Pump())
+
+    member this.Run
+        (key: string)
+        (absPath: string)
+        (importAs: string option)
+        (compute: unit -> Result<LoadedModule, ImportError>)
+        : Result<LoadedModule, ImportError> =
+        let realias (r: Result<LoadedModule, ImportError>) =
+            match r with
+            | Ok cached ->
+                Ok
+                    { cached with
+                        Alias = importAs |> Option.defaultValue cached.NaturalName }
+            | Error _ -> r
+
+        let claim =
+            lock gate (fun () ->
+                match states.TryGetValue key with
+                | true, LDone(result, at) -> Choice1Of3(result, at)
+                | true, LRunning(ev, owner) when owner <> me () -> Choice2Of3 ev
+                | true, LRunning(ev, _) -> Choice3Of3 ev
+                | _ ->
+                    let ev = new Threading.ManualResetEventSlim(false)
+                    states[key] <- LRunning(ev, me ())
+                    Choice3Of3 ev)
+
+        match claim with
+        | Choice1Of3(result, at) ->
+            match result () with
+            | Error _ when at <> absPath -> compute ()
+            | r -> realias r
+        | Choice2Of3 ev ->
+            ev.Wait()
+            this.Run key absPath importAs compute
+        | Choice3Of3 _ ->
+            let result = capture compute
+
+            lock gate (fun () ->
+                finish key absPath result
+                this.Pump())
+
+            realias (result ())
+
+// a `weir:` import names a vendored module, never a path [D:add-module]
+let private vendoredNameFault (path: string) : bool =
+    path.StartsWith "weir:"
+    && (let n = path.Substring 5 in n = "" || n.Contains "/" || n.Contains "\\" || n.Contains "..")
+
 // resolve + check an imported module to a LoadedModule, or an ImportError.
-// The graph [D:modules-v1]: `cache` (normalized abs path -> module) checks a
-// shared module once (diamonds); `chain` is the current DFS path of importing
+// The graph [D:modules-v1]: `loads` (real path -> result) checks a shared
+// module once (diamonds) and schedules the DAG's siblings on workers
+// [D:parallel-imports]; `chain` is the current DFS path of importing
 // files, so a repeat is a cycle. Transitive: a reached module's own imports
 // resolve too, sharing the cache with this module pushed on the chain.
 // sigContract [D:unused-bindings]: a #sig file is a module whose
@@ -5147,7 +5366,7 @@ let private readImportSource (absPath: string) : ImportRead =
 let rec loadModuleCachedWith
     (sigContract: bool)
     (mkR: TypeEnv -> Parser.Resolver)
-    (cache: System.Collections.Generic.Dictionary<string, LoadedModule>)
+    (loads: ModuleLoads)
     (chain: string list)
     (importingAbsPath: string)
     (path: string)
@@ -5170,10 +5389,7 @@ let rec loadModuleCachedWith
     let notAModule =
         stmt $"{quoteData absPath} is not a module; add `module` at the top, or invoke it as a command"
 
-    if
-        path.StartsWith "weir:"
-        && (let n = path.Substring 5 in n = "" || n.Contains "/" || n.Contains "\\" || n.Contains "..")
-    then
+    if vendoredNameFault path then
         stmt "a weir: import names a vendored module, never a path — weir:<name>, no separators"
     elif (vendoredFault importingAbsPath path).IsSome then
         stmt (vendoredFault importingAbsPath path).Value
@@ -5190,18 +5406,17 @@ let rec loadModuleCachedWith
             |> String.concat " → "
 
         stmt $"import cycle: {quoteData loop}"
-    elif cache.ContainsKey key then
-        // a diamond's shared module is checked once; re-alias per import site
-        let cached = cache[key]
-
-        Ok
-            { cached with
-                Alias = importAs |> Option.defaultValue cached.NaturalName }
     else
+
+    // a diamond's shared module is checked once (re-aliased per import
+    // site), by whichever thread asks first [D:parallel-imports]
+    loads.Run key absPath importAs (fun () ->
 
     // read the source once [D:lockfile-confinement] — no Exists/read race,
     // and present-but-unreadable is its own located diagnostic, not a crash
-    match readImportSource absPath with
+    let prepared = loads.TakeSource absPath
+
+    match prepared.Read with
     | IAbsent ->
         if path.StartsWith "weir:" then
             let n = path.Substring 5
@@ -5218,10 +5433,7 @@ let rec loadModuleCachedWith
               Col = c
               Message = "invalid UTF-8 — a source file must be UTF-8; this byte is not" }
     | ISource rawLines ->
-        let body, bodyOffset, _ = scriptBody rawLines
-
-        let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
-        let assembled = numbered |> assemble // raw lines: assemble classifies/strips internally [D:content-bytes]
+        let numbered, assembled = prepared.Body.Value
 
         match assembled with
         | Error msg -> stmt (assemblyErrorLocated absPath numbered msg)
@@ -5241,7 +5453,7 @@ let rec loadModuleCachedWith
                     // transitive: a reached module's own imports resolve, sharing
                     // the cache, with this module pushed on the chain
                     let childLoader: ImportLoader =
-                        fun p _ a -> loadModuleCachedWith false mkR cache (key :: chain) absPath p a
+                        fun p _ a -> loadModuleCachedWith false mkR loads (key :: chain) absPath p a
 
                     // a module-content error reports at the module's own site
                     let at line col msg : Result<_, ImportError> =
@@ -5513,10 +5725,9 @@ let rec loadModuleCachedWith
                                   Body = moduleBody
                                   MayRebind = false }
 
-                            cache[key] <- loaded
                             Ok loaded
             | Ok _ -> notAModule
-            | Error _ -> notAModule
+            | Error _ -> notAModule)
 
 // the module-body replayer [D:modules-v1]: evaluate a checked module's Body
 // in its own clean env (Self.scriptPath is the module's; process facts ride
@@ -5607,12 +5818,12 @@ let checkVendoredModule (absPath: string) : Result<int, string> =
             Error
                 "the module imports — a single file vendors as a leaf; vendor a module with imports by its repo path, <host>/<org>/<repo>//<file>@<ref>, so its imports are fetched with it"
         else
-            let cache = Collections.Generic.Dictionary()
+            let loads = ModuleLoads()
             // a phantom importer in the same directory: never equal to
             // absPath, so the self-import guard stays quiet
             let phantom = absPath + ".add"
 
-            match loadModuleCachedWith false resolver cache [] phantom absPath None with
+            match loadModuleCachedWith false resolver loads [] phantom absPath None with
             | Ok lm -> Ok(List.length lm.Members)
             | Error e ->
                 let where =
@@ -5750,9 +5961,9 @@ let closureAncestor (paths: string list) : string =
 /// cycle error). Returns the entry's member count.
 let checkVendoredClosure (dir: string) (entryRel: string) : Result<int, string> =
     let entryAbs = IO.Path.GetFullPath(IO.Path.Combine(dir, entryRel))
-    let cache = Collections.Generic.Dictionary()
+    let loads = ModuleLoads()
 
-    match loadModuleCachedWith false resolver cache [] (entryAbs + ".add") entryAbs None with
+    match loadModuleCachedWith false resolver loads [] (entryAbs + ".add") entryAbs None with
     | Ok lm -> Ok(List.length lm.Members)
     | Error e ->
         let where =
@@ -5775,6 +5986,80 @@ let importAnchor (path: string) : string =
     with _ ->
         full
 
+// the DAG before the check [D:parallel-imports]: the entry's import
+// lines, transitively, in the sequential loader's order (depth-first,
+// lines top to bottom) — each module's first site, the chain at it, its
+// imports — each handed to the loads' workers as soon as its own imports
+// are known (post-order: a leaf checks while the walk goes on). A cycle
+// makes no node and taints every module on the path reaching it, and so
+// does a module importing a tainted one; a missing, unreadable or
+// malformed import makes no node either: those modules stay with the
+// loader's own path, which reports them as it always did. Sources are
+// read once, for the check to take; an entry that cannot be read
+// schedules nothing.
+let private discoverImports (mkR: TypeEnv -> Parser.Resolver) (loads: ModuleLoads) (entryAbs: string) : unit =
+    match (if importWorkerBound > 1 then (loads.Prepare entryAbs).Body else None) with
+    | Some(_, Ok entryLines) ->
+        let r = mkR (fst (moduleBaseEnvs entryAbs))
+
+        let sitesOf (lls: LogicalLine list) : (string * string option) list =
+            lls
+            |> List.choose (fun ll ->
+                if ll.Text.TrimStart().StartsWith "import" then
+                    match (try Some(Parser.parseLineFull r ll.Text) with _ -> None) with
+                    | Some(Ok(SImport(p, _, alias))) -> Some(p, alias |> Option.map fst)
+                    | _ -> None
+                else
+                    None)
+
+        let visited = Collections.Generic.HashSet<string>()
+        let tainted = Collections.Generic.HashSet<string>()
+
+        // the importer's dep keys, or None once it reaches a cycle
+        let rec visit (chain: string list) (importerAbs: string) (importerKey: string) (lls: LogicalLine list) =
+            let deps = ResizeArray<string>()
+            let mutable taint = false
+
+            for path, alias in sitesOf lls do
+                try
+                    let absPath = resolveImportPathRaw importerAbs path
+                    let key = realPath absPath
+
+                    if vendoredNameFault path || (vendoredFault importerAbs path).IsSome || key = importerKey then
+                        ()
+                    elif List.contains key chain then
+                        chain |> List.iter (tainted.Add >> ignore)
+                        taint <- true
+                    elif visited.Contains key then
+                        if tainted.Contains key then taint <- true else deps.Add key
+                    else
+                        visited.Add key |> ignore
+
+                        match (loads.Prepare absPath).Body with
+                        | Some(_, Ok mlls) ->
+                            match visit (key :: chain) absPath key mlls with
+                            | Some childDeps ->
+                                deps.Add key
+
+                                loads.Schedule
+                                    [ key,
+                                      absPath,
+                                      childDeps,
+                                      fun () -> loadModuleCachedWith false mkR loads chain importerAbs path alias ]
+                            | None -> taint <- true
+                        | _ -> ()
+                with _ ->
+                    ()
+
+            if taint || tainted.Contains importerKey then
+                tainted.Add importerKey |> ignore
+                None
+            else
+                Some(List.ofSeq deps)
+
+        visit [ entryAbs ] entryAbs (realPath entryAbs) entryLines |> ignore
+    | _ -> ()
+
 // a file's import loader [D:modules-v1]: imports resolve against the
 // importing file; one cache per loader dedups a diamond, the chain catches
 // a cycle. The REPL init file uses it too [D:init-import]
@@ -5782,8 +6067,14 @@ let importAnchor (path: string) : string =
 // under assumeResolver exactly as it reads the importing file, the runner
 // under the hard one [D:assume-resolver]
 let fileImportLoader (mkR: TypeEnv -> Parser.Resolver) (importingAbsPath: string) : ImportLoader =
-    let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
-    fun p _ alias -> loadModuleCachedWith false mkR cache [ importingAbsPath ] importingAbsPath p alias
+    let loads = ModuleLoads()
+    // the DAG is discovered at the first import line, not at creation: a
+    // script with no imports pays nothing [D:parallel-imports]
+    let discovered = lazy (discoverImports mkR loads importingAbsPath)
+
+    fun p _ alias ->
+        discovered.Force()
+        loadModuleCachedWith false mkR loads [ importingAbsPath ] importingAbsPath p alias
 
 // the session import loader [D:repl-import]: the prompt and -e resolve an
 // import against the session cwd at the moment it runs — a phantom
@@ -5792,8 +6083,7 @@ let fileImportLoader (mkR: TypeEnv -> Parser.Resolver) (importingAbsPath: string
 let sessionImportLoader: ImportLoader =
     fun p _ alias ->
         let phantom = IO.Path.Combine(Session.Cwd(), "(session)")
-        let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
-        loadModuleCachedWith false resolver cache [] phantom p alias
+        loadModuleCachedWith false resolver (ModuleLoads()) [] phantom p alias
 
 // the no-import loader: a form with no place for an import statement (an
 // #infer source, a completion repair, a test harness) refuses it
@@ -6953,10 +7243,9 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
 
                 diags.Add(mk decl.Line $"#sig {quoteData decl.Tool}: no {quoteData sigFile} (searched from {quoteData scriptDir}) — {hint}")
             | Ok sigFile ->
-                let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
                 let absScript = IO.Path.GetFullPath path
 
-                match loadModuleCachedWith true resolver cache [ absScript ] absScript sigFile None with
+                match loadModuleCachedWith true resolver (ModuleLoads()) [ absScript ] absScript sigFile None with
                 | Error ie -> diags.Add(mk decl.Line $"#sig {quoteData decl.Tool}: {ie.Message}")
                 | Ok lm ->
                     let letStr name =

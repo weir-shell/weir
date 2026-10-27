@@ -3,7 +3,10 @@ module Weir.Extern
 open System
 open System.IO
 
+// the PATH listing, behind a lock: module checks resolve heads on worker
+// threads [D:parallel-imports]
 let mutable private cache: Set<string> option = None
+let private cacheGate = obj ()
 
 // per-program resolution memo [D:head-word-bound]: exists() is called once
 // per command head; without it a bareword ';'-spine (20k identical heads)
@@ -17,7 +20,7 @@ let mutable private existsCache =
     System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
 
 let refresh () =
-    cache <- None
+    lock cacheGate (fun () -> cache <- None)
     existsCache <- System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
 
 // Windows resolves a bare `git` to `git.exe` via PATHEXT; the name
@@ -113,6 +116,7 @@ let which (pairs: (string * string) list) (prog: string) : string option =
         resolveOn pairs pathValue prog
 
 let names () : Set<string> =
+    lock cacheGate (fun () ->
     match cache with
     | Some s -> s
     | None ->
@@ -136,7 +140,7 @@ let names () : Set<string> =
             |> Set.ofSeq
 
         cache <- Some s
-        s
+        s)
 
 let isPathy (prog: string) = isPathyName prog
 
