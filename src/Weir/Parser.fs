@@ -4292,6 +4292,9 @@ let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) (stopAtElse: bool) =
 let private cmdArgWith (stopAtIn: bool) = cmdArgStops stopAtIn false false
 
 let private cmdArg = cmdArgWith false
+let private cmdArgLetRhs = cmdArgWith true
+let private cmdArgIfBody = cmdArgStops true false true
+let private cmdArgIfCond = cmdArgStops false true false
 
 type private HeadKind =
     | ExternalHead
@@ -4386,39 +4389,35 @@ envAssignsFwdRef.Value <-
         { Kind = EList items
           Span = { Start = first.Start; End = last.End } }
 
-let private commandSegment
-    (builtinHeads: bool)
-    (argP: Parser<Expr, unit>)
-    (sigilEnv: Expr option)
-    (r: Resolver)
-    : Parser<Expr, unit> =
-    // ^$name / ^$(…) — the dynamic head [D:dynamic-head]: `^` gains a
-    // `$`-splice alternative beside the literal — a runtime string can
-    // never be a weir binding, so a dynamic head is necessarily external
-    // and `^` already says exactly that. The value is one program, never
-    // re-lexed; the fatal spellings (^$@, ^$", bare ^$) are guarded
-    // ahead of the segment so their teachings survive the backtrack.
-    let dynHead =
-        attempt (getPosition .>> pchar '^' .>> followedBy (pchar '$'))
-        >>= fun startP ->
-            (captureSigil |>> (fun e -> "$(…)", e)
-             <|> (splicePath (skipChar '$') |>> fun e -> $"${Weir.Ast.sexpr e}", e))
-            .>> ws
-            |>> fun (disp, e) ->
-                let span = { Start = pos startP; End = e.Span.End }
-                DynamicHead(disp, e), disp, span
+// ^$name / ^$(…) — the dynamic head [D:dynamic-head]: `^` gains a
+// `$`-splice alternative beside the literal — a runtime string can
+// never be a weir binding, so a dynamic head is necessarily external
+// and `^` already says exactly that. The value is one program, never
+// re-lexed; the fatal spellings (^$@, ^$", bare ^$) are guarded
+// ahead of the segment so their teachings survive the backtrack.
+let private dynHead: Parser<HeadKind * string * Span, unit> =
+    attempt (getPosition .>> pchar '^' .>> followedBy (pchar '$'))
+    >>= fun startP ->
+        (captureSigil |>> (fun e -> "$(…)", e)
+         <|> (splicePath (skipChar '$') |>> fun e -> $"${Weir.Ast.sexpr e}", e))
+        .>> ws
+        |>> fun (disp, e) ->
+            let span = { Start = pos startP; End = e.Span.End }
+            DynamicHead(disp, e), disp, span
 
-    // the head word is bounded [D:head-word-bound]: a resolvable command
-    // head is a PATH entry (a filename component, <=255 bytes), so an
-    // unbounded `cmdWord` here only ever helps the doomed command-mode
-    // attempt on a `;`-spine (`let x = b;b;b;…`) — where `;` is a bareword
-    // char, so the head scan swallowed the whole remaining line before
-    // failing, once per bareword: O(N^2). Capping the scan keeps every
-    // resolvable head byte-identical and makes the doomed attempt linear.
-    let cmdHeadWord = manyMinMaxSatisfy 1 1024 cmdWordChar
+// the head word is bounded [D:head-word-bound]: a resolvable command
+// head is a PATH entry (a filename component, <=255 bytes), so an
+// unbounded `cmdWord` here only ever helps the doomed command-mode
+// attempt on a `;`-spine (`let x = b;b;b;…`) — where `;` is a bareword
+// char, so the head scan swallowed the whole remaining line before
+// failing, once per bareword: O(N^2). Capping the scan keeps every
+// resolvable head byte-identical and makes the doomed attempt linear.
+let private cmdHeadWord = manyMinMaxSatisfy 1 1024 cmdWordChar
 
-    let litHead =
-        spanned (opt (pchar '^') .>>. cmdHeadWord)
+// the literal head word, built once: the resolver enters only in its
+// continuation inside commandSegment
+let private litHeadWord: Parser<(char option * string) * Span, unit> =
+    spanned (opt (pchar '^') .>>. cmdHeadWord)
         // the machine boundary [D:yaml-district]: a head glued to the
         // sentinel can only be the assembler's yaml-district wrap
         // (statement joins always space the sentinel) — never a command
@@ -4449,6 +4448,15 @@ let private commandSegment
             )
         )
         .>> ws
+
+let private commandSegment
+    (builtinHeads: bool)
+    (argP: Parser<Expr, unit>)
+    (sigilEnv: Expr option)
+    (r: Resolver)
+    : Parser<Expr, unit> =
+    let litHead =
+        litHeadWord
         >>= fun ((forced, w), span) ->
             if w[0] = '[' then
                 // '[' never heads a command [D:bracket-heads-expression]: a line-head
@@ -5245,13 +5253,16 @@ let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEn
             |>> fun seg -> sep, seg
     )
 
+// the def guard at the command line's type, built once
+let private defStatementGuardCmd: Parser<Expr * ((string * Span) * Seg) list, unit> = defStatementGuard ()
+
 let private cmdLineWith
     (builtinHeads: bool)
     (argP: Parser<Expr, unit>)
     (sigilEnv: Expr option)
     (r: Resolver)
     : Parser<Expr, unit> =
-    defStatementGuard ()
+    defStatementGuardCmd
     <|> (commandSegment builtinHeads argP sigilEnv r
          .>>. pipedStages builtinHeads argP sigilEnv r)
     >>= fun (h, rest) ->
@@ -5283,28 +5294,30 @@ valueHeadedTailImpl <-
             // resolves to an external command (an ECmd — a known/library
             // head fails commandSegment and falls through to barePipeHint).
             // The lookAhead consumes nothing; the stages re-parse from `|`.
-            let externalHeaded =
-                commandSegment true cmdArg None r
-                >>= fun seg ->
-                    match seg.Kind with
-                    | ECmd _ -> preturn ()
-                    | _ -> ifail "value-headed pipe needs an external command head"
+            let externalHeaded (stream: CharStream<unit>) =
+                (commandSegment true cmdArg None r
+                 >>= fun seg ->
+                     match seg.Kind with
+                     | ECmd _ -> preturn ()
+                     | _ -> ifail "value-headed pipe needs an external command head")
+                    stream
 
-            let p =
-                lookAhead (singlePipe >>. externalHeaded) >>. pipedStages true cmdArg None r
-                >>= fun stages ->
-                    match foldChain lhs stages with
-                    | Result.Ok e -> preturn e
-                    | Result.Error(m, sp) -> failChain m sp
+            let stages (stream: CharStream<unit>) =
+                (pipedStages true cmdArg None r
+                 >>= fun stages ->
+                     match foldChain lhs stages with
+                     | Result.Ok e -> preturn e
+                     | Result.Error(m, sp) -> failChain m sp)
+                    stream
 
-            p stream)
+            (lookAhead (singlePipe >>. externalHeaded) >>. stages) stream)
 
 // let-RHS command lines stop at a bareword `in` (see cmdArgWith), and
 // command-callable builtins (cd) stay ordinary functions there —
 // `let workdir = cd target` must apply the binding target, never read
 // it as a bareword.
 let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> =
-    cmdLineWith false (cmdArgWith true) None r
+    cmdLineWith false cmdArgLetRhs None r
 
 // deepen: a block let's command RHS re-enters the statement grammar
 // through its args (cmd (let y = cmd (…))) [D:depth-guard]
@@ -5314,14 +5327,14 @@ letRhsCmdRef.Value <-
         // [D:if-body-stop] — read at entry, so a sigil or paren interior
         // (its own argument parser) is untouched
         if ifBodyOk.Value then
-            (cmdLineWith false (cmdArgStops true false true) None ambientResolver.Value) stream
+            (cmdLineWith false cmdArgIfBody None ambientResolver.Value) stream
         else
             (cmdLineLetRhs ambientResolver.Value) stream)
 
 // the condition's command grammar [D:if-succeeds]: the let-RHS shape
 // (no builtin heads — `myfunc x` in a condition is already expression
 // application) with `then` stopping argv instead of `in`
-ifCondCmdRef.Value <- fun stream -> (cmdLineWith false (cmdArgStops false true false) None ambientResolver.Value) stream
+ifCondCmdRef.Value <- fun stream -> (cmdLineWith false cmdArgIfCond None ambientResolver.Value) stream
 
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
@@ -5772,6 +5785,10 @@ let private importDecl: Parser<Stmt, unit> =
     .>>. (opt (keyword "as" >>. upperName "an import alias") .>> eof)
     |>> fun ((path, pathSpan), aliasOpt) -> SImport(path, pathSpan, aliasOpt)
 
+let private foreignKeywordGuardS: Parser<Stmt, unit> = foreignKeywordGuard ()
+let private envPrefixGuardS: Parser<Stmt, unit> = envPrefixGuard ()
+let private backslashHeadGuardS: Parser<Stmt, unit> = backslashHeadGuard ()
+
 let private stmtWith (r: Resolver) =
     ws
     >>. choice
@@ -5792,13 +5809,13 @@ let private stmtWith (r: Resolver) =
                   .>> eof
               )
               |>> SLetPat
-              foreignKeywordGuard ()
+              foreignKeywordGuardS
               letKeywordGuard
               letSig
               topLet r
               cmdLine r .>> eof |>> SCmd
-              envPrefixGuard ()
-              backslashHeadGuard ()
+              envPrefixGuardS
+              backslashHeadGuardS
               (seqExpr >>= pipeOrHint) .>> eof |>> SExpr ]
 
 let private noExternals =
