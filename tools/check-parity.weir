@@ -1,0 +1,77 @@
+#!/usr/bin/env weir
+// Parity of `weir check` between two binaries over a corpus
+// [D:parallel-imports]: the acceptance instrument of the parallel import
+// loader, and of any checker change claiming "same diagnostics" — for
+// every file the two binaries' stdout, stderr and exit code must agree,
+// line for line.
+//
+//     weir tools/check-parity.weir --base <bin> --cand <bin> --corpus <list>
+//
+// The list has one path per line (relative to the cwd, or absolute); the
+// corpus the plan names is the repo's own .weir files plus a vendored port:
+//
+//     { find examples tests docs site skills /path/to/port -type f -name '*.weir'; } | sort > corpus.txt
+//
+// Each file is checked from the cwd with the path as listed, so both
+// binaries see one spelling; the two runs sit side by side per file and
+// files fan out with Seq.pmap. Every mismatch prints with its first
+// differing line, then the tally; exit 1 on any mismatch.
+
+type Cli = {
+    /// the baseline binary
+    base: string
+    /// the candidate binary
+    cand: string
+    /// the corpus list, one path per line
+    corpus: string
+    /// files checked at once
+    [<Default 8>]
+    jobs: int
+}
+
+let cli = Args.load Cli
+
+type Verdict =
+    | Same of string
+    | Differs of string * string
+
+let lineAt xs i = xs |> Seq.tryItem i |> Option.defaultValue "<absent>"
+
+let firstDiff label xs ys =
+    let n = Seq.max [ Seq.length xs; Seq.length ys ]
+
+    [0..(n - 1)]
+    |> Seq.tryFind (fun i -> lineAt xs i <> lineAt ys i)
+    |> Option.map (fun i -> $"{label} line {i + 1}: base `{lineAt xs i}` | cand `{lineAt ys i}`")
+
+let verdict f =
+    let a = ^$cli.base check $f | complete
+    let b = ^$cli.cand check $f | complete
+
+    let exitDiff =
+        if a.exitCode <> b.exitCode then
+            Some $"exit: base {a.exitCode} | cand {b.exitCode}"
+        else
+            None
+
+    let diffs =
+        [ exitDiff; firstDiff "stdout" a.stdout b.stdout; firstDiff "stderr" a.stderr b.stderr ]
+        |> Seq.choose (fun d -> d)
+
+    match diffs |> Seq.tryHead with
+    | Some d -> Differs (f, d)
+    | None -> Same f
+
+let files = File.read cli.corpus |> Seq.where Str.nonEmpty |> Seq.freeze
+let verdicts = files |> Seq.pmapWith cli.jobs verdict |> Seq.freeze
+
+let bad =
+    verdicts
+    |> Seq.choose (function
+        | Differs (f, d) -> Some $"{f}: {d}"
+        | Same _ -> None)
+    |> Seq.freeze
+
+bad |> Seq.iter printerr
+print $"parity: {files |> Seq.length} files, {bad |> Seq.length} differ"
+if (bad |> Seq.length) > 0 then exit 1
