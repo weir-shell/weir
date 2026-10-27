@@ -17082,10 +17082,14 @@ WEOF
     echo "e2e ok: within … until stopped — held until the TERM, the always runs inside the scope, the release follows, a later hold returns at once (sticky), exit 0"
 
     # a terminal ^C reaches the iteration's child too: its death is the stop,
-    # not a command failure — the loop ends cleanly [D:stop-caused-failure]
+    # not a command failure — the loop ends cleanly [D:stop-caused-failure].
+    # The ready marker is a builtin echo, so the ^C lands on `sleep` or on
+    # the shell itself: a bash sh (macOS) that takes the ^C while reaping a
+    # pipeline child that exited normally treats it as handled and carries
+    # on (the cooperative rule), so a `| tr` marker raced the ^C
     cat > "$rpdir/tty.weir" <<'WEOF'
 repeat interval=100ms
-    sh -c "ps -o pid=,pgid=,tpgid=,sigmask= -p $$; stty -a | grep -o -e -isig -e isig | head -1; python3 -c 'import signal; print(\"sigint\", signal.getsignal(2))'; echo child-ready | tr a-z A-Z; sleep 5; echo child-done"
+    sh -c "ps -o pid=,pgid=,tpgid=,sigmask= -p $$; stty -a | grep -o -e -isig -e isig | head -1; python3 -c 'import signal; print(\"sigint\", signal.getsignal(2))'; r=READY; echo CHILD-$r; sleep 5; echo child-done"
     print "iteration end"
 print (Str.toUpper "after-repeat")
 WEOF
@@ -17103,7 +17107,7 @@ WEOF
     if command -v setsid >/dev/null 2>&1; then
         cat > "$rpdir/ttysid.weir" <<'WEOF'
 repeat interval=100ms
-    setsid sh -c "echo ready | tr a-z A-Z; sleep 3; echo sid-done"
+    setsid sh -c "r=READY; echo $r; sleep 3; echo sid-done"
     print "iteration end"
 print (Str.toUpper "after-repeat")
 WEOF
