@@ -3566,28 +3566,80 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
 // one moves to its origin-qualified name ("A.Pt") everywhere in the env,
 // so its values keep their type
 
-let rec private renameTy (m: Map<string, string>) (ty: Ty) : Ty =
-    match ty with
-    | TNamed(n, args) ->
-        TNamed(Map.tryFind n m |> Option.defaultValue n, args |> List.map (renameTy m))
-    | TFun(a, b) -> TFun(renameTy m a, renameTy m b)
-    | TSeq t -> TSeq(renameTy m t)
-    | TTuple ts -> TTuple(ts |> List.map (renameTy m))
-    | TRowVar(r, fields) -> TRowVar(r, fields |> List.map (fun (f, t) -> f, renameTy m t))
-    | t -> t
+let private renameTy (m: System.Collections.Generic.IReadOnlyDictionary<string, string>) (ty: Ty) : Ty =
+    let same (a: obj) (b: obj) = obj.ReferenceEquals(a, b)
 
-let private renameScheme (m: Map<string, string>) (sch: Scheme) : Scheme = { sch with Ty = renameTy m sch.Ty }
+    let rec go ty =
+        match ty with
+        | TNamed(n, args) ->
+            let n' =
+                match m.TryGetValue n with
+                | true, k -> k
+                | _ -> n
 
-let private renameDef (m: Map<string, string>) (def: TypeDef) : TypeDef =
+            let args' = goList args
+            if same n' n && same args' args then ty else TNamed(n', args')
+        | TFun(a, b) ->
+            let a' = go a
+            let b' = go b
+            if same a' a && same b' b then ty else TFun(a', b')
+        | TSeq t ->
+            let t' = go t
+            if same t' t then ty else TSeq t'
+        | TTuple ts ->
+            let ts' = goList ts
+            if same ts' ts then ty else TTuple ts'
+        | TRowVar(r, fields) ->
+            let fields' = goFields fields
+            if same fields' fields then ty else TRowVar(r, fields')
+        | t -> t
+
+    and goList (ts: Ty list) : Ty list =
+        match ts with
+        | [] -> ts
+        | x :: rest ->
+            let x' = go x
+            let rest' = goList rest
+            if same x' x && same rest' rest then ts else x' :: rest'
+
+    and goFields (fs: (string * Ty) list) : (string * Ty) list =
+        match fs with
+        | [] -> fs
+        | ((f, t) as x) :: rest ->
+            let t' = go t
+            let rest' = goFields rest
+            if same t' t && same rest' rest then fs else (if same t' t then x else (f, t')) :: rest'
+
+    if m.Count = 0 then ty else go ty
+
+let private renameScheme (m: System.Collections.Generic.IReadOnlyDictionary<string, string>) (sch: Scheme) : Scheme =
+    let ty = renameTy m sch.Ty
+    if obj.ReferenceEquals(ty, sch.Ty) then sch else { sch with Ty = ty }
+
+let private renameDef (m: System.Collections.Generic.IReadOnlyDictionary<string, string>) (def: TypeDef) : TypeDef =
+    let changed (a: Ty) (b: Ty) = not (obj.ReferenceEquals(a, b))
+
     match def with
     | Record rd ->
-        Record
-            { rd with
-                Fields = rd.Fields |> List.map (fun (f, t) -> f, renameTy m t) }
+        let fields = rd.Fields |> List.map (fun (f, t) -> f, renameTy m t)
+
+        if List.exists2 (fun (_, a) (_, b) -> changed a b) fields rd.Fields then
+            Record { rd with Fields = fields }
+        else
+            def
     | Union u ->
-        Union
-            { u with
-                Cases = u.Cases |> List.map (fun (c, p) -> c, p |> Option.map (renameTy m)) }
+        let cases =
+            u.Cases |> List.map (fun (c, p) -> c, p |> Option.map (renameTy m))
+
+        let caseChanged (_, a) (_, b) =
+            match a, b with
+            | Some a, Some b -> changed a b
+            | _ -> false
+
+        if List.exists2 caseChanged cases u.Cases then
+            Union { u with Cases = cases }
+        else
+            def
 
 let private renameEnvTypes (m: Map<string, string>) (tenv: TypeEnv) : TypeEnv =
     if Map.isEmpty m then
@@ -3660,20 +3712,33 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
 
     let own = Set.ofList lm.TypeNames
 
+    // the first key, in key order, holding origin o
+    let keyOfOrigin (t: TypeEnv) (o: string) =
+        t.TypeOrigins |> Map.tryPick (fun k held -> if held = o then Some k else None)
+
     // the aliases already declaring a type named n
     let ownersOf (t: TypeEnv) (n: string) =
         t.ModuleTypes |> Map.toList |> List.choose (fun (a, owned) -> Map.tryFind n owned |> Option.map (fun k -> a, k))
 
     // each own type claims its key, moving another import's holder of the
     // plain name to that holder's qualified key
-    let tenv, ownKeys =
+    let tenv, ownKeys, ownTaken =
         lm.TypeNames
         |> List.fold
-            (fun (t: TypeEnv, keys: Map<string, string>) n ->
-                let taken = keys |> Map.values |> Set.ofSeq
+            (fun (t: TypeEnv, keys: Map<string, string>, taken: Set<string>) n ->
+                let claim (t: TypeEnv) k =
+                    let keys' = Map.add n k keys
 
-                match originOf n |> Option.bind (fun o -> t.TypeOrigins |> Map.tryFindKey (fun _ held -> held = o)) with
-                | Some existing -> t, Map.add n existing keys
+                    let taken' =
+                        if Map.containsKey n keys then
+                            keys' |> Map.values |> Set.ofSeq
+                        else
+                            Set.add k taken
+
+                    t, keys', taken'
+
+                match originOf n |> Option.bind (keyOfOrigin t) with
+                | Some existing -> claim t existing
                 | None ->
                     let t = yieldTransitive n t
 
@@ -3681,30 +3746,31 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
                         match ownersOf t n |> List.tryFind (fun (_, k) -> k = n) with
                         | Some(holder, _) ->
                             let t = renameEnvTypes (Map [ n, qualifiedKey t taken holder n ]) t
-                            t, Map.add n (qualifiedKey t taken lm.Alias n) keys
-                        | None -> t, Map.add n (qualifiedKey t taken lm.Alias n) keys
+                            claim t (qualifiedKey t taken lm.Alias n)
+                        | None -> claim t (qualifiedKey t taken lm.Alias n)
                     elif not (List.isEmpty (ownersOf t n)) then
-                        t, Map.add n (qualifiedKey t taken lm.Alias n) keys
+                        claim t (qualifiedKey t taken lm.Alias n)
                     else
-                        t, Map.add n n keys)
-            (tenv, Map.empty)
+                        claim t n)
+            (tenv, Map.empty, Set.empty)
 
     let subst =
-        lm.TypeDefs
-        |> List.filter (fun (n, _) -> not (own.Contains n))
-        |> List.fold
-            (fun (acc: Map<string, string>, taken: Set<string>) (n, _) ->
+        let acc = System.Collections.Generic.Dictionary<string, string>()
+        let taken = System.Collections.Generic.HashSet<string>(ownTaken)
+
+        for n, _ in lm.TypeDefs do
+            if not (own.Contains n) then
                 let o = originOf n |> Option.defaultValue n
 
-                match tenv.TypeOrigins |> Map.tryFindKey (fun _ held -> held = o) with
-                | Some existing -> Map.add n existing acc, taken
+                match keyOfOrigin tenv o with
+                | Some existing -> acc[n] <- existing
                 | None when
                     not (Map.containsKey n tenv.Types)
                     && not (own.Contains n)
                     && not (taken.Contains n)
-                    && List.isEmpty (ownersOf tenv n)
+                    && not (tenv.ModuleTypes |> Map.exists (fun _ owned -> Map.containsKey n owned))
                     ->
-                    acc, Set.add n taken
+                    taken.Add n |> ignore
                 | None ->
                     let q = qualifiedFree tenv o
 
@@ -3712,12 +3778,19 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
                         if taken.Contains c then unique (c + "'") else c
 
                     let q = unique q
-                    Map.add n q acc, Set.add q taken)
-            (Map.empty, ownKeys |> Map.values |> Set.ofSeq)
-        |> fst
-        |> fun transitive -> Map.fold (fun m n k -> if n = k then m else Map.add n k m) transitive ownKeys
+                    acc[n] <- q
+                    taken.Add q |> ignore
 
-    let rename n = Map.tryFind n subst |> Option.defaultValue n
+        for KeyValue(n, k) in ownKeys do
+            if n <> k then
+                acc[n] <- k
+
+        acc
+
+    let rename n =
+        match subst.TryGetValue n with
+        | true, k -> k
+        | _ -> n
 
     let typeDefs =
         lm.TypeDefs
