@@ -687,22 +687,50 @@ let private resolve (ctx: Ctx) (ty: Ty) : Ty =
         resolveNoTick ctx ty
 
 let private finalTy (ctx: Ctx) (ty: Ty) : Ty =
+    let same (a: obj) (b: obj) = obj.ReferenceEquals(a, b)
+
     let rec go (seen: Set<string>) ty =
         match resolve ctx ty with
-        | TFun(a, b) -> TFun(go seen a, go seen b)
-        | TSeq t -> TSeq(go seen t)
-        | TTuple ts -> TTuple(ts |> List.map (go seen))
-        | TNamed(n, args) -> TNamed(n, args |> List.map (go seen))
+        | TFun(a, b) as t ->
+            let a' = go seen a
+            let b' = go seen b
+            if same a' a && same b' b then t else TFun(a', b')
+        | TSeq e as t ->
+            let e' = go seen e
+            if same e' e then t else TSeq e'
+        | TTuple ts as t ->
+            let ts' = goList seen ts
+            if same ts' ts then t else TTuple ts'
+        | TNamed(n, args) as t ->
+            let args' = goList seen args
+            if same args' args then t else TNamed(n, args')
+        | TRowVar(r, []) as t when seen.Contains r -> t
         | TRowVar(r, _) when seen.Contains r -> TRowVar(r, [])
-        | TRowVar(r, _) ->
+        | TRowVar(r, old) as t ->
+            let seen' = Set.add r seen
+
             let fields =
                 Map.tryFind r ctx.Rows
                 |> Option.defaultValue Map.empty
                 |> Map.toList
-                |> List.map (fun (f, (t, _)) -> f, go (Set.add r seen) t)
+                |> List.map (fun (f, (t, _)) -> f, go seen' t)
 
-            TRowVar(r, fields)
+            let rec unchanged (xs: (string * Ty) list) (ys: (string * Ty) list) =
+                match xs, ys with
+                | [], [] -> true
+                | (f, t) :: xs, (g, u) :: ys -> f = g && same t u && unchanged xs ys
+                | _ -> false
+
+            if unchanged fields old then t else TRowVar(r, fields)
         | t -> t
+
+    and goList (seen: Set<string>) (ts: Ty list) : Ty list =
+        match ts with
+        | [] -> ts
+        | x :: rest ->
+            let x' = go seen x
+            let rest' = goList seen rest
+            if same x' x && same rest' rest then ts else x' :: rest'
 
     go Set.empty ty
 
