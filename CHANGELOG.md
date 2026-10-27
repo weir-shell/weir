@@ -12,6 +12,26 @@
   `semver: latest is semver/v0.1.0`. `semver@v0.1.0` pins
   one; a full sha after the `@` is taken as is. `semver@0.1.0` (no
   `v`) and `semver@` are refused naming the spelling.
+- **Rename, references and highlight reach types, fields and cases.**
+  F2 on a type name, a record field or a union case declared in the
+  file renames its declaration word and every use the checker
+  resolves: accesses (`p.id`, `p.a.id`, `_.id`, `$p.id`, interpolation
+  holes), literal keys (`{ id = id }` renames the key only), `with`
+  updates, patterns, construction, the `from json T` / `Env.load T` /
+  `Args.load T` slots, type references in other declarations and a
+  module's signature lines. A field is a wire name, so renaming it
+  renames what the json/yaml boundary and `Args.load`/`Env.load`
+  read — the thing to do when the wire is the truth; a `[<Wire>]` on
+  the field keeps its key. The rename refuses with a reason where it
+  cannot be complete: a row-typed access of the same field name
+  (`let label r = r.id` could serve any record with an `id` — the
+  site is named), an error anywhere after the declaration, a new
+  field name that is a field or wire key of the record, a new case
+  name that any visible union already declares, a new type name that
+  is a type or module. Shift+F12 and highlight answer the same sites.
+  The "nothing to rename here" refusal on a field, and the "is a type
+  or a union case" refusal on an uppercase field, are gone with it:
+  the fallback now says what the cursor must be on.
 
 ### Changed
 

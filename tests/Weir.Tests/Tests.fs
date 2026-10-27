@@ -12172,6 +12172,346 @@ let schemaHoverTests =
                   Expect.equal (Weir.Lsp.definitionTarget entry ln 1 22) None "no file to open")
           } ]
 
+let lspRenameMemberTests =
+    let refs (path: string) (lines: string list) (line: int) (col: int) =
+        Weir.Lsp.referencesFor path lines line col true
+
+    let ren (path: string) (lines: string list) (line: int) (col: int) (nn: string) =
+        Weir.Lsp.renameFor path lines line col nn
+
+    let applyEdits (lines: string list) (edits: (int * int * int) list) (newName: string) =
+        let arr = List.toArray lines
+
+        for l, c, len in edits |> List.sortDescending do
+            let t = arr[l - 1]
+            arr[l - 1] <- t.Substring(0, c - 1) + newName + t.Substring(c - 1 + len)
+
+        List.ofArray arr
+
+    let nothing =
+        "nothing to rename here — put the cursor on a value, a type, a field or a case declared in this file"
+
+    testList
+        "Rename, references and highlight over types, fields and cases [D:lsp-rename-members]"
+        [ test "fields: the declaration word, accesses, literal keys, updates, interpolation, `_.f`; the type: declaration, named literal, adapter slot" {
+              let lines =
+                  [ "type Inner = { n: int }"
+                    "type Pkg = {"
+                    "    [<Wire \"ID\">]"
+                    "    id: string"
+                    "    inner: Option<Inner>"
+                    "}"
+                    "let i = { n = 1 }"
+                    "let p = Pkg { id = \"a\"; inner = Some i }"
+                    "let q = { p with id = \"b\" }"
+                    "print p.id"
+                    "print (show q.inner)"
+                    "let id = \"x\""
+                    "let r = { id = id; inner = None }"
+                    "print r.id"
+                    "let w = [\"{}\"] |> from json seq<Pkg>"
+                    "print (show (Seq.length w))"
+                    "echo $p.id $\"{p.id}\""
+                    "let s = p |> _.id"
+                    "print s" ]
+
+              let f = "fields.weir"
+              let idSites =
+                  [ (4, 5, 2)
+                    (8, 15, 2)
+                    (9, 18, 2)
+                    (10, 9, 2)
+                    (13, 11, 2)
+                    (14, 9, 2)
+                    (17, 9, 2)
+                    (17, 17, 2)
+                    (18, 16, 2) ]
+              Expect.equal
+                  (refs f lines 4 5)
+                  (Some idSites)
+                  "the field from its declaration: every form, never the value side of `{ id = id }`"
+              Expect.equal (refs f lines 10 9) (Some idSites) "from an access: the same set"
+              Expect.equal
+                  (refs f lines 13 16)
+                  (Some [ (12, 5, 2); (13, 16, 2) ])
+                  "the value `id` in `{ id = id }` is the value binder's"
+              Expect.equal (ren f lines 4 5 "key") (Ok idSites) "rename edits every site"
+
+              Expect.equal
+                  (Weir.Lsp.documentHighlightFor f lines 10 9)
+                  (Some(idSites |> List.map (fun (l, c, len) -> l, c, len, (if l = 4 then 3 else 2))))
+                  "highlight: Write at the declaration, Read elsewhere"
+
+              Expect.equal (Weir.Lsp.prepareRenameFor f lines 10 9) (Ok(10, 9, 2)) "prepare: the access's own range"
+              Expect.equal
+                  (refs f lines 5 5)
+                  (Some [ (5, 5, 5); (8, 25, 5); (11, 15, 5); (13, 20, 5) ])
+                  "a second field: its own sites"
+              Expect.equal
+                  (refs f lines 2 6)
+                  (Some [ (2, 6, 3); (8, 9, 3); (15, 33, 3) ])
+                  "the type: declaration, named literal head, adapter slot"
+              Expect.equal
+                  (refs f lines 1 6)
+                  (Some [ (1, 6, 5); (5, 19, 5) ])
+                  "a type referenced inside another declaration"
+              Expect.equal (refs f lines 5 19) (Some [ (1, 6, 5); (5, 19, 5) ]) "from the reference: the same set"
+              Expect.equal (ren f lines 2 6 "Package") (Ok [ (2, 6, 3); (8, 9, 3); (15, 33, 3) ]) "rename the type"
+              Expect.equal (ren f lines 4 5 "ID") (Ok idSites) "the renamed field's own wire key is not a collision"
+              Expect.equal (ren f lines 4 5 "_id") (Ok idSites) "a `_`-led field name is a wire name, allowed"
+              Expect.equal (ren f lines 4 5 "Key") (Ok idSites) "a field takes either case"
+              Expect.equal
+                  (ren f lines 4 5 "n")
+                  (Error "'n' is already a field name at line 7, column 11 — pick a name no field in this file uses")
+                  "another record's field word in the extent (the declaration above it is outside)"
+              Expect.equal
+                  (ren f lines 5 5 "ID")
+                  (Error "'ID' is already a wire key of Pkg (the field 'id')")
+                  "another field's wire key (R3)"
+              Expect.equal (ren f lines 4 5 "inner") (Error "'inner' is already a field of Pkg") "an existing field"
+              Expect.equal
+                  (ren f lines 2 6 "pkg")
+                  (Error "'pkg' is not a type name — type names start uppercase")
+                  "type casing"
+              Expect.equal
+                  (ren f lines 2 6 "Inner")
+                  (Error "'Inner' is already a type visible here — pick another name")
+                  "an existing type"
+              Expect.equal
+                  (ren f lines 2 6 "Completed")
+                  (Error "'Completed' is a builtin type — pick another name")
+                  "a builtin type"
+              Expect.equal (ren f lines 2 6 "Seq") (Error "'Seq' is a module name — pick another name") "a module name"
+          }
+          test "cases: the declaration word, expression position, match patterns; a builtin case refuses; the ambiguous-ctor law" {
+              let lines =
+                  [ "type U = | A | B of int"
+                    "let u = B 1"
+                    "let k = match u with | A -> 0 | B n -> n"
+                    "print (show k)"
+                    "let o = Some k"
+                    "print (show o)" ]
+
+              let f = "cases.weir"
+              Expect.equal
+                  (refs f lines 1 12)
+                  (Some [ (1, 12, 1); (3, 24, 1) ])
+                  "a payload-less case: declaration and pattern"
+              Expect.equal
+                  (refs f lines 1 16)
+                  (Some [ (1, 16, 1); (2, 9, 1); (3, 33, 1) ])
+                  "a case with a payload: declaration, construction, pattern"
+              Expect.equal
+                  (refs f lines 2 9)
+                  (Some [ (1, 16, 1); (2, 9, 1); (3, 33, 1) ])
+                  "from the construction: the same set"
+              Expect.equal (ren f lines 1 16 "Bb") (Ok [ (1, 16, 1); (2, 9, 1); (3, 33, 1) ]) "rename the case"
+              Expect.equal
+                  (ren f lines 1 12 "b")
+                  (Error "'b' is not a case name — case names start uppercase")
+                  "case casing"
+              Expect.equal
+                  (ren f lines 1 12 "B")
+                  (Error "'B' is already a case of U — a bare 'B' could name either")
+                  "a sibling case"
+              Expect.equal
+                  (ren f lines 1 12 "None")
+                  (Error "'None' is already a case of Option — a bare 'None' could name either")
+                  "a builtin union's case [D:ambiguous-ctor]"
+              Expect.equal (refs f lines 5 9) (Some [ (5, 9, 4) ]) "a builtin case lists this file's uses (R2)"
+              Expect.equal
+                  (ren f lines 5 9 "Sm")
+                  (Error "'Some' is a case of the builtin Option — nothing in this file declares it")
+                  "a builtin case refuses"
+          }
+          test "nested paths: `o.inner.n` and `{ o with inner.n = … }` resolve step-wise" {
+              let lines =
+                  [ "type Inner = { n: int }"
+                    "type Outer = { inner: Inner }"
+                    "let o = { inner = { n = 1 } }"
+                    "let o2 = { o with inner.n = 2 }"
+                    "print (show o.inner.n)"
+                    "print (show o2)" ]
+
+              let f = "nested.weir"
+              Expect.equal
+                  (ren f lines 1 16 "m")
+                  (Ok [ (1, 16, 1); (3, 21, 1); (4, 25, 1); (5, 21, 1) ])
+                  "the inner field through both paths"
+              Expect.equal
+                  (ren f lines 2 16 "inside")
+                  (Ok [ (2, 16, 5); (3, 11, 5); (4, 19, 5); (5, 15, 5) ])
+                  "the outer field: the path head"
+          }
+          test "adapter and load slots, a case payload, a sig line: type references" {
+              let lines =
+                  [ "type Cfg = { port: int }"
+                    "type Wrap = | W of Cfg | N"
+                    "type Pair = { one: Cfg; cfgs: seq<Cfg> }"
+                    "let c = Env.load Cfg"
+                    "let a = Args.load Cfg"
+                    "print (show (c.port + a.port))"
+                    "let w = W c"
+                    "print (show w)" ]
+
+              let f = "slots.weir"
+              let cfgSites = [ (1, 6, 3); (2, 20, 3); (3, 20, 3); (3, 35, 3); (4, 18, 3); (5, 19, 3) ]
+              Expect.equal
+                  (refs f lines 1 6)
+                  (Some cfgSites)
+                  "declaration, payload, field types, generic arg, Env.load, Args.load"
+              Expect.equal (ren f lines 1 6 "Conf") (Ok cfgSites) "rename the type everywhere"
+              Expect.equal
+                  (ren f lines 1 14 "PORT")
+                  (Ok [ (1, 14, 4); (6, 16, 4); (6, 25, 4) ])
+                  "a loaded field renames — the flag and the variable derive from it (R4)"
+              Expect.equal
+                  (ren f lines 1 6 "Pair")
+                  (Error "'Pair' is already a type visible here — pick another name")
+                  "a type declared below"
+
+              let m = [ "module"; "type T = { f: int }"; "let mk : int -> T"; "let mk n = { f = n }" ]
+              Expect.equal
+                  (ren "m.weir" m 2 6 "Rec")
+                  (Ok [ (2, 6, 1); (3, 17, 1) ])
+                  "a module's signature line references the type"
+              Expect.equal (ren "m.weir" m 2 12 "g") (Ok [ (2, 12, 1); (4, 14, 1) ]) "a module's field"
+          }
+          test "an anonymous record's field is no occurrence and does not refuse; a generic record's field" {
+              let lines =
+                  [ "type R = { id: int }"; "let r = { id = 1 }"; "let z = {| id = 2 |}.id"; "print (show (r.id + z))" ]
+              let f = "anon.weir"
+              Expect.equal
+                  (ren f lines 1 12 "key")
+                  (Ok [ (1, 12, 2); (2, 11, 2); (4, 16, 2) ])
+                  "the named record's sites only"
+              Expect.equal (refs f lines 3 13) None "the anonymous literal's key"
+              Expect.equal (ren f lines 3 23 "key") (Error nothing) "the anonymous access"
+
+              let g = [ "type Box<'a> = { v: 'a }"; "let b = { v = 1 }"; "print (show b.v)" ]
+              Expect.equal
+                  (ren "generic.weir" g 1 18 "w")
+                  (Ok [ (1, 18, 1); (2, 11, 1); (3, 15, 1) ])
+                  "a generic record's field"
+              Expect.equal (refs "generic.weir" g 1 21) None "a type parameter is no occurrence"
+          }
+          test "a row-typed access of the field's name refuses, naming the first site (R1)" {
+              let lines =
+                  [ "type R = { id: int }"
+                    "let f r = r.id"
+                    "let r = { id = 1 }"
+                    "print (show (f r))"
+                    "let g = fun { id = x } -> x"
+                    "print (show (g r))" ]
+
+              let f = "row.weir"
+              Expect.equal
+                  (refs f lines 1 12)
+                  (Some [ (1, 12, 2); (3, 11, 2) ])
+                  "references: the row-typed sites are not listed"
+              Expect.equal (refs f lines 2 13) None "the row-typed access is no occurrence"
+
+              Expect.equal
+                  (Weir.Lsp.prepareRenameFor f lines 1 12)
+                  (Error
+                      "`r.id` at line 2 is row-typed — it could serve `R` or any record with a field `id`; this rename cannot tell which, so it renames nothing. Annotate the call or rename by hand.")
+                  "prepare refuses, naming the first site"
+
+              Expect.equal
+                  (ren f lines 1 6 "S")
+                  (Ok [ (1, 6, 1) ])
+                  "the type itself still renames"
+          }
+          test "refusals: builtin member, imported member, error in the extent, comment, keyword, wildcard" {
+              let dir =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), "weir-rename-m-" + string (System.Guid.NewGuid()))
+              System.IO.Directory.CreateDirectory dir |> ignore
+
+              System.IO.File.WriteAllLines(
+                  System.IO.Path.Combine(dir, "lib.weir"),
+                  [ "module"; "type T = { f: int }"; "let mk : int -> T"; "let mk n = { f = n }" ]
+              )
+
+              let main = System.IO.Path.Combine(dir, "main.weir")
+              let imp = [ "import \"./lib.weir\" as Lib"; "let t = Lib.mk 1"; "print (show t.f)" ]
+              Expect.equal (refs main imp 3 15) (Some [ (3, 15, 1) ]) "an imported field lists this file's uses (R2)"
+              Expect.equal
+                  (ren main imp 3 15 "g")
+                  (Error "'f' is a field of Lib.T — rename it in that module")
+                  "an imported field"
+
+              let b = [ "let c = echo hi | complete"; "print (show c.exitCode)" ]
+              Expect.equal
+                  (ren "b.weir" b 2 15 "code")
+                  (Error "'exitCode' is a field of the builtin Completed — nothing in this file declares it")
+                  "a builtin record's field"
+
+              let e = [ "type R = { id: int }"; "let r = { id = 1 }"; "print (show r.id)"; "let bad = 1 + \"s\"" ]
+              Expect.equal
+                  (ren "e.weir" e 1 12 "key")
+                  (Error "a statement after 'R's declaration has an error at line 4 — fix it first")
+                  "an error anywhere after the declaration (R5)"
+
+              let c = [ "type R = { id: int } // the R id"; "let r = { id = 1 }"; "print (show r.id)" ]
+              Expect.equal (ren "c.weir" c 1 25 "x") (Error nothing) "a comment mention of the type"
+              Expect.equal (ren "c.weir" c 1 29 "x") (Error nothing) "a comment mention of the field"
+              Expect.equal (ren "c.weir" c 2 10 "x") (Error nothing) "punctuation"
+              Expect.equal (ren "c.weir" c 1 1 "x") (Error "'type' is a keyword, not a name") "a keyword"
+              Expect.equal
+                  (ren "c.weir" c 1 12 "_")
+                  (Error "'_' is the wildcard, not a name")
+                  "the wildcard as the new name"
+              Expect.equal (ren "c.weir" c 1 12 "id") (Error "'id' is already the name") "the same name"
+              Expect.equal
+                  (ren "c.weir" c 1 12 "9x")
+                  (Error "'9x' is not a name — a name starts with a letter or '_' and continues with letters, digits or '_'")
+                  "not an identifier"
+              Expect.equal
+                  (ren "c.weir" c 1 12 "if")
+                  (Error "'if' is a keyword, not a name")
+                  "a keyword as the new name"
+          }
+          test "a [<Wire>]-bearing field renames with its attribute line untouched and `to json` unchanged" {
+              let lines =
+                  [ "type Pkg = {"
+                    "    [<Wire \"ID\">]"
+                    "    id: string"
+                    "}"
+                    "let p = { id = \"a\" }"
+                    "p |> to json |> print" ]
+              let edits = ren "wire.weir" lines 3 5 "key"
+              Expect.equal edits (Ok [ (3, 5, 2); (5, 11, 2) ]) "the declaration word and the literal key"
+              let renamed = applyEdits lines (Result.defaultValue [] edits) "key"
+              Expect.equal (List.item 1 renamed) "    [<Wire \"ID\">]" "the attribute line is untouched"
+              Expect.equal (List.item 2 renamed) "    key: string" "the field word"
+
+              let runCapture (ls: string list) =
+                  let path = tempPath "weir-rename-wire" + ".weir"
+                  System.IO.File.WriteAllLines(path, ls)
+                  let out = new System.IO.StringWriter()
+                  let prior = System.Console.Out
+                  System.Console.SetOut out
+
+                  try
+                      let code = Weir.Script.run path []
+                      code, out.ToString().Replace("\r\n", "\n")
+                  finally
+                      System.Console.SetOut prior
+                      System.IO.File.Delete path
+
+              Expect.equal (runCapture lines) (0, "{\"ID\":\"a\"}\n") "before: the wire key"
+              Expect.equal (runCapture renamed) (0, "{\"ID\":\"a\"}\n") "after: the same wire"
+          }
+          test "binderSitesFor lists member declaration words beside value binders" {
+              let lines =
+                  [ "type U = | A | B of int"; "type R = { id: int }"; "let r = { id = 1 }"; "print (show r.id)" ]
+
+              Expect.equal
+                  (Weir.Lsp.binderSitesFor "sites.weir" lines)
+                  [ (1, 6, false); (1, 12, false); (1, 16, false); (2, 6, false); (2, 12, false); (3, 5, true) ]
+                  "types, cases and fields are member sites; the let is a value site"
+          } ]
+
 let lspRenameTests =
     let refs (lines: string list) (line: int) (col: int) =
         Weir.Lsp.referencesFor "refs" lines line col true
@@ -12284,7 +12624,10 @@ let lspRenameTests =
               Expect.equal (refs lines 5 16) None "_.a: the wildcard is no name"
               Expect.equal (refs lines 4 1) (Some [ (4, 1, 5); (5, 32, 5) ]) "print: no binder here, the uses still list"
               Expect.equal (refs lines 5 8) (Some [ (5, 8, 7) ]) "Seq.map likewise"
-              Expect.equal (refs lines 4 16) None "a field is no occurrence"
+              Expect.equal
+                  (refs lines 4 16)
+                  (Some [ (1, 12, 1); (2, 11, 1); (3, 19, 1); (4, 16, 1); (5, 18, 1) ])
+                  "a field: its declaration, literal key, update key and accesses [D:lsp-rename-members]"
           }
           test "referencesFor: within/until binders, and a signed member's signature line" {
               let within = [ "let d = \"top\""; "within tmp d"; "    print d"; "print d" ]
@@ -12369,20 +12712,11 @@ let lspRenameTests =
 
               Expect.equal
                   (ren 5 22 "q")
-                  (Error "nothing to rename here — put the cursor on a value name bound in this file")
-                  "a field"
+                  (Ok [ (2, 12, 1); (4, 11, 1); (5, 22, 1); (8, 14, 1) ])
+                  "a field renames from a use [D:lsp-rename-members]"
 
-              Expect.equal
-                  (ren 6 9 "q")
-                  (Error
-                      "'A' is a type or a union case — only value bindings rename (fields, cases and type names are wire names)")
-                  "a case"
-
-              Expect.equal
-                  (ren 2 6 "q")
-                  (Error
-                      "'R' is a type or a union case — only value bindings rename (fields, cases and type names are wire names)")
-                  "a type name"
+              Expect.equal (ren 6 9 "q") (Error "'q' is not a case name — case names start uppercase") "a case"
+              Expect.equal (ren 2 6 "q") (Error "'q' is not a type name — type names start uppercase") "a type name"
 
               Expect.equal (ren 8 9 "q") (Error "'if' is a keyword, not a name") "a keyword under the cursor"
               Expect.equal (ren 4 5 "_") (Error "'_' is the wildcard, not a name") "target _"
@@ -12454,7 +12788,8 @@ let lspRenameTests =
 
               Expect.equal
                   (Weir.Lsp.renameFor "rename.weir" [ "let a = 1 // a here"; "print (show a)" ] 1 14 "z")
-                  (Error "nothing to rename here — put the cursor on a value name bound in this file")
+                  (Error
+                      "nothing to rename here — put the cursor on a value, a type, a field or a case declared in this file")
                   "a comment mention"
           }
           test "corpus: bindingUsage's free set equals occurrences' TopLevel set, statement by statement" {
@@ -37274,6 +37609,7 @@ let allTests =
           quickFixTests
           lspCrossFileTests
           lspRenameTests
+          lspRenameMemberTests
           lspPolishTests
           signatureHelpTests
           letBindingHoverTests
