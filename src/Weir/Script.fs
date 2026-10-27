@@ -53,8 +53,7 @@ let private docText (raw: string) : string =
 /// the documented name's (1-based col, len) on a declaration line: the
 /// identifier after `let`/`type`, after `|` (union case), or leading
 /// (a record field). None when the line has no such name.
-let private declName (raw: string) : (int * int) option =
-    let code = stripComment raw
+let private declName (code: string) : (int * int) option =
     let trimmed = code.TrimStart()
     let indent = code.Length - trimmed.Length
 
@@ -729,11 +728,13 @@ let docAttachments (lines: string list) : DocAttach list =
     let mutable pending: string list = []
     let acc = System.Collections.Generic.List<DocAttach>()
 
-    let masked = districtContentMask lines
+    let stripped = lines |> List.map (fun raw -> raw, stripComment raw)
+    let masked = districtContentMaskOf stripped
 
-    lines
-    |> List.iteri (fun idx raw ->
+    stripped
+    |> List.iteri (fun idx (raw, code) ->
         let ln = idx + 1
+        let t = code.Trim()
 
         if masked[idx] then
             () // district content is bytes — never doc syntax [D:content-bytes]
@@ -743,15 +744,15 @@ let docAttachments (lines: string list) : DocAttach list =
             // pinning a core on a heavily documented module. Cons is O(1);
             // the run is reversed once at the single consumer (Doc below).
             pending <- docText raw :: pending
-        elif isAttributeOnlyLine raw then
+        elif t.StartsWith "[<" && t.EndsWith ">]" then
             ()
         elif raw.Trim() = "" then
             pending <- []
-        elif (stripComment raw).Trim() = "" then
+        elif t = "" then
             pending <- [] // a plain // comment-only line breaks contiguity
         else
             if not (List.isEmpty pending) then
-                match declName raw with
+                match declName code with
                 | Some(col, len) ->
                     acc.Add
                         { Line = ln
@@ -6385,7 +6386,7 @@ let private docMisalignments (path: string) (lines: string list) : Diagnostic li
             runStart <- -1 // a blank / plain-// breaks the run — no attachment, no claim
         else
             (if runStart >= 0 then
-                 match declName raw with
+                 match declName (stripComment raw) with
                  | Some _ ->
                      let anchor = indent raw
 
