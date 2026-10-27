@@ -686,14 +686,13 @@ let isMarkerPiece (piece: string) =
 /// arming marker line) [D:content-bytes]: the byte-preserving passes —
 /// doc attachment, the doc-align lint, fmt's doc canonicalization —
 /// must neither read nor move them; content is bytes.
-let districtContentMask (lines: string list) : bool[] =
+let private districtContentMaskOf (lines: (string * string) list) : bool[] =
     let arr = List.toArray lines
     let mask = Array.create arr.Length false
     let mutable armed: int option = None // the marker line's indent
 
     for i in 0 .. arr.Length - 1 do
-        let raw = arr[i]
-        let code = stripComment raw
+        let raw, code = arr[i]
         let indent = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
 
         if raw.Trim() = "" then
@@ -712,6 +711,9 @@ let districtContentMask (lines: string list) : bool[] =
                     armed <- Some indent
 
     mask
+
+let districtContentMask (lines: string list) : bool[] =
+    districtContentMaskOf (lines |> List.map (fun raw -> raw, stripComment raw))
 
 /// Pure pass: a contiguous run of `///` lines attaches to the
 /// declaration on the next code line; a blank or a plain `//` line
@@ -1445,34 +1447,38 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
     // --format=a//b — stays data). Skipped: yaml district content (bytes)
     // and comment-only lines (their class carries transparency semantics
     // a blanked line would lose — blankSinceHead is the difference)
+    // each line as (number, text, code): the text is the line as the
+    // joins see it, the code its comment-cut form (the cut is idempotent,
+    // so the code of a cut text is the text)
     let numbered =
         // the mask must see stripped heads (a commented district head
         // still opens its district), so the cut runs twice: once to
         // find the content regions, once — content excluded — for real.
         // TrimEnd only on actual cuts: untouched lines stay byte-equal
-        let mask = districtContentMask (numbered |> List.map (snd >> stripComment))
+        let stripped = numbered |> List.map (fun (n, raw) -> n, raw, stripComment raw)
+        let mask = districtContentMaskOf (stripped |> List.map (fun (_, _, code) -> code, code))
 
-        numbered
-        |> List.mapi (fun i (n, raw) ->
-            if (i < mask.Length && mask[i]) || (stripComment raw).Trim() = "" then
-                n, raw
+        stripped
+        |> List.mapi (fun i (n, raw, code) ->
+            if (i < mask.Length && mask[i]) || code.Trim() = "" then
+                n, raw, code
             else
-                n, stripComment raw)
+                n, code, code)
 
     // the retired ! districts get an explanatory error
     // [D:district-retirement] — checked up front over every non-content
     // line (yaml district bodies are bytes, never read:
     // districtContentMask)
     let retiredHit =
-        let mask = districtContentMask (numbered |> List.map snd)
+        let mask = districtContentMaskOf (numbered |> List.map (fun (_, text, code) -> text, code))
 
         numbered
-        |> List.mapi (fun i (n, raw) -> i, n, raw)
-        |> List.tryPick (fun (i, n, raw) ->
+        |> List.mapi (fun i (n, _, code) -> i, n, code)
+        |> List.tryPick (fun (i, n, code) ->
             if i < mask.Length && mask[i] then
                 None
             else
-                let t = (stripComment raw).TrimEnd()
+                let t = code.TrimEnd()
                 if t <> "" && retiredDistrictMarker t then Some n else None)
 
     match retiredHit with
@@ -1539,7 +1545,7 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
         let folded =
             numbered
             |> List.fold
-                (fun state (lineNo, raw) ->
+                (fun state (lineNo, raw, code) ->
                     match state with
                     | Error e -> Error e
                     | Ok _ when
@@ -1588,7 +1594,7 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                             // boundary produced still fires at close
                             | Some p -> Ok(Some p, acc, blankSinceHead)
                             | None -> Ok(None, acc, true)
-                        elif (stripComment raw).Trim() = "" then
+                        elif code.Trim() = "" then
                             // comment-only: transparent [D:comment-transparency] —
                             // except inside an active yaml district, where the
                             // line is bytes (`// x` in a block scalar is data)
@@ -1694,7 +1700,7 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                     // structure decisions read the stripped text;
                                     // yaml-district joins carry the raw bytes
                                     let rawPiece = raw.Substring indent
-                                    let piece = (stripComment raw).Substring indent
+                                    let piece = code.Substring indent
                                     let cls = classifyPiece piece
 
                                     let rec go (p: Pend) =
