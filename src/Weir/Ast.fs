@@ -471,16 +471,18 @@ let reifierNames = reifiers |> List.map fst
 let reifierStem (surface: string) =
     reifiers |> List.find (fun (s, _) -> s = surface) |> snd
 
+// every desugar spelling, built once: the walks ask about every variable
+// they meet, and a user name never starts with `|`
+let private reifierVars =
+    reifiers
+    |> List.collect (fun (surface, stem) ->
+        let chain = "|chain" + string (System.Char.ToUpperInvariant stem[0]) + stem.Substring 1
+        [ "|" + stem, surface; $"|{stem}Env", surface; $"|{stem}In", surface; chain, surface ])
+    |> Map.ofList
+
 /// the surface reifier a desugar variable stands for, if any
 let reifierOfVar (v: string) : string option =
-    reifiers
-    |> List.tryPick (fun (surface, stem) ->
-        let chain = "|chain" + string (System.Char.ToUpperInvariant stem[0]) + stem.Substring 1
-
-        if v = "|" + stem || v = $"|{stem}Env" || v = $"|{stem}In" || v = chain then
-            Some surface
-        else
-            None)
+    if v.StartsWith "|" then Map.tryFind v reifierVars else None
 
 /// where a single reified command's program rides among its desugar
 /// variable's arguments [D:exit-reifiers]: `|<stem> prog argv`, the env

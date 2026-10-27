@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.0.81
+
+### Fixed
+
+- **Launch is faster for scripts that import large modules.** The
+  check-time walk that decides which module bindings are command
+  helpers asked, for every variable it met, whether the name was a
+  reifier's desugar spelling, and built 28 strings to answer each time.
+  The answer is now one table lookup. A script importing the 6,400-line
+  starship port goes from about 750 ms to about 400 ms before its first
+  line runs; bare startup was and is about 12 ms.
+
 ## v0.0.80
 
 ### Added
