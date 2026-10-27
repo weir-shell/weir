@@ -15649,7 +15649,8 @@ let lockfileConfinementTests =
 
 let libSpecTests =
     // [D:lib-short-name]: the bare-name expansion is pure — every arm
-    // pinned here; the host chain behind it is the live e2e probe's
+    // pinned here; the host chain behind it is the live e2e probe's.
+    // The tag is optional and per module [D:lib-module-tags]
     let expand spec =
         match Weir.Contracts.libSpec spec with
         | Ok(Some l) -> l
@@ -15664,32 +15665,40 @@ let libSpecTests =
     let passes spec =
         match Weir.Contracts.libSpec spec with
         | Ok None -> ()
-        | Ok(Some l) -> failtest $"'{spec}' must pass through, not expand to {l.Source}"
+        | Ok(Some l) -> failtest $"'{spec}' must pass through, not expand to {l.Name}"
         | Error e -> failtest $"'{spec}' must pass through, not refuse: {e}"
 
+    let sha = String.replicate 40 "a"
+
     testList
-        "lib short name [D:lib-short-name]"
-        [ test "a bare name@tag expands to the library shorthand; the name is the default --as" {
+        "lib short name [D:lib-short-name] [D:lib-module-tags]"
+        [ test "the three spellings: a bare name, a version, a full sha" {
+              Expect.equal (expand "semver") { Name = "semver"; Tag = None } "bare: the resolver picks the latest"
+              Expect.equal (expand "semver@v0.1.0") { Name = "semver"; Tag = Some "v0.1.0" } "the version as typed"
+              Expect.equal (expand $"semver@{sha}") { Name = "semver"; Tag = Some sha } "a sha passes through"
+              Expect.equal (expand "a_b2@v1.0.0").Name "a_b2" "underscores and digits are name characters"
+          }
+          test "the source the resolver builds names the per-module tag" {
               Expect.equal
-                  (expand "semver@v0.1.0")
-                  { Name = "semver"
-                    Tag = "v0.1.0"
-                    Source = "github.com/weir-shell/lib//modules/semver.weir@v0.1.0" }
-                  "the expansion"
+                  (Weir.Contracts.libSource "semver" "semver/v0.1.0")
+                  "github.com/weir-shell/lib//modules/semver.weir@semver/v0.1.0"
+                  "the shorthand at the tag"
           }
-          test "any ref the shorthand accepts is accepted (R4); underscores and digits are name characters" {
-              Expect.equal (expand "semver@main").Tag "main" "a branch"
-              Expect.equal (expand "semver@0123abcd").Tag "0123abcd" "a sha prefix"
-              Expect.equal (expand "a_b2@v1").Source "github.com/weir-shell/lib//modules/a_b2.weir@v1" "a_b2"
+          test "a trailing empty @ refuses naming both spellings" {
+              let e = refuse "semver@"
+              Expect.stringContains e "has nothing after the @" "the refusal"
+              Expect.stringContains e "weir add module semver)" "the bare spelling"
+              Expect.stringContains e "weir add module semver@v0.1.0" "the pinned spelling"
           }
-          test "no @tag refuses naming the spelling" {
-              for spec in [ "semver"; "semver@" ] do
-                  let e = refuse spec
-                  Expect.stringContains e "has no @tag" $"{spec}: the refusal"
-                  Expect.stringContains e "weir add module semver@v0.1.0" $"{spec}: the spelling"
+          test "a version without its v refuses naming the tag" {
+              let e = refuse "semver@0.1.0"
+              Expect.stringContains e "without its v" "the refusal"
+              Expect.stringContains e "the tag is semver/v0.1.0" "the tag"
+              Expect.stringContains e "weir add module semver@v0.1.0" "the spelling"
+              Expect.stringContains (refuse "semver@1.0.0-rc.1+b") "semver@v1.0.0-rc.1+b" "a prerelease too"
           }
           test "a name that cannot be a file and an alias refuses" {
-              for spec in [ "semver.weir@v1"; "my-mod@v1"; "@v1"; "1x@v1" ] do
+              for spec in [ "semver.weir@v1"; "my-mod@v1"; "@v1"; "1x@v1"; "my-mod" ] do
                   Expect.stringContains (refuse spec) "is not a library module name" $"{spec}: the refusal"
           }
           test "every spec with a / or : passes through untouched — the long grammar's teaches stand" {
@@ -15701,7 +15710,100 @@ let libSpecTests =
                     "sr.ht/a/b//x@v1" ] do
                   passes spec
           }
-          test "an expansion never re-expands" { passes (expand "semver@v0.1.0").Source } ]
+          test "an expansion never re-expands" { passes (Weir.Contracts.libSource "semver" "semver/v0.1.0") } ]
+
+
+let semverTagTests =
+    // [D:lib-module-tags]: semver precedence in weir's own code — pinned to
+    // the spec's ordered example sequence (semver.org §11) — and the pick
+    // over a ref listing
+    let key v =
+        match Weir.Contracts.semverKey v with
+        | Some k -> k
+        | None -> failtest $"'{v}' must parse"
+
+    let shaA = String.replicate 40 "a"
+    let shaB = String.replicate 40 "b"
+    let shaC = String.replicate 40 "c"
+    let shaD = String.replicate 40 "d"
+
+    testList
+        "library module tags [D:lib-module-tags]"
+        [ test "semverKey: core, prerelease, build dropped" {
+              Expect.equal (key "1.2.3") (1, 2, 3, None) "core"
+              Expect.equal (key "1.0.0-alpha.1") (1, 0, 0, Some "alpha.1") "prerelease"
+              Expect.equal (key "1.0.0+20130313144700") (1, 0, 0, None) "build dropped"
+              Expect.equal (key "1.0.0-beta+exp.sha.5114f85") (1, 0, 0, Some "beta") "both"
+              Expect.equal (key "0.0.0") (0, 0, 0, None) "zeros"
+          }
+          test "semverKey: not a version" {
+              for v in [ "v1.0.0"; "1.0"; "01.0.0"; "1.0.0-"; "1.0.0-01"; "1.0.0-a..b"; "1.0.0 "; ""; "main"; "99999999999.0.0" ] do
+                  Expect.equal (Weir.Contracts.semverKey v) None $"'{v}' is not a version"
+          }
+          test "semverCompare: the spec's example sequences, in order" {
+              let seq1 =
+                  [ "1.0.0-alpha"
+                    "1.0.0-alpha.1"
+                    "1.0.0-alpha.beta"
+                    "1.0.0-beta"
+                    "1.0.0-beta.2"
+                    "1.0.0-beta.11"
+                    "1.0.0-rc.1"
+                    "1.0.0" ]
+
+              let seq2 = [ "1.0.0"; "2.0.0"; "2.1.0"; "2.1.1" ]
+
+              for s in [ seq1; seq2 ] do
+                  for a, b in List.pairwise s do
+                      Expect.isLessThan (Weir.Contracts.semverCompare (key a) (key b)) 0 $"{a} < {b}"
+                      Expect.isGreaterThan (Weir.Contracts.semverCompare (key b) (key a)) 0 $"{b} > {a}"
+
+                  let shuffled = s |> List.rev |> List.sortWith (fun a b -> Weir.Contracts.semverCompare (key a) (key b))
+                  Expect.equal shuffled s "sorts into the spec's order"
+
+              Expect.equal (Weir.Contracts.semverCompare (key "1.0.0+a") (key "1.0.0+b")) 0 "build metadata is ignored"
+              Expect.equal (Weir.Contracts.semverCompare (key "1.0.0-rc.1") (key "1.0.0-rc.1")) 0 "equal"
+          }
+          test "latestModuleTag: the highest stable tag of the named module" {
+              let refs =
+                  [ shaA, "HEAD"
+                    shaA, "refs/heads/main"
+                    shaB, "refs/tags/semver/v0.1.0"
+                    shaC, "refs/tags/semver/v0.2.0"
+                    shaD, "refs/tags/semver/v0.10.0"
+                    shaA, "refs/tags/yaml/v3.0.0"
+                    shaA, "refs/tags/v0.1.0" ]
+
+              Expect.equal (Weir.Contracts.latestModuleTag refs "semver") (Some("semver/v0.10.0", shaD)) "numeric, not lexical"
+              Expect.equal (Weir.Contracts.latestModuleTag refs "yaml") (Some("yaml/v3.0.0", shaA)) "another module's tags are its own"
+              Expect.equal (Weir.Contracts.latestModuleTag refs "retry") None "no tag for the module"
+              Expect.equal (Weir.Contracts.latestModuleTag refs "v0") None "a repo-wide tag belongs to no module"
+          }
+          test "latestModuleTag: a prerelease is skipped while a stable tag exists, else the highest prerelease" {
+              let refs =
+                  [ shaB, "refs/tags/semver/v1.0.0"
+                    shaC, "refs/tags/semver/v2.0.0-rc.1"
+                    shaD, "refs/tags/semver/v2.0.0-beta.11" ]
+
+              Expect.equal (Weir.Contracts.latestModuleTag refs "semver") (Some("semver/v1.0.0", shaB)) "stable wins over a higher prerelease"
+
+              Expect.equal
+                  (Weir.Contracts.latestModuleTag (refs |> List.filter (fun (_, r) -> r <> "refs/tags/semver/v1.0.0")) "semver")
+                  (Some("semver/v2.0.0-rc.1", shaC))
+                  "nothing stable: the highest prerelease"
+          }
+          test "latestModuleTag: the peeled commit of an annotated tag is preferred; a non-version tag is no candidate" {
+              let refs =
+                  [ shaB, "refs/tags/semver/v0.1.0"
+                    shaC, "refs/tags/semver/v0.1.0^{}"
+                    shaA, "refs/tags/semver/vnext"
+                    shaA, "refs/tags/semver/v01.0.0"
+                    shaD, "refs/tags/semver/latest" ]
+
+              Expect.equal (Weir.Contracts.latestModuleTag refs "semver") (Some("semver/v0.1.0", shaC)) "peeled"
+              Expect.equal (Weir.Contracts.latestModuleTag (refs |> List.filter (fun (_, r) -> not (r.EndsWith "^{}"))) "semver") (Some("semver/v0.1.0", shaB)) "a lightweight tag"
+              Expect.equal (Weir.Contracts.latestModuleTag [] "semver") None "an empty listing"
+          } ]
 
 
 let refListingTests =
@@ -37199,6 +37301,7 @@ let allTests =
           lockfileSymlinkConfinementTests
           vendorClosureTests
           libSpecTests
+          semverTagTests
           refListingTests
           moduleSignatureTests
           qualifiedTypeNameTests
