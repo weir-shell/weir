@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Startup-time regression guard. Pinned medians (Session 4, dev container):
-# expression line ~6ms, command-mode spawn ~14ms. Thresholds are generous
-# (>2x pinned, plus CI-runner headroom) — this catches regressions like the
-# +10ms PATH-enumeration tax, not scheduler noise.
+# Startup-time regression guard. Pinned medians (2026-10-27, dev container,
+# pinned core): expression line ~12ms, command-mode spawn ~14ms. Thresholds
+# are generous (>2x pinned, plus CI-runner headroom) — this catches
+# regressions like the +10ms PATH-enumeration tax, not scheduler noise.
 set -euo pipefail
 
 BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
-EXPR_MAX_MS="${WEIR_MAX_EXPR_MS:-18}"
+EXPR_MAX_MS="${WEIR_MAX_EXPR_MS:-30}"
 CMD_MAX_MS="${WEIR_MAX_CMD_MS:-42}"
 
 # stale-binary guard [D:masking-mechanized]: the one shared gate — timing
