@@ -1,8 +1,8 @@
 {
   "name": "weir",
   "displayName": "weir",
-  "description": "Language support for weir, the typed shell \u2014 diagnostics, hover, completion, outline, folding, inlay hints and run/check buttons via `weir lsp`, plus TextMate colorization.",
-  "version": "0.1.1",
+  "description": "Language support for weir, the typed shell — diagnostics, hover, completion, outline, folding, inlay hints and run/check buttons via `weir lsp`, plus TextMate colorization.",
+  "version": "0.2.0",
   "publisher": "weir-shell",
   "license": "Apache-2.0",
   "engines": {

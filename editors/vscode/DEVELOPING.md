@@ -15,7 +15,7 @@ Build and sideload:
 cd editors/vscode
 npm install
 npm run package
-code --install-extension weir-0.1.0.vsix
+code --install-extension weir-0.2.0.vsix
 ```
 
 `npm run package` runs the LOCAL vsce (a devDependency, current
