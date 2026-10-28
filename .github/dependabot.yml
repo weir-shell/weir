@@ -1,0 +1,28 @@
+# Dependabot speaks the commit-area gate [D:dependabot-areas]: each
+# directory's prefix is the area ci/commit-area.weir derives for it, so a
+# bump reads `editors: bump qs from … in /editors/vscode` and passes
+# unexempted. open-pull-requests-limit 0 keeps version updates off — the
+# entries exist for the security updates, which honour their settings.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /editors/vscode
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: editors
+  - package-ecosystem: cargo
+    directory: /editors/zed
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: editors
+  - package-ecosystem: npm
+    directory: /site
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: site
