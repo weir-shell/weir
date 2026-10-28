@@ -4296,36 +4296,53 @@ let private doDirMove (op: string) (src: string) (dst: string) : unit =
         | :? System.IO.IOException as e -> failwith $"{op}: cannot access {quoteData src} — {quoteData e.Message}"
 
     if not moved then
-        // the fallback READS through the source's final symlink (a copy,
-        // not a rename), so the copy-side refusal — links followed — is
-        // the one that decides the nesting
-        refuseIntoSelf realProbe op true src dst
-
         let reason (e: exn) =
             match e with
             | :? System.UnauthorizedAccessException -> "permission denied"
             | e -> e.Message
 
-        try
-            copyTree op src dst
-        with e ->
-            let leftover =
-                try
-                    if System.IO.Directory.Exists dst then
-                        System.IO.Directory.Delete(dst, true)
+        // a final symlink moves as the link, its target text verbatim —
+        // what the rename would have done; nothing is read through it
+        // [D:dir-move-cross-device]
+        match System.IO.DirectoryInfo(System.IO.Path.TrimEndingDirectorySeparator src).LinkTarget with
+        | null ->
+            // the fallback READS through the source's final symlink (a copy,
+            // not a rename), so the copy-side refusal — links followed — is
+            // the one that decides the nesting
+            refuseIntoSelf realProbe op true src dst
 
-                    ""
-                with ce ->
-                    $"; the partial copy at {quoteData dst} could not be removed ({quoteData (reason ce)})"
+            try
+                copyTree op src dst
+            with e ->
+                let leftover =
+                    try
+                        if System.IO.Directory.Exists dst then
+                            System.IO.Directory.Delete(dst, true)
 
-            failwith
-                $"{op}: cannot move {quoteData src} to {quoteData dst} across filesystems — the copy failed ({quoteData (reason e)}); the source is unchanged{leftover}"
+                        ""
+                    with ce ->
+                        $"; the partial copy at {quoteData dst} could not be removed ({quoteData (reason ce)})"
 
-        try
-            System.IO.Directory.Delete(src, true)
-        with e ->
-            failwith
-                $"{op}: copied {quoteData src} to {quoteData dst} across filesystems, but could not remove the source — {quoteData (reason e)}"
+                failwith
+                    $"{op}: cannot move {quoteData src} to {quoteData dst} across filesystems — the copy failed ({quoteData (reason e)}); the source is unchanged{leftover}"
+
+            try
+                System.IO.Directory.Delete(src, true)
+            with e ->
+                failwith
+                    $"{op}: copied {quoteData src} to {quoteData dst} across filesystems, but could not remove the source — {quoteData (reason e)}"
+        | target ->
+            try
+                System.IO.Directory.CreateSymbolicLink(dst, target) |> ignore
+            with e ->
+                failwith
+                    $"{op}: cannot move the link {quoteData src} to {quoteData dst} across filesystems ({quoteData (reason e)}); the source is unchanged"
+
+            try
+                System.IO.Directory.Delete(System.IO.Path.TrimEndingDirectorySeparator src)
+            with e ->
+                failwith
+                    $"{op}: linked {quoteData dst} across filesystems, but could not remove the source link {quoteData src} — {quoteData (reason e)}"
 
 let private fileMembers: (string * Ty * Value) list =
     [ "read",

@@ -24700,9 +24700,10 @@ let sizedFindingsTests =
                           if Directory.Exists dst then
                               Directory.Delete(dst, true))
           }
-          // the fallback copies THROUGH a source link, so a destination
-          // inside the link's target would copy the tree into itself
-          test "Dir.move across filesystems refuses a source link whose target holds the destination" {
+          // a source link moves as the link, as the rename would
+          // [D:dir-move-cross-device]: nothing is read through it, so a
+          // destination inside its target cannot copy the tree into itself
+          test "Dir.move across filesystems moves a source link as the link" {
               if not (System.OperatingSystem.IsWindows()) && Directory.Exists "/dev/shm" then
                   withTempDir "weir-xdev-link" (fun root ->
                       let target = $"/dev/shm/weir-xdev-t-{System.Guid.NewGuid():N}"
@@ -24713,20 +24714,15 @@ let sizedFindingsTests =
                       let dst = Path.Combine(target, "inner")
 
                       try
-                          let m =
-                              try
-                                  run $"Dir.move \"{weirPath link}\" \"{dst}\"" |> ignore
-                                  ""
-                              with e ->
-                                  e.Message
+                          run $"Dir.move \"{weirPath link}\" \"{dst}\"" |> ignore
+                          Expect.equal (DirectoryInfo(dst).LinkTarget) target "the destination is the link, its target verbatim"
+                          Expect.isFalse (Directory.Exists link) "the source link is gone"
+                          Expect.equal (File.ReadAllText(Path.Combine(target, "sub", "f"))) "a" "the target is untouched"
 
-                          Expect.equal
-                              m
-                              $"Dir.move: destination {dst} is inside the source {weirPath link}"
-                              "the copy-side refusal decides"
-
-                          Expect.isFalse (Directory.Exists dst) "nothing was copied into the target"
-                          Expect.isNotNull (FileInfo(link).LinkTarget) "the source link is untouched"
+                          Expect.sequenceEqual
+                              (Directory.GetFileSystemEntries target |> Array.sort)
+                              [| dst; Path.Combine(target, "sub") |]
+                              "nothing was copied into the target"
                       finally
                           Directory.Delete(target, true))
           }

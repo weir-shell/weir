@@ -89,6 +89,7 @@
 - **`Dir.move` crosses filesystems.** A move to another mount failed
   with "cannot access … Invalid cross-device link"; it now copies then
   deletes, as `mv` and `File.move` do, and its errors name the paths.
+  A symlinked source moves as the link, exactly as on one filesystem.
 - **`weir restore` repairs a locally modified signature.** It said
   `present` and exited 0 while `verify` said MODIFIED.
 - **`Instant.tryParseWith` raises for a format without a full date.**
