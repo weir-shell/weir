@@ -40,6 +40,32 @@ let escapeEnd (s: string) (i: int) : int =
     else
         min (i + 1) (s.Length - 1)
 
+/// a type-variable tick, not a single-quote opener [D:tyvar-tick]: `'`
+/// then an identifier that is not closed by another `'`, after a
+/// type-position char (`<` `,` `:` `(` `*` `>` `|`, or the word `of`).
+/// Without it an odd tick count in a type (`type Box<'a> = {` then
+/// `v: 'a` on the next line) opened a phantom string that hid the brace.
+let isTyvarTick (s: string) (i: int) : bool =
+    let isIdent c = System.Char.IsLetterOrDigit c || c = '_'
+
+    s[i] = '\''
+    && i + 1 < s.Length
+    && (System.Char.IsLetter s[i + 1] || s[i + 1] = '_')
+    && (let mutable j = i + 1
+
+        while j < s.Length && isIdent s[j] do
+            j <- j + 1
+
+        not (j < s.Length && s[j] = '\''))
+    && (let mutable k = i - 1
+
+        while k >= 0 && s[k] = ' ' do
+            k <- k - 1
+
+        k >= 0
+        && ("<,:(*>|".Contains s[k]
+            || (k >= 1 && s[k] = 'f' && s[k - 1] = 'o' && (k = 1 || not (isIdent s[k - 2])))))
+
 let private stringScanFrom
     (modes0: ScanMode list)
     (f: 'a -> int -> char -> 'a)
@@ -73,7 +99,7 @@ let private stringScanFrom
         elif c = '"' then
             modes <- (if dollar then Interp else Plain) :: modes
             true
-        elif c = '\'' then
+        elif c = '\'' && not (isTyvarTick s i) then
             modes <- Single :: modes
             true
         else

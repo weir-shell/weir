@@ -37,7 +37,7 @@ line is also the field's `--help` text.
 ## Identifiers
 
 An identifier starts with a letter or `_` and continues with letters,
-digits, `_`, or `'`.
+digits, or `_` (no `'`: F#'s `x'` is a parse error here).
 
 Binding names start lowercase. Uppercase names are for types,
 modules, and constructors:

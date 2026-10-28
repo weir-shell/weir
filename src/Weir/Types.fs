@@ -483,6 +483,23 @@ let sanitizeTtyEcho (s: string) : string = sanitizeWith true s
 let quoteData (s: string) : string =
     (sanitizeTtyEcho s).Replace("\n", "\\x0a")
 
+/// .NET's string ceiling in chars: a result past it is refused in
+/// weir's words [D:int-narrowing], never the runtime's exception text
+let maxStrLen = 0x3FFFFFDFL
+
+let strTooLarge (who: string) (chars: int64) : string =
+    $"{who}: a {chars}-char result is too large (at most {maxStrLen})"
+
+/// a builder whose result length is not known up front: the ceiling (or
+/// a failed allocation) surfaces as the same refusal, sized when known
+let guardStrBuild (who: string) (f: unit -> string) : string =
+    try
+        f ()
+    with
+    | :? System.OutOfMemoryException
+    | :? System.ArgumentOutOfRangeException ->
+        failwith $"{who}: the result is too large for a string (at most {maxStrLen} chars)"
+
 let excerpt (s: string) : string =
     let n = CodePoints.length s
 
@@ -1433,26 +1450,32 @@ let formatDuration (totalMs: int64) : string =
         "0s"
     else
         let sign = if totalMs < 0L then "-" else ""
-        let ms = abs totalMs
-        let h = ms / 3600000L
-        let m = (ms % 3600000L) / 60000L
-        let s = (ms % 60000L) / 1000L
-        let frac = ms % 1000L
+        // the magnitude unsigned, as formatSize does (Int64.MinValue has no int64 abs)
+        let ms =
+            if totalMs < 0L then
+                uint64 (-(totalMs + 1L)) + 1UL
+            else
+                uint64 totalMs
+
+        let h = ms / 3600000UL
+        let m = (ms % 3600000UL) / 60000UL
+        let s = (ms % 60000UL) / 1000UL
+        let frac = ms % 1000UL
 
         let sec =
-            if s = 0L && frac = 0L then
+            if s = 0UL && frac = 0UL then
                 ""
-            elif frac = 0L then
+            elif frac = 0UL then
                 $"{s}s"
             else
                 let f = $"%03d{frac}".TrimEnd '0'
                 $"{s}.{f}s"
 
-        if h = 0L && m = 0L && s = 0L then
+        if h = 0UL && m = 0UL && s = 0UL then
             $"{sign}{frac}ms"
         else
-            let hPart = if h > 0L then $"{h}h" else ""
-            let mPart = if m > 0L then $"{m}m" else ""
+            let hPart = if h > 0UL then $"{h}h" else ""
+            let mPart = if m > 0UL then $"{m}m" else ""
             $"{sign}{hPart}{mPart}{sec}"
 
 // ---- Instant [D:instant]: a point on the UTC timeline ----------------
@@ -1593,6 +1616,8 @@ let parseInstantWithMs (fmt: string) (text: string) : Result<int64, string> =
     let mutable sec = 0
     let mutable frac = 0
     let mutable offMin = 0
+    let mutable offText = "Z"
+    let mutable offShapeOk = true
     let mutable error: string option = None
 
     let readDigits (n: int) (what: string) =
@@ -1691,6 +1716,7 @@ let parseInstantWithMs (fmt: string) (text: string) : Result<int64, string> =
                      ti <- ti + 1
                  elif ti < text.Length && (text[ti] = '+' || text[ti] = '-') then
                      let sign = if text[ti] = '-' then -1 else 1
+                     let start = ti
                      ti <- ti + 1
                      let hh = readDigits 2 "%z hours"
 
@@ -1700,6 +1726,8 @@ let parseInstantWithMs (fmt: string) (text: string) : Result<int64, string> =
 
                          let mm = readDigits 2 "%z minutes"
                          offMin <- sign * (hh * 60 + mm)
+                         offText <- text.Substring(start, ti - start)
+                         offShapeOk <- mm < 60 && (hh < 14 || (hh = 14 && mm = 0))
                  else
                      error <- Some $"input does not match the format at position {ti + 1}: expected Z or ±HH:MM for %%z"
              | '%' ->
@@ -1729,13 +1757,22 @@ let parseInstantWithMs (fmt: string) (text: string) : Result<int64, string> =
     | None when y < 0 || mo < 0 || d < 0 ->
         Error "the format must carry a full date (%Y %m %d) — a year-less log format needs the year supplied elsewhere"
     | None ->
-        try
-            let dto =
-                System.DateTimeOffset(y, mo, d, h, mi, sec, frac, System.TimeSpan.FromMinutes(float offMin))
+        let dateText = $"{y:D4}-{mo:D2}-{d:D2} {h:D2}:{mi:D2}:{sec:D2}"
 
-            Ok(dto.ToUnixTimeMilliseconds())
-        with _ ->
-            Error $"not a real date/time: {y:D4}-{mo:D2}-{d:D2} {h:D2}:{mi:D2}:{sec:D2}"
+        // the three failures are told apart so the message blames the
+        // part that is wrong: the date/time itself, the offset's shape,
+        // or the UTC result the offset shifts past the Instant range
+        match (try Ok(System.DateTime(y, mo, d, h, mi, sec, frac)) with _ -> Error()) with
+        | Error() -> Error $"not a real date/time: {dateText}"
+        | Ok local ->
+            if not offShapeOk then
+                Error $"'{offText}' is not a valid %%z offset — at most ±14:00, minutes below 60"
+            else
+                try
+                    let dto = System.DateTimeOffset(local, System.TimeSpan.FromMinutes(float offMin))
+                    Ok(dto.ToUnixTimeMilliseconds())
+                with _ ->
+                    Error $"{dateText} {offText} is outside the Instant range once shifted to UTC (years 0001-9999)"
 
 /// Parse "30s" / "2.5s" / "1h30m" / "-90s" to ms — compound components
 /// largest-first not required; decimals convert by integer math and

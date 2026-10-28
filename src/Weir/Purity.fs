@@ -272,6 +272,14 @@ let private mutationPhrase (n: string) : string = effectPhrase n
 // conservatively treats an unresolved send as mutation — over-refusing
 // is acceptable, admitting a mutation is not).
 let rec private httpSendMethod (arg: TypedExpr) : string option =
+    // a literal `Other "VERB"` is as determinable as a named case
+    // [D:http-safe-verbs]; a computed verb stays unknown
+    let methodOf (v: TypedExpr) =
+        match v.Kind with
+        | TEVar case -> Some(case.ToUpperInvariant())
+        | TEApp({ Kind = TEVar "Other" }, { Kind = TEStr verb }) -> Some(verb.ToUpperInvariant())
+        | _ -> None
+
     match arg.Kind with
     // pipes/apps: strip to the constructor head
     | TEApp(f, _) -> httpSendMethod f
@@ -289,13 +297,12 @@ let rec private httpSendMethod (arg: TypedExpr) : string option =
     // wins (last write); otherwise the source's constructor decides
     | TEUpdate(src, ups) ->
         match ups |> List.tryPick (fun (path, v) -> if path = [ "method" ] then Some v else None) with
-        | Some { Kind = TEVar case } -> Some(case.ToUpperInvariant())
-        | Some _ -> None // a computed method — not statically known
+        | Some v -> methodOf v // None: a computed method — not statically known
         | None -> httpSendMethod src
     | TERecord(_, fields) ->
-        match fields |> List.tryPick (fun (f, v) -> if f = "method" then Some v else None) with
-        | Some { Kind = TEVar case } -> Some(case.ToUpperInvariant())
-        | _ -> None
+        fields
+        |> List.tryPick (fun (f, v) -> if f = "method" then Some v else None)
+        |> Option.bind methodOf
     | _ -> None
 
 // the external-mutation class of an Http.send call given its request
@@ -471,8 +478,35 @@ let rec private planRefusalRoot (refused: Map<string, string>) (te: TypedExpr) :
     // [D:plan-helper-refusal]
     | TEVar n when refused.ContainsKey n ->
         Some(te.Span, $"'{n}' cannot run inside 'plan' — in its body, {refused[n]}", refused[n])
+    // a mutating Http.expect has no response inside a plan (the request
+    // is a pending Op) — the run-time refusal, decided here when the
+    // method is a literal; an unknown method refuses (the safe
+    // direction) [D:plan-apply]
+    | TEPipe(reqArg, { Kind = TEVar "Http.expect" })
+    | TEApp({ Kind = TEVar "Http.expect" }, reqArg) when httpSendIsMutation (Some reqArg) ->
+        found
+            te.Span
+            "'Http.expect' with a mutating method is refused inside 'plan' — the request is a pending Op with no response to return; Http.send captures it as the Op"
+    // the fan-out family runs its callbacks on worker threads outside
+    // the plan's capture frame [D:plan-refuses-fanout] [D:plan-parallel-refusal]
+    | TEVar("|seqPiter") ->
+        found
+            te.Span
+            "'pfor' is refused inside 'plan' — its body runs on worker threads the plan cannot capture; use a plain 'for' inside the plan, or run the parallel loop outside it"
     | TEVar n ->
         match n.Split '.' with
+        | [| "Seq"; ("pmap" | "pmapWith" | "piter" | "piterWith" | "pfirst" | "pfirstWith") as m |] ->
+            let sequential =
+                match m with
+                | "pmap"
+                | "pmapWith" -> "; Seq.map is the sequential form"
+                | "piter"
+                | "piterWith" -> "; Seq.iter is the sequential form"
+                | _ -> ""
+
+            found
+                te.Span
+                $"'Seq.{m}' is refused inside 'plan' — its callbacks run on worker threads the plan cannot capture; run it outside the plan{sequential}"
         | [| "Proc"; m |] ->
             found
                 te.Span

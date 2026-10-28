@@ -1,5 +1,40 @@
 # Spike Notes
 
+## 2026-10-27 bug hunt
+
+A fourth hunt over HEAD 1682a3e, eight domains (lexical, checker,
+stdlib, adapters, commands, boundaries, http-fs, tooling), found about
+sixty items: wrong behaviour with data or safety impact (an unknown
+flag echoing the next token — a misspelled Secret flag printed its
+value; `cmd | exec` skipping every scope teardown and ignoring the
+session cwd; an explicit Content-Type comma-joined with the body's),
+.NET exception text reaching users, check/run disagreements, message
+defects, and doc contradictions. The ranked list, repros and causes
+live outside the repo with the hunt's scratch (FINDINGS.md and
+findings-<domain>.md).
+
+The user ruled the design questions the same day: `exec` inside any
+scope is a check error [D:exec-scope-refused]; the ordering operators
+take strings, bools and Options [D:ord-scalar-operators]; `'` stays out
+of identifiers [D:no-prime-idents]; an explicit Content-Type wins
+[D:http-content-type-override]; `ServerConfig.port` becomes an
+Option with `Server.port` reporting the bound port [D:serve-port-option];
+fan-out in a plan is refused at check [D:plan-refuses-fanout]; the
+token after an unknown flag is never echoed [D:args-unknown-flag-no-echo];
+`Seq.take` keeps truncating [D:seq-take-truncates]; Size has no
+show/parse round trip [D:size-show-no-roundtrip]; `Seq.groupBy` is
+documented as forcing [D:groupby-forcing]; the echo cap is 100
+everywhere [D:echo-cap-100]; `Dir.move` crosses filesystems
+[D:dir-move-cross-device]. The fixes added smaller keys of their own
+(tls-handshake-vs-trust, http-url-refused, http-method-token,
+short-alnum, args-help-column, args-help-default, boundary-bad-value).
+
+The doc half was mostly sentences that had gone stale while the code
+moved on: a duplicated PromptStatus inventory line, a param-scrutinee
+restriction the checker had dropped, the attribute-line transparency
+the doc-help row still denied, "merge is orderless" (append-if-absent
+is not), `from yaml` claiming JSON's Map fields.
+
 ## Refs over smart HTTP — the ref→sha step leaves the host's API (2026-10-26)
 
 The one network step `weir add module`'s shorthand made before the

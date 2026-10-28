@@ -253,6 +253,11 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
         // formattedCol, first arm's original indent once seen) — arms
         // align under the m [D:fmt-match-arms]
         let mutable matches: (int * int * int option) list = []
+        // the last arm line's (original indent, original body column,
+        // formatted body column): a `|>` line at or under an arm's body
+        // continues that arm [D:match-pipe-offside], so it moves with the
+        // body, never to block depth (left of it) [D:fmt-arm-pipe]
+        let mutable armBody: (int * int * int) option = None
 
         let formatted =
             body
@@ -345,6 +350,28 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                             else
                                 None
 
+                        let armOrPipeCol () =
+                            match armColOf () with
+                            | Some col ->
+                                armBody <-
+                                    Script.armArrowIndex piece
+                                    |> Option.bind (fun a ->
+                                        let mutable j = a + 2
+
+                                        while j < piece.Length && piece[j] = ' ' do
+                                            j <- j + 1
+
+                                        if j < piece.Length then Some(indent, indent + j, col + j) else None)
+
+                                Some col
+                            | None ->
+                                match armBody with
+                                | Some(_, ob, nb) when piece.StartsWith "|>" && indent >= ob -> Some(nb + indent - ob)
+                                | Some(ai, _, _) when indent <= ai ->
+                                    armBody <- None
+                                    None
+                                | _ -> None
+
                         let isCloser = piece.StartsWith "]" || piece.StartsWith "}" || piece.StartsWith ")"
 
                         // a continuation keeps its offset: it moves by the
@@ -370,7 +397,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                                 if isCloser then
                                     joinLevel b.LineIndent
                                 else
-                                    match (if b.Kind = '(' then armColOf () else None), b.EntryIndent with
+                                    match (if b.Kind = '(' then armOrPipeCol () else None), b.EntryIndent with
                                     | Some col, _ ->
                                         braces <- { b with Delta = col - indent } :: rest
                                         col
@@ -387,7 +414,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                                         joinLevel col
                             | b :: rest when b.Kind = '(' ->
                                 // an arm's body moves with its arm
-                                match armColOf () with
+                                match armOrPipeCol () with
                                 | Some col ->
                                     braces <- { b with Delta = col - indent } :: rest
                                     col
@@ -408,7 +435,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                                 else
                                     joinLevel (shifted b.Delta)
                             | [] ->
-                                match armColOf () with
+                                match armOrPipeCol () with
                                 | Some col -> col
                                 | None ->
                                     if indent = 0 then
@@ -815,6 +842,15 @@ let desugarAliasHeads (r: Parser.Resolver) (aliasOf: string -> (string * string 
                 then
                     match aliasOf name with
                     | Some(exe, prefix) ->
+                        // a target that names a weir value (`ls`) would read
+                        // as that value in a script: force the PATH binary,
+                        // as the alias did (`cd` stays — it is command-callable)
+                        let exe =
+                            if r.IsKnown exe && not (r.IsCommandCallable exe) then
+                                "^" + exe
+                            else
+                                exe
+
                         let replacement =
                             match prefix with
                             | [] -> exe

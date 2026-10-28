@@ -45,6 +45,15 @@ type TransportError =
     | NoSuchHost
     | Refused of port: int
     | TlsUntrusted
+    // the TLS handshake itself failed — the peer did not speak TLS (a
+    // plain-http port) or offered no protocol weir accepts; never a trust
+    // question, so never the insecure repair [D:tls-handshake-vs-trust]
+    | TlsHandshake
+    // the peer's answer was not HTTP (a status line that would not parse)
+    | InvalidResponse
+    // the URL cannot be sent to: not absolute, no host, or a scheme other
+    // than http(s) — refused before any connection [D:http-url-refused]
+    | BadUrl of why: string
     | OtherTransport of root: string
     // not a transport failure but the same Error channel: the response
     // declared a charset .NET cannot decode
@@ -88,7 +97,11 @@ let classifyTransport (timeoutMs: int64) (port: int) (ex: exn) : TransportError 
             ->
             ProxyRefused(int h.StatusCode.Value)
         | :? HttpRequestException as h when h.HttpRequestError = HttpRequestError.ResponseEnded -> ConnectionEnded
+        | :? HttpRequestException as h when h.HttpRequestError = HttpRequestError.InvalidResponse -> InvalidResponse
         | :? OperationCanceledException -> Timeout timeoutMs
+        // the trust verdict and a broken handshake raise the same type;
+        // send tells them apart by whether the certificate was ever
+        // checked [D:tls-handshake-vs-trust]
         | :? Security.Authentication.AuthenticationException -> TlsUntrusted
         | :? Net.Sockets.SocketException as se ->
             match se.SocketErrorCode with
@@ -223,7 +236,14 @@ let transportMessage (host: string) (err: TransportError) : string =
     | NoSuchHost -> $"cannot resolve {host} — no such host"
     | Refused port -> $"{host}:{port} refused the connection — nothing is listening there"
     | TlsUntrusted -> $"cannot establish TLS with {host} — the certificate is not trusted"
-    | OtherTransport root -> $"cannot reach {host} — {Weir.Types.quoteData (redactUrlsIn root)}"
+    | TlsHandshake ->
+        $"cannot establish TLS with {host} — the server did not speak TLS on this port (a plain http:// endpoint, or one offering no TLS version weir accepts); the certificate was never checked"
+    | InvalidResponse -> $"{host} answered with something that is not HTTP — its status line could not be read"
+    | BadUrl why -> why
+    // the residual keeps the runtime's root message, but framed: the host
+    // and what weir knows (no response came) always precede it
+    | OtherTransport root ->
+        $"cannot reach {host} — the request failed before any response arrived: {Weir.Types.quoteData (redactUrlsIn root)}"
     | ConnectionEnded -> $"{host} closed the connection before answering"
     | ProxyRefused status -> $"the proxy refused to tunnel to {host}: {status}"
     | ProxyEnvUnusable(var, value) ->
@@ -563,6 +583,25 @@ let failingPort (url: string) : int =
     with _ ->
         0
 
+/// why a URL cannot be sent to, or None [D:http-url-refused]: not an
+/// absolute URL, a scheme other than http(s), or no host — the shapes the
+/// runtime words as its own API ("BaseAddress must be set", "the 'file'
+/// scheme is not supported"). The URL prints redacted [D:url-redact].
+let urlUnsendable (url: string) : string option =
+    let shown = Weir.Types.quoteData (redactUrl url)
+
+    match Uri.TryCreate(url, UriKind.Absolute) with
+    | true, u when u.Scheme = Uri.UriSchemeHttp || u.Scheme = Uri.UriSchemeHttps ->
+        if u.Host = "" then
+            Some $"'{shown}' names no host — an http(s) URL needs one (https://host/path)"
+        else
+            None
+    // a bare path reads as an implicit file: URI on Unix; only a written
+    // scheme is named as one
+    | true, u when url.Contains "://" ->
+        Some $"'{shown}' uses the '{Weir.Types.quoteData u.Scheme}' scheme — Http sends to http:// and https:// URLs only"
+    | _ -> Some $"'{shown}' is not a URL weir can send to — an absolute http(s) URL is needed (https://host/path)"
+
 /// the environment's proxy for a client handler, NO_PROXY matched as above
 let useEnvProxy (handler: HttpClientHandler) : unit =
     handler.Proxy <- EnvNoProxy(HttpClient.DefaultProxy)
@@ -633,22 +672,37 @@ let transportFailure (timeoutMs: int64) (url: string) (ex: exn) : string * Trans
 ///
 /// `cancel` cuts the request (a lost pfirst race, a REPL ^C); the caller
 /// names why — the transport error then reads as a timeout.
-let send (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string * TransportError> =
+let rec send (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string * TransportError> =
+    // a URL the transport could not even address is refused here, in
+    // weir's words, before a connection is attempted [D:http-url-refused]
+    match urlUnsendable req.Url with
+    | Some why -> Error(why, BadUrl why)
+    | None -> sendChecked cancel req
+
+and private sendChecked (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string * TransportError> =
     // the hop in flight: a transport failure names the host that failed,
     // never the original one a redirect left behind
     let mutable curUrl = req.Url
 
+    // set when this hop's certificate reached validation: a TLS failure
+    // before that is a broken handshake, never a trust verdict
+    // [D:tls-handshake-vs-trust]. The callback keeps the platform's
+    // own verdict unless insecure.
+    let certChecked = ref false
+
     try
-        // the insecure callback is set per request only — the default
-        // path keeps TLS verification on [D:http-s2]. Auto-redirect is
+        // insecure is honoured per request only — the default path keeps
+        // the platform's TLS verdict [D:http-s2]. Auto-redirect is
         // off so weir controls the credential-drop on an origin change
         // [D:secret-redirect] — the BCL would re-send secretHeaders.
         use handler = new HttpClientHandler()
         handler.AllowAutoRedirect <- false
         useEnvProxy handler
 
-        if req.Insecure then
-            handler.ServerCertificateCustomValidationCallback <- (fun _ _ _ _ -> true)
+        handler.ServerCertificateCustomValidationCallback <-
+            (fun _ _ _ errors ->
+                certChecked.Value <- true
+                req.Insecure || errors = Net.Security.SslPolicyErrors.None)
 
         use client = new HttpClient(handler)
         // the deadline rides a token, never client.Timeout's 24.8-day
@@ -665,26 +719,34 @@ let send (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string 
         let buildMessage (method: string) (url: string) (headers: (string * string) list) (body: (string * string) option) =
             let msg = new HttpRequestMessage(HttpMethod(method), url)
 
+            let isContentType (k: string) =
+                String.Equals(k, "Content-Type", StringComparison.OrdinalIgnoreCase)
+
             // the body is attached before headers so a content-header (e.g. a
-            // caller-set Content-Type override) can land on the content
+            // caller-set Content-Type override) can land on the content. An
+            // explicit Content-Type WINS over the body kind's default and
+            // exactly one is sent [D:http-content-type-override] — the
+            // User-Agent law; the first caller pair is the one taken
             match body with
             | Some(ct, b) ->
-                let content = new StringContent(b, Text.Encoding.UTF8)
-                // StringContent defaults text/plain; set the declared type,
-                // charset preserved from UTF8
-                (try
-                    content.Headers.ContentType <- Headers.MediaTypeHeaderValue(ct)
-                 with _ ->
-                     ())
+                // bytes, not StringContent: no default text/plain to displace
+                let content = new ByteArrayContent(Text.Encoding.UTF8.GetBytes b)
 
+                let declared =
+                    headers |> List.tryPick (fun (k, v) -> if isContentType k then Some v else None)
+
+                content.Headers.TryAddWithoutValidation("Content-Type", defaultArg declared ct) |> ignore
                 msg.Content <- content
             | None -> ()
 
             for (k, v) in headers do
                 // request headers first; a content header (Content-*) lands on
                 // the content instead — TryAddWithoutValidation keeps the bytes
-                // verbatim (no folding, no re-encoding)
-                if not (msg.Headers.TryAddWithoutValidation(k, v)) then
+                // verbatim (no folding, no re-encoding). Content-Type is
+                // already placed above, once.
+                if isContentType k && msg.Content <> null then
+                    ()
+                elif not (msg.Headers.TryAddWithoutValidation(k, v)) then
                     match msg.Content with
                     | null -> ()
                     | c -> c.Headers.TryAddWithoutValidation(k, v) |> ignore
@@ -719,6 +781,7 @@ let send (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string 
         while go do
             checkEnvProxy curUrl
             let msg = buildMessage curMethod curUrl curHeaders curBody
+            certChecked.Value <- false
             let resp = client.SendAsync(msg, deadline.Token).Result
             let code = int resp.StatusCode
 
@@ -813,7 +876,14 @@ let send (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string 
         | TooManyRedirects(hops, last) ->
             let err = RedirectLoop(hops, last)
             Error(transportMessage (failingHost req.Url) err, err)
-        | _ -> Error(transportFailure req.TimeoutMs curUrl ex)
+        | _ ->
+            match transportFailure req.TimeoutMs curUrl ex with
+            // with verification off, or before any certificate was
+            // checked, nothing was distrusted: the handshake itself
+            // failed [D:tls-handshake-vs-trust]
+            | _, TlsUntrusted when req.Insecure || not certChecked.Value -> transportMessage (failingHost curUrl) TlsHandshake, TlsHandshake
+            | failure -> failure
+            |> Error
 
 /// Basic auth is an encoding, not a prefix: base64(user:pass) [D:http] —
 /// which is why it is a union case the runner encodes, not a header a
@@ -962,6 +1032,20 @@ let headerUnsendableWith (secret: bool) (name: string, value: string) : string o
 
 let headerUnsendable (pair: string * string) : string option = headerUnsendableWith false pair
 
+/// why a method cannot be sent, or None [D:http-method-token]: `Other v`
+/// carries v verbatim to the wire, so v must be an RFC 9110 token — the
+/// class the server crossing answers 400 to otherwise [D:serve-method].
+/// Refused before anything is sent, like an unsendable header.
+let methodUnsendable (method: string) : string option =
+    if method = "" then
+        Some "the method is empty — Other needs a method token such as \"PURGE\""
+    else
+        match method |> Seq.tryFind (isTchar >> not) with
+        | Some c ->
+            Some
+                $"the method '{Weir.Types.quoteData method}' cannot be sent — it carries {describeChar c}, which a method token cannot (letters, digits and !#$%%&'*+-.^_`|~ only)"
+        | None -> None
+
 /// the located refusal for an unsendable header [D:http-header-unsendable],
 /// the injection message's shape: the crossing, the header, the reason
 let headerUnsendableMessage (who: string) (name: string) (reason: string) : string =
@@ -994,6 +1078,17 @@ let refuseUnsendableRequestHeader
     for (k, v) in headers do
         match headerUnsendableWith (secretNames.Contains(k.ToLowerInvariant())) (k, v) with
         | Some reason -> fail (headerUnsendableMessage "request header" k reason)
+        // a framing header is the transport's to write, never the
+        // caller's [D:http-header-unsendable]: the server crossing drops
+        // it, the client refuses it — the runtime would otherwise raise
+        // its own words mid-send
+        | None when String.Equals(k, "Transfer-Encoding", StringComparison.OrdinalIgnoreCase) ->
+            fail (
+                headerUnsendableMessage
+                    "request header"
+                    k
+                    "it frames the body, which the transport does on its own (a body is sent with its Content-Length); drop it"
+            )
         | None ->
             if requestHeaderHasNoPlace hasBody (k, v) then
                 fail (

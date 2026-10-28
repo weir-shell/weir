@@ -630,6 +630,62 @@ echo "e2e ok: | and propagates the left's failure"
 out=$($BIN -e "cd / | and echo ok")
 expect "a builtin (cd) chains as an | and operand" "ok" "$out"
 
+# block-interior chains, let-headed loop bodies and inline let…in: the same
+# line means the same thing inside a block as at column 0 — output order
+# and count, not parse shape [D:cmd-chaining][D:let-loop-body-sequences]
+# [D:inline-let-in-blocks]
+if [ "$IS_WINDOWS" = "0" ]; then
+    blkdir=$(mkweirtmp)
+    mkdir "$blkdir/d"
+    cat > "$blkdir/andcd.weir" <<'WEOF'
+if true then
+    echo a | and cd "d"
+    print (Path.fileName (pwd))
+let f () =
+    sh -c "exit 1" | or cd ".."
+    print "f-done"
+f ()
+WEOF
+    out=$(cd "$blkdir" && $BIN andcd.weir 2>&1)
+    [ "$out" = "$(printf 'a\nd\nf-done')" ] || fail "| and cd / | or cd inside blocks must run in order: $out"
+    echo "e2e ok: | and / | or take a builtin operand inside blocks"
+
+    cat > "$blkdir/letloop.weir" <<'WEOF'
+let n = retry attempts=1 delay=0ms
+    echo first
+    echo second
+until r
+    true
+n |> Seq.iter print
+print "after-retry"
+let _p = poll interval=10ms
+    echo p1
+    echo p2
+    true
+let _r = repeat interval=10ms
+    echo r1
+    echo r2
+    true
+WEOF
+    out=$($BIN "$blkdir/letloop.weir" 2>&1)
+    [ "$out" = "$(printf 'first\nsecond\nafter-retry\np1\np2\nr1\nr2')" ] || fail "a let-headed loop body must sequence its lines (one command per line): $out"
+    echo "e2e ok: let-headed retry/poll/repeat bodies sequence their lines"
+
+    cat > "$blkdir/letin.weir" <<'WEOF'
+let f () =
+    let q = 3 in q + 1
+if true then
+    let q = 5 in print $"if {q}"
+let g = (fun x ->
+    let q = x in q * 10)
+print $"f {f ()}"
+print $"g {g 2}"
+WEOF
+    out=$($BIN "$blkdir/letin.weir" 2>&1)
+    [ "$out" = "$(printf 'if 5\nf 4\ng 20')" ] || fail "inline let…in inside blocks must check and run: $out"
+    echo "e2e ok: inline let…in inside function, if and lambda bodies"
+fi
+
 # ---- exec: process replacement [D:exec] -----------------------------
 # exec replaces the runner (execve), so the command's own stdout and exit
 # code are the script's — there is no weir layer left to reify through.
@@ -662,6 +718,23 @@ $e(printenv EXECENV | exec)
 WEOF
     out=$($BIN "$execdir/execenv.weir")
     expect "exec's env overlay reaches the replacement" "reached" "$out"
+
+    # the session cwd reaches the replacement [D:exec]: a top-level `cd`
+    # lands on this process before execve, as a spawn's would; under
+    # `within cd` exec is refused [D:exec-scope-refused]
+    mkdir -p "$execdir/cdtarget"
+    cat > "$execdir/execcwd.weir" <<'WEOF'
+within cd "cdtarget"
+    sh -c "pwd | xargs basename" | exec
+WEOF
+    out=$(cd "$execdir" && $BIN execcwd.weir 2>&1 || true)
+    echo "$out" | grep -qF "'exec' inside 'within cd' is refused" || fail "exec under within cd must refuse"
+    cat > "$execdir/execcd.weir" <<'WEOF'
+cd "cdtarget"
+sh -c "pwd | xargs basename" | exec
+WEOF
+    out=$(cd "$execdir" && $BIN execcd.weir)
+    expect "exec after cd runs in the new directory" "cdtarget" "$out"
 
     # a value pipe into exec is refused at parse (no parent to feed stdin);
     # `check` exits nonzero on that error by design — do not let set -e abort
@@ -895,7 +968,10 @@ after=$(cat "$scriptdir/loose.weir")
 grep -q "#loose" "$scriptdir/loose.weir" || fail "fmt must not strip the unknown directive"
 echo "$after" | grep -q "Seq.where" && fail "fmt must not rewrite bare names"
 out=$($BIN "$scriptdir/loose.weir" 2>&1 || true)
-echo "$out" | grep -q "unknown or misplaced directive" || fail "a #loose file must hit the generic directive error: $out"
+echo "$out" | grep -qF "unknown directive: #loose" || fail "a #loose file must hit the unknown-directive error: $out"
+out=$($BIN check "$scriptdir/loose.weir" 2>&1 || true)
+echo "$out" | grep -qF "loose.weir:1:1: error [directive]: unknown directive: #loose" || fail "check must give run's directive message: $out"
+echo "$out" | grep -qF "Expecting:" && fail "check must not dump the parser's expectation list: $out"
 out=$($BIN check "$scriptdir/loose.weir" 2>&1 || true)
 echo "$out" | grep -q "spell it 'Seq.where'" || fail "the bare-name teaching must name the qualified spelling: $out"
 out=$($BIN -e '[1] |> where (fun n -> n > 0)' 2>&1 || true)
@@ -1041,7 +1117,10 @@ pp=$($BIN "$pfordir/outp.weir" | sort | tr '\n' ',') || fail "piter output probe
 echo "e2e ok: pfor arms' prints and statement commands reach stdout, as piter's do"
 printf 'let p =\n    plan\n        pfor x in [1; 2] do\n            print $"{x}"\nprint (show (Plan.isEmpty p))\n' > "$pfordir/pl.weir"
 out=$(cd "$pfordir" && $BIN pl.weir 2>&1) && fail "pfor inside a plan must refuse: $out"
-echo "$out" | grep -qF "pl.weir:3:9: error: 'pfor' is refused inside 'plan'" || fail "the pfor plan refusal is located at the pfor and names it: $out"
+echo "$out" | grep -qF "pl.weir:3:9: type error:" || fail "the pfor plan refusal is a check error located at the pfor [D:plan-refuses-fanout]: $out"
+echo "$out" | grep -qF "'pfor' is refused inside 'plan'" || fail "the pfor plan refusal names pfor: $out"
+out=$(cd "$pfordir" && $BIN check pl.weir 2>&1) && fail "check must refuse pfor inside a plan: $out"
+echo "$out" | grep -qF "pl.weir:3:9: error [check]: 'pfor' is refused inside 'plan'" || fail "check and run agree on the pfor plan refusal: $out"
 printf 'pfor x in [1; 2; 3] do\n    print "a"\n    if x == 2 then fail "arm boom"\n' > "$pfordir/arm.weir"
 out=$(cd "$pfordir" && $BIN arm.weir 2>&1) && fail "a failing pfor arm must fail the run: $out"
 echo "$out" | grep -qF "arm.weir:3:20: error: arm boom" || fail "a pfor arm's raise is located in the user's body: $out"
@@ -1233,7 +1312,7 @@ let _cfg = Env.load Config
 print "unreached"
 WEOF
 errout=$(cd "$envdir" && WEIR_E2E_PORT=abc $BIN bad.weir 2>&1) && fail "bad environment must fail"
-echo "$errout" | grep -qF "not an int ('abc')" || fail "collected error missing int problem: $errout"
+echo "$errout" | grep -qF "WEIR_E2E_PORT: not an int: 'abc'" || fail "collected error missing int problem: $errout"
 echo "$errout" | grep -qF "WEIR_E2E_MISSING_ZZ is missing" || fail "collected error missing absent var: $errout"
 [ -e "$envdir/env-proof" ] || fail "boundary errors are RUNTIME class: earlier effects legitimately ran"
 echo "e2e ok: Env.load collects all problems in one boundary error (runtime class — check-time is the field-TYPE rule)"
@@ -1403,6 +1482,14 @@ if $BIN fmt --check "$fmtdir/ugly.weir" 2>/dev/null; then
 fi
 $BIN fmt "$fmtdir/ugly.weir" 2>/dev/null
 $BIN fmt --check "$fmtdir/ugly.weir" 2>/dev/null || fail "fmt output must pass --check"
+# a |> continuing a match arm under its body is formatted with the body,
+# never refused: fmt never makes a checking file fail [D:fmt-arm-pipe]
+printf 'match 5 with\n| n -> n\n       |> print\nlet f v =\n  match v with\n  | n -> n + 1\n         |> show\nprint (f 2)\n' > "$fmtdir/armpipe.weir"
+$BIN fmt "$fmtdir/armpipe.weir" >/dev/null 2>&1 || fail "fmt must format an arm continued by |> under its body"
+$BIN fmt --check "$fmtdir/armpipe.weir" 2>/dev/null || fail "fmt output must pass --check (idempotent)"
+out=$($BIN "$fmtdir/armpipe.weir")
+[ "$out" = "$(printf '5\n3')" ] || fail "the formatted arm-pipe file must run identically: $out"
+echo "e2e ok: fmt keeps an arm's |> continuation under its body"
 out=$($BIN "$fmtdir/ugly.weir")
 expect "formatted file runs identically" "2" "$out"
 $BIN "$fmtdir/ugly.weir" >/dev/null 2>&1 && $BIN fmt "$fmtdir/ugly.weir" --check 2>/dev/null || fail "fmt takes --check after the script too"
@@ -3489,7 +3576,7 @@ let h = fun req ->
     Duration.sleep 5s
     HttpServerResponse { status = 200; headers = []; body = Text "ok" }
 within
-    within serve _s = { port = $svportC1; maxConcurrent = 2 } h
+    within serve _s = { port = Some $svportC1; maxConcurrent = 2 } h
         poll timeout=8s interval=50ms
             Net.portOpen $svportC1
         within proc _c = curl -s -m 10 "http://127.0.0.1:$svportC1/x"
@@ -4214,7 +4301,7 @@ let handler = fun req ->
     | _ ->
         exit 7
         HttpServerResponse { status = 200; headers = []; body = Text "ok" }
-within serve srv = { port = $svportT; maxConcurrent = 4 } handler
+within serve srv = { port = Some $svportT; maxConcurrent = 4 } handler
     within proc _c = curl -s -m 10 "http://127.0.0.1:$svportT/park"
         Duration.sleep 300ms
         let _r = Http.send { Http.defaults with url = "http://127.0.0.1:$svportT/x" } |> try result
@@ -5075,7 +5162,7 @@ SCN
         hiport=8494
         cat > "$hidir/hi.scn" <<SCN
 SLEEP 700
-SEND within serve srv = { port = $hiport; maxConcurrent = 2 } (fun req -> Duration.sleep 10s; HttpServerResponse { status = 200; headers = []; body = Text "late" })\x1b\r    print (Str.toUpper "serving")\x1b\r    Duration.sleep 30s\x1b\ralways\x1b\r    Duration.sleep 700ms\x1b\r    print (Str.toUpper \$"errs={Server.streamErrors srv |> Seq.length}")\r
+SEND within serve srv = { port = Some $hiport; maxConcurrent = 2 } (fun req -> Duration.sleep 10s; HttpServerResponse { status = 200; headers = []; body = Text "late" })\x1b\r    print (Str.toUpper "serving")\x1b\r    Duration.sleep 30s\x1b\ralways\x1b\r    Duration.sleep 700ms\x1b\r    print (Str.toUpper \$"errs={Server.streamErrors srv |> Seq.length}")\r
 SLEEP 2500
 SEND \x03
 SLEEP 3000
@@ -5388,6 +5475,26 @@ WEOF
     expect "a write through a link whose target the plan deleted refuses" "dangle: File.write: no such directory: \$T/L" "$out"
     expect "a mkdir through a link backs a write at its real path; a link renames into its target" "through: 3 ops" "$out"
     rm -rf "$dddir"
+fi
+
+# ---- Dir.move across filesystems [D:dir-move-cross-device] -----------------
+# rename(2) refuses EXDEV; the move copies the tree then deletes the source,
+# as mv does. The battery's temp dir and /dev/shm are separate mounts on
+# Linux runners (where they are not, the plain rename path must still pass).
+if [ "$IS_WINDOWS" = "0" ] && [ -d /dev/shm ] && [ -w /dev/shm ]; then
+    xdsrc=$(mkweirtmp)
+    xddst="/dev/shm/weir-e2e-xdev-$$"
+    rm -rf "$xddst"
+    mkdir -p "$xdsrc/tree/sub"
+    printf 'k\n' > "$xdsrc/tree/sub/k.txt"
+    ln -s sub/k.txt "$xdsrc/tree/link"
+    out=$($BIN -e "Dir.move \"$xdsrc/tree\" \"$xddst\"" 2>&1) || fail "Dir.move across filesystems must succeed: $out"
+    [ -f "$xddst/sub/k.txt" ] || fail "Dir.move across filesystems: the tree arrived"
+    [ -L "$xddst/link" ] || fail "Dir.move across filesystems: a symlink stays a link"
+    [ -e "$xdsrc/tree" ] && fail "Dir.move across filesystems: the source is gone"
+    echo "$out" | grep -qF "cannot access" && fail "EXDEV must never read as cannot access: $out"
+    echo "e2e ok: Dir.move across filesystems copies then deletes"
+    rm -rf "$xdsrc" "$xddst"
 fi
 
 # ---- FileRow reshape [D:filerow] --------------------------------------------
@@ -7893,7 +8000,7 @@ expect "derived shorts resolve" "true false None prod" "$out"
 
 errout=$($BIN "$tadir/cli.weir" --verbos --port abc stray 2>&1) && fail "three-problem invocation must reject"
 echo "$errout" | grep -qF "unknown flag '--verbos'. Did you mean '--verbose'?" || fail "typo did-you-means: $errout"
-echo "$errout" | grep -qF "is not an int ('abc')" || fail "int parse collected: $errout"
+echo "$errout" | grep -qF -- "--port: not an int: 'abc'" || fail "int parse collected: $errout"
 echo "$errout" | grep -qF "unexpected argument 'stray'" || fail "strictness collected: $errout"
 echo "$errout" | grep -qF "missing required flag '--env'" || fail "missing required collected: $errout"
 echo "e2e ok: a four-problem invocation reports all four, collected"
@@ -7915,7 +8022,7 @@ got=$($BIN "$odir/rec.weir" --bogus --retries x 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 2 ] || fail "a usage error exits 2 (got $rc)"
 want=$(printf '%s\n' \
     "rec.weir: unknown flag '--bogus'" \
-    "rec.weir: --retries is not an int ('x')" \
+    "rec.weir: --retries: not an int: 'x'" \
     "rec.weir: missing required flag '--target'" \
     "  -r, --retries <int>         required" \
     "  -t, --target <string>       required" \
@@ -7941,8 +8048,8 @@ print "ok"
 WEOF
 got=$($BIN "$odir/sh.weir" --level x push --depth y 2>&1 || true)
 want=$(printf '%s\n' \
-    "sh.weir: --level is not an int ('x')" \
-    "sh.weir: --depth is not an int ('y')" \
+    "sh.weir: --level: not an int: 'x'" \
+    "sh.weir: --depth: not an int: 'y'" \
     "sh.weir: missing required flag '--remote'" \
     "  -l, --level <int>           required" \
     "  -r, --remote <string>       required" \
@@ -7998,6 +8105,42 @@ want=$(printf '%s\n' \
     "run 'sec.weir --help' for usage")
 [ "$got" = "$want" ] || fail "--secret=value must not echo the value: $got"
 echo "e2e ok: --name=value teaches '--name value'; a presence flag takes no value; a Secret's or unknown flag's value is never echoed"
+# the value after an unknown flag (a misspelled Secret) is reported but
+# never echoed [D:args-unknown-flag-no-echo]
+got=$($BIN "$odir/sec.weir" --tokn e2e-hunter4 --port 1 -x e2e-hunter5 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] || fail "unknown-flag usage error exits 2 (got $rc)"
+echo "$got" | grep -qF "hunter" && fail "an unknown flag's value must never be echoed: $got"
+want=$(printf '%s\n' \
+    "sec.weir: unknown flag '--tokn'. Did you mean '--token'?" \
+    "sec.weir: unexpected argument after '--tokn'" \
+    "sec.weir: unknown flag '-x'" \
+    "sec.weir: unexpected argument after '-x'" \
+    "sec.weir: missing required flag '--token'" \
+    "  -t, --token <secret>        required" \
+    "run 'sec.weir --help' for usage")
+[ "$got" = "$want" ] || fail "unknown-flag value withheld: $got"
+echo "e2e ok: the value after an unknown flag is reported, never echoed"
+# --help layout [D:args-help-column] [D:args-help-default]: a flag longer
+# than the column wraps its text; a string default renders as data
+cat > "$odir/lay.weir" <<'WEOF'
+type Cli = {
+    /// a long one
+    veryLongFlagNameThatExceedsTheColumn: Option<string>
+    [<Default "a\nb">] sep: string
+    [<Default "">] pre: string
+}
+let cli = Args.load Cli
+print cli.sep
+WEOF
+got=$($BIN "$odir/lay.weir" --help)
+want=$(printf '%s\n' \
+    "usage: lay.weir [flags]" \
+    "  -v, --very-long-flag-name-that-exceeds-the-column <string>" \
+    "                              optional — a long one" \
+    "  -s, --sep <string>          default: a\\x0ab" \
+    "  -p, --pre <string>          default: \"\"")
+[ "$got" = "$want" ] || fail "help layout: $got"
+echo "e2e ok: --help wraps a long flag's text and renders string defaults as data"
 rm -rf "$odir"
 
 out=$($BIN "$tadir/cli.weir" --bogus --help); rc=$?
@@ -8244,16 +8387,26 @@ rm -rf "$bbdir"
 
 # the echo rule [D:echo-rule]: unforced caps with the lever that works;
 # forced echoes in full — Seq.freeze means something at the prompt now
-out=$(printf 'let xs = [1..100]\nxs\n' | $BIN 2>&1)
-echo "$out" | grep -qF "10; …] : seq<int> (first 10 of an unforced seq — Seq.freeze to echo everything)" || fail "the unforced echo names the honest lever: $out"
+out=$(printf 'let xs = [1..200]\nxs\n' | $BIN 2>&1)
+echo "$out" | grep -qF "100; …] : seq<int> (first 100 of an unforced seq — Seq.freeze to echo everything)" || fail "the unforced echo names the honest lever: $out"
 out=$(printf '[1..12] |> Seq.freeze\n' | $BIN 2>&1)
 echo "$out" | grep -qF "11; 12] : seq<int>" || fail "a forced seq echoes in full: $out"
 out=$($BIN -e '["a"; "b"; "c"; "d"; "e"; "f"; "g"; "h"; "i"; "j"; "k"]')
 echo "$out" | grep -qF "\"k\"] : seq<string>" || fail "a literal list is forced — full echo, no hint: $out"
 echo "e2e ok: the echo rule — unforced caps honestly, forced echoes whole"
 
-out=$($BIN -e '[1..50]')
-echo "$out" | grep -qF "(first 10 of an unforced seq" || fail "-e echoes like the REPL (decided): $out"
+out=$($BIN -e '[1..200]')
+echo "$out" | grep -qF "100; …] : seq<int> (first 100 of an unforced seq — Seq.freeze to echo everything)" || fail "-e echoes like the REPL, cap 100 (decided): $out"
+# one cap everywhere [D:echo-cap-100]: the piped REPL clips at 100 too, and #echo moves it
+out=$(printf '[1..200]\n#echo 5\n[1..200]\n' | $BIN 2>&1)
+echo "$out" | grep -qF "100; …] : seq<int> (first 100 of an unforced seq" || fail "piped REPL echo cap is 100: $out"
+echo "$out" | grep -qF "5; …] : seq<int> (first 5 of an unforced seq" || fail "#echo moves the piped cap: $out"
+# one renderer for both echoes [D:echo-one-renderer]: piped, the echo is the
+# data channel (byte-faithful) in -e and the REPL alike
+out=$($BIN -e '"a\u{1b}[31mb"' | od -An -c | tr -s ' ')
+out2=$(printf '"a\\u{1b}[31mb"\n' | $BIN 2>/dev/null | od -An -c | tr -s ' ')
+echo "$out" | grep -qF '033' || fail "-e piped echo stays byte-faithful: $out"
+echo "$out2" | grep -qF '033' || fail "the piped REPL echo stays byte-faithful like -e: $out2"
 echo "e2e ok: -e shares the echo rule"
 
 out=$(printf 'print (show [1..100])\n' | $BIN 2>&1)
@@ -10808,6 +10961,14 @@ out=$( cd "$ctdir/f14" && $BIN add schema http://127.0.0.1:$ctport/configmap-v1.
 echo "$out" | grep -qF "must be a plain file name" || fail "F14 traversal --as teaches the plain-name rule: $out"
 test ! -e "$ctdir/f14/../escape.json" || fail "F14: a traversal --as must write nothing outside .weir/"
 echo "e2e ok: add schema refuses an absolute/traversal --as, writing nothing (F14)"
+# a local path or file:// URL is refused by add's own usage, never the
+# transport's "cannot reach  — An invalid request URI" [D:http-url-refused]
+mkdir -p "$ctdir/local" && ( cd "$ctdir/local" && git init -q . )
+for src in "$ctdir/serve/configmap-v1.json" "file://$ctdir/serve/configmap-v1.json"; do
+    out=$( cd "$ctdir/local" && $BIN add schema "$src" --as cm 2>&1 ) && fail "add schema of a local source must refuse: $out" || true
+    expect "add schema refuses '$src' by usage" "weir add: add schema takes an http(s) URL; got '$src'" "$out"
+    test ! -e "$ctdir/local/.weir" || fail "add schema of a local source must write nothing"
+done
 # the lock is committed: add writes the URL without its userinfo and says
 # so [D:lock-no-userinfo]
 mkdir -p "$ctdir/ui" && ( cd "$ctdir/ui" && git init -q . )
@@ -12558,7 +12719,7 @@ let handler = fun req ->
         always
             note \$"inner arm {j} cleanup")
     HttpServerResponse { status = 200; headers = []; body = Text "ok" }
-within serve _srv = { port = 8495; maxConcurrent = 4 } handler
+within serve _srv = { port = Some 8495; maxConcurrent = 4 } handler
     poll timeout=8s interval=50ms
         Net.portOpen 8495
     within proc _c = curl -s --noproxy "*" -m 20 "http://127.0.0.1:8495/x"
@@ -14104,6 +14265,23 @@ echo "$iout" | grep -qF "init: not loaded" || fail "a raising init let must not 
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after a raising init let"
 echo "$iout" | grep -qF "Unhandled exception" && fail "a raising init let dumped a .NET trace: $iout" || true
 
+# the env key law at init load [D:env-key-refusal]: a key holding '=' is
+# refused naming the key, in weir's words, and nothing loads
+cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
+#session {
+    env = [("A=B", "d")]
+}
+let hi () = print "hi"
+WEOF
+iout=$(printf '#help hi
+#quit
+' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "#session env: the env key 'A=B' contains '=' — a child would read it as the variable 'A'; an env name has no '='" || fail "an '=' env key at init must be refused naming the key: $iout"
+echo "$iout" | grep -qE "init\.weir:3:" || fail "the env key refusal must be LOCATED at its line: $iout"
+echo "$iout" | grep -qF "init: not loaded" || fail "a refused env key must not load"
+echo "$iout" | grep -qF "(Parameter" && fail "the env key refusal leaked .NET text: $iout" || true
+
 # a lazy command let loads and spawns nothing; each use runs it; an
 # eager one is refused naming why [D:lazy-command-lets]
 if [ "$IS_WINDOWS" != "1" ]; then
@@ -15157,7 +15335,7 @@ let changes =
 print \$"empty={changes |> Plan.isEmpty}"
 WEOF
 out=$($BIN "$padir/par.weir" 2>&1) && fail "a parallel combinator inside a plan must refuse" || true
-echo "$out" | grep -qF "'piterWith' is refused inside 'plan'" || fail "the parallel-in-plan refusal must fire: $out"
+echo "$out" | grep -qF "'Seq.piterWith' is refused inside 'plan'" || fail "the parallel-in-plan refusal must fire (a check error) [D:plan-refuses-fanout]: $out"
 [ -f "$padir/par-marker.txt" ] && fail "a worker wrote the marker despite the plan — capture escaped"
 echo "e2e ok: plan/apply — a parallel combinator inside a plan refuses (no worker ran)"
 
@@ -15269,7 +15447,7 @@ let handler = fun req ->
         HttpServerResponse { status = 200; headers = []; body = Text \$"hello {name}" }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
 
-within serve srv = { port = $svport; maxConcurrent = 4 } handler
+within serve srv = { port = Some $svport; maxConcurrent = 4 } handler
     print \$"listening on {Server.port srv}"
     poll timeout=8s interval=100ms
         Net.portOpen $svport
@@ -15329,7 +15507,7 @@ let handler = fun req ->
         \$"chunk-{i}")
     HttpServerResponse { status = 200; headers = []; body = Stream elems }
 
-within serve srv = { port = $svport2; maxConcurrent = 4 } handler
+within serve srv = { port = Some $svport2; maxConcurrent = 4 } handler
     poll timeout=8s interval=100ms
         Net.portOpen $svport2
     within proc client = sh "$svdir/capture.sh"
@@ -15362,7 +15540,7 @@ let handler = fun req ->
     let _m2 = sh -c "echo end >> $svdir/markers.txt" | complete
     HttpServerResponse { status = 200; headers = []; body = Text "done" }
 
-within serve srv = { port = $svport3; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport3; maxConcurrent = 2 } handler
     poll timeout=8s interval=100ms
         Net.portOpen $svport3
     within proc load = sh -c "for i in 1 2 3 4; do curl -s --max-time 8 http://127.0.0.1:$svport3/slow & done; wait"
@@ -15414,7 +15592,7 @@ while True:
 print('MALFORMED|status=%s' % (d.split(b'\r\n', 1)[0].decode() if d else '(reset)'))
 PYEOF
 cat > "$svdir/method.weir" <<WEOF
-within serve srv = { port = $svport4; maxConcurrent = 2 } (fun req -> match req.method with | Get -> HttpServerResponse { status = 200; headers = []; body = Text "GET" } | Query -> HttpServerResponse { status = 200; headers = []; body = Text "QUERY" } | Other v -> HttpServerResponse { status = 405; headers = []; body = Text \$"OTHER:{v}" } | _ -> HttpServerResponse { status = 200; headers = []; body = Text "known" })
+within serve srv = { port = Some $svport4; maxConcurrent = 2 } (fun req -> match req.method with | Get -> HttpServerResponse { status = 200; headers = []; body = Text "GET" } | Query -> HttpServerResponse { status = 200; headers = []; body = Text "QUERY" } | Other v -> HttpServerResponse { status = 405; headers = []; body = Text \$"OTHER:{v}" } | _ -> HttpServerResponse { status = 200; headers = []; body = Text "known" })
     poll timeout=8s interval=100ms
         Net.portOpen $svport4
     let out = sh -c "python3 '$svdir/methprobe.py' $svport4" | complete
@@ -15451,7 +15629,7 @@ let handler = fun req ->
     | "/half" -> HttpServerResponse { status = 200; headers = []; body = Stream ([1; 2] |> Seq.map (fun i -> if i == 1 then "first" else fail "producer died")) }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "nf" }
 
-within serve srv = { port = $svport5; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport5; maxConcurrent = 2 } handler
     poll timeout=8s interval=100ms
         Net.portOpen $svport5
     let out = sh -c "python3 '$svdir/streamprobe.py' $svport5" | complete
@@ -15510,7 +15688,7 @@ let handler = fun req ->
     | "/badname" -> HttpServerResponse { status = 200; headers = [("Bad Name", "v")]; body = Text "ok" }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "nf" }
 
-within serve srv = { port = $svport5; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport5; maxConcurrent = 2 } handler
     poll timeout=8s interval=100ms
         Net.portOpen $svport5
     let out = sh -c "python3 '$svdir/hdrprobe.py' $svport5" | complete
@@ -15557,6 +15735,93 @@ for req in 'secretHeaders = [("X-Tok", Secret.of "sßcret")]|X-Tok|at byte offse
 done
 echo "e2e ok: Http.send — a secret header's non-ASCII byte is located by offset, never printed"
 
+# an explicit Content-Type REPLACES the body kind's default — exactly one
+# Content-Type line on the wire [D:http-content-type-override]; a raw
+# socket answers with the Content-Type lines it received, verbatim
+ctwport=$((24700 + RANDOM % 200))
+cat > "$svdir/ctwire.py" <<'PYEOF'
+import socket, sys, threading
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(8)
+def h(c):
+    data = b""
+    c.settimeout(5)
+    while b"\r\n\r\n" not in data: data += c.recv(65536)
+    head = data.partition(b"\r\n\r\n")[0]
+    cts = b"|".join(l for l in head.split(b"\r\n") if l.lower().startswith(b"content-type:"))
+    c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % len(cts) + cts); c.close()
+while True:
+    c, _ = s.accept(); threading.Thread(target=h, args=(c,)).start()
+PYEOF
+python3 "$svdir/ctwire.py" "$ctwport" & ctwsrv=$!
+awaitTcp $ctwport || { kill $ctwsrv 2>/dev/null || true; fail "ct-override: the raw server never came up on $ctwport"; }
+cat > "$svdir/ctwire.weir" <<WEOF
+let u = "http://127.0.0.1:$ctwport/"
+Http.send { Http.post u with headers = [("Content-Type", "text/csv")]; body = Text "x" } |> _.body |> Seq.iter (fun l -> print \$"text={l}")
+Http.send { Http.post u with headers = [("content-type", "application/vnd.x+json")]; body = Json ["{}"] } |> _.body |> Seq.iter (fun l -> print \$"json={l}")
+Http.send { Http.post u with secretHeaders = [("CONTENT-TYPE", Secret.of "text/x")]; body = Form [("a", "b")] } |> _.body |> Seq.iter (fun l -> print \$"form={l}")
+Http.send { Http.post u with body = Text "x" } |> _.body |> Seq.iter (fun l -> print \$"default={l}")
+WEOF
+out=$($BIN "$svdir/ctwire.weir" 2>&1) || { kill $ctwsrv 2>/dev/null || true; fail "ct-override: the sends failed: $out"; }
+kill $ctwsrv 2>/dev/null || true
+for want in 'text=Content-Type: text/csv' 'json=Content-Type: application/vnd.x+json' 'form=Content-Type: text/x' 'default=Content-Type: text/plain'; do
+    echo "$out" | grep -qxF "$want" || fail "ct-override: expected the line '$want' (one Content-Type, the caller's): $out"
+done
+echo "e2e ok: Http.send — an explicit Content-Type (any casing, headers or secretHeaders) replaces the body kind's; one on the wire"
+
+# refused before send, in weir's words — a method that is not a token
+# [D:http-method-token], a URL Http cannot address [D:http-url-refused],
+# a framing header [D:http-header-unsendable]; nothing need listen
+for case in 'Http.send { Http.get "http://127.0.0.1:9/" with method = Other "BAD METHOD" }|Http: the method '"'"'BAD METHOD'"'"' cannot be sent — it carries a space' \
+            'Http.send { Http.get "http://127.0.0.1:9/" with method = Other "" }|Http: the method is empty — Other needs a method token such as "PURGE"' \
+            'Http.send (Http.get "not a url")|'"'"'not a url'"'"' is not a URL weir can send to — an absolute http(s) URL is needed (https://host/path)' \
+            'Http.send (Http.get "file:///etc/hostname")|'"'"'file:///etc/hostname'"'"' uses the '"'"'file'"'"' scheme — Http sends to http:// and https:// URLs only' \
+            'Http.send { Http.get "http://127.0.0.1:9/" with headers = [("Transfer-Encoding", "chunked")] }|request header '"'"'Transfer-Encoding'"'"' cannot be sent — it frames the body'; do
+    expr=${case%%|*}; why=${case#*|}
+    rc=0
+    out=$($BIN -e "$expr" 2>&1) || rc=$?
+    [ "$rc" = "1" ] || fail "pre-send refusal: '$expr' must exit 1, got rc=$rc: $out"
+    echo "$out" | grep -qF -- "$why" || fail "pre-send refusal: '$expr' must say '$why': $out"
+    echo "$out" | grep -qE 'BaseAddress|Parameter|content object|cannot reach' && fail "pre-send refusal: .NET text or the transport umbrella leaked: $out" || true
+done
+echo "e2e ok: Http.send — a non-token method, an unaddressable URL and a Transfer-Encoding header are refused before send, in weir's words"
+
+# port is Option<int> [D:serve-port-option]: None binds a free port and
+# Server.port reports the BOUND one (a self-request through it answers);
+# Some n out of 1..65535 is refused in the config's words; a taken port is
+# named as taken. https:// to the plain listener is a broken handshake,
+# never "not trusted", and never repaired with the insecure = true it sets
+# [D:tls-handshake-vs-trust]
+cat > "$svdir/portnone.weir" <<'WEOF'
+within serve srv = { port = None; maxConcurrent = 2 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "free-ok" })
+    let p = Server.port srv
+    print $"bound-nonzero={p > 0}"
+    Http.get $"http://127.0.0.1:{p}/" |> Http.expect |> Seq.iter (fun l -> print $"self={l}")
+    let tls = Http.send { Http.get $"https://127.0.0.1:{p}/" with insecure = true } |> try result
+    print $"tls={tls}"
+    within serve again = { port = Some p; maxConcurrent = 1 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "x" })
+        print "unreachable"
+WEOF
+rc=0; out=$(env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy $BIN "$svdir/portnone.weir" 2>&1) || rc=$?
+[ "$rc" = "1" ] || fail "port None: the second bind on the taken port must fail (exit 1), got rc=$rc: $out"
+expect "port None: Server.port is the bound port" "bound-nonzero=true" "$out"
+expect "port None: a request to Server.port reaches the handler" "self=free-ok" "$out"
+expect "https to a plain listener: a broken handshake, named" "the server did not speak TLS on this port" "$out"
+echo "$out" | grep -qF "certificate is not trusted" && fail "https to a plain port must not be called untrusted: $out" || true
+echo "$out" | grep -qF "can opt out: insecure = true" && fail "the repair must not name insecure = true when it is set: $out" || true
+echo "$out" | grep -qE "serve: cannot listen on 127.0.0.1:[0-9]+ — the port is already in use \(another process holds it, or a server on it is still closing\)" || fail "a taken port must be named as taken: $out"
+echo "$out" | grep -qF "Failed to bind" && fail "Kestrel's bind text leaked: $out" || true
+for p in -1 0 70000; do
+    printf 'within serve s = { port = Some %s; maxConcurrent = 1 } (fun r -> HttpServerResponse { status = 200; headers = []; body = Text "ok" })\n    print "x"\n' "$p" > "$svdir/portrange.weir"
+    rc=0; out=$($BIN "$svdir/portrange.weir" 2>&1) || rc=$?
+    [ "$rc" = "1" ] || fail "port Some $p must be refused (exit 1), got rc=$rc: $out"
+    expect "port Some $p refused in the config's words" "serve: port is 1 to 65535 (None picks a free port), got $p" "$out"
+done
+printf 'within serve s = { port = 8080; maxConcurrent = 1 } (fun r -> HttpServerResponse { status = 200; headers = []; body = Text "ok" })\n    print "x"\n' > "$svdir/portint.weir"
+rc=0; out=$($BIN check "$svdir/portint.weir" 2>&1) || rc=$?
+[ "$rc" != "0" ] || fail "a bare int port must be a check error: $out"
+expect "a bare int port names its repair" 'serve'"'"'s port is optional: `port = Some 8080` for that port, `port = None` for a free one' "$out"
+
 # (F12) the request-body read timeout [D:serve-body-timeout]: a slow
 # client declaring a large Content-Length and holding the socket is
 # refused with 408 within the bound, not parked. bodyTimeout=1s here.
@@ -15578,7 +15843,7 @@ except Exception:
 print('elapsed=%.1f status=%s' % (time.time() - t0, d.split(b'\r\n', 1)[0].decode() if d else '(none)'))
 PYEOF
 cat > "$svdir/timeout.weir" <<WEOF
-within serve srv = { port = $svport6; maxConcurrent = 2; bodyTimeout = 1s } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "ok" })
+within serve srv = { port = Some $svport6; maxConcurrent = 2; bodyTimeout = 1s } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "ok" })
     poll timeout=8s interval=100ms
         Net.portOpen $svport6
     let out = sh -c "python3 '$svdir/slowbody.py' $svport6" | complete
@@ -15606,7 +15871,7 @@ while True:
 print('status=%s body=%s' % (d.split(b'\r\n', 1)[0].decode(), d.split(b'\r\n\r\n', 1)[-1].decode()))
 PYEOF
 cat > "$svdir/maxbody.weir" <<WEOF
-within serve srv = { port = $svport7; maxConcurrent = 2; maxBody = 16B } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text \$"len={Str.length req.body}" })
+within serve srv = { port = Some $svport7; maxConcurrent = 2; maxBody = 16B } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text \$"len={Str.length req.body}" })
     poll timeout=8s interval=100ms
         Net.portOpen $svport7
     let fits = sh -c "python3 '$svdir/maxbody.py' $svport7 16" | complete
@@ -15637,7 +15902,7 @@ while True:
 sys.stdout.buffer.write(('%s status=%s body=%s\n' % (cs, d.split(b'\r\n', 1)[0].decode(), d.split(b'\r\n\r\n', 1)[-1].decode())).encode('utf-8'))
 PYEOF
 cat > "$svdir/charset.weir" <<WEOF
-within serve srv = { port = $svport20; maxConcurrent = 2 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text \$"handled={req.body}" })
+within serve srv = { port = Some $svport20; maxConcurrent = 2 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text \$"handled={req.body}" })
     poll timeout=8s interval=100ms
         Net.portOpen $svport20
     let unknown = sh -c "python3 '$svdir/charset.py' $svport20 x-weir-none e961" | complete
@@ -15712,7 +15977,7 @@ let handler = fun req ->
         HttpServerResponse { status = 200; headers = []; body = Text \$"<{hops}>" }
     | p -> HttpServerResponse { status = 200; headers = []; body = Text \$"<{p}>" }
 
-within serve srv = { port = $svport8; maxConcurrent = 4 } handler
+within serve srv = { port = Some $svport8; maxConcurrent = 4 } handler
     poll timeout=8s interval=100ms
         Net.portOpen $svport8
     let out = sh -c "python3 '$svdir/wire.py' $svport8" | complete
@@ -15735,7 +16000,7 @@ echo "e2e ok: within serve — pipelining (2 and 3 in order), F10 three duplicat
 svport9=8479
 cat > "$svdir/f8curl.weir" <<WEOF
 let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Stream ([1; 2] |> Seq.map (fun i -> if i == 1 then "first" else fail "producer died")) }
-within serve srv = { port = $svport9; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport9; maxConcurrent = 2 } handler
     poll timeout=8s interval=100ms
         Net.portOpen $svport9
     let r = curl -s --max-time 5 http://127.0.0.1:$svport9/ | complete
@@ -15752,7 +16017,7 @@ echo "e2e ok: within serve — F8 a producer raise leaves curl exit 18"
 svport10=8480
 if python3 -c "import socket; s=socket.socket(socket.AF_INET6); s.bind(('::1', 0))" 2>/dev/null; then
     cat > "$svdir/v6.weir" <<WEOF
-within serve srv = { port = $svport10; maxConcurrent = 2 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "weir-handler" })
+within serve srv = { port = Some $svport10; maxConcurrent = 2 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "weir-handler" })
     poll timeout=8s interval=100ms
         Net.portOpen $svport10
     let v6 = curl -s -g --noproxy "*" --max-time 5 -w " status=%{http_code}" "http://[::1]:$svport10/" | complete
@@ -15787,7 +16052,7 @@ while True:
 print("FAST %s in %.2fs" % (d.split(b"\r\n", 1)[0].decode(), time.time() - t))
 PYEOF
 cat > "$svdir/loris.weir" <<WEOF
-within serve srv = { port = $svport11; maxConcurrent = 1; bodyTimeout = 10s } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "ok" })
+within serve srv = { port = Some $svport11; maxConcurrent = 1; bodyTimeout = 10s } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "ok" })
     poll timeout=8s interval=100ms
         Net.portOpen $svport11
     let out = sh -c "python3 '$svdir/loris.py' $svport11" | complete
@@ -15810,7 +16075,7 @@ let handler = fun req ->
     | "/status0" -> HttpServerResponse { status = 0; headers = []; body = Text "x" }
     | _ -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
 
-within serve srv = { port = $svport12; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport12; maxConcurrent = 2 } handler
     poll timeout=8s interval=100ms
         Net.portOpen $svport12
     let a = curl -s --max-time 5 -w " %{http_code}" http://127.0.0.1:$svport12/raise | complete
@@ -15837,13 +16102,13 @@ let handler = fun req ->
     HttpServerResponse { status = 200; headers = []; body = Text "late" }
 
 within
-    within serve srv = { port = $svport13; maxConcurrent = 4 } handler
+    within serve srv = { port = Some $svport13; maxConcurrent = 4 } handler
         poll timeout=8s interval=50ms
             Net.portOpen $svport13
         within proc client = curl -s --max-time 10 http://127.0.0.1:$svport13/
             Duration.sleep 300ms
     print \$"port-open-after-close={Net.portOpen $svport13}"
-    within serve again = { port = $svport13; maxConcurrent = 1 } handler
+    within serve again = { port = Some $svport13; maxConcurrent = 1 } handler
         print "rebind ok"
     Duration.sleep 3s
     print "after work"
@@ -15861,7 +16126,7 @@ let handler = fun req ->
     Duration.sleep 30s
     HttpServerResponse { status = 200; headers = []; body = Text "late" }
 
-within serve srv = { port = $svport13; maxConcurrent = 8 } handler
+within serve srv = { port = Some $svport13; maxConcurrent = 8 } handler
     poll timeout=8s interval=50ms
         Net.portOpen $svport13
     within proc client = sh -c "for i in 1 2 3 4 5 6 7 8; do curl -s --max-time 40 http://127.0.0.1:$svport13/ & done; wait"
@@ -15890,7 +16155,7 @@ let handler = fun req ->
     sh -c "echo handler-late-cmd >> $svdir/late.log"
     HttpServerResponse { status = 200; headers = []; body = Text "slow" }
 
-within serve srv = { port = $svport16; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport16; maxConcurrent = 2 } handler
     poll timeout=8s interval=50ms
         Net.portOpen $svport16
     within proc client = curl -s --max-time 10 http://127.0.0.1:$svport16/
@@ -15923,7 +16188,7 @@ let handler = fun req ->
     HttpServerResponse { status = 200; headers = []; body = Text "late" }
 
 within lock "$svdir/clean.lock"
-    within serve srv = { port = $svport17; maxConcurrent = 2 } handler
+    within serve srv = { port = Some $svport17; maxConcurrent = 2 } handler
         poll timeout=8s interval=50ms
             Net.portOpen $svport17
         within proc client = curl -s --max-time 15 http://127.0.0.1:$svport17/
@@ -15954,7 +16219,7 @@ let handler = fun req ->
         File.append log ["cleanup end"]
     HttpServerResponse { status = 200; headers = []; body = Text "late" }
 
-within serve srv = { port = $svport18; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport18; maxConcurrent = 2 } handler
     poll timeout=8s interval=50ms
         Net.portOpen $svport18
     within proc client = curl -s --max-time 15 http://127.0.0.1:$svport18/
@@ -15990,7 +16255,7 @@ let handler = fun req ->
 within
     print "body"
 always
-    within serve srv = { port = $svport19; maxConcurrent = 2 } handler
+    within serve srv = { port = Some $svport19; maxConcurrent = 2 } handler
         poll timeout=8s interval=50ms
             Net.portOpen $svport19
         within proc client = curl -s --max-time 10 http://127.0.0.1:$svport19/
@@ -16022,7 +16287,7 @@ let handler = fun req ->
     | "/fast" -> HttpServerResponse { status = 200; headers = []; body = Text "fast" }
     | _ -> streamer req
 
-within serve srv = { port = $svport14; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport14; maxConcurrent = 2 } handler
     poll timeout=8s interval=50ms
         Net.portOpen $svport14
     // two clients hold both slots; four more queue behind them and leave
@@ -16050,7 +16315,7 @@ let handler = fun req ->
     Duration.sleep 20s
     HttpServerResponse { status = 200; headers = []; body = Text "late" }
 within
-    within serve srv = { port = $svport15; maxConcurrent = 2 } handler
+    within serve srv = { port = Some $svport15; maxConcurrent = 2 } handler
         Duration.sleep 60s
 always
     ["cleaned-up"] |> File.write marker
@@ -17035,7 +17300,7 @@ let handler = fun req ->
     File.append log ["handler"]
     Duration.sleep hold
     HttpServerResponse { status = 200; headers = []; body = Text "late-ok" }
-within serve srv = { port = $rpport; maxConcurrent = 2 } handler
+within serve srv = { port = Some $rpport; maxConcurrent = 2 } handler
     poll timeout=8s interval=50ms
         Net.portOpen $rpport
     File.append log ["live"]

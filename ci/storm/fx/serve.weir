@@ -23,7 +23,7 @@ within
     ev "O outer"
     within
         ev "O outer/sv"
-        within serve srv = { port = port; maxConcurrent = 4 } handler
+        within serve srv = { port = Some port; maxConcurrent = 4 } handler
             within proc client = python3 -I $cli $port $dir
                 poll timeout=10s interval=20ms watch=client
                     File.exists $"{dir}/started"

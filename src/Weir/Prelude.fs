@@ -68,7 +68,9 @@ let source =
       // `{ port; maxConcurrent; bodyTimeout }` both); exhaustion refuses
       // the request (408), bounded. maxBody bounds its size the same
       // way [D:serve-max-body]: optional, 16 MiB, 413 past it.
-      "type ServerConfig = { port: int; maxConcurrent: int; bodyTimeout: Duration; maxBody: Size }"
+      // port is optional [D:serve-port-option]: None binds a free port,
+      // which Server.port reports
+      "type ServerConfig = { port: Option<int>; maxConcurrent: int; bodyTimeout: Duration; maxBody: Size }"
       "type HttpServerRequest = { method: HttpMethod; path: string; query: string; headers: seq<string * string>; body: string }"
       "type HttpServerResponse = { status: int; headers: seq<string * string>; body: HttpBody }"
       // the plan/apply Op union [D:plan-apply] — the user-visible,

@@ -40,7 +40,8 @@ usage: weir                                    the REPL
   parsed into a type you declare with `Args.load`.
 - `weir -e '<program>'` — run a program and print the value of its
   last statement with its type (`3 : int`), as the REPL echoes it
-  with `#types on`.
+  with `#types on`: a unit value prints nothing, and a lazy seq shows
+  its first 100 elements, the REPL's echo limit.
   Newlines separate statements, just as in a file. The last statement
   must be an expression; if it is a declaration (a `let`, a `type`,
   …), the error says which kind.
@@ -85,6 +86,9 @@ These maintain the [`.weir/` tree](#project-layout-weir):
   ([signatures drive Tab](#signatures-drive-tab-completion)).
 - `weir add schema <url> --as <name>` — download a JSON schema into
   `.weir/schemas/` and record it in the lock ([schemas](#yaml-schemas)).
+  The source is an http(s) URL; a local path or `file://` is refused
+  (`weir add: add schema takes an http(s) URL; got '<x>'`), as it is
+  for `add module`.
 - `weir add module <src>//<file>@<ref> --as <name>` — download a copy
   of a remote module, with the files it imports, into `.weir/modules/`
   and record it in the lock ([modules](#remote-modules)). From any

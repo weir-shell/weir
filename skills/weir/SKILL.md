@@ -130,7 +130,8 @@ print (show 1)
   defaults to string. Command-argument splices stay string/int/bool
   (plus `Uuid` and `Secret`). Lossy debug format (strings come quoted, long
   seqs truncate); `print` remains the raw data channel. The REPL's
-  echo is tighter still (100 unforced elements — `#echo` moves it,
+  echo is tighter still (100 unforced elements at a tty, piped and in
+  `-e` alike [D:echo-cap-100] — `#echo` moves it,
   forced seqs echo whole; clipped strings, a hint naming the way
   out): echo = glance, `|> print` = read. BINARY output (a NUL in
   the prefix) refuses the tty echo with a redirect hint — a compressed
@@ -261,8 +262,8 @@ let q = ["{\"items\": []}"] |> from json Page // generic: name the instance, Pag
   weir's own boundary, so there is no wire to match — flags DERIVE, and
   `[<Short>]`/`[<NoShort>]` are the naming controls), and
   two fields resolving to one wire key refuse at the declaration. The name set is CLOSED — an unregistered name is a
-  check error with a did-you-mean. `[<Positional>]` is registered for
-  command-signature files only (a foreign tool's operands); on
+  check error with a did-you-mean. `[<Positional>]` belongs to
+  command-signature files (a foreign tool's operands); on
   an `Args.load` field it is a check error — scripts take flags. Attributes attach to record
   fields, union cases, and union type declarations (an attribute
   line above `type` binds to it), and the registry is
@@ -458,13 +459,23 @@ echo --flag="quoted v" // the quoted part would be its own argument; quote the w
   result's use, a later link (`a + b + 0` infers like `0 + a + b`).
   Nothing deciding it by the statement's end cannot infer
   (int-or-string): anchor one side (`x + 0`) or take data in. All single-typing operators
-  (`- * / % > <`) default to int; `let rec` and `mutable` are reserved
+  (`- * / % > <`) default to int; anchored by an operand, `<`/`>`/
+  `<=`/`>=` also order strings (ordinal), bools and `Option`s —
+  whatever `Seq.sort`/`min`/`max` order, the operators compare
+  [D:ord-scalar-operators]. `let rec` and `mutable` are reserved
   words with no meaning. `%` is integer remainder, TRUNCATED like
   F#/.NET (`-7 % 3` is `-1`, NOT Python's `2`); zero divisor raises
   ("modulo by zero"); floats are refused (finite-only floats cannot
   hold IEEE's NaN remainder) — `Float.toInt` one side. But `==`, `show`, and `Seq.sortBy` ARE
   generic (inferred constraints): `let same x y = x == y` works at any
   equatable type — rejected only at functions/seqs, at the USE site.
+
+```weir
+// the ordering operators follow Seq.sort: strings (ordinal), bools, Options
+print (show ("a" < "b"))
+print (show (false < true))
+print (show (None < Some 1))
+```
 - Literal patterns work (`| 0 ->`, `| "yes" ->`, `| () ->`, nested in
   constructors) but int/string literals NEVER complete a match alone —
   add a `_`/var arm or it is a hard error. Guards remain legal.
@@ -622,12 +633,21 @@ print $"{key} -> {value}"
   (`git rev-parse HEAD |> Seq.exactlyOne`) — `Seq.head` takes the
   first and silently accepts more; save it for "the first of many".
   `Seq.first` is RETIRED [D:first-retired]: one name per operation —
-  `Seq.take` (pairs with `skip`). A negative count raises in both,
-  Seq.replicate's rule [D:seq-gaps].
+  `Seq.take` (pairs with `skip`). Past the end the pair parts:
+  `take n` TRUNCATES (the first n or fewer — F#'s `truncate`, so a
+  bounded slice of a short source is no error) while `skip n` RAISES
+  naming both counts [D:seq-take-truncates]. A negative count raises
+  in both, Seq.replicate's rule [D:seq-gaps].
 
 ```weir-error
 // retired: one name per operation (take pairs with skip)
 [1; 2; 3] |> Seq.first 2 |> Seq.iter print
+```
+
+```weir
+// take past the end truncates; skip past the end raises
+print (show ([1; 2] |> Seq.take 5 |> Seq.freeze))
+print (show ([1; 2] |> Seq.skip 5 |> Seq.freeze |> try result))
 ```
 
 - Floats exist and are FINITE-only: `0.5`, `1e5`, `1.5e-3` (digits
@@ -650,8 +670,10 @@ print $"{key} -> {value}"
   `2MiB`/`1GiB`/`1TiB` — binary units ONLY (`1MB` is a teaching
   error: SI is ambiguous in the wild; `Size.parse "1MB"` reads it as
   10^6 — parse reads foreign text). `show` = binary units, one
-  truncated decimal (`1.5 MiB`), bytes plain (`847 B`);
-  `Size.toBytes` is the exact exit. `+`/`-` between sizes, `*`/`/`
+  truncated decimal (`1.5 MiB`), bytes plain (`847 B`) — a glance,
+  lossy by design: there is NO show/parse round trip (`Size.parse
+  "1.9 KiB"` refuses — sub-byte text names no byte count), and
+  `Size.toBytes` is the exact exit [D:size-show-no-roundtrip]. `+`/`-` between sizes, `*`/`/`
   by int; `Size / Size` errors naming both alternatives.
   `File.size p : Size` — compare directly (`File.size p > 10MiB`).
   Args/Env fields parse (`--max 1.5GiB`, `[<Default 10MiB>]`);
@@ -783,13 +805,14 @@ within tmp d
   status and a capped body snippet — `Http.get u |> Http.expect` is the
   bare GET read [D:fetch-retired]; when the error body is data to
   inspect, `Http.send` binds it instead. A mutating-method
-  `Http.expect` inside a `plan` refuses (no response to return;
-  `Http.send` captures the Op). An `Other` verb counts as mutating
+  `Http.expect` inside a `plan` is a check error (no response to
+  return; `Http.send` captures the Op). An `Other` verb counts as mutating
   unless it is GET/HEAD/OPTIONS/QUERY/TRACE (any casing), so
   `Other "PURGE"` is captured by `plan` (`readonly` refuses every
   `Other`: the verb is not known at check).
   `url |> Http.withQuery [(k, v)]` percent-encodes
-  a query string. `resp |> Http.header "etag" : Option<string>` reads a
+  a query string (appended to an existing one with `&`, placed BEFORE
+  a `#fragment` — a parameter inside the fragment is never sent). `resp |> Http.header "etag" : Option<string>` reads a
   response header case-insensitively (HTTP's own law — a hand-rolled
   pairs filter misses ETag vs etag) — the first line's value;
   `Http.headerAll` is the multiplicity read for repeating headers
@@ -802,7 +825,12 @@ within tmp d
   enforced `timeout`, however long [D:long-waits]. Every request sends
   `User-Agent: weir/<stamp>` (the `--version` string) unless the
   caller sets one — an explicit `User-Agent` WINS (via `headers` or
-  `secretHeaders`, any casing) and exactly one is ever sent. The
+  `secretHeaders`, any casing) and exactly one is ever sent. The same
+  law for `Content-Type`: the body kind sets its default (`text/plain`
+  for `Text`, `application/json` for `Json`,
+  `application/x-www-form-urlencoded` for `Form`), an explicit header
+  (any casing) WINS, and exactly one is ever sent — never a
+  comma-joined pair [D:http-content-type-override]. The
   default is applied at SEND time, not a field of `Http.defaults` —
   so a shown/pinned request stays stable across releases, and `show
   req` does NOT display the UA the wire will carry [D:http-ua]. `auth` is a UNION,
@@ -895,8 +923,10 @@ within tmp d
 - A SCOPED background process is `within proc srv = <command>` +
   an indented block [D:scoped-procs]: the scope IS the lifetime —
   at every exit (normal or raise) the process TREE is killed and
-  reaped; there is no `&` — an unscoped BACKGROUND child is
-  unrepresentable. A bare FOREGROUND command is synchronous (weir
+  reaped (`cmd | exec` inside the scope — inside any `within` — is a
+  check error, the one exit that would skip the kill
+  [D:exec-scope-refused]); there is no `&` — an unscoped BACKGROUND
+  child is unrepresentable. A bare FOREGROUND command is synchronous (weir
   waits for it), so the no-orphan claim's one gap is weir dying WHILE
   it waits: the group signal or the controlling terminal's HUP reaps
   the child then, and a child that refuses INT and HUP outlives weir
@@ -916,8 +946,10 @@ within tmp d
   `watch=` or `Proc.wait`, nowhere else. Nested scopes release LIFO.
   The command position takes splices and env sigils like any command;
 - A SCOPED HTTP LISTENER is `within serve srv = { port;
-  maxConcurrent } handler` (the config is a `ServerConfig`: `port`,
-  `maxConcurrent`, `bodyTimeout`, `maxBody`) + an indented block [D:http-serve]: the
+  maxConcurrent } handler` (the config is a `ServerConfig`: `port` —
+  an `Option<int>`, `Some 8080` binds that port, `None` an ephemeral
+  one the kernel picks [D:serve-port-option] — `maxConcurrent`,
+  `bodyTimeout`, `maxBody`) + an indented block [D:http-serve]: the
   socket lifetime IS the block — served until the scope exits
   (normal, raise, SIGINT/SIGTERM) and CLOSED on every path, so the
   port frees (a second bind then succeeds). Same no-orphan discipline
@@ -979,7 +1011,9 @@ within tmp d
   none); a charset weir cannot decode is answered 415 before any
   handler, never guessed at [D:serve-charset].
   The config is `{ port; maxConcurrent }` plus either optional field
-  (`{ port = 8080; maxConcurrent = 4; maxBody = 1MiB }`). The handle surface is `Server.port`/`Server.running`/
+  (`{ port = Some 8080; maxConcurrent = 4; maxBody = 1MiB }`; `port =
+  None` for an ephemeral port). The handle surface is `Server.port`
+  (the port actually BOUND — the kernel's pick under `None`)/`Server.running`/
   `Server.streamErrors` — no `stop` (the scope IS the teardown). ONE type
   family: `HttpMethod`, header pairs and the body union are shared
   client↔server; only the records differ where the wire does
@@ -996,13 +1030,14 @@ let handler = fun req ->
     | "/stream" -> HttpServerResponse { status = 200; headers = []; body = Stream ["a"; "b"; "c"] }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
 
-within serve srv = { port = 8410; maxConcurrent = 4 } handler
+within serve srv = { port = Some 8410; maxConcurrent = 4 } handler
     print $"listening on {Server.port srv}, open={Server.running srv}"
 ```
 - A bare `within` (no kind) + `always` is the exit discipline alone
   [D:within-always]: the indented body runs, then the `always` block
   runs on EVERY exit — normal, `fail`, `exit n`, SIGINT/SIGTERM (not
-  `kill -9`, the standing carve-out). On a signal the body's commands
+  `kill -9`, the standing carve-out; `cmd | exec` in the body is a
+  check error, like `exit` inside `always` [D:exec-scope-refused]). On a signal the body's commands
   stop, but the `always` block's commands (and fan-outs) run — teardown
   commands are what it is for. A `pfirst` or `within serve` opened
   inside `always` still cuts its own losers and late handlers
@@ -1231,7 +1266,10 @@ let x =
   points; a delete or move acts on the link itself) —
   a plan never holds an op certain to fail at apply. The refusals:
   `proc` inside a plan (a spawned binary is uncapturable — plan covers
-  weir-native mutation only), `apply` inside a plan (a capture cannot
+  weir-native mutation only), the parallel combinators inside a plan
+  (`Seq.pmap/pmapWith/piter/piterWith/pfirst/pfirstWith` and `pfor` —
+  their arms run on threads outside the plan's capture frame; fan out
+  outside the plan [D:plan-refuses-fanout]), `apply` inside a plan (a capture cannot
   be captured — apply OUTSIDE), a known-after-apply read (any file
   read, existence check or listing at, under, or over a path an
   earlier captured mutation changes would see stale state — a write in
@@ -1270,6 +1308,15 @@ print $"one op: {(changes |> Plan.ops |> Seq.exactlyOne) == WriteFile(demo, ["{}
 let p =
     plan
         git status
+```
+
+```weir-error
+// a parallel combinator is refused inside a plan — its arms run
+// outside the capture frame
+let p =
+    plan
+        [1; 2] |> Seq.piter (fun i -> print (show i))
+print (show (Plan.isEmpty p))
 ```
 
 - A `let` RHS takes command mode wherever lets go — top level AND
@@ -1399,8 +1446,14 @@ Graph.reach (fun p -> p) neighbors "app" |> Seq.iter print
   arity never completes alone (add `_`). The match probes a bounded
   prefix ONCE (memoized): effects run once total, `rest` continues
   the same enumeration, infinite seqs are safe. Refutable → match
-  only, never `let`. Param scrutinees need a resolved seq type
-  (pipe through a Seq op first — the ctor-pattern rule).
+  only, never `let`. A bare parameter is a fine scrutinee — the
+  pattern types it as a seq.
+
+```weir
+// a parameter needs no Seq op before a seq pattern matches it
+let first xs = match xs with | [] -> 0 | x :: _ -> x
+print (show (first [7; 8]))
+```
 
 ```weir
 let first =
@@ -1413,9 +1466,10 @@ print first
 - `Seq.last`/`Seq.tryLast` FORCE the whole source by necessity (an
   infinite source does not return); `Seq.rev`, `Seq.sort`/
   `Seq.sortDescending` (key-less, Ord on the elements — scalars,
-  `Option`, `[<Ord n>]`-numbered types), and
-  `Seq.countBy` join the forcing family — reversal, ordering, and
-  counting need the whole input. `Seq.windowed n` is lazy (short
+  `Option`, `[<Ord n>]`-numbered types), `Seq.countBy` and
+  `Seq.groupBy` join the forcing family — reversal, ordering,
+  counting and grouping need the whole input, so none of them returns
+  from an infinite source [D:groupby-forcing]. `Seq.windowed n` is lazy (short
   source = empty seq, no partial window; n <= 0 raises). `Option.iter` runs a Some-only
   effect; `Option.orElse fallback opt` stays in Option
   (`defaultValue` is the one that unwraps). `Option.bind f opt` chains
@@ -1440,10 +1494,21 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
 ```
 - Filesystem [D:fs-members]: `File.delete/copy/move/size` (copy/move
   = (src, dst), REFUSE existing destinations — delete first to
-  overwrite), `Dir.create` (idempotent, makes parents) /`exists`/
+  overwrite), `File.exists` (a FILE at the path — false for a
+  directory; `Dir.exists` is the directory question), `Dir.create`
+  (idempotent, makes parents) /`exists`/
   `delete` (empty only)/`deleteAll` (RECURSIVE, destructive)/`list`
-  (full paths, sorted, both kinds; `Path.glob "**"` recurses)/`move`.
+  (full paths, sorted, both kinds; `Path.glob "**"` recurses)/`move`
+  (a rename; across filesystems it copies then deletes, as `mv` does
+  [D:dir-move-cross-device]).
   Every failure names its path.
+
+```weir
+// File.exists asks for a file; a directory answers to Dir.exists
+within tmp d
+    print (show (File.exists d))
+    print (show (Dir.exists d))
+```
 - `Seq.freeze` materializes (consume to completion, eager in-memory;
   STRICT — not for infinite seqs). When to force, three customers:
   REUSE (a command-backed seq re-runs its process per enumeration —
@@ -1483,7 +1548,8 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   (the mean of ints is a float). `Seq.filter` teaches `where`.
   `Seq.groupBy` yields `(key, items)` PAIRS — F#'s own shape, the same
   tuples `countBy`/`zip`/`pairwise` speak; the pairs feed
-  `Map.ofPairs` directly, any equatable key [D:groupby-pairs]:
+  `Map.ofPairs` directly, any equatable key [D:groupby-pairs]; it
+  FORCES the source before the first pair, as `countBy` does:
 
 ```weir
 ["aa"; "ab"; "b"]
@@ -1704,7 +1770,11 @@ print x
   "cat > out"` is byte-identical to bash. Only the chain's ENDS are
   text edges: a VALUE head feeds stdin as UTF-8 lines, and the tail's
   output becomes `seq<string>` under the usual line law when a value
-  is made (`$()`, reifiers, `|>`). A failing stage raises at the
+  is made (`$()`, reifiers, `|>`) — decoded as UTF-8 with a BOM
+  skipped, except that a UTF-16/32 byte-order mark at offset 0
+  selects THAT decoding for the whole capture (a binary stream
+  starting `FF FE` is not text to capture — keep it in the byte
+  pipe). A failing stage raises at the
   LEFTMOST fault.
 - A bare STATEMENT command at a tty INHERITS stdout
   [D:colour-inherit]: the child sees the terminal (isatty true), so
@@ -1944,7 +2014,12 @@ within tmp d
   entrypoint the app gets signals directly with no forwarding layer);
   it NEVER returns, diverging like `fail`/`exit`, so it is a legal bare
   statement and cannot take a piped stdin (there is no parent left to
-  feed it). `cmd | line` reifies a one-value CLI to its single trimmed
+  feed it). The image starts in the session cwd (a `cd` before it
+  counts) under the env overlay. Inside ANY resource scope — `within
+  tmp/proc/lock/serve/cd/env`, a bare `within … always` — it is a
+  CHECK error [D:exec-scope-refused]: the replaced image would skip
+  every teardown (the tmp dir, the proc tree, the `always` block), so
+  close the scope first and exec after it. `cmd | line` reifies a one-value CLI to its single trimmed
   line of stdout as a `string` [D:reify-line] — the
   `$(cmd) |> Seq.exactlyOne` idiom for `az … -o tsv`/`git rev-parse`;
   it raises on a nonzero exit or on 0-or-2+ lines, and composes with
@@ -1960,6 +2035,13 @@ within tmp d
   (`then` ends the argv only there — quote `"then"` to pass the word;
   the checker demands bool, so a bare streaming chain errors naming
   it). Bind first when the verdict is used twice.
+
+```weir-error
+// exec inside a resource scope is a check error — the replaced image
+// would skip the scope's teardown; close the scope, then exec
+within tmp d
+    sh -c "echo replaced" | exec
+```
   Full inspection: `cmd | complete` gives a `Completed` record, `{ ok; exitCode;
   stdout; stderr }` — `ok` is `exitCode == 0` (the `succeeds` law), so `if
   r.ok then …` reads; a tool whose nonzero codes mean something (grep's 1)
@@ -2024,7 +2106,9 @@ echo built | and echo linked
   adapter shape of the same fields. Every field needs a CONCRETE type
   at the literal (a name cannot hold a type variable — declare a
   record for the generic case). No punning (`{| key |}`), no
-  `{| r with … |}`, no empty `{||}` — each refusal teaches.
+  `{| r with … |}` SPELLING (the plain-brace update works on an
+  anonymous value and keeps its shape: `{ r with n = 4 }`), no empty
+  `{||}` — each refusal teaches.
 
 ```weir
 let x = ["{\"a\": {\"b\": 1}}"] |> from json {| a: {| b: int |} |}
@@ -2271,8 +2355,10 @@ m |> to json |> Seq.iter print // JSON object keys are strings — show the key 
   a seq appends-if-absent, or upserts by the marker line's `by=<key>`;
   scalars replace; the `$-` TOMBSTONE removes (value position = the
   key; `- $- <content>` = the matching item). Update-or-insert is the
-  SEMANTICS of `by=`, not control flow; merge is orderless and
-  idempotent. LAWS: a patch types as `YamlPatch` and does NOT render
+  SEMANTICS of `by=`, not control flow; merge is idempotent (a patch
+  applied twice is applied once) and map and `by=` merges are
+  orderless — only append-if-absent is not: two patches each
+  appending to one seq land in patch order. LAWS: a patch types as `YamlPatch` and does NOT render
   (`to yaml` refuses at check — no tombstone can leak into a file);
   `$-` is refused outside a patch district; `patch` × `schema=`
   refuse (a patch is partial); `Yaml.parse` can never produce a
@@ -2934,7 +3020,8 @@ print $"{fixed} {Path.isName fixed}"
   description [D:help-case-docs]. Field names
   derive kebab flags (`dryRun` → `--dry-run`) and unambiguous
   first-letter shorts (contested letters derive for nobody;
-  `[<Short "C">]` overrides, `[<NoShort>]` suppresses, `-h` is
+  `[<Short "C">]` overrides — one letter or digit, punctuation is a
+  check error [D:short-alnum] — `[<NoShort>]` suppresses, `-h` is
   help). `[<Default v>]` moves the resting point: the field stays
   non-Option, an absent flag fills the literal, help shows it;
   `[<Default true>]` on bool mints the `--no-x` twin (`--no-*`
@@ -2944,7 +3031,9 @@ print $"{fixed} {Path.isName fixed}"
   arguments, repeats, missing requireds — all collected into ONE
   boundary error. A value is the NEXT argument (`--out x`; `--out=x`
   is refused, teaching the spaced form; the message never repeats the
-  value of a `Secret` field or of an unknown flag). That error is the
+  value of a `Secret` field or of an unknown flag — the token after a
+  misspelled flag is reported as an unexpected argument WITHOUT its
+  text [D:args-unknown-flag-no-echo]). That error is the
   script USER's usage error [D:args-usage-error]: `tool.weir: <problem>`
   lines, the involved flags' help lines, `run 'tool.weir --help' for
   usage`, exit 2, no weir location (`try` still captures it). A file
@@ -3340,7 +3429,6 @@ the checker's own environment [D:surface-gate] — same contract as above:
 - type `Option`: `Some` `None`
 - type `Poll`: { `timeout` `interval` }
 - type `Repeat`: { `interval` `timeout` }
-- type `PromptStatus`: { `ok` `exit` }
 - type `PromptStatus`: { `ok` `exit` `duration` }
 - type `Result`: `Ok` `Error`
 - type `Retry`: { `attempts` `delay` `timeout` }

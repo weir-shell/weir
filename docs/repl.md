@@ -116,8 +116,9 @@ A note follows when a seq has not been fully evaluated. The echo
 doesn't show types by default: `2` echoes `2`, `let x = 5` echoes
 `x = 5`, and a statement that returns nothing (`print "a"`) echoes
 nothing after its output. `#types on` adds them back for the session
-(`2 : int`, `x : int = 5`, `() : unit`, a `: seq<string>` line under
-a seq's lines), `#types off` drops them again, and `#types` on its
+(`2 : int`, `x : int = 5`, a `: seq<string>` line under a seq's
+lines; a unit value still echoes nothing), `#types off` drops them
+again, and `#types` on its
 own shows the setting. `"types": "on"` in the
 [config](tooling.md#the-repl-config) turns them on at startup; the
 directive overrides it. Piped output always shows types.
@@ -175,7 +176,8 @@ includes them.
 The echo is only a preview. There are three ways to see a result:
 
 - the **echo**, for a quick look. By default it shows up to 100
-  elements of a lazy seq, which is enough for typical command output
+  elements of a lazy seq — at a terminal, piped and in `weir -e`
+  alike — which is enough for typical command output
   without a `Seq.freeze`. Long strings are cut, and a hint tells you
   the current limit.
 - **`|> print`**, which shows everything, one element per line. For a

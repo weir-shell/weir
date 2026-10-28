@@ -861,7 +861,7 @@ let c25Fixture port = $$<<<
             File.append log ["slow cleanup end"]
         HttpServerResponse { status = 200; headers = []; body = Text "ok" }
 
-    within serve srv = { port = $port; maxConcurrent = 4 } handler
+    within serve srv = { port = Some $port; maxConcurrent = 4 } handler
         within proc slow = python3 -I cli.py $port /slow
             poll timeout=10s interval=50ms watch=slow
                 File.exists log
@@ -888,7 +888,7 @@ let ctlExitParity d =
     let fixture port = [
         "let log = Self.args |> Seq.head"
         "let h = fun req -> fail \"boom\""
-        $"within serve srv = {{ port = {port}; maxConcurrent = 2 }} h"
+        $"within serve srv = {{ port = Some {port}; maxConcurrent = 2 }} h"
         $"    let x = python3 -I cli.py {port} | complete"
         "    File.append log x.stdout"
         "    Server.streamErrors srv |> Seq.iter (fun e -> File.append log [\"SE=\" + e])"

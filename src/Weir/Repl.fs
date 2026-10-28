@@ -2577,11 +2577,8 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
             // one destructuring line reports each binding on its
             // own line, value included — matching what two lets would
             // have shown (the one-line form; tables stay the plain let's)
-            let cap =
-                if Console.IsOutputRedirected then
-                    Eval.echoPipedCap
-                else
-                    echoCap
+            // one cap at a tty and piped [D:echo-cap-100]: #echo moves both
+            let cap = echoCap
 
             for n, sch in schemes do
                 match bindings |> List.tryFind (fun (bn, _) -> bn = n) with
@@ -2596,7 +2593,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                         let rendered, hint = Eval.echoValue cap (Eval.echoPrep bv)
 
                         Console.WriteLine
-                            $"{letEchoHead n sch.Ty} = {Eval.sanitizeTtyEcho rendered}{Eval.echoTail hint}"
+                            $"{letEchoHead n sch.Ty} = {Eval.echoRender Console.IsOutputRedirected rendered}{Eval.echoTail hint}"
                 | _ -> Console.WriteLine(letEchoHead n sch.Ty)
 
             { state with
@@ -2634,13 +2631,8 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 // is pinned surface): records tabulate [D:repl-table],
                 // seq<string> shows its lines [D:echo-lines] — keyed on
                 // the type, never the content — the literal otherwise
-                // the cap in effect [D:echo-cap]: the session's at a
-                // tty; the piped surface keeps its pinned constant
-                let cap =
-                    if Console.IsOutputRedirected then
-                        Eval.echoPipedCap
-                    else
-                        echoCap
+                // one cap at a tty and piped [D:echo-cap-100]: #echo moves both
+                let cap = echoCap
 
                 match
                     (if Console.IsOutputRedirected then
@@ -2680,7 +2672,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 | None ->
                     let rendered, hint = Eval.echoValue cap ev
                     let tail = Eval.echoTail hint
-                    Console.WriteLine $"{letEchoHead name te.Ty} = {Eval.sanitizeTtyEcho rendered}{tail}"
+                    Console.WriteLine $"{letEchoHead name te.Ty} = {Eval.echoRender Console.IsOutputRedirected rendered}{tail}"
 
             // a `let` binds its name only — it does not rebind `it`
             // (FSI parity) [D:repl-it]
@@ -2764,11 +2756,8 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 let ev = if v <> Eval.VUnit then Eval.echoPrep v else v
 
                 if v <> Eval.VUnit then
-                    let cap =
-                        if Console.IsOutputRedirected then
-                            Eval.echoPipedCap
-                        else
-                            echoCap
+                    // one cap at a tty and piped [D:echo-cap-100]: #echo moves both
+                    let cap = echoCap
 
                     match functionEcho state.TypeEnv te ev with
                     // a named function value echoes its mini-help
@@ -2806,8 +2795,9 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                             // like every other metadata line [D:table-polish]
                             let meta = if echoTypes () then $" : {formatEchoTy te.Ty}{tail}" else tail
 
+                            // one renderer with -e [D:echo-one-renderer]
                             Console.WriteLine(
-                                Eval.sanitizeTtyEcho rendered
+                                Eval.echoRender Console.IsOutputRedirected rendered
                                 + (if meta = "" then "" else Types.Color.dim Types.Color.onStdout.Value meta)
                             )
                 elif not Console.IsOutputRedirected then
@@ -3141,6 +3131,17 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
                 match name.Split '.' with
                 | [| m; mem |] when Map.containsKey m te.Modules ->
                     $"#help: {m} has no member '{mem}'{didYouMean mem (te.Modules[m] |> Map.keys)}"
+                | _ when Builtins.bareTwoHome.Contains name ->
+                    // a two-home name is qualified-only [D:bare-partition] —
+                    // not unknown: name its homes, as the checker does
+                    let homes =
+                        Builtins.bareAliasModules
+                        |> Seq.filter (fun m ->
+                            te.Modules |> Map.tryFind m |> Option.exists (Map.containsKey name))
+                        |> Seq.map (fun m -> $"{m}.{name}")
+                        |> String.concat " or "
+
+                    $"'{name}' is module-qualified here; use {homes}"
                 | _ ->
                     // the documentable universe, one source shared with the
                     // #help-arg completion slot [D:help-arg-complete] — so
@@ -3819,19 +3820,34 @@ let private namesSessionIt (d: Script.Diagnostic) : bool =
         && (d.Message.Length = marker.Length
             || (let c = d.Message[marker.Length] in c = '.' || c = ' ')))
 
+// a `cmd-not-found` diagnostic whose word is a name the SESSION bound:
+// in the distilled file that word is a dangling reference (its binding
+// was dropped, or a redeclaration moved below its reader by the dedup),
+// which a script reads as a phantom command — check warns, run fails.
+// The guarantee treats it as `it` is treated [D:repl-save].
+let private namesSessionBinding (sessionNames: Set<string>) (d: Script.Diagnostic) : bool =
+    d.Code = "cmd-not-found"
+    && (let m =
+            Text.RegularExpressions.Regex.Match(d.Message, @"^command not found on PATH: ([A-Za-z_][A-Za-z0-9_]*)")
+
+        m.Success && sessionNames.Contains m.Groups[1].Value)
+
 // the distill-fatal diagnostics for a candidate file, [] when clean.
 // Line-split each block, assemble the file, analyze it (the synthetic
 // path is used only for import resolution — none here — and messages).
-// Distill-fatal = any error-severity diagnostic or a session-only `it`
-// reference (a warning the guarantee still must act on).
-let private candidateErrors (stmts: DistillStmt list) : Script.Diagnostic list =
+// Distill-fatal = any error-severity diagnostic, a session-only `it`
+// reference, or a dangling reference to a session-bound name (warnings
+// the guarantee still must act on).
+let private candidateErrors (sessionNames: Set<string>) (stmts: DistillStmt list) : Script.Diagnostic list =
     let lines = stmts |> List.collect (fun s -> s.Lines)
 
     if List.isEmpty lines then
         []
     else
         let diags, _, _, _, _ = Script.analyzeLines "#save" lines
-        diags |> List.filter (fun d -> d.Severity = "error" || namesSessionIt d)
+
+        diags
+        |> List.filter (fun d -> d.Severity = "error" || namesSessionIt d || namesSessionBinding sessionNames d)
 
 // protect a self-contained-but-unused binder [D:repl-save]: the
 // unused-binding law refuses a top-level `let x = <<<…>>>` that nothing
@@ -3896,8 +3912,12 @@ let private unusedName (d: Script.Diagnostic) : string =
     let m = Text.RegularExpressions.Regex.Match(d.Message, "^'([^']+)'")
     if m.Success then m.Groups[1].Value else ""
 
-let rec private guaranteeChecks (kept: DistillStmt list) (dropped: int) : DistillStmt list * int =
-    let errs = candidateErrors kept
+let rec private guaranteeChecks
+    (sessionNames: Set<string>)
+    (kept: DistillStmt list)
+    (dropped: int)
+    : DistillStmt list * int =
+    let errs = candidateErrors sessionNames kept
 
     if List.isEmpty errs then
         kept, dropped
@@ -3922,7 +3942,7 @@ let rec private guaranteeChecks (kept: DistillStmt list) (dropped: int) : Distil
                     |> List.filter (fun (j, _) -> not (List.contains j ownersToDrop))
                     |> List.map snd
 
-                guaranteeChecks kept' (dropped + List.length ownersToDrop)
+                guaranteeChecks sessionNames kept' (dropped + List.length ownersToDrop)
             | [] ->
                 // only unused-binding errors remain — protect exactly the
                 // lets the findings point at (a definition is the product,
@@ -3951,7 +3971,7 @@ let rec private guaranteeChecks (kept: DistillStmt list) (dropped: int) : Distil
                         kept
 
                 if protectedSet <> kept then
-                    guaranteeChecks protectedSet dropped
+                    guaranteeChecks sessionNames protectedSet dropped
                 else
                     let victim =
                         unusedOwners |> List.tryHead |> Option.defaultValue (List.length kept - 1)
@@ -3959,7 +3979,7 @@ let rec private guaranteeChecks (kept: DistillStmt list) (dropped: int) : Distil
                     let kept' =
                         kept |> List.mapi (fun j s -> j, s) |> List.filter (fun (j, _) -> j <> victim) |> List.map snd
 
-                    guaranteeChecks kept' (dropped + 1)
+                    guaranteeChecks sessionNames kept' (dropped + 1)
 
 // the distill core, exposed as a seam for tests: transcript survivors
 // (the `TDef` name + physical source) through qualify -> dedup -> the
@@ -3972,11 +3992,14 @@ let distillDefs
     : string list * int =
     // a resolver that parses alias names as external heads (so an aliased
     // command line parses to an ECmd) but never rewrites them, so the head
-    // keeps its source name and span for the desugar [D:command-head-alias]
+    // keeps its source name and span for the desugar [D:command-head-alias].
+    // The identity alias (the name itself, no prefix) keeps the alias table's
+    // precedence over a builtin VALUE of the same name (`#alias ls = ls …`):
+    // without it `ls /tmp` reads as the typed `ls` applied, and no head is found
     let desugarR =
         { r with
             IsExternal = (fun n -> r.IsExternal n || (aliasOf n).IsSome)
-            AliasHead = fun _ -> None }
+            AliasHead = fun n -> aliasOf n |> Option.map (fun _ -> (n, [])) }
 
     // qualify bare module aliases, then desugar command-head aliases (both
     // per physical line, span-based; a multi-line heredoc/type keeps its
@@ -3990,7 +4013,8 @@ let distillDefs
               { Key = name; Lines = lines } ]
 
     let deduped = dedupLast qualified
-    let survivors, dropped = guaranteeChecks deduped 0
+    let sessionNames = defs |> List.map fst |> Set.ofList
+    let survivors, dropped = guaranteeChecks sessionNames deduped 0
     (survivors |> List.collect (fun s -> s.Lines)), dropped
 
 let private saveDirective (state: State) (path: string) : unit =
@@ -4514,12 +4538,32 @@ let private applySessionField
         // within env and the sigils layer over it as they layer
         // over any inherited env. (No unset: an entry adds or
         // overrides, never hides.)
-        for pv in pairs do
-            match pv with
-            | Eval.VTuple [ Eval.VStr k; Eval.VStr v ] -> Environment.SetEnvironmentVariable(k, v)
-            | _ -> ()
+        let pairs =
+            pairs
+            |> Seq.choose (function
+                | Eval.VTuple [ Eval.VStr k; Eval.VStr v ] -> Some(k, v)
+                | _ -> None)
+            |> List.ofSeq
 
-        true
+        // the key law holds here as where any env is built
+        // [D:env-key-refusal]: every key is judged before any is set, so a
+        // refused one leaves the process env untouched (all-or-nothing)
+        let refusal =
+            pairs
+            |> List.tryPick (fun (k, _) ->
+                try
+                    Proc.envKeyRefusal "#session env" k
+                    None
+                with Failure msg ->
+                    Some msg)
+
+        match refusal with
+        | Some msg -> err msg
+        | None ->
+            for k, v in pairs do
+                Environment.SetEnvironmentVariable(k, v)
+
+            true
     | k, _ -> err $"#session {k}: unexpected value"
 
 /// load the init file into the session; all-or-nothing. Returns the

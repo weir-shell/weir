@@ -1105,7 +1105,10 @@ Like `fail` and `exit`, `| exec` never returns, so it can stand alone
 as a statement. The program can be written literally or come from a
 value (`^$cmd`), and you can add an environment
 (`$e(cmd | exec)`). You can't pipe input into it, since there's no
-weir process left to feed it.
+weir process left to feed it. And it can't sit inside a `within`
+block of any kind — `weir check` refuses it there, because the
+replaced process would skip the scope's cleanup (the temp dir, the
+scoped process, the `always` block). Close the scope, then exec.
 
 For bash's `&&`/`||` one-liners, chain on the exit status directly:
 
@@ -1932,7 +1935,7 @@ decide that yourself. (Almost no servers support QUERY yet, so expect
 
 For query strings, `base |> Http.withQuery [("q", term)]`
 percent-encodes each key and value, so a space or `&` can't break the
-URL. You still have to build the path part of the URL carefully
+URL; the query goes before any `#fragment`. You still have to build the path part of the URL carefully
 yourself.
 
 TLS certificates are verified by default.
@@ -1994,7 +1997,7 @@ let handler = fun req ->
     | "/events" -> HttpServerResponse { status = 200; headers = []; body = Stream (Seq.initInfinite show) }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
 
-within serve srv = { port = 8080; maxConcurrent = 8 } handler
+within serve srv = { port = Some 8080; maxConcurrent = 8 } handler
     print $"serving on {Server.port srv}"
     Duration.sleep 30s
 ```
@@ -2654,6 +2657,10 @@ Where the guarantee stops:
   program reads or writes, so `plan` is a dry run for *file and
   config work*, not for any script. `cmd | exec` isn't allowed
   either, since replacing the process can't be recorded.
+- **Parallel work isn't allowed in a plan**: `Seq.pmap`, `piter`,
+  `pfirst` (and their `…With` forms) and `pfor` are check errors
+  there, since their arms run on threads the plan can't record. Fan
+  out outside the plan.
 - **`apply` isn't allowed inside a plan**, since that change couldn't
   be recorded. Build the plan in the block and apply it outside.
   Nested `plan` blocks are fine; each returns its own plan.

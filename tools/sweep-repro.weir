@@ -1023,7 +1023,8 @@ let b38 d =
     let refuses r needle = codeOf r == 1 && not (diagOf r |> Str.contains needle)
 
     failing [
-        ("Some 1 < None names no '<'", codeOf rOrd == 1 && (diagOf rOrd |> Str.contains "'<'"))
+        // `<` orders Options [D:ord-scalar-operators]
+        ("Some 1 < None is refused", codeOf rOrd == 0)
         ("a Show leftover called equality", refuses rShow "equality")
         ("an Ord leftover called equality", refuses rSort "equality")
         ("budget error says annotate", refuses rBudget "annotate")

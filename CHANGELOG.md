@@ -56,6 +56,104 @@
   import's parse allocates 79 MB instead of 151 MB, and the import goes
   from 225 ms to 202 ms pinned to one core and from 192 ms to 167 ms on
   15 (medians of 21); bare startup stays about 9 ms pinned.
+- **A misspelled flag no longer prints the next argument.** After an
+  unknown flag, `Args.load` reported the following word as an
+  unexpected argument and quoted it, so `--tokn hunter2` for a
+  `Secret` flag printed the secret. The word is still reported, as
+  `unexpected argument after '--tokn'`, without its text.
+- **`cmd | exec` honours the current directory, and is refused where
+  it would skip cleanup.** The replaced process started in the
+  script's start directory whatever `cd` or `within cd` said; it now
+  starts in the session's. Inside any `within` block (`tmp`, `proc`,
+  `lock`, `serve`, `cd`, `env`, or a bare `within … always`) `exec` is
+  now a check error: replacing the process left the temp dir behind,
+  orphaned the scoped process and never ran `always`.
+- **`let x = retry …` runs each body line on its own.** With the loop
+  head on the `let` line, same-indent body lines were glued into one
+  command (`echo first echo second`) with only a warning; they now
+  sequence as they do without the `let`.
+- **An explicit `Content-Type` replaces the body's.** A request with
+  a `Content-Type` header and a `Text`/`Json`/`Form` body sent both,
+  comma-joined (`text/plain, text/csv`), which servers reject. The
+  explicit header now wins and exactly one is sent, as for
+  `User-Agent`.
+- **`#save` keeps what it promises.** A line that used a name later
+  redeclared was saved above the redeclaration and failed at run, and
+  an alias over a builtin (`#alias ls = ls --color=never`) dropped the
+  aliased `let` while keeping its dependents. Both saved files now
+  check and run.
+- **A top-level YAML `null` writes `null`.** `to yaml` wrote empty
+  text for it, which does not read back, and a `null` document
+  vanished from a `to yaml stream`.
+- **`Server.port` reports the bound port.** See Changed.
+- **`Dir.move` crosses filesystems.** A move to another mount failed
+  with "cannot access … Invalid cross-device link"; it now copies then
+  deletes, as `mv` and `File.move` do, and its errors name the paths.
+  A symlinked source moves as the link, exactly as on one filesystem.
+- **`weir restore` repairs a locally modified signature.** It said
+  `present` and exited 0 while `verify` said MODIFIED.
+- **`Instant.tryParseWith` raises for a format without a full date.**
+  Such a format can never match, so returning `None` hid the bug; it
+  now raises as `parseWith` and an unknown directive do.
+- **`Http.withQuery` puts the query before a `#fragment`.** It
+  appended after it (`h/p#frag?a=1`), so the parameter was never sent.
+- **`[<Wire "name">]` matches a table header verbatim** even when it
+  is spelled like the field.
+- **`///` above a one-line `[<Attr>] field: T` reaches `--help`.**
+  The own-line attribute form worked; the inline one dropped the doc.
+- **`weir -e` and the REPL echo share one renderer.** Piped, both
+  write a value's control characters byte-faithfully; at a terminal,
+  both show them visibly (`\x00`, `\x1b`). They used to disagree.
+- **No more .NET exception text** from `show` of the minimum
+  `Duration`, strings past the length limit (`Str.join`, `+`,
+  interpolation, `Str.replace`, `Bytes.toHex` now name the limit),
+  `Json.inferShape` on bad JSON (and the message names
+  `Json.inferShape`, not `#infer`), an init file's bad `#session` env
+  key (now a check error, NUL included), an out-of-range serve port,
+  an `Other` method that is not a token, an invalid or non-http URL, a
+  `Transfer-Encoding` request header (refused before send), a garbled
+  status line, `weir add schema` given a local path (`add schema takes
+  an http(s) URL`), and a malformed `.weir/lock.json`.
+- **`weir check` agrees with the run.** It refused spec-valid code —
+  `let q = 3 in q + 1` inside an indented block, `cmd | and cd d` in a
+  block — and passed code the run refused: `Seq.pmap`/`piter`/
+  `pfirst`/`pfor` and a mutating `Http.expect` inside `plan`,
+  `[<Short "-">]` (a short is now one letter or digit). A misplaced
+  or unknown directive gets the run's message from check too, an
+  ambiguous imported case is named as such, env-key refusals are
+  located where the key is built, and a shared module's error is
+  reported once, not once per import.
+- **`weir fmt` no longer refuses a match arm continued by `|>`** under
+  its body, a layout the checker accepts.
+- **Clearer messages.** No internal names (`'__hole1`, `'a1`) or
+  parser expectation dumps in diagnostics; one shape for a bad flag or
+  env value (`--rate: not a float: 'abc'`); `--` is refused as an
+  end-of-options marker instead of getting a did-you-mean; `--help`
+  keeps two spaces between a long flag and its text (wrapping when it
+  must) and shows string defaults quoted; a TLS handshake with a plain
+  HTTP port is no longer called an untrusted certificate; and a dozen
+  more located or reworded errors.
+- **Docs match the binary.** The reference and the skill file no
+  longer contradict behaviour: `Seq.groupBy` forces its source,
+  `Seq.take` past the end truncates while `skip` raises, `Size`'s
+  `show` does not parse back, identifiers take no `'`, `from yaml`
+  refuses `Map` fields, a yaml patch's sequence appends depend on
+  patch order, `File.exists` is false for a directory, command output
+  starting with a UTF-16/32 byte-order mark decodes as that encoding,
+  and the echo shows 100 elements in `-e` and piped as at a terminal.
+
+### Changed
+
+- **`ServerConfig.port` is an `Option<int>`.** `Some 8080` binds that
+  port; `None` asks the kernel for a free one, and `Server.port`
+  reports the port actually bound (it said 0 for `port = 0`). Migrate
+  `{ port = 8080; … }` to `{ port = Some 8080; … }`.
+- **`<`, `>`, `<=` and `>=` compare strings, bools and Options.**
+  Whatever `Seq.sort` orders, the operators now compare (strings
+  ordinally, `false` before `true`, `None` first); `Uuid` still has no
+  `<`.
+- **The `-e` and piped REPL echo shows 100 elements of a lazy seq**,
+  as the terminal REPL does and `#echo` reports (it was 10).
 
 ## v0.0.80
 

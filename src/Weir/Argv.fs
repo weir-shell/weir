@@ -141,6 +141,10 @@ let badEnvDefault (def: RecordDef) : string option =
             | TBool, ABool _
             | TDur, ADur _
             | TSize, ASize _ -> None
+            // the Args teaching, one rule for both boundaries [D:secret]
+            | TSecret, _ ->
+                Some
+                    $"'{f}': a Secret takes no [<Default>] — a hardcoded default secret defeats the type; set the variable in the environment"
             | TNamed("Option", _), _ ->
                 Some(
                     "'"
