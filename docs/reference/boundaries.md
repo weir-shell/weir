@@ -45,11 +45,12 @@ A bad command line is the script user's mistake, not the script's, so
 the error reads like any tool's usage error: the script's name, one
 line per problem, the help lines of the flags involved, and a pointer
 to `--help`. It carries no weir source location, and the exit code
-is 2. `deploy.weir --trget prod` gives:
+is 2. The word after an unknown flag is reported without its text —
+the flag may be a misspelled secret. `deploy.weir --trget prod` gives:
 
 ```text
 deploy.weir: unknown flag '--trget'. Did you mean '--target'?
-deploy.weir: unexpected argument 'prod'
+deploy.weir: unexpected argument after '--trget'
 deploy.weir: missing required flag '--target'
   -t, --target <string>       required — the environment to deploy to
 run 'deploy.weir --help' for usage
@@ -165,6 +166,6 @@ comments; no `export` and no `$VAR` expansion).
 
 ## What both refuse
 
-Both refuse `Bytes` fields, and the error names the conversion to
-use. Both parse `Instant` fields as ISO 8601. A `Secret` passed as a
+Both refuse `Bytes` fields, and the error lists the field types they
+take. Both parse `Instant` fields as ISO 8601. A `Secret` passed as a
 flag is visible in `ps` output; weir does not hide argv.

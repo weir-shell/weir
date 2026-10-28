@@ -268,8 +268,12 @@ code:
 - `cmd | exec` — replaces the weir process with the command (`execve`;
   on Windows weir runs it, waits, and exits with its code). The command
   keeps weir's pid, so a container entrypoint gets signals directly. It
-  never returns, so it can stand alone as a statement. It can't take
-  piped input and isn't allowed inside `plan`.
+  never returns, so it can stand alone as a statement, and it starts
+  in the session's current directory (a `cd` before it counts). It
+  can't take piped input, isn't allowed inside `plan`, and is a check
+  error inside any `within` block (`tmp`, `proc`, `lock`, `serve`,
+  `cd`, `env`, or a bare `within … always`): the replaced process
+  would skip the scope's cleanup, so close the scope first.
 
 All three accept an env overlay (`$e(cmd | line)`), and `line` and
 `text` accept piped input (`xs | grep foo | line`).

@@ -34,7 +34,9 @@ that too. With job control on (`weir … &` or `nohup weir … &` typed at an
 interactive shell) the job runs in its own process group with SIGINT
 live: a terminal Ctrl+C is not sent to it, and `kill -INT` works as usual. The block is an ordinary block: its statements run
 and the last expression is its value. It also works as a plain
-statement.
+statement. One statement is refused inside any `within` block, at
+check time: `cmd | exec`. The replaced process would skip the
+release, so close the scope first and exec after it.
 
 | form | holds | on every exit |
 |---|---|---|
@@ -146,7 +148,7 @@ statements after the scope run, and the program exits 0. It is how a
 server or a sidecar stays up until the operator stops it:
 
 ```weir-demo
-within serve srv = { port = 8080; maxConcurrent = 4 } handler
+within serve srv = { port = Some 8080; maxConcurrent = 4 } handler
     print $"listening on {Server.port srv}"
 until stopped
 
@@ -184,7 +186,7 @@ within proc fwd = kubectl port-forward svc/db 5432:5432
     poll timeout=30s interval=200ms watch=fwd
         Net.portOpen 5432
     within proc tun = ssh -N -R 9000:localhost:8080 bastion
-        within serve srv = { port = 8080; maxConcurrent = 4 } handler
+        within serve srv = { port = Some 8080; maxConcurrent = 4 } handler
             print "up"
         until stopped
 print "tunnels closed"
@@ -218,14 +220,14 @@ daemon and belongs under systemd; weir has no `nohup`.
 ## `serve`
 
 An HTTP listener held for the block. `within serve srv = { port =
-8080; maxConcurrent = 4 } handler` opens the socket on loopback, runs
+Some 8080; maxConcurrent = 4 } handler` opens the socket on loopback, runs
 `handler` — a plain synchronous `HttpServerRequest ->
 HttpServerResponse` function — once per request, and closes the socket
 however the block exits (normally, by an error, SIGINT, SIGTERM), so
 the port is freed. As with `proc`, the server lives exactly as long as
-the block, and there is no `stop` function. `Server.port`,
-`Server.running` and `Server.streamErrors` are all you can do with
-the handle.
+the block, and there is no `stop` function. `Server.port` (the port
+actually bound), `Server.running` and `Server.streamErrors` are all
+you can do with the handle.
 
 The listener answers on the same port for all the common loopback
 names — `127.0.0.1`, `localhost` and `[::1]` — so a client using any of
@@ -274,7 +276,10 @@ without an answer and nothing is recorded.
 `Seq.pmapWith`; extra requests wait in a queue, and pipelined requests
 on one connection are answered in order.
 
-The config record is `{ port; maxConcurrent }`, optionally with
+The config record is `{ port; maxConcurrent }` — `port` is an
+`Option<int>`: `Some 8080` asks for that port, `None` lets the kernel
+pick a free one, and `Server.port srv` reports the bound port either
+way — optionally with
 `bodyTimeout` (a `Duration`, default 30s) that limits how long
 reading the request body may take, and `maxBody` (a `Size`, default
 16MiB) that limits its size. The body is read before a handler slot

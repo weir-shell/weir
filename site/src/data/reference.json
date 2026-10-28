@@ -1760,9 +1760,9 @@
         {
           "name": "port",
           "signature": "Server.port (srv: Server) : int",
-          "summary": "The port the listener bound.",
+          "summary": "The port the listener bound \u2014 the port asked for, or the free one picked for \u0060port = None\u0060.",
           "example": null,
-          "pointer": "within serve srv = { port = 8080; maxConcurrent = 4 } handler binds the handle; see #help within"
+          "pointer": "within serve srv = { port = Some 8080; maxConcurrent = 4 } handler binds the handle; see #help within"
         },
         {
           "name": "running",
@@ -3037,7 +3037,7 @@
       "fields": [
         {
           "name": "port",
-          "type": "int"
+          "type": "Option\u003Cint\u003E"
         },
         {
           "name": "maxConcurrent",

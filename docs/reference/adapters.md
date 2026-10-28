@@ -89,7 +89,9 @@ counts |> Map.pairs |> Seq.iter (fun (k, n) -> print $"{k}={n}")
 
 ## YAML
 
-`from yaml T` accepts the same shapes as JSON. Quoting decides a
+`from yaml T` accepts the same shapes as JSON, except a `Map<string, T>`
+field: yaml refuses it in both directions (write the mapping as a seq
+of pairs, `seq<string * T>`). Quoting decides a
 scalar's type in both directions: `rate: 1.5` is a number, `"1.5"` is
 a string. An empty value and the plain words `null`, `Null`, `NULL`
 and `~` are null (YAML 1.2's core schema): `None` in an `Option`
@@ -330,10 +332,12 @@ language. Maps are merged recursively, adding or updating keys. A
 sequence item is appended if absent, or, with `by=<key>` on the
 marker line, updated by that key (and inserted if no item matches). Scalars are replaced. The `$-` marker
 removes things: in value position it removes the key it sits under,
-and as `- $- <content>` it removes the matching item. The order of
-changes does not matter and applying a patch twice gives the same
-result, so with `by=` you never write an "update or insert" branch
-yourself.
+and as `- $- <content>` it removes the matching item. Applying a
+patch twice gives the same result as once, and for map merges and
+`by=` upserts the order of patches does not matter either; only
+append-if-absent depends on it — two patches that each append to the
+same sequence land in the order they are applied. So with `by=` you
+never write an "update or insert" branch yourself.
 
 ```weir
 let doc = <<<

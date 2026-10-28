@@ -409,8 +409,16 @@ Ordering is the one constraint you opt into for your own types: a
 record or union sorts (`Seq.sort`, `sortBy` keys, `min`/`max`) and
 compares (`<`, `>`, `<=`, `>=`) only by `[<Ord n>]` positions written
 on its fields or cases, so the order is spelled, never read off the
-declaration. Scalars, `Option` and numbered types order; tuples do not
-— name the parts in a record and number them with `[<Ord n>]`:
+declaration. Scalars (`int`, `float`, `string` — ordinal —, `bool`,
+`Duration`, `Size`, `Instant`), `Option` of them and numbered types
+both sort and compare with `<`/`>`/`<=`/`>=`: whatever `Seq.sort`
+orders, the operators compare. Tuples do not — name the parts in a
+record and number them with `[<Ord n>]`:
+
+```weir
+print (show ("a" < "b"))
+print (show (None < Some "x"))
+```
 
 ```weir-error
 [(1, "b"); (2, "a")] |> Seq.sort |> Seq.iter (fun p -> print (show p)) // tuples have no order

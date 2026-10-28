@@ -234,7 +234,8 @@ The longer story behind some of those rows:
 - An anonymous record literal needs concrete field types:
   `fun x -> {| a = x |}` is rejected, though F# accepts it. There's
   also no empty `{||}` (F# allows it), no punning, and no
-  `{| r with … |}`.
+  `{| r with … |}` spelling — write `{ r with … }`, which works on an
+  anonymous value too.
 - `(>) 10` means `fun x -> 10 > x`, which almost everyone reads the
   wrong way round, so weir doesn't allow partially applied operators.
 
