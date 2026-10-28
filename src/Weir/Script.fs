@@ -12398,8 +12398,14 @@ let checkOnly (json: bool) (path: string) : int =
     | Ok rawLines ->
         // the stray directive lines report as run reports them, and the
         // rest of the file still checks with those lines blanked (line
-        // numbers kept) — never an expected-token dump at the `#`
-        let misuses = directiveMisuses rawLines
+        // numbers kept) — never an expected-token dump at the `#`. An
+        // init-marked file checks as the init it is [D:init-marker]; its
+        // directives are analyzeLines' to judge
+        let misuses =
+            if isInitMarked rawLines then
+                []
+            else
+                directiveMisuses rawLines
         let stray = misuses |> List.map fst |> Set.ofList
 
         let directiveDiags =
