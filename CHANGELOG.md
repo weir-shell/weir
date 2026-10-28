@@ -31,6 +31,11 @@
   tuple and a child list per node. Each is now built once or not at
   all. Same diagnostics: the starship import goes from 196 ms to 182 ms
   pinned and from 159 ms to 153 ms on 15.
+- **Source positions are values.** Every syntax node's span held two
+  heap-allocated positions; a position is now two plain numbers inside
+  the span. With the change above, the starship import allocates 137 MB
+  instead of 163 MB and goes from 196 ms to 178 ms pinned and from
+  159 ms to 141 ms on 15 (medians of 21).
 
 ## v0.0.81
 
