@@ -210,10 +210,28 @@ let respaceLine (line: string) : string =
 // the 1-based column of the first tab in a line's leading whitespace
 // [D:spaces-only-indent]
 let private leadingTabCol (raw: string) : int option =
-    raw
-    |> Seq.takeWhile (fun c -> c = ' ' || c = '\t')
-    |> Seq.tryFindIndex ((=) '\t')
-    |> Option.map ((+) 1)
+    let mutable i = 0
+
+    while i < raw.Length && raw[i] = ' ' do
+        i <- i + 1
+
+    if i < raw.Length && raw[i] = '\t' then Some(i + 1) else None
+
+let private leadingSpaces (s: string) : int =
+    let mutable i = 0
+
+    while i < s.Length && s[i] = ' ' do
+        i <- i + 1
+
+    i
+
+let private leadingSpacesTabs (s: string) : int =
+    let mutable i = 0
+
+    while i < s.Length && (s[i] = ' ' || s[i] = '\t') do
+        i <- i + 1
+
+    i
 
 let private tabIndentError (lineNo: int) (raw: string) : string =
     let col = leadingTabCol raw |> Option.defaultValue 1
@@ -766,34 +784,35 @@ let isMarkerPiece (piece: string) =
 /// arming marker line) [D:content-bytes]: the byte-preserving passes —
 /// doc attachment, the doc-align lint, fmt's doc canonicalization —
 /// must neither read nor move them; content is bytes.
-let private districtContentMaskOf (lines: (string * string) list) : bool[] =
-    let arr = List.toArray lines
-    let mask = Array.create arr.Length false
-    let mutable armed: int option = None // the marker line's indent
+let private districtContentMaskOf (raws: string[]) (codes: string[]) : bool[] =
+    let mask = Array.create raws.Length false
+    let mutable armed = -1 // the marker line's indent
 
-    for i in 0 .. arr.Length - 1 do
-        let raw, code = arr[i]
-        let indent = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
+    for i in 0 .. raws.Length - 1 do
+        let raw = raws[i]
+        let code = codes[i]
 
-        if raw.Trim() = "" then
+        if System.String.IsNullOrWhiteSpace raw then
             () // blank: transparent, stays armed, unmasked
-        elif code.Trim() = "" then
-            match armed with
-            | Some m when indent > m -> mask[i] <- true
-            | _ -> ()
+        elif System.String.IsNullOrWhiteSpace code then
+            if armed >= 0 && leadingSpaces raw > armed then
+                mask[i] <- true
+        elif armed >= 0 && leadingSpaces raw > armed then
+            mask[i] <- true
         else
-            match armed with
-            | Some m when indent > m -> mask[i] <- true
-            | _ ->
-                armed <- None
+            armed <- -1
 
-                if isMarkerPiece (code.TrimStart()) then
-                    armed <- Some indent
+            if
+                (code.Contains "yaml" || code.Contains "<<<")
+                && isMarkerPiece (code.TrimStart())
+            then
+                armed <- leadingSpaces raw
 
     mask
 
 let districtContentMask (lines: string list) : bool[] =
-    districtContentMaskOf (lines |> List.map (fun raw -> raw, stripComment raw))
+    let raws = List.toArray lines
+    districtContentMaskOf raws (Array.map stripComment raws)
 
 /// Pure pass: a contiguous run of `///` lines attaches to the
 /// declaration on the next code line; a blank or a plain `//` line
@@ -809,11 +828,13 @@ let docAttachments (lines: string list) : DocAttach list =
     let mutable pending: string list = []
     let acc = System.Collections.Generic.List<DocAttach>()
 
-    let stripped = lines |> List.map (fun raw -> raw, stripComment raw)
-    let masked = districtContentMaskOf stripped
+    let raws = List.toArray lines
+    let codes = Array.map stripComment raws
+    let masked = districtContentMaskOf raws codes
 
-    stripped
-    |> List.iteri (fun idx (raw, code) ->
+    raws
+    |> Array.iteri (fun idx raw ->
+        let code = codes[idx]
         let ln = idx + 1
         let t = code.Trim()
 
@@ -853,6 +874,10 @@ let docAttachments (lines: string list) : DocAttach list =
 /// expecting-list (a documented feature's removal is the one case a
 /// reader has a right to be confused about)
 let retiredDistrictMarker (piece: string) : bool =
+    if not (piece.Contains '!') then
+        false
+    else
+
     let lastToken =
         match piece.LastIndexOf ' ' with
         | -1 -> piece
@@ -1404,6 +1429,25 @@ let private bufIsTypeDecl (b: PendBuf) : bool =
 let private bufLastSeg (b: PendBuf) : string =
     b.Sb.ToString(b.LastSegStart, b.Sb.Length - b.LastSegStart)
 
+let private bufLastSegContains (b: PendBuf) (marker: string) : bool =
+    let len = b.Sb.Length - b.LastSegStart
+
+    len >= marker.Length
+    && (let pool = System.Buffers.ArrayPool<char>.Shared
+        let chars = pool.Rent len
+
+        try
+            b.Sb.CopyTo(b.LastSegStart, System.Span<char>(chars, 0, len), len)
+
+            System.MemoryExtensions.IndexOf(
+                System.ReadOnlySpan<char>(chars, 0, len),
+                System.MemoryExtensions.AsSpan marker,
+                System.StringComparison.Ordinal
+            )
+            >= 0
+        finally
+            pool.Return chars)
+
 // a bare `repeat` head (no options) [D:repeat-missing-interval]: its body
 // joins sentineled, so the parser sees the options are missing instead of
 // reading the first body line as the options atom
@@ -1413,17 +1457,20 @@ let private bufEndsInBareRepeat (b: PendBuf) : bool =
     || bufTrimEndEndsWith b "(repeat"
 
 let private bufEndsInProcHead (b: PendBuf) : bool =
-    endsInBinderHeadSeg "within proc " (bufLastSeg b)
+    bufLastSegContains b "within proc "
+    && endsInBinderHeadSeg "within proc " (bufLastSeg b)
 
 let private bufEndsInServeHead (b: PendBuf) : bool =
-    endsInBinderHeadSeg "within serve " (bufLastSeg b)
+    bufLastSegContains b "within serve "
+    && endsInBinderHeadSeg "within serve " (bufLastSeg b)
 
 // `within env A=1 …` [D:within-env-pairs]: its block joins sentineled too,
 // so a first body line that is itself `B=2 cmd` stays that command's own
 // prefix instead of widening the scope (the binder-head shape: an
 // identifier glued to `=`; a bound `within env e` keeps the space join)
 let private bufEndsInEnvHead (b: PendBuf) : bool =
-    endsInBinderHeadSeg "within env " (bufLastSeg b)
+    bufLastSegContains b "within env "
+    && endsInBinderHeadSeg "within env " (bufLastSeg b)
 
 // materialize a LogicalLine from a finished pending buffer (segments are
 // reversed at the boundary exactly as before)
@@ -1545,12 +1592,15 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
         // still opens its district), so the cut runs twice: once to
         // find the content regions, once — content excluded — for real.
         // TrimEnd only on actual cuts: untouched lines stay byte-equal
-        let stripped = numbered |> List.map (fun (n, raw) -> n, raw, stripComment raw)
-        let mask = districtContentMaskOf (stripped |> List.map (fun (_, _, code) -> code, code))
+        let arr = List.toArray numbered
+        let codes = arr |> Array.map (fun (_, raw) -> stripComment raw)
+        let mask = districtContentMaskOf codes codes
 
-        stripped
-        |> List.mapi (fun i (n, raw, code) ->
-            if (i < mask.Length && mask[i]) || code.Trim() = "" then
+        List.init arr.Length (fun i ->
+            let n, raw = arr[i]
+            let code = codes[i]
+
+            if (i < mask.Length && mask[i]) || System.String.IsNullOrWhiteSpace code then
                 n, raw, code
             else
                 n, code, code)
@@ -1560,16 +1610,25 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
     // line (yaml district bodies are bytes, never read:
     // districtContentMask)
     let retiredHit =
-        let mask = districtContentMaskOf (numbered |> List.map (fun (_, text, code) -> text, code))
+        let arr = List.toArray numbered
+        let texts = arr |> Array.map (fun (_, text, _) -> text)
+        let codes = arr |> Array.map (fun (_, _, code) -> code)
+        let mask = districtContentMaskOf texts codes
 
-        numbered
-        |> List.mapi (fun i (n, _, code) -> i, n, code)
-        |> List.tryPick (fun (i, n, code) ->
-            if i < mask.Length && mask[i] then
-                None
-            else
-                let t = code.TrimEnd()
-                if t <> "" && retiredDistrictMarker t then Some n else None)
+        let mutable hit = None
+        let mutable i = 0
+
+        while hit.IsNone && i < arr.Length do
+            if not (i < mask.Length && mask[i]) then
+                let t = codes[i].TrimEnd()
+
+                if t <> "" && retiredDistrictMarker t then
+                    let n, _, _ = arr[i]
+                    hit <- Some n
+
+            i <- i + 1
+
+        hit
 
     match retiredHit with
     | Some n ->
@@ -1662,7 +1721,7 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                             | Some p -> not p.Lambdas.IsEmpty
                             | None -> false
 
-                        if raw.Trim() = "" then
+                        if System.String.IsNullOrWhiteSpace raw then
                             match current with
                             // inside an active yaml district a blank line is
                             // bytes [D:block-scalars] — a block scalar's
@@ -1684,7 +1743,7 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                             // boundary produced still fires at close
                             | Some p -> Ok(Some p, acc, blankSinceHead)
                             | None -> Ok(None, acc, true)
-                        elif code.Trim() = "" then
+                        elif System.String.IsNullOrWhiteSpace code then
                             // comment-only: transparent [D:comment-transparency] —
                             // except inside an active yaml district, where the
                             // line is bytes (`// x` in a block scalar is data)
@@ -1694,15 +1753,15 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                             // [D:spaces-only-indent]
                             | Some { District = Some { Yaml = true; MarkerIndent = m } } when
                                 (leadingTabCol raw).IsSome
-                                && (raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length) > m
+                                && leadingSpacesTabs raw > m
                                 ->
                                 Error(tabIndentError lineNo raw)
                             | Some({ District = Some({ Active = Some bse
                                                        Yaml = true
                                                        MarkerIndent = m } as dst) } as p) when
-                                (let ind = raw |> Seq.takeWhile ((=) ' ') |> Seq.length in ind > m && ind >= bse)
+                                (let ind = leadingSpaces raw in ind > m && ind >= bse)
                                 ->
-                                let ind = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
+                                let ind = leadingSpaces raw
 
                                 if (heredocCommentGap dst).IsSome then
                                     Error (heredocCommentGap dst).Value
@@ -1728,9 +1787,9 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                        Yaml = true
                                                        Marker = MarkerKind.Heredoc
                                                        MarkerIndent = m } as dst) } as p) when
-                                (raw |> Seq.takeWhile ((=) ' ') |> Seq.length) > m
+                                leadingSpaces raw > m
                                 ->
-                                let ind = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
+                                let ind = leadingSpaces raw
 
                                 Ok(
                                     Some
@@ -1770,7 +1829,7 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                             || inOpenBrace
                             || inOpenLambda
                         then
-                            let indent = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
+                            let indent = leadingSpaces raw
 
                             // indentation is spaces only, block content
                             // included: a tab is content only after the
@@ -1790,7 +1849,10 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                     // structure decisions read the stripped text;
                                     // yaml-district joins carry the raw bytes
                                     let rawPiece = raw.Substring indent
-                                    let piece = code.Substring indent
+
+                                    let piece =
+                                        if obj.ReferenceEquals(raw, code) then rawPiece else code.Substring indent
+
                                     let cls = classifyPiece piece
 
                                     let rec go (p: Pend) =
@@ -2547,7 +2609,8 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
 
                                     go p
                         else
-                            let cls = classifyPiece (raw.TrimEnd())
+                            let rawT = raw.TrimEnd()
+                            let cls = classifyPiece rawT
 
                             // a statement-level attribute line binds to the
                             // declaration below it [D:attr-positions] — a pend
@@ -2575,12 +2638,12 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
 
                             accR
                             |> Result.bind (fun acc ->
-                                bracketFold lineNo 0 [] (raw.TrimEnd())
+                                bracketFold lineNo 0 [] rawT
                                 |> Result.map (fun brackets ->
                                     Some
                                         { Buf =
                                             match joinedBuf with
-                                            | Some b -> applyJoin JSpace b (raw.TrimEnd()) lineNo 0
+                                            | Some b -> applyJoin JSpace b rawT lineNo 0
                                             | None -> bufNew raw lineNo 0
                                           Lets = []
                                           LastIndent = 0
@@ -2594,12 +2657,12 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                   [ (0, 0, 0) ]
                                               else
                                                   []
-                                          ParenDepth = parenDelta (raw.TrimEnd())
+                                          ParenDepth = parenDelta rawT
                                           StmtLevel = 0
-                                          PrevDangles = dangleOpensBlock (raw.TrimEnd())
+                                          PrevDangles = dangleOpensBlock rawT
                                           Lambdas =
-                                            (if lambdaOpens (raw.TrimEnd()) then
-                                                 [ (lineNo, 0, parenDelta (raw.TrimEnd()) - 1, 0) ]
+                                            (if lambdaOpens rawT then
+                                                 [ (lineNo, 0, parenDelta rawT - 1, 0) ]
                                              else
                                                  [])
                                           PipeGroups = []
