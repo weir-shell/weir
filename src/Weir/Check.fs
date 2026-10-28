@@ -688,6 +688,29 @@ let private resolve (ctx: Ctx) (ty: Ty) : Ty =
 
 let private same (a: obj) (b: obj) = obj.ReferenceEquals(a, b)
 
+let mapShared (f: 'a -> 'a) (xs: 'a list) : 'a list =
+    let mutable out: 'a[] = null
+    let mutable i = 0
+
+    for x in xs do
+        let y = f x
+
+        if not (isNull out) then
+            out[i] <- y
+        elif not (obj.ReferenceEquals(y, x)) then
+            out <- Array.zeroCreate (List.length xs)
+            let mutable p = xs
+
+            for j in 0 .. i - 1 do
+                out[j] <- p.Head
+                p <- p.Tail
+
+            out[i] <- y
+
+        i <- i + 1
+
+    if isNull out then xs else List.ofArray out
+
 let private finalTy (ctx: Ctx) (ty: Ty) : Ty =
     let rec go (seen: Set<string>) ty =
         match resolve ctx ty with
@@ -724,13 +747,7 @@ let private finalTy (ctx: Ctx) (ty: Ty) : Ty =
             if unchanged fields old then t else TRowVar(r, fields)
         | t -> t
 
-    and goList (seen: Set<string>) (ts: Ty list) : Ty list =
-        match ts with
-        | [] -> ts
-        | x :: rest ->
-            let x' = go seen x
-            let rest' = goList seen rest
-            if same x' x && same rest' rest then ts else x' :: rest'
+    and goList (seen: Set<string>) (ts: Ty list) : Ty list = mapShared (go seen) ts
 
     go Set.empty ty
 

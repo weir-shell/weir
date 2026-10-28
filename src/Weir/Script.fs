@@ -3594,21 +3594,13 @@ let private renameTy (m: System.Collections.Generic.IReadOnlyDictionary<string, 
             if same fields' fields then ty else TRowVar(r, fields')
         | t -> t
 
-    and goList (ts: Ty list) : Ty list =
-        match ts with
-        | [] -> ts
-        | x :: rest ->
-            let x' = go x
-            let rest' = goList rest
-            if same x' x && same rest' rest then ts else x' :: rest'
+    and goList (ts: Ty list) : Ty list = Weir.Check.mapShared go ts
 
     and goFields (fs: (string * Ty) list) : (string * Ty) list =
-        match fs with
-        | [] -> fs
-        | ((f, t) as x) :: rest ->
+        fs
+        |> Weir.Check.mapShared (fun ((f, t) as x) ->
             let t' = go t
-            let rest' = goFields rest
-            if same t' t && same rest' rest then fs else (if same t' t then x else (f, t')) :: rest'
+            if same t' t then x else (f, t'))
 
     if m.Count = 0 then ty else go ty
 

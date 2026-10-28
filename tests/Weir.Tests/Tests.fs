@@ -17337,6 +17337,14 @@ let depthGuardTests =
 
               let diags = diagsIn "pin.weir" [ line ]
               Expect.isNonEmpty diags "the depth guard diagnoses; the iterative name walk never crashes"
+          }
+          test "a wide tuple's type walks do not overflow a 1MB stack [D:pattern-width]" {
+              let lines = [ "let t = (" + String.replicate 19999 "0, " + "0)"; "print t" ]
+              let diags = ref []
+              let th = System.Threading.Thread((fun () -> diags.Value <- diagsIn "pin.weir" lines), 1024 * 1024)
+              th.Start()
+              th.Join()
+              Expect.isNonEmpty diags.Value "print rejects the tuple with a diagnostic, not a crash"
           } ]
 
 let boolBranchTests =
