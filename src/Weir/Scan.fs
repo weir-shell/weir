@@ -66,56 +66,61 @@ let isTyvarTick (s: string) (i: int) : bool =
         && ("<,:(*>|".Contains s[k]
             || (k >= 1 && s[k] = 'f' && s[k - 1] = 'o' && (k = 1 || not (isIdent s[k - 2])))))
 
+let private tripleAt (s: string) (j: int) =
+    j + 2 < s.Length && s[j] = '"' && s[j + 1] = '"' && s[j + 2] = '"'
+
+// a string opener at i in code (top level or a hole): raw kinds
+// [D:raw-strings] — verbatim @"..." ("" = one quote, no escapes) and
+// triple-quoted """...""" (no escapes, closes at the first triple);
+// `$` turns a plain or triple quote into its interpolated twin
+let private opener (s: string) (i: int) (modes: ScanMode list) : struct (bool * ScanMode list * int) =
+    let c = s[i]
+    let dollar = i > 0 && s[i - 1] = '$'
+
+    if c = '@' && i + 1 < s.Length && s[i + 1] = '"' then
+        struct (true, Verbatim :: modes, i + 1)
+    elif tripleAt s i then
+        struct (true, (if dollar then InterpTriple else Triple) :: modes, i + 2)
+    elif c = '"' then
+        struct (true, (if dollar then Interp else Plain) :: modes, i)
+    elif c = '\'' && not (isTyvarTick s i) then
+        struct (true, Single :: modes, i)
+    else
+        struct (false, modes, i)
+
 let private stringScanFrom
     (modes0: ScanMode list)
     (f: 'a -> int -> char -> 'a)
     (init: 'a)
     (s: string)
-    : 'a * ScanMode list =
+    : struct ('a * ScanMode list) =
     let mutable st = init
     let mutable i = 0
     // innermost first; empty = top-level code
     let mutable modes: ScanMode list = modes0
-
-    let tripleAt (j: int) =
-        j + 2 < s.Length && s[j] = '"' && s[j + 1] = '"' && s[j + 2] = '"'
-
-    // a string opener at i in code (top level or a hole): raw kinds
-    // [D:raw-strings] — verbatim @"..." ("" = one quote, no escapes) and
-    // triple-quoted """...""" (no escapes, closes at the first triple);
-    // `$` turns a plain or triple quote into its interpolated twin
-    let opener () : bool =
-        let c = s[i]
-        let dollar = i > 0 && s[i - 1] = '$'
-
-        if c = '@' && i + 1 < s.Length && s[i + 1] = '"' then
-            modes <- Verbatim :: modes
-            i <- i + 1
-            true
-        elif tripleAt i then
-            modes <- (if dollar then InterpTriple else Triple) :: modes
-            i <- i + 2
-            true
-        elif c = '"' then
-            modes <- (if dollar then Interp else Plain) :: modes
-            true
-        elif c = '\'' && not (isTyvarTick s i) then
-            modes <- Single :: modes
-            true
-        else
-            false
 
     while i < s.Length do
         let c = s[i]
 
         match modes with
         | [] ->
-            if not (opener ()) then
+            let struct (opened, m, j) = opener s i modes
+
+            if opened then
+                modes <- m
+                i <- j
+            else
                 st <- f st i c
         | Hole d :: rest ->
-            if not (opener ()) then
-                if c = '{' then modes <- Hole(d + 1) :: rest
-                elif c = '}' then modes <- (if d = 0 then rest else Hole(d - 1) :: rest)
+            let struct (opened, m, j) = opener s i modes
+
+            if opened then
+                modes <- m
+                i <- j
+            elif c = '{' then
+                modes <- Hole(d + 1) :: rest
+            elif c = '}' then
+                modes <- (if d = 0 then rest else Hole(d - 1) :: rest)
         | (Plain
           | Interp as m) :: rest ->
             if c = '\\' && i + 1 < s.Length then
@@ -138,7 +143,7 @@ let private stringScanFrom
                     modes <- rest
         | (Triple
           | InterpTriple as m) :: rest ->
-            if tripleAt i then
+            if tripleAt s i then
                 i <- i + 2
                 modes <- rest
             elif m = InterpTriple && c = '{' then
@@ -149,18 +154,24 @@ let private stringScanFrom
 
         i <- i + 1
 
-    st, modes
+    struct (st, modes)
 
 let stringScan (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a * bool =
-    let st, modes = stringScanFrom [] f init s
+    let struct (st, modes) = stringScanFrom [] f init s
     st, not modes.IsEmpty
 
-let foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a = fst (stringScan f init s)
+let foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a =
+    let struct (st, _) = stringScanFrom [] f init s
+    st
 
 /// where a line's `//` comment starts, or -1
 let commentAt (line: string) : int =
     // comment only at line start or after whitespace: bareword URLs
     // (https://...) live in command lines (nuget-script receipt)
+    if line.IndexOf("//", System.StringComparison.Ordinal) < 0 then
+        -1
+    else
+
     foldOutsideStrings
         (fun cut i c ->
             if
@@ -180,7 +191,8 @@ let commentAt (line: string) : int =
 // one can never be completed by more input — the multiline REPL submits
 // such a buffer instead of growing it [D:repl-multiline]
 let endsInsideString (s: string) : bool =
-    snd (stringScan (fun () _ _ -> ()) () s)
+    let struct (_, modes) = stringScanFrom [] (fun () _ _ -> ()) () s
+    not modes.IsEmpty
 
 // endsInsideString over a text fed in chunks, linear in the total
 // [D:one-scanner]: the state after `a` then `b` is the state after
@@ -189,6 +201,7 @@ let endsInsideString (s: string) : bool =
 let stringStart: StringState = StringState []
 
 let stringStep (StringState modes) (chunk: string) : StringState =
-    StringState(snd (stringScanFrom modes (fun () _ _ -> ()) () chunk))
+    let struct (_, modes) = stringScanFrom modes (fun () _ _ -> ()) () chunk
+    StringState modes
 
 let isInsideString (StringState modes) : bool = not modes.IsEmpty

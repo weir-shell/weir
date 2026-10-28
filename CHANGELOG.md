@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.0.82
+
+### Fixed
+
+- **Line assembly allocates far less.** Before parsing, every physical
+  line was trimmed, split into its comment and code and re-scanned by
+  the district mask, the doc attachment and the binder-head checks,
+  each building its own strings; the string scanner allocated its
+  helpers on every call. The scans now count and index in place, and
+  the marker checks look for their keyword before doing the full test.
+  Same diagnostics, same `fmt` output: the starship import's assembly
+  allocates 9 MB instead of 35 MB, and the import goes from 216 ms to
+  200 ms pinned to one core and from 176 ms to 160 ms on 15 (medians
+  of 21).
+
 ## v0.0.81
 
 ### Fixed
