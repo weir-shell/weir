@@ -1772,10 +1772,10 @@ let forcedItems (items: seq<Value>) : Value list option =
 let unforcedHint (cap: int) =
     $"first {cap} of an unforced seq — Seq.freeze to echo everything"
 
-// the piped/-e echo cap [D:echo-cap]: the session cap is a tty-echo
-// concern (the REPL owns it, #echo moves it); the piped surface and
-// -e keep this constant because their output bytes are pinned
-let echoPipedCap: int option = Some 10
+// the -e echo cap [D:echo-cap-100]: the REPL's default (100) — one cap
+// everywhere, so `-e` echoes as the REPL does and `#echo` tells the truth
+// (the REPL's session cap, which #echo moves, serves its piped echo too)
+let echoPipedCap: int option = Some 100
 
 /// echo preparation [D:echo-once]: cache an unforced seq so the table
 /// probe and the line rendering enumerate the source once — without
@@ -1808,6 +1808,13 @@ let sanitizeTtyEcho (s: string) : string = Weir.Types.sanitizeTtyEcho s
 /// gets the safe rendering
 let sanitizeIfTty (redirected: bool) (s: string) : string =
     if redirected then s else sanitizeTtyData s
+
+/// the ONE echo renderer, shared by the REPL echo and the -e echo
+/// [D:tty-echo-strict] [D:echo-one-renderer]: at a tty a value's controls
+/// render visibly; redirected, the echo is the data channel and stays
+/// byte-faithful [D:binary-echo]
+let echoRender (redirected: bool) (s: string) : string =
+    if redirected then s else sanitizeTtyEcho s
 
 /// stderr at a tty [D:tty-diag-sanitize]: every write rides the data
 /// sanitizer, so a diagnostic echoing source, a path or a pattern
@@ -2345,7 +2352,13 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "<", VDur a, VDur b -> VBool(a < b)
     | ">=", VDur a, VDur b -> VBool(a >= b)
     | "<=", VDur a, VDur b -> VBool(a <= b)
-    | "+", VStr a, VStr b -> VStr(a + b)
+    | "+", VStr a, VStr b ->
+        let chars = int64 a.Length + int64 b.Length
+        // past .NET's string ceiling: weir's refusal [D:int-narrowing]
+        if chars > maxStrLen then
+            failwith (strTooLarge "string +" chars)
+
+        VStr(a + b)
     | "-", VInt a, VInt b -> checkedInt (fun () -> Checked.(-) a b)
     | "*", VInt a, VInt b -> checkedInt (fun () -> Checked.(*) a b)
     | "/", VInt a, VInt b ->
@@ -2369,11 +2382,12 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | ">=", VInt a, VInt b -> VBool(a >= b)
     | "<=", VInt a, VInt b -> VBool(a <= b)
     // an ordered record or union compares by its `[<Ord n>]` key
-    // [D:derived-ord]
-    | ">", ((VRecord _ | VUnion _) as a), b -> VBool(orderCompare op a b > 0)
-    | "<", ((VRecord _ | VUnion _) as a), b -> VBool(orderCompare op a b < 0)
-    | ">=", ((VRecord _ | VUnion _) as a), b -> VBool(orderCompare op a b >= 0)
-    | "<=", ((VRecord _ | VUnion _) as a), b -> VBool(orderCompare op a b <= 0)
+    // [D:derived-ord]; string, bool and Option by the sort's own order
+    // [D:ord-scalar-operators]
+    | ">", ((VRecord _ | VUnion _ | VStr _ | VBool _) as a), b -> VBool(orderCompare op a b > 0)
+    | "<", ((VRecord _ | VUnion _ | VStr _ | VBool _) as a), b -> VBool(orderCompare op a b < 0)
+    | ">=", ((VRecord _ | VUnion _ | VStr _ | VBool _) as a), b -> VBool(orderCompare op a b >= 0)
+    | "<=", ((VRecord _ | VUnion _ | VStr _ | VBool _) as a), b -> VBool(orderCompare op a b <= 0)
     | "==", a, b -> VBool(a = b)
     | "<>", a, b -> VBool(a <> b)
     | _ -> unreachable $"the checker rejects '{op}' on {formatValue l} and {formatValue r}"
@@ -2807,6 +2821,7 @@ let private jsonKindName (k: System.Text.Json.JsonValueKind) : string =
     | System.Text.Json.JsonValueKind.True
     | System.Text.Json.JsonValueKind.False -> "boolean"
     | System.Text.Json.JsonValueKind.Null -> "null"
+    | System.Text.Json.JsonValueKind.Object -> "object"
     | _ -> "non-object"
 
 // the value a field met, in weir's words beside a weir type — never
@@ -3639,8 +3654,14 @@ let private tableRows (who: string) (def: RecordDef) (lines: string list) : Valu
             |> List.map (fun (fname, fty) ->
                 let wire = Types.wireName def fname
 
+                // the attribute's presence decides, not its spelling: a
+                // [<Wire>] equal to the field name still matches verbatim
+                let hasWire =
+                    Map.tryFind fname def.Attrs
+                    |> Option.exists (List.exists (fun (n, _) -> n = "Wire"))
+
                 let hit =
-                    if wire <> fname then
+                    if hasWire then
                         // the Wire rule: the attribute names the raw header
                         colArr |> Array.tryFindIndex (fun c -> c.Header = wire)
                     else
@@ -3650,7 +3671,7 @@ let private tableRows (who: string) (def: RecordDef) (lines: string list) : Valu
                 match hit with
                 | Some i -> fname, fty, i
                 | None ->
-                    let want = if wire <> fname then $"'{wire}'" else $"'{fname}'"
+                    let want = if hasWire then $"'{wire}'" else $"'{fname}'"
                     failwith $"{who}: missing column {want} for field '{fname}' — headers seen: {quoteData headers}")
 
         let cellValue (line: int) (col: Table.Column) (ty: Ty) (raw: string) : Value =
@@ -4441,6 +4462,9 @@ let private yamlToLines
     (v: Value)
     : string list =
     match yamlRender renames unions 0 guide v with
+    // a null document is the word, never empty text [D:yaml-empty-doc] —
+    // the bare inline is a mapping value's form (`key:`), not a document's
+    | Inline "" -> [ "null" ]
     | Inline s -> [ s ]
     | Block lines -> lines
     | BlockScalar(h, content) -> h :: (content |> List.map (fun l -> if l = "" then "" else "  " + l))
@@ -4647,9 +4671,25 @@ let private argvValueSlot (ty: Ty) : string =
     | TNamed("Option", [ TSecret ]) -> " <secret>"
     | _ -> ""
 
+// a string default shows as data [D:args-help-default]: escapes render
+// visibly (the error-data rule — a newline never splits the row), and an
+// empty or whitespace-only literal is quoted so the row still says what
+// the default is
+let private argvDefaultText (s: string) : string =
+    if s.Trim() = "" then $"\"{s}\"" else quoteData s
+
 let private argvUsageLinesWith (flagShorts: Map<string, string>) (def: RecordDef) : string list =
-    def.Fields
-    |> List.map (fun (f, ty) ->
+    // an anonymous type's fields are sorted ordinally (its canonical name);
+    // the help sorts by the flag spelling so the list reads alphabetically
+    // [D:env-inline-type]
+    let fields =
+        if def.Name.StartsWith "{|" then
+            def.Fields |> List.sortBy (fun (f, _) -> Argv.kebabFlag f)
+        else
+            def.Fields
+
+    fields
+    |> List.collect (fun (f, ty) ->
         let flag = "--" + Argv.kebabFlag f
 
         let short =
@@ -4670,7 +4710,7 @@ let private argvUsageLinesWith (flagShorts: Map<string, string>) (def: RecordDef
             | TBool, Some(ABool true) -> $"default: on — --no-{Argv.kebabFlag f} disables"
             | TBool, _ -> ""
             | TNamed("Option", _), _ -> "optional"
-            | _, Some(AStr s) -> $"default: {s}"
+            | _, Some(AStr s) -> $"default: {argvDefaultText s}"
             | _, Some(AInt n) -> $"default: {n}"
             | _, Some(ADur n) -> $"default: {formatDuration n}"
             | _, Some(AFloat fl) -> $"default: {formatFloat fl}"
@@ -4685,7 +4725,12 @@ let private argvUsageLinesWith (flagShorts: Map<string, string>) (def: RecordDef
             |> List.filter (fun s -> s <> "")
             |> String.concat " — "
 
-        if right = "" then left else sprintf "%-30s%s" left right)
+        // the help column [D:args-help-column]: at least two spaces
+        // separate a flag from its text; a flag too long for the column
+        // wraps its text onto the next line at the column
+        if right = "" then [ left ]
+        elif left.Length + 2 > 30 then [ left; sprintf "%30s%s" "" right ]
+        else [ sprintf "%-30s%s" left right ])
 
 let private argvUsageLines (def: RecordDef) : string list =
     argvUsageLinesWith (fst (Argv.shortTables def)) def
@@ -4704,10 +4749,23 @@ let private scopeDef (sharedDef: RecordDef) (payloadDef: RecordDef option) : Rec
             Docs = pd.Docs |> Map.fold (fun m k v -> Map.add k v m) sharedDef.Docs }
     | None -> sharedDef
 
+// a token with no leading dash is a value, never a flag or a command
+let private argvIsValue (t: string) : bool = not (t.StartsWith "-")
+
+// the unknown-flag spellings whose value would be the NEXT token: a bare
+// long flag or a single letter; `--x=v` and `-xv` carry theirs attached
+let private argvUnknownTakesNext (t: string) : bool =
+    t <> "--" && (t.Length = 2 || (t.StartsWith "--" && not (t.Contains "=")))
+
 // pass 1 of the shared-flags scan: shared flags float, and the first
-// non-flag token anchors as the case selector (an unknown flag
-// consumes no value, as everywhere else)
-let private argvFindCase (sharedDef: RecordDef) (argv: string list) : (int * string) option =
+// non-flag token anchors as the case selector. An unknown flag takes
+// the value after it off the line [D:args-unknown-flag-no-echo] (it may
+// be a misspelled Secret, so the value never surfaces as the command);
+// the command slot's own flag takes none — the token after `--mode` IS
+// the command, and the message teaches the bare spelling
+let private argvFindCase (sharedDef: RecordDef) (unionField: string) (argv: string list) : (int * string) option =
+    let slot = "--" + Argv.kebabFlag unionField
+
     let sharedLong =
         sharedDef.Fields
         |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, ty)
@@ -4735,7 +4793,11 @@ let private argvFindCase (sharedDef: RecordDef) (argv: string list) : (int * str
                  | _ :: r -> go (i + 2) r
                  | [] -> None)
             | Some _ -> go (i + 1) rest
-            | None when t.StartsWith "-" -> go (i + 1) rest
+            | None when t = slot || t.StartsWith(slot + "=") -> go (i + 1) rest
+            | None when t.StartsWith "-" ->
+                (match rest with
+                 | v :: r when argvUnknownTakesNext t && argvIsValue v -> go (i + 2) r
+                 | _ -> go (i + 1) rest)
             | None -> Some(i, t)
 
     go 0 argv
@@ -4855,7 +4917,7 @@ let argvUsage (target: ArgsTarget) (argv: string list) : string =
 
         // case-scoped help when a case token rides along [D:shared-flags]
         let scoped =
-            argvFindCase sharedDef (argv |> List.filter (fun t -> t <> "--help" && t <> "-h"))
+            argvFindCase sharedDef uf (argv |> List.filter (fun t -> t <> "--help" && t <> "-h"))
             |> Option.bind (fun (_, tok) -> udef.Cases |> List.tryFind (fun (c, _) -> c.ToLowerInvariant() = tok))
 
         match scoped with
@@ -5027,6 +5089,47 @@ let private argvDup
 
     polarity[f] <- neg
 
+// one scalar parse for both argv and env boundaries [D:boundary-bad-value]:
+// every refusal reads `not a <type>: '<value>'` (a tail may teach), so
+// one Args/Env error never mixes phrasings. A Secret never fails, so its
+// value never reaches a message.
+let private boundaryScalar (ty: Ty) (raw: string) : Result<Value, string> =
+    let inner =
+        match ty with
+        | TNamed("Option", [ t ]) -> t
+        | t -> t
+
+    let wrapped =
+        match inner with
+        | TInt ->
+            match System.Int64.TryParse raw with
+            | true, n -> Ok(VInt n)
+            | _ -> Error $"not an int: '{excerpt raw}'"
+        | TBool ->
+            match raw with
+            | "true" -> Ok(VBool true)
+            | "false" -> Ok(VBool false)
+            | _ -> Error $"not a bool: '{excerpt raw}' — exactly true or false"
+        | TDur -> parseDurationMs raw |> Result.map VDur
+        | TInstant ->
+            parseInstantMs raw
+            |> Result.map VInstant
+            |> Result.mapError (fun _ ->
+                $"not an ISO 8601 instant: '{excerpt (raw.Trim())}' — e.g. 2026-08-14T12:34:56Z; offsets allowed, a bare date reads as midnight UTC")
+        | TSize -> parseSize raw |> Result.map VSize
+        | TFloat ->
+            // every infinity spelling is a non-finite float, as nan is
+            match parseFloat raw, raw.Trim().TrimStart('+', '-').ToLowerInvariant() with
+            | Ok fl, _ -> Ok(VFloat fl)
+            | Error _, ("inf" | "infinity" | "nan") -> Error $"not a finite float: '{excerpt raw}'"
+            | Error e, _ -> Error e
+        // the boundary wraps [D:secret]: a Secret field's token is secret
+        // from the moment it enters, so it is VSecret, never a bare VStr
+        | TSecret -> Ok(VSecret raw)
+        | _ -> Ok(VStr raw)
+
+    wrapped |> Result.map (wrapOpt ty)
+
 let private argvParseValue
     (problems: ArgvProblems)
     (values: System.Collections.Generic.Dictionary<string, Value>)
@@ -5035,38 +5138,9 @@ let private argvParseValue
     (flagTok: string)
     (raw: string)
     =
-    match ty with
-    | TInt
-    | TNamed("Option", [ TInt ]) ->
-        match System.Int64.TryParse raw with
-        | true, n -> values[f] <- wrapOpt ty (VInt n)
-        | _ -> problems.AddFor(f, $"{flagTok} is not an int ('{quoteData raw}')")
-    | TDur
-    | TNamed("Option", [ TDur ]) ->
-        match parseDurationMs raw with
-        | Ok n -> values[f] <- wrapOpt ty (VDur n)
-        | Error e -> problems.AddFor(f, $"{flagTok}: {e}")
-    | TInstant
-    | TNamed("Option", [ TInstant ]) ->
-        match parseInstantMs raw with
-        | Ok n -> values[f] <- wrapOpt ty (VInstant n)
-        | Error e -> problems.AddFor(f, $"{flagTok}: {e}")
-    | TSize
-    | TNamed("Option", [ TSize ]) ->
-        match parseSize raw with
-        | Ok b -> values[f] <- wrapOpt ty (VSize b)
-        | Error e -> problems.AddFor(f, $"{flagTok}: {e}")
-    | TFloat
-    | TNamed("Option", [ TFloat ]) ->
-        match parseFloat raw with
-        | Ok fl -> values[f] <- wrapOpt ty (VFloat fl)
-        | Error e -> problems.AddFor(f, $"{flagTok}: {e}")
-    | TSecret
-    | TNamed("Option", [ TSecret ]) ->
-        // the boundary wraps [D:secret]: a Secret field's token is secret
-        // from the moment it enters, so it is VSecret, never a bare VStr
-        values[f] <- wrapOpt ty (VSecret raw)
-    | _ -> values[f] <- wrapOpt ty (VStr raw)
+    match boundaryScalar ty raw with
+    | Ok v -> values[f] <- v
+    | Error e -> problems.AddFor(f, $"{flagTok}: {e}")
 
 // an unknown long flag's message; `--name=value` for a known `--name`
 // teaches the separate-argument spelling (weir's argv has no `=` form).
@@ -5075,6 +5149,8 @@ let private argvParseValue
 // a misspelled Secret).
 let private unknownFlagMessage (t: string) (known: string list) (tyOf: string -> Ty option) : string =
     match t.IndexOf '=' with
+    // the end-of-options marker is no misspelled flag [D:args-unknown-flag-no-echo]
+    | _ when t = "--" -> "unexpected '--' — weir's argv takes no end-of-options marker: every argument is a flag or its value"
     | i when i > 2 && List.contains (t.Substring(0, i)) known ->
         let name, value = t.Substring(0, i), t.Substring(i + 1)
 
@@ -5158,7 +5234,7 @@ let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string
                     Map.tryFind n longIndex |> Option.map (fun (_, ty, _) -> ty)
 
                 problems.Add(unknownFlagMessage t (flagged |> List.map fst) tyOf)
-                go rest
+                unknownValue t rest
         | t :: rest when t.StartsWith "-" && t.Length = 2 ->
             match Map.tryFind (t.Substring 1) shortIndex with
             | Some(ShortOf flag) ->
@@ -5169,7 +5245,7 @@ let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string
                 go rest
             | None ->
                 problems.Add $"unknown flag '{quoteData t}'"
-                go rest
+                unknownValue t rest
         | t :: rest when t.StartsWith "-" && t.Length > 2 ->
             let tyOf flag =
                 Map.tryFind flag longIndex |> Option.map (fun (_, ty, _) -> ty)
@@ -5179,6 +5255,15 @@ let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string
         | t :: rest ->
             problems.Add $"unexpected argument '{quoteData t}'"
             go rest
+
+    // the value after an unknown flag is reported, never echoed — it may
+    // be a misspelled Secret's [D:args-unknown-flag-no-echo]
+    and unknownValue t rest =
+        match rest with
+        | v :: rest' when argvUnknownTakesNext t && argvIsValue v ->
+            problems.Add $"unexpected argument after '{quoteData t}'"
+            go rest'
+        | _ -> go rest
 
     and consume f ty neg flagTok rest =
         dup f neg flagTok
@@ -5226,7 +5311,7 @@ let private argvLoadShared
         |> Map.ofList
 
     let caseTable = udef.Cases |> List.map (fun (c, p) -> c.ToLowerInvariant(), (c, p))
-    let caseAt = argvFindCase sharedDef argv
+    let caseAt = argvFindCase sharedDef unionField argv
 
     let selected =
         caseAt
@@ -5344,10 +5429,17 @@ let private argvLoadShared
 
                     problems.Add
                         $"unknown flag '{shown}' — the command is written bare, without a flag: '{usageName ()} {example}'"
+                    go (i + 1) rest
                 else
                     problems.Add(unknownFlagMessage t cands tyOf)
 
-                go (i + 1) rest
+                    // the value after an unknown flag is reported, never
+                    // echoed [D:args-unknown-flag-no-echo]
+                    match rest with
+                    | v :: rest' when i + 1 <> caseIdx && argvUnknownTakesNext t && argvIsValue v ->
+                        problems.Add $"unexpected argument after '{quoteData t}'"
+                        go (i + 2) rest'
+                    | _ -> go (i + 1) rest
             | Choice3Of3() -> go (i + 1) rest
 
     go 0 argv
@@ -5991,18 +6083,27 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEInterp parts ->
         let sb = System.Text.StringBuilder()
 
+        // the ceiling checked per piece, so the refusal is weir's
+        // [D:int-narrowing] and names the size reached
+        let append (piece: string) =
+            let chars = int64 sb.Length + int64 piece.Length
+
+            if chars > maxStrLen then
+                failwith (strTooLarge "string interpolation" chars)
+
+            sb.Append piece |> ignore
+
         for p in parts do
             match p with
-            | IStr s -> sb.Append s |> ignore
+            | IStr s -> append s
             | IExpr e ->
                 // a hole renders what show renders [D:interp-show]; a
                 // bare string stays raw (the value, not its quoted form)
-                sb.Append(
+                append (
                     match eval env e with
                     | VStr str -> str
                     | v -> formatValue v
                 )
-                |> ignore
 
         VStr(sb.ToString())
     | TEFrom(fmt, top, defs, udefs, seqOf, mapOf) -> fromAdapter fmt seqOf mapOf top defs udefs
@@ -6109,46 +6210,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         | None ->
                             problems.Add $"{name} is missing"
                             VUnit
-                    | (TStr | TNamed("Option", [ TStr ])), v -> wrapOpt ty (VStr v)
-                    | (TInt | TNamed("Option", [ TInt ])), v ->
-                        match System.Int64.TryParse v with
-                        | true, n -> wrapOpt ty (VInt n)
-                        | _ ->
-                            problems.Add $"{name} is not an int ('{quoteData v}')"
-                            VUnit
-                    | (TBool | TNamed("Option", [ TBool ])), v ->
-                        match v with
-                        | "true" -> wrapOpt ty (VBool true)
-                        | "false" -> wrapOpt ty (VBool false)
-                        | _ ->
-                            problems.Add $"{name} is not a bool ('{quoteData v}'; exactly true or false)"
-                            VUnit
-                    | (TDur | TNamed("Option", [ TDur ])), v ->
-                        match parseDurationMs v with
-                        | Ok n -> wrapOpt ty (VDur n)
+                    // one bad-value phrasing with Args.load [D:boundary-bad-value];
+                    // env is the secret channel [D:secret]: a Secret wraps there
+                    | (TStr | TInt | TBool | TDur | TInstant | TSize | TFloat | TSecret), v
+                    | TNamed("Option", [ (TStr | TInt | TBool | TDur | TInstant | TSize | TFloat | TSecret) ]), v ->
+                        match boundaryScalar ty v with
+                        | Ok value -> value
                         | Error e ->
                             problems.Add $"{name}: {e}"
                             VUnit
-                    | (TInstant | TNamed("Option", [ TInstant ])), v ->
-                        match parseInstantMs v with
-                        | Ok n -> wrapOpt ty (VInstant n)
-                        | Error e ->
-                            problems.Add $"{name}: {e}"
-                            VUnit
-                    | (TSize | TNamed("Option", [ TSize ])), v ->
-                        match parseSize v with
-                        | Ok b -> wrapOpt ty (VSize b)
-                        | Error e ->
-                            problems.Add $"{name}: {e}"
-                            VUnit
-                    | (TFloat | TNamed("Option", [ TFloat ])), v ->
-                        match parseFloat v with
-                        | Ok fl -> wrapOpt ty (VFloat fl)
-                        | Error e ->
-                            problems.Add $"{name}: {e}"
-                            VUnit
-                    // env is the secret channel [D:secret]: wrap at the boundary
-                    | (TSecret | TNamed("Option", [ TSecret ])), v -> wrapOpt ty (VSecret v)
                     | (TNamed(un, []) | TNamed("Option", [ TNamed(un, []) ])), v ->
                         // the enum conversion [D:env-enums]: matching is
                         // case-insensitive against the declared names (env
@@ -6177,7 +6247,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                 |> Option.defaultValue ""
 
                             let listed = String.concat ", " cases
-                            problems.Add $"{name} is not a {un} ('{quoteData v}'; expected one of: {listed}){hint}"
+                            problems.Add $"{name}: not a {un}: '{excerpt v}' — expected one of: {listed}{hint}"
                             VUnit
                     | _ -> unreachable "the checker rejects non-scalar Env.load fields"
 
@@ -6511,9 +6581,17 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 | VRecord(_, f) -> f
                 | v -> unreachable $"the checker rejects a serve config of {formatValue v}"
 
+            // the port is optional [D:serve-port-option]: None picks a
+            // free one (Server.port reports it); Some n is checked here,
+            // before the socket, in the config's own words
             let port =
                 match recGet "port" cfg with
-                | VInt n -> toIntArg "serve port" Amount n
+                | VUnion("None", None) -> None
+                | VUnion("Some", Some(VInt n)) ->
+                    if n < 1L || n > 65535L then
+                        failwith $"serve: port is 1 to 65535 (None picks a free port), got {n}"
+
+                    Some(toIntArg "serve port" Amount n)
                 | v -> unreachable $"serve port {formatValue v}"
 
             let maxConcurrent =
@@ -6650,7 +6728,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             let handle =
                 Serve.start
-                    port
+                    (defaultArg port 0)
                     { BodyTimeoutMs = bodyTimeoutMs
                       MaxBody = maxBody }
 

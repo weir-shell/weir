@@ -236,7 +236,7 @@ let serveFixture port dir = $<<<
         let r = sh -c $"printf '%s' '{{payload}}' | python3 '{dir}/req.py' {port}" | complete
         r.stdout |> Str.join " "
 
-    within serve srv = {{ port = {port}; maxConcurrent = 4 }} handler
+    within serve srv = {{ port = Some {port}; maxConcurrent = 4 }} handler
         let ctl = raw "/control"
         print (if ctl |> Str.contains "X-Control" then "control-header-arrives OK" else "control-header-arrives FAILED")
 

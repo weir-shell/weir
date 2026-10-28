@@ -73,11 +73,26 @@ let private declName (code: string) : (int * int) option =
         else
             None
 
+    // a same-line attribute (`[<Short "n">] n: int`) is transparent: the
+    // documented name is the one after the attribute list [D:doc-help]
+    let rec afterAttrs (from: int) : int =
+        let mutable i = from
+
+        while i < code.Length && (code[i] = ' ' || code[i] = '\t') do
+            i <- i + 1
+
+        if i + 1 < code.Length && code[i] = '[' && code[i + 1] = '<' then
+            match code.IndexOf(">]", i + 2) with
+            | -1 -> from
+            | j -> afterAttrs (j + 2)
+        else
+            from
+
     if trimmed.StartsWith "let " then identAt (indent + 3)
     elif trimmed.StartsWith "type " then identAt (indent + 4)
-    elif trimmed.StartsWith "|" then identAt (indent + 1)
+    elif trimmed.StartsWith "|" then identAt (afterAttrs (indent + 1))
     elif trimmed = "" then None
-    else identAt indent
+    else identAt (afterAttrs indent)
 
 // In-string mask over a line — true where a char sits inside any
 // string kind (plain/single/verbatim/triple). The scanner family's
@@ -387,6 +402,68 @@ let armArrowIndex (s: string) : int option =
 
     if found >= 0 then Some found else None
 
+/// an inline `let x = e in body` [D:inline-let-in-blocks]: a `let`
+/// piece whose every `let` (outside strings and brackets) is closed by an
+/// `in` on the same line, with a body after the last one, is a complete
+/// expression — not a block-let head awaiting its body on the next
+/// same-indent line. A `for`/`pfor` takes its own `in`.
+let private hasInlineIn (piece: string) : bool =
+    let isWord c = System.Char.IsLetterOrDigit c || c = '_'
+    let mutable depth = 0
+    let mutable inStr = false
+    let mutable i = 0
+    let mutable openLets = 0
+    let mutable openFors = 0
+    let mutable lastWasIn = false
+
+    while i < piece.Length do
+        let c = piece[i]
+
+        if inStr then
+            if c = '\\' then i <- i + 1
+            elif c = '"' then inStr <- false
+
+            i <- i + 1
+        elif c = '"' then
+            inStr <- true
+            lastWasIn <- false
+            i <- i + 1
+        elif c = '(' || c = '[' || c = '{' then
+            depth <- depth + 1
+            lastWasIn <- false
+            i <- i + 1
+        elif c = ')' || c = ']' || c = '}' then
+            depth <- depth - 1
+            lastWasIn <- false
+            i <- i + 1
+        elif isWord c then
+            let s = i
+
+            while i < piece.Length && isWord piece[i] do
+                i <- i + 1
+
+            let w = piece.Substring(s, i - s)
+            let bounded = s = 0 || not (piece[s - 1] = '.' || piece[s - 1] = '\'')
+            lastWasIn <- false
+
+            if depth = 0 && bounded then
+                match w with
+                | "let" -> openLets <- openLets + 1
+                | "for"
+                | "pfor" -> openFors <- openFors + 1
+                | "in" when openFors > 0 -> openFors <- openFors - 1
+                | "in" ->
+                    openLets <- openLets - 1
+                    lastWasIn <- true
+                | _ -> ()
+        else
+            if not (System.Char.IsWhiteSpace c) then
+                lastWasIn <- false
+
+            i <- i + 1
+
+    openLets <= 0 && not lastWasIn
+
 let classifyPiece (piece: string) : PieceClass =
     { Kind =
         if piece.StartsWith "|" then
@@ -404,7 +481,7 @@ let classifyPiece (piece: string) : PieceClass =
             || piece = "always"
         then
             PieceKind.ElseHead
-        elif piece.StartsWith "let " then
+        elif piece.StartsWith "let " && not (hasInlineIn piece) then
             PieceKind.LetHead
         else
             PieceKind.Plain
@@ -597,6 +674,19 @@ let endsInProcHead (text: string) : bool = endsInBinderHead "within proc " text
 // head line does not defeat the body attach
 let endsInServeHead (text: string) : bool = endsInBinderHead "within serve " text
 
+let private isLoopHead (t: string) : bool =
+    let afterLet =
+        if t.StartsWith "let " then
+            match t.IndexOf '=' with
+            | -1 -> t
+            | i -> t.Substring(i + 1).TrimStart()
+        else
+            t
+
+    // repeat joins retry/poll [D:repeat]
+    [ "retry"; "poll"; "repeat" ]
+    |> List.exists (fun k -> afterLet = k || afterLet.StartsWith(k + " "))
+
 let dangleOpensBlock (piece: string) : bool =
     let t = piece.TrimEnd()
 
@@ -623,14 +713,10 @@ let dangleOpensBlock (piece: string) : bool =
     // the plan head opens a statement block [D:plan-apply]
     || isPlanHead t
     // retry/poll heads and the until binder line open their blocks
-    // [D:retry-poll]
-    || t = "retry"
-    || t.StartsWith "retry "
-    || t = "poll"
-    || t.StartsWith "poll "
-    // repeat joins them [D:repeat]
-    || t = "repeat"
-    || t.StartsWith "repeat "
+    // [D:retry-poll] — behind `let <name> =` too, the within head's rule
+    // [D:let-loop-body-sequences]: the body's same-indent lines sequence
+    // exactly as under a bare loop head
+    || isLoopHead t
     || t.StartsWith "until "
     // the bare within's teardown segment dangles too [D:within-always]
     || t = "always"
@@ -901,7 +987,7 @@ let closers (text: string) : string =
                      elif i > 0 && text[i - 1] = '$' then '$'
                      else '"')
                     :: stack
-            elif c = '\'' then
+            elif c = '\'' && not (Scan.isTyvarTick text i) then
                 stack <- '\'' :: stack
             elif c = '(' then
                 stack <- ')' :: stack
@@ -1317,6 +1403,14 @@ let private bufIsTypeDecl (b: PendBuf) : bool =
 // this instead of LastIndexOf over the whole growing text [D:assemble-quadratic]
 let private bufLastSeg (b: PendBuf) : string =
     b.Sb.ToString(b.LastSegStart, b.Sb.Length - b.LastSegStart)
+
+// a bare `repeat` head (no options) [D:repeat-missing-interval]: its body
+// joins sentineled, so the parser sees the options are missing instead of
+// reading the first body line as the options atom
+let private bufEndsInBareRepeat (b: PendBuf) : bool =
+    bufTrimEndLen b = 6 && bufTrimEndEndsWith b "repeat"
+    || bufTrimEndEndsWith b " repeat"
+    || bufTrimEndEndsWith b "(repeat"
 
 let private bufEndsInProcHead (b: PendBuf) : bool =
     endsInBinderHeadSeg "within proc " (bufLastSeg b)
@@ -2328,6 +2422,8 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                             // the dangle position [D:scoped-procs]
                                                             | _ when bufEndsInProcHead buf || bufEndsInServeHead buf || bufEndsInEnvHead buf ->
                                                                 p.Lets, JStmtSibling
+                                                            | _ when p.PrevDangles && indent > p.LastIndent && bufEndsInBareRepeat buf ->
+                                                                p.Lets, JStmtSibling
                                                             // the first line after a dangling head opens its
                                                             // body — a stale statement level from an earlier
                                                             // block must not sibling-capture it
@@ -2762,7 +2858,7 @@ let private interpMasks (line: string) : bool[] * bool[] =
                     stack <- (if i > 0 && line[i - 1] = '@' then 'V'
                               elif i > 0 && line[i - 1] = '$' then '$'
                               else '"') :: stack
-                elif c = '\'' then
+                elif c = '\'' && not (Scan.isTyvarTick line i) then
                     str[i] <- true
                     stack <- '\'' :: stack
                 elif c = '{' && inHole then
@@ -3269,9 +3365,9 @@ let discardError (ty: Ty) : string option =
     // determines it — almost always a helper whose body ends in
     // exit/fail (diverging, so polymorphic — never unit). A bare
     // "computes a 'a1" names no cause; this names it and the repair.
-    | TVar _ as ty ->
+    | TVar _ ->
         Some(
-            $"this statement computes a {formatTy ty} and discards it — an unresolved type here usually means the helper ends in exit or fail, which makes it polymorphic, not unit: return the exit code and exit at the call site (exit (helper …)), or bind the value"
+            $"this statement computes a value of undetermined type and discards it — an unresolved type here usually means the helper ends in exit or fail, which makes it polymorphic, not unit: return the exit code and exit at the call site (exit (helper …)), or bind the value"
         )
     | ty -> Some $"this statement computes a {formatTy ty} and discards it — bind it, or pipe it to print"
 
@@ -3366,6 +3462,18 @@ type CheckedStatement =
 // dashes; never keywords, never dotted): the expression grammar must
 // keep claiming Env.load, from-adapters, and punctuation heads
 let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
+    // a union case of any known type (an ambiguous imported one
+    // included) is an expression head, never a program — so check
+    // reaches the runner's "module-qualified here" verdict [D:assume-resolver]
+    let caseNames =
+        lazy
+            (tenv.Types
+             |> Seq.collect (fun (KeyValue(_, def)) ->
+                 match def with
+                 | Union u -> u.Cases |> List.map fst
+                 | Record _ -> [])
+             |> Set.ofSeq)
+
     { resolver tenv with
         IsExternal =
             fun n ->
@@ -3380,6 +3488,7 @@ let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
                     && not (Map.containsKey n tenv.Modules)
                     // an import's type, its bare name ambiguous [D:qualified-type-names]
                     && not (tenv.ModuleTypes |> Map.exists (fun _ owned -> owned.ContainsKey n))
+                    && not (caseNames.Force().Contains n)
                     && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-')) }
 
 // mkR builds the resolver from the current env per statement, so
@@ -4334,11 +4443,7 @@ let rec private checkStatementCore
                 // it" — the wrapper is what is in the way, so the error
                 // names the drop [D:district-retirement] (the wrap-it
                 // hint's principle, inverted)
-                let dropClause =
-                    match e.Kind with
-                    | ECapture { Kind = ECmd _ }
-                    | ECapture { Kind = EPipe(_, { Kind = ECmd _ }) } -> ", or drop the $( ) to run it as a command"
-                    | _ -> ""
+                let dropClause = Check.captureDropHint e
 
                 // a diverging tail makes no value to discard
                 // [D:fail-bottom]: its fresh var passes the statement gate
@@ -11503,6 +11608,12 @@ let analyzeLinesAs
     | None -> [], [], typeEnv0, [], []
     | Some logicalLines ->
         let diags = ResizeArray<Diagnostic>()
+        // a shared module's own error is reported once [D:module-error-once]:
+        // a module that fails is re-checked at every import site (only a
+        // loaded module is cached), so its error arrives once per site —
+        // and under each spelling of its path (a symlink); identity is the
+        // real path, the first spelling seen is the one printed
+        let seenModuleErrors = System.Collections.Generic.HashSet<string * int * int * string>()
         let stmts = ResizeArray<LogicalLine * CheckedStatement>()
         let partials = ResizeArray<LogicalLine * CheckedStatement>()
         // first declaration per type name: line * came-from-import
@@ -11595,6 +11706,11 @@ let analyzeLinesAs
         // aliases of imports that failed: a later "no module named" for
         // one echoes the import's own error, so it is not reported
         let mutable failedImports: Set<string> = Set.empty
+        // a type declaration that errored: its later uses (`T.create`,
+        // `from json T`) are echoes of the one real error, not new ones
+        let mutable failedTypes: Set<string> = Set.empty
+        // …and a failed record's literal, which resolves to no record now
+        let mutable failedRecordLiterals: Set<string> = Set.empty
         let sigImplLines = ResizeArray<string * int>()
 
         // unused bindings [D:unused-bindings]: fed per statement, judged
@@ -11848,7 +11964,24 @@ let analyzeLinesAs
                          match stmt with
                          | SLet(name, _) -> [ name ]
                          | SLetPat(pat, _) -> patVars pat
+                         // a failed union still names its cases, as a
+                         // failed let names its binder [D:block-recovery]
+                         | SType { Body = DUnion cases } -> cases |> List.map (fun (c, _, _) -> c)
                          | _ -> []
+
+                     (match stmt with
+                      | SType decl ->
+                          failedTypes <- Set.add decl.Name failedTypes
+
+                          match decl.Body with
+                          | DRecord fields ->
+                              let names =
+                                  fields |> List.map (fun (n, _, _) -> n) |> Set.ofList |> String.concat ", "
+
+                              failedRecordLiterals <-
+                                  Set.add $"no declared record has exactly the fields: {names}" failedRecordLiterals
+                          | DUnion _ -> ()
+                      | _ -> ())
 
                      (match stmt with
                       | SImport(_, _, Some(alias, _)) -> failedImports <- Set.add alias failedImports
@@ -11917,6 +12050,14 @@ let analyzeLinesAs
                 let echoesFailedImport =
                     failedImports
                     |> Set.exists (fun a -> d.Message.StartsWith $"no module named '{a}'")
+                    || (match d.File with
+                        | Some mf -> not (seenModuleErrors.Add((realPath mf, d.PhysLine, d.PhysCol, d.Message)))
+                        | None -> false)
+                    || failedTypes
+                       |> Set.exists (fun t ->
+                           d.Message.StartsWith $"no module named '{t}'"
+                           || d.Message.StartsWith $"unknown type '{t}'")
+                    || failedRecordLiterals.Contains d.Message
 
                 // multi-file [D:modules-v1]: a module error carries File +
                 // PhysLine/Col into that other file; its Note is the "imported
@@ -11949,7 +12090,7 @@ let analyzeLinesAs
                           Message = d.Message }
 
                 (match d.Note with
-                 | Some(nl, nc, nmsg) ->
+                 | Some(nl, nc, nmsg) when not echoesFailedImport || d.File.IsNone ->
                      diags.Add
                          { File = path
                            Line = nl
@@ -11961,7 +12102,7 @@ let analyzeLinesAs
                            Related = [ d.File |> Option.defaultValue path, d.PhysLine, d.PhysCol, d.Message ]
                            Fix = None
                            Message = nmsg }
-                 | None -> ())
+                 | _ -> ())
 
                 // budget stop-at-first [D:budget-stop-first]: a budget
                 // diagnostic ends the fold — no further statement is
@@ -12214,14 +12355,73 @@ let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
                 |> Eval.sanitizeIfTty Console.IsOutputRedirected
             )
 
+/// a `#` line past the directive head [D:directive-diagnostic]: the one
+/// pass for `check` and `run`, so both name the same mistake the same way.
+/// Column-0 only: a directive is a statement-position thing. Indented `#`
+/// lines are continuations — inside a yaml district they are content
+/// (`#!/bin/sh` in a block scalar, `#` comments) [D:block-scalars];
+/// anywhere else they fail the parse. Returns (physical line, message)
+/// per stray line; `run` stops at the first, `check` reports them all.
+let directiveMisuses (rawLines: string list) : (int * string) list =
+    let body, bodyOffset, _ = scriptBody rawLines
+
+    body
+    |> List.mapi (fun i l -> i, l.TrimEnd())
+    |> List.filter (fun (_, l) -> l.StartsWith "#")
+    |> List.map (fun (i, l) ->
+        let word = l.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries).[0]
+
+        let msg =
+            if word = "#init" then
+                "an init file is not runnable — the REPL loads it; author it anywhere with #init on the first line and symlink it to the config dir (weir/init.weir)"
+            elif word = "#session" then
+                "#session lives in the REPL init file (config dir, weir/init.weir) — a script takes its settings from flags and env"
+            elif word = "#alias" then
+                "#alias lives in the REPL init file (config dir, weir/init.weir) and at the REPL prompt — a script names its programs directly"
+            elif word = "#sig" then
+                "misplaced directive: #sig — #sig lines belong at the file head, before any code, comment or blank line"
+            elif word.StartsWith "#!" then
+                "a shebang (#!) is only the first line of the file"
+            else
+                $"unknown directive: {word} — a script's only directive is #sig (the REPL init file takes #init, #session and #alias)"
+
+        bodyOffset + i + 1, msg)
+
+let directiveMisuse (rawLines: string list) : (int * string) option =
+    directiveMisuses rawLines |> List.tryHead
+
 let checkOnly (json: bool) (path: string) : int =
     match readEntryScript path with
     | Error msg ->
         Console.Error.WriteLine $"weir: {msg}"
         2
     | Ok rawLines ->
-        let diags, stmts, _, _, _ = analyzeLines path rawLines
-        printDiags json (not (List.isEmpty stmts)) diags
+        // the stray directive lines report as run reports them, and the
+        // rest of the file still checks with those lines blanked (line
+        // numbers kept) — never an expected-token dump at the `#`
+        let misuses = directiveMisuses rawLines
+        let stray = misuses |> List.map fst |> Set.ofList
+
+        let directiveDiags =
+            misuses
+            |> List.map (fun (line, msg) ->
+                { File = path
+                  Line = line
+                  Col = 1
+                  EndLine = None
+                  EndCol = None
+                  Severity = "error"
+                  Code = "directive"
+                  Message = msg
+                  Related = []
+                  Fix = None })
+
+        let checkedLines =
+            rawLines |> List.mapi (fun i l -> if stray.Contains(i + 1) then "" else l)
+
+        let diags, stmts, _, _, _ = analyzeLines path checkedLines
+        let diags = directiveDiags @ diags |> List.sortBy (fun d -> d.Line)
+        printDiags json (not (List.isEmpty stmts) || not (List.isEmpty misuses)) diags
 
         if diags |> List.exists (fun d -> d.Severity = "error") then
             1
@@ -12242,29 +12442,9 @@ let run (path: string) (scriptArgs: string list) : int =
 
         let body, bodyOffset, runSigDecls = scriptBody rawLines
 
-        // Column-0 only: a directive is a statement-position thing.
-        // Indented `#` lines are continuations — inside a yaml district
-        // they are content (`#!/bin/sh` in a block scalar, `#` comments)
-        // [D:block-scalars]; anywhere else they fail the parse
-        let directiveError =
-            body
-            |> List.mapi (fun i l -> i, l.TrimEnd())
-            |> List.tryFind (fun (_, l) -> l.StartsWith "#")
-
-        match directiveError with
-        | Some(i, l) ->
-            Console.Error.WriteLine(
-                located
-                    path
-                    (bodyOffset + i + 1)
-                    (if l.TrimStart().StartsWith "#init" then
-                         "an init file is not runnable — the REPL loads it; author it anywhere with #init on the first line and symlink it to the config dir (weir/init.weir)"
-                     elif l.TrimStart().StartsWith "#session" then
-                         "#session lives in the REPL init file (config dir, weir/init.weir) — a script takes its settings from flags and env"
-                     else
-                         $"unknown or misplaced directive: {l} (directives belong at the file head)")
-            )
-
+        match directiveMisuse rawLines with
+        | Some(line, msg) ->
+            Console.Error.WriteLine(located path line msg)
             1
         | None ->
             // the script's own absolute path [D:script-path]: resolved

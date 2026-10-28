@@ -963,18 +963,18 @@ let serveRun d off fixture =
     runOnFreePort off (fun port -> runIn d "60" [put d "serve.weir" (fixture port)])
 
 let ctlServeV4 d =
-    let r = serveRun d 1 (fun port -> [okHandler; $"within serve srv = {{ port = {port}; maxConcurrent = 4 }} handler"; $"    python3 -I cli.py get {port} /"])
+    let r = serveRun d 1 (fun port -> [okHandler; $"within serve srv = {{ port = Some {port}; maxConcurrent = 4 }} handler"; $"    python3 -I cli.py get {port} /"])
     codeOf r == 0 && (outOf r |> Str.contains "200 OK") && (outOf r |> Str.contains "weir-handler")
 
 // H3-E5: one slow request body holds the only slot for bodyTimeout
 let h3e5 d =
-    let r = serveRun d 2 (fun port -> [okHandler; $"within serve srv = {{ port = {port}; maxConcurrent = 1; bodyTimeout = 6s }} handler"; $"    python3 -I cli.py e5 {port}"])
+    let r = serveRun d 2 (fun port -> [okHandler; $"within serve srv = {{ port = Some {port}; maxConcurrent = 1; bodyTimeout = 6s }} handler"; $"    python3 -I cli.py e5 {port}"])
     let lat = r.stdout |> Seq.tryFind (Str.startsWith "LAT ") |> Option.map (fun l -> l |> Str.fields |> Seq.item 1 |> Str.toInt) |> Option.defaultValue 999999
     failing [ ($"a GET waited {lat}ms behind one slow-body client (exit {codeOf r})", lat < 2000) ]
 
 // H3-E6: a listener 404/505 is followed by an unsolicited 200 on the connection
 let h3e6 d =
-    let r = serveRun d 3 (fun port -> [okHandler; $"within serve srv = {{ port = {port}; maxConcurrent = 4 }} handler"; $"    python3 -I cli.py e6 {port}"])
+    let r = serveRun d 3 (fun port -> [okHandler; $"within serve srv = {{ port = Some {port}; maxConcurrent = 4 }} handler"; $"    python3 -I cli.py e6 {port}"])
     ["foreign-host"; "abs-uri"; "bad-version"]
     |> Seq.map (fun k ->
         let n = r.stdout |> Seq.tryFind (Str.startsWith $"{k} ") |> Option.map (fun l -> l |> Str.fields |> Seq.item 1) |> Option.defaultValue "?"
@@ -988,7 +988,7 @@ let e7Fixture port = [
     "    | \"/raise\" -> fail \"h3-boom\""
     "    | \"/status\" -> HttpServerResponse { status = 1000; headers = []; body = Text \"x\" }"
     "    | _ -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }"
-    $"within serve srv = {{ port = {port}; maxConcurrent = 4 }} handler"
+    $"within serve srv = {{ port = Some {port}; maxConcurrent = 4 }} handler"
     $"    python3 -I cli.py get {port} /raise |> File.write \"raise.out\""
     "    print $\"after-raise {Server.streamErrors srv |> Seq.length}\""
     $"    python3 -I cli.py get {port} /status |> File.write \"status.out\""
@@ -1009,7 +1009,7 @@ let h3e7 d =
 let h3a3 d =
     let v6 = python3 -I -c "import socket; s = socket.socket(socket.AF_INET6); s.bind(('::1', 0))" | succeeds
     if not v6 then skip "no IPv6 loopback on this host" else ()
-    let r = serveRun d 5 (fun port -> [okHandler; $"within serve srv = {{ port = {port}; maxConcurrent = 4 }} handler"; $"    python3 -I cli.py v6 {port}"])
+    let r = serveRun d 5 (fun port -> [okHandler; $"within serve srv = {{ port = Some {port}; maxConcurrent = 4 }} handler"; $"    python3 -I cli.py v6 {port}"])
     failing [ ($"""a [::1] request ({r.stdout |> Seq.tryHead |> Option.defaultValue "no answer"})""", outOf r |> Str.contains "weir-handler") ]
 
 // H3-C3: a handler running >2s after scope close crashes weir (134)
@@ -1018,7 +1018,7 @@ let c3Fixture port = [
     "    Duration.sleep 3s"
     "    HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }"
     "within"
-    $"    within serve srv = {{ port = {port}; maxConcurrent = 4 }} handler"
+    $"    within serve srv = {{ port = Some {port}; maxConcurrent = 4 }} handler"
     "        poll timeout=8s interval=50ms"
     $"            Net.portOpen {port}"
     $"        within proc client = python3 -I cli.py hold {port}"

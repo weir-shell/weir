@@ -189,7 +189,7 @@ let serveHoldFixture = <<<
     let port = Str.toInt a[0]
     let md = a[1]
     let h = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "holder" }
-    within serve srv = { port = port; maxConcurrent = 1 } h
+    within serve srv = { port = Some port; maxConcurrent = 1 } h
         ["up"] |> File.write $"{md}/ready"
         Duration.sleep 8s
 
@@ -1427,7 +1427,7 @@ let curlHit d url =
     (r.exitCode, r.stdout |> Str.join "", body)
 
 let serveAt port mb h body =
-    within serve srv = { port = port; maxConcurrent = 4; maxBody = mb } h
+    within serve srv = { port = Some port; maxConcurrent = 4; maxBody = mb } h
         body srv port
 
 // the bind is the claim [D:harness-ports]: a candidate another process took between the check and the bind moves on to the next one; any other failure is the probe's
@@ -1548,7 +1548,7 @@ let x59 d =
 // X48 — F11: a response header the wire cannot carry is refused, never dropped — the client gets a 500 and Server.streamErrors names the header [D:http-header-bytes] [D:http-header-unsendable]
 let x48 d =
     let port = freePort 18561
-    within serve srv = { port = port; maxConcurrent = 4 } probeHandler
+    within serve srv = { port = Some port; maxConcurrent = 4 } probeHandler
         let (s1, _b1) = hit $"http://127.0.0.1:{port}/badname"
         let (s2, _b2) = hit $"http://127.0.0.1:{port}/crlfhdr"
         Duration.sleep 200ms
@@ -1563,7 +1563,7 @@ let x48 d =
 // X49 — maxBody: a request body over the bound is answered 413 [D:serve-max-body]; and an HTTP body with CRLF reads as clean lines [D:http-body-lines]
 let x49 d =
     let port = freePort 18621
-    within serve srv = { port = port; maxConcurrent = 4; maxBody = 1KiB } probeHandler
+    within serve srv = { port = Some port; maxConcurrent = 4; maxBody = 1KiB } probeHandler
         let big = Http.send { Http.post $"http://127.0.0.1:{port}/who" with body = Text (Str.replicate 4096 "a") } |> try result
         let crlfResp = Http.send (Http.get $"http://127.0.0.1:{port}/crlfbody")
         let lines = crlfResp.body |> Seq.freeze
@@ -1580,7 +1580,7 @@ let x49 d =
         |> withNote $"port {Server.port srv}"
 
 let bindOnce port =
-    within serve s = { port = port; maxConcurrent = 1 } probeHandler
+    within serve s = { port = Some port; maxConcurrent = 1 } probeHandler
         Server.port s
 
 // X50 — port in use: a second listener on a held port (another process, or a nested scope) raises naming the port — no internal error — and the port frees when the holder goes (SKILL: within serve; [D:http-serve] [D:harness-ports])
@@ -1601,7 +1601,7 @@ let x50 d =
     let freed = bindOnce port |> try result
     let port2 = freePort 18741
     let nestedMsg =
-        within serve s = { port = port2; maxConcurrent = 1 } probeHandler
+        within serve s = { port = Some port2; maxConcurrent = 1 } probeHandler
             match bindOnce (Server.port s) |> try result with
             | Ok _ -> "<bound twice>"
             | Error m -> oneLine m

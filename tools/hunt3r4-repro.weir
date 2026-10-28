@@ -489,7 +489,7 @@ let p02ServeIn port = $$<<<
     within
         File.append log ["body"]
     always
-        within serve srv = { port = $port; maxConcurrent = 2 } handler
+        within serve srv = { port = Some $port; maxConcurrent = 2 } handler
             within proc client = python3 -I cli.py $port
                 poll timeout=10s interval=50ms watch=client
                     File.exists $"{log}.h"
@@ -497,7 +497,7 @@ let p02ServeIn port = $$<<<
 
 let p02ServeBare port = $$<<<
     File.append log ["body"]
-    within serve srv = { port = $port; maxConcurrent = 2 } handler
+    within serve srv = { port = Some $port; maxConcurrent = 2 } handler
         within proc client = python3 -I cli.py $port
             poll timeout=10s interval=50ms watch=client
                 File.exists $"{log}.h"
@@ -557,7 +557,7 @@ let p03Fixture port tail = $$<<<
         HttpServerResponse { status = 200; headers = []; body = Text "ok" }
 
     within
-        within serve srv = { port = $port; maxConcurrent = 2 } handler
+        within serve srv = { port = Some $port; maxConcurrent = 2 } handler
             within proc client = python3 -I cli.py $port
                 poll timeout=10s interval=50ms watch=client
                     File.exists $"{log}.h"
@@ -663,7 +663,7 @@ let p05Fixture port cmd = $$<<<
         print "h3"
         HttpServerResponse { status = 200; headers = []; body = Text "ok" }
     print "first"
-    within serve srv = { port = $port; maxConcurrent = 2 } handler
+    within serve srv = { port = Some $port; maxConcurrent = 2 } handler
         within proc c = python3 -I cli.py $port
             $cmd
     print "after"
@@ -705,7 +705,7 @@ let p06Scopes = [
     ("tmp", fun _ -> ["within tmp t"; "    print \"in tmp\""])
     ("always", fun _ -> ["within"; "    print \"in body\""; "always"; "    print \"in always\""])
     ("proc", fun _ -> ["within proc q = sh -c \"exit 0\""; "    print \"in proc\""])
-    ("serve", fun port -> [$"within serve srv = {{ port = {port}; maxConcurrent = 1 }} (fun req -> HttpServerResponse {{ status = 200; headers = []; body = Text \"ok\" }})"; "    print \"in serve\""])
+    ("serve", fun port -> [$"within serve srv = {{ port = Some {port}; maxConcurrent = 1 }} (fun req -> HttpServerResponse {{ status = 200; headers = []; body = Text \"ok\" }})"; "    print \"in serve\""])
 ]
 
 let p06Run d name prefix port mark =
@@ -865,7 +865,7 @@ let p11Steps port = [
     typedLine "let h = fun req -> print (Str.toUpper \"handling\") ; Duration.sleep 20s ; HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }"
     promptReady
     pastedEntry [
-        $"within serve srv = {{ port = {port}; maxConcurrent = 2 }} h"
+        $"within serve srv = {{ port = Some {port}; maxConcurrent = 2 }} h"
         "    within"
         "        print (Str.toUpper \"serving\")"
         "        Duration.sleep 20s"
@@ -889,7 +889,7 @@ let ctlHandlerRaise500 d =
     let _c = put d "cli.py" cliPy
     let fixture port = [
         "let h = fun req -> fail \"boom\""
-        $"within serve srv = {{ port = {port}; maxConcurrent = 2 }} h"
+        $"within serve srv = {{ port = Some {port}; maxConcurrent = 2 }} h"
         $"    python3 -I cli.py {port}"
         "    Server.streamErrors srv |> Seq.iter (fun e -> print (\"SE=\" + e))"
     ]

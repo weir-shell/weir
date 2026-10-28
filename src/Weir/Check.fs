@@ -314,6 +314,13 @@ let private mismatch (span: Span) (expected: Ty) (actual: Ty) =
         | TStr, TNamed("HttpRequest", _) -> " — a request runs through Http.expect (raising) or Http.send (status as data)"
         | _ -> unwrapHint expected actual
 
+    // a raw generated var never reaches a message [D:user-language-messages]:
+    // both sides rename together, in first-appearance order ('a, 'b, …)
+    let expected, actual =
+        match normalizeEchoVars (TTuple [ expected; actual ]) with
+        | TTuple [ e; a ] -> e, a
+        | _ -> expected, actual
+
     err span $"expected {formatTy expected}, got {formatTy actual}{hint}"
 
 let private allOk (items: 'a list) (f: 'a -> Result<unit, TypeError>) : Result<unit, TypeError> =
@@ -1423,14 +1430,75 @@ let distinctScheme: Scheme =
 // the sequenced-unit message, one home for its two arms — the infer
 // and check-mode ESeq twins share it so they cannot drift
 // [D:maintenance-2]
-let private seqUnitError (first: Expr) (ty: Ty) : string =
-    let drop =
-        match first.Kind with
-        | ECapture { Kind = ECmd _ }
-        | ECapture { Kind = EPipe(_, { Kind = ECmd _ }) } -> ", or drop the $( ) to run it as a command"
-        | _ -> ""
+// the discarded-capture repair, one home for the statement gate and the
+// sequenced-unit arms [D:district-retirement]: `$(cmd)` drops its parens;
+// the env sigil `$e(cmd)` has none to drop — its overlay form is
+// `within env e` over the bare command
+let captureDropHint (e: Expr) : string =
+    let envName (env: Expr option) =
+        match env with
+        | Some { Kind = EVar n } -> n
+        | _ -> "e"
 
-    $"a sequenced expression must be unit; this one is {formatTy ty} — bind it or print it{drop}"
+    match e.Kind with
+    | ECapture { Kind = ECmd(_, _, Some env) }
+    | ECapture { Kind = EPipe(_, { Kind = ECmd(_, _, Some env) }) } ->
+        $", or run it as a command under the overlay: `within env {envName (Some env)}` with the bare command indented below"
+    | ECapture { Kind = ECmd _ }
+    | ECapture { Kind = EPipe(_, { Kind = ECmd _ }) } -> ", or drop the $( ) to run it as a command"
+    | _ -> ""
+
+let private seqUnitError (first: Expr) (ty: Ty) : string =
+    $"a sequenced expression must be unit; this one is {formatTy ty} — bind it or print it{captureDropHint first}"
+
+// `| exec` inside a resource scope is refused [D:exec-scope-refused]:
+// exec replaces weir's process, so the scope's teardown (and an always
+// block) would never run. Lexical, like exit inside always — the first
+// exec site under the expression, if any
+let private execSite (e: Expr) : Ast.Span option =
+    let rec go (e: Expr) =
+        match e.Kind with
+        | EVar v when v.StartsWith "|execed" -> Some e.Span
+        | _ -> Ast.exprChildren e |> List.tryPick go
+
+    go e
+
+let private execInScope (kind: WithinKindId) (body: Expr) : Result<unit, TypeError> =
+    let lost =
+        match kind with
+        | WithinTmp -> Some "the temporary directory would never be removed"
+        | WithinProc -> Some "the scoped process would never be stopped"
+        | WithinLock -> Some "the lock would never be released"
+        | WithinServe -> Some "the server would never be stopped"
+        | WithinCd
+        | WithinEnv -> Some "the scope would never close"
+        // pure/readonly/plan refuse every command already
+        | _ -> None
+
+    match lost, execSite body with
+    | Some what, Some sp ->
+        Error
+            { Message =
+                $"'exec' inside 'within {withinKindName kind}' is refused — exec replaces weir's process, so {what}; run the command without exec, or exec after the scope"
+              Span = sp
+              Origin = None }
+    | _ -> Ok()
+
+let private execInAlways (body: Expr) (cleanup: Expr) : Result<unit, TypeError> =
+    match execSite body, execSite cleanup with
+    | Some sp, _ ->
+        Error
+            { Message =
+                "'exec' inside a scope with always is refused — exec replaces weir's process, so the always block would never run; run the command without exec, or exec after the scope"
+              Span = sp
+              Origin = None }
+    | None, Some sp ->
+        Error
+            { Message =
+                "'exec' inside always is refused — exec replaces weir's process, so the rest of the teardown would never run; run the command without exec"
+              Span = sp
+              Origin = None }
+    | None, None -> Ok()
 
 // a diverging tail [D:fail-bottom]: every path out of the expression
 // ends in fail/exit (reserved names, un-shadowable), so its value is a
@@ -1756,6 +1824,35 @@ let rec private typeBinOp
     | ("*" | "/"), TInt, TInt -> Ok(TInt)
     | (">" | "<" | ">=" | "<="), TInt, TInt -> Ok TBool
     | ("&&" | "||"), TBool, TBool -> Ok TBool
+    // the operators admit what sorts [D:ord-scalar-operators]: string
+    // (ordinal) and bool (false first) compare as Seq.sort orders them;
+    // an Option by its content, None first. Uuid stays out — an
+    // identifier is not a quantity [D:uuid]
+    | (">" | "<" | ">=" | "<="), TStr, TStr
+    | (">" | "<" | ">=" | "<="), TBool, TBool -> Ok TBool
+    | (">" | "<" | ">=" | "<="), (TNamed("Option", [ _ ]) as a), (TVar _ | TNamed("Option", [ _ ]))
+    | (">" | "<" | ">=" | "<="), TVar _, (TNamed("Option", [ _ ]) as a) ->
+        let rec holdsUuid t =
+            match resolve ctx t with
+            | TUuid -> true
+            | TNamed("Option", [ inner ]) -> holdsUuid inner
+            | _ -> false
+
+        bind ctx env r.Span (resolve ctx l.Ty) (resolve ctx r.Ty)
+        |> Result.bind (fun () ->
+            if holdsUuid a then
+                err opSpan $"operator '{op}' is not defined for {formatTy (finalTy ctx a)}; a Uuid is an identifier, not a quantity — Seq.sort orders Uuids"
+            else
+                let p =
+                    { Cls = Cls.Ord
+                      Span = opSpan
+                      Describe =
+                        fun env t ->
+                            let off = ordOffender env Set.empty t |> Option.defaultValue t
+                            $"operator '{op}' is not defined for {formatTy t} — {ordTail env true off}" }
+
+                demand ctx env p a)
+        |> Result.map (fun () -> TBool)
     // an ordered type compares with its own kind [D:derived-ord] — a
     // declared type is a quantity by declaration (the Instant side of
     // the Instant/Uuid split); an unknown other side binds to it, the
@@ -1973,6 +2070,10 @@ let rec private jsonAdmitted
     // the ID-keyed object [D:map-string]: Map<string, T> is a JSON
     // object whose keys are data — admitted iff T is
     | TNamed("Map", [ TStr; inner ]) -> jsonAdmitted reading span env seen path inner
+    // cascade suppression [PLAN-diagnostics-arc B6]: a hole stands for
+    // an already-reported error — never print its name
+    | TVar v
+    | TNamed("Map", [ TVar v; _ ]) when v.StartsWith "__hole" -> Ok()
     // a key still open where the value is written: the generic teaching
     | TNamed("Map", [ TVar v; _ ]) when not reading && not (v.StartsWith "__hole") ->
         err span (at + genericWireTeach "json" ty)
@@ -3494,10 +3595,47 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
                     | PCons(h, t) -> isIrrefutablePat h && isIrrefutablePat t
                     | _ -> false)
 
-            [ if not nilCovered then
-                  "[]"
-              if not consCovered then
-                  "_ :: _" ]
+            // a chained cons (`a :: b :: rest`) covers every length from
+            // its depth up: when the shortest such chain is deeper than
+            // one, the gap is the short seqs below it — name those, not
+            // `_ :: _` [D:seq-patterns]
+            let rec chainDepth (p: Pattern) =
+                match p.PKind with
+                | PCons(h, t) when isIrrefutablePat h -> chainDepth t |> Option.map ((+) 1)
+                | _ when isIrrefutablePat p -> Some 0
+                | _ -> None
+
+            let fixedLens =
+                pats
+                |> List.choose (fun p ->
+                    match p.PKind with
+                    | PSeqNil -> Some 0
+                    | PSeqList ps when ps |> List.forall isIrrefutablePat -> Some ps.Length
+                    | _ -> None)
+                |> Set.ofList
+
+            let shortest =
+                pats
+                |> List.choose (fun p ->
+                    match p.PKind with
+                    | PCons _ -> chainDepth p
+                    | _ -> None)
+                |> List.sort
+                |> List.tryHead
+
+            match shortest with
+            | Some k when not consCovered && k > 1 ->
+                [ for n in 0 .. k - 1 do
+                      if not (fixedLens.Contains n) then
+                          if n = 0 then
+                              "[]"
+                          else
+                              "[" + String.concat "; " (List.replicate n "_") + "]" ]
+            | _ ->
+                [ if not nilCovered then
+                      "[]"
+                  if not consCovered then
+                      "_ :: _" ]
         // every arm here is refutable (the guard above returned
         // otherwise); a payload the checker could not resolve (a type
         // variable) or any other unanalysed type owes the catch-all
@@ -4065,6 +4203,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                           Origin = None }
                 | None -> Ok()
 
+            do! execInAlways body cleanup
             let! tbody = infer ctx env body
             let! tcleanup = check ctx env cleanup TUnit
 
@@ -4088,6 +4227,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         // in withinContracts, shared with the check direction; the scope's
         // type is the body's type
         result {
+            do! execInScope kind body
             let! targ, topts, benv = withinContracts ctx env kind binder arg opts
 
             let! tbody =
@@ -4476,6 +4616,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             err
                                 expr.Span
                                 "no b[i] index on Bytes — slice it (b[a..b], inclusive) or take a window with Bytes.sub start len"
+                        // a string has no s[i] — the raw "expected seq"
+                        // would name the desugar's own var; teach the
+                        // character forms instead
+                        | TStr ->
+                            err
+                                expr.Span
+                                "no s[i] index on a string — slice it (s[i..i], inclusive) or take characters with Str.sub start len"
                         | _ -> Ok()
                     // a broken target reports through the ordinary path
                     | Error _ -> Ok()
@@ -5014,6 +5161,15 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         $"'to {fmt} stream' does not exist — one document per element is 'to jsonl'; one array document is 'to json'"
                 else
                     Ok()
+
+            // a hole (an earlier, already-reported error) takes the
+            // per-element shape the stream forms demand, so the cascade
+            // stays silent [PLAN-diagnostics-arc B6]
+            do!
+                match resolve ctx targ.Ty with
+                | TVar v when v.StartsWith "__hole" && (fmt = "jsonl" || (fmt = "yaml" && streamOf)) ->
+                    bind ctx env arg.Span (TSeq(holeVar ctx)) targ.Ty
+                | _ -> Ok()
 
             match fmt, resolve ctx targ.Ty with
             | "json", _ ->
@@ -6650,8 +6806,17 @@ and private checkSpineOn
 
             do!
                 match piped with
-                | Some(pipedTy, pipedSpan) ->
-                    bind ctx env pipedSpan (List.last paramTys) pipedTy
+                | Some(pipedTy, _) ->
+                    // the stage that cannot take the piped value is the
+                    // fault, not the pipeline's source — in a chain the
+                    // source may sit lines above the failing stage
+                    let stageSpan =
+                        { head.Span with
+                            End = (match List.tryLast args with
+                                   | Some a -> a.Span.End
+                                   | None -> head.Span.End) }
+
+                    bind ctx env stageSpan (List.last paramTys) pipedTy
                     |> Result.mapError (nameHoleDefault (List.last paramTys))
                 | None -> Ok()
 
@@ -6809,6 +6974,7 @@ and private withinContracts
                     if Set.isSubset core names && Set.isSubset (Set.difference names core) optional then
                         let fieldTy name =
                             match name with
+                            | "port" -> TNamed("Option", [ TInt ])
                             | "bodyTimeout" -> TDur
                             | "maxBody" -> TSize
                             | _ -> TInt
@@ -6818,7 +6984,14 @@ and private withinContracts
                             (fun acc (n, _, v) ->
                                 acc
                                 |> Result.bind (fun ts ->
-                                    check ctx env v (fieldTy n) |> Result.map (fun tv -> (n, tv) :: ts)))
+                                    match check ctx env v (fieldTy n), n with
+                                    // the pre-Option spelling names its repair
+                                    // [D:serve-port-option]
+                                    | Error _, "port" when (infer ctx env v |> Result.map (fun t -> t.Ty)) = Ok TInt ->
+                                        err
+                                            v.Span
+                                            "expected Option<int>, got int — serve's port is optional: `port = Some 8080` for that port, `port = None` for a free one"
+                                    | r, _ -> r |> Result.map (fun tv -> (n, tv) :: ts)))
                             (Ok [])
                         |> Result.map (fun tfields ->
                             Some
@@ -6920,6 +7093,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
                           Origin = None }
                 | None -> Ok()
 
+            do! execInAlways body cleanup
             let! tbody = check ctx env body expected
             let! tcleanup = check ctx env cleanup TUnit
 
@@ -6955,6 +7129,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
         }
     | EWithin(kind, binder, arg, opts, body), _ ->
         result {
+            do! execInScope kind body
             let! targ, topts, benv = withinContracts ctx env kind binder arg opts
             let! tbody = check ctx benv body expected
 
@@ -8449,7 +8624,14 @@ let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPo
         [ "Short",
           ((function
            | Some(AStr "h") -> Some "argument 'h' is reserved for --help"
-           | Some(AStr s) when s.Length = 1 -> None
+           // a short flag is `-` plus a letter or digit: `-`, a space or
+           // other punctuation is no flag the argv scanner can match. A
+           // digit stays legal — a signature describes foreign CLIs
+           // (`ls -1`), and the sig generator writes them
+           // [D:short-alnum]
+           | Some(AStr s) when s.Length = 1 && System.Char.IsLetterOrDigit s[0] -> None
+           | Some(AStr s) when s.Length = 1 ->
+               Some $"expects a letter, e.g. [<Short \"c\">] — '-{s}' can never be matched as a flag"
            | _ -> Some "expects a one-character string, e.g. [<Short \"c\">]"),
            [ FieldPos ])
           "NoShort",
@@ -8481,6 +8663,7 @@ let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPo
           "Wire",
           ((function
            | Some(AStr s) when s <> "" -> None
+           | Some(AStr _) -> Some "refuses an empty wire key — name the key the field reads and writes, e.g. [<Wire \"type\">] kind: string"
            | _ -> Some "expects the wire key as a string, e.g. [<Wire \"type\">] kind: string"),
            [ FieldPos; CasePos ])
           // the XML boundary markers [D:from-xml]: [<Attr>] reads a field

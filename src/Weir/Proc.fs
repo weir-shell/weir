@@ -79,7 +79,7 @@ let envKeyRefusal (where: string) (k: string) : unit =
         failwith
             $"{where}: the env key '{k}' contains '=' — a child would read it as the variable '{k.Substring(0, k.IndexOf '=')}'; an env name has no '='"
     elif k.Contains '\u0000' then
-        failwith $"{where}: the env key '{Weir.Types.quoteData (k.Replace('\u0000', '?'))}' contains a NUL byte — an env name is NUL-free"
+        failwith $"{where}: the env key '{Weir.Types.quoteData k}' contains a NUL byte — an env name is NUL-free"
 
 // no command runs while a module is imported [D:module-import-no-commands]:
 // the check-time walk refuses the direct forms; a helper reached through
@@ -653,10 +653,14 @@ let exec (s: Spec) : unit =
         if not isWindows then
             setenv (k, v, 1) |> ignore
 
-    match s.Cwd with
-    | Some wd when System.IO.Directory.Exists wd -> System.IO.Directory.SetCurrentDirectory wd
-    | Some wd -> failwith $"the working directory no longer exists: {Weir.Types.quoteData wd}"
-    | None -> ()
+    // the cwd the spawn path gives a child (Session.Cwd — `cd`, `within
+    // cd`) lands on THIS process before execve, so the image inherits it [D:exec]
+    let wd = match s.Cwd with Some c -> c | None -> Session.Cwd()
+
+    if System.IO.Directory.Exists wd then
+        System.IO.Directory.SetCurrentDirectory wd
+    else
+        failwith $"the working directory no longer exists: {Weir.Types.quoteData wd}"
 
     if System.OperatingSystem.IsWindows() then
         // no execve: run foreground, then hard-exit with the child's

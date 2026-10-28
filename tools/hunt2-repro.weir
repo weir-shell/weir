@@ -452,7 +452,7 @@ let h5 d =
             {"schemaVersion":1,"artifacts":[{"kind":"schema","name":"a","url":"http://127.0.0.1:$port/x","sha256":"$sha","path":"lock.json"}]}
         let lockPath = put $"{w}/.weir" "lock.json" lock
         let r =
-            within serve srv = { port = port; maxConcurrent = 4 } handler
+            within serve srv = { port = Some port; maxConcurrent = 4 } handler
                 within cd w
                     let x = timeout 30 $cli.bin restore | complete
                     x
@@ -637,7 +637,7 @@ let h13 d =
             let lock = $$<<<
                 {"schemaVersion":1,"artifacts":[{"kind":"module","name":"h","url":"http://127.0.0.1:$port/h.weir","sha256":"$sha","path":"modules/h.weir"}]}
             let _l = put $"{w}/.weir" "lock.json" lock
-            within serve srv = { port = port; maxConcurrent = 4 } handler
+            within serve srv = { port = Some port; maxConcurrent = 4 } handler
                 within cd w
                     within env WEIR_TOKEN_127_0_0_1=tok-h13
                         let x = timeout 30 $cli.bin restore | complete
@@ -680,7 +680,7 @@ let serveFixture port = $$<<<
         | "/te" -> HttpServerResponse { status = 200; headers = [("Transfer-Encoding", "chunked")]; body = Text "hello" }
         | "/sse" -> HttpServerResponse { status = 200; headers = []; body = Stream ["a\n\ndata: evil"; "b"] }
         | _ -> HttpServerResponse { status = 200; headers = []; body = Text "body-text" }
-    within serve srv = { port = $port; maxConcurrent = 4 } handler
+    within serve srv = { port = Some $port; maxConcurrent = 4 } handler
         printf "GET /nc HTTP/1.1\nHost: 127.0.0.1:$port\nConnection: close\n\n" | python3 rawcli.py $port |> File.write "nc.out"
         printf "HEAD /x HTTP/1.1\nHost: 127.0.0.1:$port\nConnection: close\n\n" | python3 rawcli.py $port |> File.write "head.out"
         printf "GET /te HTTP/1.1\nHost: 127.0.0.1:$port\nConnection: close\n\n" | python3 rawcli.py $port |> File.write "te.out"
@@ -738,7 +738,7 @@ let h19 d =
 
 let h20Fixture port = $$<<<
     let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Text $"got {Str.length req.body}" }
-    within serve srv = { port = $port; maxConcurrent = 2; maxBody = 1KiB } handler
+    within serve srv = { port = Some $port; maxConcurrent = 2; maxBody = 1KiB } handler
         let code = curl -s -o /dev/null -w "%{http_code}" --data-binary "@body.txt" http://127.0.0.1:$port/ | line
         print code
 
@@ -1139,7 +1139,7 @@ let h56 d =
             let lock = $$<<<
                 {"schemaVersion":1,"artifacts":[{"kind":"module","name":"m","url":"http://127.0.0.1:$port/m.weir","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"modules/m.weir"}]}
             let _l = put $"{w}/.weir" "lock.json" lock
-            within serve srv = { port = port; maxConcurrent = 4 } handler
+            within serve srv = { port = Some port; maxConcurrent = 4 } handler
                 within cd w
                     let x = timeout 30 $cli.bin restore | complete
                     x)
@@ -1210,7 +1210,7 @@ let ctlSecretCapture d = prints "tok" (runAt d "30" (put d "c.weir" ["let s = Se
 
 let ctlServeSrc port = $$<<<
     let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Text $"got {Str.length req.body}" }
-    within serve srv = { port = $port; maxConcurrent = 2 } handler
+    within serve srv = { port = Some $port; maxConcurrent = 2 } handler
         let b = curl -s --data-binary "0123456789" http://127.0.0.1:$port/ | line
         print b
 
@@ -1236,7 +1236,7 @@ let ctlRestorePlain d =
             let lock = $$<<<
                 {"schemaVersion":1,"artifacts":[{"kind":"schema","name":"a","url":"http://127.0.0.1:$port/a.json","sha256":"$sha","path":"schemas/a.json"}]}
             let _l = put $"{w}/.weir" "lock.json" lock
-            within serve srv = { port = port; maxConcurrent = 4 } handler
+            within serve srv = { port = Some port; maxConcurrent = 4 } handler
                 within cd w
                     let x = timeout 30 $cli.bin restore | complete
                     x)

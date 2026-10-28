@@ -867,20 +867,32 @@ let private unicodeEscape (at: Position) : Parser<string, unit> =
     >>. manyMinMaxSatisfy 0 7 isHex
     >>= body
 
+// dispatch on the peeked char, never an alternation [D:anchor-before-read]:
+// a failing `anyOf`/'u' pair would lead the message with FParsec's
+// expected-set and demote the teaching to a footnote
 let private escapedChar: Parser<string, unit> =
-    getPosition .>> pchar '\\'
-    >>= fun at ->
-        (anyOf "\"\\nte"
-         |>> function
-             | 'n' -> "\n"
-             | 't' -> "\t"
-             | 'e' -> "\u001b"
-             | c -> string c)
-        <|> unicodeEscape at
-        <|> (lookAhead (satisfy System.Char.IsLetter)
-             >>= fun c ->
-                 failFatally
-                     $"'\\{c}' is not an escape (the escapes are {escapeList}) — for a Windows path use a verbatim string: @\"C:\\path\" (forward slashes also work)")
+    getPosition .>> pchar '\\' .>>. getPosition .>>. lookAhead (opt anyChar)
+    >>= fun ((at, after), next) ->
+        match next with
+        | Some('"' | '\\' | 'n' | 't' | 'e') ->
+            anyChar
+            |>> function
+                | 'n' -> "\n"
+                | 't' -> "\t"
+                | 'e' -> "\u001b"
+                | c -> string c
+        | Some 'u' -> unicodeEscape at
+        | Some c when System.Char.IsLetter c ->
+            failFatallyAt
+                after
+                $"'\\{c}' is not an escape (the escapes are {escapeList}) — for a Windows path use a verbatim string: @\"C:\\path\" (forward slashes also work)"
+        // a non-letter is no path shape: the list alone, no hint to misfire
+        | Some c when not (System.Char.IsControl c) ->
+            failFatallyAt after $"'\\{c}' is not an escape (the escapes are {escapeList}; a literal backslash is \\\\)"
+        | _ ->
+            failFatallyAt
+                after
+                $"a backslash at the end of a string line is not an escape (the escapes are {escapeList}) — a literal backslash is \\\\, and strings are single-line (use \\n for a line break)"
 
 let private stringChar =
     choice [ many1Satisfy (fun c -> c <> '"' && c <> '\\'); escapedChar ]
@@ -1413,11 +1425,26 @@ let private negAtom =
     // instead of being swallowed by the attempt (a fatal inside an attempt
     // is not a fatal) and merged into a dump
     >>= fun p ->
+        // `--` has no reading [D:double-minus-teach]: the second `-` can
+        // never start a prefix minus (it follows a `-`), so without this
+        // the operand fails into an expected-token dump
+        (followedBy (pchar '-')
+         >>. failFatallyAt
+                 p
+                 "'--' is not an operator (weir has no decrement) — to negate a negative, parenthesize: -(-x); a command flag belongs on a command line, not in an expression")
+        <|>
         // Int64.MinValue's magnitude has no positive literal, so the 0 - e
         // desugar cannot spell it; F# reads `-9223372036854775808` as one
         // literal and so does weir
+        // a silent gate: the special case must never surface as an
+        // expected token in a message (`--5` would list it)
         (attempt (
-            pstring "9223372036854775808"
+            (fun (stream: CharStream<unit>) ->
+                if stream.Match "9223372036854775808" then
+                    Reply(())
+                else
+                    Reply(ReplyStatus.Error, NoErrorMessages))
+            >>. pstring "9223372036854775808"
             >>. notFollowedBy (satisfy (fun c -> Char.IsLetterOrDigit c || c = '_'))
             >>. notFollowedBy (pchar '.' >>. satisfy isDigit)
          )
@@ -1834,7 +1861,29 @@ let private appChain: Parser<Expr, unit> =
         postfixAtom
         >>= fun head ->
             if isLoadHead head then
-                opt loadShapeArg .>>. many postfixAtom
+                // `Env.load Box<int>` [D:load-generic-instance]: a generic
+                // instance would read as `Box < int > …`; the boundary takes
+                // monomorphic records only, so teach that instead
+                let who =
+                    match head.Kind with
+                    | EField({ Kind = EVar m }, _, _) -> $"{m}.load"
+                    | _ -> "load"
+
+                (attempt (
+                    getPosition
+                    .>>. lookAhead (
+                        many1Satisfy2 Char.IsUpper isIdentCont
+                        .>> pchar '<'
+                        .>> ws
+                        .>> satisfy (fun c -> Char.IsLetter c || c = '\'')
+                    )
+                 )
+                 >>= fun (at, name) ->
+                     failFatallyAt
+                         at
+                         $"{who} needs a monomorphic record; '{name}' is generic — declare a concrete record with the field types filled in and load that")
+                <|> preturn ()
+                >>. opt loadShapeArg .>>. many postfixAtom
                 |>> fun (shape, rest) -> head :: (Option.toList shape @ rest)
             else
                 many postfixAtom |>> fun rest -> head :: rest
@@ -2947,6 +2996,15 @@ let private retryExprBody =
                      preturn
                          { Kind = EVar defaultsKey
                            Span = { Start = pos p; End = pos p } }
+                 // a bare `repeat` [D:repeat-missing-interval]: no options at
+                 // all reads as the empty update, so the checker's
+                 // missing-interval error names the gap (not a parse dump
+                 // that blames the body)
+                 | [] when kind = LoopRepeat && not (watchE.IsSome) ->
+                     (followedBy (skipString sibSepStr <|> skipChar ';' <|> eof)
+                      >>% { Kind = EUpdate({ Kind = EVar defaultsKey; Span = { Start = pos p; End = pos p } }, [])
+                            Span = { Start = pos p; End = pos p } })
+                     <|> (postfixAtom <?> $"{headWord}'s options (key=value pairs or a {famName} record)")
                  | [] ->
                      // the record form: one atom, exactly as within cd
                      postfixAtom <?> $"{headWord}'s options (key=value pairs or a {famName} record)"
@@ -2962,7 +3020,7 @@ let private retryExprBody =
                                End = (List.last pairs |> snd).Span.End } })
                 >>= fun optsE ->
                     opt (str_ws ";" <|> str_ws sibSepStr)
-                    >>. (withExprParen false seqExpr <?> "the retry body")
+                    >>. (withExprParen false seqExpr <?> $"the {headWord} body")
                     >>= fun body ->
                         opt (
                             attempt (opt (str_ws ";" <|> str_ws sibSepStr) >>. keyword "until")
@@ -3896,6 +3954,21 @@ let private heredocDistrictBody: Parser<Expr, unit> =
 
 let private heredocDistrict = deepenAfter [ "<<<"; "$<<<"; "$$<<<" ] heredocDistrictBody // [D:depth-guard]
 
+// a `<<<` that is not the line's last token never opened a block
+// [D:text-block]: name it, instead of the expected-set dump (whose
+// backtrack note talks about tab stops when a tab trails the marker)
+let private heredocMarkerTeach: Parser<Expr, unit> =
+    getPosition
+    .>> (fun (stream: CharStream<unit>) ->
+        if stream.Match "<<<" || stream.Match "$<<<" || stream.Match "$$<<<" then
+            Reply(())
+        else
+            Reply(ReplyStatus.Error, NoErrorMessages))
+    >>= fun at ->
+        failFatallyAt
+            at
+            "a text block marker '<<<' must end its line — nothing may follow it, not even trailing spaces or tabs; the block is the indented lines below"
+
 opp.TermParser <-
     choice
         [ lambda
@@ -3912,6 +3985,7 @@ opp.TermParser <-
           retryExpr
           yamlDistrict
           heredocDistrict
+          heredocMarkerTeach
           fromExpr
           toExpr
           tryForm
@@ -4304,10 +4378,30 @@ let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) (stopAtElse: bool) =
     // each guard is gated on its piece's opener (notMidWord's shape) so
     // the fatal fires only where a piece genuinely starts — never on the
     // `|` of `hi |grep` or the `)` that closes a capture
+    // a line-end text block is never an argv word [D:arm-blocks]: the
+    // expression chain's blockArgGuard, command face
+    // silent when absent: the gate names no expected token
+    let cmdBlockArgGuard =
+        getPosition
+        .>> (fun (stream: CharStream<unit>) ->
+            let atMarker (m: string) = stream.Match(m + sibSepStr)
+
+            if atMarker "<<<" || atMarker "$<<<" || atMarker "$$<<<" then
+                Reply(())
+            else
+                Reply(ReplyStatus.Error, NoErrorMessages))
+        >>= fun at ->
+            // failChain: the teaching survives a speculative head probe
+            // (the value-headed tail's lookAhead) that would swallow it
+            failChain
+                "a text block cannot be a command argument — bind it first (`let body = <<<`, the block below it) and pass the value: `$body`"
+                { Start = pos at; End = pos at }
+
     choice
         // rawness is a kind, never positional [D:raw-strings]: a triple
         // quote is one word here as anywhere [D:argv-at-raw]
-        [ lookAhead (pstring "\"\"\"") >>. notGluedPiece >>. tripleLit
+        [ cmdBlockArgGuard
+          lookAhead (pstring "\"\"\"") >>. notGluedPiece >>. tripleLit
           lookAhead (pchar '"') >>. notGluedPiece >>. strLit
           lookAhead (pchar '\'') >>. notGluedPiece >>. singleQuoted
           lookAhead (pstring "@\"") >>. notGluedPiece >>. verbatimArgTeach
@@ -4801,14 +4895,19 @@ let private chainRhsTeach (kw: string) (r: Resolver) : Parser<Expr, unit> =
             failFatallyAt at $"'{w}' is a weir {what}, not a program — '| {kw}' must be followed by a command; {fix}"
         | _ -> failFatallyAt at $"'| {kw}' must be followed by a command, as in `<command> | {kw} <other command>`"
 
-let private andMarker bh ap se r : Parser<Seg, unit> =
+// the RHS always admits a command-callable builtin head (`mkdir d | and
+// cd d`) [D:cmd-chaining]: after `| and`/`| or` the text is a command
+// line by construction, so the let-RHS/block grammar's `builtinHeads =
+// false` (which keeps `let d = cd x` an application) does not carry
+// into it; only the argv stop-words (`in`, `then`, `else`) do
+let private andMarker _bh ap se r : Parser<Seg, unit> =
     attempt (spanned (pstring "and" .>> notFollowedBy (satisfy cmdWordChar)) .>> ws)
-    .>>. (cmdChainRhs bh ap se r <|> chainRhsTeach "and" r)
+    .>>. (cmdChainRhs true ap se r <|> chainRhsTeach "and" r)
     |>> fun ((_, span), rhs) -> AndMarker(rhs, span)
 
-let private orMarker bh ap se r : Parser<Seg, unit> =
+let private orMarker _bh ap se r : Parser<Seg, unit> =
     attempt (spanned (pstring "or" .>> notFollowedBy (satisfy cmdWordChar)) .>> ws)
-    .>>. (cmdChainRhs bh ap se r <|> chainRhsTeach "or" r)
+    .>>. (cmdChainRhs true ap se r <|> chainRhsTeach "or" r)
     |>> fun ((_, span), rhs) -> OrMarker(rhs, span)
 
 // fold a parsed pipeline — an initial head expression plus piped stages
@@ -5446,8 +5545,11 @@ tySynRef.Value <-
 let private attrArgLit =
     choice
         [ between (pchar '"') (pchar '"') (manyStrings stringChar) |>> AStr
+          // a leading `-` is part of the literal [D:attr-negative-literal]:
+          // `[<Default -1>]` is an int literal exactly as `-1` is anywhere
           getPosition
-          .>>. many1Satisfy isDigit
+          .>>. (opt (pchar '-') .>>. many1Satisfy isDigit
+                |>> fun (neg, d) -> if neg.IsSome then "-" + d else d)
           .>>. opt (
               attempt (
                   (choice
@@ -5478,9 +5580,9 @@ let private attrArgLit =
                   failFatallyAt at $"attribute argument out of range (64-bit): {digits}"
 
               let scaled (n: int64) (factor: int64) : Parser<int64, unit> =
-                  // Int64 saturating check: n * factor overflows iff
-                  // n > MaxValue / factor (both non-negative — digits only)
-                  if factor <> 0L && n > System.Int64.MaxValue / factor then
+                  // Int64 saturating check: |n| * factor overflows iff
+                  // |n| > MaxValue / factor (a negative n is bounded the same)
+                  if factor <> 0L && (n > System.Int64.MaxValue / factor || n < -(System.Int64.MaxValue / factor)) then
                       outOfRange ()
                   else
                       preturn (n * factor)
@@ -5488,7 +5590,10 @@ let private attrArgLit =
               match sfx, frac with
               | _, Some f ->
                   preturn (
-                      AFloat(System.Double.Parse($"{digits}.{f}", System.Globalization.CultureInfo.InvariantCulture))
+                      AFloat(
+                          let v = System.Double.Parse($"{digits}.{f}", System.Globalization.CultureInfo.InvariantCulture)
+                          if v = 0.0 then 0.0 else v
+                      )
                   )
               | Some unit, _ ->
                   match System.Int64.TryParse digits with
@@ -5533,9 +5638,11 @@ let private fieldNameDecl: Parser<string, unit> =
         else
             preturn w
 
+// stacked attribute lines (`[<Short "n">]` above `[<Default 5>]`) join
+// with a space, so a field may carry several lists [D:attr-stacked-lines]
 let private fieldDecl =
-    opt attrList .>>. (fieldNameDecl .>> str_ws ":") .>>. tySyn
-    |>> fun ((attrs, name), ty) -> name, ty, defaultArg attrs []
+    many attrList .>>. (fieldNameDecl .>> str_ws ":") .>>. tySyn
+    |>> fun ((attrs, name), ty) -> name, ty, List.concat attrs
 
 let private recordBody =
     str_ws "{" >>. sepBy1 fieldDecl fieldSepP .>> str_ws "}" |>> DRecord
@@ -5571,7 +5678,7 @@ let private caseDecl =
     // peek-validate-then-consume: a post-consumption fail reports past
     // the word (its trailing ws even crosses physical lines) — lookAhead
     // restores the position so the error lands on the constructor
-    opt attrList
+    many attrList
     .>>. (lookAhead rawWord
           >>= fun w ->
               if keywords.Contains w then
@@ -5580,13 +5687,20 @@ let private caseDecl =
                   failFatally "constructor names must start with an uppercase letter"
               else
                   rawWord .>> ws >>= fun w -> opt (keyword "of" >>. tySyn) |>> fun ty -> w, ty)
-    |>> fun (attrs, (w, ty)) -> w, ty, defaultArg attrs []
+    |>> fun (attrs, (w, ty)) -> w, ty, List.concat attrs
 
 let private unionBody = opt (str_ws "|") >>. sepBy1 caseDecl (str_ws "|") |>> DUnion
 
 let private typeParams =
-    opt (between (str_ws "<") (str_ws ">") (sepBy1 (pchar '\'' >>. rawWord .>> ws) (str_ws ",")))
-    |>> Option.defaultValue []
+    opt (between (str_ws "<") (str_ws ">") (sepBy1 (getPosition .>> pchar '\'' .>>. rawWord .>> ws) (str_ws ",")))
+    >>= fun ps ->
+        let ps = defaultArg ps []
+
+        // a repeated parameter is named at its second spelling
+        // [D:anchor-before-read]
+        match ps |> List.indexed |> List.tryFind (fun (i, (_, n)) -> ps |> List.take i |> List.exists (fun (_, m) -> m = n)) with
+        | Some(_, (at, n)) -> failFatallyAt at $"duplicate type parameter '{n} — each type parameter is declared once"
+        | None -> preturn (ps |> List.map snd)
 
 // `validate <binder> = <expr>` [D:validated-types]: a contextual word —
 // only after a declaration body, so `validate` stays an ordinary name
@@ -5885,32 +5999,53 @@ let private nodeChildren =
     | NExpr e -> (exprChildren e |> List.map NExpr) @ (exprPats e |> List.map NPat)
     | NPat p -> patChildren p |> List.map NPat
 
+// the located site is the CHAIN that crossed the limit, not the deep
+// leaf [D:depth-locate-chain]: a flat `a + b + …` or `x |> f |> …` nests
+// along its left spine, so the deepest node is an arbitrary inner prefix
+// (the 5th term, the 105th stage); each node carries the span of the
+// outermost operator node of its spine, and a hit reports that
 let private nodeTooDeep (root: DeepNode) : Span option =
-    let stack = System.Collections.Generic.Stack<DeepNode * int>()
-    stack.Push(root, 1)
+    let stack = System.Collections.Generic.Stack<DeepNode * int * Span option>()
+    stack.Push(root, 1, None)
     let mutable hit = None
 
+    // a spine continues into the left operand of the same operator kind
+    let spineOf (parent: Expr) (chain: Span option) =
+        Some(defaultArg chain parent.Span)
+
     while hit.IsNone && stack.Count > 0 do
-        let node, d = stack.Pop()
+        let node, d, chain = stack.Pop()
 
         if d > maxDepth then
-            hit <- Some(nodeSpan node)
+            hit <- Some(defaultArg chain (nodeSpan node))
         else
             match node with
             // a block's continuation is width, not depth [D:block-width]
             | NExpr({ Kind = ELet(_, _, v, body) }) ->
-                stack.Push(NExpr v, d + 1)
-                stack.Push(NExpr body, d)
+                stack.Push(NExpr v, d + 1, None)
+                stack.Push(NExpr body, d, None)
             | NExpr({ Kind = ELetPat(p, v, body) }) ->
-                stack.Push(NPat p, d + 1)
-                stack.Push(NExpr v, d + 1)
-                stack.Push(NExpr body, d)
+                stack.Push(NPat p, d + 1, None)
+                stack.Push(NExpr v, d + 1, None)
+                stack.Push(NExpr body, d, None)
             | NExpr({ Kind = ESeq(a, rest) }) ->
-                stack.Push(NExpr a, d + 1)
-                stack.Push(NExpr rest, d)
+                stack.Push(NExpr a, d + 1, None)
+                stack.Push(NExpr rest, d, None)
+            | NExpr({ Kind = EBinOp(op, l, r) } as e) ->
+                stack.Push(NExpr r, d + 1, None)
+
+                match l.Kind with
+                | EBinOp(op2, _, _) when op2 = op -> stack.Push(NExpr l, d + 1, spineOf e chain)
+                | _ -> stack.Push(NExpr l, d + 1, None)
+            | NExpr({ Kind = EPipe(a, f) } as e) ->
+                stack.Push(NExpr f, d + 1, None)
+
+                match a.Kind with
+                | EPipe _ -> stack.Push(NExpr a, d + 1, spineOf e chain)
+                | _ -> stack.Push(NExpr a, d + 1, None)
             | _ ->
                 for c in nodeChildren node do
-                    stack.Push(c, d + 1)
+                    stack.Push(c, d + 1, None)
 
     hit
 

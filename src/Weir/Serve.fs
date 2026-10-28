@@ -96,7 +96,9 @@ type SCtx =
 // on every scope exit path [D:http-serve]
 type Handle =
     { Server: KestrelServer
-      Port: int
+      // the port actually bound [D:serve-port-option] — read back from
+      // the listener after start, so an asked-for free port is reported
+      mutable Port: int
       // the loopback addresses actually bound [D:serve-loopback-names]
       Bound: string list
       mutable Closed: bool
@@ -285,14 +287,37 @@ let private onRequest (h: Handle) (lim: Limits) (features: IFeatureCollection) :
                 http.Abort()
     }
 
-/// bind loopback:port and start serving. Raises a worded error on a bind
-/// failure (a port already taken is the common one — the acceptance's
-/// "second bind succeeds after close" pins the inverse) [D:http-serve]
+// a free loopback port, asked of the kernel [D:serve-port-option]: picked
+// up front so 127.0.0.1 and ::1 bind the SAME port (two `:0` listens
+// would pick two), then handed to the listener like an explicit one
+let private freePort () : int =
+    use s =
+        new Sockets.Socket(Sockets.AddressFamily.InterNetwork, Sockets.SocketType.Stream, Sockets.ProtocolType.Tcp)
+
+    s.Bind(IPEndPoint(IPAddress.Loopback, 0))
+    (s.LocalEndPoint :?> IPEndPoint).Port
+
+let private addressInUse (ex: exn) : bool =
+    let rec go (e: exn) =
+        match e with
+        | null -> false
+        | :? Sockets.SocketException as se -> se.SocketErrorCode = Sockets.SocketError.AddressAlreadyInUse
+        | e -> go e.InnerException
+
+    go ex
+
+/// bind loopback:port and start serving; port 0 binds a free port, and
+/// the handle's Port is the one bound [D:serve-port-option]. Raises a
+/// worded error on a bind failure (a port already taken is the common one
+/// — the acceptance's "second bind succeeds after close" pins the
+/// inverse) [D:http-serve]
 let start (port: int) (lim: Limits) : Handle =
     // loopback only — v1 is a reverse-proxy posture, no public bind,
     // no TLS (TLS is the proxy's, a stated bounded-out) [D:http-serve].
     // ::1 sits beside 127.0.0.1 [D:serve-loopback-names]; a host with no
     // IPv6 loopback binds 127.0.0.1 alone.
+    let port = if port = 0 then freePort () else port
+
     let build (addrs: IPAddress list) =
         let opts = KestrelServerOptions()
         // the settings weir pins rather than inherits [D:serve-kestrel]
@@ -336,6 +361,18 @@ let start (port: int) (lim: Limits) : Handle =
 
         try
             await (server.StartAsync(app, CancellationToken.None))
+
+            // the bound port as the listener reports it [D:serve-port-option]
+            match server.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>() with
+            | null -> ()
+            | f ->
+                f.Addresses
+                |> Seq.tryPick (fun a ->
+                    match Uri.TryCreate(a, UriKind.Absolute) with
+                    | true, u when u.Port > 0 -> Some u.Port
+                    | _ -> None)
+                |> Option.iter (fun p -> h.Port <- p)
+
             h
         with ex ->
             (try
@@ -371,8 +408,15 @@ let start (port: int) (lim: Limits) : Handle =
             run [ IPAddress.Loopback ]
     with ex ->
         // the bind failure in its own words — the port is the fact the
-        // caller needs to reword ("address in use")
-        failwith $"serve: cannot listen on 127.0.0.1:{port} — {(unwrap ex).Message}"
+        // caller needs; a taken port is named as such, never as the
+        // runtime's "Failed to bind to address" line
+        let why =
+            if addressInUse ex then
+                "the port is already in use (another process holds it, or a server on it is still closing)"
+            else
+                $"the listener could not open: {(unwrap ex).Message}"
+
+        failwith $"serve: cannot listen on 127.0.0.1:{port} — {why}"
 
 /// record a stream-producer failure on the handle [D:serve-stream] — the
 /// designated channel a Stream body's mid-flight raise reports through

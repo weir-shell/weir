@@ -521,7 +521,7 @@ let e3Plain port = $$<<<
             File.append log ["cleanup end"]
         HttpServerResponse { status = 200; headers = []; body = Text "ok" }
 
-    within serve srv = { port = $port; maxConcurrent = 4 } handler
+    within serve srv = { port = Some $port; maxConcurrent = 4 } handler
         within proc client = python3 -I cli.py $port
             poll timeout=10s interval=50ms watch=client
                 File.exists log
@@ -542,7 +542,7 @@ let e3Lock port = $$<<<
         HttpServerResponse { status = 200; headers = []; body = Text "ok" }
 
     within lock "sv.lock"
-        within serve srv = { port = $port; maxConcurrent = 4 } handler
+        within serve srv = { port = Some $port; maxConcurrent = 4 } handler
             within proc client = python3 -I cli.py $port
                 poll timeout=10s interval=50ms watch=client
                     File.exists log
@@ -556,7 +556,7 @@ let e3Fast port = $$<<<
         File.append log ["handled"]
         HttpServerResponse { status = 200; headers = []; body = Text "ok" }
 
-    within serve srv = { port = $port; maxConcurrent = 2 } handler
+    within serve srv = { port = Some $port; maxConcurrent = 2 } handler
         python3 -I cli.py $port
     File.append log ["serve returned"]
 
@@ -691,7 +691,7 @@ let c1Serve port = $$<<<
         Duration.sleep 5s
         HttpServerResponse { status = 200; headers = []; body = Text "ok" }
     within
-        within serve s = { port = $port; maxConcurrent = 2 } h
+        within serve s = { port = Some $port; maxConcurrent = 2 } h
             within proc c = python3 -I cli.py $port
                 poll timeout=10s interval=20ms watch=c
                     File.exists $"{log}.h"

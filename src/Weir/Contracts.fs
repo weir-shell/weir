@@ -750,6 +750,17 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
             |> Ok
         with
         | LockShape msg -> Error $"{p}: malformed lockfile — {msg}; re-add the artifact or fix the entry"
+        // the parser's position in weir's words, never its text
+        // [D:user-language-messages]; JSON positions are 0-based
+        | :? Text.Json.JsonException as je ->
+            let at =
+                match Option.ofNullable je.LineNumber, Option.ofNullable je.BytePositionInLine with
+                | Some l, Some c -> $" (line {l + 1L}, column {c + 1L})"
+                | Some l, None -> $" (line {l + 1L})"
+                | _ -> ""
+
+            Error
+                $"{Weir.Types.quoteData p}: malformed lockfile — not valid JSON{at}; fix the file or restore it from version control"
         | ex -> Error $"{Weir.Types.quoteData p}: cannot read the lockfile: {Weir.Types.quoteData ex.Message}"
 
 let writeLock (weirDir: string) (entries: LockEntry list) : unit =
@@ -2395,7 +2406,13 @@ let rec anyClosedProps (el: Text.Json.JsonElement) : bool =
 /// `weir add schema <url> --as <name>`: fetch, write under the kind
 /// directory, upsert the lock entry.
 let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : Result<string, string> =
-    match fetchBytes url with
+    // a local path or a non-http URL is refused by the command's own
+    // usage, never the transport's words [D:http-url-refused]
+    match
+        (match Http.urlUnsendable url with
+         | Some _ -> Error $"add {kind} takes an http(s) URL; got '{quoteData (Http.redactUrl url)}'"
+         | None -> fetchBytes url)
+    with
     | Error e -> Error e
     | Ok(bytes, contentType) ->
         // [D:add-validates]: add validates everything the checker will
@@ -2575,12 +2592,16 @@ let restore (weirDir: string) : Result<string list, string> =
                 // lock's intent — restore repairs it by refetching, the
                 // same hash-checked path an absent file takes (a
                 // deliberate local edit is a re-add, not an edit-in-place)
-                let presentAndTrue =
-                    File.Exists dest
-                    && (e.Url.StartsWith "generated:" || sha256Hex (File.ReadAllBytes dest) = e.Sha256)
+                let actual = if File.Exists dest then Some(sha256Hex (File.ReadAllBytes dest)) else None
 
-                if presentAndTrue then
+                if actual = Some e.Sha256 then
                     Ok [ $"{e.Kind} {e.Name}: present" ]
+                elif e.Url.StartsWith "generated:" && actual.IsSome then
+                    // a modified generated file is reported as verify reports
+                    // it — never `present`; restore cannot refetch it and never
+                    // regenerates [D:command-signatures]
+                    Error
+                        $"{e.Kind} {e.Name}: MODIFIED — sha256 {actual.Value.Substring(0, 12)}…, lock records {e.Sha256.Substring(0, 12)}… — a generated file is not refetched; restore the checked-in copy, or regenerate deliberately with `weir add sig {e.Name}`"
                 elif e.Url.StartsWith "generated:" then
                     // the ruled restore behaviour for a generated entry
                     // [D:command-signatures]: never regenerate (that would

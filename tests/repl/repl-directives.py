@@ -203,11 +203,11 @@ if "#echo" not in t:
 if "hang" not in t:
     failures.append(f"#help's #echo line must carry the all-hangs warning: {t[-300:]!r}")
 
-# --- piped bytes are unmoved by the session cap [D:echo-cap]: the piped
-# echo keeps its pinned constant even after #echo changes the session's
+# --- one cap everywhere [D:echo-cap-100]: the piped echo follows the
+# session cap, so #echo moves it and its report tells the truth
 t = piped('#echo 3\n[1; 2; 3; 4; 5; 6; 7; 8; 9; 10; 11; 12] |> Seq.map (fun x -> x)\n#quit\n')
-if "first 10 of an unforced seq" not in t:
-    failures.append(f"the piped echo must keep its pinned cap of 10: {t[-300:]!r}")
+if "first 3 of an unforced seq" not in t:
+    failures.append(f"the piped echo must follow #echo: {t[-300:]!r}")
 
 # --- the cap at a tty: default 100 covers command-sized output; #echo
 # moves it live; all uncaps (the acceptance rides the lines form) ------

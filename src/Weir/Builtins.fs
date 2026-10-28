@@ -924,19 +924,22 @@ let private rreplaceImpl: Value =
                     let mutable pos = 0
                     let mutable m = Check.regexGuarded pat s (fun () -> re.Match s)
 
-                    while m.Success do
-                        sb.Append(s, pos, m.Index - pos) |> ignore
+                    VStr(
+                        guardStrBuild "Str.rreplace" (fun () ->
+                            while m.Success do
+                                sb.Append(s, pos, m.Index - pos) |> ignore
 
-                        for p in parts do
-                            match p with
-                            | RLit t -> sb.Append t |> ignore
-                            | RGroup g -> sb.Append m.Groups[g].Value |> ignore
+                                for p in parts do
+                                    match p with
+                                    | RLit t -> sb.Append t |> ignore
+                                    | RGroup g -> sb.Append m.Groups[g].Value |> ignore
 
-                        pos <- m.Index + m.Length
-                        m <- Check.regexGuarded pat s m.NextMatch
+                                pos <- m.Index + m.Length
+                                m <- Check.regexGuarded pat s m.NextMatch
 
-                    sb.Append(s, pos, s.Length - pos) |> ignore
-                    VStr(sb.ToString())
+                            sb.Append(s, pos, s.Length - pos) |> ignore
+                            sb.ToString())
+                    )
                 | _ -> unreachable "the checker rejects 'rreplace' on these arguments")))
 
 // Path.glob [D:path-glob] — the standard subset (`*` within-segment,
@@ -1458,7 +1461,17 @@ let private joinImpl: Value =
     VBuiltin(fun sep ->
         VBuiltin(fun s ->
             match sep, s with
-            | VStr sep, VSeq items -> VStr(items |> Seq.map asString |> String.concat sep)
+            | VStr sep, VSeq items ->
+                let parts = items |> Seq.map asString |> Array.ofSeq
+
+                let chars =
+                    (parts |> Array.sumBy (fun p -> int64 p.Length))
+                    + int64 sep.Length * int64 (max 0 (parts.Length - 1))
+
+                if chars > maxStrLen then
+                    failwith (strTooLarge "Str.join" chars)
+
+                VStr(guardStrBuild "Str.join" (fun () -> String.concat sep parts))
             | _ -> unreachable "the checker rejects 'join' on these arguments"))
 
 let private replaceImpl: Value =
@@ -1467,7 +1480,7 @@ let private replaceImpl: Value =
             VBuiltin(fun subject ->
                 match pat, rep, subject with
                 | VStr "", VStr _, VStr _ -> failwith "Str.replace: the text to replace is empty — there is nothing to find"
-                | VStr p, VStr r, VStr s -> VStr(s.Replace(p, r))
+                | VStr p, VStr r, VStr s -> VStr(guardStrBuild "Str.replace" (fun () -> s.Replace(p, r)))
                 | _ -> unreachable "the checker rejects 'replace' on these arguments")))
 
 let private strLenImpl: Value =
@@ -1543,11 +1556,9 @@ let private substringImpl: Value =
 // Negative counts/widths refuse like Seq.replicate — the one convention.
 // A result past .NET's string ceiling is refused in weir's words
 // [D:int-narrowing], as is a failed allocation below it.
-let private maxStrLen = 0x3FFFFFDFL
-
 let private buildStr (who: string) (chars: int64) (f: unit -> string) : string =
     if chars > maxStrLen then
-        failwith $"{who}: a {chars}-char result is too large (at most {maxStrLen})"
+        failwith (strTooLarge who chars)
 
     try
         f ()
@@ -3830,6 +3841,8 @@ let private envOfPairsImpl: Value =
     VBuiltin(fun sv ->
         match sv with
         | VSeq items ->
+            // forced here so a bad key is refused where the env is built,
+            // not at its first reader [D:env-key-refusal]
             VSeq(
                 items
                 |> Seq.map (fun p ->
@@ -3838,6 +3851,7 @@ let private envOfPairsImpl: Value =
                         Proc.envKeyRefusal "Env.ofPairs" n
                         recordOf envVarDef [ VStr n; VStr v ]
                     | v -> unreachable $"the checker rejects 'Env.ofPairs' elements: {formatValue v}")
+                |> List.ofSeq
             )
         | v -> unreachable $"the checker rejects 'Env.ofPairs' on {formatValue v}")
 
@@ -4204,9 +4218,6 @@ let private preDirMove (pr: FsProbe) (op: string) (src: string) (dst: string) : 
     refuseIntoSelf pr op false src dst
     requireParent pr op dst
 
-let private doDirMove (op: string) (src: string) (dst: string) : unit =
-    preDirMove realProbe op src dst
-    ioGuarded op src (fun () -> System.IO.Directory.Move(src, dst))
 
 // copying a directory means copying its contents — there is no
 // non-recursive reading, so the delete/deleteAll naming split does
@@ -4222,35 +4233,91 @@ let private preDirCopy (pr: FsProbe) (op: string) (src: string) (dst: string) : 
     refuseIntoSelf pr op true src dst
     requireParent pr op dst
 
+// the tree copy itself (no preflight): Dir.copy's body and Dir.move's
+// cross-filesystem fallback share it, so both keep one reading of links
+// and special files
+let private copyTree (op: string) (src: string) (dst: string) : unit =
+    let rec go (s: string) (d: string) =
+        System.IO.Directory.CreateDirectory d |> ignore
+
+        for e in DirectoryInfo(s).EnumerateFileSystemInfos() do
+            let target = System.IO.Path.Combine(d, e.Name)
+
+            match e.LinkTarget with
+            | null ->
+                match e with
+                | :? DirectoryInfo -> go e.FullName target
+                | _ ->
+                    // a FIFO, socket or device is recreated, never
+                    // opened — `cp -R`'s reading [D:dircopy-special]
+                    match Session.specialFile e.FullName with
+                    | Some special ->
+                        match Session.makeSpecialFile target special with
+                        | None -> ()
+                        | Some why -> failwith $"{op}: cannot create the special file {quoteData target} — {why}"
+                    | None -> System.IO.File.Copy(e.FullName, target)
+            | link ->
+                match e with
+                | :? DirectoryInfo -> System.IO.Directory.CreateSymbolicLink(target, link) |> ignore
+                | _ -> System.IO.File.CreateSymbolicLink(target, link) |> ignore
+
+    go src dst
+
 let private doDirCopy (op: string) (src: string) (dst: string) : unit =
     preDirCopy realProbe op src dst
+    ioGuarded op src (fun () -> copyTree op src dst)
 
-    ioGuarded op src (fun () ->
-        let rec go (s: string) (d: string) =
-            System.IO.Directory.CreateDirectory d |> ignore
+// rename(2) cannot cross a filesystem (EXDEV); `mv`'s answer is the
+// move's: copy the tree, then delete the source [D:dir-move-cross-device].
+// A failed copy removes its partial destination and leaves the source
+// whole; every message names both paths.
+let private crossDevice (src: string) (dst: string) (e: System.IO.IOException) : bool =
+    if System.OperatingSystem.IsWindows() then
+        not (
+            System.String.Equals(
+                System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath src),
+                System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath dst),
+                System.StringComparison.OrdinalIgnoreCase
+            )
+        )
+    else
+        e.HResult = 18 // EXDEV on Linux and macOS
 
-            for e in DirectoryInfo(s).EnumerateFileSystemInfos() do
-                let target = System.IO.Path.Combine(d, e.Name)
+let private doDirMove (op: string) (src: string) (dst: string) : unit =
+    preDirMove realProbe op src dst
 
-                match e.LinkTarget with
-                | null ->
-                    match e with
-                    | :? DirectoryInfo -> go e.FullName target
-                    | _ ->
-                        // a FIFO, socket or device is recreated, never
-                        // opened — `cp -R`'s reading [D:dircopy-special]
-                        match Session.specialFile e.FullName with
-                        | Some special ->
-                            match Session.makeSpecialFile target special with
-                            | None -> ()
-                            | Some why -> failwith $"{op}: cannot create the special file {quoteData target} — {why}"
-                        | None -> System.IO.File.Copy(e.FullName, target)
-                | link ->
-                    match e with
-                    | :? DirectoryInfo -> System.IO.Directory.CreateSymbolicLink(target, link) |> ignore
-                    | _ -> System.IO.File.CreateSymbolicLink(target, link) |> ignore
+    let moved =
+        try
+            System.IO.Directory.Move(src, dst)
+            true
+        with
+        | :? System.UnauthorizedAccessException -> failwith $"{op}: permission denied: {quoteData src}"
+        | :? System.IO.IOException as e when crossDevice src dst e -> false
+        | :? System.IO.IOException as e -> failwith $"{op}: cannot access {quoteData src} — {quoteData e.Message}"
 
-        go src dst)
+    if not moved then
+        let reason (e: exn) =
+            match e with
+            | :? System.UnauthorizedAccessException -> "permission denied"
+            | e -> e.Message
+
+        try
+            copyTree op src dst
+        with e ->
+            (try
+                if System.IO.Directory.Exists dst then
+                    System.IO.Directory.Delete(dst, true)
+             with _ ->
+                 ())
+
+            failwith
+                $"{op}: cannot move {quoteData src} to {quoteData dst} across filesystems — the copy failed ({quoteData (reason e)}); the source is unchanged"
+
+        try
+            System.IO.Directory.Delete(src, true)
+        with e ->
+            failwith
+                $"{op}: copied {quoteData src} to {quoteData dst} across filesystems, but could not remove the source — {quoteData (reason e)}"
 
 let private fileMembers: (string * Ty * Value) list =
     [ "read",
@@ -4988,7 +5055,8 @@ let private bytesMembers: (string * Ty * Value) list =
       TFun(TBytes, TStr),
       VBuiltin(fun v ->
           match v with
-          | VBytes b -> VStr(b |> Array.map (fun x -> x.ToString "x2") |> String.concat "")
+          | VBytes b ->
+              VStr(buildStr "Bytes.toHex" (2L * int64 b.Length) (fun () -> System.Convert.ToHexStringLower b))
           | v -> unreachable $"the checker rejects 'Bytes.toHex' on {formatValue v}")
       // Str.sub's exact shape on bytes [D:port-members]: start, then
       // length, data last; out of range raises with the same detail
@@ -5494,6 +5562,12 @@ let private runRequest (reqV: Value) : Http.Resp =
             ((urlAuth @ auth @ secret) |> List.map (fun (k, _) -> k.ToLowerInvariant()) |> Set.ofList)
             req.Headers
 
+        // `Other v` is refused before send when v is not a method token
+        // [D:http-method-token] — the header rule's sibling
+        match Http.methodUnsendable req.Method with
+        | Some why -> failwith $"Http: {why}"
+        | None -> ()
+
         let host =
             try
                 System.Uri(req.Url).Host
@@ -5642,8 +5716,20 @@ let private httpWithQueryImpl: Value =
                 if qs = "" then
                     VStr baseUrl
                 else
-                    let sep = if baseUrl.Contains "?" then "&" else "?"
-                    VStr(baseUrl + sep + qs)
+                    // the query lands before any #fragment (a fragment is
+                    // never sent, so a parameter inside it would be lost);
+                    // a bare trailing `?` takes the pairs without a `&`
+                    let url, fragment =
+                        match baseUrl.IndexOf '#' with
+                        | -1 -> baseUrl, ""
+                        | i -> baseUrl.Substring(0, i), baseUrl.Substring i
+
+                    let sep =
+                        if url.EndsWith "?" then ""
+                        elif url.Contains "?" then "&"
+                        else "?"
+
+                    VStr(url + sep + qs + fragment)
             | v, _ -> unreachable $"the checker rejects 'Http.withQuery' on {formatValue v}"))
 
 // the header accessors [D:http-dx]: header names are case-insensitive
@@ -5927,7 +6013,9 @@ let private instantMembers: (string * Ty * Value) list =
               | VStr fmt, VStr text ->
                   (match parseInstantWithMs fmt text with
                    | Ok ms -> VUnion("Some", Some(VInstant ms))
-                   | Error e when e.StartsWith "unknown directive" -> failwith $"Instant.tryParseWith: {e}"
+                   // a FORMAT defect raises here too — only an input miss is None
+                   | Error e when e.StartsWith "unknown directive" || e.StartsWith "the format must carry" ->
+                       failwith $"Instant.tryParseWith: {e}"
                    | Error _ -> VUnion("None", None))
               | _ -> unreachable "the checker rejects 'Instant.tryParseWith' on these arguments"))
       "epochMs",
@@ -6852,7 +6940,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "p" ]
           // ---- Server: the scoped-listener handle [D:http-serve] ----
           "Server.port",
-          bd "The port the listener bound." None (Some "within serve srv = { port = 8080; maxConcurrent = 4 } handler binds the handle; see #help within")
+          bd "The port the listener bound — the port asked for, or the free one picked for `port = None`." None (Some "within serve srv = { port = Some 8080; maxConcurrent = 4 } handler binds the handle; see #help within")
           |> named [ "srv" ]
           "Server.running",
           bd "True while the listener is still open (the scope has not exited)." None None

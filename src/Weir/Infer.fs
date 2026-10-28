@@ -66,6 +66,14 @@ let rec private ofJsonElement (el: System.Text.Json.JsonElement) : INode =
             | _ -> IFloat
     | _ -> IStr
 
+// where System.Text.Json stopped, in the author's terms — its own
+// exception text never reaches a message [D:user-language-messages]
+let private jsonWhere (ex: exn) : string =
+    match ex with
+    | :? System.Text.Json.JsonException as je when je.LineNumber.HasValue && je.BytePositionInLine.HasValue ->
+        $" (line {je.LineNumber.Value + 1L}, byte {je.BytePositionInLine.Value + 1L})"
+    | _ -> ""
+
 /// join the sample lines and parse one JSON document into an INode
 let private jsonNode (lines: string seq) : Result<INode, string> =
     let text = String.Join("\n", lines)
@@ -75,12 +83,13 @@ let private jsonNode (lines: string seq) : Result<INode, string> =
         use doc = doc
         Ok(ofJsonElement doc.RootElement)
     | Error(Some why) -> Error $"#infer: the sample is valid JSON, but {why}"
+    | Error None when text.Trim() = "" -> Error "#infer: the sample is empty — there is no JSON to draft from"
     | Error None ->
         try
             System.Text.Json.JsonDocument.Parse(text).Dispose()
             Error "#infer: the sample is not valid JSON"
         with ex ->
-            Error $"#infer: the sample is not valid JSON: {Weir.Types.quoteData ex.Message}"
+            Error $"#infer: the sample is not valid JSON{jsonWhere ex}"
 
 /// NDJSON — one JSON document per non-blank line, gathered into an array
 let private jsonlNode (lines: string seq) : Result<INode, string> =
@@ -99,7 +108,7 @@ let private jsonlNode (lines: string seq) : Result<INode, string> =
                     System.Text.Json.JsonDocument.Parse(line).Dispose()
                     err <- Some "#infer: a jsonl line is not valid JSON"
                 with ex ->
-                    err <- Some $"#infer: a jsonl line is not valid JSON: {Weir.Types.quoteData ex.Message}"
+                    err <- Some $"#infer: a jsonl line is not valid JSON{jsonWhere ex}"
 
     match err with
     | Some e -> Error e
@@ -887,7 +896,16 @@ let infer
 /// builtin-raise convention.
 let inferShapeText (reserved: Set<string>) (taken: Set<string>) (fmt: Format) (topName: string) (lines: string seq) : string =
     match infer reserved taken fmt topName lines with
-    | Error msg -> failwith msg
+    | Error msg ->
+        // the script's caller names the failure, not the REPL directive
+        let caller =
+            match fmt with
+            | Json -> "Json.inferShape"
+            | Jsonl -> "Json.inferShape"
+            | Yaml -> "Yaml.inferShape"
+            | Table -> "Table.inferShape"
+
+        failwith (if msg.StartsWith "#infer: " then $"{caller}: {msg.Substring 8}" else msg)
     | Ok(decls, notes) ->
         let noteLines = notes |> List.map (fun n -> $"// note: {Weir.Types.quoteData n}")
         String.Join("\n", decls @ noteLines)
