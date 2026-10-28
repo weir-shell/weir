@@ -14,6 +14,15 @@
   allocates 9 MB instead of 35 MB, and the import goes from 216 ms to
   200 ms pinned to one core and from 176 ms to 160 ms on 15 (medians
   of 21).
+- **The checker looks constructors and record shapes up in a table.**
+  Every constructor use scanned all known types for the unions declaring
+  that case, every record literal scanned them for a record with its
+  fields, and each `let` walked its expression for anonymous record
+  shapes twice. The case owners and record shapes are now indexed once
+  per set of types, and the walk runs once. Same diagnostics: the
+  check's own allocation drops from about 42 MB to 28 MB, and with the
+  assembly change above the starship import goes from 216 ms to 195 ms
+  pinned and from 176 ms to 155 ms on 15.
 
 ## v0.0.81
 

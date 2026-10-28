@@ -2737,6 +2737,84 @@ let private isImportedType (env: TypeEnv) (key: string) : bool =
     Map.containsKey key env.TypeOrigins
     || env.ModuleTypes |> Map.exists (fun _ owned -> owned |> Map.exists (fun _ k -> k = key))
 
+let private fieldSetKey (names: Set<string>) : string =
+    let sb = System.Text.StringBuilder()
+
+    for n in names do
+        sb.Append(n.Length).Append(':').Append(n) |> ignore
+
+    sb.ToString()
+
+type private TypesIndex
+    (
+        caseOwners: System.Collections.Generic.Dictionary<string, string list>,
+        recordsByFields: Lazy<System.Collections.Generic.Dictionary<string, (string * RecordDef) list>>
+    ) =
+    member _.CaseOwners(name: string) : string list =
+        match caseOwners.TryGetValue name with
+        | true, owners -> owners
+        | _ -> []
+
+    member _.RecordsWithFields(names: Set<string>) : (string * RecordDef) list =
+        match recordsByFields.Value.TryGetValue(fieldSetKey names) with
+        | true, recs -> recs
+        | _ -> []
+
+let private typesIndexes =
+    System.Runtime.CompilerServices.ConditionalWeakTable<Map<string, TypeDef>, TypesIndex>()
+
+let private recordFieldKeys =
+    System.Runtime.CompilerServices.ConditionalWeakTable<RecordDef, string>()
+
+let private recordFieldKey =
+    System.Runtime.CompilerServices.ConditionalWeakTable<RecordDef, string>.CreateValueCallback(fun r ->
+        fieldSetKey (Set.ofList (List.map fst r.Fields)))
+
+let private buildTypesIndex (types: Map<string, TypeDef>) : TypesIndex =
+    let caseOwners = System.Collections.Generic.Dictionary<string, string list>()
+
+    Map.foldBack
+        (fun tn def () ->
+            match def with
+            | Union u ->
+                for c, _ in u.Cases do
+                    match caseOwners.TryGetValue c with
+                    | true, (owner :: _) when owner = tn -> ()
+                    | true, owners -> caseOwners[c] <- tn :: owners
+                    | _ -> caseOwners[c] <- [ tn ]
+            | Record _ -> ())
+        types
+        ()
+
+    let recordsByFields =
+        lazy
+            (let byFields =
+                System.Collections.Generic.Dictionary<string, (string * RecordDef) list>()
+
+             Map.foldBack
+                 (fun tn def () ->
+                     match def with
+                     | Record r when isUserName tn && not (isReceipt tn) ->
+                         let fields = recordFieldKeys.GetValue(r, recordFieldKey)
+
+                         match byFields.TryGetValue fields with
+                         | true, recs -> byFields[fields] <- (tn, r) :: recs
+                         | _ -> byFields[fields] <- [ tn, r ]
+                     | _ -> ())
+                 types
+                 ()
+
+             byFields)
+
+    TypesIndex(caseOwners, recordsByFields)
+
+let private typesIndexBuilder =
+    System.Runtime.CompilerServices.ConditionalWeakTable<Map<string, TypeDef>, TypesIndex>.CreateValueCallback
+        buildTypesIndex
+
+let private typesIndex (env: TypeEnv) : TypesIndex =
+    typesIndexes.GetValue(env.Types, typesIndexBuilder)
+
 // an unbound name that is a field of a declared (or imported) record:
 // the repair it most likely needs, and whether it is confident (a value
 // of the record is bound — `args.mode`). The prelude's records are not
@@ -2807,13 +2885,8 @@ and ctorOwnersAll (env: TypeEnv) (name: string) : string list =
         // name and must not make a local declaration look ambiguous — a type
         // reached only transitively [D:transitive-types] included
         let owners =
-            env.Types
-            |> Map.toList
-            |> List.choose (fun (tn, d) ->
-                match d with
-                | Union u when u.Cases |> List.exists (fun (c, _) -> c = name) && not (isImportedType env tn) -> Some tn
-                | _ -> None)
-            |> List.sort
+            (typesIndex env).CaseOwners name
+            |> List.filter (fun tn -> not (isImportedType env tn))
 
         owners
 
@@ -2821,12 +2894,7 @@ and ctorOwnersAll (env: TypeEnv) (name: string) : string list =
 // leaves out (their cases are not in scope bare), consulted only where
 // a pattern types its scrutinee [D:match-scrutinee-infer]
 let private importedCtorOwners (env: TypeEnv) (name: string) : string list =
-    env.Types
-    |> Map.toList
-    |> List.choose (fun (tn, d) ->
-        match d with
-        | Union u when u.Cases |> List.exists (fun (c, _) -> c = name) && isImportedType env tn -> Some tn
-        | _ -> None)
+    (typesIndex env).CaseOwners name |> List.filter (isImportedType env)
 
 // the unions a bare case pattern can name with nothing typing the value:
 // the in-scope owners, else — their cases being not in scope bare — the
@@ -5784,18 +5852,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // user record of the same shape wins outright, and a literal
                 // of the receipt's shape (its derived fields optional)
                 // gets the provenance teaching below
-                let candidates =
-                    env.Types
-                    |> Map.toList
-                    |> List.choose (fun (tn, def) ->
-                        match def with
-                        | Record r when
-                            isUserName tn
-                            && not (isReceipt tn)
-                            && Set.ofList (List.map fst r.Fields) = names
-                            ->
-                            Some(tn, r)
-                        | _ -> None)
+                let candidates = (typesIndex env).RecordsWithFields names
 
                 let receiptShaped =
                     receipts
@@ -7708,14 +7765,34 @@ let private pendingAnonRecords () : (string * TypeDef) list =
               Docs = Map.empty })
 
 let private withDefList (env: TypeEnv) (defs: (string * TypeDef) list) : TypeEnv =
+    let held (n: string, d: TypeDef) =
+        match env.Types.TryGetValue n with
+        | true, d' -> obj.ReferenceEquals(d, d')
+        | _ -> false
+
     match defs with
     | [] -> env
+    | defs when List.forall held defs -> env
     | defs ->
         { env with
             Types = defs |> List.fold (fun ts (n, d) -> Map.add n d ts) env.Types }
 
+let private lastAnonDefs =
+    new System.Threading.ThreadLocal<System.WeakReference<Expr> * (string * TypeDef) list>(fun () ->
+        System.WeakReference<Expr>(Unchecked.defaultof<Expr>), [])
+
+let private anonDefsOf (expr: Expr) : (string * TypeDef) list =
+    let memo, defs = lastAnonDefs.Value
+
+    match memo.TryGetTarget() with
+    | true, e when obj.ReferenceEquals(e, expr) -> defs
+    | _ ->
+        let defs = anonDefs expr
+        lastAnonDefs.Value <- (System.WeakReference<Expr>(expr), defs)
+        defs
+
 let withAnonDefs (env: TypeEnv) (expr: Expr) : TypeEnv =
-    withDefList env (anonDefs expr @ pendingAnonRecords ())
+    withDefList env (anonDefsOf expr @ pendingAnonRecords ())
 
 /// the anonymous shapes the last statement minted, registered now
 /// rather than at the next statement's drain [D:anon-literals] — the
@@ -8053,7 +8130,7 @@ let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
 
             Set.union args fb
         | TEYaml(tpl, _, _) -> walkTpl tpl
-        | _ -> childExprs te |> List.map walk |> unionAll
+        | _ -> childExprs te |> List.fold (fun acc c -> Set.union acc (walk c)) Set.empty
 
     and walkTpl (tpl: TypedYamlTpl) : Set<string> =
         match tpl with
