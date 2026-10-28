@@ -85,7 +85,7 @@ let source =
       // renderer [D:secret].
       "type Op = WriteFile of string * seq<string> | WriteFileAtomic of string * seq<string> | DeleteFile of string | Copy of string * string | Move of string * string | CopyDir of string * string | MoveDir of string * string | MakeDir of string | DeleteDir of string | DeleteTree of string | HttpSend of HttpRequest" ]
 
-let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
+let private extendClean (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
     Check.preludeLoading.Value <- true
 
     source
@@ -123,3 +123,12 @@ let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
             Check.builtinTypeNames.TryAdd(name, 0uy) |> ignore
 
         te, ve
+
+let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
+    let held = Types.drainAnonDefs ()
+
+    try
+        extendClean typeEnv valueEnv
+    finally
+        for name, fields in held do
+            Types.pushAnonDef name fields
