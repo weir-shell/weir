@@ -13792,6 +13792,15 @@ let semanticTokenTests =
                       "a match-arm binding merges too — the rewrite is position-general"
               | Error e -> failtestf "fmt failed: %s" e
           }
+          test "the prelude env ignores a thread's pending anonymous shapes and leaves them pending [D:anon-nesting]" {
+              let names (te: Weir.Types.TypeEnv) = te.Types |> Map.keys |> Set.ofSeq
+              let clean, _ = Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+              Weir.Types.pushAnonDef "PendingShapeProbe" [ ("a", Weir.Types.TInt) ]
+              let withPending, _ = Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+              let after = Weir.Types.drainAnonDefs ()
+              Expect.equal (names withPending) (names clean) "no pending shape enters the prelude env"
+              Expect.equal (after |> List.map fst) [ "PendingShapeProbe" ] "the caller's pending shape survives"
+          }
           test "SKILL.md's inventory lists every bare builtin and prelude type, both ways [D:surface-gate]" {
               // ground truth is the checker's own env, not #help: the
               // module gate (ci/skill-surface.sh) reads #help, which never

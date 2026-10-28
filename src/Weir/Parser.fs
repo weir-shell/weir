@@ -103,6 +103,14 @@ let private ambientResolver =
           BareHome = (fun _ -> None)
           AliasHead = fun _ -> None })
 
+let private ambientProxy: Resolver =
+    { IsKnown = fun n -> ambientResolver.Value.IsKnown n
+      IsCommandCallable = fun n -> ambientResolver.Value.IsCommandCallable n
+      IsExternal = fun n -> ambientResolver.Value.IsExternal n
+      ExternalNames = fun () -> ambientResolver.Value.ExternalNames()
+      BareHome = fun n -> ambientResolver.Value.BareHome n
+      AliasHead = fun n -> ambientResolver.Value.AliasHead n }
+
 // Block-let command RHS [D:block-let-cmd][D:statement-lets]:
 // context-derived — true along the spine a top-level let's RHS
 // assembles into (its let-in chain included; inheritance through
@@ -367,7 +375,7 @@ let isYamlMarkerPiece (piece: string) =
         || (tok.StartsWith "by=" && tok.Length > 3)
 
     let mutable core = piece
-    let mutable go = true
+    let mutable go = piece.Contains "yaml"
 
     while go do
         let lastTok =
@@ -389,11 +397,12 @@ let isYamlMarkerPiece (piece: string) =
     // `to yaml`/`from yaml` adapters (["to";"yaml"]/["from";"yaml"] are
     // not `= yaml`) and excludes `>= yaml`/`== yaml` (the token before
     // `yaml` is `>=`/`==`, never `=`).
-    let toks = core.Split(' ')
-    let n = toks.Length
+    core.Contains "yaml"
+    && (let toks = core.Split(' ')
+        let n = toks.Length
 
-    (n = 1 && toks[0] = "yaml")
-    || (n >= 2 && toks[n - 1] = "yaml" && toks[n - 2] = "=")
+        (n = 1 && toks[0] = "yaml")
+        || (n >= 2 && toks[n - 1] = "yaml" && toks[n - 2] = "="))
 
 /// the marker suffix's length in a marker piece — `yaml` plus its
 /// modifiers (`patch`, `by=`, `schema=`); the REPL colorizer's tint
@@ -445,8 +454,14 @@ let private pos (p: Position) : Pos =
     { Line = int p.Line
       Col = int p.Column }
 
+let private here: Parser<Pos, unit> =
+    fun stream ->
+        Reply
+            { Line = int stream.Line
+              Col = int stream.Column }
+
 let private spanned (p: Parser<'a, unit>) : Parser<'a * Span, unit> =
-    pipe3 getPosition p getPosition (fun s x e -> x, { Start = pos s; End = pos e })
+    pipe3 here p here (fun s x e -> x, { Start = s; End = e })
 
 let private rawWord = many1Satisfy2L isIdentStart isIdentCont "identifier"
 
@@ -558,6 +573,13 @@ let private keyword s =
 let internalLabelMarker = "\u0006"
 
 let private ifail (label: string) : Parser<'a, unit> = fail (internalLabelMarker + label)
+
+let private onHead (c: char) (miss: Parser<'b, unit>) (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        if stream.Peek() = c then
+            p stream
+        else
+            Reply(Error, (miss stream).Error)
 
 let private notKeyword (w: string) =
     if keywords.Contains w then
@@ -1503,7 +1525,8 @@ let private holeBackslashTeaching: Parser<Expr, unit> =
 // the generic expecting-list (the block-body `cd ~` reaches here, where
 // cd is the ordinary string -> string function)
 let private tildeTeaching: Parser<Expr, unit> =
-    attempt (
+    onHead '~' (pchar '~')
+    <| attempt (
         getPosition
         .>> pchar '~'
         .>> (followedBy eof <|> followedBy (satisfy (fun c -> not (System.Char.IsLetterOrDigit c || c = '_'))))
@@ -1515,17 +1538,20 @@ let private tildeTeaching: Parser<Expr, unit> =
 
 // C negation `!x` in an expression teaches weir's word [D:left-to-right-ops]
 let private bangNegationTeaching: Parser<Expr, unit> =
-    attempt (getPosition .>> pchar '!' .>> followedBy (many1Satisfy2 isIdentStart isIdentCont))
-    >>= fun at -> failFatallyAt at "weir has no `!` negation — write `not x`"
+    onHead '!' (pchar '!')
+    <| (attempt (getPosition .>> pchar '!' .>> followedBy (many1Satisfy2 isIdentStart isIdentCont))
+        >>= fun at -> failFatallyAt at "weir has no `!` negation — write `not x`")
 
 let private dotFloatTeaching =
-    attempt (getPosition .>> pchar '.' .>> lookAhead (satisfy System.Char.IsDigit))
-    >>= fun at -> failFatallyAt at "float literals need a digit before the point (write 0.5)"
+    onHead '.' (pchar '.')
+    <| (attempt (getPosition .>> pchar '.' .>> lookAhead (satisfy System.Char.IsDigit))
+        >>= fun at -> failFatallyAt at "float literals need a digit before the point (write 0.5)")
 
 // `try` is a form after `|>` (a term, tried before atoms); as an argument
 // it is misplaced — teach the form [D:try-form]
 let private tryAtomTeaching: Parser<Expr, unit> =
-    attempt (getPosition .>> pstring "try" .>> notFollowedBy (satisfy isIdentCont))
+    onHead 't' (pstring "try")
+    <| attempt (getPosition .>> pstring "try" .>> notFollowedBy (satisfy isIdentCont))
     >>= fun at ->
         failFatallyAt
             at
@@ -1534,7 +1560,8 @@ let private tryAtomTeaching: Parser<Expr, unit> =
 // `orFail` after `|>` is a form (a term, tried before atoms) and after
 // a command's `|` a reifier; as an argument it is misplaced [D:orfail-form]
 let private orFailAtomTeaching: Parser<Expr, unit> =
-    attempt (getPosition .>> pstring "orFail" .>> notFollowedBy (satisfy isIdentCont))
+    onHead 'o' (pstring "orFail")
+    <| attempt (getPosition .>> pstring "orFail" .>> notFollowedBy (satisfy isIdentCont))
     >>= fun at ->
         failFatallyAt
             at
@@ -1616,82 +1643,82 @@ let private deepenAfter (kws: string list) (p: Parser<'a, unit>) : Parser<'a, un
 // [D:depth-guard]
 let private indexExpr = deepen expr
 
+type private Suffix =
+    | SSlice of Expr option * Expr option * bool * bool * Pos
+    | SField of string * Span
+    | SIndex of bool * Expr * Pos
+
 let private postfixAtom =
     // one suffix step; the chain is a loop, not recursion — a long
     // field chain (a.b.b.…) must not grow the parser stack
     // [D:depth-guard]
-    let oneSuffix (target: Expr) : Parser<Expr, unit> =
-        let immediate (p: Position) =
-            int p.Line = target.Span.End.Line && int p.Column = target.Span.End.Col
 
-        // xs[a..b], xs[..b], xs[a..], xs[..], and the from-end `^` bounds
-        // xs[^2..], xs[..^1], xs[^3..^1] [D:range-slicing]. A bound is an
-        // optional `^` (from the end) then an index expr; `..` is not an
-        // expr, so an absent bound is an open end.
-        let bound =
-            opt (attempt (opt (pchar '^') .>>. indexExpr) |>> fun (caret, e) -> (e, caret.IsSome))
+    // xs[a..b], xs[..b], xs[a..], xs[..], and the from-end `^` bounds
+    // xs[^2..], xs[..^1], xs[^3..^1] [D:range-slicing]. A bound is an
+    // optional `^` (from the end) then an index expr; `..` is not an
+    // expr, so an absent bound is an open end.
+    let bound =
+        opt (attempt (opt (pchar '^') .>>. indexExpr) |>> fun (caret, e) -> (e, caret.IsSome))
 
-        let sliceNext =
-            attempt (
-                getPosition
-                >>= fun p ->
-                    if immediate p then
-                        pchar '[' >>. ws >>. bound .>> str_ws ".."
-                        .>>. bound
-                        .>> pchar ']'
-                        .>>. getPosition
-                        .>> ws
-                        |>> fun ((loB, hiB), endP) ->
-                            let lo, loEnd =
-                                match loB with
-                                | Some(e, b) -> Some e, b
-                                | None -> None, false
+    let sliceNext =
+        attempt (
+            pchar '[' >>. ws >>. bound .>> str_ws ".."
+            .>>. bound
+            .>> pchar ']'
+            .>>. here
+            .>> ws
+            |>> fun ((loB, hiB), endP) ->
+                let lo, loEnd =
+                    match loB with
+                    | Some(e, b) -> Some e, b
+                    | None -> None, false
 
-                            let hi, hiEnd =
-                                match hiB with
-                                | Some(e, b) -> Some e, b
-                                | None -> None, false
+                let hi, hiEnd =
+                    match hiB with
+                    | Some(e, b) -> Some e, b
+                    | None -> None, false
 
-                            { Kind = ESlice(target, lo, hi, loEnd, hiEnd)
-                              Span =
-                                { Start = target.Span.Start
-                                  End = pos endP } }
-                    else
-                        ifail "whitespace before [ means application"
-            )
+                SSlice(lo, hi, loEnd, hiEnd, endP)
+        )
 
-        // xs.[i] — F# 5's indexer spelling; the same muscle-memory
-        // population the while/return/try reservations serve
-        let dotBracketGuard =
-            attempt (getPosition .>> pchar '.' .>> followedBy (pchar '['))
-            >>= fun at -> failFatallyAt at "weir indexes without the dot: xs[i], not xs.[i]"
+    let spacedBracket: Parser<Suffix, unit> =
+        attempt (ifail "whitespace before [ means application")
 
-        let fieldNext =
-            attempt fieldSuffix
-            |>> fun (name, fspan) ->
-                { Kind = EField(target, name, fspan)
-                  Span = Span.union target.Span fspan }
+    // xs.[i] — F# 5's indexer spelling; the same muscle-memory
+    // population the while/return/try reservations serve
+    let dotBracketGuard =
+        onHead '.' (pchar '.')
+        <| attempt (getPosition .>> pchar '.' .>> followedBy (pchar '['))
+        >>= fun at -> failFatallyAt at "weir indexes without the dot: xs[i], not xs.[i]"
 
-        let indexNext =
-            attempt (
-                getPosition
-                >>= fun p ->
-                    if immediate p then
-                        pchar '[' >>. ws >>. opt (pchar '^') .>>. indexExpr .>> pchar ']'
-                        .>>. getPosition
-                        .>> ws
-                        |>> fun ((caret, idx), endP) ->
-                            match caret with
-                            | Some _ -> fromEndIndexDesugar target idx (pos endP)
-                            | None -> indexDesugar target idx (pos endP)
-                    else
-                        ifail "whitespace before [ means application"
-            )
+    let fieldNext = attempt fieldSuffix |>> SField
 
-        // the guards lead: dotBracketGuard detects xs.[i] (fatal teach),
-        // sliceNext the `..` forms (incl. `^` from-end bounds), indexNext
-        // the single index (incl. `^n` from-end)
-        dotBracketGuard <|> sliceNext <|> fieldNext <|> indexNext
+    let indexNext =
+        attempt (
+            pchar '[' >>. ws >>. opt (pchar '^') .>>. indexExpr .>> pchar ']'
+            .>>. here
+            .>> ws
+            |>> fun ((caret, idx), endP) -> SIndex(caret.IsSome, idx, endP)
+        )
+
+    // the guards lead: dotBracketGuard detects xs.[i] (fatal teach),
+    // sliceNext the `..` forms (incl. `^` from-end bounds), indexNext
+    // the single index (incl. `^n` from-end)
+    let immediateSuffix = dotBracketGuard <|> sliceNext <|> fieldNext <|> indexNext
+    let spacedSuffix = dotBracketGuard <|> spacedBracket <|> fieldNext <|> spacedBracket
+
+    let applySuffix (target: Expr) (suffix: Suffix) : Expr =
+        match suffix with
+        | SSlice(lo, hi, loEnd, hiEnd, endP) ->
+            { Kind = ESlice(target, lo, hi, loEnd, hiEnd)
+              Span =
+                { Start = target.Span.Start
+                  End = endP } }
+        | SField(name, fspan) ->
+            { Kind = EField(target, name, fspan)
+              Span = Span.union target.Span fspan }
+        | SIndex(true, idx, endP) -> fromEndIndexDesugar target idx endP
+        | SIndex(false, idx, endP) -> indexDesugar target idx endP
 
     let suffixes (target: Expr) : Parser<Expr, unit> =
         fun stream ->
@@ -1702,16 +1729,20 @@ let private postfixAtom =
 
             while go do
                 let tag = stream.StateTag
-                let r = (oneSuffix cur) stream
+
+                let immediate =
+                    int stream.Line = cur.Span.End.Line && int stream.Column = cur.Span.End.Col
+
+                let r = (if immediate then immediateSuffix else spacedSuffix) stream
 
                 if r.Status = Ok then
-                    cur <- r.Result
+                    cur <- applySuffix cur r.Result
                 elif stream.StateTag = tag then
                     // clean no-progress failure: the chain ends here
                     go <- false
                 else
                     // consumed input or fatal: propagate the reply
-                    bad <- r
+                    bad <- Reply(r.Status, r.Error)
                     failedHard <- true
                     go <- false
 
@@ -5284,33 +5315,32 @@ cmdChainRhsImpl <- fun bh ap se r -> deepen (fun stream -> (cmdLineWith bh ap se
 let private singlePipe: Parser<unit, unit> =
     attempt (pchar '|' .>> notFollowedBy (anyOf "|>")) >>. ws
 
+// gate [D:value-headed-pipe]: a single `|` then a head that
+// resolves to an external command (an ECmd — a known/library
+// head fails commandSegment and falls through to barePipeHint).
+// The lookAhead consumes nothing; the stages re-parse from `|`.
+let private valueHeadedGate =
+    lookAhead (
+        singlePipe
+        >>. (commandSegment true cmdArg None ambientProxy
+             >>= fun seg ->
+                 match seg.Kind with
+                 | ECmd _ -> preturn ()
+                 | _ -> ifail "value-headed pipe needs an external command head")
+    )
+
+let private valueHeadedStages = pipedStages true cmdArg None ambientProxy
+
 valueHeadedTailImpl <-
     // deepen: the tail re-enters the command grammar [D:depth-guard]
     fun lhs ->
-        deepen (fun stream ->
-            let r = ambientResolver.Value
-
-            // gate [D:value-headed-pipe]: a single `|` then a head that
-            // resolves to an external command (an ECmd — a known/library
-            // head fails commandSegment and falls through to barePipeHint).
-            // The lookAhead consumes nothing; the stages re-parse from `|`.
-            let externalHeaded (stream: CharStream<unit>) =
-                (commandSegment true cmdArg None r
-                 >>= fun seg ->
-                     match seg.Kind with
-                     | ECmd _ -> preturn ()
-                     | _ -> ifail "value-headed pipe needs an external command head")
-                    stream
-
-            let stages (stream: CharStream<unit>) =
-                (pipedStages true cmdArg None r
-                 >>= fun stages ->
-                     match foldChain lhs stages with
-                     | Result.Ok e -> preturn e
-                     | Result.Error(m, sp) -> failChain m sp)
-                    stream
-
-            (lookAhead (singlePipe >>. externalHeaded) >>. stages) stream)
+        deepen (
+            valueHeadedGate >>. valueHeadedStages
+            >>= fun stages ->
+                match foldChain lhs stages with
+                | Result.Ok e -> preturn e
+                | Result.Error(m, sp) -> failChain m sp
+        )
 
 // let-RHS command lines stop at a bareword `in` (see cmdArgWith), and
 // command-callable builtins (cd) stay ordinary functions there —
@@ -5321,20 +5351,23 @@ let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> =
 
 // deepen: a block let's command RHS re-enters the statement grammar
 // through its args (cmd (let y = cmd (…))) [D:depth-guard]
+let private ifBodyCmdShared = cmdLineWith false cmdArgIfBody None ambientProxy
+let private letRhsCmdShared = cmdLineLetRhs ambientProxy
+
 letRhsCmdRef.Value <-
     deepen (fun stream ->
         // a then/elif body's statement chain also stops at else/elif
         // [D:if-body-stop] — read at entry, so a sigil or paren interior
         // (its own argument parser) is untouched
         if ifBodyOk.Value then
-            (cmdLineWith false cmdArgIfBody None ambientResolver.Value) stream
+            ifBodyCmdShared stream
         else
-            (cmdLineLetRhs ambientResolver.Value) stream)
+            letRhsCmdShared stream)
 
 // the condition's command grammar [D:if-succeeds]: the let-RHS shape
 // (no builtin heads — `myfunc x` in a condition is already expression
 // application) with `then` stopping argv instead of `in`
-ifCondCmdRef.Value <- fun stream -> (cmdLineWith false cmdArgIfCond None ambientResolver.Value) stream
+ifCondCmdRef.Value <- cmdLineWith false cmdArgIfCond None ambientProxy
 
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
@@ -5638,6 +5671,7 @@ let private topLet (r: Resolver) =
                     | _ -> []
 
                 let paramNames = ps |> List.collect leafNames |> Set.ofList
+                let r = ambientResolver.Value
 
                 let r' =
                     { r with
@@ -5658,7 +5692,7 @@ let private topLet (r: Resolver) =
                     // fall through to the same teaching, not the $() one
                     (fun stream ->
                         let off = stream.Index
-                        let reply = (cmdLineLetRhs r') stream
+                        let reply = letRhsCmdShared stream
 
                         if reply.Status = ReplyStatus.Ok then
                             grantedRhsRanges.Value.Add(struct (off, stream.Index))
@@ -5978,6 +6012,8 @@ let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) op
 
     walk Set.empty root
 
+let private stmtShared = stmtWith ambientProxy
+
 let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
     ambientResolver.Value <- r
     parseDepth.Value <- 0
@@ -5987,7 +6023,7 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
 
     try
         try
-            match run (stmtWith r) input with
+            match run stmtShared input with
             | Success(s, _, _) ->
                 match s |> stmtNodes |> List.tryPick nodeTooDeep with
                 | Some span ->
