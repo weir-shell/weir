@@ -4296,6 +4296,11 @@ let private doDirMove (op: string) (src: string) (dst: string) : unit =
         | :? System.IO.IOException as e -> failwith $"{op}: cannot access {quoteData src} — {quoteData e.Message}"
 
     if not moved then
+        // the fallback READS through the source's final symlink (a copy,
+        // not a rename), so the copy-side refusal — links followed — is
+        // the one that decides the nesting
+        refuseIntoSelf realProbe op true src dst
+
         let reason (e: exn) =
             match e with
             | :? System.UnauthorizedAccessException -> "permission denied"
@@ -4304,14 +4309,17 @@ let private doDirMove (op: string) (src: string) (dst: string) : unit =
         try
             copyTree op src dst
         with e ->
-            (try
-                if System.IO.Directory.Exists dst then
-                    System.IO.Directory.Delete(dst, true)
-             with _ ->
-                 ())
+            let leftover =
+                try
+                    if System.IO.Directory.Exists dst then
+                        System.IO.Directory.Delete(dst, true)
+
+                    ""
+                with ce ->
+                    $"; the partial copy at {quoteData dst} could not be removed ({quoteData (reason ce)})"
 
             failwith
-                $"{op}: cannot move {quoteData src} to {quoteData dst} across filesystems — the copy failed ({quoteData (reason e)}); the source is unchanged"
+                $"{op}: cannot move {quoteData src} to {quoteData dst} across filesystems — the copy failed ({quoteData (reason e)}); the source is unchanged{leftover}"
 
         try
             System.IO.Directory.Delete(src, true)

@@ -24700,6 +24700,36 @@ let sizedFindingsTests =
                           if Directory.Exists dst then
                               Directory.Delete(dst, true))
           }
+          // the fallback copies THROUGH a source link, so a destination
+          // inside the link's target would copy the tree into itself
+          test "Dir.move across filesystems refuses a source link whose target holds the destination" {
+              if not (System.OperatingSystem.IsWindows()) && Directory.Exists "/dev/shm" then
+                  withTempDir "weir-xdev-link" (fun root ->
+                      let target = $"/dev/shm/weir-xdev-t-{System.Guid.NewGuid():N}"
+                      Directory.CreateDirectory(Path.Combine(target, "sub")) |> ignore
+                      File.WriteAllText(Path.Combine(target, "sub", "f"), "a")
+                      let link = Path.Combine(root, "link")
+                      Directory.CreateSymbolicLink(link, target) |> ignore
+                      let dst = Path.Combine(target, "inner")
+
+                      try
+                          let m =
+                              try
+                                  run $"Dir.move \"{weirPath link}\" \"{dst}\"" |> ignore
+                                  ""
+                              with e ->
+                                  e.Message
+
+                          Expect.equal
+                              m
+                              $"Dir.move: destination {dst} is inside the source {weirPath link}"
+                              "the copy-side refusal decides"
+
+                          Expect.isFalse (Directory.Exists dst) "nothing was copied into the target"
+                          Expect.isNotNull (FileInfo(link).LinkTarget) "the source link is untouched"
+                      finally
+                          Directory.Delete(target, true))
+          }
           test "Http.withQuery is data-last: the url pipes in" {
               Expect.equal
                   (run "\"http://x/s\" |> Http.withQuery [(\"q\", \"a b\")]")
