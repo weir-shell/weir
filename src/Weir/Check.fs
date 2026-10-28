@@ -686,23 +686,68 @@ let private resolve (ctx: Ctx) (ty: Ty) : Ty =
     else
         resolveNoTick ctx ty
 
+let private same (a: obj) (b: obj) = obj.ReferenceEquals(a, b)
+
+let mapShared (f: 'a -> 'a) (xs: 'a list) : 'a list =
+    let mutable out: 'a[] = null
+    let mutable i = 0
+
+    for x in xs do
+        let y = f x
+
+        if not (isNull out) then
+            out[i] <- y
+        elif not (obj.ReferenceEquals(y, x)) then
+            out <- Array.zeroCreate (List.length xs)
+            let mutable p = xs
+
+            for j in 0 .. i - 1 do
+                out[j] <- p.Head
+                p <- p.Tail
+
+            out[i] <- y
+
+        i <- i + 1
+
+    if isNull out then xs else List.ofArray out
+
 let private finalTy (ctx: Ctx) (ty: Ty) : Ty =
     let rec go (seen: Set<string>) ty =
         match resolve ctx ty with
-        | TFun(a, b) -> TFun(go seen a, go seen b)
-        | TSeq t -> TSeq(go seen t)
-        | TTuple ts -> TTuple(ts |> List.map (go seen))
-        | TNamed(n, args) -> TNamed(n, args |> List.map (go seen))
+        | TFun(a, b) as t ->
+            let a' = go seen a
+            let b' = go seen b
+            if same a' a && same b' b then t else TFun(a', b')
+        | TSeq e as t ->
+            let e' = go seen e
+            if same e' e then t else TSeq e'
+        | TTuple ts as t ->
+            let ts' = goList seen ts
+            if same ts' ts then t else TTuple ts'
+        | TNamed(n, args) as t ->
+            let args' = goList seen args
+            if same args' args then t else TNamed(n, args')
+        | TRowVar(r, []) as t when seen.Contains r -> t
         | TRowVar(r, _) when seen.Contains r -> TRowVar(r, [])
-        | TRowVar(r, _) ->
+        | TRowVar(r, old) as t ->
+            let seen' = Set.add r seen
+
             let fields =
                 Map.tryFind r ctx.Rows
                 |> Option.defaultValue Map.empty
                 |> Map.toList
-                |> List.map (fun (f, (t, _)) -> f, go (Set.add r seen) t)
+                |> List.map (fun (f, (t, _)) -> f, go seen' t)
 
-            TRowVar(r, fields)
+            let rec unchanged (xs: (string * Ty) list) (ys: (string * Ty) list) =
+                match xs, ys with
+                | [], [] -> true
+                | (f, t) :: xs, (g, u) :: ys -> f = g && same t u && unchanged xs ys
+                | _ -> false
+
+            if unchanged fields old then t else TRowVar(r, fields)
         | t -> t
+
+    and goList (seen: Set<string>) (ts: Ty list) : Ty list = mapShared (go seen) ts
 
     go Set.empty ty
 
@@ -7219,69 +7264,198 @@ let private resolvePendingSplices (ctx: Ctx) (env: TypeEnv) (generic: Set<string
     | Some(_, (span, _)) -> err span "cannot infer the operand types of '+'; pipe data in or use concrete values"
     | None -> resolvePendingSplicesCore ctx env generic
 
+// List.map that hands back `xs` itself when `f` changed no element
+let private shareMap (f: 'a -> 'a) (xs: 'a list) : 'a list =
+    match xs with
+    | [] -> xs
+    | [ x ] ->
+        let x' = f x
+        if same x' x then xs else [ x' ]
+    | _ ->
+        let out = Array.zeroCreate (List.length xs)
+        let mutable i = 0
+        let mutable changed = false
+
+        for x in xs do
+            let x' = f x
+            out[i] <- x'
+
+            if not (same x' x) then
+                changed <- true
+
+            i <- i + 1
+
+        if changed then List.ofArray out else xs
+
+let private shareOpt (f: 'a -> 'a) (o: 'a option) : 'a option =
+    match o with
+    | Some x ->
+        let x' = f x
+        if same x' x then o else Some x'
+    | None -> o
+
 let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
+    let fin = finalizeExpr ctx
+    let k0 = te.Kind
+
     let kind =
-        match te.Kind with
-        | TELet(n, ns, v, b) -> TELet(n, ns, finalizeExpr ctx v, finalizeExpr ctx b)
-        | TELambda(p, ps, b) -> TELambda(p, ps, finalizeExpr ctx b)
-        | TEApp(f, a) -> TEApp(finalizeExpr ctx f, finalizeExpr ctx a)
-        | TEPipe(a, f) -> TEPipe(finalizeExpr ctx a, finalizeExpr ctx f)
-        | TEField(t, f) -> TEField(finalizeExpr ctx t, f)
+        match k0 with
+        | TELet(n, ns, v, b) ->
+            let v' = fin v
+            let b' = fin b
+            if same v' v && same b' b then k0 else TELet(n, ns, v', b')
+        | TELambda(p, ps, b) ->
+            let b' = fin b
+            if same b' b then k0 else TELambda(p, ps, b')
+        | TEApp(f, a) ->
+            let f' = fin f
+            let a' = fin a
+            if same f' f && same a' a then k0 else TEApp(f', a')
+        | TEPipe(a, f) ->
+            let a' = fin a
+            let f' = fin f
+            if same a' a && same f' f then k0 else TEPipe(a', f')
+        | TEField(t, f) ->
+            let t' = fin t
+            if same t' t then k0 else TEField(t', f)
         | TESlice(t, lo, hi, s, loEnd, hiEnd) ->
-            TESlice(finalizeExpr ctx t, Option.map (finalizeExpr ctx) lo, Option.map (finalizeExpr ctx) hi, s, loEnd, hiEnd)
-        | TEBinOp(op, l, r) -> TEBinOp(op, finalizeExpr ctx l, finalizeExpr ctx r)
-        | TEUpdate(src, ups) -> TEUpdate(finalizeExpr ctx src, ups |> List.map (fun (p, v) -> p, finalizeExpr ctx v))
-        | TERecord(n, fields) -> TERecord(n, fields |> List.map (fun (f, v) -> f, finalizeExpr ctx v))
-        | TEList items -> TEList(items |> List.map (finalizeExpr ctx))
-        | TETuple items -> TETuple(items |> List.map (finalizeExpr ctx))
+            let t' = fin t
+            let lo' = shareOpt fin lo
+            let hi' = shareOpt fin hi
+
+            if same t' t && same lo' lo && same hi' hi then
+                k0
+            else
+                TESlice(t', lo', hi', s, loEnd, hiEnd)
+        | TEBinOp(op, l, r) ->
+            let l' = fin l
+            let r' = fin r
+            if same l' l && same r' r then k0 else TEBinOp(op, l', r')
+        | TEUpdate(src, ups) ->
+            let src' = fin src
+
+            let ups' =
+                ups
+                |> shareMap (fun ((p, v) as u) ->
+                    let v' = fin v
+                    if same v' v then u else (p, v'))
+
+            if same src' src && same ups' ups then k0 else TEUpdate(src', ups')
+        | TERecord(n, fields) ->
+            let fields' =
+                fields
+                |> shareMap (fun ((f, v) as fv) ->
+                    let v' = fin v
+                    if same v' v then fv else (f, v'))
+
+            if same fields' fields then k0 else TERecord(n, fields')
+        | TEList items ->
+            let items' = shareMap fin items
+            if same items' items then k0 else TEList items'
+        | TETuple items ->
+            let items' = shareMap fin items
+            if same items' items then k0 else TETuple items'
         | TEYaml(tpl, schema, patchBy) -> TEYaml(finalizeYamlTpl ctx tpl, schema, patchBy)
-        | TELetPat(p, v, b) -> TELetPat(p, finalizeExpr ctx v, finalizeExpr ctx b)
-        | TELambdaPat(p, b) -> TELambdaPat(p, finalizeExpr ctx b)
+        | TELetPat(p, v, b) ->
+            let v' = fin v
+            let b' = fin b
+            if same v' v && same b' b then k0 else TELetPat(p, v', b')
+        | TELambdaPat(p, b) ->
+            let b' = fin b
+            if same b' b then k0 else TELambdaPat(p, b')
         | TECmd(head, args, envO) ->
             let fhead =
                 match head with
                 | THeadLit _ -> head
-                | THeadDyn(d, he) -> THeadDyn(d, finalizeExpr ctx he)
+                | THeadDyn(d, he) ->
+                    let he' = fin he
+                    if same he' he then head else THeadDyn(d, he')
 
-            TECmd(fhead, args |> List.map (finalizeExpr ctx), envO |> Option.map (finalizeExpr ctx))
-        | TESplat e -> TESplat(finalizeExpr ctx e)
+            let args' = shareMap fin args
+            let envO' = shareOpt fin envO
+
+            if same fhead head && same args' args && same envO' envO then
+                k0
+            else
+                TECmd(fhead, args', envO')
+        | TESplat e ->
+            let e' = fin e
+            if same e' e then k0 else TESplat e'
         | TEInterp parts ->
-            TEInterp(
+            let parts' =
                 parts
-                |> List.map (function
-                    | IStr s -> IStr s
-                    | IExpr e -> IExpr(finalizeExpr ctx e))
-            )
+                |> shareMap (fun part ->
+                    match part with
+                    | IStr _ -> part
+                    | IExpr e ->
+                        let e' = fin e
+                        if same e' e then part else IExpr e')
+
+            if same parts' parts then k0 else TEInterp parts'
         | TEMatch(s, arms) ->
-            TEMatch(
-                s |> finalizeExpr ctx,
+            let s' = fin s
+
+            let arms' =
                 arms
-                |> List.map (fun (p, g, b) -> p, g |> Option.map (finalizeExpr ctx), finalizeExpr ctx b)
-            )
-        | TEIf(c, t, e) -> TEIf(finalizeExpr ctx c, finalizeExpr ctx t, e |> Option.map (finalizeExpr ctx))
-        | TEDur _ -> te.Kind
-        | TEFloat _ -> te.Kind
-        | TESize _ -> te.Kind
+                |> shareMap (fun ((p, g, b) as arm) ->
+                    let g' = shareOpt fin g
+                    let b' = fin b
+                    if same g' g && same b' b then arm else (p, g', b'))
+
+            if same s' s && same arms' arms then k0 else TEMatch(s', arms')
+        | TEIf(c, t, e) ->
+            let c' = fin c
+            let t' = fin t
+            let e' = shareOpt fin e
+            if same c' c && same t' t && same e' e then k0 else TEIf(c', t', e')
+        | TEDur _ -> k0
+        | TEFloat _ -> k0
+        | TESize _ -> k0
         | TERetry(ip, o, w, b, u) ->
-            TERetry(
-                ip,
-                finalizeExpr ctx o,
-                w |> Option.map (finalizeExpr ctx),
-                finalizeExpr ctx b,
-                u |> Option.map (fun (n, p) -> n, finalizeExpr ctx p)
-            )
-        | TESeq(a, b) -> TESeq(finalizeExpr ctx a, finalizeExpr ctx b)
+            let o' = fin o
+            let w' = shareOpt fin w
+            let b' = fin b
+
+            let u' =
+                u
+                |> shareOpt (fun ((n, p) as nu) ->
+                    let p' = fin p
+                    if same p' p then nu else (n, p'))
+
+            if same o' o && same w' w && same b' b && same u' u then
+                k0
+            else
+                TERetry(ip, o', w', b', u')
+        | TESeq(a, b) ->
+            let a' = fin a
+            let b' = fin b
+            if same a' a && same b' b then k0 else TESeq(a', b')
         | TEWithin(k, n, a, o, b) ->
-            TEWithin(k, n, a |> Option.map (finalizeExpr ctx), o |> Option.map (finalizeExpr ctx), finalizeExpr ctx b)
-        | TEAlways(b, c) -> TEAlways(finalizeExpr ctx b, finalizeExpr ctx c)
-        | TEHold b -> TEHold(finalizeExpr ctx b)
+            let a' = shareOpt fin a
+            let o' = shareOpt fin o
+            let b' = fin b
+
+            if same a' a && same o' o && same b' b then
+                k0
+            else
+                TEWithin(k, n, a', o', b')
+        | TEAlways(b, c) ->
+            let b' = fin b
+            let c' = fin c
+            if same b' b && same c' c then k0 else TEAlways(b', c')
+        | TEHold b ->
+            let b' = fin b
+            if same b' b then k0 else TEHold b'
         | TEEnvLoad _
-        | TEArgsLoad _ -> te.Kind
+        | TEArgsLoad _ -> k0
         | leaf -> leaf
 
-    { te with
-        Kind = kind
-        Ty = finalTy ctx te.Ty }
+    let ty = finalTy ctx te.Ty
+
+    if same kind k0 && same ty te.Ty then
+        te
+    else
+        { te with Kind = kind; Ty = ty }
 
 // typecheckWith: the statement-boundary rule for class constraints.
 // Residue = pendings still riding unresolved vars that appear in the

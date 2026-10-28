@@ -33,6 +33,18 @@
   249 ms as before; bare startup stays about 12 ms. What remains is the
   collector's: the workstation GC marks on one thread, and the module
   checks spend most of their parallel phase stopped for it.
+- **The collector has less to do.** Merging an imported module into the
+  importer rebuilt its set of taken type names once per type and walked
+  every type origin through an enumerator per lookup; it now keeps both
+  as it goes. Finalizing a statement's types and typed tree copied every
+  node even where nothing changed, and renaming an import's types copied
+  ones no rename touched; unchanged nodes are now shared. Same
+  diagnostics, same trees: the starship import allocates 254 MB instead
+  of 287 MB, promotes 13.3 MB instead of 15.7 MB out of the youngest
+  generation, and spends about 50 ms instead of 57 ms in GC pauses; it
+  goes from 246 ms to 225 ms pinned to one core and from 206 ms to 184
+  ms on 15 (medians of 25), a direct check of its largest file from
+  91 ms to 86 ms; bare startup stays about 10 ms.
 
 ## v0.0.80
 
