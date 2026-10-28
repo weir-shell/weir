@@ -36,6 +36,12 @@
   the span. With the change above, the starship import allocates 137 MB
   instead of 163 MB and goes from 196 ms to 178 ms pinned and from
   159 ms to 141 ms on 15 (medians of 21).
+- **The prelude is built once per process.** Every imported module
+  parsed and checked the prelude's type declarations again for its own
+  base environment; the result is now computed once and shared, each
+  caller getting its own scratch table. Same diagnostics: bare startup
+  goes from 10.0 ms to 9.3 ms pinned, a direct check of the starship
+  port's largest module from 95 ms to 90 ms.
 
 ## v0.0.81
 
