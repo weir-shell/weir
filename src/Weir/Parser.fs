@@ -572,14 +572,24 @@ let private keyword s =
 // the leak as a class (deliberate teaching stays on failFatally)
 let internalLabelMarker = "\u0006"
 
-let private ifail (label: string) : Parser<'a, unit> = fail (internalLabelMarker + label)
+let private ifailErrors =
+    System.Collections.Concurrent.ConcurrentDictionary<string, ErrorMessageList>()
 
-let private onHead (c: char) (miss: Parser<'b, unit>) (p: Parser<'a, unit>) : Parser<'a, unit> =
+let private ifailError =
+    System.Func<string, ErrorMessageList>(fun label -> messageError (internalLabelMarker + label))
+
+let private ifail (label: string) : Parser<'a, unit> =
+    let error = ifailErrors.GetOrAdd(label, ifailError)
+    fun _ -> Reply(Error, error)
+
+let private onHeadIf (test: char -> bool) (miss: Parser<'b, unit>) (p: Parser<'a, unit>) : Parser<'a, unit> =
     fun stream ->
-        if stream.Peek() = c then
+        if test (stream.Peek()) then
             p stream
         else
             Reply(Error, (miss stream).Error)
+
+let private onHead (c: char) (miss: Parser<'b, unit>) (p: Parser<'a, unit>) : Parser<'a, unit> = onHeadIf ((=) c) miss p
 
 let private notKeyword (w: string) =
     if keywords.Contains w then
@@ -685,7 +695,8 @@ let private literalTailTeaching (at: Position) (text: string) (isFloat: bool) : 
             preturn ()
 
 let private intLit =
-    spanned (
+    onHeadIf isDigit (many1Satisfy isDigit)
+    <| spanned (
         // anchor at the literal's start [D:anchor-before-read]: the fail
         // fires after consuming the digits (and the measure), so seek back
         getPosition
@@ -5994,19 +6005,19 @@ let private nodeSpan =
     | NExpr e -> e.Span
     | NPat p -> p.PSpan
 
-let private nodeChildren =
-    function
-    | NExpr e -> (exprChildren e |> List.map NExpr) @ (exprPats e |> List.map NPat)
-    | NPat p -> patChildren p |> List.map NPat
-
 // the located site is the CHAIN that crossed the limit, not the deep
 // leaf [D:depth-locate-chain]: a flat `a + b + …` or `x |> f |> …` nests
 // along its left spine, so the deepest node is an arbitrary inner prefix
 // (the 5th term, the 105th stage); each node carries the span of the
 // outermost operator node of its spine, and a hit reports that
+let private deepStack =
+    new System.Threading.ThreadLocal<System.Collections.Generic.Stack<struct (DeepNode * int * Span option)>>(fun () ->
+        System.Collections.Generic.Stack())
+
 let private nodeTooDeep (root: DeepNode) : Span option =
-    let stack = System.Collections.Generic.Stack<DeepNode * int * Span option>()
-    stack.Push(root, 1, None)
+    let stack = deepStack.Value
+    stack.Clear()
+    stack.Push(struct (root, 1, None))
     let mutable hit = None
 
     // a spine continues into the left operand of the same operator kind
@@ -6014,7 +6025,7 @@ let private nodeTooDeep (root: DeepNode) : Span option =
         Some(defaultArg chain parent.Span)
 
     while hit.IsNone && stack.Count > 0 do
-        let node, d, chain = stack.Pop()
+        let struct (node, d, chain) = stack.Pop()
 
         if d > maxDepth then
             hit <- Some(defaultArg chain (nodeSpan node))
@@ -6022,31 +6033,38 @@ let private nodeTooDeep (root: DeepNode) : Span option =
             match node with
             // a block's continuation is width, not depth [D:block-width]
             | NExpr({ Kind = ELet(_, _, v, body) }) ->
-                stack.Push(NExpr v, d + 1, None)
-                stack.Push(NExpr body, d, None)
+                stack.Push(struct (NExpr v, d + 1, None))
+                stack.Push(struct (NExpr body, d, None))
             | NExpr({ Kind = ELetPat(p, v, body) }) ->
-                stack.Push(NPat p, d + 1, None)
-                stack.Push(NExpr v, d + 1, None)
-                stack.Push(NExpr body, d, None)
+                stack.Push(struct (NPat p, d + 1, None))
+                stack.Push(struct (NExpr v, d + 1, None))
+                stack.Push(struct (NExpr body, d, None))
             | NExpr({ Kind = ESeq(a, rest) }) ->
-                stack.Push(NExpr a, d + 1, None)
-                stack.Push(NExpr rest, d, None)
+                stack.Push(struct (NExpr a, d + 1, None))
+                stack.Push(struct (NExpr rest, d, None))
             | NExpr({ Kind = EBinOp(op, l, r) } as e) ->
-                stack.Push(NExpr r, d + 1, None)
+                stack.Push(struct (NExpr r, d + 1, None))
 
                 match l.Kind with
-                | EBinOp(op2, _, _) when op2 = op -> stack.Push(NExpr l, d + 1, spineOf e chain)
-                | _ -> stack.Push(NExpr l, d + 1, None)
+                | EBinOp(op2, _, _) when op2 = op -> stack.Push(struct (NExpr l, d + 1, spineOf e chain))
+                | _ -> stack.Push(struct (NExpr l, d + 1, None))
             | NExpr({ Kind = EPipe(a, f) } as e) ->
-                stack.Push(NExpr f, d + 1, None)
+                stack.Push(struct (NExpr f, d + 1, None))
 
                 match a.Kind with
-                | EPipe _ -> stack.Push(NExpr a, d + 1, spineOf e chain)
-                | _ -> stack.Push(NExpr a, d + 1, None)
-            | _ ->
-                for c in nodeChildren node do
-                    stack.Push(c, d + 1, None)
+                | EPipe _ -> stack.Push(struct (NExpr a, d + 1, spineOf e chain))
+                | _ -> stack.Push(struct (NExpr a, d + 1, None))
+            | NExpr e ->
+                for c in exprChildren e do
+                    stack.Push(struct (NExpr c, d + 1, None))
 
+                for p in exprPats e do
+                    stack.Push(struct (NPat p, d + 1, None))
+            | NPat p ->
+                for c in patChildren p do
+                    stack.Push(struct (NPat c, d + 1, None))
+
+    stack.Clear()
     hit
 
 let private stmtNodes (s: Stmt) : DeepNode list =

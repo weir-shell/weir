@@ -23,6 +23,19 @@
   check's own allocation drops from about 42 MB to 28 MB, and with the
   assembly change above the starship import goes from 216 ms to 195 ms
   pinned and from 176 ms to 155 ms on 15.
+- **Less garbage per statement.** The check's command-head rule rebuilt
+  the set of every known union case for each statement; parse failures
+  that only steer the grammar built a fresh error each time; every
+  expression position read the source position before seeing whether a
+  number could start there; and the post-parse depth probe allocated a
+  tuple and a child list per node. Each is now built once or not at
+  all. Same diagnostics: the starship import goes from 196 ms to 182 ms
+  pinned and from 159 ms to 153 ms on 15.
+- **Source positions are values.** Every syntax node's span held two
+  heap-allocated positions; a position is now two plain numbers inside
+  the span. With the change above, the starship import allocates 137 MB
+  instead of 163 MB and goes from 196 ms to 178 ms pinned and from
+  159 ms to 141 ms on 15 (medians of 21).
 
 ## v0.0.81
 

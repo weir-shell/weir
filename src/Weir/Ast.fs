@@ -2,6 +2,7 @@ module Weir.Ast
 
 open Weir.Types
 
+[<Struct>]
 type Pos = { Line: int; Col: int }
 
 type Span = { Start: Pos; End: Pos }

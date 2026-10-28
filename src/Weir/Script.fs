@@ -836,7 +836,6 @@ let docAttachments (lines: string list) : DocAttach list =
     |> Array.iteri (fun idx raw ->
         let code = codes[idx]
         let ln = idx + 1
-        let t = code.Trim()
 
         if masked[idx] then
             () // district content is bytes — never doc syntax [D:content-bytes]
@@ -846,11 +845,16 @@ let docAttachments (lines: string list) : DocAttach list =
             // pinning a core on a heavily documented module. Cons is O(1);
             // the run is reversed once at the single consumer (Doc below).
             pending <- docText raw :: pending
-        elif t.StartsWith "[<" && t.EndsWith ">]" then
+        elif
+            (let t = System.MemoryExtensions.Trim(System.MemoryExtensions.AsSpan code)
+
+             System.MemoryExtensions.StartsWith(t, "[<", System.StringComparison.Ordinal)
+             && System.MemoryExtensions.EndsWith(t, ">]", System.StringComparison.Ordinal))
+        then
             ()
-        elif raw.Trim() = "" then
+        elif System.String.IsNullOrWhiteSpace raw then
             pending <- []
-        elif t = "" then
+        elif System.String.IsNullOrWhiteSpace code then
             pending <- [] // a plain // comment-only line breaks contiguity
         else
             if not (List.isEmpty pending) then
@@ -3524,19 +3528,22 @@ type CheckedStatement =
 // assume only command-shaped words (letter-initial, ident chars +
 // dashes; never keywords, never dotted): the expression grammar must
 // keep claiming Env.load, from-adapters, and punctuation heads
+let private caseNameSets =
+    System.Runtime.CompilerServices.ConditionalWeakTable<Map<string, TypeDef>, Set<string>>()
+
+let private caseNameSet =
+    System.Runtime.CompilerServices.ConditionalWeakTable<Map<string, TypeDef>, Set<string>>.CreateValueCallback(fun types ->
+        types
+        |> Seq.collect (fun (KeyValue(_, def)) ->
+            match def with
+            | Union u -> u.Cases |> List.map fst
+            | Record _ -> [])
+        |> Set.ofSeq)
+
 let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
     // a union case of any known type (an ambiguous imported one
     // included) is an expression head, never a program — so check
     // reaches the runner's "module-qualified here" verdict [D:assume-resolver]
-    let caseNames =
-        lazy
-            (tenv.Types
-             |> Seq.collect (fun (KeyValue(_, def)) ->
-                 match def with
-                 | Union u -> u.Cases |> List.map fst
-                 | Record _ -> [])
-             |> Set.ofSeq)
-
     { resolver tenv with
         IsExternal =
             fun n ->
@@ -3551,7 +3558,7 @@ let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
                     && not (Map.containsKey n tenv.Modules)
                     // an import's type, its bare name ambiguous [D:qualified-type-names]
                     && not (tenv.ModuleTypes |> Map.exists (fun _ owned -> owned.ContainsKey n))
-                    && not (caseNames.Force().Contains n)
+                    && not (caseNameSets.GetValue(tenv.Types, caseNameSet).Contains n)
                     && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-')) }
 
 // mkR builds the resolver from the current env per statement, so
