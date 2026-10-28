@@ -6,6 +6,7 @@ weekly: self-correction rate (stranded = failures), fallback ranking
 skill lines and targeted hints).
 
 ## fallbacks
+- 2026-10-28 | /output/tmp/gcm/bench.py -> python3 | GC-config benchmark: needs each child's peak RSS (os.wait4 rusage); weir exposes no rusage and the container has no /usr/bin/time.
 - 2026-10-19 | ci/storm/repl.py -> python3 | storm.py's sibling for the tty REPL: a pty master typing entries and ^C at timed offsets, closing the master for a hangup, termios reads after exit, and storm.py's judge and /proc scans reused.
 - 2026-10-18 | ci/storm/storm.py, fuzz.py -> python3 | a pty session leader typing ^C, signals at sub-ms offsets to a pid, /proc session scans and a thread pool of timed runs; the job's glue stays in the workflow's run lines.
 - 2026-10-18 | signature gate samples (tests/sigs/replay.sh) ->

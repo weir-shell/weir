@@ -45,6 +45,17 @@
   goes from 246 ms to 225 ms pinned to one core and from 206 ms to 184
   ms on 15 (medians of 25), a direct check of its largest file from
   91 ms to 86 ms; bare startup stays about 10 ms.
+- **The parser builds its grammar once.** The command grammar was
+  rebuilt for every statement, and for every command line nested in a
+  let, an `if` or a value-headed pipe, because it held that statement's
+  name resolver; it now asks the current one as it parses. A postfix
+  chain rebuilt its index, slice and field parsers at every step, the
+  expression grammar's teaching alternatives read the source position
+  before checking the next character, and every node's span allocated
+  two positions on the way. Same diagnostics, same trees: the starship
+  import's parse allocates 79 MB instead of 151 MB, and the import goes
+  from 225 ms to 202 ms pinned to one core and from 192 ms to 167 ms on
+  15 (medians of 21); bare startup stays about 9 ms pinned.
 
 ## v0.0.80
 

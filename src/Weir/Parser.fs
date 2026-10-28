@@ -103,6 +103,14 @@ let private ambientResolver =
           BareHome = (fun _ -> None)
           AliasHead = fun _ -> None })
 
+let private ambientProxy: Resolver =
+    { IsKnown = fun n -> ambientResolver.Value.IsKnown n
+      IsCommandCallable = fun n -> ambientResolver.Value.IsCommandCallable n
+      IsExternal = fun n -> ambientResolver.Value.IsExternal n
+      ExternalNames = fun () -> ambientResolver.Value.ExternalNames()
+      BareHome = fun n -> ambientResolver.Value.BareHome n
+      AliasHead = fun n -> ambientResolver.Value.AliasHead n }
+
 // Block-let command RHS [D:block-let-cmd][D:statement-lets]:
 // context-derived — true along the spine a top-level let's RHS
 // assembles into (its let-in chain included; inheritance through
@@ -5307,33 +5315,32 @@ cmdChainRhsImpl <- fun bh ap se r -> deepen (fun stream -> (cmdLineWith bh ap se
 let private singlePipe: Parser<unit, unit> =
     attempt (pchar '|' .>> notFollowedBy (anyOf "|>")) >>. ws
 
+// gate [D:value-headed-pipe]: a single `|` then a head that
+// resolves to an external command (an ECmd — a known/library
+// head fails commandSegment and falls through to barePipeHint).
+// The lookAhead consumes nothing; the stages re-parse from `|`.
+let private valueHeadedGate =
+    lookAhead (
+        singlePipe
+        >>. (commandSegment true cmdArg None ambientProxy
+             >>= fun seg ->
+                 match seg.Kind with
+                 | ECmd _ -> preturn ()
+                 | _ -> ifail "value-headed pipe needs an external command head")
+    )
+
+let private valueHeadedStages = pipedStages true cmdArg None ambientProxy
+
 valueHeadedTailImpl <-
     // deepen: the tail re-enters the command grammar [D:depth-guard]
     fun lhs ->
-        deepen (fun stream ->
-            let r = ambientResolver.Value
-
-            // gate [D:value-headed-pipe]: a single `|` then a head that
-            // resolves to an external command (an ECmd — a known/library
-            // head fails commandSegment and falls through to barePipeHint).
-            // The lookAhead consumes nothing; the stages re-parse from `|`.
-            let externalHeaded (stream: CharStream<unit>) =
-                (commandSegment true cmdArg None r
-                 >>= fun seg ->
-                     match seg.Kind with
-                     | ECmd _ -> preturn ()
-                     | _ -> ifail "value-headed pipe needs an external command head")
-                    stream
-
-            let stages (stream: CharStream<unit>) =
-                (pipedStages true cmdArg None r
-                 >>= fun stages ->
-                     match foldChain lhs stages with
-                     | Result.Ok e -> preturn e
-                     | Result.Error(m, sp) -> failChain m sp)
-                    stream
-
-            (lookAhead (singlePipe >>. externalHeaded) >>. stages) stream)
+        deepen (
+            valueHeadedGate >>. valueHeadedStages
+            >>= fun stages ->
+                match foldChain lhs stages with
+                | Result.Ok e -> preturn e
+                | Result.Error(m, sp) -> failChain m sp
+        )
 
 // let-RHS command lines stop at a bareword `in` (see cmdArgWith), and
 // command-callable builtins (cd) stay ordinary functions there —
@@ -5344,20 +5351,23 @@ let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> =
 
 // deepen: a block let's command RHS re-enters the statement grammar
 // through its args (cmd (let y = cmd (…))) [D:depth-guard]
+let private ifBodyCmdShared = cmdLineWith false cmdArgIfBody None ambientProxy
+let private letRhsCmdShared = cmdLineLetRhs ambientProxy
+
 letRhsCmdRef.Value <-
     deepen (fun stream ->
         // a then/elif body's statement chain also stops at else/elif
         // [D:if-body-stop] — read at entry, so a sigil or paren interior
         // (its own argument parser) is untouched
         if ifBodyOk.Value then
-            (cmdLineWith false cmdArgIfBody None ambientResolver.Value) stream
+            ifBodyCmdShared stream
         else
-            (cmdLineLetRhs ambientResolver.Value) stream)
+            letRhsCmdShared stream)
 
 // the condition's command grammar [D:if-succeeds]: the let-RHS shape
 // (no builtin heads — `myfunc x` in a condition is already expression
 // application) with `then` stopping argv instead of `in`
-ifCondCmdRef.Value <- fun stream -> (cmdLineWith false cmdArgIfCond None ambientResolver.Value) stream
+ifCondCmdRef.Value <- cmdLineWith false cmdArgIfCond None ambientProxy
 
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 
@@ -5661,6 +5671,7 @@ let private topLet (r: Resolver) =
                     | _ -> []
 
                 let paramNames = ps |> List.collect leafNames |> Set.ofList
+                let r = ambientResolver.Value
 
                 let r' =
                     { r with
@@ -5681,7 +5692,7 @@ let private topLet (r: Resolver) =
                     // fall through to the same teaching, not the $() one
                     (fun stream ->
                         let off = stream.Index
-                        let reply = (cmdLineLetRhs r') stream
+                        let reply = letRhsCmdShared stream
 
                         if reply.Status = ReplyStatus.Ok then
                             grantedRhsRanges.Value.Add(struct (off, stream.Index))
@@ -6001,6 +6012,8 @@ let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) op
 
     walk Set.empty root
 
+let private stmtShared = stmtWith ambientProxy
+
 let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
     ambientResolver.Value <- r
     parseDepth.Value <- 0
@@ -6010,7 +6023,7 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
 
     try
         try
-            match run (stmtWith r) input with
+            match run stmtShared input with
             | Success(s, _, _) ->
                 match s |> stmtNodes |> List.tryPick nodeTooDeep with
                 | Some span ->
