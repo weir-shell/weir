@@ -18403,6 +18403,19 @@ let depthGuardTests =
               Expect.isNone (Weir.Fast.tryStmt r chain) "the deep chain is refused"
               Expect.isLessThan sw.ElapsedMilliseconds 5000L "the refusal never doubles per level"
 
+              // nested list elements that can nest (a prefix minus, parens,
+              // an interpolation) are parsed once: the range probe runs on
+              // leaf first tokens only
+              for name, spine in
+                  [ "neg-list", String.replicate 30 "[-" + "1" + String.replicate 30 "]"
+                    "paren-list", String.replicate 24 "[(" + "1" + String.replicate 24 ")]"
+                    "interp-list", String.replicate 24 "[$\"{" + "1" + String.replicate 24 "}\"]" ] do
+                  let sw = System.Diagnostics.Stopwatch.StartNew()
+                  let parsed = Weir.Parser.parseLine r ("let x = " + spine)
+                  sw.Stop()
+                  Expect.isLessThan sw.ElapsedMilliseconds 5000L $"{name}: nesting is parsed once per level"
+                  Expect.isOk parsed $"{name}: the nested list parses"
+
               // a refusal after an anonymous shape was read takes the shape back
               Weir.Types.drainAnonDefs () |> ignore
               Expect.isNone (Weir.Fast.tryStmt r "let f : {| a: int |} -> {| b: string |} ->") "the broken signature is refused"

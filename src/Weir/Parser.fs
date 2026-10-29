@@ -1156,8 +1156,69 @@ let private rangeTerm, private rangeTermRef =
 // a range endpoint is never `[`/`{`, so committing to the list path
 // here is safe — and it stops rangeTerm from descending into nested
 // brackets that the backtrack would then re-parse (O(2^n) on `[[[…]]]`).
+// the probe's other doubling faces [D:range-probe]: a paren group or an
+// interpolation at the element's head is parsed by the probe and again
+// by the element loop when no `..` follows — O(2^n) on `[([(…)])]`. A
+// quote-aware look past that first atom (its matching `)`, or the
+// string's close), its `.field` tail and the whitespace decides whether
+// a `..` is there at all; only then does the probe run. An extent the
+// look cannot settle (a `$(` sigil, an unbalanced group) runs the probe
+// as before. Consuming nothing and failing with no message, it merges
+// exactly as the opener guard does.
+let private rangeProbeAhead: Parser<unit, unit> =
+    fun stream ->
+        let c = stream.Peek()
+
+        if c <> '(' && c <> '$' then
+            Reply(())
+        else
+            let rest = stream.PeekString(int (stream.IndexOfLastCharPlus1 - stream.Index))
+
+            let atomEnd =
+                if c = '(' then
+                    let struct (_, e) =
+                        Scan.foldOutsideStrings
+                            (fun (struct (d, e)) i ch ->
+                                if e >= 0 then struct (d, e)
+                                elif ch = '(' then struct (d + 1, e)
+                                elif ch = ')' then (if d = 1 then struct (0, i + 1) else struct (d - 1, e))
+                                else struct (d, e))
+                            (struct (0, -1))
+                            rest
+
+                    e
+                elif rest.Length > 1 && rest[1] = '"' then
+                    // the first code character after the opener is past the string
+                    Scan.foldOutsideStrings (fun e i _ -> if e >= 0 then e elif i > 0 then i else e) -1 rest
+                else
+                    -1
+
+            if atomEnd < 0 then
+                Reply(())
+            else
+                let mutable j = atomEnd
+
+                let skipWs () =
+                    while j < rest.Length && (rest[j] = ' ' || rest[j] = '\t') do
+                        j <- j + 1
+
+                skipWs ()
+
+                while j + 1 < rest.Length && rest[j] = '.' && isIdentStart rest[j + 1] do
+                    j <- j + 1
+
+                    while j < rest.Length && isIdentCont rest[j] do
+                        j <- j + 1
+
+                    skipWs ()
+
+                if j + 1 < rest.Length && rest[j] = '.' && rest[j + 1] = '.' then
+                    Reply(())
+                else
+                    Reply(ReplyStatus.Error, NoErrorMessages)
+
 let private rangeBody =
-    notFollowedBy (anyOf "[{") >>. attempt (rangeTerm .>> dotdot)
+    notFollowedBy (anyOf "[{") >>. rangeProbeAhead >>. attempt (rangeTerm .>> dotdot)
     .>>. rangeTerm
     .>>. opt (dotdot >>. rangeTerm)
     >>= fun ((a, b), c) ->

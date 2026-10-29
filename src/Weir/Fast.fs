@@ -1454,8 +1454,23 @@ and private listLit (st: St) : Expr =
     st.I <- st.I + 1
     ws st
 
+    // the range probe runs only on a leaf first token — a number, a
+    // string, a name and its fields, `-digits` — whose retry re-reads one
+    // token; an opener, a prefix minus or an interpolation would parse
+    // its interior here and again in the element loop, doubling per
+    // nesting level. Those start the element loop directly, and a `..`
+    // after such an element is the grammar's range to parse.
+    let leafStart =
+        let c = peek st
+
+        isDigit c
+        || c = '"'
+        || (c = '@' && peekAt st 1 = '"')
+        || isIdentStart c
+        || (c = '-' && isDigit (peekAt st 1))
+
     let asRange =
-        if peek st = '[' || peek st = '{' then
+        if not leafStart then
             Unchecked.defaultof<_>
         else
             let save = st.I
