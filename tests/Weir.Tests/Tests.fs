@@ -2387,6 +2387,31 @@ let boundaryTests =
               Expect.isFalse (Weir.Parser.isYamlMarkerPiece "x >= yaml") ">= yaml does not arm"
               Expect.isFalse (Weir.Parser.isYamlMarkerPiece "x == yaml") "== yaml does not arm"
           }
+          test "any blank run before the marker arms; a trailing blank teaches at check and run [D:yaml-marker-blanks]" {
+              for piece in [ "let y =  yaml"; "let y =\tyaml"; "let y= yaml"; "let y = yaml patch" ] do
+                  Expect.isTrue (Weir.Parser.isYamlMarkerPiece piece) piece
+
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "make FOO= yaml") "a glued name= arms only on a let"
+
+              for head in [ "let y =  yaml"; "let y= yaml"; "let y =\tyaml" ] do
+                  checkEqRun [ head; "    a: 1"; "print (show y)" ]
+
+              let teach =
+                  "a yaml block marker must end its line — nothing may follow it, not even trailing spaces or tabs; the block is the indented lines below"
+
+              for head in [ "let y = yaml "; "let y = yaml patch\t" ] do
+                  let lines = [ head; "    a: 1"; "print (show y)" ]
+
+                  match errorsIn "ym.weir" lines with
+                  | d :: _ ->
+                      Expect.equal (d.Message.Replace("\n", " ")) teach $"check: {head}"
+                      Expect.equal (d.Line, d.Col) (1, 9) "on the marker"
+                  | [] -> failtest $"must refuse: {head}"
+
+                  match Weir.Parser.parseLine realResolver (asm (List.take 2 lines)) with
+                  | Error m -> Expect.stringContains (m.Replace("\n", " ")) teach $"run: {head}"
+                  | Ok _ -> failtest $"run must refuse: {head}"
+          }
           test "YamlPatch is a built-in type name — undeclarable [D:yaml-nodes]" {
               match Weir.Check.checkDecl env (parseDecl "type YamlPatch = { x: int }") with
               | Error terr -> Expect.stringContains terr.Message "'YamlPatch' is a built-in type" ""
@@ -5736,8 +5761,17 @@ let commandModeTests =
           test "builtin shadows PATH: ls -la is expression mode" {
               // adjacency: `-la` is a prefix-minus argument, exactly
               // F#'s parse; still an error + the ^ls hint
-              Expect.equal (show (parseCmd "ls -la")) "(ls (- 0 la))" "parses as application of -la"
+              // a name operand negates in its own type [D:prefix-minus-typed]
+              Expect.equal (show (parseCmd "ls -la")) "(ls (let |neg la (- (- |neg |neg) |neg)))" "parses as application of -la"
               Expect.stringContains (checkErr "ls - la").Message "unbound variable 'la'" ""
+          }
+          test "prefix minus on a name negates in the name's type [D:prefix-minus-typed]" {
+              Expect.equal (run "let x = 1.5 in -x") (VFloat -1.5) "float"
+              Expect.equal (run "let d = 2s in -d") (VDur -2000L) "Duration"
+              Expect.equal (run "let k = 3KiB in -k") (VSize -3072L) "Size"
+              Expect.equal (run "let i = 4 in -i") (VInt -4L) "int"
+              Expect.equal (run "-(Float.abs 2.0)") (VFloat -2.0) "a parenthesized float"
+              Expect.equal (run "let i = 4 in -(-i)") (VInt 4L) "double negation"
           }
           test "'|' before an expression stage is a parse error — the RHS decides [D:pipe-rhs-decides]" {
               match Weir.Parser.parseLine cmdResolver "git log | first 5" with
@@ -7956,6 +7990,25 @@ let bracketContinuationTests =
               Expect.isEmpty
                   (errorMsgsIn "tv.weir" [ "type T<'a, 'b> = { v: 'a }"; "let t = { v = 1 }"; "print $\"{t.v}\""; "echo 'x y' 'z'" ])
                   "an unused parameter and argv quotes both hold"
+          }
+          test "a command line's quoted word is a quote, never a tick [D:tyvar-tick-line]" {
+              Expect.equal (Weir.Scan.commentAt "echo key: 'it // works'") -1 "the // sits inside the quotes"
+
+              for line in [ "echo key: 'it // works'"; "echo a, 'b c'"; "echo (x) <'d e'"; "grep -E x| 'y z'" ] do
+                  Expect.isFalse (Weir.Scan.isTyvarTick line (line.IndexOf '\'')) line
+
+              for line, i in [ "type Box<'a> = {", 9; "    v: 'a", 7; "let f (x: 'a) : 'a =", 10; "| Some of 'a", 10; "fun (x: 'a) -> x", 8 ] do
+                  Expect.isTrue (Weir.Scan.isTyvarTick line i) line
+
+              Expect.isEmpty
+                  (errorMsgsIn
+                      "tk.weir"
+                      [ "echo key: 'it // works'"
+                        "echo key: 'it { works'"
+                        "if true then"
+                        "    echo key: 'it // works'"
+                        "print \"after\"" ])
+                  "the quoted words stay argv"
           }
           test "same-line attributes ride a type field line" {
               Expect.equal
@@ -20867,8 +20920,9 @@ let siblingSentinelTests =
               // the user through the cleaned dump
               let ds = diags [ "let x = [\"[]\"] |> from json seq<int>" ]
 
+              // the slot's teaching is a fatal now [D:adapter-slot-teach]
               Expect.isTrue
-                  (ds |> List.exists (fun d -> d.Message.Contains "a record name inside seq< >"))
+                  (ds |> List.exists (fun d -> d.Message.Contains "'int' inside seq< > is not a declared record name"))
                   $"the designed expectation must survive: {ds}"
 
               let ds2 = diags [ "let p = \"C:\\Users\\x\"" ]
@@ -23292,7 +23346,7 @@ let fromJsonSeqTests =
           test "the inner-name gate speaks in expectations, never an internal label" {
               match Weir.Parser.parseExpr "[\"[]\"] |> from json seq<int>" with
               | Error m ->
-                  Expect.stringContains m "a record name inside seq< >" "the designed expectation"
+                  Expect.stringContains m "'int' inside seq< > is not a declared record name" "the designed teaching [D:adapter-slot-teach]"
                   Expect.isFalse (m.Contains "type name") "the old leaked label is retired"
               | Ok _ -> failtest "seq<int> must not parse into the slot"
           }
@@ -25068,6 +25122,96 @@ let sizedFindingsTests =
                   "url |> withQuery params"
           } ]
 
+// the last-resort teacher [D:dump-teach]: shapes users reach by reflex
+// get their repair, at check and at run, never an expected-token list
+let dumpTeachTests =
+    let one (lines: string list) =
+        match errorsIn "dt.weir" lines with
+        | d :: _ -> d
+        | [] -> failtest $"must refuse: {lines}"
+
+    testList
+        "parse dumps teach [D:dump-teach]"
+        [ test "each reflex shape names its repair at check" {
+              for lines, line, col, msg in
+                  [ [ "ls /" ],
+                    1,
+                    5,
+                    "'ls' is a weir name here, so / is read as weir code — a path argument is a string (\"/\"); to run the ls program, write ^ls /"
+                    [ "let x = 1"; "let y = 1 + ~x" ],
+                    2,
+                    13,
+                    "'~' is the home directory only in a command line — in an expression, Path.home () is the home path ($\"{Path.home ()}/…\" for one below it)"
+                    [ "repeat"; "print \"x\"" ], 1, 7, "'repeat' needs a body — the indented lines below it"
+                    [ "let foo = true"; "let y = 1 + !foo" ], 2, 13, "weir has no `!` negation — write `not x`"
+                    [ "let n = 3"; "print (show [0 .. -n])" ],
+                    2,
+                    19,
+                    "a range endpoint is a literal, a name or a field access — parenthesize a computed one, as in [(n - 1) .. (-m)]"
+                    [ "let n = 3"; "print (show [n - 1 .. 5])" ],
+                    2,
+                    20,
+                    "a range endpoint is a literal, a name or a field access — parenthesize a computed one, as in [(n - 1) .. (-m)]"
+                    [ "print (show (3--1))" ],
+                    1,
+                    16,
+                    "'--' is not an operator (weir has no decrement) — to negate a negative, parenthesize: -(-x)"
+                    [ "print (show (- -5))" ],
+                    1,
+                    14,
+                    "a prefix '-' is glued to its operand (-x) — to negate a negative, parenthesize: -(-x)"
+                    [ "print (echo a | line)" ],
+                    1,
+                    15,
+                    "'| line' ends a command statement, so it can't sit inside an expression — bind it first: `let r = <command> | line`, then use r"
+                    [ "match sh -c \"exit 3\" | exitCode with"; "| 0 -> print \"a\""; "| _ -> print \"b\"" ],
+                    1,
+                    22,
+                    "'| exitCode' ends a command statement, so it can't sit inside an expression — bind it first: `let r = <command> | exitCode`, then use r"
+                    [ "let x = $(ls)" ],
+                    1,
+                    11,
+                    "'ls' is a weir name, not a program — $(…) runs a program and captures its output; call ls as weir code, or write $(^ls …) for a program of that name"
+                    [ "echo ()" ], 1, 7, "an empty '()' is not a command argument — quote literal text: \"()\""
+                    [ "let n = (echo a | exec)" ],
+                    1,
+                    17,
+                    "'| exec' hands the process over and never returns, so it can't sit inside an expression — write it as a statement of its own: `<command> | exec`"
+                    [ "within proc p = echo x | cat"; "    print \"x\"" ],
+                    1,
+                    29,
+                    "within proc takes ONE command — a pipeline or capture is not a scoped child; compose inside sh -c \"…\""
+                    [ "let s = \"1\""; "let x = s |> from json int" ],
+                    2,
+                    24,
+                    "'int' is not a declared record name — the adapter slot takes one: declare a record that holds the data (type Doc = { items: seq<int> }) and write its name, or seq<Name> for a list of records"
+                    [ "if true then"; "    import \"./a.weir\" as A" ],
+                    2,
+                    5,
+                    "an import is a top-level statement — put it at column 0, outside any block, before the code that uses it"
+                    [ "import $\"./a7.weir\" as A7" ], 1, 8, "import takes a literal string path, e.g. import \"./lib/paths.weir\""
+                    [ "import \"./a9.weir\" as A9 as B9" ], 1, 26, "'as' is left over — the statement is already complete before it"
+                    [ "let e = 1"; "let y = (e : int)" ],
+                    2,
+                    12,
+                    "weir has no type annotation inside an expression — annotate the binding instead: `let y: T = e`" ] do
+                  let d = one lines
+                  Expect.equal (d.Message.Replace("\n", " ")) msg $"{lines}"
+                  Expect.equal (d.Line, d.Col) (line, col) $"site: {lines}"
+          }
+          test "run words them the same (the run resolver)" {
+              for src, needle in
+                  [ "ls /", "a path argument is a string"
+                    "print (echo a | line)", "bind it first"
+                    "let x = $e(pwd)", "$(…) runs a program"
+                    "print (show (3--1))", "'--' is not an operator" ] do
+                  match Weir.Parser.parseLine realResolver src with
+                  | Error m ->
+                      Expect.stringContains (m.Replace("\n", " ")) needle src
+                      Expect.isFalse (m.Contains "Expecting") $"no dump: {src}"
+                  | Ok other -> failtest $"{src}: expected an error, got {other}"
+          } ]
+
 let windowsFindingsTests =
     // the Windows hand-run's two message fixes [D:windows-findings] —
     // neither is Windows-specific; Windows is just where they surfaced.
@@ -25101,6 +25245,17 @@ let windowsFindingsTests =
                   let m = msgIn src
                   Expect.isTrue (m.StartsWith $"'\\{c}' is not an escape (the escapes are") $"leads with the teaching: {m}"
                   Expect.isFalse (m.Contains "Expecting") "no FParsec dump"
+          }
+          test "a backslash before a TAB or an emoji names that character [D:escape-names-char]" {
+              Expect.equal
+                  (msgIn "print \"a\\\tb\"")
+                  "a backslash followed by a TAB is not an escape (the escapes are \\\" \\\\ \\n \\t \\e \\u{…}; a literal backslash is \\\\)"
+                  "a mid-line TAB"
+
+              Expect.equal
+                  (msgIn "print \"a\\😀b\"")
+                  "'\\😀' is not an escape (the escapes are \\\" \\\\ \\n \\t \\e \\u{…}; a literal backslash is \\\\)"
+                  "the whole emoji, not half a pair"
           }
           test "a trailing backslash in a string teaches the literal-backslash spelling" {
               let m = msgIn "print \"a\\"
@@ -32667,6 +32822,39 @@ let cmdChainTests =
               match Weir.Parser.parseLine realResolver "git status | and" with
               | Error e -> Expect.stringContains e "'| and' must be followed by a command" "teaches"
               | Ok other -> failtest $"expected an error, got {other}"
+          }
+          test "| and / | or after a weir value: one teaching at check and run [D:value-chain-word]" {
+              for lines, kw, col in
+                  [ [ "42 | and echo x" ], "and", 6
+                    [ "true | or echo x" ], "or", 8
+                    [ "false | or print \"fallback\"" ], "or", 9
+                    [ "let xs = [\"a\"]"; "xs | and echo x" ], "and", 6
+                    [ "if true then"; "    42 | and echo x" ], "and", 10 ] do
+                  let msg =
+                      $"'| {kw}' must follow an external command or a pipeline of them — the left side here is a weir value, which has no exit code; to branch on a value, write an if"
+
+                  match errorsIn "vc.weir" lines with
+                  | d :: _ ->
+                      Expect.equal (d.Message.Replace("\n", " ")) msg $"check: {lines}"
+                      Expect.equal (d.Line, d.Col) (List.length lines, col) $"at the chain word: {lines}"
+                  | [] -> failtest $"check must refuse: {lines}"
+
+                  match Weir.Parser.parseLine realResolver ((List.last lines).Trim()) with
+                  | Error m -> Expect.stringContains (m.Replace("\n", " ")) msg $"run: {lines}"
+                  | Ok other -> failtest $"run must refuse: {other}"
+          }
+          test "| and before a weir name teaches the and repair, the same at check and run [D:value-chain-word]" {
+              let msg =
+                  "'exit' is a weir name, not a program — '| and' must be followed by a command; to run weir code when the command succeeds, use `if <command> | succeeds then …`; to run a program named exit, write ^exit"
+
+              for lines in [ [ "echo a | and exit 3" ]; [ "if true then"; "    echo a | and exit 3" ] ] do
+                  match errorsIn "an.weir" lines with
+                  | d :: _ -> Expect.equal (d.Message.Replace("\n", " ")) msg $"check: {lines}"
+                  | [] -> failtest $"check must refuse: {lines}"
+
+              match Weir.Parser.parseLine realResolver "git status | and exit 3" with
+              | Error m -> Expect.stringContains (m.Replace("\n", " ")) msg "run"
+              | Ok other -> failtest $"run must refuse: {other}"
           } ]
 
 let aliasTests =
@@ -34170,6 +34358,23 @@ let hardeningTests =
               match Weir.Parser.parseStmt "type T = { [<Default -99999999999999999999>] A: int }" with
               | Error msg -> Expect.stringContains msg "attribute argument out of range (64-bit): -99999999999999999999" "the range refusal names the signed digits"
               | Ok _ -> failtest "expected the overflow to be rejected"
+          }
+          test "a '-' not followed by a number in an attribute argument teaches [D:attr-negative-literal]" {
+              for src, col in
+                  [ "type Cfg = { [<Default -x>] d: int }", 24
+                    "type Cfg = { [<Default -\"a\">] d: string }", 24
+                    "type Cfg = { [<Default - 1>] d: int }", 24
+                    "type Cfg = { [<Default --1>] d: int }", 24
+                    "type U = | [<Wire -a>] A | B", 19 ] do
+                  match errorsIn "neg.weir" [ src ] with
+                  | d :: _ ->
+                      Expect.equal
+                          (d.Message.Replace("\n", " "))
+                          "a '-' in an attribute argument must be followed by a number, as in [<Default -1>] — attribute arguments are literals"
+                          src
+
+                      Expect.equal (d.Line, d.Col) (1, col) $"on the '-': {src}"
+                  | [] -> failtest $"must refuse: {src}"
           }
           test "stacked attribute lines on one field (and case) accumulate [D:attr-stacked-lines]" {
               Expect.isEmpty
@@ -39255,6 +39460,7 @@ let allTests =
           sigDynamicTests
           sizeTests
           windowsFindingsTests
+          dumpTeachTests
           sizedFindingsTests
           walkCohortTests
           pinsWalkTests

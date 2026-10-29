@@ -627,6 +627,28 @@ if $BIN -e "sh -c 'exit 1' | and echo no" >/dev/null 2>&1; then
     fail "| and must propagate the left's failure (right skipped, nonzero exit)"
 fi
 echo "e2e ok: | and propagates the left's failure"
+# a weir value before | and / | or: check and run refuse alike [D:value-chain-word]
+vcdir=$(mkweirtmp)
+printf '42 | and echo x\n' > "$vcdir/vc.weir"
+rc=0; ck=$($BIN check "$vcdir/vc.weir" 2>&1) || rc=$?
+[ "$rc" = "1" ] || fail "check must refuse a value before | and (rc $rc): $ck"
+rc=0; rn=$($BIN "$vcdir/vc.weir" 2>&1) || rc=$?
+[ "$rc" = "1" ] || fail "run must refuse a value before | and (rc $rc): $rn"
+for o in "$ck" "$rn"; do
+    echo "$o" | tr '\n' ' ' | grep -qF "the left side here is a weir value" || fail "value | and teaching: $o"
+done
+echo "e2e ok: a value before | and is refused at check and at run alike"
+# any blank run before a yaml marker arms it; run agrees with check [D:yaml-marker-blanks]
+printf 'let y =  yaml\n    a: 1\nprint (show y)\n' > "$vcdir/ym.weir"
+$BIN check "$vcdir/ym.weir" >/dev/null 2>&1 || fail "check: '=  yaml' arms the district"
+out=$($BIN "$vcdir/ym.weir" 2>&1) || fail "run: '=  yaml' arms the district: $out"
+expect "a doubled blank before yaml still arms the district" 'YInt 1' "$out"
+# a command line's quoted word after ':' is argv, never a type tick [D:tyvar-tick-line]
+printf "echo key: 'it // works'\n" > "$vcdir/tk.weir"
+$BIN check "$vcdir/tk.weir" >/dev/null 2>&1 || fail "check: a quoted argv word after ':' parses"
+out=$($BIN "$vcdir/tk.weir" 2>&1) || fail "run: a quoted argv word after ':': $out"
+[ "$out" = "key: it // works" ] || fail "the quoted word reaches argv whole: $out"
+echo "e2e ok: a quoted argv word after ':' is not a tyvar tick"
 out=$($BIN -e "cd / | and echo ok")
 expect "a builtin (cd) chains as an | and operand" "ok" "$out"
 

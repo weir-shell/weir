@@ -42,11 +42,49 @@ let escapeEnd (s: string) (i: int) : int =
 
 /// a type-variable tick, not a single-quote opener [D:tyvar-tick]: `'`
 /// then an identifier that is not closed by another `'`, after a
-/// type-position char (`<` `,` `:` `(` `*` `>` `|`, or the word `of`).
+/// type-position char (`<` `,` `:` `(` `*` `>` `|`, or the word `of`),
+/// on a line whose head puts it in type position [D:tyvar-tick-line]:
+/// a `type`/`and` line, a `let` header before its `=`, a `|`
+/// union case's `of` payload, a `fun` parameter before its `->`, or a record
+/// field line (`{`, `[<…>]`, `name:`). A command line's quoted word
+/// (`echo key: 'it // works'`) is never a tick.
 /// Without it an odd tick count in a type (`type Box<'a> = {` then
 /// `v: 'a` on the next line) opened a phantom string that hid the brace.
 let isTyvarTick (s: string) (i: int) : bool =
     let isIdent c = System.Char.IsLetterOrDigit c || c = '_'
+
+    let typeLine () =
+        let ls = (if i = 0 then -1 else s.LastIndexOf('\n', i - 1)) + 1
+        let pre = s.Substring(ls, i - ls)
+        let head = pre.TrimStart()
+        let word (w: string) = head.StartsWith(w + " ") || head.StartsWith(w + "\t")
+        let beforeEq () = not (pre.Contains '=')
+
+        let afterFun () =
+            let f = pre.LastIndexOf "fun "
+            f >= 0 && (f = 0 || not (isIdent pre[f - 1])) && not (pre.Substring(f).Contains "->")
+
+        let fieldHead () =
+            let mutable h = head
+
+            while h.StartsWith "[<" && h.Contains ">]" do
+                h <- h.Substring(h.IndexOf ">]" + 2).TrimStart()
+
+            let mutable j = 0
+
+            while j < h.Length && isIdent h[j] do
+                j <- j + 1
+
+            let rest = h.Substring(j).TrimStart()
+            j > 0 && rest.StartsWith ":" && not (rest.StartsWith "::")
+
+        word "type"
+        || word "and"
+        || (word "let" && beforeEq ())
+        || (head.StartsWith "|" && pre.Contains " of " && not (pre.Contains "->"))
+        || (head.StartsWith "{" && beforeEq ())
+        || afterFun ()
+        || fieldHead ()
 
     s[i] = '\''
     && i + 1 < s.Length
@@ -65,6 +103,7 @@ let isTyvarTick (s: string) (i: int) : bool =
         k >= 0
         && ("<,:(*>|".Contains s[k]
             || (k >= 1 && s[k] = 'f' && s[k - 1] = 'o' && (k = 1 || not (isIdent s[k - 2])))))
+    && typeLine ()
 
 let private tripleAt (s: string) (j: int) =
     j + 2 < s.Length && s[j] = '"' && s[j + 1] = '"' && s[j + 2] = '"'

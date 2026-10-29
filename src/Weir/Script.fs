@@ -900,7 +900,10 @@ let retiredDistrictMarker (piece: string) : bool =
     // (a standalone `!e`, or one after then/else/->, was a district header
     // and keeps its retirement teaching)
     let negationSlot =
-        List.contains before [ "="; "("; "&&"; "||"; "<-"; ","; "["; "not"; "=="; "<>" ]
+        // an operator's operand too: `1 + !x` is the negation slip
+        List.contains
+            before
+            [ "="; "("; "&&"; "||"; "<-"; ","; "["; "not"; "=="; "<>"; "+"; "-"; "*"; "/"; "%"; "<"; ">"; "<="; ">=" ]
         || before.EndsWith "("
 
     piece = "!"
