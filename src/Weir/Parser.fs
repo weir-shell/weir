@@ -299,22 +299,32 @@ let private withMatchArm (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
         finally
             matchArmDepth.Value <- saved
 
+// names bound in scope beat the alias table [D:alias-binding-shadow] —
+// one set, not a closure per binding: a long run of block lets would
+// otherwise chain a frame per name into every alias lookup
+let private aliasMasked = new System.Threading.ThreadLocal<Set<string>>(fun () -> Set.empty)
+
+let private aliasHeadOf (r: Resolver) (w: string) =
+    if aliasMasked.Value.Contains w then None else r.AliasHead w
+
 // the param-ful law one scope deeper [D:block-let-cmd]: a block-let
 // name shadows PATH for every later parse in its body
 let private withAmbientName (name: string) (p: Parser<'a, unit>) : Parser<'a, unit> =
     fun stream ->
         let saved = ambientResolver.Value
+        let savedMask = aliasMasked.Value
 
         ambientResolver.Value <-
             { saved with
-                IsKnown = fun n -> n = name || saved.IsKnown n
-                // a bound name beats the alias table [D:alias-binding-shadow]
-                AliasHead = fun n -> if n = name then None else saved.AliasHead n }
+                IsKnown = fun n -> n = name || saved.IsKnown n }
+
+        aliasMasked.Value <- Set.add name savedMask
 
         try
             p stream
         finally
             ambientResolver.Value <- saved
+            aliasMasked.Value <- savedMask
 
 let private isIdentStart c = isLetter c || c = '_'
 let private isIdentCont c = isLetter c || isDigit c || c = '_'
@@ -2106,14 +2116,16 @@ let private lambdaBody =
 
                     ambientResolver.Value <-
                         { saved with
-                            IsKnown = fun n -> Set.contains n names || saved.IsKnown n
-                            // a bound name beats the alias table [D:alias-binding-shadow]
-                            AliasHead = fun n -> if Set.contains n names then None else saved.AliasHead n }
+                            IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
+
+                    let savedMask = aliasMasked.Value
+                    aliasMasked.Value <- Set.union names savedMask
 
                     try
                         inner stream
                     finally
                         ambientResolver.Value <- saved
+                        aliasMasked.Value <- savedMask
 
             // a lambda body is a statement body [D:lambda-lets]: it
             // grants command lets wherever it sits, as the spine does
@@ -2171,14 +2183,16 @@ let private withPatNames (p: Pattern) (inner: Parser<'a, unit>) : Parser<'a, uni
 
         ambientResolver.Value <-
             { saved with
-                IsKnown = fun n -> Set.contains n names || saved.IsKnown n
-                // a bound name beats the alias table [D:alias-binding-shadow]
-                AliasHead = fun n -> if Set.contains n names then None else saved.AliasHead n }
+                IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
+
+        let savedMask = aliasMasked.Value
+        aliasMasked.Value <- Set.union names savedMask
 
         try
             inner stream
         finally
             ambientResolver.Value <- saved
+            aliasMasked.Value <- savedMask
 
 // deepen on every block form [D:depth-guard]: their bodies nest
 // through seqExpr without re-entering atom, so a chain of them
@@ -2276,14 +2290,16 @@ let private letInBody =
 
                           ambientResolver.Value <-
                               { saved with
-                                  IsKnown = fun n -> Set.contains n names || saved.IsKnown n
-                                  // a bound name beats the alias table [D:alias-binding-shadow]
-                                  AliasHead = fun n -> if Set.contains n names then None else saved.AliasHead n }
+                                  IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
+
+                          let savedMask = aliasMasked.Value
+                          aliasMasked.Value <- Set.union names savedMask
 
                           try
                               inner stream
                           finally
                               ambientResolver.Value <- saved
+                              aliasMasked.Value <- savedMask
 
                   // a bare `let name =` with nothing after it gets its own
                   // first-reached diagnosis [D:windows-findings] — without
@@ -4716,7 +4732,7 @@ let private envPrefixGuard () : Parser<'a, unit> =
         match next with
         // a head that resolves was refused for another reason — that
         // route's error is the true one
-        | Some(w, _) when isIdentLike w && (r.IsExternal w || (r.AliasHead w).IsSome || r.IsCommandCallable w) ->
+        | Some(w, _) when isIdentLike w && (r.IsExternal w || (aliasHeadOf r w).IsSome || r.IsCommandCallable w) ->
             ifail "the head resolves; not an env-prefix failure"
         | Some(w, sp) when not (keywords.Contains w) ->
             failFatallyAtCol
@@ -4852,11 +4868,11 @@ let private commandSegment
                     preturn (ExternalHead, w, span)
                 else
                     failFatally $"command not found: {quoteData w}{didYouMean w (r.ExternalNames())}"
-            elif isIdentLike w && (r.AliasHead w).IsSome then
+            elif isIdentLike w && (aliasHeadOf r w).IsSome then
                 // the alias table is consulted before builtins and PATH, so
                 // an alias shadowing a real name (`#alias ls = ls --color`)
                 // wins here and `^ls` (above) is the bypass [D:command-head-alias]
-                match r.AliasHead w with
+                match aliasHeadOf r w with
                 | Some(exe, prefix) -> preturn (AliasedHead(exe, prefix), w, span)
                 | None -> ifail "not an alias"
             elif builtinHeads && isIdentLike w && r.IsCommandCallable w then
@@ -6070,9 +6086,7 @@ let private topLet (r: Resolver) =
 
                 let r' =
                     { r with
-                        IsKnown = fun n -> Set.contains n paramNames || r.IsKnown n
-                        // a bound name beats the alias table [D:alias-binding-shadow]
-                        AliasHead = fun n -> if Set.contains n paramNames then None else r.AliasHead n }
+                        IsKnown = fun n -> Set.contains n paramNames || r.IsKnown n }
 
                 // command-first body [D:sibling-sentinel]: the command
                 // is one statement; the sentinel-separated tail (inner
@@ -6106,12 +6120,16 @@ let private topLet (r: Resolver) =
                 let withSpine (p: Parser<'a, unit>) : Parser<'a, unit> =
                     fun stream ->
                         let saved = ambientResolver.Value
+                        let savedMask = aliasMasked.Value
                         ambientResolver.Value <- r'
+                        // a param beats the alias table [D:alias-binding-shadow]
+                        aliasMasked.Value <- Set.union paramNames savedMask
 
                         try
                             (withLetCmd true p) stream
                         finally
                             ambientResolver.Value <- saved
+                            aliasMasked.Value <- savedMask
 
                 withSpine (rhsP .>> eof)
                 |>> fun rhs ->
@@ -6537,6 +6555,7 @@ let private dumpTeach (r: Resolver) (input: string) (idx: int) (msg: string) : s
 
 let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
     ambientResolver.Value <- r
+    aliasMasked.Value <- Set.empty
     parseDepth.Value <- 0
     // per-line memo [D:statement-lets] — offsets are line-relative
     grantedRhsRanges.Value.Clear()
