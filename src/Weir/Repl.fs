@@ -4188,7 +4188,13 @@ let private saveWrite (path: string) (lines: string list) : Result<unit, string>
     if Directory.Exists full then
         Error $"#save: {quoteData path} is a directory"
     elif not (isNull parent) && parent <> "" && not (Directory.Exists parent) then
-        Error $"#save: no such directory: {quoteData parent}"
+        // the parent as the user wrote it, as File.write names it
+        let shown =
+            match path.LastIndexOfAny [| '/'; '\\' |] with
+            | i when i > 0 -> path.Substring(0, i)
+            | _ -> parent
+
+        Error $"#save: no such directory: {quoteData shown}"
     else
         try
             File.WriteAllLines(full, lines)

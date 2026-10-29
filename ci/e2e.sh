@@ -828,10 +828,11 @@ WEOF
     [ "$out" = "$(printf 'caught\nEXECLEAK=unset\nNone')" ] || fail "a failed exec must not leak its env prefix: $out"
 
     # E2BIG is named, not "command not found" [D:start-failure-errno] —
-    # the spawn and the exec path alike
+    # the spawn and the exec path alike. 4M chars passes every ARG_MAX:
+    # Linux refuses one argument past 128 KiB, macOS only the ~1 MiB total
     for form in 'echo $big | wc -c' 'echo $big | exec'; do
         rc=0
-        out=$($BIN -e "let big = Str.replicate 300000 \"a\"
+        out=$($BIN -e "let big = Str.replicate 4000000 \"a\"
 $form" 2>&1) || rc=$?
         [ "$rc" = "1" ] || fail "E2BIG ($form) must exit 1 (got $rc): $out"
         echo "$out" | grep -qF "cannot start echo: its arguments and environment are too large for the OS (argument list too long;" || fail "E2BIG ($form) must be named: $out"

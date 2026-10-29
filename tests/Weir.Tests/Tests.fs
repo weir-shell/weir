@@ -2404,12 +2404,12 @@ let boundaryTests =
 
                   match errorsIn "ym.weir" lines with
                   | d :: _ ->
-                      Expect.equal (d.Message.Replace("\n", " ")) teach $"check: {head}"
+                      Expect.equal (d.Message.Replace("\r\n", " ").Replace("\n", " ")) teach $"check: {head}"
                       Expect.equal (d.Line, d.Col) (1, 9) "on the marker"
                   | [] -> failtest $"must refuse: {head}"
 
                   match Weir.Parser.parseLine realResolver (asm (List.take 2 lines)) with
-                  | Error m -> Expect.stringContains (m.Replace("\n", " ")) teach $"run: {head}"
+                  | Error m -> Expect.stringContains (m.Replace("\r\n", " ").Replace("\n", " ")) teach $"run: {head}"
                   | Ok _ -> failtest $"run must refuse: {head}"
           }
           test "YamlPatch is a built-in type name — undeclarable [D:yaml-nodes]" {
@@ -25594,7 +25594,7 @@ let dumpTeachTests =
                     12,
                     "weir has no type annotation inside an expression — annotate the binding instead: `let y: T = e`" ] do
                   let d = one lines
-                  Expect.equal (d.Message.Replace("\n", " ")) msg $"{lines}"
+                  Expect.equal (d.Message.Replace("\r\n", " ").Replace("\n", " ")) msg $"{lines}"
                   Expect.equal (d.Line, d.Col) (line, col) $"site: {lines}"
           }
           test "run words them the same (the run resolver)" {
@@ -25605,7 +25605,7 @@ let dumpTeachTests =
                     "print (show (3--1))", "'--' is not an operator" ] do
                   match Weir.Parser.parseLine realResolver src with
                   | Error m ->
-                      Expect.stringContains (m.Replace("\n", " ")) needle src
+                      Expect.stringContains (m.Replace("\r\n", " ").Replace("\n", " ")) needle src
                       Expect.isFalse (m.Contains "Expecting") $"no dump: {src}"
                   | Ok other -> failtest $"{src}: expected an error, got {other}"
           } ]
@@ -30202,7 +30202,7 @@ let portMembersTests =
 
               match diags |> List.filter (fun d -> d.Severity = "error") with
               | [ d ] ->
-                  let m = d.Message.Replace("\n", " ")
+                  let m = d.Message.Replace("\r\n", " ").Replace("\n", " ")
                   Expect.stringContains m "'date' is a weir name, not a program — $(…) runs a program and captures its output" "named"
                   Expect.stringContains m "write $(^date …) for a program of that name" "the program spelling"
                   Expect.isFalse (m.Contains "Expecting") "no dump"
@@ -33349,12 +33349,12 @@ let cmdChainTests =
 
                   match errorsIn "vc.weir" lines with
                   | d :: _ ->
-                      Expect.equal (d.Message.Replace("\n", " ")) msg $"check: {lines}"
+                      Expect.equal (d.Message.Replace("\r\n", " ").Replace("\n", " ")) msg $"check: {lines}"
                       Expect.equal (d.Line, d.Col) (List.length lines, col) $"at the chain word: {lines}"
                   | [] -> failtest $"check must refuse: {lines}"
 
                   match Weir.Parser.parseLine realResolver ((List.last lines).Trim()) with
-                  | Error m -> Expect.stringContains (m.Replace("\n", " ")) msg $"run: {lines}"
+                  | Error m -> Expect.stringContains (m.Replace("\r\n", " ").Replace("\n", " ")) msg $"run: {lines}"
                   | Ok other -> failtest $"run must refuse: {other}"
           }
           test "| and before a weir name teaches the and repair, the same at check and run [D:value-chain-word]" {
@@ -33363,11 +33363,11 @@ let cmdChainTests =
 
               for lines in [ [ "echo a | and exit 3" ]; [ "if true then"; "    echo a | and exit 3" ] ] do
                   match errorsIn "an.weir" lines with
-                  | d :: _ -> Expect.equal (d.Message.Replace("\n", " ")) msg $"check: {lines}"
+                  | d :: _ -> Expect.equal (d.Message.Replace("\r\n", " ").Replace("\n", " ")) msg $"check: {lines}"
                   | [] -> failtest $"check must refuse: {lines}"
 
               match Weir.Parser.parseLine realResolver "git status | and exit 3" with
-              | Error m -> Expect.stringContains (m.Replace("\n", " ")) msg "run"
+              | Error m -> Expect.stringContains (m.Replace("\r\n", " ").Replace("\n", " ")) msg "run"
               | Ok other -> failtest $"run must refuse: {other}"
           } ]
 
@@ -34912,7 +34912,7 @@ let hardeningTests =
                   match errorsIn "neg.weir" [ src ] with
                   | d :: _ ->
                       Expect.equal
-                          (d.Message.Replace("\n", " "))
+                          (d.Message.Replace("\r\n", " ").Replace("\n", " "))
                           "a '-' in an attribute argument must be followed by a number, as in [<Default -1>] — attribute arguments are literals"
                           src
 
