@@ -1266,6 +1266,116 @@ let boundaryTests =
               skipOnWindows ()
               Expect.equal (Weir.Proc.lines "echo" [ "ok" ] None |> List.ofSeq) [ "ok" ] "a clean spawn is untouched"
           }
+          // the single-capture cap [D:capture-cap-error]: reaching it is a
+          // weir error naming the cap and the command — the 2 GiB cap's
+          // own run is the e2e cell; here a small cap drives the same path
+          let capSpec prog args : Weir.Proc.Spec =
+              { Prog = prog; Args = args; Env = []; Input = None; Cwd = None; Ambient = None }
+
+          test "a capture reaching its cap is a weir error naming the cap and the command [D:capture-cap-error]" {
+              skipOnWindows ()
+
+              let ex =
+                  Expect.throwsC
+                      (fun () ->
+                          Weir.Proc.completedCapped 1024L true (capSpec "sh" [ "-c"; "head -c 5000 /dev/zero" ]) |> ignore)
+                      id
+
+              Expect.equal
+                  ex.Message
+                  "the output of 'sh -c head -c 5000 /dev/zero' reached the 1 KiB single-capture cap — a capture holds the whole output in memory; stream it instead: run the command bare, iterate its lines (`cmd |> Seq.iter …`), or write them to a file (`cmd |> File.write path`) and read back what you need"
+                  "the cap and the command, never a silent truncation"
+
+              let chainEx =
+                  Expect.throwsC
+                      (fun () ->
+                          Weir.Proc.chainCompletedCapped
+                              1024L
+                              true
+                              [ capSpec "sh" [ "-c"; "head -c 5000 /dev/zero" ]; capSpec "cat" [] ]
+                          |> ignore)
+                      id
+
+              Expect.stringStarts
+                  chainEx.Message
+                  "the output of 'sh -c head -c 5000 /dev/zero | cat' reached the 1 KiB single-capture cap"
+                  "a chain names every stage"
+
+              Expect.stringStarts (Weir.Proc.captureCapMessage Weir.Proc.captureCap "x") "the output of 'x' reached the 2 GiB single-capture cap" "the real cap reads 2 GiB"
+          }
+          test "a capture under its cap is whole; a code-only capture holds nothing and owes no cap [D:capture-cap-error]" {
+              skipOnWindows ()
+              let code, out, _ = Weir.Proc.completedCapped 1024L true (capSpec "sh" [ "-c"; "printf 'a\\nb\\n'" ])
+              Expect.equal (code, List.ofSeq out) (0, [ "a"; "b" ]) "under the cap"
+              let code, out, _ = Weir.Proc.completedCapped 1024L false (capSpec "sh" [ "-c"; "head -c 50000 /dev/zero" ])
+              Expect.equal (code, List.ofSeq out) (0, []) "drained, unheld"
+          }
+          // E2BIG is the command's size, not a missing program [D:start-failure-errno]
+          test "an argument list past the OS limit is named, not 'command not found' [D:start-failure-errno]" {
+              skipOnWindows ()
+              let big = System.String('a', 3_000_000)
+              let ex = Expect.throwsC (fun () -> Weir.Proc.lines "echo" [ big ] None |> Seq.iter ignore) id
+
+              Expect.equal
+                  ex.Message
+                  "cannot start echo: its arguments and environment are too large for the OS (argument list too long; 2.8 MiB of them in this command alone) — pass big data on stdin (`xs | cmd`) or through a file, not as an argument"
+                  "E2BIG named with the size and the way out"
+
+              Expect.equal
+                  (Weir.Proc.startFailureMessage "nosuch" [] [] 2)
+                  "command not found or not executable: nosuch"
+                  "ENOENT keeps the not-found message"
+          }
+          // a failed exec leaves the session as it found it
+          // [D:exec-failure-restores]; the program never exists, so no
+          // path can replace the test process
+          test "a failed exec restores its env prefix and the process cwd [D:exec-failure-restores]" {
+              skipOnWindows ()
+              let key = "WEIR_UNIT_EXEC_LEAK"
+              let cwd = System.IO.Directory.GetCurrentDirectory()
+
+              Expect.throws
+                  (fun () ->
+                      Weir.Proc.exec
+                          { capSpec "weir-unit-no-such-prog" [] with
+                              Env = [ key, "leaked" ]
+                              Cwd = Some "/" })
+                  "the exec failed"
+
+              Expect.isNull (System.Environment.GetEnvironmentVariable key) "the prefix did not leak"
+              Expect.equal (System.IO.Directory.GetCurrentDirectory()) cwd "the cwd did not leak"
+          }
+          // the runtime backstop [D:exec-scope-transitive]
+          test "exec refuses at run time inside a parallel arm and while an always is live [D:exec-scope-transitive]" {
+              skipOnWindows ()
+              let execNoSuch () = Weir.Proc.exec (capSpec "weir-unit-no-such-prog" [])
+              let depth = Weir.Session.parallelDepthNow ()
+              Weir.Session.setParallelDepth (depth + 1)
+
+              let arm =
+                  try
+                      Expect.throwsC execNoSuch id
+                  finally
+                      Weir.Session.setParallelDepth depth
+
+              Expect.equal
+                  arm.Message
+                  "'exec' inside a parallel arm (pfor, Seq.pmap, Seq.piter, Seq.pfirst) is refused — exec replaces weir's process, so the other arms would be orphaned and the join would never run; run the command without exec, or exec after the fan-out"
+                  "an arm"
+
+              let hooked = Weir.Session.registerAlways ()
+
+              let scope =
+                  try
+                      Expect.throwsC execNoSuch id
+                  finally
+                      Weir.Session.deregisterAlways hooked |> ignore
+
+              Expect.equal
+                  scope.Message
+                  "'exec' while a scope is open (a within or always block) is refused — exec replaces weir's process, so the scope's teardown would never run; run the command without exec, or exec after the scope"
+                  "a live always"
+          }
           test "statement-path control stays green: a NUL arg refuses via the evaluator too [D:spawn-nul-funnel]" {
               skipOnWindows ()
               // the pre-existing evaluator refusal must not regress — a
@@ -22381,6 +22491,21 @@ let httpTests =
                   ex.Message
                   "request header 'transfer-encoding' cannot be sent — it frames the body, which the transport does on its own (a body is sent with its Content-Length); drop it"
                   "refused by name before the send"
+          }
+          test "an explicit Content-Length request header is refused as framing [D:http-header-unsendable]" {
+              for v in [ "5"; "0"; "abc" ] do
+                  let ex =
+                      Expect.throwsC
+                          (fun () ->
+                              run
+                                  $"Http.send {{ Http.post \"http://127.0.0.1:9/\" with body = Text \"a\"; headers = [(\"Content-Length\", \"{v}\")] }}"
+                              |> ignore)
+                          id
+
+                  Expect.equal
+                      ex.Message
+                      "request header 'Content-Length' cannot be sent — it frames the body, which the transport does on its own (the length is taken from the body itself); drop it"
+                      $"refused by name before the send ({v})"
           }
           test "an explicit Content-Type replaces the body kind's: exactly one on the wire [D:http-content-type-override]" {
               let port, seen =

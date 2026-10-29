@@ -741,6 +741,65 @@ WEOF
     printf '["a"] | grep a | exec\n' > "$execdir/execbad.weir"
     out=$($BIN check "$execdir/execbad.weir" 2>&1 || true)
     echo "$out" | grep -qF "cannot take a piped stdin" || fail "value-headed exec must refuse at check"
+
+    # the run refuses exec while a scope or a fan-out arm is live
+    # [D:exec-scope-transitive] — the backstop for a helper reached as a
+    # value: the tmp dir is removed, the replacement never runs
+    cat > "$execdir/execval.weir" <<'WEOF'
+let go () = sh -c "echo exec-ran" | exec
+let inScope f =
+    within tmp d
+        print d
+        if true then f () else ()
+inScope go
+WEOF
+    rc=0
+    out=$($BIN "$execdir/execval.weir" 2>&1) || rc=$?
+    [ "$rc" = "1" ] || fail "exec under a live scope must exit 1 (got $rc): $out"
+    echo "$out" | grep -qF "'exec' while a scope is open (a within or always block) is refused" || fail "exec under a live scope must be refused in weir's words: $out"
+    echo "$out" | grep -qF "exec-ran" && fail "the replacement must not run under a live scope: $out"
+    xtmp=$(echo "$out" | head -1)
+    [ -n "$xtmp" ] && [ ! -e "$xtmp" ] || fail "the scope's teardown must run (tmp dir $xtmp left): $out"
+    cat > "$execdir/execarm.weir" <<'WEOF'
+let go _i = sh -c "echo exec-ran" | exec
+let fan f =
+    pfor i in [1; 2] do
+        if true then f i else ()
+fan go
+WEOF
+    rc=0
+    out=$($BIN "$execdir/execarm.weir" 2>&1) || rc=$?
+    [ "$rc" = "1" ] || fail "exec in a pfor arm must exit 1 (got $rc): $out"
+    echo "$out" | grep -qF "'exec' inside a parallel arm (pfor, Seq.pmap, Seq.piter, Seq.pfirst) is refused" || fail "exec in an arm must be refused in weir's words: $out"
+    echo "$out" | grep -qF "exec-ran" && fail "the replacement must not run in an arm: $out"
+
+    # a failed exec leaves the session as it found it [D:exec-failure-restores]:
+    # its env prefix and cwd do not leak into later commands
+    cat > "$execdir/execleak.weir" <<'WEOF'
+let go () =
+    let t = "weir-e2e-no-such-prog"
+    EXECLEAK=leaked ^$t | exec
+let r = go () |> try result
+match r with
+| Ok _ -> print "ok?"
+| Error _ -> print "caught"
+sh -c "echo EXECLEAK=${EXECLEAK:-unset}"
+print (show (Env.get "EXECLEAK"))
+WEOF
+    out=$(cd "$execdir" && $BIN execleak.weir 2>&1)
+    [ "$out" = "$(printf 'caught\nEXECLEAK=unset\nNone')" ] || fail "a failed exec must not leak its env prefix: $out"
+
+    # E2BIG is named, not "command not found" [D:start-failure-errno] —
+    # the spawn and the exec path alike
+    for form in 'echo $big | wc -c' 'echo $big | exec'; do
+        rc=0
+        out=$($BIN -e "let big = Str.replicate 300000 \"a\"
+$form" 2>&1) || rc=$?
+        [ "$rc" = "1" ] || fail "E2BIG ($form) must exit 1 (got $rc): $out"
+        echo "$out" | grep -qF "cannot start echo: its arguments and environment are too large for the OS (argument list too long;" || fail "E2BIG ($form) must be named: $out"
+        echo "$out" | grep -qF "not found" && fail "E2BIG ($form) is not 'command not found': $out"
+    done
+    echo "e2e ok: exec — refused at run time under a live scope or arm, a failed exec restores env, E2BIG named"
 fi
 
 # ---- the single-line capture reifier [D:reify-line] ------------------
@@ -1456,6 +1515,29 @@ echo "$errout" | grep -qF "diag" || fail "printerr must reach stderr"
 echo "$errout" | grep -qF "error: stop here" || fail "fail must be located on stderr: $errout"
 echo "e2e ok: fail exits located; printerr separates streams"
 rm -rf "$faildir"
+
+# the single-capture cap [D:capture-cap-error]: past 2 GiB a capture is a
+# located weir error naming the cap and the command, never empty or
+# truncated output; `| succeeds` holds nothing and owes no cap. Linux
+# with 4 GiB free only — the capture holds 2 GiB before it refuses
+if [ "$(uname -s)" = Linux ] && [ "$(awk '/MemAvailable/{print $2}' /proc/meminfo)" -gt 4194304 ]; then
+    capdir=$(mkweirtmp)
+    printf 'let _r = head -c 2200000000 /dev/zero | complete\nprint "unreached"\n' > "$capdir/cap.weir"
+    printf 'let _r = head -c 2200000000 /dev/zero | cat | complete\nprint "unreached"\n' > "$capdir/capchain.weir"
+    for f in cap capchain; do
+        rc=0
+        out=$($BIN "$capdir/$f.weir" 2>&1) || rc=$?
+        [ "$rc" = "1" ] || fail "capture cap ($f) must exit 1 (got $rc): $out"
+        echo "$out" | grep -qF "$f.weir:1:10: error: the output of 'head -c 2200000000 /dev/zero" || fail "capture cap ($f) must be located and name the command: $out"
+        echo "$out" | grep -qF "reached the 2 GiB single-capture cap" || fail "capture cap ($f) must name the cap: $out"
+        echo "$out" | grep -qF "unreached" && fail "capture cap ($f) must stop the script: $out"
+    done
+    out=$($BIN -e 'let ok = head -c 2200000000 /dev/zero | succeeds
+print (show ok)')
+    expect "| succeeds drains past the cap unheld" "true" "$out"
+    rm -rf "$capdir"
+    echo "e2e ok: capture cap — past 2 GiB a located error naming the cap and the command; | succeeds owes none"
+fi
 
 bigdir=$(mkweirtmp)
 truncate -s 3G "$bigdir/sparse.bin"
@@ -12934,6 +13016,26 @@ out=$($BIN "$spdir/esc.weir" 2>&1) || fail "the escaped handle must not crash: $
 printf '%s' "$out" | head -1 | grep -qF "false" || fail "escaped running must be false: $out"
 printf '%s' "$out" | tail -1 | grep -qF "0" || fail "escaped tail must be empty (spill gone): $out"
 
+# Proc.tail reads back from the end of the spill, never the whole file
+# [D:scoped-procs] [D:proc-tail-window]: a 300 MB one-line spill gives its
+# cut line (marked …) and the last line, in bounded memory
+if [ "$(uname -s)" = Linux ]; then
+    cat > "$spdir/bigtail.weir" <<'WEOF'
+within proc p = sh -c "head -c 300000000 /dev/zero | tr '\\0' a; echo; echo LASTLINE"
+    let _code = Proc.wait p
+    let t = Proc.tail p
+    print (show (Seq.length t))
+    print (t |> Seq.last)
+    print (t |> Seq.head |> Str.sub 0 2)
+    File.read "/proc/self/status" |> Seq.where (Str.startsWith "VmHWM") |> Seq.iter print
+WEOF
+    out=$($BIN "$spdir/bigtail.weir" 2>&1) || fail "the big-spill tail must run: $out"
+    [ "$(printf '%s\n' "$out" | head -3)" = "$(printf '2\nLASTLINE\n…a')" ] || fail "the big-spill tail must hold the cut line and the last line: $out"
+    hwm=$(printf '%s\n' "$out" | awk '/VmHWM/{print $2}')
+    [ -n "$hwm" ] && [ "$hwm" -lt 400000 ] || fail "Proc.tail must not read the whole spill into memory (VmHWM ${hwm} kB): $out"
+    echo "e2e ok: Proc.tail reads a big spill back from its end, in bounded memory"
+fi
+
 # a proc scope spawns in a checked position too [D:scoped-procs]: an
 # else branch and a non-first match arm are typed by the check direction,
 # not infer, and the two directions must agree on the scope's contracts.
@@ -15776,7 +15878,8 @@ for case in 'Http.send { Http.get "http://127.0.0.1:9/" with method = Other "BAD
             'Http.send { Http.get "http://127.0.0.1:9/" with method = Other "" }|Http: the method is empty — Other needs a method token such as "PURGE"' \
             'Http.send (Http.get "not a url")|'"'"'not a url'"'"' is not a URL weir can send to — an absolute http(s) URL is needed (https://host/path)' \
             'Http.send (Http.get "file:///etc/hostname")|'"'"'file:///etc/hostname'"'"' uses the '"'"'file'"'"' scheme — Http sends to http:// and https:// URLs only' \
-            'Http.send { Http.get "http://127.0.0.1:9/" with headers = [("Transfer-Encoding", "chunked")] }|request header '"'"'Transfer-Encoding'"'"' cannot be sent — it frames the body'; do
+            'Http.send { Http.get "http://127.0.0.1:9/" with headers = [("Transfer-Encoding", "chunked")] }|request header '"'"'Transfer-Encoding'"'"' cannot be sent — it frames the body' \
+            'Http.send { Http.post "http://127.0.0.1:9/" with body = Text "a"; headers = [("Content-Length", "5")] }|request header '"'"'Content-Length'"'"' cannot be sent — it frames the body'; do
     expr=${case%%|*}; why=${case#*|}
     rc=0
     out=$($BIN -e "$expr" 2>&1) || rc=$?
@@ -15784,7 +15887,7 @@ for case in 'Http.send { Http.get "http://127.0.0.1:9/" with method = Other "BAD
     echo "$out" | grep -qF -- "$why" || fail "pre-send refusal: '$expr' must say '$why': $out"
     echo "$out" | grep -qE 'BaseAddress|Parameter|content object|cannot reach' && fail "pre-send refusal: .NET text or the transport umbrella leaked: $out" || true
 done
-echo "e2e ok: Http.send — a non-token method, an unaddressable URL and a Transfer-Encoding header are refused before send, in weir's words"
+echo "e2e ok: Http.send — a non-token method, an unaddressable URL and a Transfer-Encoding or Content-Length header are refused before send, in weir's words"
 
 # port is Option<int> [D:serve-port-option]: None binds a free port and
 # Server.port reports the BOUND one (a self-request through it answers);

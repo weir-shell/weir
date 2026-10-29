@@ -1716,39 +1716,102 @@ let procTail (h: ProcHandle) : string list =
      with _ ->
          ())
 
-    let readLines path =
-        try
-            use fs =
-                new System.IO.FileStream(
-                    path,
-                    System.IO.FileMode.Open,
-                    System.IO.FileAccess.Read,
-                    System.IO.FileShare.ReadWrite
+    // the spill is bounded by disk, not memory [D:scoped-procs]: read
+    // back from the end, at most tailWindow bytes, until n lines are in
+    // hand — never the whole file. A line the window cuts keeps its end,
+    // marked with a leading … [D:proc-tail-window]
+    let tailWindow = 1L <<< 20
+
+    let readLast (n: int) (path: string) : string list =
+        let fsO =
+            try
+                Some(
+                    new System.IO.FileStream(
+                        path,
+                        System.IO.FileMode.Open,
+                        System.IO.FileAccess.Read,
+                        System.IO.FileShare.ReadWrite ||| System.IO.FileShare.Delete
+                    )
                 )
+            with _ ->
+                // an escaped handle's scope removed the spill: its tail is
+                // empty, never a crash [D:scoped-procs]
+                if System.IO.Directory.Exists h.SpillDir then
+                    failwith $"Proc.tail: cannot read the spilled output of pid {h.Proc.Id} at {quoteData path}"
 
-            use r = new System.IO.StreamReader(fs)
-            let mutable lines = []
-            let mutable line = r.ReadLine()
+                None
 
-            while line <> null do
-                lines <- line :: lines
-                line <- r.ReadLine()
+        match fsO with
+        | None -> []
+        | Some fs ->
 
-            List.rev lines
-        with _ ->
-            []
+        use fs = fs
+        let len = fs.Length
+        let chunk = 65536L
+        let mutable start = len
+        let mutable newlines = 0
 
-    let err = readLines h.ErrPath
-    let out = readLines h.OutPath
-    let take n (xs: string list) = xs |> List.skip (max 0 (xs.Length - n))
-    let errT = take 100 err
-    errT @ take (100 - errT.Length) out
+        // n lines end in at most n+1 newlines back from the end (the
+        // trailing one terminates the last line)
+        while start > 0L && newlines <= n && len - start < tailWindow do
+            let size = min chunk start
+            start <- start - size
+            let buf = Array.zeroCreate<byte> (int size)
+            fs.Position <- start
+            let mutable got = 0
+
+            while got < buf.Length do
+                let r = fs.Read(buf, got, buf.Length - got)
+                got <- if r = 0 then buf.Length else got + r
+
+            for b in buf do
+                if b = 10uy then
+                    newlines <- newlines + 1
+
+        let cut = start > 0L
+        let bytes = Array.zeroCreate<byte> (int (len - start))
+        fs.Position <- start
+        let mutable got = 0
+
+        while got < bytes.Length do
+            let r = fs.Read(bytes, got, bytes.Length - got)
+            got <- if r = 0 then bytes.Length else got + r
+
+        // the BOM switch is the start of the file's, as a reader would see it
+        use r =
+            new System.IO.StreamReader(new System.IO.MemoryStream(bytes), System.Text.Encoding.UTF8, not cut)
+
+        let lines = ResizeArray<string>()
+        let mutable line = r.ReadLine()
+
+        while line <> null do
+            lines.Add line
+            line <- r.ReadLine()
+
+        // the window opened mid-line: that line's start is missing
+        if cut && lines.Count > 0 && start > 0L then
+            fs.Position <- start - 1L
+
+            if fs.ReadByte() <> 10 then
+                lines[0] <- "…" + lines[0]
+
+        lines |> Seq.skip (max 0 (lines.Count - n)) |> List.ofSeq
+
+    let errT = readLast 100 h.ErrPath
+    let outT = if errT.Length < 100 then readLast (100 - errT.Length) h.OutPath else []
+    errT @ outT
 
 // a one-line rendering of the tail for error messages: lines join
 // with ⏎, fzf's convention for multi-line content in a one-line
 // message
 let procTailLine (h: ProcHandle) : string =
-    let t = procTail h
+    // the tail decorates another error: an unreadable spill must not
+    // replace the error it was decorating
+    let t =
+        try
+            procTail h
+        with _ ->
+            []
 
     match t |> List.skip (max 0 (t.Length - 5)) with
     | [] -> ""

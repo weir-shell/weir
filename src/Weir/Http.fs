@@ -1089,6 +1089,16 @@ let refuseUnsendableRequestHeader
                     k
                     "it frames the body, which the transport does on its own (a body is sent with its Content-Length); drop it"
             )
+        // Content-Length is the same framing: the transport sets it from
+        // the body itself, and a caller's value either contradicts the
+        // body (the runtime's own words mid-send) or is ignored
+        | None when String.Equals(k, "Content-Length", StringComparison.OrdinalIgnoreCase) ->
+            fail (
+                headerUnsendableMessage
+                    "request header"
+                    k
+                    "it frames the body, which the transport does on its own (the length is taken from the body itself); drop it"
+            )
         | None ->
             if requestHeaderHasNoPlace hasBody (k, v) then
                 fail (

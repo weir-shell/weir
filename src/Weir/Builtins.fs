@@ -561,8 +561,7 @@ let private succeededWith (overlay: (string * string) list) : Value =
             match progV, argsV with
             | VStr prog, VSeq args ->
                 let argv = argStrings args
-                let code, _, _ = Proc.completeWith overlay (Proc.specProg prog) argv None
-                VBool(code = 0)
+                VBool(Proc.completeCode overlay (Proc.specProg prog) argv None = 0)
             | _ -> unreachable "the checker rejects 'succeeded' on these arguments"))
 
 let private orFailedWith (overlay: (string * string) list) : Value =
@@ -701,8 +700,7 @@ let private succeededWithIn (overlay: (string * string) list) : Value =
                 | VStr prog, VSeq args, VSeq stdin ->
                     let argv = argStrings args
                     let input = stdin |> Seq.map asString |> Eval.pinnedFeed
-                    let code, _, _ = Proc.completeWith overlay (Proc.specProg prog) argv (Some input)
-                    VBool(code = 0)
+                    VBool(Proc.completeCode overlay (Proc.specProg prog) argv (Some input) = 0)
                 | _ -> unreachable "the checker rejects 'succeededIn' on these arguments")))
 
 let private exitCodedWithIn (overlay: (string * string) list) : Value =
@@ -8610,8 +8608,7 @@ let private chainCompletedImpl =
 
 let private chainSucceededImpl =
     chainBuiltin (fun specs ->
-        let code, _, _ = Proc.chainCompletedOf specs
-        VBool(code = 0))
+        VBool(Proc.chainCompletedCode specs = 0))
 
 let private chainExitCodedImpl =
     chainBuiltin (fun specs -> VInt(int64 (Proc.chainStreamCodeOf specs)))
