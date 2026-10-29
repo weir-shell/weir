@@ -218,7 +218,10 @@ type private TranscriptKind =
 type private TranscriptLine =
     { Text: string
       PhysText: string
-      Kind: TranscriptKind }
+      Kind: TranscriptKind
+      // the constructors a `type` decl binds — session names #save
+      // must not let dangle [D:repl-save-chain]
+      Binds: string list }
 
 let private transcript = System.Collections.Generic.List<TranscriptLine>()
 
@@ -227,21 +230,37 @@ let private recordDef (name: string) (physText: string) (text: string) =
     transcript.Add
         { Text = text
           PhysText = physText
-          Kind = TDef name }
+          Kind = TDef name
+          Binds = [] }
+
+// record a checked definition: a union decl carries its constructors
+let private recordChecked (chk: Script.CheckedStatement) (name: string) (physText: string) (text: string) =
+    let binds =
+        match chk.Kind with
+        | Script.KType({ Body = DUnion cases }, _) -> cases |> List.map (fun (c, _, _) -> c)
+        | _ -> []
+
+    transcript.Add
+        { Text = text
+          PhysText = physText
+          Kind = TDef name
+          Binds = binds }
 
 // record a bare non-unit echo — scratch, dropped by #save
 let private recordDiscard (physText: string) (text: string) =
     transcript.Add
         { Text = text
           PhysText = physText
-          Kind = TDiscard }
+          Kind = TDiscard
+          Binds = [] }
 
 // record a unit statement — an effect echo, dropped by #save
 let private recordOther (physText: string) (text: string) =
     transcript.Add
         { Text = text
           PhysText = physText
-          Kind = TOther }
+          Kind = TOther
+          Binds = [] }
 
 // the physical source of a logical line [D:repl-save]: a multi-line
 // statement (a heredoc, a `type` decl, a block let) assembled `ll.Text`
@@ -330,7 +349,8 @@ let private recordImport (chk: Script.CheckedStatement) (text: string) =
             transcript[i] <-
                 { Text = line
                   PhysText = line
-                  Kind = TDef key }
+                  Kind = TDef key
+                  Binds = [] }
         | None -> recordDef key line line
     | _ -> ()
 
@@ -2472,10 +2492,14 @@ let private functionEcho (env: TypeEnv) (te: Check.TypedExpr) (v: Eval.Value) : 
 // a name bound by the session (a let, an init declaration) — not a
 // builtin or prelude name [D:alias-binding-shadow]: the distinction the
 // alias order needs, since `#alias ls = ls --color` over the builtin is
-// the canonical shell alias and must keep resolving
+// the canonical shell alias and must keep resolving. A session `let`
+// over a builtin's name (`let find = 3`) replaces its entry, so it is
+// the entry's identity that tells the two apart, not the name
 let private isSessionBinding (state: State) (n: string) : bool =
-    Map.containsKey n state.TypeEnv.Values
-    && not (Map.containsKey n initial.TypeEnv.Values)
+    match Map.tryFind n state.TypeEnv.Values, Map.tryFind n initial.TypeEnv.Values with
+    | Some _, None -> true
+    | Some mine, Some builtin -> not (obj.ReferenceEquals(mine, builtin))
+    | None, _ -> false
 
 let private resolver (state: State) : Parser.Resolver =
     { Script.resolver state.TypeEnv with
@@ -2497,7 +2521,7 @@ let private resolver (state: State) : Parser.Resolver =
 let private diagLine (s: string) =
     Console.WriteLine(Eval.sanitizeIfTty Console.IsOutputRedirected s)
 
-let private printHint (state: State) (line: string) =
+let private hintFor (state: State) (line: string) =
     Diagnose.hint
         (fun n ->
             Map.containsKey n state.TypeEnv.Values
@@ -2505,7 +2529,9 @@ let private printHint (state: State) (line: string) =
         Builtins.commandCallable.Contains
         Extern.exists
         line
-    |> Option.iter (fun h -> diagLine $"hint: {h}")
+
+let private printHint (state: State) (line: string) =
+    hintFor state line |> Option.iter (fun h -> diagLine $"hint: {h}")
 
 // The last-result binding [D:repl-it], FSI parity: expressions and
 // commands rebind `it` — always, unit included (a streamed bare
@@ -3794,17 +3820,25 @@ let private inferDirective (state: State) (rest: string) : State =
 
 // one distilled statement: its dedup key (a type/binder name) and its
 // physical source lines (already qualified)
-type private DistillStmt = { Key: string; Lines: string list }
+type private DistillStmt =
+    { Key: string
+      Lines: string list
+      IsType: bool }
 
 // dedup by key, keeping the last definition, preserving survivor order.
 // A re-declared `type Color`/rebound `let x` keeps only its final form.
-let private dedupLast (stmts: DistillStmt list) : DistillStmt list =
+// The indices (into `stmts`) of the survivors.
+let private dedupLast (stmts: DistillStmt list) : Set<int> =
     let lastIdx =
         stmts
         |> List.mapi (fun i s -> s.Key, i)
         |> List.fold (fun m (k, i) -> Map.add k i m) Map.empty
 
-    stmts |> List.mapi (fun i s -> i, s) |> List.filter (fun (i, s) -> Map.find s.Key lastIdx = i) |> List.map snd
+    stmts
+    |> List.mapi (fun i s -> i, s)
+    |> List.filter (fun (i, s) -> Map.find s.Key lastIdx = i)
+    |> List.map fst
+    |> Set.ofList
 
 // a `cmd-not-found` diagnostic that names the REPL-only `it` [D:repl-it]:
 // `it` can never be a real script command (a warning at check time, but
@@ -3831,6 +3865,20 @@ let private namesSessionBinding (sessionNames: Set<string>) (d: Script.Diagnosti
             Text.RegularExpressions.Regex.Match(d.Message, @"^command not found on PATH: ([A-Za-z_][A-Za-z0-9_]*)")
 
         m.Success && sessionNames.Contains m.Groups[1].Value)
+
+// the name a dangling-reference diagnostic is about: a phantom command
+// (`f x`, `xs |> …`) or an unbound variable (`[a; 2]`)
+let private danglingName (d: Script.Diagnostic) : string option =
+    let pattern =
+        match d.Code with
+        | "cmd-not-found" -> Some @"^command not found on PATH: ([A-Za-z_][A-Za-z0-9_]*)"
+        | "unbound" -> Some @"^unbound variable '([A-Za-z_][A-Za-z0-9_]*)'"
+        | _ -> None
+
+    pattern
+    |> Option.bind (fun pat ->
+        let m = Text.RegularExpressions.Regex.Match(d.Message, pat)
+        if m.Success then Some m.Groups[1].Value else None)
 
 // the distill-fatal diagnostics for a candidate file, [] when clean.
 // Line-split each block, assemble the file, analyze it (the synthetic
@@ -3981,14 +4029,68 @@ let rec private guaranteeChecks
 
                     guaranteeChecks sessionNames kept' (dropped + 1)
 
+// A shadowing chain survives the dedup [D:repl-save-chain]: the dedup
+// keeps a name's last form only, so a survivor that read an EARLIER form
+// (`let xs = xs |> …`, a `g` calling the `f` a later `let f` replaced)
+// is left reading a name not yet bound. Each such dangling read restores
+// the definition the session read there — the latest one of that name
+// above the reader — and the file re-checks, until nothing restores. A
+// script shadows a top-level let as the session did, so the restored
+// chain computes the session's values. A type is never restored (a
+// redeclared type is one type in a file); the readers of its old form
+// are dropped by the guarantee. An echo-rebound `it` (`SaveEcho`) is
+// session-only state: a read of `it` whose latest binder is an echo
+// restores nothing and is dropped.
+let private restoreChains (all: DistillStmt list) (kept0: Set<int>) : Set<int> =
+    let indexed = all |> List.indexed
+    let letNames = all |> List.filter (fun s -> not s.IsType) |> List.map (fun s -> s.Key) |> Set.ofList
+
+    let rec go (kept: Set<int>) =
+        let cand = indexed |> List.filter (fun (i, _) -> kept.Contains i)
+        let stmts = List.map snd cand
+        let lines = stmts |> List.collect (fun s -> s.Lines)
+
+        let diags =
+            if List.isEmpty lines then
+                []
+            else
+                let ds, _, _, _, _ = Script.analyzeLines "#save" lines
+                ds
+
+        let additions =
+            diags
+            |> List.choose (fun d ->
+                match danglingName d, ownerOf stmts d.Line with
+                | Some name, Some ci when letNames.Contains name ->
+                    let reader = fst (List.item ci cand)
+
+                    indexed
+                    |> List.filter (fun (p, s) -> p < reader && s.Key = name && not s.IsType)
+                    |> List.tryLast
+                    |> Option.bind (fun (p, s) ->
+                        if List.isEmpty s.Lines || kept.Contains p then None else Some p)
+                | _ -> None)
+            |> Set.ofList
+
+        if Set.isEmpty additions then kept else go (Set.union kept additions)
+
+    go kept0
+
+/// one transcript entry handed to the distill core [D:repl-save]: a
+/// definition (its dedup key, physical source, and the constructor names
+/// a type binds), or an echo — which rebinds `it` [D:repl-it]
+type SaveEntry =
+    | SaveDef of key: string * text: string * binds: string list
+    | SaveEcho
+
 // the distill core, exposed as a seam for tests: transcript survivors
-// (the `TDef` name + physical source) through qualify -> dedup -> the
-// check guarantee. Returns the final qualified lines (pre-format) and the
-// count of statements dropped by the check guarantee.
-let distillDefs
+// through qualify -> dedup -> chain restore -> the check guarantee.
+// Returns the final qualified lines (pre-format) and the count of
+// statements dropped by the check guarantee.
+let distillSession
     (r: Parser.Resolver)
     (aliasOf: string -> (string * string list) option)
-    (defs: (string * string) list)
+    (entries: SaveEntry list)
     : string list * int =
     // a resolver that parses alias names as external heads (so an aliased
     // command line parses to an ECmd) but never rewrites them, so the head
@@ -3996,7 +4098,9 @@ let distillDefs
     // The identity alias (the name itself, no prefix) keeps the alias table's
     // precedence over a builtin VALUE of the same name (`#alias ls = ls …`):
     // without it `ls /tmp` reads as the typed `ls` applied, and no head is found
-    let desugarR =
+    // a name an earlier definition bound is no alias head below it — the
+    // session read it as the binding [D:alias-binding-shadow]
+    let desugarR (aliasOf: string -> (string * string list) option) =
         { r with
             IsExternal = (fun n -> r.IsExternal n || (aliasOf n).IsSome)
             AliasHead = fun n -> aliasOf n |> Option.map (fun _ -> (n, [])) }
@@ -4004,33 +4108,116 @@ let distillDefs
     // qualify bare module aliases, then desugar command-head aliases (both
     // per physical line, span-based; a multi-line heredoc/type keeps its
     // real newlines)
-    let rewrite (line: string) =
-        line |> Fmt.qualifyBareAliases r |> Fmt.desugarAliasHeads desugarR aliasOf
+    let rewrite (bound: Set<string>) (line: string) =
+        let aliasOf n =
+            if bound.Contains n then None else aliasOf n
+
+        line
+        |> Fmt.qualifyBareAliasesExcept bound r
+        |> Fmt.desugarAliasHeads (desugarR aliasOf) aliasOf
+
+    let boundBefore =
+        entries
+        |> List.scan
+            (fun acc e ->
+                match e with
+                | SaveDef(name, _, binds) -> Set.union acc (Set.ofList (name :: binds))
+                | SaveEcho -> acc)
+            Set.empty
 
     let qualified =
-        [ for (name, physText) in defs ->
-              let lines = physText.Split '\n' |> Array.toList |> List.map rewrite
-              { Key = name; Lines = lines } ]
+        [ for e, bound in List.zip entries (List.take entries.Length boundBefore) ->
+              match e with
+              | SaveDef(name, physText, _) ->
+                  let lines = physText.Split '\n' |> Array.toList |> List.map (rewrite bound)
 
-    let deduped = dedupLast qualified
-    let sessionNames = defs |> List.map fst |> Set.ofList
+                  // a type decl, past any attribute lines above it
+                  let isType =
+                      lines
+                      |> List.map (fun l -> l.TrimStart())
+                      |> List.tryFind (fun l -> l <> "" && not (l.StartsWith "[<"))
+                      |> Option.exists (fun l -> l.StartsWith "type ")
+
+                  { Key = name
+                    Lines = lines
+                    IsType = isType }
+              | SaveEcho -> { Key = "it"; Lines = []; IsType = false } ]
+
+    let kept = restoreChains qualified (dedupLast qualified)
+    let deduped =
+        qualified
+        |> List.indexed
+        |> List.filter (fun (i, s) -> kept.Contains i && not (List.isEmpty s.Lines))
+        |> List.map snd
+
+    // a superseded type's constructors are session names too: a value
+    // built from one dangles in the file once the type's last form wins
+    let sessionNames =
+        entries
+        |> List.collect (function
+            | SaveDef(name, _, binds) -> name :: binds
+            | SaveEcho -> [])
+        |> Set.ofList
+
     let survivors, dropped = guaranteeChecks sessionNames deduped 0
     (survivors |> List.collect (fun s -> s.Lines)), dropped
 
-let private saveDirective (state: State) (path: string) : unit =
-    if path = "" then
-        Console.WriteLine "#save <path> — a destination path is required (e.g. #save explore.weir)"
+// `distillSession` over plain (name, source) definitions
+let distillDefs
+    (r: Parser.Resolver)
+    (aliasOf: string -> (string * string list) option)
+    (defs: (string * string) list)
+    : string list * int =
+    distillSession r aliasOf [ for name, text in defs -> SaveDef(name, text, []) ]
+
+// #save's argument: a bare path, or a string literal for a path with
+// spaces [D:repl-save-path] — never the quotes themselves
+let private savePath (arg: string) : Result<string, string> =
+    if arg.StartsWith "\"" then
+        match Parser.parseExpr arg with
+        | Ok { Kind = EStr p } -> Ok p
+        | _ -> Error $"#save: write the path bare or as one plain string literal (e.g. #save \"my file.weir\"); got {arg}"
     else
+        Ok arg
+
+// write the distilled file, refusing in the words File.write uses
+let private saveWrite (path: string) (lines: string list) : Result<unit, string> =
+    let full = Session.resolve path
+    let parent = Path.GetDirectoryName full
+
+    if Directory.Exists full then
+        Error $"#save: {quoteData path} is a directory"
+    elif not (isNull parent) && parent <> "" && not (Directory.Exists parent) then
+        // the parent as the user wrote it, as File.write names it
+        let shown =
+            match path.LastIndexOfAny [| '/'; '\\' |] with
+            | i when i > 0 -> path.Substring(0, i)
+            | _ -> parent
+
+        Error $"#save: no such directory: {quoteData shown}"
+    else
+        try
+            File.WriteAllLines(full, lines)
+            Ok()
+        with
+        | :? UnauthorizedAccessException -> Error $"#save: permission denied: {quoteData path}"
+        | :? IOException -> Error $"#save: could not write {quoteData path}"
+
+let private saveDirective (state: State) (arg: string) : unit =
+    match savePath arg with
+    | Error msg -> Console.WriteLine msg
+    | Ok "" -> Console.WriteLine "#save <path> — a destination path is required (e.g. #save explore.weir)"
+    | Ok path ->
         // keep only definitions (types + named lets); drop scratch echoes
         // and unit effect echoes
-        let defs =
+        let entries =
             [ for entry in transcript do
                   match entry.Kind with
-                  | TDef name -> yield (name, entry.PhysText)
+                  | TDef name -> yield SaveDef(name, entry.PhysText, entry.Binds)
                   | TDiscard
-                  | TOther -> () ]
+                  | TOther -> yield SaveEcho ]
 
-        if List.isEmpty defs then
+        if not (entries |> List.exists (fun e -> e <> SaveEcho)) then
             Console.WriteLine
                 "#save: nothing to save yet — the session has no definitions (a type or a named let binding)"
         else
@@ -4039,7 +4226,7 @@ let private saveDirective (state: State) (path: string) : unit =
             let aliasOf n =
                 Map.tryFind n state.Aliases |> Option.map (fun a -> (a.Exe, a.Prefix))
 
-            let distilled, dropped = distillDefs r aliasOf defs
+            let distilled, dropped = distillSession r aliasOf entries
 
             let note () =
                 if dropped > 0 then
@@ -4056,19 +4243,17 @@ let private saveDirective (state: State) (path: string) : unit =
                     // raw rather than lose the session, and say what happened
                     Console.WriteLine $"#save: formatting failed ({msg}); writing unformatted"
 
-                    try
-                        File.WriteAllLines(path, distilled)
+                    match saveWrite path distilled with
+                    | Ok() ->
                         note ()
                         Console.WriteLine $"#save: wrote {distilled.Length} line(s) to {path} (unformatted)"
-                    with ex ->
-                        Console.WriteLine $"#save: could not write {quoteData path}: {quoteData ex.Message}"
+                    | Error msg -> Console.WriteLine msg
                 | Ok formatted ->
-                    try
-                        File.WriteAllLines(path, formatted)
+                    match saveWrite path formatted with
+                    | Ok() ->
                         note ()
                         Console.WriteLine $"#save: wrote {List.length formatted} line(s) to {path}"
-                    with ex ->
-                        Console.WriteLine $"#save: could not write {quoteData path}: {quoteData ex.Message}"
+                    | Error msg -> Console.WriteLine msg
 
 let rec private loop (state: State) =
     // an anonymous record bound last line completes its fields now
@@ -4344,7 +4529,7 @@ let rec private loop (state: State) =
                              let phys = physicalSource srcLines ll
 
                              match recordKind chk with
-                             | Some(TDef name) -> recordDef name phys ll.Text
+                             | Some(TDef name) -> recordChecked chk name phys ll.Text
                              | Some TDiscard -> recordDiscard phys ll.Text
                              | Some TOther -> recordOther phys ll.Text
                              | None -> recordImport chk ll.Text)
@@ -4406,9 +4591,16 @@ let rec private loop (state: State) =
                     Types.Color.red Types.Color.onStdout.Value (String(' ', promptWidth + d.PhysCol - 1) + "^")
                 )
 
-                // labelled, like every other parse diagnostic weir prints
-                diagLine $"parse error: {d.Message}"
-                printHint state line
+                // labelled, like every other parse diagnostic weir prints;
+                // a shell reflex over a weir name (`find .`) is named, not
+                // answered with the grammar's expectation list
+                // [D:directive-diagnostic]
+                match hintFor state line with
+                | Some h when d.Message.StartsWith "Expecting:" -> diagLine $"parse error: {h}"
+                | h ->
+                    diagLine $"parse error: {d.Message}"
+                    h |> Option.iter (fun h -> diagLine $"hint: {h}")
+
                 state
             | Error d ->
                 lastErrored <- true
@@ -4453,7 +4645,7 @@ let rec private loop (state: State) =
                 (if not lastErrored then
                      // a single-line entry: physical source is its own text
                      match recordKind chk with
-                     | Some(TDef name) -> recordDef name ll.Text ll.Text
+                     | Some(TDef name) -> recordChecked chk name ll.Text ll.Text
                      | Some TDiscard -> recordDiscard ll.Text ll.Text
                      | Some TOther -> recordOther ll.Text ll.Text
                      | None -> recordImport chk ll.Text)
@@ -4484,26 +4676,39 @@ let private initDiag (path: string) (line: int) (col: int) (srcLine: string) (ms
         Console.Error.WriteLine srcLine
         Console.Error.WriteLine(String(' ', max 0 (col - 1)) + "^")
 
-/// apply one checked #session setting — the static rules (key, type,
+/// judge one checked #session setting — the static rules (key, type,
 /// command-free) already held in Script.checkInit [D:repl-init]; what is
-/// left needs the value: a cwd that exists, a logLevel that parses, an
-/// echoCap in range
-let private applySessionField
+/// left needs the value: a cwd that exists, and the value rules
+/// (Script.sessionValueRefusal) on a computed value. Returns the
+/// setting's apply, run only once every field judged clean
+/// [D:init-all-or-nothing]
+let private prepareSessionField
     (path: string)
     (lines: string[])
     (ll: Script.LogicalLine)
     (name: string)
     (te: Check.TypedExpr)
     (venv: Eval.Env)
-    : bool =
+    : (unit -> unit) option =
     let srcLine (n: int) =
         if n >= 1 && n <= lines.Length then lines.[n - 1] else ""
 
     let err msg =
         initDiag path ll.Head 5 (srcLine ll.Head) msg
-        false
+        None
 
-    match name, Eval.eval venv te with
+    // forced once: the value rules and the apply read the same pairs
+    let value =
+        match Eval.eval venv te with
+        | Eval.VSeq items -> Eval.VSeq(List.ofSeq items)
+        | v -> v
+
+    // the value rules check runs too [D:session-value-one-home]
+    match Script.sessionValueRefusal name value with
+    | Some msg -> err msg
+    | None ->
+
+    match name, value with
     | "cwd", Eval.VStr p ->
         let home () = Builtins.homeDir ()
 
@@ -4515,21 +4720,16 @@ let private applySessionField
         let resolved = Session.resolve expanded
 
         if Directory.Exists resolved then
-            Session.setCwd resolved
-            true
+            Some(fun () -> Session.setCwd resolved)
         else
             err $"cwd: no such directory: {resolved}"
     | "logLevel", Eval.VStr lvl ->
         match Builtins.parseLogLevel lvl with
-        | Ok i ->
-            Builtins.setLogThreshold i
-            true
-        | Error e -> err (e.Replace("WEIR_LOG=", "logLevel="))
-    | "echoCap", Eval.VInt n when n > 0 && n <= int64 System.Int32.MaxValue ->
-        echoCap <- Some(Eval.toIntArg "echoCap" Eval.Amount n)
-        true
-    | "echoCap", Eval.VInt n when n > 0 -> err $"echoCap {n} is too large (at most {System.Int32.MaxValue})"
-    | "echoCap", Eval.VInt n -> err $"echoCap must be positive; got {n}"
+        | Ok i -> Some(fun () -> Builtins.setLogThreshold i)
+        | Error e -> err e
+    | "echoCap", Eval.VInt n ->
+        let cap = Eval.toIntArg "echoCap" Eval.Amount n
+        Some(fun () -> echoCap <- Some cap)
     | "env", Eval.VSeq pairs ->
         // the session's base reality, not an overlay: set the
         // process env once, before the first prompt — exactly what
@@ -4537,33 +4737,14 @@ let private applySessionField
         // Env.vars, and every spawn see it with no new machinery;
         // within env and the sigils layer over it as they layer
         // over any inherited env. (No unset: an entry adds or
-        // overrides, never hides.)
-        let pairs =
-            pairs
-            |> Seq.choose (function
-                | Eval.VTuple [ Eval.VStr k; Eval.VStr v ] -> Some(k, v)
-                | _ -> None)
-            |> List.ofSeq
-
-        // the key law holds here as where any env is built
-        // [D:env-key-refusal]: every key is judged before any is set, so a
-        // refused one leaves the process env untouched (all-or-nothing)
-        let refusal =
-            pairs
-            |> List.tryPick (fun (k, _) ->
-                try
-                    Proc.envKeyRefusal "#session env" k
-                    None
-                with Failure msg ->
-                    Some msg)
-
-        match refusal with
-        | Some msg -> err msg
-        | None ->
-            for k, v in pairs do
-                Environment.SetEnvironmentVariable(k, v)
-
-            true
+        // overrides, never hides.) Every pair was judged above before
+        // any is set, so a refused one leaves the process env untouched
+        // (all-or-nothing)
+        Some(fun () ->
+            for item in pairs do
+                match item with
+                | Eval.VTuple [ Eval.VStr k; Eval.VStr v ] -> Environment.SetEnvironmentVariable(k, v)
+                | _ -> ())
     | k, _ -> err $"#session {k}: unexpected value"
 
 /// load the init file into the session; all-or-nothing. Returns the
@@ -4609,22 +4790,52 @@ let private loadInit (baseState: State) : State =
         let aliasMap: Map<string, Alias> =
             ic.Aliases |> List.fold (fun m (_, n, a) -> Map.add n a m) Map.empty
 
-        // the settings first — settings before names
-        let settingsApplied =
+        // the settings first — settings before names. Every field is
+        // judged before any applies, and a later failure (a name, the
+        // prompt) restores what the settings changed: a refused init
+        // leaves no partial state [D:init-all-or-nothing]
+        let prepared =
             ic.Settings
-            |> List.forall (fun (ll, name, te) ->
+            |> List.map (fun (ll, name, te) ->
                 try
-                    applySessionField path lines ll name te strictVenv
+                    prepareSessionField path lines ll name te strictVenv
                 with ex ->
                     // a raising value (File.read on a missing path…) fails
                     // the load like any other located error, never a raw
                     // trace [D:init-eval-guard]
                     initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
-                    false)
+                    None)
 
-        if not settingsApplied then
+        if prepared |> List.exists Option.isNone then
             notLoaded ()
         else
+
+        let savedCwd = Session.Cwd()
+        let savedLog = Builtins.logThresholdNow ()
+        let savedCap = echoCap
+
+        let savedEnv =
+            [ for e in Environment.GetEnvironmentVariables() |> Seq.cast<Collections.DictionaryEntry> ->
+                  string e.Key, string e.Value ]
+
+        for apply in List.choose id prepared do
+            apply ()
+
+        let notLoaded () =
+            Session.setCwd savedCwd
+            Builtins.setLogThreshold savedLog
+            echoCap <- savedCap
+            let before = Map.ofList savedEnv
+
+            for e in Environment.GetEnvironmentVariables() |> Seq.cast<Collections.DictionaryEntry> do
+                if not (before.ContainsKey(string e.Key)) then
+                    Environment.SetEnvironmentVariable(string e.Key, null)
+
+            for k, v in savedEnv do
+                if Environment.GetEnvironmentVariable k <> v then
+                    Environment.SetEnvironmentVariable(k, v)
+
+            notLoaded ()
 
         // the declarations checked strict (a script's rules); the session
         // binds them in its own env, where bare names stay available at the

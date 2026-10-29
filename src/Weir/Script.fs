@@ -330,6 +330,10 @@ let stripInitDirectives (lines: string list) : string list =
               yield ""
           elif t = "#alias" || t.StartsWith "#alias " then
               yield ""
+          elif l.StartsWith "#" then
+              // any other directive line is splitInit's to report
+              // [D:directive-diagnostic]
+              yield ""
           else
               yield l ]
 
@@ -900,7 +904,10 @@ let retiredDistrictMarker (piece: string) : bool =
     // (a standalone `!e`, or one after then/else/->, was a district header
     // and keeps its retirement teaching)
     let negationSlot =
-        List.contains before [ "="; "("; "&&"; "||"; "<-"; ","; "["; "not"; "=="; "<>" ]
+        // an operator's operand too: `1 + !x` is the negation slip
+        List.contains
+            before
+            [ "="; "("; "&&"; "||"; "<-"; ","; "["; "not"; "=="; "<>"; "+"; "-"; "*"; "/"; "%"; "<"; ">"; "<="; ">=" ]
         || before.EndsWith "("
 
     piece = "!"
@@ -2742,6 +2749,11 @@ let pipedAttaches (buf: string list) (next: string) : bool =
         false
     else
         match statementCount buf, statementCount (buf @ [ next ]) with
+        // a complete buffer plus a column-0 line that is pending on its
+        // own (a heredoc/yaml opener, `let f x =`): the new statement
+        // is what waits for more, not the old one [D:repl-multiline]
+        | Some _, None when next.Length > 0 && next[0] <> ' ' && next[0] <> '\t' && statementCount [ next ] = None ->
+            false
         | _, None -> true
         | None, Some _ -> true
         | Some a, Some b -> b <= a
@@ -3548,6 +3560,13 @@ let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
         IsExternal =
             fun n ->
                 Extern.exists n
+                // a path head that does not exist yet (`./gen.sh`, built
+                // earlier in the script) is the PATH rule's: check warns,
+                // run errors [D:path-head-warn]. Only path-led words — no
+                // expression starts with '/' or '.', while `total/2` is
+                // arithmetic
+                || ((n.StartsWith "./" || n.StartsWith "../" || n.StartsWith "/")
+                    && not (n.Contains '\000'))
                 || (n.Length > 0
                     && System.Char.IsLetter n[0]
                     && not (Parser.isKeyword n)
@@ -3929,8 +3948,10 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
         let acc = System.Collections.Generic.Dictionary<string, string>()
         let taken = System.Collections.Generic.HashSet<string>(ownTaken)
 
+        // an anonymous shape keys by its canonical spelling everywhere —
+        // one type, never qualified [D:anon-literals]
         for n, _ in lm.TypeDefs do
-            if not (own.Contains n) then
+            if not (own.Contains n) && not (n.StartsWith "{|") then
                 let o = originOf n |> Option.defaultValue n
 
                 match keyOfOrigin tenv o with
@@ -3971,6 +3992,7 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
             // joined an existing same-origin entry: nothing to add
             match Map.tryFind n' tenv.TypeOrigins, originOf n with
             | Some held, Some o when held = o -> None
+            | _ when n.StartsWith "{|" && Map.containsKey n tenv.Types -> None
             | _ when n' <> n && Map.containsKey n' tenv.Types && not (own.Contains n) -> None
             | _ -> Some(n', renameDef subst d))
 
@@ -4110,6 +4132,9 @@ let rec private checkStatementCore
                              $"'{c}' is a reifier, but this position is an expression — wrap the chain: $(<command> | {c}); bare command lets belong to statement bodies (top level, if/for/match arms, within blocks)"
                          | Some(c, _) when afterPipe ->
                              $"unknown command '{prog}' — not found on PATH. Did you mean the reifier '{c}'? (`<command> | {c}`)"
+                         // a path head [D:path-head-warn]: nothing to install
+                         | _ when Extern.isPathy prog ->
+                             $"no executable at {prog}{others} — weir resolves command names before running; if the script creates it, name it at run time — `let tool = \"{prog}\"` then `^$tool`"
                          | _ ->
                              $"unknown command '{prog}' — not found on PATH{others}. weir resolves command names before running: install the tool, or, if it only exists when the script runs, name it at run time — `let tool = \"{prog}\"` then `^$tool`")
                   File = None
@@ -4441,12 +4466,26 @@ let rec private checkStatementCore
                     | Check.TEApp(f, _) -> exitCodeSpine f
                     | _ -> false
 
+                // the reifier desugar's span starts at the reifier stage
+                // (the caret's place) but ends where the command did — before
+                // its start; it runs on to the statement's last node
+                let wholeSpan =
+                    let rec spans (t: Check.TypedExpr) = t.Span :: (Check.childExprs t |> List.collect spans)
+                    let key (p: Pos) = p.Line, p.Col
+                    let all = spans te |> List.filter (fun sp -> sp.Start.Line > 0)
+
+                    match all with
+                    | [] -> te.Span
+                    | _ ->
+                        let last = all |> List.map (fun sp -> sp.End) |> List.maxBy key
+                        if key last > key te.Span.End then { te.Span with End = last } else te.Span
+
                 match te.Ty with
                 | TBool ->
                     Error(
                         typed
                             StmtTag.Cmd
-                            { Span = te.Span
+                            { Span = wholeSpan
                               Message =
                                 "this statement computes a bool and discards it — bind it "
                                 + "(let ok = ... | succeeds) or use it in a condition"
@@ -4457,7 +4496,7 @@ let rec private checkStatementCore
                     Error(
                         typed
                             StmtTag.Cmd
-                            { Span = te.Span
+                            { Span = wholeSpan
                               Message =
                                 "this statement computes the exit code and discards it — bind it "
                                 + "(let rc = <command> | exitCode), match on it, or drop '| exitCode' if you don't need the code"
@@ -4469,7 +4508,7 @@ let rec private checkStatementCore
                     Error(
                         typed
                             StmtTag.Cmd
-                            { Span = te.Span
+                            { Span = wholeSpan
                               Message =
                                 "this statement computes a Completed record and discards it — bind it "
                                 + "(let r = ... | complete) or read a field (.exitCode, .stdout)"
@@ -4667,6 +4706,8 @@ let checkStatement
     (ll: LogicalLine)
     : Result<CheckedStatement, StmtDiag> =
     checkStatementCore gateExprs sigCtx mkR loadImport tenv ll
+    // no checker var reaches the author [D:user-language-messages]
+    |> Result.mapError (fun d -> { d with Message = Types.normalizeDiagVars d.Message })
     |> Result.bind (fun st ->
         let teTag =
             match st.Kind with
@@ -4690,7 +4731,9 @@ let checkStatement
             let violation =
                 match st.Kind with
                 | KType _ -> Purity.validatorViolation tenv.PureBindings te
-                | _ -> Purity.pureViolation tenv.PlanRefused tenv.PureBindings te
+                | _ ->
+                    Purity.pureViolation tenv.PlanRefused tenv.PureBindings te
+                    |> Option.orElseWith (fun () -> Purity.execScopeViolation tenv.ExecHelpers te)
 
             match violation with
             | Some(span, message) ->
@@ -4720,7 +4763,12 @@ let checkStatement
                                     PlanRefused =
                                         match Purity.planRefusalOf tenv.PlanRefused te with
                                         | Some why -> Map.add name why st.Env.PlanRefused
-                                        | None -> Map.remove name st.Env.PlanRefused } }
+                                        | None -> Map.remove name st.Env.PlanRefused
+                                    ExecHelpers =
+                                        if Purity.execHelperOf tenv.ExecHelpers te then
+                                            Set.add name st.Env.ExecHelpers
+                                        else
+                                            Set.remove name st.Env.ExecHelpers } }
                 | _ -> Ok st)
 
 // ---- unused bindings [D:unused-bindings]: whole-file threading ------------
@@ -5281,6 +5329,34 @@ let private readSourceBytes (path: string) : byte[] =
 // BOM is skipped; lines split as ReadAllLines splits (\r\n, \n, \r).
 exception private BadUtf8 of line: int * col: int
 
+/// the one line splitter [D:one-pipeline]: a line ends at \r\n, \n or a
+/// bare \r — as ReadAllLines reads a script — so fmt and the LSP see
+/// the lines check and run see. Every piece is kept: a text ending in a
+/// break yields a final "" (an editor's last, empty line)
+let splitSourceText (text: string) : string list =
+    let acc = Collections.Generic.List<string>()
+    let mutable start = 0
+    let mutable i = 0
+
+    while i < text.Length do
+        match text[i] with
+        | '\r' ->
+            acc.Add(text.Substring(start, i - start))
+            i <- if i + 1 < text.Length && text[i + 1] = '\n' then i + 2 else i + 1
+            start <- i
+        | '\n' ->
+            acc.Add(text.Substring(start, i - start))
+            i <- i + 1
+            start <- i
+        | _ -> i <- i + 1
+
+    acc.Add(text.Substring start)
+    List.ofSeq acc
+
+/// does the text end in a line break (any of the three)?
+let endsWithLineBreak (text: string) : bool =
+    text.EndsWith "\n" || text.EndsWith "\r"
+
 let private strictUtf8 = Text.UTF8Encoding(false, true)
 
 let private decodeSourceLines (bytes: byte[]) : string list =
@@ -5707,6 +5783,11 @@ let rec loadModuleCachedWith
                     // [D:unused-bindings]: signed members exempt at flush
                     let moduleUnused = UnusedTracker()
 
+                    // first declaration per type name: line * came-from-import
+                    // — a module refuses a duplicate as a script does
+                    // [D:dup-type-decl]
+                    let declaredTypes = System.Collections.Generic.Dictionary<string, int * bool>()
+
                     // helpers: the module's command-reaching functions and
                     // lazy command values so far, in declaration order
                     let rec go
@@ -5747,9 +5828,25 @@ let rec loadModuleCachedWith
                                     | _ -> None
 
                                 match chk.Kind with
+                                | KType(decl, _) when declaredTypes.ContainsKey decl.Name ->
+                                    let firstLine, viaImport = declaredTypes[decl.Name]
+
+                                    at
+                                        ll.Head
+                                        1
+                                        (if viaImport then
+                                             $"type '{decl.Name}' is already provided by the import at line {firstLine}; rename one"
+                                         else
+                                             $"type '{decl.Name}' is already declared at line {firstLine}")
                                 | KType(decl, validator) ->
+                                    declaredTypes[decl.Name] <- (ll.Head, false)
                                     go chk.Env sc helpers implLines ((ll, CType(decl, validator)) :: accBody) tail
-                                | KImport lm -> go chk.Env sc helpers implLines ((ll, CImport lm) :: accBody) tail
+                                | KImport lm ->
+                                    for tn in lm.TypeNames do
+                                        if not (declaredTypes.ContainsKey tn) then
+                                            declaredTypes[tn] <- (ll.Head, true)
+
+                                    go chk.Env sc helpers implLines ((ll, CImport lm) :: accBody) tail
                                 | KSig(name, sd) ->
                                     // the sig binds nothing yet [D:module-signatures];
                                     // the paired implementation is the value
@@ -5960,6 +6057,10 @@ let rec loadModuleCachedWith
 
                                       (typeDefs |> List.map (fun (n, _) -> n, ownOrigin n))
                                       @ (reachableDefs
+                                         // an anonymous shape carries no origin: same-shape
+                                         // anonymous types are one type, from any module
+                                         // [D:anon-literals]
+                                         |> List.filter (fun (n, _) -> not (n.StartsWith "{|"))
                                          |> List.map (fun (n, _) ->
                                              n, Map.tryFind n finalTenv.TypeOrigins |> Option.defaultValue (ownOrigin n)))
                                   Body = moduleBody
@@ -10823,6 +10924,50 @@ let sessionDeclRefMessage (name: string) : string =
 
 let knownSessionKeys = Set [ "cwd"; "env"; "logLevel"; "echoCap"; "prompt" ]
 
+/// the #session rules that need the value, ONE home
+/// [D:session-value-one-home]: the REPL loader runs them on the evaluated
+/// value, `weir check` on a literal one (a computed value waits for the
+/// load). cwd's existence is the machine's, so it stays the loader's.
+let sessionValueRefusal (key: string) (v: Eval.Value) : string option =
+    match key, v with
+    | "logLevel", Eval.VStr lvl ->
+        match Builtins.parseLogLevel lvl with
+        | Ok _ -> None
+        | Error e -> Some(e.Replace("WEIR_LOG=", "logLevel="))
+    | "echoCap", Eval.VInt n when n > int64 System.Int32.MaxValue ->
+        Some $"echoCap {n} is too large (at most {System.Int32.MaxValue})"
+    | "echoCap", Eval.VInt n when n <= 0L -> Some $"echoCap must be positive; got {n}"
+    | "env", Eval.VSeq pairs ->
+        // the key law holds here as where any env is built
+        // [D:env-key-refusal]; a NUL value would be cut short at the
+        // process env, so it is refused rather than truncated
+        pairs
+        |> Seq.tryPick (function
+            | Eval.VTuple [ Eval.VStr k; Eval.VStr value ] ->
+                try
+                    Proc.envKeyRefusal "#session env" k
+
+                    if value.Contains '\u0000' then
+                        Some
+                            $"#session env: the value for '{quoteData k}' contains a NUL byte — the environment would cut it short there; an env value is NUL-free"
+                    else
+                        None
+                with Failure msg ->
+                    Some msg
+            | _ -> None)
+    | _ -> None
+
+// a value `weir check` can judge without running anything: literals and
+// the operators over them (`-3` is `0 - 3`)
+let rec private sessionLiteral (te: Check.TypedExpr) : bool =
+    match te.Kind with
+    | Check.TEStr _
+    | Check.TEInt _ -> true
+    | Check.TEBinOp(_, l, r) -> sessionLiteral l && sessionLiteral r
+    | Check.TEList items
+    | Check.TETuple items -> List.forall sessionLiteral items
+    | _ -> false
+
 let expectedFieldTypes (key: string) : Ty list =
     match key with
     | "cwd"
@@ -10919,6 +11064,19 @@ let splitInit (file: string) (lines: string list) : InitSplit * Diagnostic list 
                         "malformed #session — usage: '#session {' then 'key = value' lines then '}'"
                 )
 
+            rest <- (i + 1, "") :: rest
+        elif not inBlock && l.StartsWith "#" then
+            // a stray directive gets its own message, never a parse dump
+            // [D:directive-diagnostic]
+            let word = t.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries).[0]
+
+            let msg =
+                if word = "#sig" then
+                    "#sig belongs at a script's head — an init file takes #init, #session and #alias"
+                else
+                    $"unknown directive: {word} — an init file takes #init, #session and #alias"
+
+            diags.Add(initError file (i + 1) 1 None "directive" msg)
             rest <- (i + 1, "") :: rest
         elif inBlock && t = "}" then
             inBlock <- false
@@ -11223,9 +11381,21 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                                 | "echoCap", ty -> Some $"echoCap expects an int, got {formatTy ty}"
                                 | _, ty -> Some $"env expects seq<string * string> — pairs, order kept; got {formatTy ty}"
 
+                            let valueMsg () =
+                                if sessionLiteral te then
+                                    try
+                                        sessionValueRefusal key (Eval.eval Map.empty te)
+                                    with _ ->
+                                        None
+                                else
+                                    None
+
                             match typeMsg with
                             | Some msg -> diags.Add(initError file ll.Head vc None "session-type" msg)
-                            | None -> acc.Add(ll, key, te)
+                            | None ->
+                                match valueMsg () with
+                                | Some msg -> diags.Add(initError file ll.Head vc None "session-value" msg)
+                                | None -> acc.Add(ll, key, te)
                     | _ ->
                         diags.Add(
                             initError file ll.Head 1 None "session-shape" "a #session block takes 'key = value' lines only"
@@ -11545,12 +11715,44 @@ let private recoverStatement
     | SModule _
     | SImport _ -> None, false
 
+/// a `#` line past the directive head [D:directive-diagnostic]: the one
+/// pass for `check` and `run`, so both name the same mistake the same way.
+/// Column-0 only: a directive is a statement-position thing. Indented `#`
+/// lines are continuations — inside a yaml district they are content
+/// (`#!/bin/sh` in a block scalar, `#` comments) [D:block-scalars];
+/// anywhere else they fail the parse. Returns (physical line, message)
+/// per stray line; `run` stops at the first, `check` reports them all.
+let directiveMisuses (rawLines: string list) : (int * string) list =
+    let body, bodyOffset, _ = scriptBody rawLines
+
+    body
+    |> List.mapi (fun i l -> i, l.TrimEnd())
+    |> List.filter (fun (_, l) -> l.StartsWith "#")
+    |> List.map (fun (i, l) ->
+        let word = l.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries).[0]
+
+        let msg =
+            if word = "#init" then
+                "an init file is not runnable — the REPL loads it; author it anywhere with #init on the first line and symlink it to the config dir (weir/init.weir)"
+            elif word = "#session" then
+                "#session lives in the REPL init file (config dir, weir/init.weir) — a script takes its settings from flags and env"
+            elif word = "#alias" then
+                "#alias lives in the REPL init file (config dir, weir/init.weir) and at the REPL prompt — a script names its programs directly"
+            elif word = "#sig" then
+                "misplaced directive: #sig — #sig lines belong at the file head, before any code, comment or blank line"
+            elif word.StartsWith "#!" then
+                "a shebang (#!) is only the first line of the file"
+            else
+                $"unknown directive: {word} — a script's only directive is #sig (the REPL init file takes #init, #session and #alias)"
+
+        bodyOffset + i + 1, msg)
+
 /// analyzeLines, with `asInit` forcing the init-file reading (the LSP's
 /// canonical init path, marked or not [D:init-marker]). The fifth
 /// product is the partials [D:block-recovery]: statements that did NOT
 /// check, with their recovered trees — never among `stmts`, so every
 /// diagnostic consumer sees exactly the checked ones
-let analyzeLinesAs
+let private analyzeLinesBare
     (asInit: bool)
     (path: string)
     (rawLines: string list)
@@ -11834,7 +12036,7 @@ let analyzeLinesAs
                     match Map.tryFind prog Builtins.bareAliasHomes with
                     | Some home ->
                         $"'{prog}' is a bare module member, not a program — spell it '{home}.{prog}' (bare names live in the REPL session)"
-                    | None when prog.StartsWith "~/" ->
+                    | None when prog.StartsWith "~/" || Extern.isPathy prog ->
                         $"no executable at {prog} — weir resolves commands at check time; the script runs once it exists"
                     | None ->
                         $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed"
@@ -12359,6 +12561,44 @@ let analyzeLinesAs
         logicalLines,
         List.ofSeq partials
 
+/// the stray directive lines report as run reports them, and the rest of
+/// the file still checks with those lines blanked (line numbers kept) —
+/// never an expected-token dump at the `#` — for every consumer: check,
+/// fmt's parse gate, the LSP [D:directive-diagnostic]. An init-marked
+/// file checks as the init it is [D:init-marker]; its directives are
+/// checkInit's to judge
+let analyzeLinesAs (asInit: bool) (path: string) (rawLines: string list) =
+    let misuses =
+        if asInit || isInitMarked rawLines then
+            []
+        else
+            directiveMisuses rawLines
+
+    if List.isEmpty misuses then
+        analyzeLinesBare asInit path rawLines
+    else
+        let stray = misuses |> List.map fst |> Set.ofList
+
+        let directiveDiags =
+            misuses
+            |> List.map (fun (line, msg) ->
+                { File = path
+                  Line = line
+                  Col = 1
+                  EndLine = None
+                  EndCol = None
+                  Severity = "error"
+                  Code = "directive"
+                  Message = msg
+                  Related = []
+                  Fix = None })
+
+        let checkedLines =
+            rawLines |> List.mapi (fun i l -> if stray.Contains(i + 1) then "" else l)
+
+        let diags, stmts, env, lls, partials = analyzeLinesBare asInit path checkedLines
+        (directiveDiags @ diags |> List.sortBy (fun d -> d.Line)), stmts, env, lls, partials
+
 let analyzeLines (path: string) (rawLines: string list) =
     analyzeLinesAs false path rawLines
 
@@ -12425,38 +12665,6 @@ let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
                 |> Eval.sanitizeIfTty Console.IsOutputRedirected
             )
 
-/// a `#` line past the directive head [D:directive-diagnostic]: the one
-/// pass for `check` and `run`, so both name the same mistake the same way.
-/// Column-0 only: a directive is a statement-position thing. Indented `#`
-/// lines are continuations — inside a yaml district they are content
-/// (`#!/bin/sh` in a block scalar, `#` comments) [D:block-scalars];
-/// anywhere else they fail the parse. Returns (physical line, message)
-/// per stray line; `run` stops at the first, `check` reports them all.
-let directiveMisuses (rawLines: string list) : (int * string) list =
-    let body, bodyOffset, _ = scriptBody rawLines
-
-    body
-    |> List.mapi (fun i l -> i, l.TrimEnd())
-    |> List.filter (fun (_, l) -> l.StartsWith "#")
-    |> List.map (fun (i, l) ->
-        let word = l.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries).[0]
-
-        let msg =
-            if word = "#init" then
-                "an init file is not runnable — the REPL loads it; author it anywhere with #init on the first line and symlink it to the config dir (weir/init.weir)"
-            elif word = "#session" then
-                "#session lives in the REPL init file (config dir, weir/init.weir) — a script takes its settings from flags and env"
-            elif word = "#alias" then
-                "#alias lives in the REPL init file (config dir, weir/init.weir) and at the REPL prompt — a script names its programs directly"
-            elif word = "#sig" then
-                "misplaced directive: #sig — #sig lines belong at the file head, before any code, comment or blank line"
-            elif word.StartsWith "#!" then
-                "a shebang (#!) is only the first line of the file"
-            else
-                $"unknown directive: {word} — a script's only directive is #sig (the REPL init file takes #init, #session and #alias)"
-
-        bodyOffset + i + 1, msg)
-
 let directiveMisuse (rawLines: string list) : (int * string) option =
     directiveMisuses rawLines |> List.tryHead
 
@@ -12471,33 +12679,9 @@ let checkOnly (json: bool) (path: string) : int =
         // numbers kept) — never an expected-token dump at the `#`. An
         // init-marked file checks as the init it is [D:init-marker]; its
         // directives are analyzeLines' to judge
-        let misuses =
-            if isInitMarked rawLines then
-                []
-            else
-                directiveMisuses rawLines
-        let stray = misuses |> List.map fst |> Set.ofList
-
-        let directiveDiags =
-            misuses
-            |> List.map (fun (line, msg) ->
-                { File = path
-                  Line = line
-                  Col = 1
-                  EndLine = None
-                  EndCol = None
-                  Severity = "error"
-                  Code = "directive"
-                  Message = msg
-                  Related = []
-                  Fix = None })
-
-        let checkedLines =
-            rawLines |> List.mapi (fun i l -> if stray.Contains(i + 1) then "" else l)
-
-        let diags, stmts, _, _, _ = analyzeLines path checkedLines
-        let diags = directiveDiags @ diags |> List.sortBy (fun d -> d.Line)
-        printDiags json (not (List.isEmpty stmts) || not (List.isEmpty misuses)) diags
+        let diags, stmts, _, _, _ = analyzeLines path rawLines
+        let anyDirective = diags |> List.exists (fun d -> d.Code = "directive")
+        printDiags json (not (List.isEmpty stmts) || anyDirective) diags
 
         if diags |> List.exists (fun d -> d.Severity = "error") then
             1

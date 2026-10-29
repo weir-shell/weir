@@ -1391,7 +1391,7 @@
         {
           "name": "except",
           "signature": "Seq.except (excluded: seq\u003C\u0027a\u003E) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
-          "summary": "The elements of the sequence that are not in the excluded values. The excluded values come first and are read in full on the first request; the sequence itself is read lazily.",
+          "summary": "The elements of the sequence that are not in the excluded values, each kept once (a repeat is dropped, as F#\u0027s Seq.except does). The excluded values come first and are read in full on the first request; the sequence itself is read lazily.",
           "example": "[1; 2; 3; 4] |\u003E Seq.except [2; 4] |\u003E Seq.freeze",
           "pointer": null
         },

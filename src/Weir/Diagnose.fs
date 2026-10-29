@@ -31,6 +31,8 @@ let hint
 
             let pathLike =
                 tail.StartsWith "/"
+                || tail = "."
+                || tail.StartsWith ". "
                 || tail.StartsWith "./"
                 || tail.StartsWith ".."
                 || tail.StartsWith "~"

@@ -292,6 +292,8 @@ let rec private httpSendMethod (arg: TypedExpr) : string option =
         match n.Split '.' with
         | [| "Http"; ("get" | "head" | "options" | "query" | "post" | "put" | "delete" | "patch") as m |] ->
             Some(m.ToUpperInvariant())
+        // the defaults record is a GET [D:http]
+        | [| "Http"; "defaults" |] -> Some "GET"
         | _ -> None
     // { Http.post u with method = Get; … } — an explicit method update
     // wins (last write); otherwise the source's constructor decides
@@ -313,6 +315,23 @@ let private httpSendIsMutation (arg: TypedExpr option) : bool =
     match arg |> Option.bind httpSendMethod with
     | Some m -> Weir.Effects.httpMethodClass m = Weir.Effects.Mutation
     | None -> true // unknown method — refuse (the safe direction)
+
+// the readonly refusal's phrase: a determinable mutating method is
+// named so; an unresolved one is only possibly mutating
+let private httpSendPhrase (sendName: string) (arg: TypedExpr option) : string =
+    match arg |> Option.bind httpSendMethod with
+    | Some _ -> $"'{sendName}' talks to the network (external mutation — a mutating HTTP method)"
+    | None ->
+        $"'{sendName}' talks to the network, and its method is not known at check time (external mutation unless a query method)"
+
+// the plan's Http.expect refusal claims a mutating method only when
+// one is determinable [D:plan-apply]: an unresolved method (a variable,
+// a helper's parameter) is left to the run-time refusal, which sees the
+// request — a GET must never be called mutating
+let private httpSendIsKnownMutation (arg: TypedExpr) : bool =
+    match httpSendMethod arg with
+    | Some m -> Weir.Effects.httpMethodClass m = Weir.Effects.Mutation
+    | None -> false
 
 /// the first external-mutation node under a `readonly` region, with
 /// its span [D:pure-stage2] — the ambient/mutation partition's ceiling
@@ -408,7 +427,7 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
     // per-method request record): the request is the pipe's argument
     | TEPipe(reqArg, { Kind = TEVar(("Http.send" | "Http.expect") as sendName) }) ->
         if httpSendIsMutation (Some reqArg) then
-            Some(te.Span, $"'{sendName}' talks to the network (external mutation — a mutating HTTP method)")
+            Some(te.Span, httpSendPhrase sendName (Some reqArg))
         else
             firstMutation env reqArg
     | TEApp(_, _) ->
@@ -423,7 +442,7 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
                  | _ -> None
 
              if httpSendIsMutation reqArg then
-                 Some((headOf te).Span, $"'{sendName}' talks to the network (external mutation — a mutating HTTP method)")
+                 Some((headOf te).Span, httpSendPhrase sendName reqArg)
              else
                  // ambient (query method): walk only the argument for
                  // a nested mutation — not the `Http.send` head var,
@@ -480,10 +499,10 @@ let rec private planRefusalRoot (refused: Map<string, string>) (te: TypedExpr) :
         Some(te.Span, $"'{n}' cannot run inside 'plan' — in its body, {refused[n]}", refused[n])
     // a mutating Http.expect has no response inside a plan (the request
     // is a pending Op) — the run-time refusal, decided here when the
-    // method is a literal; an unknown method refuses (the safe
-    // direction) [D:plan-apply]
+    // method is determinable; an unknown one is the run time's
+    // [D:plan-apply]
     | TEPipe(reqArg, { Kind = TEVar "Http.expect" })
-    | TEApp({ Kind = TEVar "Http.expect" }, reqArg) when httpSendIsMutation (Some reqArg) ->
+    | TEApp({ Kind = TEVar "Http.expect" }, reqArg) when httpSendIsKnownMutation reqArg ->
         found
             te.Span
             "'Http.expect' with a mutating method is refused inside 'plan' — the request is a pending Op with no response to return; Http.send captures it as the Op"
@@ -546,6 +565,120 @@ let planRefusalOf (refused: Map<string, string>) (te: TypedExpr) : string option
         planRefusalRoot refused te |> Option.map (fun (_, _, root) -> root)
     else
         None
+
+// ---- exec through helpers [D:exec-scope-transitive] -----------------
+// The lexical refusal (Check.execInScope/execInAlways) sees only the
+// scope's own text; a helper whose body reaches `cmd | exec` skips the
+// teardown just the same. Earlier top-level FUNCTIONS that reach an
+// exec ride the env (ExecHelpers), as plan refusals do
+// [D:plan-helper-refusal]; a call inside a resource scope, an always
+// block or a fan-out arm refuses at the call. Unknown callables (a
+// function parameter, an import's member) are the run-time backstop's.
+
+let private isExecVar (n: string) = n.StartsWith "|execed"
+
+// the first exec site under the expression: Some(span, None) for a
+// direct exec, Some(span, Some helper) for a call into an exec helper.
+// A local binder shadows a top-level helper.
+let rec private execReach (helpers: Set<string>) (te: TypedExpr) : (Span * string option) option =
+    let without names =
+        names |> List.fold (fun h n -> Set.remove n h) helpers
+
+    match te.Kind with
+    | TEVar n when isExecVar n -> Some(te.Span, None)
+    | TEVar n when helpers.Contains n -> Some(te.Span, Some n)
+    | TELet(n, _, v, b) ->
+        execReach helpers v
+        |> Option.orElseWith (fun () -> execReach (without [ n ]) b)
+    | TELetPat(p, v, b) ->
+        execReach helpers v
+        |> Option.orElseWith (fun () -> execReach (without (patBound p)) b)
+    | TELambda(p, _, b) -> execReach (without [ p ]) b
+    | TELambdaPat(p, b) -> execReach (without (patBound p)) b
+    | _ -> Check.childExprs te |> List.tryPick (execReach helpers)
+
+/// a top-level binding is an exec helper when it is a function whose
+/// body reaches an exec, directly or through another helper
+let execHelperOf (helpers: Set<string>) (te: TypedExpr) : bool =
+    tyHasFun te.Ty && (execReach helpers te).IsSome
+
+// the fan-out family: its arms run on worker threads the exec would
+// orphan — never cut, never joined [D:exec-scope-transitive]
+let private fanoutName (n: string) : string option =
+    match n with
+    | "|seqPiter" -> Some "pfor"
+    | "Seq.pmap"
+    | "Seq.pmapWith"
+    | "Seq.piter"
+    | "Seq.piterWith"
+    | "Seq.pfirst"
+    | "Seq.pfirstWith" -> Some n
+    | _ -> None
+
+let private execInFanoutMessage (name: string) (helper: string option) : string =
+    let subject =
+        match helper with
+        | None -> "'exec'"
+        | Some h -> $"'{h}' reaches 'exec' in its body, and 'exec'"
+
+    let repair =
+        match helper with
+        | None -> "run the command without exec"
+        | Some _ -> "run its command without exec"
+
+    $"{subject} inside a '{name}' arm is refused — exec replaces weir's process, so the other arms would be orphaned, never cut or joined; {repair}"
+
+/// the first exec reached inside a resource scope, an always block or a
+/// fan-out arm — lexically or through a helper [D:exec-scope-transitive]
+let rec execScopeViolation (helpers: Set<string>) (te: TypedExpr) : (Span * string) option =
+    let recur = execScopeViolation helpers
+
+    let without names =
+        names |> List.fold (fun h n -> Set.remove n h) helpers
+
+    let rec headOf (e: TypedExpr) =
+        match e.Kind with
+        | TEApp(g, _) -> headOf g
+        | _ -> e
+
+    match te.Kind with
+    | TEWithin(kind, _, arg, opts, body) when (Check.execScopeLoss kind).IsSome ->
+        let what = (Check.execScopeLoss kind).Value
+        // a server's handler runs while the scope is live; another
+        // kind's argument runs before it opens
+        let live =
+            match kind with
+            | WithinServe -> [ arg; opts ] |> List.choose id
+            | _ -> []
+
+        (live @ [ body ])
+        |> List.tryPick (execReach helpers)
+        |> Option.map (fun (span, h) -> span, Check.execInScopeMessage kind what h)
+        |> Option.orElseWith (fun () -> Check.childExprs te |> List.tryPick recur)
+    | TEAlways(body, cleanup) ->
+        execReach helpers body
+        |> Option.map (fun (span, h) -> span, Check.execInAlwaysMessage false h)
+        |> Option.orElseWith (fun () ->
+            execReach helpers cleanup
+            |> Option.map (fun (span, h) -> span, Check.execInAlwaysMessage true h))
+        |> Option.orElseWith (fun () -> Check.childExprs te |> List.tryPick recur)
+    | TEApp _ ->
+        match (headOf te).Kind with
+        | TEVar n when (fanoutName n).IsSome ->
+            Check.childExprs te
+            |> List.tryPick (execReach helpers)
+            |> Option.map (fun (span, h) -> span, execInFanoutMessage (fanoutName n).Value h)
+            |> Option.orElseWith (fun () -> Check.childExprs te |> List.tryPick recur)
+        | _ -> Check.childExprs te |> List.tryPick recur
+    | TELet(n, _, v, b) ->
+        recur v
+        |> Option.orElseWith (fun () -> execScopeViolation (without [ n ]) b)
+    | TELetPat(p, v, b) ->
+        recur v
+        |> Option.orElseWith (fun () -> execScopeViolation (without (patBound p)) b)
+    | TELambda(p, _, b) -> execScopeViolation (without [ p ]) b
+    | TELambdaPat(p, b) -> execScopeViolation (without (patBound p)) b
+    | _ -> Check.childExprs te |> List.tryPick recur
 
 /// scan a checked statement's tree for `pure` regions and report the
 /// first violation [D:pure-stage1] — the env tracks bindings on the way

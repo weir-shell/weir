@@ -773,6 +773,36 @@ let warningTests =
 
               Expect.equal (ic.Diags |> List.map _.Code) [ "init-marker" ] ""
           }
+          test "check refuses the #session values the loader refuses [D:session-value-one-home]" {
+              let msgs (setting: string) =
+                  errorsIn "init.weir" [ "#init"; "#session {"; "    " + setting; "}" ]
+                  |> List.map (fun d -> d.Code, d.Message)
+
+              let one setting (msg: string) =
+                  Expect.equal (msgs setting) [ "session-value", msg ] setting
+
+              one "logLevel = \"loud\"" "logLevel=loud: unknown log level (one of trace|debug|info|warn|off)"
+              one "echoCap = 0" "echoCap must be positive; got 0"
+              one "echoCap = -3" "echoCap must be positive; got -3"
+              one "echoCap = 3000000000" "echoCap 3000000000 is too large (at most 2147483647)"
+
+              one
+                  "env = [ (\"A=B\", \"x\") ]"
+                  "#session env: the env key 'A=B' contains '=' — a child would read it as the variable 'A'; an env name has no '='"
+
+              one "env = [ (\"\", \"x\") ]" "#session env: an env key is empty — a child cannot receive an unnamed variable"
+
+              one
+                  "env = [ (\"A\\u{0}B\", \"x\") ]"
+                  "#session env: the env key 'A\\x00B' contains a NUL byte — an env name is NUL-free"
+
+              one
+                  "env = [ \"OK\", \"x\\u{0}y\" ]"
+                  "#session env: the value for 'OK' contains a NUL byte — the environment would cut it short there; an env value is NUL-free"
+
+              Expect.isEmpty (msgs "logLevel = Str.trim \" loud \"") "a computed value waits for the load"
+              Expect.isEmpty (msgs "echoCap = 5") "an in-range literal"
+          }
           test "a comma between record-literal fields teaches the separator" {
               for src in [ "let v = { a = 1, b = 2 }"; "let v = {| a = 1, b = 2 |}"; "let v = { T.zero with a = 1, b = 2 }" ] do
                   let e = firstErrorIn "comma.weir" [ "type T = { a: int; b: int }"; src; "print $\"{v.a}\"" ]
@@ -1265,6 +1295,116 @@ let boundaryTests =
           test "funnel control: a CLEAN command still spawns (no false refusal) [D:spawn-nul-funnel]" {
               skipOnWindows ()
               Expect.equal (Weir.Proc.lines "echo" [ "ok" ] None |> List.ofSeq) [ "ok" ] "a clean spawn is untouched"
+          }
+          // the single-capture cap [D:capture-cap-error]: reaching it is a
+          // weir error naming the cap and the command — the 2 GiB cap's
+          // own run is the e2e cell; here a small cap drives the same path
+          let capSpec prog args : Weir.Proc.Spec =
+              { Prog = prog; Args = args; Env = []; Input = None; Cwd = None; Ambient = None }
+
+          test "a capture reaching its cap is a weir error naming the cap and the command [D:capture-cap-error]" {
+              skipOnWindows ()
+
+              let ex =
+                  Expect.throwsC
+                      (fun () ->
+                          Weir.Proc.completedCapped 1024L true (capSpec "sh" [ "-c"; "head -c 5000 /dev/zero" ]) |> ignore)
+                      id
+
+              Expect.equal
+                  ex.Message
+                  "the output of 'sh -c head -c 5000 /dev/zero' reached the 1 KiB single-capture cap — a capture holds the whole output in memory; stream it instead: run the command bare, iterate its lines (`cmd |> Seq.iter …`), or write them to a file (`cmd |> File.write path`) and read back what you need"
+                  "the cap and the command, never a silent truncation"
+
+              let chainEx =
+                  Expect.throwsC
+                      (fun () ->
+                          Weir.Proc.chainCompletedCapped
+                              1024L
+                              true
+                              [ capSpec "sh" [ "-c"; "head -c 5000 /dev/zero" ]; capSpec "cat" [] ]
+                          |> ignore)
+                      id
+
+              Expect.stringStarts
+                  chainEx.Message
+                  "the output of 'sh -c head -c 5000 /dev/zero | cat' reached the 1 KiB single-capture cap"
+                  "a chain names every stage"
+
+              Expect.stringStarts (Weir.Proc.captureCapMessage Weir.Proc.captureCap "x") "the output of 'x' reached the 2 GiB single-capture cap" "the real cap reads 2 GiB"
+          }
+          test "a capture under its cap is whole; a code-only capture holds nothing and owes no cap [D:capture-cap-error]" {
+              skipOnWindows ()
+              let code, out, _ = Weir.Proc.completedCapped 1024L true (capSpec "sh" [ "-c"; "printf 'a\\nb\\n'" ])
+              Expect.equal (code, List.ofSeq out) (0, [ "a"; "b" ]) "under the cap"
+              let code, out, _ = Weir.Proc.completedCapped 1024L false (capSpec "sh" [ "-c"; "head -c 50000 /dev/zero" ])
+              Expect.equal (code, List.ofSeq out) (0, []) "drained, unheld"
+          }
+          // E2BIG is the command's size, not a missing program [D:start-failure-errno]
+          test "an argument list past the OS limit is named, not 'command not found' [D:start-failure-errno]" {
+              skipOnWindows ()
+              let big = System.String('a', 3_000_000)
+              let ex = Expect.throwsC (fun () -> Weir.Proc.lines "echo" [ big ] None |> Seq.iter ignore) id
+
+              Expect.equal
+                  ex.Message
+                  "cannot start echo: its arguments and environment are too large for the OS (argument list too long; 2.8 MiB of them in this command alone) — pass big data on stdin (`xs | cmd`) or through a file, not as an argument"
+                  "E2BIG named with the size and the way out"
+
+              Expect.equal
+                  (Weir.Proc.startFailureMessage "nosuch" [] [] 2)
+                  "command not found or not executable: nosuch"
+                  "ENOENT keeps the not-found message"
+          }
+          // a failed exec leaves the session as it found it
+          // [D:exec-failure-restores]; the program never exists, so no
+          // path can replace the test process
+          test "a failed exec restores its env prefix and the process cwd [D:exec-failure-restores]" {
+              skipOnWindows ()
+              let key = "WEIR_UNIT_EXEC_LEAK"
+              let cwd = System.IO.Directory.GetCurrentDirectory()
+
+              Expect.throws
+                  (fun () ->
+                      Weir.Proc.exec
+                          { capSpec "weir-unit-no-such-prog" [] with
+                              Env = [ key, "leaked" ]
+                              Cwd = Some "/" })
+                  "the exec failed"
+
+              Expect.isNull (System.Environment.GetEnvironmentVariable key) "the prefix did not leak"
+              Expect.equal (System.IO.Directory.GetCurrentDirectory()) cwd "the cwd did not leak"
+          }
+          // the runtime backstop [D:exec-scope-transitive]
+          test "exec refuses at run time inside a parallel arm and while an always is live [D:exec-scope-transitive]" {
+              skipOnWindows ()
+              let execNoSuch () = Weir.Proc.exec (capSpec "weir-unit-no-such-prog" [])
+              let depth = Weir.Session.parallelDepthNow ()
+              Weir.Session.setParallelDepth (depth + 1)
+
+              let arm =
+                  try
+                      Expect.throwsC execNoSuch id
+                  finally
+                      Weir.Session.setParallelDepth depth
+
+              Expect.equal
+                  arm.Message
+                  "'exec' inside a parallel arm (pfor, Seq.pmap, Seq.piter, Seq.pfirst) is refused — exec replaces weir's process, so the other arms would be orphaned and the join would never run; run the command without exec, or exec after the fan-out"
+                  "an arm"
+
+              let hooked = Weir.Session.registerAlways ()
+
+              let scope =
+                  try
+                      Expect.throwsC execNoSuch id
+                  finally
+                      Weir.Session.deregisterAlways hooked |> ignore
+
+              Expect.equal
+                  scope.Message
+                  "'exec' while a scope is open (a within or always block) is refused — exec replaces weir's process, so the scope's teardown would never run; run the command without exec, or exec after the scope"
+                  "a live always"
           }
           test "statement-path control stays green: a NUL arg refuses via the evaluator too [D:spawn-nul-funnel]" {
               skipOnWindows ()
@@ -2247,6 +2387,31 @@ let boundaryTests =
               Expect.isFalse (Weir.Parser.isYamlMarkerPiece "x >= yaml") ">= yaml does not arm"
               Expect.isFalse (Weir.Parser.isYamlMarkerPiece "x == yaml") "== yaml does not arm"
           }
+          test "any blank run before the marker arms; a trailing blank teaches at check and run [D:yaml-marker-blanks]" {
+              for piece in [ "let y =  yaml"; "let y =\tyaml"; "let y= yaml"; "let y = yaml patch" ] do
+                  Expect.isTrue (Weir.Parser.isYamlMarkerPiece piece) piece
+
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "make FOO= yaml") "a glued name= arms only on a let"
+
+              for head in [ "let y =  yaml"; "let y= yaml"; "let y =\tyaml" ] do
+                  checkEqRun [ head; "    a: 1"; "print (show y)" ]
+
+              let teach =
+                  "a yaml block marker must end its line — nothing may follow it, not even trailing spaces or tabs; the block is the indented lines below"
+
+              for head in [ "let y = yaml "; "let y = yaml patch\t" ] do
+                  let lines = [ head; "    a: 1"; "print (show y)" ]
+
+                  match errorsIn "ym.weir" lines with
+                  | d :: _ ->
+                      Expect.equal (d.Message.Replace("\r\n", " ").Replace("\n", " ")) teach $"check: {head}"
+                      Expect.equal (d.Line, d.Col) (1, 9) "on the marker"
+                  | [] -> failtest $"must refuse: {head}"
+
+                  match Weir.Parser.parseLine realResolver (asm (List.take 2 lines)) with
+                  | Error m -> Expect.stringContains (m.Replace("\r\n", " ").Replace("\n", " ")) teach $"run: {head}"
+                  | Ok _ -> failtest $"run must refuse: {head}"
+          }
           test "YamlPatch is a built-in type name — undeclarable [D:yaml-nodes]" {
               match Weir.Check.checkDecl env (parseDecl "type YamlPatch = { x: int }") with
               | Error terr -> Expect.stringContains terr.Message "'YamlPatch' is a built-in type" ""
@@ -2397,6 +2562,31 @@ let boundaryTests =
                       | v -> failtest $"expected YMap, got {v}"
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
+          }
+          // the district reads what Yaml.parse reads: `- - x`
+          // [D:yaml-inline-nested-seq], a flush-left sequence under a key
+          // and the dash gap's 4-space style [D:yaml-seq]
+          test "district: nested dash items, flush-left and 4-space sequences read as Yaml.parse reads them" {
+              let lit (lines: string list) =
+                  "[" + (lines |> List.map (fun l -> "\"" + l.Replace("\"", "\\\"") + "\"") |> String.concat "; ") + "]"
+
+              for body in
+                  [ [ "m:"; "  - - c"; "    - d" ]
+                    [ "list:"; "- k: v"; "- j: w"; "other: 1" ]
+                    [ "list:"; "  -   x: y"; "      z: w" ]
+                    [ "- - - a"; "    - b" ] ] do
+                  let src = asm ("let d = yaml" :: (body |> List.map (fun l -> "    " + l)))
+
+                  match Weir.Parser.parseLine realResolver src with
+                  | Ok(SLet(_, e)) ->
+                      match typecheck env e with
+                      | Ok te ->
+                          Expect.equal
+                              (formatValue (Weir.Eval.eval valueEnv te))
+                              (formatValue (run (lit body + " |> Yaml.parse")))
+                              $"{body}"
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"{body}: {other}"
           }
           test "a quoted district key is literal, like a quoted value; a bare $name key splices [D:yaml-district]" {
               let src =
@@ -2723,6 +2913,10 @@ let boundaryTests =
                   "a directive after match arms does not attach"
               Expect.isFalse (Weir.Script.pipedAttaches [ "let xs ="; "    [1]"; "    |> Seq.map id" ] "#help") "a directive after a |> chain does not attach"
               Expect.isTrue (Weir.Script.pipedAttaches [ "let block = <<<"; "    a" ] "    #b") "an indented # line in a heredoc body still attaches"
+              // a column-0 opener that pends on its own starts its own
+              // statement: the line above never joins its entry
+              Expect.isFalse (Weir.Script.pipedAttaches [ "let a = nope" ] "let t = <<<") "a heredoc opener does not glue the line above"
+              Expect.isFalse (Weir.Script.pipedAttaches [ "1 + 1" ] "let y = yaml") "nor does a yaml opener"
           }
           test "block scalars read: | and |- chomp semantically; content is bytes [D:block-scalars]" {
               let blockText d =
@@ -5571,8 +5765,17 @@ let commandModeTests =
           test "builtin shadows PATH: ls -la is expression mode" {
               // adjacency: `-la` is a prefix-minus argument, exactly
               // F#'s parse; still an error + the ^ls hint
-              Expect.equal (show (parseCmd "ls -la")) "(ls (- 0 la))" "parses as application of -la"
+              // a name operand negates in its own type [D:prefix-minus-typed]
+              Expect.equal (show (parseCmd "ls -la")) "(ls (let |neg la (- (- |neg |neg) |neg)))" "parses as application of -la"
               Expect.stringContains (checkErr "ls - la").Message "unbound variable 'la'" ""
+          }
+          test "prefix minus on a name negates in the name's type [D:prefix-minus-typed]" {
+              Expect.equal (run "let x = 1.5 in -x") (VFloat -1.5) "float"
+              Expect.equal (run "let d = 2s in -d") (VDur -2000L) "Duration"
+              Expect.equal (run "let k = 3KiB in -k") (VSize -3072L) "Size"
+              Expect.equal (run "let i = 4 in -i") (VInt -4L) "int"
+              Expect.equal (run "-(Float.abs 2.0)") (VFloat -2.0) "a parenthesized float"
+              Expect.equal (run "let i = 4 in -(-i)") (VInt 4L) "double negation"
           }
           test "'|' before an expression stage is a parse error — the RHS decides [D:pipe-rhs-decides]" {
               match Weir.Parser.parseLine cmdResolver "git log | first 5" with
@@ -6160,6 +6363,30 @@ let stringTests =
               Expect.stringStarts (msgOf "Str.rreplace \"(\" \"x\" \"a\"") "invalid regex:" "the r-family's error class"
               Expect.stringContains (msgOf "Str.rreplace \"(?P<n>a)\" \"x\" \"a\"") "named" "the (?P<name>) teaching"
           }
+          // the r-family counts code points [D:regex-code-points]: `.`, a
+          // negated class and \S take a whole pair; no match or capture
+          // splits one; an astral literal is one unit for a quantifier
+          test "regex members never split a surrogate pair [D:regex-code-points]" {
+              expectValue "Str.rreplace \".\" \"*\" \"😀\"" (VStr "*")
+              expectValue "Str.rreplace \"\" \"-\" \"😀\"" (VStr "-😀-")
+              expectValue "Str.isMatch \"^.$\" \"😀\"" (VBool true)
+              expectValue "Str.isMatch \"^..$\" \"😀\"" (VBool false)
+              expectValue "Str.rsplit \"\" \"😀\" |> Seq.length" (VInt 3L)
+              expectValue "Str.rreplace \"[^a]\" \"*\" \"a😀b\"" (VStr "a**")
+              expectValue "Str.rreplace @\"\\S\" \"*\" \"a😀\"" (VStr "**")
+              expectValue "Str.rreplace \"[^😀]\" \"*\" \"a😀🎉\"" (VStr "*😀*")
+              expectValue "Str.rreplace \"[😀b]\" \"*\" \"a😀b🎉\"" (VStr "a**🎉")
+              expectValue "Str.rreplace \"😀+\" \"*\" \"a😀😀b\"" (VStr "a*b")
+              expectValue "Str.rmatch \"(.)\" \"😀x\"" (VUnion("Some", Some(VSeq [ VStr "😀" ])))
+              expectValue "Str.rmatchAll \"(.)\" \"😀x\" |> Seq.length" (VInt 2L)
+              expectValue "Str.rreplace \"(?i)A.\" \"_\" \"xa😀Ab\"" (VStr "x__")
+
+              expectValue
+                  "match \"ab😀cd\" with | Regex @\"^(.{3})\" (h) -> h | _ -> \"\""
+                  (VStr "ab😀")
+              // the user's own pattern is what an error quotes
+              Expect.stringStarts (msgOf "Str.rreplace \"[\" \"x\" \"a\"") "invalid regex:" "still the r-family's class"
+          }
           test "rsplitOnce splits at the LAST separator [D:split-once]" {
               // the from-the-right receipt: user@host:port, [::1]:port
               expectValue "Str.rsplitOnce \":\" \"[::1]:8080\"" (VTuple [ VStr "[::1]"; VStr "8080" ])
@@ -6726,7 +6953,22 @@ let derivedOrdTests =
                   "operator '<' is not defined for Option<Uuid>; a Uuid is an identifier, not a quantity — Seq.sort orders Uuids"
                   "an Option of a Uuid"
 
+              // the refusal carries through a generic [D:uuid-unordered-generic]
+              Expect.equal
+                  (checkErr "let before a b = Some a < Some b in before Uuid.nil Uuid.max").Message
+                  "this use compares values with '<', '>', '<=' or '>=', which are not defined for Uuid; a Uuid is an identifier, not a quantity — Seq.sort orders Uuids"
+                  "a generic helper instantiated at Uuid"
+
+              Expect.equal
+                  (checkErr "let f x = x < None in f (Some Uuid.nil)").Message
+                  "this use compares values with '<', '>', '<=' or '>=', which are not defined for Uuid; a Uuid is an identifier, not a quantity — Seq.sort orders Uuids"
+                  "an Option-typed parameter instantiated at Option<Uuid>"
+
+              expectValue "let before a b = Some a < Some b in before 1 2" (VBool true)
+              expectValue "let before a b = Some a < Some b in before (Instant.ofEpochMs 0) (Instant.ofEpochMs 1)" (VBool true)
+
               Expect.equal (checkErr "\"a\" < 1").Message "expected string, got int" "a mismatch"
+              Expect.equal (checkErr "Some 1 < 2").Message "expected Option<int>, got int" "an Option against its content"
           }
           test "a generic ordered type is conditional: admits at int, refuses at a function naming the key" {
               ordShow "[{ v = 1 }; { v = 0 }] |> Seq.sort |> Seq.head" "{ v = 0 }"
@@ -6976,12 +7218,12 @@ let attributeTests =
               Expect.stringContains terr.Message "reserved for --help" ""
           }
           test "Short takes a letter or digit: '-', a space or punctuation is no flag the scanner can match [D:short-alnum]" {
-              for c in [ "-"; " "; "." ] do
+              for c in [ "-"; " "; "."; "_" ] do
                   let terr = env |> declErr $"type T = {{ [<Short \"{c}\">] a: bool }}"
 
                   Expect.equal
                       terr.Message
-                      $"'Short' expects a letter, e.g. [<Short \"c\">] — '-{c}' can never be matched as a flag"
+                      $"'Short' expects a letter or digit, e.g. [<Short \"c\">] — '-{c}' can never be matched as a flag"
                       $"Short \"{c}\""
 
               env |> declare "type TShortUpper = { [<Short \"C\">] a: bool }" |> ignore
@@ -7175,6 +7417,10 @@ let typedArgvTests =
 
               let shorts5, _ = Weir.Argv.shortTables (def "S5" "type S5 = { host: bool }")
               Expect.equal (Map.tryFind "--host" shorts5) None "h never derives (help)"
+
+              let shorts6, index6 = Weir.Argv.shortTables (def "S6" "type S6 = { __y: bool }")
+              Expect.equal (Map.tryFind "--__y" shorts6) None "punctuation never derives [D:short-alnum]"
+              Expect.equal (Map.tryFind "_" index6) None "and owns no letter"
           }
           test "Args.load types as the record; the union as the union" {
               let e2 =
@@ -7768,6 +8014,25 @@ let bracketContinuationTests =
                   (errorMsgsIn "tv.weir" [ "type T<'a, 'b> = { v: 'a }"; "let t = { v = 1 }"; "print $\"{t.v}\""; "echo 'x y' 'z'" ])
                   "an unused parameter and argv quotes both hold"
           }
+          test "a command line's quoted word is a quote, never a tick [D:tyvar-tick-line]" {
+              Expect.equal (Weir.Scan.commentAt "echo key: 'it // works'") -1 "the // sits inside the quotes"
+
+              for line in [ "echo key: 'it // works'"; "echo a, 'b c'"; "echo (x) <'d e'"; "grep -E x| 'y z'" ] do
+                  Expect.isFalse (Weir.Scan.isTyvarTick line (line.IndexOf '\'')) line
+
+              for line, i in [ "type Box<'a> = {", 9; "    v: 'a", 7; "let f (x: 'a) : 'a =", 10; "| Some of 'a", 10; "fun (x: 'a) -> x", 8 ] do
+                  Expect.isTrue (Weir.Scan.isTyvarTick line i) line
+
+              Expect.isEmpty
+                  (errorMsgsIn
+                      "tk.weir"
+                      [ "echo key: 'it // works'"
+                        "echo key: 'it { works'"
+                        "if true then"
+                        "    echo key: 'it // works'"
+                        "print \"after\"" ])
+                  "the quoted words stay argv"
+          }
           test "same-line attributes ride a type field line" {
               Expect.equal
                   (joined [ "type Cli ="; "    { [<Short \"c\">] count: int"; "      verbose: bool }" ])
@@ -8003,6 +8268,89 @@ let fmtSourceTests =
                   Expect.isEmpty lines "an empty file"
                   Expect.isFalse changed "is canonical"
               | Error e -> failtest e
+          }
+          test "a bare CR ends a line, as the script reader reads it [D:one-pipeline]" {
+              // check/run split \r\n, \n and a bare \r; fmt must see the same
+              // lines, or it formats a running file into a failing one
+              match Weir.Fmt.formatSource "t.weir" "let f x =\n    let y = x\r            + 1\n    y * 10\nprint $\"{f 1}\"\n" with
+              | Ok(lines, _) ->
+                  Expect.equal
+                      lines
+                      [ "let f x ="; "    let y = x"; "        + 1"; "    y * 10"; "print $\"{f 1}\"" ]
+                      "the CR line break is a line break"
+              | Error e -> failtest e
+
+              match Weir.Fmt.formatSource "t.weir" "print \"a\"\rprint \"b\"\r" with
+              | Ok(lines, _) -> Expect.equal lines [ "print \"a\""; "print \"b\"" ] "a CR-only file"
+              | Error e -> failtest e
+
+              Expect.equal (Weir.Script.splitSourceText "a\r\nb\rc\nd\n") [ "a"; "b"; "c"; "d"; "" ] "the one splitter"
+          }
+          test "a yaml block whose first line is a deeper comment formats, never crashes [D:yaml-district]" {
+              // the comment is invisible to the reader's layout: the block's
+              // base is its first code line
+              for src in
+                  [ "let y = yaml\n          // note\n    a: 1\nprint (show y)\n"
+                    "let y = yaml\n        // note\n    a: 1\nprint (show y)\n" ] do
+                  match Weir.Fmt.formatSource "t.weir" src with
+                  | Ok(lines, _) -> Expect.equal (lines |> List.item 2) "    a: 1" $"the block keeps its base: {lines}"
+                  | Error e -> failtest $"{src}: {e}"
+          }
+          test "a heredoc whose comment line breaks its layout is refused, located — never a crash" {
+              match Weir.Fmt.formatSource "t.weir" "let m = <<<\n            //\n    a\nprint m\n" with
+              | Error e ->
+                  Expect.equal
+                      e
+                      "cannot format: line 3:5: this heredoc line outdents below the block's first line (fix errors first)"
+                      "the reader's own error"
+              | Ok r -> failtestf "must refuse: %A" r
+          }
+          test "a match later on its line takes its arms' `|>` continuation [D:fmt-arm-pipe]" {
+              let src =
+                  [ "let x = 2"
+                    "let r = match x with"
+                    "        | 1 -> \"a\""
+                    "        | _ -> \"b\""
+                    "               |> Str.toUpper"
+                    "print r" ]
+
+              match Weir.Fmt.formatLines src with
+              | Ok out -> Expect.equal out src "already canonical"
+              | Error e -> failtest e
+          }
+          test "an else between its if and a deeper then-body formats, keeping the parse [D:fmt-depth-model]" {
+              match
+                  Weir.Fmt.formatLines
+                      [ "let x = 1"; "let v ="; "    if x > 0 then"; "          \"a\""; "        else"; "        \"b\""; "print v" ]
+              with
+              | Ok out ->
+                  Expect.equal
+                      out
+                      [ "let x = 1"; "let v ="; "    if x > 0 then"; "            \"a\""; "        else"; "        \"b\""; "print v" ]
+                      "the then-body steps past the else"
+              | Error e -> failtest e
+          }
+          test "an init file's #session fields seat at 4, however they were indented [D:init-session-fields]" {
+              match
+                  Weir.Fmt.formatSource
+                      "init.weir"
+                      "#init\n#session {\n      cwd = \"/tmp\"\n    logLevel = \"info\"\n}\nlet  twice x = x * 2\n"
+              with
+              | Ok(lines, _) ->
+                  Expect.equal
+                      lines
+                      [ "#init"; "#session {"; "    cwd = \"/tmp\""; "    logLevel = \"info\""; "}"; "let twice x = x * 2" ]
+                      "aligned"
+              | Error e -> failtest e
+          }
+          test "a misplaced directive refuses fmt with check's message, not a parser dump [D:directive-diagnostic]" {
+              match Weir.Fmt.formatSource "t.weir" "print \"a\"\n#sig git\n" with
+              | Error e ->
+                  Expect.equal
+                      e
+                      "cannot format: line 2:1: misplaced directive: #sig — #sig lines belong at the file head, before any code, comment or blank line (fix errors first)"
+                      "the directive message"
+              | Ok r -> failtestf "must refuse: %A" r
           }
           test "only parser whitespace is trimmed: U+3000/U+2028/U+FEFF are tokens and stay" {
               for tail in [ "\u3000"; "\u2028"; "\uFEFF" ] do
@@ -8539,6 +8887,24 @@ let replEchoTests =
                   Expect.isFalse (lines |> List.exists (fun l -> l.Contains "…")) "no clip without a width"
               | other -> failtest $"expected a table, got {other}"
           }
+          test "table columns measure terminal cells: wide and combining text align, a TAB is spelled [D:str-width]" {
+              let rows =
+                  VSeq
+                      [ VRecord("R", [ "name", VStr "日本語日本語"; "n", VInt 1L ])
+                        VRecord("R", [ "name", VStr "e\u0301x"; "n", VInt 22L ])
+                        VRecord("R", [ "name", VStr "a\tc"; "n", VInt 3L ]) ]
+
+              match Weir.Eval.echoTable Weir.Eval.echoPipedCap None rows with
+              | Some(lines, None) ->
+                  Expect.equal
+                      lines
+                      [ "name           n"; "────────────  ──"; "日本語日本語   1"; "e\u0301x            22"; "a\\tc           3" ]
+                      "every row is 16 cells wide"
+
+                  for l in lines do
+                      Expect.equal (Weir.Types.CellWidth.ofString l) 16 $"cells: {l}"
+              | other -> failtest $"expected a table, got {other}"
+          }
           test "show is byte-identical to its shipped contract (NOT the echo)" {
               let long = VSeq(seq { for i in 1..100 -> VInt(int64 i) })
 
@@ -8703,6 +9069,65 @@ let replEchoTests =
                   (formatEchoTy (TFun(TSeq(TVar "a1"), TSeq TStr)))
                   "seq<'a> -> seq<string>"
                   "concrete types are untouched"
+          }
+          test "no checker var reaches a diagnostic: fresh names rename in order [D:user-language-messages]" {
+              Expect.equal
+                  (normalizeDiagVars "expected 'a12, got Result<int, 'a3> and 'a12 again")
+                  "expected 'a, got Result<int, 'b> and 'a again"
+                  "first-appearance order, one name per var"
+
+              Expect.equal
+                  (normalizeDiagVars "'f' takes 'a -> 'r4 here; 'a1' is a binding")
+                  "'f' takes 'a -> 'b here; 'a1' is a binding"
+                  "a letter the message already uses is skipped; a quoted name stays"
+
+              Expect.equal (normalizeDiagVars "type '__hole2 * int") "type 'a * int" "a hole var too"
+
+              let allLetters = [ 'a' .. 'z' ] |> List.map (fun c -> $"'{c}") |> String.concat " -> "
+
+              Expect.equal
+                  (normalizeDiagVars $"{allLetters} -> 'a12")
+                  $"{allLetters} -> 'a12"
+                  "every letter taken: the fresh name stays, never a divide by zero"
+
+              Expect.equal
+                  (checkErr "Ok 1 < Error \"x\"").Message
+                  "operator '<' is not defined for Result<int, 'a>"
+                  "an operator fall-through"
+
+              Expect.equal (checkErr "print None").Message "print takes a string, int, float, bool, Uuid, or seq<string>; this is Option<'a>" "print"
+              Expect.equal (checkErr "show (fun x -> x)").Message "show cannot render functions; this is 'a -> 'a" "show"
+
+              Expect.equal
+                  (checkErr "let f x = x < Ok 1 in 0").Message
+                  "operator '<' is not defined for Result<int, 'a>"
+                  "an open left side is no mismatch"
+
+              Expect.equal
+                  (errorMsgsIn "disc.weir" [ "let f x = x"; "f" ])
+                  [ "this statement computes a 'a -> 'a and discards it — bind it, or pipe it to print" ]
+                  "the statement layer's discard"
+
+              Expect.equal
+                  (errorMsgsIn "hole.weir" [ "let e = Nope.thing 1"; "[(e, 1)] |> to json |> Seq.iter print" ]
+                   |> List.filter (fun m -> m.Contains "to json" || m.Contains "admitted"))
+                  []
+                  "a hole inside a tuple stays silent at the wire"
+          }
+          test "a lambda right of |> knows its parameter: to json/yaml see the piped type" {
+              cleanIn
+                  "pipelam.weir"
+                  [ "type PJ = { a: int }"
+                    "let cfg = { a = 1 }"
+                    "cfg |> fun c -> c |> to yaml |> Seq.iter print"
+                    "let r = Some 1 |> function | Some v -> v |> to json | None -> []"
+                    "print (show r)" ]
+                  "the piped type reaches the boundary"
+
+              Expect.equal
+                  (run "Some 1 |> function | Some v -> v |> to json |> Str.join \"\" | None -> \"\"")
+                  (VStr "1")
+                  "function too"
           }
           test "a builtin function value echoes the #help composition — one source, string-equal [D:repl-fn-echo]" {
               let te = Weir.Builtins.typeEnv
@@ -10004,6 +10429,14 @@ let readonlyBlockTests =
 
               Expect.stringContains e.Message "'Http.send' talks to the network" "a POST mutates"
               Expect.stringContains e.Message "mutating HTTP method" "the class names the method"
+
+              let e =
+                  firstErr [ "let r = Http.get \"http://x\""; "let x ="; "    readonly"; "        Http.send r"; "print $\"{x.status}\"" ]
+
+              Expect.equal
+                  e.Message
+                  "this 'readonly' block forbids external mutation, but 'Http.send' talks to the network, and its method is not known at check time (external mutation unless a query method) — reads are allowed"
+                  "an unresolved method is refused without being called mutating"
           }
           test "Http.query and a GET expect admit — idempotent by construction" {
               Expect.isEmpty
@@ -10350,9 +10783,7 @@ let planApplyTests =
               for req in
                   [ "(Http.post \"http://127.0.0.1:1/\")"
                     "(Http.delete \"http://127.0.0.1:1/\")"
-                    "{ Http.defaults with method = Other \"PURGE\"; url = \"http://127.0.0.1:1/\" }"
-                    // a computed method is unknown at check — refused
-                    "{ Http.defaults with method = (if true then Get else Post); url = \"http://127.0.0.1:1/\" }" ] do
+                    "{ Http.defaults with method = Other \"PURGE\"; url = \"http://127.0.0.1:1/\" }" ] do
                   match inPlan req with
                   | [ e ] ->
                       Expect.equal e.Message refusal req
@@ -10361,8 +10792,28 @@ let planApplyTests =
 
               for req in
                   [ "(Http.get \"http://127.0.0.1:1/\")"
-                    "{ Http.defaults with method = Other \"get\"; url = \"http://127.0.0.1:1/\" }" ] do
+                    "{ Http.defaults with method = Other \"get\"; url = \"http://127.0.0.1:1/\" }"
+                    // the defaults record is a GET, and so is a copy of it
+                    "Http.defaults"
+                    "{ Http.defaults with url = \"http://127.0.0.1:1/\" }"
+                    // a method unknown at check is the run time's refusal —
+                    // never claimed mutating here [D:plan-apply]
+                    "{ Http.defaults with method = (if true then Get else Post); url = \"http://127.0.0.1:1/\" }" ] do
                   Expect.isEmpty (inPlan req |> List.map _.Message) req
+
+              // a request in a variable, a copy-update of it, a helper's parameter
+              Expect.isEmpty
+                  (errsOf
+                      [ "let req = Http.get \"http://127.0.0.1:1/\""
+                        "let g r = Http.expect r"
+                        "let p ="
+                        "    plan"
+                        "        Http.expect req |> Seq.iter print"
+                        "        Http.expect { req with timeout = 5s } |> Seq.iter print"
+                        "        g req |> Seq.iter print"
+                        "print $\"{p |> Plan.isEmpty}\"" ]
+                   |> List.map _.Message)
+                  "an unresolved method is not called mutating"
 
               // the piped spelling
               Expect.exists
@@ -11887,6 +12338,45 @@ let withinAlwaysAnyTests =
 
               Expect.isEmpty (diagsOf [ "within tmp d"; "    print d"; "echo hi | exec" ]) "exec after the scope stays legal"
           }
+          test "exec reached through a helper or in a fan-out arm is a check error too [D:exec-scope-transitive]" {
+              let helper = "let go () = echo hi | exec"
+
+              Expect.equal
+                  (diagsOf [ helper; "within tmp d"; "    print d"; "    exit (go ())" ])
+                  [ "'go' reaches 'exec' in its body, and 'exec' inside 'within tmp' is refused — exec replaces weir's process, so the temporary directory would never be removed; run its command without exec, or call 'go' after the scope" ]
+                  "a helper inside a resource scope"
+
+              Expect.equal
+                  (diagsOf [ helper; "let go2 () = go ()"; "within"; "    exit (go2 ())"; "always"; "    print \"c\"" ])
+                  [ "'go2' reaches 'exec' in its body, and 'exec' inside a scope with always is refused — exec replaces weir's process, so the always block would never run; run its command without exec, or call 'go2' after the scope" ]
+                  "a helper of a helper, in a bare within's body"
+
+              Expect.equal
+                  (diagsOf
+                      [ "let stop () = if true then echo bye | exec else ()"
+                        "within"
+                        "    print \"b\""
+                        "always"
+                        "    stop ()" ])
+                  [ "'stop' reaches 'exec' in its body, and 'exec' inside always is refused — exec replaces weir's process, so the rest of the teardown would never run; run its command without exec" ]
+                  "a unit helper in always"
+
+              Expect.equal
+                  (diagsOf [ helper; "pfor i in [1; 2] do"; "    if i == 2 then exit (go ())" ])
+                  [ "'go' reaches 'exec' in its body, and 'exec' inside a 'pfor' arm is refused — exec replaces weir's process, so the other arms would be orphaned, never cut or joined; run its command without exec" ]
+                  "a helper in a pfor arm"
+
+              Expect.equal
+                  (diagsOf [ "[1; 2] |> Seq.piter (fun i -> echo $i | exec)" ])
+                  [ "'exec' inside a 'Seq.piter' arm is refused — exec replaces weir's process, so the other arms would be orphaned, never cut or joined; run the command without exec" ]
+                  "a direct exec in a Seq.piter callback"
+
+              Expect.isEmpty (diagsOf [ helper; "within tmp d"; "    print d"; "exit (go ())" ]) "the helper after the scope stays legal"
+
+              Expect.isEmpty
+                  (diagsOf [ helper; "within tmp d"; "    let go () = print d"; "    go ()"; "exit (go ())" ])
+                  "a local binder shadows the helper"
+          }
           test "the scope's value carries through" {
               expectValue "within tmp d\n    41 + 1\nalways\n    ()" (VInt 42L)
           } ]
@@ -12115,7 +12605,20 @@ let hoverResidueTests =
     // fixed here
     testList
         "hover residue: retry/poll/until forms + the type argument [D:form-word-hover]"
-        [ test "retry and poll hover their meaning + KEYS derived from the prelude options records" {
+        [ test "hover and signature help name generic types 'a, 'b — never the checker's 'a1 [D:no-raw-tyvars]" {
+              let lines = [ "let pair x y = (x, y)"; "print (show (pair 1 \"a\"))" ]
+
+              match Weir.Lsp.hoverType lines 1 5 with
+              | Some hv ->
+                  Expect.stringContains hv "pair (x: 'a) (y: 'b) : 'a * 'b" "the signature"
+                  Expect.isFalse (hv.Contains "'a1" || hv.Contains "'a2") $"no raw var: {hv}"
+              | None -> failtest "pair must answer"
+
+              match Weir.Lsp.hoverType [ "type Box<'b> = { v: 'b }"; "let b = { v = 1 }"; "print (show b.v)" ] 1 6 with
+              | Some hv -> Expect.stringContains hv "v: 'b" $"a declared parameter keeps its name: {hv}"
+              | None -> failtest "Box must answer"
+          }
+          test "retry and poll hover their meaning + KEYS derived from the prelude options records" {
               let retryLines =
                   [ "let out = retry attempts=2 delay=0ms (1 == 1)"; "print (show out)" ]
 
@@ -12998,6 +13501,68 @@ let lspRenameTests =
                       "nothing to rename here — put the cursor on a value, a type, a field or a case declared in this file")
                   "a comment mention"
           }
+          test "rename reaches T.create and a type inside an anonymous adapter type [D:lsp-rename-members]" {
+              let email =
+                  [ "type Email = Email of string"
+                    "    validate s = if not (Str.contains \"@\" s) then fail $\"bad: {s}\""
+                    "let (Email raw) = Email.create \"a@b\""
+                    "print raw" ]
+
+              Expect.equal (Weir.Lsp.renameFor "rename.weir" email 1 6 "Mail") (Ok [ (1, 6, 5); (3, 19, 5) ]) "T.create"
+
+              let anon =
+                  [ "type User = { name: string }"
+                    "let r = [\"{\\\"users\\\": []}\"] |> from json {| users: seq<User> |}"
+                    "print $\"{r.users}\"" ]
+
+              Expect.equal (Weir.Lsp.renameFor "rename.weir" anon 1 6 "Person") (Ok [ (1, 6, 4); (2, 56, 4) ]) "the adapter slot"
+          }
+          test "a length-changing rename inside a column-aligned layout is refused, never left broken [D:lsp-rename-aligned]" {
+              let aligned = [ "type P = { x: int; y: int }"; "let pt = { x = 1"; "           y = 2 }"; "print $\"{pt.x}\"" ]
+
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" aligned 2 5 "point")
+                  (Error
+                      "renaming 'pt' to 'point' would break the column alignment at line 3 — a rename does not re-align other lines; pick a name of the same length, or rename by hand and re-align")
+                  "refused, located"
+
+              Expect.equal (Weir.Lsp.renameFor "rename.weir" aligned 2 5 "pq") (Ok [ (2, 5, 2); (4, 10, 2) ]) "same length renames"
+          }
+          test "rename takes the parser's digits only: a non-ASCII digit is no name" {
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" [ "let x = 1"; "print (show x)" ] 1 5 "x\u0661")
+                  (Error "'x\u0661' is not a name — a name starts with a letter or '_' and continues with letters, digits or '_'")
+                  "Arabic-Indic one"
+          }
+          test "references on an imported case meet across expression and pattern uses [D:qualified-case-patterns]" {
+              let dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-refs-{System.Guid.NewGuid():N}")
+              System.IO.Directory.CreateDirectory dir |> ignore
+
+              try
+                  System.IO.File.WriteAllLines(
+                      System.IO.Path.Combine(dir, "lib.weir"),
+                      [ "module"; ""; "type Pt = { x: int; y: int }"; ""; "type Shape ="; "    | Circle of int"; "    | Square of Pt" ]
+                  )
+
+                  let main = System.IO.Path.Combine(dir, "main.weir")
+
+                  let lines =
+                      [ "import \"./lib.weir\" as Lib"
+                        "let a = { x = 1; y = 2 }"
+                        "let s1 = Lib.Square a"
+                        "let s2 = Lib.Square a"
+                        "let f sh ="
+                        "    match sh with"
+                        "    | Lib.Square q -> q.x"
+                        "    | Lib.Circle r -> r"
+                        "print $\"{f s1}{f s2}\"" ]
+
+                  let all = Some [ (3, 14, 6); (4, 14, 6); (7, 11, 6) ]
+                  Expect.equal (Weir.Lsp.referencesFor main lines 3 15 true) all "from an expression use"
+                  Expect.equal (Weir.Lsp.referencesFor main lines 7 12 true) all "from a pattern use"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
           test "corpus: bindingUsage's free set equals occurrences' TopLevel set, statement by statement" {
               let root = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..")
 
@@ -13839,12 +14404,15 @@ let semanticTokenTests =
                   | Error e -> failtestf "second fmt failed: %s" e
           }
           test "doc comments: fmt never anchors a /// inside a heredoc/yaml block into its content [D:content-bytes]" {
-              for src in
-                  [ [ "let t = <<<"; "    abc"; "/// doc"; "    def"; "print t" ]
-                    [ "let t = yaml"; "    a: 1"; "/// doc"; "    b: 2"; "print t" ] ] do
-                  match Weir.Fmt.formatLines src with
-                  | Ok out -> Expect.equal out src "the /// line stays where it is"
-                  | Error e -> failtestf "fmt failed: %s" e
+              match Weir.Fmt.formatLines [ "let t = yaml"; "    a: 1"; "/// doc"; "    b: 2"; "print t" ] with
+              | Ok out -> Expect.equal out [ "let t = yaml"; "    a: 1"; "/// doc"; "    b: 2"; "print t" ] "the /// line stays where it is"
+              | Error e -> failtestf "fmt failed: %s" e
+
+              // in a heredoc the comment is content, and outdented it breaks
+              // the block's layout — check refuses it, so fmt does, located
+              match Weir.Fmt.formatLines [ "let t = <<<"; "    abc"; "/// doc"; "    def"; "print t" ] with
+              | Error e -> Expect.stringContains e "line 3:1: this comment line outdents below the heredoc's first line" "located"
+              | Ok out -> failtestf "must refuse: %A" out
           }
           test "fmt: a yaml district keeps relative indentation, re-anchors the base [D:yaml-district]" {
               // the block's relative indentation is semantic (JYamlLine rel),
@@ -13879,7 +14447,9 @@ let semanticTokenTests =
                   | Error e -> failtestf "second fmt failed: %s" e
           }
           test "fmt: a comment outdented past a district's base clamps inside the district" {
-              for marker, a, b in [ "<<<", "abc", "def"; "yaml", "a: 1", "b: 2" ] do
+              // a yaml block only: in a heredoc the comment is content and the
+              // outdent a layout error, refused (the test above)
+              for marker, a, b in [ "yaml", "a: 1", "b: 2" ] do
                   let src =
                       [ $"let t = {marker}"
                         $"          {a}"
@@ -14432,6 +15002,20 @@ let semanticTokenTests =
                   diags2
                   (fun d -> d.Code = "cmd-not-found" && d.Message.Contains "targ")
                   "the errored statement's head warns"
+          }
+          test "a path head that does not exist yet warns at check, as a PATH command does [D:path-head-warn]" {
+              match diagsIn "ph.weir" [ "./weir-not-yet-built.sh --flag" ] with
+              | [ d ] ->
+                  Expect.equal d.Severity "warning" "a warning, not a parse error"
+                  Expect.equal d.Code "cmd-not-found" "the PATH rule's code"
+
+                  Expect.equal
+                      d.Message
+                      "no executable at ./weir-not-yet-built.sh — weir resolves commands at check time; the script runs once it exists"
+                      "named as a path"
+              | other -> failtest $"expected one warning, got {other |> List.map _.Message}"
+
+              cleanIn "ph2.weir" [ "let total = 4"; "print (show (total/2))" ] "a slash inside an expression stays arithmetic"
           }
           test "row provenance: a bad field access errors at the ACCESS, not the call [PLAN-diagnostics-arc D]" {
               // the bicep 62/107 shape reduced: quality's t.BicepPath2
@@ -17142,6 +17726,23 @@ let scriptTests =
                   []
                   "shebang + head #sig are the head"
           }
+          test "every consumer of the analysis sees the directive message, never a dump (fmt, the LSP, init files) [D:directive-diagnostic]" {
+              let diags, _, _, _, _ = Weir.Script.analyzeLines "d.weir" [ "print \"a\""; "#sig git"; "print \"b\"" ]
+
+              Expect.equal
+                  (diags |> List.map (fun d -> d.Line, d.Code, d.Message))
+                  [ 2, "directive", "misplaced directive: #sig — #sig lines belong at the file head, before any code, comment or blank line" ]
+                  "analyzeLines names it, and the rest checks"
+
+              let diags, _, _, _, _ =
+                  Weir.Script.analyzeLines "init.weir" [ "#init"; "#loose"; "#sig \"abc\""; "let x = 1" ]
+
+              Expect.equal
+                  (diags |> List.map (fun d -> d.Line, d.Code, d.Message))
+                  [ 2, "directive", "unknown directive: #loose — an init file takes #init, #session and #alias"
+                    3, "directive", "#sig belongs at a script's head — an init file takes #init, #session and #alias" ]
+                  "an init file names its own"
+          }
           test "#loose is GONE: the directive is unknown, files are always strict [D:bare-partition]" {
               // no migration message — a mode that never executed gets
               // whatever the generic stray-directive path does (a parse
@@ -18343,6 +18944,7 @@ let agentFindingsTests =
               match diags |> List.filter (fun d -> d.Severity = "error") with
               | [ d ] ->
                   Expect.equal (d.Line, d.Col) (1, 14) "caret on the `complete` stage, matching succeeds"
+                  Expect.equal (d.EndLine, d.EndCol) (Some 1, Some 22) "running forward over the stage, never inverted"
                   Expect.stringContains d.Message "computes a Completed record and discards it" "the record voice"
                   Expect.stringContains d.Message "read a field (.exitCode, .stdout)" "the per-cell use clause"
               | other -> failtest $"expected ONE discard error, got {other}"
@@ -19353,14 +19955,29 @@ let childEnvTests =
               Expect.equal got [ VStr "1"; VStr "sq val"; VStr "dq"; VStr "" ] ""
               System.IO.File.Delete f
           }
-          test "fromFile: rejection raises at force, naming the sh escape" {
+          test "fromFile: a rejection raises at the call, naming the sh escape [D:env-fromfile-bind-once]" {
               let f = weirPath (System.IO.Path.GetTempFileName())
               System.IO.File.WriteAllLines(f, [ "GOOD=1"; "BAD=$HOME" ])
 
-              let ex =
-                  Expect.throws (fun () -> run ("Env.fromFile \"" + f + "\" |> Seq.freeze") |> ignore) ""
+              Expect.throws (fun () -> run ("Env.fromFile \"" + f + "\" |> ignore") |> ignore) "unforced, still refused"
 
               System.IO.File.Delete f
+          }
+          test "fromFile: the file is read once, at the bind [D:env-fromfile-bind-once]" {
+              let f = weirPath (System.IO.Path.GetTempFileName())
+              System.IO.File.WriteAllLines(f, [ "A=1" ])
+
+              let got =
+                  run (
+                      "let e = Env.fromFile \""
+                      + f
+                      + "\" in let _ = File.delete \""
+                      + f
+                      + "\" in e |> Seq.map _.value |> Seq.freeze"
+                  )
+                  |> forceSeq
+
+              Expect.equal got [ VStr "1" ] "a delete after the bind changes nothing"
           }
           test "a discarded $e(cmd) names the overlay form, not a paren drop [D:district-retirement]" {
               match errorMsgsIn "es.weir" [ "let e = Env.ofPairs [(\"Q\", \"1\")]"; "$e(sh -c \"echo $Q\")" ] with
@@ -20663,8 +21280,9 @@ let siblingSentinelTests =
               // the user through the cleaned dump
               let ds = diags [ "let x = [\"[]\"] |> from json seq<int>" ]
 
+              // the slot's teaching is a fatal now [D:adapter-slot-teach]
               Expect.isTrue
-                  (ds |> List.exists (fun d -> d.Message.Contains "a record name inside seq< >"))
+                  (ds |> List.exists (fun d -> d.Message.Contains "'int' inside seq< > is not a declared record name"))
                   $"the designed expectation must survive: {ds}"
 
               let ds2 = diags [ "let p = \"C:\\Users\\x\"" ]
@@ -21452,6 +22070,25 @@ let durationTests =
               let ex = Expect.throwsC (fun () -> run "Duration.parse \"1.0001s\"" |> ignore) id
 
               Expect.stringContains ex.Message "sub-millisecond" "the precision floor"
+          }
+          test "parse reads the extremes show prints; exact zero padding; ASCII digits only" {
+              // the minimum reads back: the sign applies before the range check
+              Expect.equal
+                  (run "Duration.parse (show (Duration.ms (0 - 9223372036854775807 - 1))) == Duration.ms (0 - 9223372036854775807 - 1)")
+                  (VBool true)
+                  "the minimum Duration round-trips"
+
+              Expect.equal (run "Size.parse \"-9223372036854775808B\"") (VSize System.Int64.MinValue) "the minimum Size"
+              Expect.stringContains (msgOf "Size.parse \"9223372036854775808B\"") "beyond the 64-bit byte range" "one past the maximum"
+              Expect.stringContains (msgOf "Duration.parse \"-9223372036854775809ms\"") "beyond the 64-bit millisecond range" "one past the minimum"
+              // zero padding of any length is exact, not an overflow
+              Expect.equal (run "Duration.parse \"1.0000000000000000000s\"") (VDur 1000L) "19 zero digits"
+              Expect.equal (run "Size.parse \"1.00000000000000000000000KiB\"") (VSize 1024L) "23 zero digits"
+              Expect.stringContains (msgOf "Duration.parse \"1.0000000000000000001s\"") "sub-millisecond precision" "a real remainder"
+              // non-ASCII digits are not digits: a parse error, None from the twin
+              Expect.stringContains (msgOf "Duration.parse \"１s\"") "not a duration: '１s' — expected digits at position 1" "fullwidth"
+              Expect.equal (run "Duration.tryParse \"١s\"") (VUnion("None", None)) "Arabic-Indic: None, no raise"
+              Expect.stringContains (msgOf "Duration.parse \"1.١s\"") "a decimal point needs digits" "in the fraction too"
           }
           test "the teaching rejections, each located" {
               Expect.stringContains
@@ -22382,6 +23019,21 @@ let httpTests =
                   "request header 'transfer-encoding' cannot be sent — it frames the body, which the transport does on its own (a body is sent with its Content-Length); drop it"
                   "refused by name before the send"
           }
+          test "an explicit Content-Length request header is refused as framing [D:http-header-unsendable]" {
+              for v in [ "5"; "0"; "abc" ] do
+                  let ex =
+                      Expect.throwsC
+                          (fun () ->
+                              run
+                                  $"Http.send {{ Http.post \"http://127.0.0.1:9/\" with body = Text \"a\"; headers = [(\"Content-Length\", \"{v}\")] }}"
+                              |> ignore)
+                          id
+
+                  Expect.equal
+                      ex.Message
+                      "request header 'Content-Length' cannot be sent — it frames the body, which the transport does on its own (the length is taken from the body itself); drop it"
+                      $"refused by name before the send ({v})"
+          }
           test "an explicit Content-Type replaces the body kind's: exactly one on the wire [D:http-content-type-override]" {
               let port, seen =
                   rawServe (fun _ -> "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
@@ -23054,7 +23706,7 @@ let fromJsonSeqTests =
           test "the inner-name gate speaks in expectations, never an internal label" {
               match Weir.Parser.parseExpr "[\"[]\"] |> from json seq<int>" with
               | Error m ->
-                  Expect.stringContains m "a record name inside seq< >" "the designed expectation"
+                  Expect.stringContains m "'int' inside seq< > is not a declared record name" "the designed teaching [D:adapter-slot-teach]"
                   Expect.isFalse (m.Contains "type name") "the old leaked label is retired"
               | Ok _ -> failtest "seq<int> must not parse into the slot"
           }
@@ -23945,6 +24597,17 @@ let accessorTeachingTests =
                   (Weir.Types.strTooLarge "string +" 1200000000L)
                   "string +: a 1200000000-char result is too large (at most 1073741791)"
                   "the shared refusal string + and interpolation raise"
+
+              // show's escaping past the ceiling: refused, sized, before building
+              Expect.equal
+                  (msgOf "Str.replicate 540000000 \"\\\"\" |> show |> Str.length")
+                  "show: a 1080000002-char result is too large (at most 1073741791)"
+                  "show"
+              // to json writes a string past System.Text.Json's single-token
+              // ceiling in segments, a pair never split between them
+              expectValue
+                  "let s = Str.replicate 16777215 \"a\" + \"😀\" + Str.replicate 167000000 \"b\" in {| s = s |} |> to json |> from json {| s: string |} |> fun r -> r.s == s"
+                  (VBool true)
               expectValue "[1] |> Seq.chunkBySize 2147483647 |> Seq.length" (VInt 1L)
           }
           // the gate: no builtin narrows a user int with a bare `int` cast —
@@ -24276,6 +24939,13 @@ let pinsWalkTests =
 
               Expect.stringContains m "Float.toInt: out of int range" ""
           }
+          test "Float.toInt reaches the int minimum; Float.round never yields -0.0 [D:floats]" {
+              expectValue "Float.toInt -9223372036854775808.0" (VInt System.Int64.MinValue)
+              Expect.stringContains (msgOf "Float.toInt 9223372036854775808.0") "out of int range" "2^63 is past the maximum"
+              expectValue "$\"{Float.round -0.4}\"" (VStr "0.0")
+              expectValue "Float.round -0.4 |> show" (VStr "0.0")
+              expectValue "Float.round -0.5" (VFloat -1.0)
+          }
           test "print seq<unit> teaches Seq.iter" {
               Expect.stringContains
                   (checkErr "print ([1] |> Seq.map (fun x -> ()))").Message
@@ -24447,6 +25117,51 @@ let walkCohortTests =
                   Expect.isTrue
                       hit
                       $"the declare-after-import half must name the import: {diags |> List.map (fun d -> d.Message)}"
+              finally
+                  System.IO.Directory.Delete(td, true)
+          }
+          test "a module declaring a type twice is refused at the import, located in the module [D:dup-type-decl]" {
+              let td = tempDir "weir-dupmod"
+
+              System.IO.File.WriteAllLines(
+                  System.IO.Path.Combine(td, "e.weir"),
+                  [| "module"
+                     "type T = { id: string }"
+                     "let a : unit -> T"
+                     "let a () = { id = \"x\" }"
+                     "type T = { id: string; v: int }" |]
+              )
+
+              try
+                  let diags =
+                      diagsIn (System.IO.Path.Combine(td, "main.weir")) [ "import \"./e.weir\" as E"; "let r = E.a ()"; "print r.id" ]
+
+                  Expect.exists
+                      diags
+                      (fun d -> d.Message.Contains "type 'T' is already declared at line 2" && d.Severity = "error")
+                      $"the module's duplicate surfaces at the importer: {diags |> List.map (fun d -> d.Message)}"
+              finally
+                  System.IO.Directory.Delete(td, true)
+          }
+          test "two modules returning the same anonymous shape share one type [D:anon-literals]" {
+              let td = tempDir "weir-anonmods"
+
+              for f in [ "a.weir"; "a2.weir" ] do
+                  System.IO.File.WriteAllLines(
+                      System.IO.Path.Combine(td, f),
+                      [| "module"; ""; "let shape : int -> {| k: int |}"; "let shape n = {| k = n |}" |]
+                  )
+
+              try
+                  let diags =
+                      diagsIn
+                          (System.IO.Path.Combine(td, "main.weir"))
+                          [ "import \"./a.weir\" as A"
+                            "import \"./a2.weir\" as A2"
+                            "let xs = [A.shape 2; A2.shape 3; {| k = 4 |}]"
+                            "print (Seq.length xs)" ]
+
+                  Expect.isEmpty (diags |> List.map (fun d -> d.Message)) "one shape, one type"
               finally
                   System.IO.Directory.Delete(td, true)
           }
@@ -24745,11 +25460,161 @@ let sizedFindingsTests =
                       finally
                           Directory.Delete(target, true))
           }
+          // directories keep their permission bits through the copy, as
+          // `cp -R` / `mv` keep them; the move keeps directory mtimes too
+          // [D:dir-copy-modes]
+          test "Dir.copy and Dir.move across filesystems keep directory modes" {
+              if not (System.OperatingSystem.IsWindows()) && Directory.Exists "/dev/shm" then
+                  withTempDir "weir-dirmodes" (fun root ->
+                      let mk (top: string) =
+                          Directory.CreateDirectory(Path.Combine(top, "priv")) |> ignore
+                          File.WriteAllText(Path.Combine(top, "priv", "f"), "a")
+                          File.SetUnixFileMode(Path.Combine(top, "priv"), enum<UnixFileMode> 0o700)
+                          File.SetUnixFileMode(top, enum<UnixFileMode> 0o750)
+
+                      let src = Path.Combine(root, "src")
+                      mk src
+                      let old = System.DateTime(2020, 1, 2, 3, 4, 5, System.DateTimeKind.Utc)
+                      Directory.SetLastWriteTimeUtc(Path.Combine(src, "priv"), old)
+                      let w = weirPath root
+                      run $"Dir.copy \"{w}/src\" \"{w}/cp\"" |> ignore
+                      Expect.equal (int (File.GetUnixFileMode(Path.Combine(root, "cp")))) 0o750 "the root keeps 0750"
+                      Expect.equal (int (File.GetUnixFileMode(Path.Combine(root, "cp", "priv")))) 0o700 "a private dir stays 0700"
+
+                      let dst = $"/dev/shm/weir-dirmodes-{System.Guid.NewGuid():N}"
+
+                      try
+                          run $"Dir.move \"{w}/src\" \"{dst}\"" |> ignore
+                          Expect.equal (int (File.GetUnixFileMode dst)) 0o750 "the moved root keeps 0750"
+                          Expect.equal (int (File.GetUnixFileMode(Path.Combine(dst, "priv")))) 0o700 "the moved private dir stays 0700"
+                          Expect.equal (Directory.GetLastWriteTimeUtc(Path.Combine(dst, "priv"))) old "the move keeps the dir mtime"
+                          Expect.isFalse (Directory.Exists src) "the source is gone"
+                      finally
+                          if Directory.Exists dst then
+                              Directory.Delete(dst, true))
+          }
+          // a symlink moves as the LINK across filesystems, its target text
+          // verbatim, dangling included [D:file-move-link]
+          test "File.move across filesystems moves a link as the link" {
+              if not (System.OperatingSystem.IsWindows()) && Directory.Exists "/dev/shm" then
+                  withTempDir "weir-fmove-link" (fun root ->
+                      File.WriteAllText(Path.Combine(root, "t"), "data")
+                      File.CreateSymbolicLink(Path.Combine(root, "l"), "t") |> ignore
+                      File.CreateSymbolicLink(Path.Combine(root, "dang"), "nowhere") |> ignore
+                      let w = weirPath root
+                      let tag = System.Guid.NewGuid().ToString "N"
+                      let d1, d2 = $"/dev/shm/weir-fl-{tag}", $"/dev/shm/weir-fd-{tag}"
+
+                      try
+                          run $"File.move \"{w}/l\" \"{d1}\"" |> ignore
+                          run $"File.move \"{w}/dang\" \"{d2}\"" |> ignore
+                          Expect.equal (FileInfo(d1).LinkTarget) "t" "a link, its target text verbatim"
+                          Expect.equal (FileInfo(d2).LinkTarget) "nowhere" "a dangling link moves too"
+                          Expect.isFalse (File.Exists(Path.Combine(root, "l")) || FileInfo(Path.Combine(root, "l")).Exists) "the source link is gone"
+                          Expect.isNull (FileInfo(Path.Combine(root, "dang")).LinkTarget) "the dangling source is gone"
+                          Expect.equal (File.ReadAllText(Path.Combine(root, "t"))) "data" "the target is untouched"
+                          // same filesystem: still the rename
+                          run $"File.move \"{d1}\" \"{d1}-2\"" |> ignore
+                          Expect.equal (FileInfo(d1 + "-2").LinkTarget) "t" "a same-fs move renames the link"
+                      finally
+                          for f in [ d1; d1 + "-2"; d2 ] do
+                              File.Delete f)
+          }
           test "Http.withQuery is data-last: the url pipes in" {
               Expect.equal
                   (run "\"http://x/s\" |> Http.withQuery [(\"q\", \"a b\")]")
                   (VStr "http://x/s?q=a%20b")
                   "url |> withQuery params"
+          } ]
+
+// the last-resort teacher [D:dump-teach]: shapes users reach by reflex
+// get their repair, at check and at run, never an expected-token list
+let dumpTeachTests =
+    let one (lines: string list) =
+        match errorsIn "dt.weir" lines with
+        | d :: _ -> d
+        | [] -> failtest $"must refuse: {lines}"
+
+    testList
+        "parse dumps teach [D:dump-teach]"
+        [ test "each reflex shape names its repair at check" {
+              for lines, line, col, msg in
+                  [ [ "ls /" ],
+                    1,
+                    5,
+                    "'ls' is a weir name here, so / is read as weir code — a path argument is a string (\"/\"); to run the ls program, write ^ls /"
+                    [ "let x = 1"; "let y = 1 + ~x" ],
+                    2,
+                    13,
+                    "'~' is the home directory only in a command line — in an expression, Path.home () is the home path ($\"{Path.home ()}/…\" for one below it)"
+                    [ "repeat"; "print \"x\"" ], 1, 7, "'repeat' needs a body — the indented lines below it"
+                    [ "let foo = true"; "let y = 1 + !foo" ], 2, 13, "weir has no `!` negation — write `not x`"
+                    [ "let n = 3"; "print (show [0 .. -n])" ],
+                    2,
+                    19,
+                    "a range endpoint is a literal, a name or a field access — parenthesize a computed one, as in [(n - 1) .. (-m)]"
+                    [ "let n = 3"; "print (show [n - 1 .. 5])" ],
+                    2,
+                    20,
+                    "a range endpoint is a literal, a name or a field access — parenthesize a computed one, as in [(n - 1) .. (-m)]"
+                    [ "print (show (3--1))" ],
+                    1,
+                    16,
+                    "'--' is not an operator (weir has no decrement) — to negate a negative, parenthesize: -(-x)"
+                    [ "print (show (- -5))" ],
+                    1,
+                    14,
+                    "a prefix '-' is glued to its operand (-x) — to negate a negative, parenthesize: -(-x)"
+                    [ "print (echo a | line)" ],
+                    1,
+                    15,
+                    "'| line' ends a command statement, so it can't sit inside an expression — bind it first: `let r = <command> | line`, then use r"
+                    [ "match sh -c \"exit 3\" | exitCode with"; "| 0 -> print \"a\""; "| _ -> print \"b\"" ],
+                    1,
+                    22,
+                    "'| exitCode' ends a command statement, so it can't sit inside an expression — bind it first: `let r = <command> | exitCode`, then use r"
+                    [ "let x = $(ls)" ],
+                    1,
+                    11,
+                    "'ls' is a weir name, not a program — $(…) runs a program and captures its output; call ls as weir code, or write $(^ls …) for a program of that name"
+                    [ "echo ()" ], 1, 7, "an empty '()' is not a command argument — quote literal text: \"()\""
+                    [ "let n = (echo a | exec)" ],
+                    1,
+                    17,
+                    "'| exec' hands the process over and never returns, so it can't sit inside an expression — write it as a statement of its own: `<command> | exec`"
+                    [ "within proc p = echo x | cat"; "    print \"x\"" ],
+                    1,
+                    29,
+                    "within proc takes ONE command — a pipeline or capture is not a scoped child; compose inside sh -c \"…\""
+                    [ "let s = \"1\""; "let x = s |> from json int" ],
+                    2,
+                    24,
+                    "'int' is not a declared record name — the adapter slot takes one: declare a record that holds the data (type Doc = { items: seq<int> }) and write its name, or seq<Name> for a list of records"
+                    [ "if true then"; "    import \"./a.weir\" as A" ],
+                    2,
+                    5,
+                    "an import is a top-level statement — put it at column 0, outside any block, before the code that uses it"
+                    [ "import $\"./a7.weir\" as A7" ], 1, 8, "import takes a literal string path, e.g. import \"./lib/paths.weir\""
+                    [ "import \"./a9.weir\" as A9 as B9" ], 1, 26, "'as' is left over — the statement is already complete before it"
+                    [ "let e = 1"; "let y = (e : int)" ],
+                    2,
+                    12,
+                    "weir has no type annotation inside an expression — annotate the binding instead: `let y: T = e`" ] do
+                  let d = one lines
+                  Expect.equal (d.Message.Replace("\r\n", " ").Replace("\n", " ")) msg $"{lines}"
+                  Expect.equal (d.Line, d.Col) (line, col) $"site: {lines}"
+          }
+          test "run words them the same (the run resolver)" {
+              for src, needle in
+                  [ "ls /", "a path argument is a string"
+                    "print (echo a | line)", "bind it first"
+                    "let x = $e(pwd)", "$(…) runs a program"
+                    "print (show (3--1))", "'--' is not an operator" ] do
+                  match Weir.Parser.parseLine realResolver src with
+                  | Error m ->
+                      Expect.stringContains (m.Replace("\r\n", " ").Replace("\n", " ")) needle src
+                      Expect.isFalse (m.Contains "Expecting") $"no dump: {src}"
+                  | Ok other -> failtest $"{src}: expected an error, got {other}"
           } ]
 
 let windowsFindingsTests =
@@ -24785,6 +25650,17 @@ let windowsFindingsTests =
                   let m = msgIn src
                   Expect.isTrue (m.StartsWith $"'\\{c}' is not an escape (the escapes are") $"leads with the teaching: {m}"
                   Expect.isFalse (m.Contains "Expecting") "no FParsec dump"
+          }
+          test "a backslash before a TAB or an emoji names that character [D:escape-names-char]" {
+              Expect.equal
+                  (msgIn "print \"a\\\tb\"")
+                  "a backslash followed by a TAB is not an escape (the escapes are \\\" \\\\ \\n \\t \\e \\u{…}; a literal backslash is \\\\)"
+                  "a mid-line TAB"
+
+              Expect.equal
+                  (msgIn "print \"a\\😀b\"")
+                  "'\\😀' is not an escape (the escapes are \\\" \\\\ \\n \\t \\e \\u{…}; a literal backslash is \\\\)"
+                  "the whole emoji, not half a pair"
           }
           test "a trailing backslash in a string teaches the literal-backslash spelling" {
               let m = msgIn "print \"a\\"
@@ -25650,6 +26526,27 @@ let matchArmCommandTests =
                         "    | _ -> echo inner-other"
                         "| _ -> echo outer-other" ])
                   "the inner match's arms parse and arm independently"
+          }
+          test "an if/else or match with command branches at a unit-demanded tail arms (loop body, lambda, always)" {
+              Expect.isEmpty
+                  (diags [ "for i in [1; 2] do"; "    if i == 1 then echo one else echo two" ])
+                  "if/else in a for body"
+
+              Expect.isEmpty
+                  (diags [ "for i in [1; 2] do"; "    if i == 1 then echo one else print \"two\"" ])
+                  "a command branch and a unit branch"
+
+              Expect.isEmpty
+                  (diags [ "for i in [1; 2] do"; "    match i with"; "    | 1 -> echo one"; "    | _ -> echo other" ])
+                  "match in a for body"
+
+              Expect.isEmpty
+                  (diags [ "[1; 2] |> Seq.iter (fun i -> if i == 1 then echo one else print \"two\")" ])
+                  "a Seq.iter lambda"
+
+              Expect.isEmpty
+                  (diags [ "within"; "    print \"body\""; "always"; "    if true then echo done else echo other" ])
+                  "an always cleanup"
           } ]
 
 let stopRequestTests =
@@ -27332,6 +28229,36 @@ let instantTests =
                   (msgOf "Instant.tryParseWith \"%H:%M:%S\" \"03:04:05\"")
                   "Instant.tryParseWith: the format must carry a full date (%Y %m %d) — a year-less log format needs the year supplied elsewhere"
                   "a year-less format is a format defect, not None"
+
+              // a format defect raises whatever the input — checked before
+              // any input is read
+              for fmt, want in
+                  [ "%Y-%m-%d %q", "unknown directive '%q'"
+                    "%Y-%m-%d %", "a lone '%' ends the format — write %% for a literal percent"
+                    "%H:%M:%S", "the format must carry a full date" ] do
+                  for input in [ "garbage"; "2026-01-02 x"; "03:04:05"; "" ] do
+                      Expect.stringContains (msgOf $"Instant.tryParseWith \"{fmt}\" \"{input}\"") want $"{fmt} on '{input}'"
+
+              Expect.stringContains
+                  (msgOf "Instant.parseWith \"%Y-%m-%d %q\" \"2026-01-02\"")
+                  "unknown directive '%q'"
+                  "parseWith names the directive, not the input"
+
+              // non-ASCII digits are an input miss, never .NET's text
+              Expect.equal
+                  (run "Instant.tryParseWith \"%Y-%m-%d\" \"٢٠٢٦-01-01\"")
+                  (VUnion("None", None))
+                  "Arabic-Indic digits: None"
+
+              Expect.equal
+                  (msgOf "Instant.parseWith \"%Y-%m-%d %H:%M:%S.%f\" \"2026-01-01 00:00:00.١\"")
+                  "Instant.parseWith: input does not match the format at position 21: expected digits for %f"
+                  "%f reads ASCII digits"
+
+              Expect.equal
+                  (msgOf "Instant.parseWith \"%Y-%m-%e\" \"2026-01-١\"")
+                  "Instant.parseWith: input does not match the format at position 9: expected a day for %e"
+                  "%e reads ASCII digits"
           }
           test "epoch round-trip; Ord sorts; Eq holds" {
               Expect.equal (run "Instant.ofEpochMs 1500 |> Instant.epochMs") (VInt 1500L) ""
@@ -29277,6 +30204,17 @@ let portMembersTests =
                   "#infer spelling"
                   "the directive-in-a-file misuse is taught"
           }
+          test "a weir name heading $( ) names the program spellings, never an expectation dump" {
+              let diags = diagsIn "d.weir" [ "let date = 3"; "print $(date)" ]
+
+              match diags |> List.filter (fun d -> d.Severity = "error") with
+              | [ d ] ->
+                  let m = d.Message.Replace("\r\n", " ").Replace("\n", " ")
+                  Expect.stringContains m "'date' is a weir name, not a program — $(…) runs a program and captures its output" "named"
+                  Expect.stringContains m "write $(^date …) for a program of that name" "the program spelling"
+                  Expect.isFalse (m.Contains "Expecting") "no dump"
+              | other -> failtest $"expected one error, got {other}"
+          }
           test "a capture sigil x reifier teaches the in-parens spelling [D:exit-reifiers]" {
               mustSay
                   [ "let e = Env.ofPairs [(\"A\", \"1\")]"
@@ -30147,6 +31085,33 @@ let moduleSignatureTests =
                               d.Message
                               "'Lib.helper' is module-private (no signature) — add `let helper : int -> int` in the module to export it"
                               "the migration teaching, inferred type included"
+                      | [] -> failtest "the private member must refuse")
+          }
+          test "the private-member suggestion spells a writable signature: vars normalized, no row type" {
+              withDir
+                  [ "m.weir",
+                    [ "module M"
+                      "let _id x = x"
+                      "let _get r = r.id"
+                      "let pub : int -> int"
+                      "let pub n = _id (_get {| id = n |})" ]
+                    "a.weir", [ "import \"./m.weir\""; "print (show (M._id 3))" ]
+                    "b.weir", [ "import \"./m.weir\""; "print (show (M._get 3))" ] ]
+                  (fun td ->
+                      match diagsOf td "a.weir" with
+                      | d :: _ ->
+                          Expect.equal
+                              d.Message
+                              "'M._id' is module-private (no signature) — add `let _id : 'a -> 'a` in the module to export it"
+                              "normalized vars"
+                      | [] -> failtest "the private member must refuse"
+
+                      match diagsOf td "b.weir" with
+                      | d :: _ ->
+                          Expect.equal
+                              d.Message
+                              "'M._get' is module-private (no signature) — to export it, declare the record it reads as a type and add `let _get : …` naming it in the module (its inferred type reads fields of any record, which a signature cannot spell)"
+                              "a row type has no signature spelling"
                       | [] -> failtest "the private member must refuse")
           }
           test "a type a module imports crosses with the signatures that mention it (B23)" {
@@ -32142,21 +33107,78 @@ let replSaveDistillTests =
               Expect.equal dropped 0 "a self-contained binding is not a session-only drop"
               Expect.isTrue (distilledChecks lines) "and it checks clean"
           }
-          test "(d2) DROP: a dependent of a redeclared name is dropped, not saved above the redeclaration" {
-              // the dedup keeps `a`'s LAST form at its last position, so the
-              // earlier dependent would read an unbound `a` (a phantom command:
-              // check warns, run fails) — the guarantee drops it with the note
+          test "(d2) CHAIN: a dependent of a redefined name keeps the definition it read [D:repl-save-chain]" {
+              // the session's `b` read the FIRST `a`: the dedup alone would
+              // leave it reading a name bound only below it, so the earlier
+              // `a` is restored and the file computes the session's values
               let lines, dropped =
                   distill [ ("a", "let a = 1"); ("b", "let b = a + 1"); ("a", "let a = \"s\"") ]
 
-              Expect.equal lines [ "let _a = \"s\"" ] "only the redeclaration survives"
-              Expect.equal dropped 1 "the dependent counts for the note"
+              Expect.equal lines [ "let a = 1"; "let _b = a + 1"; "let _a = \"s\"" ] "the chain survives in order"
+              Expect.equal dropped 0 "nothing referenced session-only state"
+              Expect.isTrue (distilledChecks lines) "and it checks clean"
 
               let lines, dropped =
-                  distill [ ("f", "let f n = n + 1"); ("g", "let g = f 1"); ("f", "let f s = s + \"x\"") ]
+                  distill [ ("f", "let f x = x + 1"); ("g", "let g x = f x"); ("f", "let f x = x * 10") ]
 
-              Expect.isFalse (lines |> List.exists (fun l -> l.Contains "f 1")) $"the dependent call is dropped: {lines}"
-              Expect.equal dropped 1 "one drop"
+              Expect.equal lines [ "let f x = x + 1"; "let _g x = f x"; "let _f x = x * 10" ] "g keeps the f it called"
+              Expect.equal dropped 0 "no drop"
+          }
+          test "(d3) CHAIN: a shadowing chain is saved whole, not dropped [D:repl-save-chain]" {
+              let lines, dropped =
+                  distill [ ("xs", "let xs = [1; 2]"); ("xs", "let xs = xs |> Seq.map (fun x -> x * 2)") ]
+
+              Expect.equal lines [ "let xs = [1; 2]"; "let _xs = xs |> Seq.map (fun x -> x * 2)" ] "both links"
+              Expect.equal dropped 0 "no drop"
+
+              let lines, _ = distill [ ("a", "let a = 1"); ("a", "let a = a + 1"); ("a", "let a = a + 1") ]
+              Expect.equal lines [ "let a = 1"; "let a = a + 1"; "let _a = a + 1" ] "a three-link chain"
+          }
+          test "(d4) a superseded type's values are dropped, never saved under the new type" {
+              let lines, dropped =
+                  Weir.Repl.distillSession
+                      realResolver
+                      (fun _ -> None)
+                      [ Weir.Repl.SaveDef("T", "type T = A | B", [ "A"; "B" ])
+                        Weir.Repl.SaveDef("t", "let t = A", [])
+                        Weir.Repl.SaveDef("T", "type T = C | D", [ "C"; "D" ])
+                        Weir.Repl.SaveDef("u", "let u = C", []) ]
+
+              Expect.equal lines [ "type T = C | D"; "let _u = C" ] "the old-shape value is gone"
+              Expect.equal dropped 1 "and counted"
+          }
+          test "(d5) a user `it` an echo rebound is session-only state [D:repl-it]" {
+              // session: let it = 5; 3 (echo rebinds it); let y = it + 1 -> 4.
+              // Saving `let it = 5` + `let y = it + 1` would compute 6
+              let lines, dropped =
+                  Weir.Repl.distillSession
+                      realResolver
+                      (fun _ -> None)
+                      [ Weir.Repl.SaveDef("it", "let it = 5", [])
+                        Weir.Repl.SaveEcho
+                        Weir.Repl.SaveDef("y", "let y = it + 1", []) ]
+
+              Expect.isFalse (lines |> List.exists (fun l -> l.Contains "it + 1")) $"the reader is dropped: {lines}"
+              Expect.equal dropped 1 "and counted"
+
+              // with no echo in between the user's `it` is the value read
+              let lines, _ =
+                  Weir.Repl.distillSession
+                      realResolver
+                      (fun _ -> None)
+                      [ Weir.Repl.SaveDef("it", "let it = 5", []); Weir.Repl.SaveDef("y", "let y = it + 1", []) ]
+
+              Expect.equal lines [ "let it = 5"; "let _y = it + 1" ] "kept"
+          }
+          test "(d6) a session let named like a bare alias is the user's value, never qualified or alias-desugared" {
+              let aliasOf n =
+                  if n = "find" then Some("echo", [ "FOUND" ]) else None
+
+              let lines, dropped =
+                  Weir.Repl.distillDefs realResolver aliasOf [ ("find", "let find = 3"); ("r", "let r = find + 1") ]
+
+              Expect.equal lines [ "let find = 3"; "let _r = find + 1" ] "no Seq.find, no echo FOUND"
+              Expect.equal dropped 0 "no drop"
           }
           test "(f) PROTECT is surgical: a binder a later survivor reads keeps its name" {
               // the chained-session shape: `base` is read by `total`, only
@@ -32321,6 +33343,39 @@ let cmdChainTests =
               match Weir.Parser.parseLine realResolver "git status | and" with
               | Error e -> Expect.stringContains e "'| and' must be followed by a command" "teaches"
               | Ok other -> failtest $"expected an error, got {other}"
+          }
+          test "| and / | or after a weir value: one teaching at check and run [D:value-chain-word]" {
+              for lines, kw, col in
+                  [ [ "42 | and echo x" ], "and", 6
+                    [ "true | or echo x" ], "or", 8
+                    [ "false | or print \"fallback\"" ], "or", 9
+                    [ "let xs = [\"a\"]"; "xs | and echo x" ], "and", 6
+                    [ "if true then"; "    42 | and echo x" ], "and", 10 ] do
+                  let msg =
+                      $"'| {kw}' must follow an external command or a pipeline of them — the left side here is a weir value, which has no exit code; to branch on a value, write an if"
+
+                  match errorsIn "vc.weir" lines with
+                  | d :: _ ->
+                      Expect.equal (d.Message.Replace("\r\n", " ").Replace("\n", " ")) msg $"check: {lines}"
+                      Expect.equal (d.Line, d.Col) (List.length lines, col) $"at the chain word: {lines}"
+                  | [] -> failtest $"check must refuse: {lines}"
+
+                  match Weir.Parser.parseLine realResolver ((List.last lines).Trim()) with
+                  | Error m -> Expect.stringContains (m.Replace("\r\n", " ").Replace("\n", " ")) msg $"run: {lines}"
+                  | Ok other -> failtest $"run must refuse: {other}"
+          }
+          test "| and before a weir name teaches the and repair, the same at check and run [D:value-chain-word]" {
+              let msg =
+                  "'exit' is a weir name, not a program — '| and' must be followed by a command; to run weir code when the command succeeds, use `if <command> | succeeds then …`; to run a program named exit, write ^exit"
+
+              for lines in [ [ "echo a | and exit 3" ]; [ "if true then"; "    echo a | and exit 3" ] ] do
+                  match errorsIn "an.weir" lines with
+                  | d :: _ -> Expect.equal (d.Message.Replace("\r\n", " ").Replace("\n", " ")) msg $"check: {lines}"
+                  | [] -> failtest $"check must refuse: {lines}"
+
+              match Weir.Parser.parseLine realResolver "git status | and exit 3" with
+              | Error m -> Expect.stringContains (m.Replace("\r\n", " ").Replace("\n", " ")) msg "run"
+              | Ok other -> failtest $"run must refuse: {other}"
           } ]
 
 let aliasTests =
@@ -32380,6 +33435,26 @@ let aliasTests =
                   Expect.isFalse (s.Contains "kubectl") "no head-rewrite in argument position"
               | Ok other -> failtest $"expected a git ECmd, got {other}"
               | Error e -> failtest $"parse failed: {e}"
+          }
+          test "(e2) a name bound in scope beats the alias table [D:alias-binding-shadow]" {
+              // a parameter, a lambda binder, a match-arm binder and a
+              // block let are names bound in scope: `k + 1` reads them,
+              // never runs `kubectl + 1`
+              for src in
+                  [ "let f k = k + 1"
+                    "[1] |> Seq.map (fun k -> k + 1)"
+                    "match 3 with | k -> k + 1"
+                    "let g () = let k = 5 in k + 1" ] do
+                  match Weir.Parser.parseLine aliasResolver src with
+                  | Ok stmt ->
+                      let s = sprintf "%A" stmt
+                      Expect.isFalse (s.Contains "kubectl") $"{src}: the binding wins"
+                  | Error e -> failtest $"{src}: {e}"
+
+              // and outside the binding the alias still heads a command
+              match parseWith aliasResolver "k get po" with
+              | Ok s -> Expect.stringContains s "kubectl" "the alias still resolves an unbound head"
+              | Error e -> failtest e
           }
           test "(f) REPL-only: the base script resolver carries no aliases" {
               // realResolver (no AliasHead) — `k` is not a known external,
@@ -32546,6 +33621,15 @@ let lsCommandTeachTests =
               let g = (checkErr "let xs = [1; 2] in xs -5").Message
               Expect.stringContains g "not a function taking" "a user value is unaffected"
               Expect.isFalse (g.Contains "shell command") "no ^-advice for a non-command value"
+          }
+          test "a user's own `ls` binding is named as the binding it is, with no #alias advice" {
+              match diagsIn "ls.weir" [ "let ls = \"x\""; "ls -la" ] |> List.filter (fun d -> d.Severity = "error") with
+              | [ d ] ->
+                  Expect.equal
+                      d.Message
+                      "'ls' is bound here to a string value, not the shell command — to run the external 'ls' with arguments, force it external: ^ls …"
+                      "no 'weir's typed', no #alias in a script"
+              | other -> failtest $"expected one error, got {other}"
           } ]
 
 let tildeTests =
@@ -33825,6 +34909,23 @@ let hardeningTests =
               | Error msg -> Expect.stringContains msg "attribute argument out of range (64-bit): -99999999999999999999" "the range refusal names the signed digits"
               | Ok _ -> failtest "expected the overflow to be rejected"
           }
+          test "a '-' not followed by a number in an attribute argument teaches [D:attr-negative-literal]" {
+              for src, col in
+                  [ "type Cfg = { [<Default -x>] d: int }", 24
+                    "type Cfg = { [<Default -\"a\">] d: string }", 24
+                    "type Cfg = { [<Default - 1>] d: int }", 24
+                    "type Cfg = { [<Default --1>] d: int }", 24
+                    "type U = | [<Wire -a>] A | B", 19 ] do
+                  match errorsIn "neg.weir" [ src ] with
+                  | d :: _ ->
+                      Expect.equal
+                          (d.Message.Replace("\r\n", " ").Replace("\n", " "))
+                          "a '-' in an attribute argument must be followed by a number, as in [<Default -1>] — attribute arguments are literals"
+                          src
+
+                      Expect.equal (d.Line, d.Col) (1, col) $"on the '-': {src}"
+                  | [] -> failtest $"must refuse: {src}"
+          }
           test "stacked attribute lines on one field (and case) accumulate [D:attr-stacked-lines]" {
               Expect.isEmpty
                   (errorMsgsIn
@@ -34850,6 +35951,53 @@ let argsHelpTests =
                         "j3.weir: unexpected argument after '--tokn'"
                         "run 'j3.weir go --help' for usage" ])
                   "shared twin: the withheld value never anchors as the command"
+          }
+          test "usage error: every unknown flag spelling withholds the token after it [D:args-unknown-flag-no-echo]" {
+              let def = record "Cli" [ "tok", TSecret; "n", TInt ] []
+
+              Expect.equal
+                  (usageErr (Weir.Check.ArgsRecord def) [ "-tok"; "hunter2"; "-n"; "5"; "-zz"; "hunter3"; "--tok"; "s" ])
+                  (String.concat
+                      "\n"
+                      [ "j3.weir: unknown flag '-t***' — a flag's value is the next argument: write '-t <value>'"
+                        "j3.weir: unexpected argument after '-t…'"
+                        "j3.weir: unexpected argument '-z…'"
+                        "j3.weir: unexpected argument after '-z…'"
+                        "run 'j3.weir --help' for usage" ])
+                  "single-dash long and attached short"
+
+              Expect.equal
+                  (usageErr cmdUnion [ "status"; "--tok"; "hunter2"; "-pw=x"; "hunter3"; "plain" ])
+                  (String.concat
+                      "\n"
+                      [ "j3.weir: unexpected argument '--tok' — 'status' takes nothing after it"
+                        "j3.weir: unexpected argument after '--tok'"
+                        "j3.weir: unexpected argument '-p…' — 'status' takes nothing after it"
+                        "j3.weir: unexpected argument after '-p…'"
+                        "j3.weir: unexpected argument 'plain' — 'status' takes nothing after it"
+                        "run 'j3.weir status --help' for usage" ])
+                  "a bare case of a pure-union load"
+
+              Expect.equal
+                  (usageErr cmdUnion [ "--tokk=hunter2"; "hunter3" ])
+                  (String.concat
+                      "\n"
+                      [ "j3.weir: unexpected flag '--tokk=…' — the command comes first, one of:"
+                        "  deploy   Ships builds."
+                        "  status   show status"
+                        "run 'j3.weir --help' for usage" ])
+                  "a flag where a pure union's command goes"
+          }
+          test "usage error: an unknown flag never swallows a command word [D:args-unknown-flag-command]" {
+              let deploy = record "Deploy" [ "tok", TSecret; "n", TInt ] []
+              let sub = union "Sub" [ "Deploy", Some(TNamed("Deploy", [])); "Status", None ] []
+              let cli = record "Cli" [ "verbose", TBool; "cmd", TNamed("Sub", []) ] []
+              let shared = Weir.Check.ArgsShared(cli, "cmd", sub, Map.ofList [ "Deploy", deploy ])
+
+              Expect.equal
+                  (usageErr shared [ "--verbos"; "deploy"; "--tok"; "x"; "-n"; "5" ])
+                  "j3.weir: unknown flag '--verbos'. Did you mean '--verbose'?\nrun 'j3.weir deploy --help' for usage"
+                  "only the did-you-mean; the payload flags bind"
           }
           test "usage error: every bad value reads '--flag: not a <type>: <value>' [D:boundary-bad-value]" {
               let def =
@@ -36857,6 +38005,71 @@ let hunt3r5FormatTests =
                   "{\"s\":\"x\u00a0\",\"t\":\"\u3000y\",\"\u3000k\":\"v\",\"u\":\"z\"}"
                   "NBSP and U+3000 are content"
           }
+          test "yaml: Unicode white space survives keys, quoted continuations and block lines; weir reads its own output [D:yaml-ws]" {
+              Expect.equal
+                  (run (lit [ "- \u00a0x: 1"; "- 'x\u00a0"; "  y'" ] + " |> Yaml.parse |> to json") |> text)
+                  "[{\"\u00a0x\":1},\"x\u00a0 y\"]"
+                  "a leading NBSP key, a trailing NBSP before a fold"
+
+              for v in [ "\"x\\n\u00a0\""; "\"x\\n\u3000\""; "\"\u2003\\ny\"" ] do
+                  Expect.equal
+                      (run $"{{| a = {v} |}} |> to yaml |> from yaml {{| a: string |}} |> fun b -> b.a == {v}")
+                      (VBool true)
+                      $"reads back: {v}"
+          }
+          test "yaml: `- - x` nests a sequence on the dash line, any depth, as PyYAML reads it [D:yaml-inline-nested-seq]" {
+              let json lines = run (lit lines + " |> Yaml.parse |> to json") |> text
+              Expect.equal (json [ "- - 1" ]) "[[1]]" "one level"
+              Expect.equal (json [ "- - - a"; "    - b"; "  - c"; "- d" ]) "[[[\"a\",\"b\"],\"c\"],\"d\"]" "three levels, siblings at each column"
+              Expect.equal (json [ "- - k: v"; "    j: w" ]) "[[{\"k\":\"v\",\"j\":\"w\"}]]" "a compact map inside"
+              Expect.equal (json [ "- -"; "- -   x" ]) "[[null],[\"x\"]]" "an empty inner item; the dash gap"
+              Expect.equal (json [ "m:"; "- - a" ]) "{\"m\":[[\"a\"]]}" "under a flush-left key"
+
+              // depth x line length is bounded: each level keeps its own copy of the line
+              let ladder depth tail = String.replicate depth "- " + String.replicate tail "a"
+
+              match Weir.Yaml.parseDocs [ 1, ladder 300 400000 ] with
+              | Error msg ->
+                  Expect.equal
+                      msg
+                      "line 1: yaml nesting is too deep for a line this long — split the item over several lines"
+                      "a deep ladder on a long line refuses"
+              | Ok _ -> failtest "a 300-deep ladder on a 400k line must refuse, not allocate depth x length"
+
+              Expect.isOk (Weir.Yaml.parseDocs [ 1, ladder 300 1000 ]) "a deep ladder on a short line still reads"
+          }
+          test "yaml: quotes — `''` inside a single-quoted key or item, an escaped quote ending a folded line [D:quoted-fold]" {
+              let json lines = run (lit lines + " |> Yaml.parse |> to json") |> text
+              Expect.equal (json [ "- 'it''s: here'" ]) "[\"it's: here\"]" "an item, not a mapping"
+              Expect.equal (json [ "'a''b: c': d" ]) "{\"a'b: c\":\"d\"}" "a quoted key with '' and ': '"
+              Expect.equal (json [ "r: 'a''"; "  b'" ]) "{\"r\":\"a' b\"}" "'' ends the first line"
+              Expect.equal (json [ "r: \"a\\\""; "  b\"" ]) "{\"r\":\"a\\\" b\"}" "an escaped double quote ends the first line"
+
+              Expect.equal
+                  (msgOf (lit [ "r: 'a''" ] + " |> Yaml.parse"))
+                  "Yaml.parse: line 1: unclosed single-quoted scalar — the closing ' must appear before the block dedents to the key's column"
+                  "the unclosed one-liner refuses"
+
+              Expect.equal
+                  (msgOf (lit [ "r: 'a'b'" ] + " |> Yaml.parse"))
+                  "Yaml.parse: line 1: content after the closing ' — the quoted value ends at its closing quote"
+                  "text after the closing quote refuses"
+          }
+          test "to yaml quotes a leading `...` and U+FEFF so they read back [D:yaml-v1]" {
+              Expect.equal (run "\"...\" |> to yaml" |> text) "\"...\"" "a document end otherwise"
+              Expect.equal (run "\"\\u{FEFF}a\" |> to yaml" |> text) "\"\\uFEFFa\"" "a byte-order mark otherwise"
+
+              for v in [ "\"...\""; "\"... x\""; "\"\\u{FEFF}a\"" ] do
+                  Expect.equal
+                      (run $"{v} |> to yaml |> Yaml.parse |> fun y -> match y with | YStr t -> t == {v} | _ -> false")
+                      (VBool true)
+                      $"round-trips: {v}"
+
+              Expect.equal
+                  (run "[\"a\"; \"...\"; \"b\"] |> to yaml stream |> Str.join \"|\"")
+                  (VStr "a|---|\"...\"|---|b")
+                  "no stream element lost"
+          }
           test "yaml: a block-scalar line starting with % is content; a column-0 directive still refuses [D:block-scalars]" {
               Expect.equal
                   (run ("show (" + lit [ "data:"; "  fmt: |"; "    LogFormat"; "    %h %l %u %t" ] + " |> from yaml {| data: {| fmt: string |} |})"))
@@ -38810,6 +40023,7 @@ let allTests =
           sigDynamicTests
           sizeTests
           windowsFindingsTests
+          dumpTeachTests
           sizedFindingsTests
           walkCohortTests
           pinsWalkTests

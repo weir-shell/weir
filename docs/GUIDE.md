@@ -1109,6 +1109,9 @@ weir process left to feed it. And it can't sit inside a `within`
 block of any kind — `weir check` refuses it there, because the
 replaced process would skip the scope's cleanup (the temp dir, the
 scoped process, the `always` block). Close the scope, then exec.
+The same goes for a function that execs, called inside the block or
+in a `pfor` arm; if the check can't follow the call, the run refuses
+it.
 
 For bash's `&&`/`||` one-liners, chain on the exit status directly:
 
@@ -1194,6 +1197,9 @@ need a shell. If a file really has to be sourced, run it in a shell:
 
 `sh -c "set -a; . ./file.env; your-command"`
 
+`Env.fromFile` reads the file once, when it is called, and reports a
+bad line there; later changes to the file don't reach the bound value.
+
 Bind the environment once, then run commands with it using
 `within env e`. Or put its name in a capture: `$e(...)` runs the
 command with `e` and captures the output:
@@ -1267,6 +1273,10 @@ The `Regex` pattern only accepts raw strings: `@"..."`, or
 escapes is an error, so you can't fall into the double-escaping
 trap. If you need to build a regex at runtime, use `Str.isMatch` or
 `Str.rmatch`, which take any string.
+
+Regex counts characters as the rest of weir does, by code point: `.`
+matches a whole emoji, and match positions and captures never split
+one.
 
 To pull every match out of a text, use `Str.rmatchAll`. It gives you
 the capture groups of each match, lazily. There's no `Option`: no
@@ -1398,6 +1408,10 @@ let cutoff = Instant.parse "2026-08-14T10:00:00Z"
         | None -> None)
     |> Seq.iter print
 ```
+
+A mistake in the format itself (an unknown `%` directive, a lone `%`
+at the end, no full date) is an error even from `tryParseWith`,
+whatever the text.
 
 Instants can be compared and sorted. `Args.load` and `Env.load`
 parse ISO text into `Instant` fields (`--since 2026-08-01`). JSON
@@ -2438,9 +2452,10 @@ also says whether the watched process was still running.
 The process's output goes to files on disk, so it isn't limited by
 memory. It never reaches your terminal or the script's own stdout,
 so a noisy server can't break `weir script | next`. `Proc.tail`
-reads about the last 100 lines. To see those lines as they're
-written, pass the program's unbuffered flag (python's `-u`), since
-programs buffer stdout when it isn't a terminal.
+reads about the last 100 lines (from the end of the file, at most
+1 MiB; a line cut by that limit starts with `…`). To see those lines
+as they're written, pass the program's unbuffered flag (python's
+`-u`), since programs buffer stdout when it isn't a terminal.
 
 A background process's exit code is just data. This is the one place
 where a failing exit doesn't raise an error by default. You only see

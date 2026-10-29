@@ -20,7 +20,9 @@ In any editor with LSP support you get:
   signature file and the tool version recorded there. It reads only
   the signature file, so it works even when the tool isn't installed.
   On a `schema=` name, hover shows the vendored schema file, where it
-  came from, and whether it catches unknown fields.
+  came from, and whether it catches unknown fields. Type variables read
+  `'a`, `'b`, … in hover and signature help, never internal names;
+  declared ones keep their names.
 - **Go to definition** for locals, module members, import paths,
   signature files and vendored schemas.
 - **Find references** and **highlight** of a name's uses across the
@@ -31,8 +33,11 @@ In any editor with LSP support you get:
   case declared in the file — the declaration word, accesses
   (`p.id`, `p.a.id`, `_.id`), literal keys, `with` updates, patterns,
   construction, the `from json T` / `Env.load T` / `Args.load T`
-  slots and type references in other declarations. On a builtin or
-  an imported member the uses in this file are listed. Comments and
+  slots, a validated type's `T.create`, types inside an anonymous
+  adapter type (`from json {| p: Point |}`) and type references in
+  other declarations. On a builtin or an imported member the uses in
+  this file are listed, an imported union case's expression and
+  pattern uses together. Comments and
   strings are never included; a row-typed access (`let label r =
   r.id`) belongs to no named field and is not listed.
 - **Rename** (F2) of a value binder, with the same reach — the sig
@@ -57,7 +62,12 @@ In any editor with LSP support you get:
   name is uppercase and no visible type or module. A field accessed
   through a row-typed function (`let label r = r.id`) refuses, naming
   the site: the access could serve any record with that field, so
-  annotate the call or rename by hand. Init files and signature files
+  annotate the call or rename by hand. A new name with a non-ASCII
+  digit is refused. The result is re-checked, and a rename that would
+  leave an error is refused, naming it — most often a length change
+  that breaks a column-aligned layout, since rename does not re-align
+  other lines: pick a name of the same length, or rename by hand and
+  re-align. Init files and signature files
   do not rename. Other files that import a renamed member show the
   breakage as diagnostics on their next refresh.
 - **Completion** of module members (type `Lib.` to list them), and of

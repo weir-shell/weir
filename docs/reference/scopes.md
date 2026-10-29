@@ -36,7 +36,9 @@ live: a terminal Ctrl+C is not sent to it, and `kill -INT` works as usual. The b
 and the last expression is its value. It also works as a plain
 statement. One statement is refused inside any `within` block, at
 check time: `cmd | exec`. The replaced process would skip the
-release, so close the scope first and exec after it.
+release, so close the scope first and exec after it. That includes
+an exec reached through a function called in the block; one the check
+can't see is refused when it runs.
 
 | form | holds | on every exit |
 |---|---|---|

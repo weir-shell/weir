@@ -44,7 +44,8 @@ usage: weir                                    the REPL
   its first 100 elements, the REPL's echo limit.
   Newlines separate statements, just as in a file. The last statement
   must be an expression; if it is a declaration (a `let`, a `type`,
-  …), the error says which kind.
+  …), the error says which kind. Directives are refused: `-e` takes
+  weir code only (the REPL's directives work at the prompt).
 
 ### Checking
 
@@ -74,6 +75,10 @@ usage: weir                                    the REPL
   isn't formatted, which is what you want in CI. A shebang line is
   left exactly as written, and a formatted file ends in one newline.
   A file that doesn't parse is not touched; the error names its line.
+  Line breaks are read as check reads them (LF, CRLF or a bare CR). In
+  an init file, fmt seats every `#session` field at column 4. A
+  heredoc line indented less than the block's first line, a comment
+  included, is refused with its line and column.
 
 ### The project subcommands
 

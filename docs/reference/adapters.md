@@ -101,6 +101,12 @@ the line, and a tab before `#` starts a comment as a space does. A
 plain value trims only spaces and tabs, so a no-break space or U+3000
 is part of the value.
 
+A block sequence may sit indented under its key or at the key's own
+column (kubectl's `items:` then `- apiVersion: v1`), and a sequence may
+nest on the dash line (`- - x`, at any depth), read as PyYAML reads it.
+A `yaml` block takes the same forms. Text after a quoted value's
+closing quote (`'a'b`) is an error.
+
 Numbers follow YAML 1.2's core schema, which differs from the YAML 1.1
 readers many tools still use (PyYAML, kubectl's go-yaml v2):
 

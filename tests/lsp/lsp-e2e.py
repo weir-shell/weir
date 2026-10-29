@@ -1577,6 +1577,20 @@ note = [d for d in got[nuri(ent8_uri)] if d["code"] == "imported-here"]
 expect(note and note[0].get("relatedInformation")
        and nuri(note[0]["relatedInformation"][0]["location"]["uri"]) == nuri(lib8_uri),
        f"the imported-here note relates to the module site: {note}")
+# a module's parse error arrives from its own analysis AND (relabelled
+# `check`) through the open importer: published once, under its own
+# code [D:module-error-once]
+LIB8_PARSE = 'module Mytool\nlet version = "mytool 1.0"\ntype Cmd = { dryRun: bool; }\n'
+open(lib8, "w").write(LIB8_PARSE)
+send8({"jsonrpc": "2.0", "method": "textDocument/didChange",
+       "params": {"textDocument": {"uri": lib8_uri, "version": 3}, "contentChanges": [{"text": LIB8_PARSE}]}})
+got = collect8([lib8_uri, ent8_uri])
+at3 = [(d["code"], d["message"]) for d in got[nuri(lib8_uri)] if d["range"]["start"]["line"] == 2]
+expect(len(at3) == 1 and at3[0][0] == "parse", f"the module's parse error is published once, as parse: {at3}")
+open(lib8, "w").write(LIB8_BAD)
+send8({"jsonrpc": "2.0", "method": "textDocument/didChange",
+       "params": {"textDocument": {"uri": lib8_uri, "version": 4}, "contentChanges": [{"text": LIB8_BAD}]}})
+collect8([lib8_uri, ent8_uri])
 # the module CLOSED (the bad file stays on disk): its error now comes
 # through the import channel, published on its own uri, related to the
 # entry's import line

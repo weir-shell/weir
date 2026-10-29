@@ -3374,3 +3374,22 @@ let registerAlways () : int =
 // claim-by-removal: true for the one caller that took the cleanup
 // [D:within-always-any]
 let deregisterAlways (id: int) : bool = fst (liveAlways.TryRemove id)
+
+/// why `exec` may not replace the process now [D:exec-scope-transitive]:
+/// a parallel arm (its siblings and the join are owed), or a live
+/// scope — a `within`, an `always` (pending or running), whose teardown
+/// would never run. None when nothing is owed
+let execScopeRefusal () : string option =
+    let openFrames = lock watchdogGate (fun () -> mainFrames.Count > 0)
+
+    if parallelDepth.Value > 0 then
+        Some
+            "'exec' inside a parallel arm (pfor, Seq.pmap, Seq.piter, Seq.pfirst) is refused — exec replaces weir's process, so the other arms would be orphaned and the join would never run; run the command without exec, or exec after the fan-out"
+    elif cleanupDepth.Value > 0 then
+        Some
+            "'exec' inside always is refused — exec replaces weir's process, so the rest of the teardown would never run; run the command without exec"
+    elif openFrames || not liveTmpDirs.IsEmpty || not liveAlways.IsEmpty then
+        Some
+            "'exec' while a scope is open (a within or always block) is refused — exec replaces weir's process, so the scope's teardown would never run; run the command without exec, or exec after the scope"
+    else
+        None

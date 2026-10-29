@@ -19,6 +19,54 @@ open Weir.Check
 
 open System.Text.Json
 
+// the checker's fresh type variables ('a1, 'b3) never reach the editor
+// [D:no-raw-tyvars]: hover and signature help rename them to 'a, 'b, …
+// in first-appearance order, skipping the letters a declared parameter
+// already spells — the REPL echo's renaming, minus its reach into the
+// declared names a type decl's fields carry
+let private isFreshVar (v: string) =
+    v.Length >= 2 && Char.IsLetter v[0] && v.Substring 1 |> Seq.forall Char.IsDigit
+
+let private displayTy (ty: Ty) : Ty =
+    let declared =
+        tyVars ty |> Set.filter (fun v -> not (isFreshVar v)) |> Set.map (fun v -> v.TrimStart '\'')
+
+    let mapping = Collections.Generic.Dictionary<string, string>()
+
+    let renameVar (v: string) =
+        match mapping.TryGetValue v with
+        | true, r -> r
+        | _ ->
+            let r =
+                Seq.initInfinite id
+                |> Seq.map (fun i -> if i < 26 then string (char (int 'a' + i)) else $"{char (int 'a' + i % 26)}{i / 26}")
+                |> Seq.find (fun c -> not (declared.Contains c) && not (mapping.ContainsValue c))
+
+            mapping[v] <- r
+            r
+
+    let rec go (t: Ty) : Ty =
+        match t with
+        | TVar v when isFreshVar v -> TVar(renameVar v)
+        | TFun(a, b) ->
+            let a' = go a
+            TFun(a', go b)
+        | TSeq e -> TSeq(go e)
+        | TTuple ts -> TTuple(List.map go ts)
+        | TNamed(n, args) -> TNamed(n, List.map go args)
+        | TRowVar(r, fields) -> TRowVar(r, fields |> List.map (fun (f, ft) -> f, go ft))
+        | t -> t
+
+    go ty
+
+let private formatTy (ty: Ty) : string = Types.formatTy (displayTy ty)
+
+let private formatSignature (name: string) (paramNames: string list) (ty: Ty) : string =
+    Types.formatSignature name paramNames (displayTy ty)
+
+let private formatSignatureParts (name: string) (paramNames: string list) (ty: Ty) =
+    Types.formatSignatureParts name paramNames (displayTy ty)
+
 /// a `///` comment's lines as paragraphs [D:hover-reflow]: lines the author
 /// wrapped join with a space (a client showing one line, or wrapping on its
 /// own, must not get the source's line breaks); blank lines, list items and
@@ -488,7 +536,7 @@ let private isReplInitPath (path: string) : bool =
 /// the lines the checker/completer should see for a document — init
 /// directives rewritten for the REPL init file, the raw text otherwise
 let private effectiveLines (uri: string) (text: string) : string list =
-    let raw = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+    let raw = Script.splitSourceText text
 
     // directives rewrite for every init file [D:init-marker]: a marked
     // one anywhere, and the canonical path even unmarked (so its only
@@ -551,7 +599,7 @@ let private analyze (uri: string) (text: string) =
     // analyze against the real path so imports resolve relative to the file;
     // diagnostics come back File-identified (the entry + its modules)
     let path = uriToPath uri
-    let raw = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+    let raw = Script.splitSourceText text
     let canonical = isReplInitPath path
 
     // an init file (marked anywhere, or the canonical path) checks as the
@@ -1987,6 +2035,57 @@ let private memberOccurrences
                     | _ -> None
 
                 keyOf te.Ty |> Option.iter (fun k -> typeUse k te.Span)
+
+                // an anonymous record adapter type names its field types
+                // in the slot too (`{| users: seq<User> |}`) — each is a
+                // use of that type [D:lsp-rename-members]
+                let rec namedIn (seen: Set<string>) (ty: Ty) : string list =
+                    match ty with
+                    | TFun(_, o) -> namedIn seen o
+                    | TSeq t
+                    | TNamed("Map", [ _; t ]) -> namedIn seen t
+                    | TNamed(k, args) when isAnon k && not (seen.Contains k) ->
+                        (match recordOf k with
+                         | Some d -> d.Fields |> List.collect (snd >> namedIn (seen.Add k))
+                         | None -> [])
+                        @ (args |> List.collect (namedIn seen))
+                    | TNamed(k, args) when not (isAnon k) -> k :: (args |> List.collect (namedIn seen))
+                    | TTuple ts -> ts |> List.collect (namedIn seen)
+                    | _ -> []
+
+                match keyOf te.Ty with
+                | Some k when isAnon k ->
+                    let mask = stringMask text
+                    let lo = max 0 (te.Span.Start.Col - 1)
+                    let hi = min text.Length (te.Span.End.Col - 1)
+
+                    for inner in namedIn Set.empty (TNamed(k, [])) |> List.distinct do
+                        if declared.Contains(plainName inner) then
+                            for jc in wordFinds (plainName inner) text mask lo hi do
+                                add (plainName inner) (MemberKey(inner, None)) false (Some jc)
+                | _ -> ()
+            | TEVar n when Types.isUserName n && n.Contains '.' && Char.IsUpper n[n.LastIndexOf '.' + 1] ->
+                // an imported union's case in an expression (`Lib.Square p`),
+                // keyed as its pattern sites are [D:qualified-case-patterns]
+                let alias = n.Substring(0, n.LastIndexOf '.')
+                let ctor = n.Substring(n.LastIndexOf '.' + 1)
+
+                env.ModuleTypes
+                |> Map.tryFind alias
+                |> Option.bind (
+                    Map.tryPick (fun _ key ->
+                        match Map.tryFind key env.Types with
+                        | Some(Union d) when d.Cases |> List.exists (fst >> (=) ctor) -> Some key
+                        | _ -> None)
+                )
+                |> Option.iter (fun k ->
+                    let lo = max 0 (te.Span.Start.Col - 1) + alias.Length + 1
+                    caseUse k ctor (wordFind ctor text lo (min text.Length (lo + ctor.Length))))
+            | TEVar n when n.StartsWith Types.createVarPrefix ->
+                // `T.create` [D:validated-types]: the type word is a use of T
+                match te.Ty with
+                | TFun(_, TNamed(key, _)) -> typeUse key te.Span
+                | _ -> ()
             | TEFromYaml(tyName, _, _)
             | TEFromToml(tyName, _) -> typeUse tyName te.Span
             | TEEnvLoad(def, _) -> typeUse def.Name te.Span
@@ -2121,8 +2220,19 @@ let private occurrenceAt
     let stmts = withPartials stmts0 partials
     let table = fileOccurrences stmts
 
-    table
-    |> List.tryFind (fun o -> o.OLine = line && o.OCol <= col && col < o.OCol + o.OName.Length)
+    let covering =
+        table
+        |> List.filter (fun o -> o.OLine = line && o.OCol <= col && col < o.OCol + o.OName.Length)
+
+    // an imported case's expression use sits in both tables (the value
+    // `Lib.Square`, the case `Square`): the case key is the one its
+    // pattern sites share, so it answers [D:qualified-case-patterns]
+    covering
+    |> List.tryFind (fun o ->
+        match o.Key with
+        | MemberKey(_, Some _) -> covering |> List.exists (fun v -> v.OName.Contains '.')
+        | _ -> false)
+    |> Option.orElse (List.tryHead covering)
     |> Option.map (fun o -> table, o)
 
 /// every occurrence of the binder at the cursor, as (physLine, physCol,
@@ -2180,7 +2290,7 @@ let private isSigFile (path: string) =
 let private isIdentName (n: string) =
     n.Length > 0
     && (Char.IsLetter n[0] || n[0] = '_')
-    && (n |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_'))
+    && (n |> Seq.forall (fun c -> Char.IsLetter c || (c >= '0' && c <= '9') || c = '_'))
 
 /// the renamable name at the cursor: the file's table, the occurrence
 /// under the cursor, and the scope extent as statement indices (first,
@@ -2463,7 +2573,7 @@ let private memberNameCheck
 /// textDocument/rename: every edit as (physLine, physCol, len), sorted,
 /// or the refusal. Re-validates the position (a client may skip
 /// prepareRename).
-let renameFor
+let private renameEditsFor
     (path: string)
     (lines: string list)
     (line: int)
@@ -2526,6 +2636,61 @@ let renameFor
                         Error
                             $"'{newName}' is already bound here (a builtin, or a binding above line {(fst arr[first]).Head}) — pick a name that is new in '{n}'s scope"
                     | None -> Ok(edits ()))
+
+/// a rename never breaks the file [D:lsp-rename]: the edits are applied
+/// and the result re-checked; a new error refuses. A length-changing
+/// rename inside a column-aligned layout (`let pt = { x = 1` over
+/// `           y = 2 }`) is refused, not re-aligned — a rename edits
+/// names, never other lines' indentation [D:lsp-rename-aligned]
+let renameFor
+    (path: string)
+    (lines: string list)
+    (line: int)
+    (col: int)
+    (newName: string)
+    : Result<(int * int * int) list, string> =
+    renameEditsFor path lines line col newName
+    |> Result.bind (fun edits ->
+        let arr = List.toArray lines
+
+        let oldName =
+            match edits with
+            | (l, c, len) :: _ when l >= 1 && l <= arr.Length && c - 1 + len <= arr[l - 1].Length ->
+                arr[l - 1].Substring(c - 1, len)
+            | _ -> ""
+
+        for l, c, len in edits |> List.sortByDescending (fun (l, c, _) -> l, c) do
+            if l >= 1 && l <= arr.Length && c >= 1 && c - 1 + len <= arr[l - 1].Length then
+                arr[l - 1] <- arr[l - 1].Substring(0, c - 1) + newName + arr[l - 1].Substring(c - 1 + len)
+
+        let errorsOf (ls: string list) =
+            let diags, _, _, _, _ = analyzeCached path ls
+
+            diags
+            |> List.filter (fun d -> d.Severity = "error" && d.File = path)
+            |> List.countBy (fun d -> d.Code)
+            |> Map.ofList
+
+        let before = errorsOf lines
+        let afterDiags, _, _, _, _ = analyzeCached path (List.ofArray arr)
+
+        let fresh =
+            afterDiags
+            |> List.filter (fun d -> d.Severity = "error" && d.File = path)
+            |> List.countBy (fun d -> d.Code)
+            |> List.tryPick (fun (code, n) ->
+                if n > defaultArg (Map.tryFind code before) 0 then
+                    afterDiags |> List.tryFind (fun d -> d.Severity = "error" && d.File = path && d.Code = code)
+                else
+                    None)
+
+        match fresh with
+        | None -> Ok edits
+        | Some d when d.Code = "layout" ->
+            Error
+                $"renaming '{oldName}' to '{newName}' would break the column alignment at line {d.Line} — a rename does not re-align other lines; pick a name of the same length, or rename by hand and re-align"
+        | Some d ->
+            Error $"renaming '{oldName}' to '{newName}' would leave an error at line {d.Line}: {d.Message}")
 
 // the within form answers [D:within-kinds] — one table, three
 // consumers. The kind hovers its doc + binds/consumes nature; the
@@ -4380,7 +4545,7 @@ let run (debug: bool) : int =
                 |> Seq.tryPick (fun kv -> if uriToPath kv.Key = absPath then Some kv.Value else None)
 
             match buffered with
-            | Some text -> Some(text.Replace("\r\n", "\n").Split('\n') |> Array.toList)
+            | Some text -> Some(Script.splitSourceText text)
             | None ->
                 if IO.File.Exists absPath then
                     Some(IO.File.ReadAllLines absPath |> Array.toList)
@@ -4632,11 +4797,20 @@ let run (debug: bool) : int =
         for kv in byUri do
             // the same file can be diagnosed both directly (open) and as a
             // dependency of another open doc; dedup by position+message,
-            // keeping the richer span (EndCol present)
+            // keeping the richer span (EndCol present). An importer
+            // relabels a module's error `check`, so the code is no part of
+            // its identity and the module's own label wins
+            // [D:module-error-once]
             toPublish[kv.Key] <-
                 (kv.Value
                  |> Seq.sortByDescending (fun d -> d.EndCol.IsSome)
-                 |> Seq.distinctBy (fun d -> d.Line, d.Col, d.Severity, d.Code, d.Message)
+                 |> Seq.groupBy (fun d -> d.Line, d.Col, d.Severity, d.Message)
+                 |> Seq.map (fun (_, ds) ->
+                     let richest = Seq.head ds
+
+                     match ds |> Seq.tryFind (fun d -> d.Code <> "check") with
+                     | Some own -> { richest with Code = own.Code }
+                     | None -> richest)
                  |> List.ofSeq)
 
         for kv in docs do
@@ -4820,7 +4994,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
                             | Some(_, text) ->
-                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let lines = Script.splitSourceText text
                                 let toks = semanticTokensFor lines
                                 w.WriteStartObject()
                                 w.WritePropertyName "data"
@@ -4943,7 +5117,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf (), posOf () with
                             | Some(uri, text), Some(line, col) ->
-                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let lines = Script.splitSourceText text
 
                                 // a #session field key reports the key + its
                                 // schema type, never the rewritten binder
@@ -4972,7 +5146,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf (), posOf () with
                             | Some(uri, text), Some(line, col) ->
-                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let lines = Script.splitSourceText text
 
                                 match definitionTarget (uriToPath uri) lines line col with
                                 | Some(fileOpt, pl, pc, len) ->
@@ -5005,7 +5179,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf (), posOf () with
                             | Some(uri, text), Some(line, col) ->
-                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let lines = Script.splitSourceText text
 
                                 match referencesFor (uriToPath uri) lines line col includeDeclaration with
                                 | Some occs ->
@@ -5026,7 +5200,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf (), posOf () with
                             | Some(uri, text), Some(line, col) ->
-                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let lines = Script.splitSourceText text
 
                                 match documentHighlightFor (uriToPath uri) lines line col with
                                 | Some occs ->
@@ -5050,7 +5224,7 @@ let run (debug: bool) : int =
                         let outcome =
                             match docOf (), posOf () with
                             | Some(uri, text), Some(line, col) ->
-                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let lines = Script.splitSourceText text
 
                                 prepareRenameFor (uriToPath uri) lines line col
                                 |> Result.map (fun (pl, pc, len) -> lines, pl, pc, len)
@@ -5070,7 +5244,7 @@ let run (debug: bool) : int =
                         let outcome =
                             match docOf (), posOf (), jStr "newName" ps with
                             | Some(uri, text), Some(line, col), Some newName ->
-                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let lines = Script.splitSourceText text
 
                                 renameFor (uriToPath uri) lines line col newName
                                 |> Result.map (fun edits -> uri, newName, edits)
@@ -5108,7 +5282,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
                             | Some(uri, text) ->
-                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let lines = Script.splitSourceText text
 
                                 match Fmt.formatSource (uriToPath uri) text with
                                 | Ok(formatted, true) ->
@@ -5155,7 +5329,7 @@ let run (debug: bool) : int =
                                 // column-preserving) so a #session field value
                                 // completes as the let-RHS it becomes [D:session-prompt]
                                 let effLines = effectiveLines uri text |> Array.ofList
-                                let origLines = text.Replace("\r\n", "\n").Split('\n')
+                                let origLines = (Script.splitSourceText text |> Array.ofList)
 
                                 // a #alias line is blanked in effectiveLines, so
                                 // its command completes off the ORIGINAL line
@@ -5272,7 +5446,7 @@ let run (debug: bool) : int =
                                     if not (isReplInitPath (uriToPath uri)) then
                                         []
                                     else
-                                        let orig = text.Replace("\r\n", "\n").Split('\n')
+                                        let orig = (Script.splitSourceText text |> Array.ofList)
                                         let mutable inBlock = false
 
                                         for i in 0 .. min (line - 2) (orig.Length - 1) do
@@ -5454,7 +5628,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
                             | Some(uri, text) ->
-                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let lines = Script.splitSourceText text
                                 w.WriteStartArray()
 
                                 for (s, e, kind) in foldingRangesFor (uriToPath uri) lines do
@@ -5476,7 +5650,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
                             | Some(uri, text) ->
-                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let lines = Script.splitSourceText text
                                 let syms = documentSymbolsFor (uriToPath uri) lines
 
                                 let rec writeSymbol (sy: DocSymbol) =
@@ -5555,7 +5729,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
                             | Some(uri, text) ->
-                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let lines = Script.splitSourceText text
                                 w.WriteStartArray()
 
                                 for (l, c, len, target, tip) in documentLinksFor (uriToPath uri) lines do
@@ -5583,7 +5757,7 @@ let run (debug: bool) : int =
 
                             match docOf (), range with
                             | Some(uri, text), Some(fromLine, toLine) ->
-                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let lines = Script.splitSourceText text
                                 w.WriteStartArray()
 
                                 for h in inlayHintsFor inlayOptions (uriToPath uri) lines fromLine toLine do
@@ -5612,7 +5786,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf (), posOf () with
                             | Some(uri, text), Some(line, col) ->
-                                let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+                                let lines = Script.splitSourceText text
 
                                 match signatureHelpAt (uriToPath uri) lines line col with
                                 | Some sh ->

@@ -185,6 +185,39 @@ type private OpenBracket =
       EntryIndent: int option
       Delta: int }
 
+// the column of a `match` keyword heading the arms below a line that
+// ends `with`, past the line's start: outside string literals, a whole
+// word (not `matched`, `x.match`)
+let private midLineMatchHead (code: string) : int option =
+    let code = code.TrimEnd(parserWs)
+
+    if not (code.EndsWith " with") then
+        None
+    else
+        let isIdent c = System.Char.IsLetterOrDigit c || c = '_' || c = '.' || c = '\''
+        let mutable inStr = false
+        let mutable found = None
+        let mutable i = 0
+
+        while i < code.Length do
+            let c = code[i]
+
+            if inStr then
+                if c = '\\' then i <- i + 1
+                elif c = '"' then inStr <- false
+            elif c = '"' then
+                inStr <- true
+            elif
+                i > 0
+                && System.String.CompareOrdinal(code, i, "match ", 0, 6) = 0
+                && not (isIdent code[i - 1])
+            then
+                found <- Some i
+
+            i <- i + 1
+
+        found
+
 // `lineOffset`: the physical lines above `body` (a shebang), so an error
 // names the file's own line number
 let private formatLinesCore (lineOffset: int) (body: string list) : Result<string list, string> =
@@ -218,7 +251,17 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
             | Ok a, Ok b when texts a = texts b -> candidate
             | _ -> body
 
-    match logicalAt lineOffset body with
+    // the gate reads comment lines as the script reader does: inside a
+    // heredoc they are content and can break its layout [D:one-pipeline]
+    let gate =
+        match logicalAt lineOffset body with
+        | Ok lls ->
+            match body |> List.mapi (fun i l -> i + 1 + lineOffset, l) |> Script.assemble with
+            | Error e -> Error e
+            | Ok _ -> Ok lls
+        | Error e -> Error e
+
+    match gate with
     | Error e ->
         // located as a parse refusal is, line:col [D:assembly-col]
         match Script.assemblyErrorAt (body |> List.mapi (fun i l -> i + 1 + lineOffset, l)) e with
@@ -249,6 +292,8 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
         let mutable district: (int * int) option = None
         let mutable yamlDistrict = false
         let mutable yamlBase: int option = None
+        // a heredoc's comment lines are its content, so one sets the base
+        let mutable heredocDistrict = false
         // open match heads, innermost first: (originalIndent,
         // formattedCol, first arm's original indent once seen) — arms
         // align under the m [D:fmt-match-arms]
@@ -259,9 +304,48 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
         // body, never to block depth (left of it) [D:fmt-arm-pipe]
         let mutable armBody: (int * int * int) option = None
 
+        // the indent of the next code line at or below each line: a
+        // comment heading a yaml block takes its base from the block's
+        // first code line, as the reader does (comments are invisible
+        // to its layout) [D:yaml-district]
+        let bodyArr = List.toArray body
+
+        let nextCodeIndent =
+            let arr = bodyArr
+            let out = Array.create (arr.Length + 1) -1
+
+            for i in arr.Length - 1 .. -1 .. 0 do
+                out[i] <-
+                    if Script.classifyLine arr[i] = Script.LineKind.Code then
+                        arr[i] |> Seq.takeWhile ((=) ' ') |> Seq.length
+                    else
+                        out[i + 1]
+
+            out
+
+        // the distinct indents strictly between `parent` and `indent` of
+        // the `else`/`elif` lines after `lineIdx`, until a line returns to
+        // `parent` (arms and pipes have their own alignment)
+        let between (lineIdx: int) (parent: int) (indent: int) =
+            let arr = bodyArr
+            let mutable j = lineIdx + 1
+            let mutable stop = false
+            let found = System.Collections.Generic.HashSet<int>()
+
+            while not stop && j < arr.Length do
+                if Script.classifyLine arr[j] = Script.LineKind.Code then
+                    let i = arr[j] |> Seq.takeWhile ((=) ' ') |> Seq.length
+
+                    if i <= parent then stop <- true
+                    elif i < indent && Script.continuesOpenIf (arr[j].TrimStart ' ') then found.Add i |> ignore
+
+                j <- j + 1
+
+            found.Count
+
         let formatted =
             body
-            |> List.map (fun raw ->
+            |> List.mapi (fun lineIdx raw ->
                 let code = Script.stripComment raw
                 let content = raw.TrimStart(parserWs).TrimEnd(parserWs)
 
@@ -283,8 +367,11 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                         let b =
                             match yamlBase with
                             | Some b -> b
+                            | None when not heredocDistrict && nextCodeIndent[lineIdx] > m -> nextCodeIndent[lineIdx]
                             | None ->
-                                yamlBase <- Some cIndent
+                                if heredocDistrict then
+                                    yamlBase <- Some cIndent
+
                                 cIndent
 
                         // a comment outdented past the base keeps its
@@ -309,7 +396,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                             // bytes: trailing whitespace survives
                             // [D:content-bytes]; indentation is spaces only
                             // [D:spaces-only-indent] — strip just that
-                            String.replicate ((mDepth + 1) * 4 + (indent - b)) " "
+                            String.replicate (max (mDepth * 4 + 1) ((mDepth + 1) * 4 + (indent - b))) " "
                             + raw.Substring(min indent raw.Length)
                         else
                             // unreachable while yaml is the one marker
@@ -445,7 +532,14 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                                         let col =
                                             match levels |> List.tryFind (fun (k, _) -> k <= indent) with
                                             | Some(k, c) when k = indent -> c
-                                            | Some(_, c) -> (c / 4 + 1) * 4
+                                            | Some(k, c) ->
+                                                // a later line that lands between this
+                                                // level and its parent (an `else` between
+                                                // its `if` and a deeper then-body) takes
+                                                // the next stop, so this level steps past
+                                                // it — the relation stays strict
+                                                // [D:fmt-depth-model]
+                                                (c / 4 + 1 + between lineIdx k indent) * 4
                                             | None -> 4
 
                                         joinLevel col
@@ -460,6 +554,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                             // yaml's are [D:text-block] — the flag means
                             // "district content is verbatim", not "is yaml"
                             yamlDistrict <- (marker = Script.MarkerKind.Yaml || marker = Script.MarkerKind.Heredoc)
+                            heredocDistrict <- (marker = Script.MarkerKind.Heredoc)
 
                             yamlBase <- None
 
@@ -474,6 +569,13 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
 
                         if mRest.StartsWith "match " || mRest = "match" then
                             matches <- (indent, col + mOff, None) :: matches
+                        else
+                            // a match head later on its line (`let r = match
+                            // x with`, `if c then match x with`) opens its arm
+                            // set too [D:fmt-arm-pipe]
+                            match midLineMatchHead (Script.stripComment piece) with
+                            | Some at -> matches <- (indent, col + at, None) :: matches
+                            | None -> ()
 
                         // re-annotate: brackets pushed on this line learn
                         // their style from where the line leaves its opener
@@ -683,6 +785,35 @@ let private formatSettled (lineOffset: int) (body: string list) : Result<string 
 
 let formatLines (body: string list) : Result<string list, string> = formatSettled 0 body
 
+let private alignSessionFields (body: string list) : string list =
+    let fieldStart = System.Text.RegularExpressions.Regex @"^[A-Za-z_][A-Za-z0-9_]*\s*="
+    let indentOf (l: string) = l |> Seq.takeWhile ((=) ' ') |> Seq.length
+    let mutable inBlock = false
+    let mutable delta = 0
+
+    [ for l in body do
+          let t = l.Trim(parserWs)
+
+          if not inBlock then
+              if t = "#session {" then
+                  inBlock <- true
+                  delta <- 0
+
+              l
+          elif t = "}" then
+              inBlock <- false
+              l
+          elif t = "" || Script.classifyLine l <> Script.LineKind.Code then
+              l
+          elif fieldStart.IsMatch t then
+              delta <- 4 - indentOf l
+              "    " + l.TrimStart ' '
+          else
+              // a continuation keeps its offset from its field, never
+              // leaving the block's body
+              let i = indentOf l
+              if i + delta > 4 then String.replicate (i + delta) " " + l.TrimStart ' ' else l ]
+
 /// The one formatter entry point for `weir fmt` and the LSP's
 /// formatting request [D:fmt-v1]: a source text in, its canonical lines
 /// out, plus whether they differ from the source. The shebang line
@@ -692,20 +823,20 @@ let formatLines (body: string list) : Result<string list, string> = formatSettle
 /// check` cannot parse is refused [D:fmt-parse-gate]; `path` anchors
 /// its imports, as check's does.
 let formatSource (path: string) (text: string) : Result<string list * bool, string> =
-    let normalized = text.Replace("\r\n", "\n")
-
+    // lines split as the script reader splits them (a bare \r too)
+    // [D:one-pipeline]
     let lines =
-        if normalized = "" then
+        if text = "" then
             []
         else
-            let all = normalized.Split '\n' |> Array.toList
+            let all = Script.splitSourceText text
 
-            if normalized.EndsWith "\n" then
+            if Script.endsWithLineBreak text then
                 List.take (all.Length - 1) all
             else
                 all
 
-    let finalNewline = normalized = "" || normalized.EndsWith "\n"
+    let finalNewline = text = "" || Script.endsWithLineBreak text
 
     let header, body =
         match lines with
@@ -719,7 +850,13 @@ let formatSource (path: string) (text: string) : Result<string list * bool, stri
         let diags, _, _, _, _ = Script.analyzeLines path lines
 
         diags
-        |> List.tryFind (fun d -> d.File = path && d.Code = "parse" && d.Severity = "error")
+        |> List.tryFind (fun d -> d.File = path && (d.Code = "parse" || d.Code = "directive") && d.Severity = "error")
+
+    // an init file's #session fields are separate settings, each read on
+    // its own (Script.splitInit) — so any field indent loads; fmt seats
+    // every field start at 4, its continuation lines riding along
+    // [D:init-session-fields]
+    let body = if Script.isInitMarked lines then alignSessionFields body else body
 
     formatSettled header.Length body
     |> Result.bind (fun formattedBody ->
@@ -755,13 +892,17 @@ let formatSource (path: string) (text: string) : Result<string list * bool, stri
 // touches a string literal or a field name that happens to spell a
 // bare alias. Operates on a single physical line (the REPL
 // transcript's logical-line text); parse failure leaves it unchanged.
-let qualifyBareAliases (r: Parser.Resolver) (line: string) : string =
+/// `qualifyBareAliases`, leaving the names in `bound` alone: a session
+/// binding named like a bare alias (`let find = 3`) is the user's value
+/// [D:alias-binding-shadow]
+let qualifyBareAliasesExcept (bound: Set<string>) (r: Parser.Resolver) (line: string) : string =
     match Parser.parseLineFull r line with
     | Error _ -> line
     | Ok stmt ->
         let uses =
             Parser.stmtExprs stmt
             |> List.collect collectBareUses
+            |> List.filter (fun (_, name) -> not (bound.Contains name))
             // right-to-left so earlier column offsets stay valid
             |> List.sortByDescending (fun (sp, _) -> sp.Start.Col)
 
@@ -781,6 +922,8 @@ let qualifyBareAliases (r: Parser.Resolver) (line: string) : string =
                 else
                     acc)
             line
+
+let qualifyBareAliases (r: Parser.Resolver) (line: string) : string = qualifyBareAliasesExcept Set.empty r line
 
 // collect command-head spans and their head names [D:command-head-alias]:
 // an ECmd's head is the literal program name, and its token sits at the

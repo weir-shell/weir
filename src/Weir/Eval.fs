@@ -516,6 +516,23 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
                 | Some m when CodePoints.length s > m -> CodePoints.head s m, true
                 | _ -> s, false
 
+            // the escaped form past the string ceiling is refused in
+            // weir's words, sized [D:int-narrowing]
+            if int64 raw.Length * 2L + 3L > maxStrLen then
+                let mutable chars = int64 raw.Length + 2L
+
+                for c in raw do
+                    match c with
+                    | '\\'
+                    | '"'
+                    | '\n'
+                    | '\r'
+                    | '\t' -> chars <- chars + 1L
+                    | _ -> ()
+
+                if chars > maxStrLen then
+                    failwith (strTooLarge "show" chars)
+
             let escaped =
                 raw
                     .Replace("\\", "\\\\")
@@ -594,7 +611,10 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
         | VUnit -> "()"
         | VTuple items -> "(" + (items |> List.map sub |> String.concat ", ") + ")"
 
-let formatValue (v: Value) : string = formatWith showLimits 0 v
+// a container whose rendering crosses the string ceiling: the same
+// refusal [D:int-narrowing]
+let formatValue (v: Value) : string =
+    guardStrBuild "show" (fun () -> formatWith showLimits 0 v)
 
 // ---- plan/apply capture [D:plan-apply] ------------------------------
 // A `plan` block runs its body but captures external mutations as Op
@@ -1716,39 +1736,102 @@ let procTail (h: ProcHandle) : string list =
      with _ ->
          ())
 
-    let readLines path =
-        try
-            use fs =
-                new System.IO.FileStream(
-                    path,
-                    System.IO.FileMode.Open,
-                    System.IO.FileAccess.Read,
-                    System.IO.FileShare.ReadWrite
+    // the spill is bounded by disk, not memory [D:scoped-procs]: read
+    // back from the end, at most tailWindow bytes, until n lines are in
+    // hand — never the whole file. A line the window cuts keeps its end,
+    // marked with a leading … [D:proc-tail-window]
+    let tailWindow = 1L <<< 20
+
+    let readLast (n: int) (path: string) : string list =
+        let fsO =
+            try
+                Some(
+                    new System.IO.FileStream(
+                        path,
+                        System.IO.FileMode.Open,
+                        System.IO.FileAccess.Read,
+                        System.IO.FileShare.ReadWrite ||| System.IO.FileShare.Delete
+                    )
                 )
+            with _ ->
+                // an escaped handle's scope removed the spill: its tail is
+                // empty, never a crash [D:scoped-procs]
+                if System.IO.Directory.Exists h.SpillDir then
+                    failwith $"Proc.tail: cannot read the spilled output of pid {h.Proc.Id} at {quoteData path}"
 
-            use r = new System.IO.StreamReader(fs)
-            let mutable lines = []
-            let mutable line = r.ReadLine()
+                None
 
-            while line <> null do
-                lines <- line :: lines
-                line <- r.ReadLine()
+        match fsO with
+        | None -> []
+        | Some fs ->
 
-            List.rev lines
-        with _ ->
-            []
+        use fs = fs
+        let len = fs.Length
+        let chunk = 65536L
+        let mutable start = len
+        let mutable newlines = 0
 
-    let err = readLines h.ErrPath
-    let out = readLines h.OutPath
-    let take n (xs: string list) = xs |> List.skip (max 0 (xs.Length - n))
-    let errT = take 100 err
-    errT @ take (100 - errT.Length) out
+        // n lines end in at most n+1 newlines back from the end (the
+        // trailing one terminates the last line)
+        while start > 0L && newlines <= n && len - start < tailWindow do
+            let size = min chunk start
+            start <- start - size
+            let buf = Array.zeroCreate<byte> (int size)
+            fs.Position <- start
+            let mutable got = 0
+
+            while got < buf.Length do
+                let r = fs.Read(buf, got, buf.Length - got)
+                got <- if r = 0 then buf.Length else got + r
+
+            for b in buf do
+                if b = 10uy then
+                    newlines <- newlines + 1
+
+        let cut = start > 0L
+        let bytes = Array.zeroCreate<byte> (int (len - start))
+        fs.Position <- start
+        let mutable got = 0
+
+        while got < bytes.Length do
+            let r = fs.Read(bytes, got, bytes.Length - got)
+            got <- if r = 0 then bytes.Length else got + r
+
+        // the BOM switch is the start of the file's, as a reader would see it
+        use r =
+            new System.IO.StreamReader(new System.IO.MemoryStream(bytes), System.Text.Encoding.UTF8, not cut)
+
+        let lines = ResizeArray<string>()
+        let mutable line = r.ReadLine()
+
+        while line <> null do
+            lines.Add line
+            line <- r.ReadLine()
+
+        // the window opened mid-line: that line's start is missing
+        if cut && lines.Count > 0 && start > 0L then
+            fs.Position <- start - 1L
+
+            if fs.ReadByte() <> 10 then
+                lines[0] <- "…" + lines[0]
+
+        lines |> Seq.skip (max 0 (lines.Count - n)) |> List.ofSeq
+
+    let errT = readLast 100 h.ErrPath
+    let outT = if errT.Length < 100 then readLast (100 - errT.Length) h.OutPath else []
+    errT @ outT
 
 // a one-line rendering of the tail for error messages: lines join
 // with ⏎, fzf's convention for multi-line content in a one-line
 // message
 let procTailLine (h: ProcHandle) : string =
-    let t = procTail h
+    // the tail decorates another error: an unreadable spill must not
+    // replace the error it was decorating
+    let t =
+        try
+            procTail h
+        with _ ->
+            []
 
     match t |> List.skip (max 0 (t.Length - 5)) with
     | [] -> ""
@@ -1964,7 +2047,9 @@ let rec private tableCell (v: Value) : (string * bool) option =
         // the table is a tty-only renderer [D:binary-echo]: a data cell's
         // hostile bytes are neutralized (the tint is added later, around
         // this sanitized text — weir's own colouring is untouched)
-        Some(sanitizeTtyEcho clipped, false)
+        // a raw TAB would jump the cell off its column: it shows as weir
+        // spells it [D:str-width]
+        Some((sanitizeTtyEcho clipped).Replace("\t", "\\t"), false)
     | VInt _
     | VFloat _
     | VSize _
@@ -2068,11 +2153,16 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                             let t, num = r[i]
                             num || t = ""))
 
+                // columns measure terminal cells, not code points: a wide
+                // (CJK) character takes two, a combining mark none
+                // [D:str-width]
+                let cells (t: string) = CellWidth.ofString t
+
                 let widths =
                     [ 0 .. showKeys.Length - 1 ]
                     |> List.map (fun i ->
                         rows
-                        |> List.fold (fun w r -> max w (CodePoints.length (fst r[i]))) (CodePoints.length showKeys[i]))
+                        |> List.fold (fun w r -> max w (cells (fst r[i]))) (cells showKeys[i]))
 
                 // terminal-width clamping [D:table-polish]: the widest
                 // column above its floor absorbs the clip (usually the
@@ -2084,7 +2174,7 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                     match width with
                     | Some termW ->
                         let sep = 2 * (showKeys.Length - 1)
-                        let floorOf i = max 5 (CodePoints.length showKeys[i])
+                        let floorOf i = max 5 (cells showKeys[i])
 
                         let rec shrink (ws: int list) =
                             let total = List.sum ws + sep
@@ -2110,18 +2200,26 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                 // a cell longer than its (possibly clamped) column ends
                 // in the ellipsis — never a silent cut
                 let clip (w: int) (t: string) =
-                    if CodePoints.length t > w then
-                        CodePoints.head t (max 0 (w - 1)) + "…"
+                    if cells t > w then
+                        // the longest prefix that leaves a cell for the `…`
+                        let mutable kept = ""
+                        let mutable full = false
+
+                        for r in t.EnumerateRunes() do
+                            if not full then
+                                let next = kept + r.ToString()
+
+                                if cells next <= w - 1 then kept <- next else full <- true
+
+                        kept + "…"
                     else
                         t
 
                 let pad (i: int) (t: string) =
                     let t = clip widths[i] t
+                    let fill = System.String(' ', max 0 (widths[i] - cells t))
 
-                    if numeric[i] then
-                        CodePoints.padLeft widths[i] t
-                    else
-                        CodePoints.padRight widths[i] t
+                    if numeric[i] then fill + t else t + fill
 
                 let line (cells: string list) =
                     (cells |> List.mapi pad |> String.concat "  ").TrimEnd()
@@ -2660,6 +2758,8 @@ let private refuseDupKeys (who: string) (keys: string seq) =
             failwith
                 $"{who}: the mapping holds the key '{quoteData k}' twice — a document's keys are unique; keep one pair per key before writing"
 
+let private jsonSegment = 1 <<< 24
+
 let private jsonLine
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, WireCase>)
@@ -2677,6 +2777,20 @@ let private jsonLine
         // a valid JSON number since non-finite values are
         // unrepresentable
         | VFloat f -> writer.WriteRawValue(formatFloat f)
+        // past System.Text.Json's single-token ceiling (~166M chars) a
+        // string writes in segments; the line's own size is checked below
+        | VStr s when s.Length > jsonSegment ->
+            let mutable i = 0
+
+            while i < s.Length do
+                let mutable n = min jsonSegment (s.Length - i)
+
+                // a surrogate pair never straddles two segments
+                if i + n < s.Length && System.Char.IsHighSurrogate s[i + n - 1] then
+                    n <- n - 1
+
+                writer.WriteStringValueSegment(System.MemoryExtensions.AsSpan(s, i, n), (i + n = s.Length))
+                i <- i + n
         | VStr s -> writer.WriteStringValue s
         // the canonical text [D:uuid]: JSON has no uuid type
         | VUuid g -> writer.WriteStringValue(formatUuid g)
@@ -2809,9 +2923,17 @@ let private jsonLine
                 writer.WritePropertyName(Map.tryFind (fst kv) rens |> Option.defaultValue (fst kv))
                 write (snd kv)
 
-    write v
-    writer.Flush()
-    System.Text.Encoding.UTF8.GetString buffer.WrittenSpan
+    // a line past the string ceiling is refused in weir's words, sized
+    // when known [D:int-narrowing] — never the runtime's text
+    guardStrBuild "to json" (fun () ->
+        write v
+        writer.Flush()
+        let chars = int64 (System.Text.Encoding.UTF8.GetCharCount buffer.WrittenSpan)
+
+        if chars > maxStrLen then
+            failwith (strTooLarge "to json" chars)
+
+        System.Text.Encoding.UTF8.GetString buffer.WrittenSpan)
 
 let private jsonKindName (k: System.Text.Json.JsonValueKind) : string =
     match k with
@@ -4461,7 +4583,9 @@ let private yamlToLines
     (guide: Yaml.Shape option)
     (v: Value)
     : string list =
-    match yamlRender renames unions 0 guide v with
+    // the string ceiling crossed while rendering is refused in weir's
+    // words [D:int-narrowing]
+    match guardStrBuild "to yaml" (fun () -> yamlRender renames unions 0 guide v) with
     // a null document is the word, never empty text [D:yaml-empty-doc] —
     // the bare inline is a mapping value's form (`key:`), not a document's
     | Inline "" -> [ "null" ]
@@ -4752,18 +4876,40 @@ let private scopeDef (sharedDef: RecordDef) (payloadDef: RecordDef option) : Rec
 // a token with no leading dash is a value, never a flag or a command
 let private argvIsValue (t: string) : bool = not (t.StartsWith "-")
 
-// the unknown-flag spellings whose value would be the NEXT token: a bare
-// long flag or a single letter; `--x=v` and `-xv` carry theirs attached
-let private argvUnknownTakesNext (t: string) : bool =
-    t <> "--" && (t.Length = 2 || (t.StartsWith "--" && not (t.Contains "=")))
+// one rule for every unknown flag-shaped spelling (`--x`, `--x=v`, `-x`,
+// `-xv`, `-long`, `-42`): the value-shaped token after it is taken off
+// the line and reported, never echoed [D:args-unknown-flag-no-echo] —
+// any of them may be a misspelled Secret. `--` is no flag.
+let private argvIsFlagShaped (t: string) : bool = t.StartsWith "-" && t <> "--"
+
+// how a follow-on message names an unknown flag: never its attached text
+let private argvFlagShown (t: string) : string =
+    if t.StartsWith "--" then
+        match t.IndexOf '=' with
+        | i when i > 2 -> t.Substring(0, i) + "=…"
+        | _ -> t
+    elif t.Length > 2 then
+        t.Substring(0, 2) + "…"
+    else
+        t
+
+let private argvAfterUnknown (t: string) : string =
+    $"unexpected argument after '{quoteData (argvFlagShown t)}'"
 
 // pass 1 of the shared-flags scan: shared flags float, and the first
 // non-flag token anchors as the case selector. An unknown flag takes
 // the value after it off the line [D:args-unknown-flag-no-echo] (it may
 // be a misspelled Secret, so the value never surfaces as the command);
 // the command slot's own flag takes none — the token after `--mode` IS
-// the command, and the message teaches the bare spelling
-let private argvFindCase (sharedDef: RecordDef) (unionField: string) (argv: string list) : (int * string) option =
+// the command, and the message teaches the bare spelling. Nor does an
+// unknown flag take a command word (`--verbos deploy`): a known command
+// is never a withheld value, so it anchors [D:args-unknown-flag-command]
+let private argvFindCase
+    (sharedDef: RecordDef)
+    (unionField: string)
+    (caseWords: string list)
+    (argv: string list)
+    : (int * string) option =
     let slot = "--" + Argv.kebabFlag unionField
 
     let sharedLong =
@@ -4796,7 +4942,7 @@ let private argvFindCase (sharedDef: RecordDef) (unionField: string) (argv: stri
             | None when t = slot || t.StartsWith(slot + "=") -> go (i + 1) rest
             | None when t.StartsWith "-" ->
                 (match rest with
-                 | v :: r when argvUnknownTakesNext t && argvIsValue v -> go (i + 2) r
+                 | v :: r when argvIsFlagShaped t && argvIsValue v && not (List.contains v caseWords) -> go (i + 2) r
                  | _ -> go (i + 1) rest)
             | None -> Some(i, t)
 
@@ -4917,7 +5063,7 @@ let argvUsage (target: ArgsTarget) (argv: string list) : string =
 
         // case-scoped help when a case token rides along [D:shared-flags]
         let scoped =
-            argvFindCase sharedDef uf (argv |> List.filter (fun t -> t <> "--help" && t <> "-h"))
+            argvFindCase sharedDef uf (udef.Cases |> List.map (fun (c, _) -> c.ToLowerInvariant())) (argv |> List.filter (fun t -> t <> "--help" && t <> "-h"))
             |> Option.bind (fun (_, tok) -> udef.Cases |> List.tryFind (fun (c, _) -> c.ToLowerInvariant() = tok))
 
         match scoped with
@@ -5242,7 +5388,7 @@ let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string
                 consume f ty neg t rest
             | Some(AmbiguousShort candidates) ->
                 problems.Add $"""'{quoteData t}' is ambiguous: {String.concat ", " candidates}"""
-                go rest
+                unknownValue t rest
             | None ->
                 problems.Add $"unknown flag '{quoteData t}'"
                 unknownValue t rest
@@ -5251,7 +5397,7 @@ let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string
                 Map.tryFind flag longIndex |> Option.map (fun (_, ty, _) -> ty)
 
             problems.Add(attachedShortMessage t shortIndex tyOf)
-            go rest
+            unknownValue t rest
         | t :: rest ->
             problems.Add $"unexpected argument '{quoteData t}'"
             go rest
@@ -5260,8 +5406,8 @@ let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string
     // be a misspelled Secret's [D:args-unknown-flag-no-echo]
     and unknownValue t rest =
         match rest with
-        | v :: rest' when argvUnknownTakesNext t && argvIsValue v ->
-            problems.Add $"unexpected argument after '{quoteData t}'"
+        | v :: rest' when argvIsFlagShaped t && argvIsValue v ->
+            problems.Add(argvAfterUnknown t)
             go rest'
         | _ -> go rest
 
@@ -5311,7 +5457,7 @@ let private argvLoadShared
         |> Map.ofList
 
     let caseTable = udef.Cases |> List.map (fun (c, p) -> c.ToLowerInvariant(), (c, p))
-    let caseAt = argvFindCase sharedDef unionField argv
+    let caseAt = argvFindCase sharedDef unionField (List.map fst caseTable) argv
 
     let selected =
         caseAt
@@ -5365,7 +5511,7 @@ let private argvLoadShared
                     | None ->
                         match Map.tryFind t payloadLong with
                         | Some(f, ty, neg) when i > caseIdx -> Choice1Of3(payloadValues, f, ty, neg)
-                        | _ -> Choice2Of3()
+                        | _ -> Choice2Of3 true
                 elif t.StartsWith "-" && t.Length = 2 then
                     match Map.tryFind (t.Substring 1) scopeShorts with
                     | Some(ShortOf flag) ->
@@ -5374,11 +5520,11 @@ let private argvLoadShared
                          | None ->
                              match Map.tryFind flag payloadLong with
                              | Some(f, ty, neg) when i > caseIdx -> Choice1Of3(payloadValues, f, ty, neg)
-                             | _ -> Choice2Of3())
+                             | _ -> Choice2Of3 true)
                     | Some(AmbiguousShort candidates) ->
                         problems.Add $"""'{quoteData t}' is ambiguous: {String.concat ", " candidates}"""
-                        Choice3Of3()
-                    | None -> Choice2Of3()
+                        Choice2Of3 false
+                    | None -> Choice2Of3 true
                 elif t.StartsWith "-" && t.Length > 2 then
                     let tyOf flag =
                         match Map.tryFind flag sharedLong, Map.tryFind flag payloadLong with
@@ -5387,7 +5533,7 @@ let private argvLoadShared
                         | _ -> None
 
                     problems.Add(attachedShortMessage t scopeShorts tyOf)
-                    Choice3Of3()
+                    Choice2Of3 false
                 else
                     problems.Add $"unexpected argument '{quoteData t}'"
                     Choice3Of3()
@@ -5406,7 +5552,7 @@ let private argvLoadShared
                          parseValue values f ty t raw
                          go (i + 2) rest'
                      | [] -> problems.AddFor(f, $"flag '{t}' needs a value"))
-            | Choice2Of3() ->
+            | Choice2Of3 report ->
                 let cands = if i < caseIdx then beforeCandidates else afterCandidates
                 let tyOf n =
                     match Map.tryFind n sharedLong, Map.tryFind n payloadLong with
@@ -5431,13 +5577,14 @@ let private argvLoadShared
                         $"unknown flag '{shown}' — the command is written bare, without a flag: '{usageName ()} {example}'"
                     go (i + 1) rest
                 else
-                    problems.Add(unknownFlagMessage t cands tyOf)
+                    if report then
+                        problems.Add(unknownFlagMessage t cands tyOf)
 
                     // the value after an unknown flag is reported, never
                     // echoed [D:args-unknown-flag-no-echo]
                     match rest with
-                    | v :: rest' when i + 1 <> caseIdx && argvUnknownTakesNext t && argvIsValue v ->
-                        problems.Add $"unexpected argument after '{quoteData t}'"
+                    | v :: rest' when i + 1 <> caseIdx && argvIsFlagShaped t && argvIsValue v ->
+                        problems.Add(argvAfterUnknown t)
                         go (i + 2) rest'
                     | _ -> go (i + 1) rest
             | Choice3Of3() -> go (i + 1) rest
@@ -5506,14 +5653,32 @@ let argvLoadWith (target: ArgsTarget) (argv: string list) : Value =
         | [] ->
             problems.AddCommands "missing command — one of:"
             fail ""
+        // a flag where the command goes is never echoed whole, nor the
+        // token after it [D:args-unknown-flag-no-echo]
+        | tok :: _ when argvIsFlagShaped tok ->
+            problems.AddCommands $"unexpected flag '{quoteData (argvFlagShown tok)}' — the command comes first, one of:"
+            fail ""
         | tok :: rest ->
             match table |> List.tryFind (fun (w, _) -> w = tok) with
             | Some(_, (c, None)) ->
                 match rest with
                 | [] -> VUnion(c, None)
                 | extra ->
-                    for t in extra do
-                        problems.Add $"unexpected argument '{quoteData t}' — '{quoteData tok}' takes nothing after it"
+                    // the no-echo rule holds here too [D:args-unknown-flag-no-echo]
+                    let rec strays (ts: string list) =
+                        match ts with
+                        | [] -> ()
+                        | t :: rest ->
+                            let shown = if argvIsFlagShaped t then argvFlagShown t else t
+                            problems.Add $"unexpected argument '{quoteData shown}' — '{quoteData tok}' takes nothing after it"
+
+                            match rest with
+                            | v :: rest' when argvIsFlagShaped t && argvIsValue v ->
+                                problems.Add(argvAfterUnknown t)
+                                strays rest'
+                            | _ -> strays rest
+
+                    strays extra
 
                     fail (tok + " ")
             | Some(_, (c, Some _)) ->
@@ -5529,7 +5694,7 @@ let argvLoadWith (target: ArgsTarget) (argv: string list) : Value =
 let private argvLoad (target: ArgsTarget) : Value = argvLoadWith target Session.ScriptArgs
 
 // the sigil env slot evaluated to overlay pairs — inside the stream's
-// delay, so Env.fromFile boundary errors keep raise-at-force semantics
+// delay
 let private envPairsOf (where: string) (v: Value) : (string * string) list =
     match v with
     | VSeq items ->
@@ -5949,7 +6114,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
         | VRecord(name, fields) ->
             match recTryGet field fields with
             | Some v -> v
-            | None -> unreachable $"the checker rejects unknown field '{field}' on {name}"
+            // reachable only through a value built under an earlier
+            // declaration of the type — the REPL replaces a redeclared
+            // type by design [D:dup-type-decl]; say so in the author's terms
+            | None ->
+                failwith
+                    $"this value has no field '{field}' — it was built under an earlier declaration of '{name}'; build it again after the redeclaration"
         | v -> unreachable $"the checker rejects field access on {formatValue v}"
     | TESlice(target, lo, hi, on, loFromEnd, hiFromEnd) ->
         // inclusive, clamping [D:range-slicing]: an absent bound is an open

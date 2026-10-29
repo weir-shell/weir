@@ -299,20 +299,32 @@ let private withMatchArm (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
         finally
             matchArmDepth.Value <- saved
 
+// names bound in scope beat the alias table [D:alias-binding-shadow] —
+// one set, not a closure per binding: a long run of block lets would
+// otherwise chain a frame per name into every alias lookup
+let private aliasMasked = new System.Threading.ThreadLocal<Set<string>>(fun () -> Set.empty)
+
+let private aliasHeadOf (r: Resolver) (w: string) =
+    if aliasMasked.Value.Contains w then None else r.AliasHead w
+
 // the param-ful law one scope deeper [D:block-let-cmd]: a block-let
 // name shadows PATH for every later parse in its body
 let private withAmbientName (name: string) (p: Parser<'a, unit>) : Parser<'a, unit> =
     fun stream ->
         let saved = ambientResolver.Value
+        let savedMask = aliasMasked.Value
 
         ambientResolver.Value <-
             { saved with
                 IsKnown = fun n -> n = name || saved.IsKnown n }
 
+        aliasMasked.Value <- Set.add name savedMask
+
         try
             p stream
         finally
             ambientResolver.Value <- saved
+            aliasMasked.Value <- savedMask
 
 let private isIdentStart c = isLetter c || c = '_'
 let private isIdentCont c = isLetter c || isDigit c || c = '_'
@@ -397,12 +409,22 @@ let isYamlMarkerPiece (piece: string) =
     // `to yaml`/`from yaml` adapters (["to";"yaml"]/["from";"yaml"] are
     // not `= yaml`) and excludes `>= yaml`/`== yaml` (the token before
     // `yaml` is `>=`/`==`, never `=`).
+    // any run of blanks separates tokens (`=  yaml`, `=<TAB>yaml`), and
+    // a let's glued `name=` is its `=` [D:yaml-marker-blanks]
     core.Contains "yaml"
-    && (let toks = core.Split(' ')
+    && (let toks =
+            core.Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries)
+
         let n = toks.Length
 
+        let gluedLetEq (t: string) =
+            toks[0] = "let"
+            && t.Length > 1
+            && t.EndsWith "="
+            && t.Substring(0, t.Length - 1) |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
+
         (n = 1 && toks[0] = "yaml")
-        || (n >= 2 && toks[n - 1] = "yaml" && toks[n - 2] = "="))
+        || (n >= 2 && toks[n - 1] = "yaml" && (toks[n - 2] = "=" || gluedLetEq toks[n - 2])))
 
 /// the marker suffix's length in a marker piece — `yaml` plus its
 /// modifiers (`patch`, `by=`, `schema=`); the REPL colorizer's tint
@@ -502,6 +524,9 @@ let private failFatallyAtCol (col: int) (msg: string) : Parser<'a, unit> =
         stream.Seek(int64 (col - 1))
         Reply(ReplyStatus.FatalError, messageError msg)
 
+let private spanAt (p: Position) : Span =
+    { Start = pos p; End = pos p }
+
 let private failChain (m: string) (sp: Span) : Parser<'a, unit> =
     if chainTeach.Value.IsNone then
         chainTeach.Value <- Some(m, sp)
@@ -555,6 +580,13 @@ let private barePipeHint: Parser<unit, unit> =
              .>>. (choice (reifierNames |> List.map pstring) .>> reifierWordEnd)
           )
           >>= fun (at, name) -> failFatallyAt at (reifierHereMsg name))
+         // `<value> | and`/`| or` [D:value-chain-word]: and/or branch on an
+         // exit code, which a weir value does not have
+         <|> (attempt (ws >>. getPosition .>>. (choice [ pstring "and"; pstring "or" ] .>> reifierWordEnd))
+              >>= fun (at, kw) ->
+                  failFatallyAt
+                      at
+                      $"'| {kw}' must follow an external command or a pipeline of them — the left side here is a weir value, which has no exit code; to branch on a value, write an if")
          <|> failFatallyAt pipePos "'|' chains commands; pipe expressions with '|>'")
     <|> preturn ()
 
@@ -897,6 +929,23 @@ let private escapedChar: Parser<string, unit> =
             failFatallyAt
                 after
                 $"'\\{c}' is not an escape (the escapes are {escapeList}) — for a Windows path use a verbatim string: @\"C:\\path\" (forward slashes also work)"
+        // a surrogate pair is one character [D:escape-names-char]: name it
+        // whole, never a lone half
+        | Some c when System.Char.IsHighSurrogate c ->
+            lookAhead (anyString 2)
+            >>= fun pair ->
+                failFatallyAt after $"'\\{pair}' is not an escape (the escapes are {escapeList}; a literal backslash is \\\\)"
+        // a mid-line control char (a TAB) is named, not taken for the line end
+        | Some c when
+            System.Char.IsControl c
+            && c <> '\n'
+            && c <> '\r'
+            && c <> sibSep
+            && c <> fieldSep
+            && c <> districtClose
+            ->
+            let name = if c = '\t' then "a TAB" else $"the control character U+{int c:X4}"
+            failFatallyAt after $"a backslash followed by {name} is not an escape (the escapes are {escapeList}; a literal backslash is \\\\)"
         // a non-letter is no path shape: the list alone, no hint to misfire
         | Some c when not (System.Char.IsControl c) ->
             failFatallyAt after $"'\\{c}' is not an escape (the escapes are {escapeList}; a literal backslash is \\\\)"
@@ -1178,9 +1227,15 @@ let private dotdot = pstring ".." .>> ws
 // negative-literal form predates general prefix minus [D:prefix-minus] and stays:
 // range steps allow the spaced form ([10.. -1 ..1]) that adjacency rejects.
 // rangeTerm is a forward ref: it needs atom, which needs listLit.
+// complex endpoints are refused by design; both refusal sites name the
+// repair [D:range-endpoint-teach]
+let private rangeEndpointMsg =
+    "a range endpoint is a literal, a name or a field access — parenthesize a computed one, as in [(n - 1) .. (-m)]"
+
 let private negIntLit =
     spanned (
-        pchar '-' >>. many1Satisfy isDigit
+        getPosition .>> pchar '-'
+        >>= (fun at -> many1Satisfy isDigit <|> failFatallyAt at rangeEndpointMsg)
         >>= fun digits ->
             match System.Int64.TryParse("-" + digits) with
             | true, n -> preturn (EInt n)
@@ -1233,7 +1288,11 @@ let private listLit =
                 [ rangeBody
                   .>> (pchar ']' <?> "']' (complex range endpoints need parentheses: [a..(f x)])")
                   |>> Choice1Of2
-                  sepBy commaExpr fieldSepP .>> pchar ']' |>> Choice2Of2 ]
+                  sepBy commaExpr fieldSepP
+                  .>> (pchar ']'
+                       <|> (getPosition .>> followedBy (pstring "..")
+                            >>= fun at -> failFatallyAt at rangeEndpointMsg))
+                  |>> Choice2Of2 ]
     )
     |>> buildBracket
     .>> ws
@@ -1382,11 +1441,28 @@ let rec private chainReifier (e: Expr) : string option =
     | EPipe(l, r) -> chainReifier r |> Option.orElseWith (fun () -> chainReifier l)
     | _ -> None
 
+// a weir name heading a `$( )` (`let date = 3` then `$(date)`, the
+// builtin `ls`): the command grammar refuses it, and the refusal names
+// the two spellings that run a program [D:directive-diagnostic]
+let private sigilKnownHead: Parser<Expr, unit> =
+    lookAhead (getPosition .>>. many1Satisfy2 isIdentStart isIdentCont .>> notFollowedBy (pchar '.'))
+    >>= fun (at, w) ->
+        let r = ambientResolver.Value
+
+        if r.IsKnown w && not (keywords.Contains w) then
+            // consume the word so the fatal clears the competing expectations
+            many1Satisfy isIdentCont
+            >>. failFatallyAt
+                    at
+                    $"'{w}' is a weir name, not a program — $(…) runs a program and captures its output; call {w} as weir code, or write $(^{w} …) for a program of that name"
+        else
+            fail "not a known head"
+
 let private captureSigil =
     spanned (
         sigilOpen '$'
         >>= fun envO ->
-            ws >>. sigilChain envO
+            ws >>. (sigilChain envO <|> sigilKnownHead)
             >>= fun chain ->
                 (if exitCodeSpine chain then
                      failFatally
@@ -1407,7 +1483,8 @@ let private captureSigil =
 // when the previous char cannot end an operand (start, space, `(`,
 // `[`, `{`, `=`, ...) and the operand is glued to the glyph. In an
 // application chain `f -1` means `f (-1)`; `x-1` and `x - 1` stay
-// infix. Desugars to `0 - e`, so typing and eval are untouched.
+// infix. Desugars to `0 - e` for an int literal, else to a once-bound
+// `n - n - n` [D:prefix-minus-typed], so typing and eval are untouched.
 let private postfixAtomFwd, private postfixAtomFwdRef =
     createParserForwardedToRef<Expr, unit> ()
 
@@ -1473,8 +1550,18 @@ let private negAtom =
             | EFloat f -> { Kind = EFloat(if f = 0.0 then 0.0 else -f); Span = span }
             | EDur n -> { Kind = EDur(-n); Span = span }
             | ESize b -> { Kind = ESize(-b); Span = span }
-            | _ ->
+            | EInt _ ->
                 { Kind = EBinOp("-", { Kind = EInt 0L; Span = e.Span }, e)
+                  Span = span }
+            // any other operand negates in its own type [D:prefix-minus-typed]:
+            // `n - n - n` is `-n` exactly for int, Duration, Size and the
+            // finite floats, without an int 0 pinning the type; bound once
+            // so the operand evaluates once
+            | _ ->
+                let v = { Kind = EVar "|neg"; Span = e.Span }
+                let sub a b = { Kind = EBinOp("-", a, b); Span = span }
+
+                { Kind = ELet("|neg", e.Span, e, sub (sub v v) v)
                   Span = span })
 
 // Depth guard [D:depth-guard]: unbounded expression depth blows the
@@ -1565,9 +1652,8 @@ let private holeBackslashTeaching: Parser<Expr, unit> =
 let private tildeTeaching: Parser<Expr, unit> =
     onHead '~' (pchar '~')
     <| attempt (
-        getPosition
-        .>> pchar '~'
-        .>> (followedBy eof <|> followedBy (satisfy (fun c -> not (System.Char.IsLetterOrDigit c || c = '_'))))
+        // `~x` too: no expression reading starts with `~`
+        getPosition .>> pchar '~'
     )
     >>= fun at ->
         failFatallyAt
@@ -2032,10 +2118,14 @@ let private lambdaBody =
                         { saved with
                             IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
 
+                    let savedMask = aliasMasked.Value
+                    aliasMasked.Value <- Set.union names savedMask
+
                     try
                         inner stream
                     finally
                         ambientResolver.Value <- saved
+                        aliasMasked.Value <- savedMask
 
             // a lambda body is a statement body [D:lambda-lets]: it
             // grants command lets wherever it sits, as the spine does
@@ -2095,10 +2185,14 @@ let private withPatNames (p: Pattern) (inner: Parser<'a, unit>) : Parser<'a, uni
             { saved with
                 IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
 
+        let savedMask = aliasMasked.Value
+        aliasMasked.Value <- Set.union names savedMask
+
         try
             inner stream
         finally
             ambientResolver.Value <- saved
+            aliasMasked.Value <- savedMask
 
 // deepen on every block form [D:depth-guard]: their bodies nest
 // through seqExpr without re-entering atom, so a chain of them
@@ -2198,10 +2292,14 @@ let private letInBody =
                               { saved with
                                   IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
 
+                          let savedMask = aliasMasked.Value
+                          aliasMasked.Value <- Set.union names savedMask
+
                           try
                               inner stream
                           finally
                               ambientResolver.Value <- saved
+                              aliasMasked.Value <- savedMask
 
                   // a bare `let name =` with nothing after it gets its own
                   // first-reached diagnosis [D:windows-findings] — without
@@ -2541,6 +2639,29 @@ let private fromExpr =
                      failFatallyAtCol
                          wspan.Start.Col
                          "the adapter slot takes a declared record name — 'from … as <Name>' is the REPL's #infer spelling; here, declare the type and write the name (draft it at the prompt: #infer let x = <src> |> from <fmt> as _)")
+            // a lowercase type in the slot (`int`, `seq<int>`) is a scalar
+            // or builtin type, never a record [D:adapter-slot-teach]:
+            // recognized whole first, so the fatal fires outside the
+            // slot's attempt, as the #infer spelling's does
+            <|> (attempt (
+                     (identSpanned
+                      >>= fun (w, wspan) ->
+                          if w = "seq" then
+                              str_ws "<" >>. identSpanned
+                              >>= fun (inner, ispan) ->
+                                  if Char.IsLower inner[0] then
+                                      preturn (ispan, $"'{inner}' inside seq< >")
+                                  else
+                                      ifail "a record name inside seq< >"
+                          elif Char.IsLower w[0] && w <> "stream" then
+                              preturn (wspan, $"'{w}'")
+                          else
+                              ifail "not a lowercase slot type")
+                 )
+                 >>= fun (sp, what) ->
+                     failFatallyAtCol
+                         sp.Start.Col
+                         $"{what} is not a declared record name — the adapter slot takes one: declare a record that holds the data (type Doc = {{ items: seq<int> }}) and write its name, or seq<Name> for a list of records")
             <|> attempt (
                 identSpanned
                 >>= fun (w, _) ->
@@ -2563,7 +2684,7 @@ let private fromExpr =
                             (str_ws ">")
                             ((anonShape |>> FromAnon)
                              <|> (identSpanned
-                                  >>= fun (inner, _) ->
+                                  >>= fun (inner, ispan) ->
                                       if Char.IsUpper inner[0] then
                                           adapterName inner >>= slotName
                                       else
@@ -3073,7 +3194,11 @@ let private retryExprBody =
                                End = (List.last pairs |> snd).Span.End } })
                 >>= fun optsE ->
                     opt (str_ws ";" <|> str_ws sibSepStr)
-                    >>. (withExprParen false seqExpr <?> $"the {headWord} body")
+                    >>. (withExprParen false seqExpr
+                         // nothing that starts a body [D:loop-body-teach]
+                         <|> (getPosition
+                              >>= fun at ->
+                                  failFatallyAt at $"'{headWord}' needs a body — the indented lines below it"))
                     >>= fun body ->
                         opt (
                             attempt (opt (str_ws ";" <|> str_ws sibSepStr) >>. keyword "until")
@@ -3667,14 +3792,28 @@ and private parseTplBlockBody
                                     else
                                         Result.Ok(YtItem(YtScalar("", false, spanAt col)))
                                 else
-                                    match Yaml.splitKey inlinePart with
-                                    | Some _ ->
-                                        // compact map item: the first entry lives on
-                                        // this line at a virtual rel of item+2
-                                        let shifted =
-                                            Array.append [| (inlineCol, indent + 2, inlinePart) |] lines[i + 1 .. j - 1]
+                                    // the dash's gap sets the nested column: `-   x: 1`
+                                    // puts its siblings at item+4, as Yaml.parse reads
+                                    let gap = inlinePart.Length - inlinePart.TrimStart(' ').Length
+                                    let inlineBody = inlinePart.Substring gap
 
-                                        parseTplBlock shifted 0 shifted.Length (indent + 2) |> Result.map YtItem
+                                    // compact item: the first entry (or a nested
+                                    // sequence's first item, `- - x`
+                                    // [D:yaml-inline-nested-seq]) lives on this line
+                                    // at a virtual rel of item+2+gap
+                                    let compact () =
+                                        let shifted =
+                                            Array.append
+                                                [| (inlineCol + gap, indent + 2 + gap, inlineBody) |]
+                                                lines[i + 1 .. j - 1]
+
+                                        parseTplBlock shifted 0 shifted.Length (indent + 2 + gap) |> Result.map YtItem
+
+                                    if inlineBody.StartsWith "- " || inlineBody.TrimEnd() = "-" then
+                                        compact ()
+                                    else
+                                    match Yaml.splitKey inlinePart with
+                                    | Some _ -> compact ()
                                     | None ->
                                         if hasNested then
                                             Result.Error("a scalar sequence item cannot have a nested block", col)
@@ -3701,6 +3840,29 @@ and private parseTplBlockBody
                         match Yaml.splitKey text with
                         | None -> Result.Error("expected 'key:', '- ', or 'for … in …' in this yaml block", col)
                         | Some(rawKey, rest) ->
+                            // a valueless key over a sequence at its own column
+                            // (kubectl's flush-left form, [D:yaml-seq]): the
+                            // sequence's items and their nested lines are the value
+                            let isItemAt k =
+                                let (_, r, t) = lines[k]
+                                r = indent && (t.StartsWith "- " || t.TrimEnd() = "-")
+
+                            let j0 = j
+
+                            let j =
+                                if rest.Trim() = "" && not hasNested && j < fin && isItemAt j then
+                                    let mutable k = j
+
+                                    while k < fin
+                                          && (let (_, r, t) = lines[k] in tplTransparent t || r > indent || isItemAt k) do
+                                        k <- k + 1
+
+                                    k
+                                else
+                                    j
+
+                            let flushSeq = j > j0
+
                             // a quoted key is literal, as a quoted value is:
                             // only a bare `$name` key splices
                             let quotedKey = text.StartsWith "\"" || text.StartsWith "'"
@@ -3740,7 +3902,9 @@ and private parseTplBlockBody
                                         tplBlockScalar lines (i + 1) j keep (col + text.Length - rest.Length)
                                     | None ->
 
-                                        if rest.Trim() = "" then
+                                        if flushSeq then
+                                            parseTplBlock lines j0 j indent
+                                        elif rest.Trim() = "" then
                                             if hasNested then
                                                 let r1 = firstContentRel (i + 1) j (indent + 4)
                                                 parseTplBlock lines (i + 1) j r1
@@ -4022,6 +4186,42 @@ let private heredocMarkerTeach: Parser<Expr, unit> =
             at
             "a text block marker '<<<' must end its line — nothing may follow it, not even trailing spaces or tabs; the block is the indented lines below"
 
+// after a `yaml` word: the rest of an assembler-armed marker line ends
+// in a blank [D:yaml-marker-blanks] — the district's first content line
+// is glued to the sentinel, a sibling statement's join is spaced
+let private yamlBlankTailIn (rest: string) : bool =
+    let cut = rest.IndexOf sibSep
+
+    cut > 0
+    && cut + 1 < rest.Length
+    && rest[cut + 1] <> ' '
+    && (let seg = "yaml" + rest.Substring(0, cut)
+
+        (seg.EndsWith " " || seg.EndsWith "\t") && isYamlMarkerPiece (seg.TrimEnd()))
+
+let private yamlBlankTail: Parser<unit, unit> =
+    fun stream ->
+        if yamlBlankTailIn (stream.PeekString 512) then
+            Reply(())
+        else
+            Reply(ReplyStatus.Error, NoErrorMessages)
+
+// the `<<<` teaching for it, not a command `yaml` or an expected-set dump
+let private yamlMarkerTeach: Parser<Expr, unit> =
+    // a silent gate: `yaml` must never join an expected-token list
+    getPosition
+    .>> (fun (stream: CharStream<unit>) ->
+        let rest = stream.PeekString 516
+
+        if rest.StartsWith "yaml" && yamlBlankTailIn (rest.Substring 4) then
+            Reply(())
+        else
+            Reply(ReplyStatus.Error, NoErrorMessages))
+    >>= fun at ->
+        failFatallyAt
+            at
+            "a yaml block marker must end its line — nothing may follow it, not even trailing spaces or tabs; the block is the indented lines below"
+
 opp.TermParser <-
     choice
         [ lambda
@@ -4037,6 +4237,7 @@ opp.TermParser <-
           planExpr
           retryExpr
           yamlDistrict
+          yamlMarkerTeach
           heredocDistrict
           heredocMarkerTeach
           fromExpr
@@ -4531,7 +4732,7 @@ let private envPrefixGuard () : Parser<'a, unit> =
         match next with
         // a head that resolves was refused for another reason — that
         // route's error is the true one
-        | Some(w, _) when isIdentLike w && (r.IsExternal w || (r.AliasHead w).IsSome || r.IsCommandCallable w) ->
+        | Some(w, _) when isIdentLike w && (r.IsExternal w || (aliasHeadOf r w).IsSome || r.IsCommandCallable w) ->
             ifail "the head resolves; not an env-prefix failure"
         | Some(w, sp) when not (keywords.Contains w) ->
             failFatallyAtCol
@@ -4625,6 +4826,13 @@ let private litHeadWord: Parser<(char option * string) * Span, unit> =
                 >>. pchar sibSep
             )
         )
+        // …and a marker with a trailing blank [D:yaml-marker-blanks]: the
+        // district arm teaches it, check's assume-resolver must not run it
+        >>= (fun (((forced, w), _) as head) ->
+            if forced.IsNone && w = "yaml" then
+                notFollowedBy yamlBlankTail >>% head
+            else
+                preturn head)
         .>> ws
 
 let private commandSegment
@@ -4660,11 +4868,11 @@ let private commandSegment
                     preturn (ExternalHead, w, span)
                 else
                     failFatally $"command not found: {quoteData w}{didYouMean w (r.ExternalNames())}"
-            elif isIdentLike w && (r.AliasHead w).IsSome then
+            elif isIdentLike w && (aliasHeadOf r w).IsSome then
                 // the alias table is consulted before builtins and PATH, so
                 // an alias shadowing a real name (`#alias ls = ls --color`)
                 // wins here and `^ls` (above) is the bypass [D:command-head-alias]
-                match r.AliasHead w with
+                match aliasHeadOf r w with
                 | Some(exe, prefix) -> preturn (AliasedHead(exe, prefix), w, span)
                 | None -> ifail "not an alias"
             elif builtinHeads && isIdentLike w && r.IsCommandCallable w then
@@ -4938,15 +5146,24 @@ let private chainRhsTeach (kw: string) (r: Resolver) : Parser<Expr, unit> =
     >>= fun (at, w) ->
         match w with
         | Some w when isIdentLike w && (keywords.Contains w || r.IsKnown w) ->
-            let fix =
-                if r.IsExternal w then
-                    $"to run the {w} program, write ^{w}"
+            // the resolver never picks the repair [D:value-chain-word]:
+            // check assumes every head external, run does not, so both
+            // name the weir-code repair and (for a name) the ^ spelling
+            let weirFix =
+                if kw = "and" then
+                    "to run weir code when the command succeeds, use `if <command> | succeeds then …`"
                 else
-                    $"to run weir code when the command fails, use `if not (<command> | succeeds) then …`"
+                    "to run weir code when the command fails, use `if not (<command> | succeeds) then …`"
+
+            let fix =
+                if keywords.Contains w then
+                    weirFix
+                else
+                    $"{weirFix}; to run a program named {w}, write ^{w}"
 
             let what = if keywords.Contains w then "keyword" else "name"
-            failFatallyAt at $"'{w}' is a weir {what}, not a program — '| {kw}' must be followed by a command; {fix}"
-        | _ -> failFatallyAt at $"'| {kw}' must be followed by a command, as in `<command> | {kw} <other command>`"
+            failChain $"'{w}' is a weir {what}, not a program — '| {kw}' must be followed by a command; {fix}" (spanAt at)
+        | _ -> failChain $"'| {kw}' must be followed by a command, as in `<command> | {kw} <other command>`" (spanAt at)
 
 // the RHS always admits a command-callable builtin head (`mkdir d | and
 // cd d`) [D:cmd-chaining]: after `| and`/`| or` the text is a command
@@ -5046,6 +5263,17 @@ let private mixedChain (seg: Seg) : (string * string * Span) option =
     | AndMarker(rhs, sp) when chainWord rhs = Some "or" -> Some("and", "or", sp)
     | OrMarker(rhs, sp) when chainWord rhs = Some "and" -> Some("or", "and", sp)
     | _ -> None
+
+// a capture sigil closes its chain at the ')' — the composition exists
+// inside the parens [D:exit-reifiers]: teach the spelling, not just the law
+let private captureReifierMsg (inner: Expr) (stageName: string) =
+    let sigil =
+        match inner.Kind with
+        | ECmd(_, _, Some { Kind = EVar n })
+        | EPipe(_, { Kind = ECmd(_, _, Some { Kind = EVar n }) }) -> "$" + n
+        | _ -> "$"
+
+    $"'{stageName}' must directly follow a single external command segment — the capture sigil closes its chain at the ')'; the reifier composes inside the parens: {sigil}(cmd | {stageName})"
 
 let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Expr, string * Span> =
     rest
@@ -5279,17 +5507,7 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
                     // a capture sigil closes its chain at the ')' — the
                     // composition exists inside the parens [D:exit-reifiers]:
                     // teach the spelling, not just the law
-                    | ECapture inner ->
-                        let sigil =
-                            match inner.Kind with
-                            | ECmd(_, _, Some { Kind = EVar n })
-                            | EPipe(_, { Kind = ECmd(_, _, Some { Kind = EVar n }) }) -> "$" + n
-                            | _ -> "$"
-
-                        Result.Error(
-                            $"'{stageName}' must directly follow a single external command segment — the capture sigil closes its chain at the ')'; the reifier composes inside the parens: {sigil}(cmd | {stageName})",
-                            mspan
-                        )
+                    | ECapture inner -> Result.Error(captureReifierMsg inner stageName, mspan)
                     // a reifier after a command chain [D:chain-reifiers]: the
                     // stages ride a list of (prog, argv, env) — each built as a
                     // single reified segment's — with the value head's stdin
@@ -5471,9 +5689,14 @@ let private singlePipe: Parser<unit, unit> =
 // resolves to an external command (an ECmd — a known/library
 // head fails commandSegment and falls through to barePipeHint).
 // The lookAhead consumes nothing; the stages re-parse from `|`.
+// a chain word or a reifier is never the external head
+// [D:value-chain-word]: under check's assume-resolver `and`/`line`
+// read as programs, under run's they do not — both refuse here so the
+// barePipeHint teaching is the one answer
 let private valueHeadedGate =
     lookAhead (
         singlePipe
+        >>. notFollowedBy (choice (("and" :: "or" :: reifierNames) |> List.map pstring) .>> reifierWordEnd)
         >>. (commandSegment true cmdArg None ambientProxy
              >>= fun seg ->
                  match seg.Kind with
@@ -5487,11 +5710,24 @@ valueHeadedTailImpl <-
     // deepen: the tail re-enters the command grammar [D:depth-guard]
     fun lhs ->
         deepen (
-            valueHeadedGate >>. valueHeadedStages
-            >>= fun stages ->
-                match foldChain lhs stages with
-                | Result.Ok e -> preturn e
-                | Result.Error(m, sp) -> failChain m sp
+            // a capture then a reifier: the gate refuses the reifier head, so
+            // the capture's own teaching is raised here, check and run alike
+            // [D:value-chain-word]
+            (match lhs.Kind with
+             | ECapture inner ->
+                 attempt (
+                     lookAhead (
+                         singlePipe >>. getPosition
+                         .>>. (choice (reifierNames |> List.map pstring) .>> reifierWordEnd)
+                     )
+                 )
+                 >>= fun (at, name) -> failFatallyAt at (captureReifierMsg inner name)
+             | _ -> ifail "not a capture head")
+            <|> (valueHeadedGate >>. valueHeadedStages
+                 >>= fun stages ->
+                     match foldChain lhs stages with
+                     | Result.Ok e -> preturn e
+                     | Result.Error(m, sp) -> failChain m sp)
         )
 
 // let-RHS command lines stop at a bareword `in` (see cmdArgWith), and
@@ -5601,8 +5837,16 @@ let private attrArgLit =
           // a leading `-` is part of the literal [D:attr-negative-literal]:
           // `[<Default -1>]` is an int literal exactly as `-1` is anywhere
           getPosition
-          .>>. (opt (pchar '-') .>>. many1Satisfy isDigit
-                |>> fun (neg, d) -> if neg.IsSome then "-" + d else d)
+          .>>. (opt (getPosition .>> pchar '-')
+                >>= function
+                    | None -> many1Satisfy isDigit
+                    // the consumed `-` would report an empty message
+                    | Some at ->
+                        (many1Satisfy isDigit
+                         <|> failFatallyAt
+                             at
+                             "a '-' in an attribute argument must be followed by a number, as in [<Default -1>] — attribute arguments are literals")
+                        |>> fun d -> "-" + d)
           .>>. opt (
               attempt (
                   (choice
@@ -5876,12 +6120,16 @@ let private topLet (r: Resolver) =
                 let withSpine (p: Parser<'a, unit>) : Parser<'a, unit> =
                     fun stream ->
                         let saved = ambientResolver.Value
+                        let savedMask = aliasMasked.Value
                         ambientResolver.Value <- r'
+                        // a param beats the alias table [D:alias-binding-shadow]
+                        aliasMasked.Value <- Set.union paramNames savedMask
 
                         try
                             (withLetCmd true p) stream
                         finally
                             ambientResolver.Value <- saved
+                            aliasMasked.Value <- savedMask
 
                 withSpine (rhsP .>> eof)
                 |>> fun rhs ->
@@ -6209,8 +6457,105 @@ let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) op
 
 let private stmtShared = stmtWith ambientProxy
 
+// the last-resort teacher [D:dump-teach]: a parse that still ends in
+// FParsec's expected-token list is read once more at its error site, and
+// the shapes users reach by reflex get the repair in their own words. One
+// table, consulted only when nothing in the grammar taught.
+let private dumpTeach (r: Resolver) (input: string) (idx: int) (msg: string) : string option =
+    let lines = msg.Replace("\r", "").Split '\n'
+
+    // a deliberate teaching FParsec merged beside the expected list
+    let others =
+        match lines |> Array.tryFindIndex (fun l -> l = "Other error messages:") with
+        | Some i ->
+            lines[i + 1 ..]
+            |> Array.takeWhile (fun l -> l.StartsWith "  ")
+            |> Array.map (fun l -> l.Trim())
+            |> Array.filter (fun l ->
+                l <> "" && not (l.Contains internalLabelMarker) && not (l.Contains "\\u0006"))
+        | None -> [||]
+
+    let idx = max 0 (min idx input.Length)
+    let before = input.Substring(0, idx)
+    let rest = input.Substring idx
+    let beforeT = before.TrimEnd()
+
+    let wordAt (t: string) =
+        t |> Seq.takeWhile (fun c -> not (System.Char.IsWhiteSpace c) && c <> sibSep && c <> fieldSep) |> System.String.Concat
+
+    let lastIdent =
+        let m = System.Text.RegularExpressions.Regex.Match(beforeT, @"(?:^|[\s(])([A-Za-z_][A-Za-z0-9_]*)$")
+        if m.Success then Some m.Groups[1].Value else None
+
+    // `ls /`: the `/` read as division, the error lands past it
+    let pathAfterWord =
+        let m =
+            System.Text.RegularExpressions.Regex.Match(
+                beforeT,
+                @"(?:^|[\s(])([A-Za-z_][A-Za-z0-9_]*)\s+((?:\.{0,2}|~)/[^\s]*)$"
+            )
+
+        if m.Success then Some(m.Groups[1].Value, m.Groups[2].Value) else None
+
+    let rx (p: string) (t: string) =
+        let m = System.Text.RegularExpressions.Regex.Match(t, p)
+        if m.Success then Some m.Groups[1].Value else None
+
+    let parenDepth =
+        before |> Seq.sumBy (fun c -> if c = '(' then 1 elif c = ')' then -1 else 0)
+
+    if not (msg.Contains "Expecting:") then
+        None
+    elif others.Length > 0 then
+        Some(String.concat " " others)
+    elif System.Text.RegularExpressions.Regex.IsMatch(rest, @"^-\s+-") then
+        Some "a prefix '-' is glued to its operand (-x) — to negate a negative, parenthesize: -(-x)"
+    elif rest.StartsWith "-" && beforeT.EndsWith "-" then
+        if before.EndsWith "-" then
+            Some "'--' is not an operator (weir has no decrement) — to negate a negative, parenthesize: -(-x)"
+        else
+            Some "a prefix '-' is glued to its operand (-x) — to negate a negative, parenthesize: -(-x)"
+    elif (rx @"^\|\s*([A-Za-z]+)(?![A-Za-z0-9_-])" rest |> Option.exists (fun w -> List.contains w reifierNames)) then
+        let name = (rx @"^\|\s*([A-Za-z]+)" rest).Value
+
+        if name = "exec" then
+            Some "'| exec' hands the process over and never returns, so it can't sit inside an expression — write it as a statement of its own: `<command> | exec`"
+        else
+            Some
+                $"'| {name}' ends a command statement, so it can't sit inside an expression — bind it first: `let r = <command> | {name}`, then use r"
+    elif (rx @"^(import)(?![A-Za-z0-9_])" rest).IsSome then
+        Some "an import is a top-level statement — put it at column 0, outside any block, before the code that uses it"
+    elif
+        System.Text.RegularExpressions.Regex.IsMatch(before, @"\$[A-Za-z_]*\($")
+        && (rx @"^([A-Za-z_][A-Za-z0-9_]*)" rest
+            |> Option.exists r.IsKnown)
+    then
+        let w = (rx @"^([A-Za-z_][A-Za-z0-9_]*)" rest).Value
+        Some
+            $"'{w}' is a weir name, not a program — $(…) runs a program and captures its output; call {w} as weir code, or write $(^{w} …) for a program of that name"
+    elif rest.StartsWith ")" && beforeT.EndsWith "(" then
+        Some "an empty '()' is not a command argument — quote literal text: \"()\""
+    elif rest.StartsWith ":" && not (rest.StartsWith "::") && parenDepth > 0 then
+        Some "weir has no type annotation inside an expression — annotate the binding instead: `let y: T = e`"
+    elif
+        (rest.StartsWith "/" || rest.StartsWith "./" || rest.StartsWith "~/") && lastIdent.IsSome
+        || pathAfterWord.IsSome
+    then
+        let w, path =
+            match pathAfterWord with
+            | Some wp -> wp
+            | None -> lastIdent.Value, wordAt rest
+
+        Some
+            $"'{w}' is a weir name here, so {path} is read as weir code — a path argument is a string (\"{path}\"); to run the {w} program, write ^{w} {path}"
+    elif lines |> Array.exists (fun l -> l.Trim() = "Expecting: end of input") && rest.Trim() <> "" then
+        Some $"'{wordAt rest}' is left over — the statement is already complete before it"
+    else
+        None
+
 let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
     ambientResolver.Value <- r
+    aliasMasked.Value <- Set.empty
     parseDepth.Value <- 0
     // per-line memo [D:statement-lets] — offsets are line-relative
     grantedRhsRanges.Value.Clear()
@@ -6251,6 +6596,21 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
                         Some(int err.Position.Column)
                     else
                         None
+
+                let msg =
+                    match col with
+                    | Some c ->
+                        // keep FParsec's position + snippet + caret head, the
+                        // shape every consumer strips, and swap the body
+                        let ls = msg.Replace("\r\n", "\n").Split '\n'
+
+                        let caret =
+                            ls |> Array.tryFindIndex (fun l -> l.Trim() <> "" && l.Trim() |> Seq.forall ((=) '^'))
+
+                        match dumpTeach r input (c - 1) msg, caret with
+                        | Some m, Some k -> String.concat "\n" (Array.append ls[..k] [| m |])
+                        | _ -> msg
+                    | None -> msg
 
                 Result.Error { Message = msg; Col = col }
         with

@@ -267,7 +267,7 @@ let private result = ResultBuilder()
 let private err (span: Span) (msg: string) : Result<'a, TypeError> =
     Error
         { Span = span
-          Message = msg
+          Message = normalizeDiagVars msg
           Origin = None }
 
 // the tombstone scope law [D:yaml-nodes]: only a `yaml patch` district
@@ -827,7 +827,8 @@ let private strandedMessage (cls: Cls) : string =
     let req =
         match cls with
         | Cls.Eq -> "an equality"
-        | Cls.Ord -> "an ordering"
+        | Cls.Ord
+        | Cls.Cmp -> "an ordering"
         | Cls.Show
         | Cls.Render -> "a rendering"
 
@@ -933,6 +934,27 @@ let private ordTail (env: TypeEnv) (atUse: bool) (offender: Ty) : string =
         else
             "only int, float, string, bool, Duration, Size, Instant, Uuid, an Option of those, and records or unions numbered with [<Ord n>] order"
 
+// the comparison operators' refusal [D:uuid-unordered-generic]: one text
+// for the operator site and a Cmp constraint met at instantiation (`op`
+// is None there — the operator sits in the generic's body)
+let private cmpDescribe (op: string option) (env: TypeEnv) (t: Ty) : string =
+    let rec holdsUuid t =
+        match t with
+        | TUuid -> true
+        | TNamed("Option", [ inner ]) -> holdsUuid inner
+        | _ -> false
+
+    let subject =
+        match op with
+        | Some op -> $"operator '{op}' is not defined for {formatTy t}"
+        | None -> $"this use compares values with '<', '>', '<=' or '>=', which are not defined for {formatTy t}"
+
+    if holdsUuid t then
+        $"{subject}; a Uuid is an identifier, not a quantity — Seq.sort orders Uuids"
+    else
+        let off = ordOffender env Set.empty t |> Option.defaultValue t
+        $"{subject} — {ordTail env true off}"
+
 let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
     if Set.isEmpty sch.Forall then
         sch.Ty
@@ -1024,6 +1046,7 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                                 fun env t ->
                                     let off = ordOffender env Set.empty t |> Option.defaultValue t
                                     $"cannot sort by this key: {formatTy t} cannot be ordered — {ordTail env true off}"
+                            | Cls.Cmp -> cmpDescribe None
                             | Cls.Render -> fun _ t -> holeDescribe t })
 
                 ctx.Cons <- Map.add v' (ps @ (Map.tryFind v' ctx.Cons |> Option.defaultValue [])) ctx.Cons
@@ -1070,6 +1093,12 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p0: Pending) (ty0: Ty) : Result<un
         // [D:hole-generic]; below the top a Secret renders masked
         | TSecret when p.Cls = Cls.Render -> false
         | t when p.Cls = Cls.Render -> okAs { p with Cls = Cls.Show } seen t
+        // Cmp is Ord with Uuid refused, through Option too
+        // [D:uuid-unordered-generic]; a declared [<Ord n>] key may hold
+        // one (the declaration orders, not the Uuid)
+        | TUuid when p.Cls = Cls.Cmp -> false
+        | TNamed("Option", [ inner ]) when p.Cls = Cls.Cmp -> okAs p seen inner
+        | t when p.Cls = Cls.Cmp -> okAs { p with Cls = Cls.Ord } seen t
         | t ->
             let decompose (n: string) (targs: Ty list) =
                 let key = formatTy t
@@ -1148,7 +1177,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p0: Pending) (ty0: Ty) : Result<un
             // Render by its delegation; the compiler cannot see that
             // through this nesting
             | _, (TVar _ | TRowVar _) -> true
-            | Cls.Render, _ -> false
+            | (Cls.Render | Cls.Cmp), _ -> false
 
     if okAs p0 Set.empty ty0 then
         Ok()
@@ -1453,8 +1482,10 @@ let private seqUnitError (first: Expr) (ty: Ty) : string =
 
 // `| exec` inside a resource scope is refused [D:exec-scope-refused]:
 // exec replaces weir's process, so the scope's teardown (and an always
-// block) would never run. Lexical, like exit inside always — the first
-// exec site under the expression, if any
+// block) would never run. Lexical here, like exit inside always — the
+// first exec site under the expression, if any; an exec reached through
+// a helper is the post-check layer's (Purity.execScopeViolation)
+// [D:exec-scope-transitive]
 let private execSite (e: Expr) : Ast.Span option =
     let rec go (e: Expr) =
         match e.Kind with
@@ -1463,23 +1494,49 @@ let private execSite (e: Expr) : Ast.Span option =
 
     go e
 
-let private execInScope (kind: WithinKindId) (body: Expr) : Result<unit, TypeError> =
-    let lost =
-        match kind with
-        | WithinTmp -> Some "the temporary directory would never be removed"
-        | WithinProc -> Some "the scoped process would never be stopped"
-        | WithinLock -> Some "the lock would never be released"
-        | WithinServe -> Some "the server would never be stopped"
-        | WithinCd
-        | WithinEnv -> Some "the scope would never close"
-        // pure/readonly/plan refuse every command already
-        | _ -> None
+/// what a scope loses to an exec inside it; None for the kinds that
+/// refuse every command already (pure/readonly/plan)
+let execScopeLoss (kind: WithinKindId) : string option =
+    match kind with
+    | WithinTmp -> Some "the temporary directory would never be removed"
+    | WithinProc -> Some "the scoped process would never be stopped"
+    | WithinLock -> Some "the lock would never be released"
+    | WithinServe -> Some "the server would never be stopped"
+    | WithinCd
+    | WithinEnv -> Some "the scope would never close"
+    | _ -> None
 
-    match lost, execSite body with
+// the refusal's subject: the exec itself, or the helper whose body
+// reaches one [D:exec-scope-transitive]
+let private execSubject (helper: string option) : string =
+    match helper with
+    | None -> "'exec'"
+    | Some h -> $"'{h}' reaches 'exec' in its body, and 'exec'"
+
+// `after`: the scope's own repair — exec once the scope has closed
+let private execRepair (helper: string option) (after: bool) : string =
+    match helper, after with
+    | None, false -> "run the command without exec"
+    | None, true -> "run the command without exec, or exec after the scope"
+    | Some _, false -> "run its command without exec"
+    | Some h, true -> $"run its command without exec, or call '{h}' after the scope"
+
+/// the scope refusal [D:exec-scope-refused] [D:exec-scope-transitive]
+let execInScopeMessage (kind: WithinKindId) (what: string) (helper: string option) : string =
+    $"{execSubject helper} inside 'within {withinKindName kind}' is refused — exec replaces weir's process, so {what}; {execRepair helper true}"
+
+/// the always refusals: in the guarded body, or in the cleanup itself
+let execInAlwaysMessage (inCleanup: bool) (helper: string option) : string =
+    if inCleanup then
+        $"{execSubject helper} inside always is refused — exec replaces weir's process, so the rest of the teardown would never run; {execRepair helper false}"
+    else
+        $"{execSubject helper} inside a scope with always is refused — exec replaces weir's process, so the always block would never run; {execRepair helper true}"
+
+let private execInScope (kind: WithinKindId) (body: Expr) : Result<unit, TypeError> =
+    match execScopeLoss kind, execSite body with
     | Some what, Some sp ->
         Error
-            { Message =
-                $"'exec' inside 'within {withinKindName kind}' is refused — exec replaces weir's process, so {what}; run the command without exec, or exec after the scope"
+            { Message = execInScopeMessage kind what None
               Span = sp
               Origin = None }
     | _ -> Ok()
@@ -1488,14 +1545,12 @@ let private execInAlways (body: Expr) (cleanup: Expr) : Result<unit, TypeError> 
     match execSite body, execSite cleanup with
     | Some sp, _ ->
         Error
-            { Message =
-                "'exec' inside a scope with always is refused — exec replaces weir's process, so the always block would never run; run the command without exec, or exec after the scope"
+            { Message = execInAlwaysMessage false None
               Span = sp
               Origin = None }
     | None, Some sp ->
         Error
-            { Message =
-                "'exec' inside always is refused — exec replaces weir's process, so the rest of the teardown would never run; run the command without exec"
+            { Message = execInAlwaysMessage true None
               Span = sp
               Origin = None }
     | None, None -> Ok()
@@ -1832,27 +1887,18 @@ let rec private typeBinOp
     | (">" | "<" | ">=" | "<="), TBool, TBool -> Ok TBool
     | (">" | "<" | ">=" | "<="), (TNamed("Option", [ _ ]) as a), (TVar _ | TNamed("Option", [ _ ]))
     | (">" | "<" | ">=" | "<="), TVar _, (TNamed("Option", [ _ ]) as a) ->
-        let rec holdsUuid t =
-            match resolve ctx t with
-            | TUuid -> true
-            | TNamed("Option", [ inner ]) -> holdsUuid inner
-            | _ -> false
-
         bind ctx env r.Span (resolve ctx l.Ty) (resolve ctx r.Ty)
         |> Result.bind (fun () ->
-            if holdsUuid a then
-                err opSpan $"operator '{op}' is not defined for {formatTy (finalTy ctx a)}; a Uuid is an identifier, not a quantity — Seq.sort orders Uuids"
-            else
-                let p =
-                    { Cls = Cls.Ord
-                      Span = opSpan
-                      Describe =
-                        fun env t ->
-                            let off = ordOffender env Set.empty t |> Option.defaultValue t
-                            $"operator '{op}' is not defined for {formatTy t} — {ordTail env true off}" }
+            let p =
+                { Cls = Cls.Cmp
+                  Span = opSpan
+                  Describe = cmpDescribe (Some op) }
 
-                demand ctx env p a)
+            demand ctx env p a)
         |> Result.map (fun () -> TBool)
+    // an Option against anything else is an operand mismatch — the
+    // operators are defined for an Option [D:ord-scalar-operators]
+    | (">" | "<" | ">=" | "<="), (TNamed("Option", [ _ ]) as a), b -> mismatch r.Span a b
     // an ordered type compares with its own kind [D:derived-ord] — a
     // declared type is a quantity by declaration (the Instant side of
     // the Instant/Uuid split); an unknown other side binds to it, the
@@ -1871,6 +1917,10 @@ let rec private typeBinOp
         err
             opSpan
             $"operator '{op}' is not defined for {formatTy a} — number its {(authorDeclared env n).Value} with [<Ord n>] to compare it"
+    // …nor on the right with the left still open: the unknown side is
+    // no mismatch to report
+    | _, TVar _, ((TNamed _ | TSeq _ | TTuple _ | TUnit) as b) ->
+        err opSpan $"operator '{op}' is not defined for {formatTy b}"
     // no operator here is defined for these on the left, whatever the
     // right side is — say so before any operand mismatch
     | _, ((TNamed _ | TSeq _ | TTuple _ | TUnit) as a), _ ->
@@ -2114,6 +2164,9 @@ let rec private jsonAdmitted
         | None when List.contains n deflessBuiltinNominals ->
             err span $"{at}{n} is an opaque value with no JSON form — encode the fields you need into a record"
         | None -> err span $"{at}{unknownTypeMsg env n}"
+    // cascade suppression [PLAN-diagnostics-arc B6] through a tuple or
+    // a generic argument too: the hole's error is already reported
+    | ty when tyVars ty |> Set.exists (fun v -> v.StartsWith "__hole") -> Ok()
     | TVar v when not reading && not (v.StartsWith "__hole") -> err span (at + genericWireTeach "json" ty)
     // a generic record left uninstantiated [D:wire-generics]
     | TNamed(_, _ :: _) when not reading && not (Set.isEmpty (tyVars ty)) ->
@@ -2561,9 +2614,9 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
             | None when List.contains n deflessBuiltinNominals ->
                 err span $"{at}{n} is an opaque value with no YAML form — encode the fields you need into a record"
             | None -> err span $"{at}unknown type '{n}'"
-    | TVar v when v.StartsWith "__hole" ->
-        // cascade suppression [PLAN-diagnostics-arc B6]
-        Ok()
+    // cascade suppression [PLAN-diagnostics-arc B6], through a generic
+    // argument or a tuple too
+    | ty when tyVars ty |> Set.exists (fun v -> v.StartsWith "__hole") -> Ok()
     | TVar _ -> err span (at + genericWireTeach "yaml" ty)
     | TNamed(_, _ :: _) when not (Set.isEmpty (tyVars ty)) -> err span (at + genericWireTeach "yaml" ty)
     | ty ->
@@ -2635,6 +2688,18 @@ let compileRegex (pat: string) : Result<System.Text.RegularExpressions.Regex, st
         try
             let rx =
                 System.Text.RegularExpressions.Regex(pat, System.Text.RegularExpressions.RegexOptions.None, regexTimeout)
+
+            // the user's pattern validated above; the engine runs its
+            // code-point form [D:regex-code-points]
+            let rx =
+                try
+                    System.Text.RegularExpressions.Regex(
+                        Types.regexCodePoints pat,
+                        System.Text.RegularExpressions.RegexOptions.None,
+                        regexTimeout
+                    )
+                with _ ->
+                    rx
 
             // named groups are rejected [D:no-named-groups]: .NET
             // numbers positional groups first and named ones after —
@@ -5445,6 +5510,24 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                           Span = expr.Span }
                 | _ -> return! err fromExpr.Span "the right side of a pipe must be a function"
         }
+    // a lambda right of `|>` is checked against the piped type, so its
+    // parameter is known inside the body — `cfg |> fun c -> c |> to
+    // yaml` resolves as `to yaml cfg` does, not as a generic value
+    | EPipe(arg, ({ Kind = ELambda _ | ELambdaPat _ } as fnExpr)) when
+        (match fnExpr.Kind with
+         | ELambda("()", _, _) -> false
+         | _ -> true)
+        ->
+        result {
+            let! targ = infer ctx env arg
+            let res = TVar(freshName ctx "a")
+            let! tfn = check ctx env fnExpr (TFun(targ.Ty, res))
+
+            return
+                { Kind = TEPipe(targ, tfn)
+                  Ty = res
+                  Span = expr.Span }
+        }
     | EPipe(arg, fnExpr) ->
         result {
             let! targ = infer ctx env arg
@@ -5529,11 +5612,29 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     | Some priv ->
                         let hint = didYouMean field (Map.keys members)
 
-                        return!
-                            err
-                                fieldSpan
-                                ($"'{m}.{field}' is module-private (no signature) — add `let {field} : {formatTy priv.Ty}` "
-                                 + $"in the module to export it{hint}")
+                        let rec hasRow t =
+                            match t with
+                            | TRowVar _ -> true
+                            | TFun(a, b) -> hasRow a || hasRow b
+                            | TSeq e -> hasRow e
+                            | TTuple ts -> List.exists hasRow ts
+                            | TNamed(_, args) -> List.exists hasRow args
+                            | _ -> false
+
+                        // a row type has no signature spelling: suggesting
+                        // one would hand over a line that does not parse
+                        if hasRow priv.Ty then
+                            return!
+                                err
+                                    fieldSpan
+                                    ($"'{m}.{field}' is module-private (no signature) — to export it, declare the record it reads as a type and add `let {field} : …` naming it in the module "
+                                     + $"(its inferred type reads fields of any record, which a signature cannot spell){hint}")
+                        else
+                            return!
+                                err
+                                    fieldSpan
+                                    ($"'{m}.{field}' is module-private (no signature) — add `let {field} : {formatEchoTy priv.Ty}` "
+                                     + $"in the module to export it{hint}")
                     | None ->
                         let hint = didYouMean field (Map.keys members)
                         return! err fieldSpan $"module {m} has no member '{field}'{hint}"
@@ -6823,10 +6924,24 @@ and private checkSpineOn
                     // always a shell-command reflex (`ls -la`) [D:ls-command-teach]
                     // — it is weir's typed listing, not the external command,
                     // so point at the force-external escape
-                    return!
-                        err
-                            head.Span
-                            $"'{name}' is weir's typed {formatTy (finalTy ctx thead.Ty)} value, not the shell command — to run the external '{name}' with arguments, force it external: ^{name} … (or alias it: #alias x = {name} …)"
+                    // a user's own `let ls = …` is no builtin: it is named
+                    // as the binding it is, with no alias to suggest
+                    let builtinShape =
+                        match name, finalTy ctx thead.Ty with
+                        | "ls", TSeq(TNamed("FileRow", [])) -> true
+                        | "pwd", TStr -> true
+                        | _ -> false
+
+                    if builtinShape then
+                        return!
+                            err
+                                head.Span
+                                $"'{name}' is weir's typed {formatTy (finalTy ctx thead.Ty)} value, not the shell command — to run the external '{name}' with arguments, force it external: ^{name} … (or alias it: #alias x = {name} …)"
+                    else
+                        return!
+                            err
+                                head.Span
+                                $"'{name}' is bound here to a {formatTy (finalTy ctx thead.Ty)} value, not the shell command — to run the external '{name}' with arguments, force it external: ^{name} …"
                 | _ ->
                     return!
                         err
@@ -6960,6 +7075,19 @@ and armTail (e: Expr) : Expr =
             { Kind = EIf(c, armTail t, Some(armTail els))
               Span = e.Span }
         | _ -> e
+
+// armTail would rewrite something — its own recursion, as a test
+and private tailArms (e: Expr) : bool =
+    isCmdChain e
+    || (match e.Kind with
+        | ESeq(_, b)
+        | EWithin(_, _, _, _, b)
+        | EAlways(b, _)
+        | EHold b
+        | ELet(_, _, _, b) -> tailArms b
+        | EMatch(_, arms) -> arms |> List.exists (fun (_, _, b) -> tailArms b)
+        | EIf(_, t, Some els) -> tailArms t || tailArms els
+        | _ -> false)
 
 // an exit-code spine discarded where unit is demanded keeps its
 // tailored teaching [D:district-retirement]
@@ -7129,6 +7257,11 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
                 )
               Span = expr.Span }
             TUnit
+    // an if/else or match under a unit demand (a loop body's or a
+    // checked lambda's tail, an always cleanup) arms its branches'
+    // command tails as a statement-position one does
+    // [D:interior-arming] [D:match-arm-commands]
+    | (EIf(_, _, Some _) | EMatch _), TUnit when tailArms expr -> check ctx env (armTail expr) TUnit
     // the check direction rides into a scope's body [D:within-scopes] —
     // a statement-position `within` demands unit of the block, arming a
     // final command exactly as any block does
@@ -8708,7 +8841,7 @@ let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPo
            // [D:short-alnum]
            | Some(AStr s) when s.Length = 1 && System.Char.IsLetterOrDigit s[0] -> None
            | Some(AStr s) when s.Length = 1 ->
-               Some $"expects a letter, e.g. [<Short \"c\">] — '-{s}' can never be matched as a flag"
+               Some $"expects a letter or digit, e.g. [<Short \"c\">] — '-{s}' can never be matched as a flag"
            | _ -> Some "expects a one-character string, e.g. [<Short \"c\">]"),
            [ FieldPos ])
           "NoShort",

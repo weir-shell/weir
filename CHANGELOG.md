@@ -50,6 +50,165 @@
   as before, and a failure always replays it, so error messages are
   unchanged. The starship import goes from 178 ms to 176 ms pinned and
   from 137 ms to 133 ms on 15 (medians of 21).
+- **`echo key: 'it // works'` parses again.** v0.0.81 read a quoted
+  word after `:` (or `,` `*` `>` `(` `<` `|`) as a type variable's
+  tick, so `//` started a comment. A tick is now a type variable only
+  on a type line: a `type` line, a `let` header, a union case, a `fun`
+  parameter, a record field.
+- **`Http.expect` of a GET runs inside `plan` again.** A request held
+  in a variable, built from `Http.defaults` or passed to a helper was
+  refused as "a mutating method". Only a method known to mutate is a
+  check error now; one check cannot determine is refused at run if it
+  mutates.
+- **A misspelled flag before a subcommand no longer eats it.**
+  `--verbos deploy --tok x` printed seven errors; it now prints the
+  did-you-mean and the usage pointer.
+- **A misspelled flag never prints the next argument, in any
+  spelling.** v0.0.81 covered `--tokn hunter2`; `-tok hunter2`,
+  `-zz hunter2`, `--x=hunter2` and a token after a subcommand that
+  takes nothing (`status --tok hunter2`) still echoed it. All now
+  report `unexpected argument after '<flag>'` and hide attached text
+  (`--x=…`). A flag where a command belongs says `unexpected flag
+  '--x=…' — the command comes first, one of:` and lists the commands.
+- **`[<Default -x>]` gets a message.** It, `-"a"`, `- 1` and
+  `[<Wire -a>]` gave an empty `error [parse]: `; a `-` in an attribute
+  argument must now be followed by a number, and the error says so.
+- **`Uuid` has no `<`, even through a generic function.**
+  `let before a b = Some a < Some b` called with Uuids passed check; it
+  is now refused as the direct form is.
+- **`Dir.move` and `Dir.copy` keep directory permissions.** The
+  cross-filesystem move and the copy reset `0700` to `0755`, so a
+  private tree became world-listable. Both keep each directory's mode,
+  as `mv` and `cp -R` do; the move also keeps directory mtimes.
+- **`File.move` moves a symlink as a link across filesystems.** It
+  copied the target (same-filesystem moves kept the link) and leaked
+  .NET text for a dangling link.
+- **`#save` keeps a shadowing chain.** `let xs = [1; 2]` then
+  `let xs = xs |> …` saved nothing, a redefined function's callers
+  vanished, and a redeclared type's old constructors were saved and
+  failed check. The chain is saved whole; values of a superseded type
+  are dropped with a note. A user-bound `it` read after an echoed line
+  is no longer saved against the wrong value.
+- **`#save "x y.weir"` writes `x y.weir`.** The quotes became part of
+  the name, and a directory or unwritable path printed .NET text; the
+  refusals now read `#save: <p> is a directory`, `no such directory`,
+  `permission denied`.
+- **A capture past 2 GiB is an error.** `| complete` on more than
+  2 GiB of output returned nothing or a truncated prefix with exit 0.
+  It now stops with a located error naming the command and teaching
+  streaming (iterate the lines, or write them to a file). `| succeeds`
+  holds no output and has no cap.
+- **`Proc.tail` on a large spill.** It read the whole spill into
+  memory (6.4 GB for a 1.2 GB spill) and returned `[]`; it now reads
+  back at most 1 MiB from the end, marking a cut first line with `…`.
+- **`exec` is refused wherever it would skip cleanup, however it is
+  reached.** v0.0.81 refused `cmd | exec` written directly inside a
+  `within`; through a helper function, in a `pfor` or `Seq.pmap` arm,
+  or in an `always` cleanup it still ran and orphaned the scope. Check
+  now follows helpers, and the run refuses `exec` while any scope or
+  parallel arm is open (helpers passed as arguments or imported).
+- **A failed `exec` leaves the session as it was.** Its env prefix
+  and cwd stayed applied for the rest of the session.
+- **An init file loads all or nothing.** A refused init left its
+  `#session` `cwd`, `env` and `logLevel` applied while saying "not
+  loaded". Every field is checked first (all errors print); any
+  failure, including a later one, leaves the session as it started.
+- **A session `let` shadows an alias.** `let find = 3` did not shadow
+  `#alias find`, and an alias beat a parameter, lambda, match or
+  block-let binding of the same name (`let f g = g + 1` ran the alias).
+  Bindings now win, and `#alias` over a live binding is refused.
+- **YAML reads `- - x` as PyYAML does.** A sequence nested on the dash
+  line was read as the string `"- x"`; `- 'it''s: here'` was split
+  into a mapping; `"..."` was written unquoted and read back as a
+  document end; non-breaking and other Unicode spaces were trimmed, so
+  weir couldn't read back its own output. A multi-line quoted value
+  whose first line ends in `''` or `\"` now reads. `yaml` blocks take
+  flush-left (kubectl) and 4-space sequences, as `Yaml.parse` does.
+- **Two modules returning the same anonymous record shape agree.**
+  They produced two incompatible types (`expected {| k: int |}, got
+  A2.{| k: int |}`).
+- **Regex never splits an emoji.** `Str.rreplace "." "*" "😀"` gave
+  `**` and `Str.isMatch "^.$" "😀"` false. Regex members now count code
+  points, as every other `Str` member does: `.` and negated classes
+  match a whole character, and positions, lengths and captures never
+  split one.
+- **Numbers at the edges.** `Float.round -0.4` is `0.0`, not `-0.0`;
+  `Float.toInt` takes the minimum int; `Duration.parse` reads back
+  `show` of the minimum `Duration`; `Size.parse` reads the minimum
+  size; `Instant` reads a zero-padded fraction of 19 or more digits
+  exactly.
+- **`Instant.tryParseWith` reports a bad format whatever the input.**
+  A format defect (an unknown directive, a lone trailing `%`) was hidden
+  unless the input reached it; it now raises, as `parseWith` does.
+- **`Env.fromFile` reads its file once.** It re-read the file on every
+  use and reported a bad line wherever the list was first used. It now
+  reads at the call and reports a bad line there.
+- **No more .NET exception text** from `weir fmt` on a yaml or heredoc
+  block whose first line is a deeper comment, a module that declares a
+  type twice (and the REPL after a type redeclaration), non-ASCII
+  digits in `Duration`/`Instant` parsing (the `try` forms return
+  `None`), strings too long for `Str.toBase64`, `Bytes.toBase64`,
+  `show`, `to json` or `to yaml` (they name the limit; `to json` now
+  writes strings past ~166M characters), an explicit `Content-Length`
+  request header (refused before send, as `Transfer-Encoding` is), and
+  an argument list too long for the OS (it said "command not found").
+- **`weir check` agrees with the run.** An `if`/`match` with command
+  branches ending a `for`/`pfor` body, a `Seq.iter` lambda or an
+  `always` failed both with `expected unit, got seq<string>`; it now
+  runs. A path head that does not exist yet (`./gen.sh`, created
+  earlier in the script) is a `cmd-not-found` warning at check, not a
+  parse error; at run a still-missing one fails before any statement.
+  `let y =  yaml`, a tab before `yaml` and `let y= yaml` open a yaml
+  block instead of running a command. `<value> | and <cmd>` is refused
+  at check, not only at run. `weir check` on an init file refuses the
+  `#session` values the REPL refuses (bad `logLevel`, `echoCap` ≤ 0, an
+  env key with `=` or empty, NUL); a NUL env value is refused at load
+  instead of truncated. A module declaring a type twice, or below an
+  import that provides it, is refused at the import.
+- **`weir fmt` and the LSP split lines as check does.** A bare CR
+  ended a line for check and run but not for fmt and the LSP, so fmt
+  could break a running file. fmt also accepts `let r = match x with`
+  arms continued by `|>`, init `#session` fields at any indent (it
+  seats them at 4), and `else` between `if` and a deeper then-body; a
+  heredoc line outdented below the block is a located refusal.
+- **The piped REPL keeps the line before a heredoc on its own.** It
+  was glued into the heredoc's entry.
+- **LSP rename and references.** Rename covers `T.create` of a
+  validated type and types inside anonymous adapter types, refuses
+  non-ASCII digits, and refuses a rename that would leave an error —
+  a length change that breaks a column-aligned layout among them.
+  References on an imported union case find both expression and
+  pattern uses. A module's parse error is published once, not twice.
+- **Clearer messages.** More parser expectation dumps replaced by
+  located teaching: a directive in `-e` or an init file, `find .` and
+  `$(date)` with `date` bound at the prompt, a reifier inside an
+  expression (`print (echo a | line)`, `match … | exitCode with`),
+  `$(ls)`, `echo ()`, `import` inside a block, `ls /`, `1 + ~x`, a bare
+  `repeat` with no body, computed range endpoints (`[0 .. -n]` gave an
+  empty message), `3--1`, `- -5`, `(e : T)`, and a lowercase type after
+  `from json`. Hover, signature help and diagnostics show `'a`, `'b`
+  where `'a1`, `'a2` leaked. `[<Short "_">]` says "a letter or digit";
+  `Some 1 < 2` names the operand mismatch; `"a\<TAB>b"` and `"\😀"` name
+  the character; `ls`/`pwd` bound to a value say so; a record-table
+  echo aligns wide characters and shows TAB as `\t`.
+- **Docs match the binary.** `#echo`'s limit applies to piped
+  sessions too; a long string is cut at the echo with `…` and no hint;
+  string slices count code points, not UTF-16 units; and the v0.0.81
+  notes below no longer claim that `weir restore` repairs a modified
+  signature or that `--help` quotes every string default.
+
+### Changed
+
+- **`-x` negates in `x`'s type.** Prefix minus on a float, `Duration`
+  or `Size` name was a type error (`let x = 1.5 in -x`); it now works
+  as on literals. A lambda parameter whose type is not yet known
+  (`fun x -> -x` applied to a float) still types as int.
+- **`#save path` is relative to the session's directory**, not the
+  directory weir started in, so it follows `cd`.
+- **A YAML quoted value followed by more text is refused.** `'a'b'`
+  was read silently; it now says `content after the closing '`.
+- **`exec` under a scope fails at run when check can't see it.** The
+  error names the parallel arm or the open scope.
 
 ## v0.0.81
 
@@ -141,8 +300,11 @@
   with "cannot access … Invalid cross-device link"; it now copies then
   deletes, as `mv` and `File.move` do, and its errors name the paths.
   A symlinked source moves as the link, exactly as on one filesystem.
-- **`weir restore` repairs a locally modified signature.** It said
-  `present` and exited 0 while `verify` said MODIFIED.
+- **`weir restore` reports a locally modified signature.** It said
+  `present` and exited 0 while `verify` said MODIFIED; it now reports
+  MODIFIED and fails. A signature is generated, not downloaded, so
+  `restore` does not repair it: restore the checked-in copy or run
+  `weir add sig` again.
 - **`Instant.tryParseWith` raises for a format without a full date.**
   Such a format can never match, so returning `None` hid the bug; it
   now raises as `parseWith` and an unknown directive do.
@@ -176,12 +338,13 @@
   reported once, not once per import.
 - **`weir fmt` no longer refuses a match arm continued by `|>`** under
   its body, a layout the checker accepts.
-- **Clearer messages.** No internal names (`'__hole1`, `'a1`) or
-  parser expectation dumps in diagnostics; one shape for a bad flag or
-  env value (`--rate: not a float: 'abc'`); `--` is refused as an
-  end-of-options marker instead of getting a did-you-mean; `--help`
-  keeps two spaces between a long flag and its text (wrapping when it
-  must) and shows string defaults quoted; a TLS handshake with a plain
+- **Clearer messages.** Fewer internal names (`'__hole1`, `'a1`) and
+  parser expectation dumps in diagnostics (most of the rest went in
+  the next release); one shape for a bad flag or env value (`--rate:
+  not a float: 'abc'`); `--` is refused as an end-of-options marker
+  instead of getting a did-you-mean; `--help` keeps two spaces between
+  a long flag and its text (wrapping when it must), shows an empty
+  string default as `""` and escapes a newline in one; a TLS handshake with a plain
   HTTP port is no longer called an untrusted certificate; and a dozen
   more located or reworded errors.
 - **Docs match the binary.** The reference and the skill file no

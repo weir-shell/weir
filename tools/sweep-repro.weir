@@ -537,7 +537,9 @@ let fmtKeeps d file src =
 
 let b14 d =
     failing [
-        ("heredoc", fmtKeeps d "b14-heredoc.weir" b14Heredoc && codeOf (fmtW $"{d}/b14-heredoc.weir") == 0)
+        // in a heredoc the comment is content and the outdent a layout
+        // error check reports: fmt refuses it, located, file untouched
+        ("heredoc", fmtKeeps d "b14-heredoc.weir" b14Heredoc && codeOf (fmtW $"{d}/b14-heredoc.weir") == 3)
         ("yaml block", fmtKeeps d "b14-yaml.weir" b14Yaml && codeOf (fmtW $"{d}/b14-yaml.weir") == 0)
     ]
 

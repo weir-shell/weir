@@ -311,6 +311,9 @@ echo "e2e ok: continued command — check warns at the second command (exit 0, -
 
 # walk candidates: exit codes exact; File.readSecret (never covered); Dir.copy success
 pw2=$(mkweirtmp)
+# a directive in -e is named, never an expected-token dump [D:directive-diagnostic]
+out=$($BIN -e '#echo 3' 2>&1) && fail "a directive in -e must fail" || true
+[ "$out" = "weir -e: #echo is a directive — -e evaluates weir code and takes none (the REPL's directives work at the weir prompt)" ] || fail "-e directive message: $out"
 rc=0; $BIN -e 'exit 4' >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 4 ] || fail "exit 4 must propagate rc 4, got $rc"
 rc=0; $BIN -e 'fail "m"' >/dev/null 2>&1 || rc=$?
@@ -627,6 +630,28 @@ if $BIN -e "sh -c 'exit 1' | and echo no" >/dev/null 2>&1; then
     fail "| and must propagate the left's failure (right skipped, nonzero exit)"
 fi
 echo "e2e ok: | and propagates the left's failure"
+# a weir value before | and / | or: check and run refuse alike [D:value-chain-word]
+vcdir=$(mkweirtmp)
+printf '42 | and echo x\n' > "$vcdir/vc.weir"
+rc=0; ck=$($BIN check "$vcdir/vc.weir" 2>&1) || rc=$?
+[ "$rc" = "1" ] || fail "check must refuse a value before | and (rc $rc): $ck"
+rc=0; rn=$($BIN "$vcdir/vc.weir" 2>&1) || rc=$?
+[ "$rc" = "1" ] || fail "run must refuse a value before | and (rc $rc): $rn"
+for o in "$ck" "$rn"; do
+    echo "$o" | tr '\n' ' ' | grep -qF "the left side here is a weir value" || fail "value | and teaching: $o"
+done
+echo "e2e ok: a value before | and is refused at check and at run alike"
+# any blank run before a yaml marker arms it; run agrees with check [D:yaml-marker-blanks]
+printf 'let y =  yaml\n    a: 1\nprint (show y)\n' > "$vcdir/ym.weir"
+$BIN check "$vcdir/ym.weir" >/dev/null 2>&1 || fail "check: '=  yaml' arms the district"
+out=$($BIN "$vcdir/ym.weir" 2>&1) || fail "run: '=  yaml' arms the district: $out"
+expect "a doubled blank before yaml still arms the district" 'YInt 1' "$out"
+# a command line's quoted word after ':' is argv, never a type tick [D:tyvar-tick-line]
+printf "echo key: 'it // works'\n" > "$vcdir/tk.weir"
+$BIN check "$vcdir/tk.weir" >/dev/null 2>&1 || fail "check: a quoted argv word after ':' parses"
+out=$($BIN "$vcdir/tk.weir" 2>&1) || fail "run: a quoted argv word after ':': $out"
+[ "$out" = "key: it // works" ] || fail "the quoted word reaches argv whole: $out"
+echo "e2e ok: a quoted argv word after ':' is not a tyvar tick"
 out=$($BIN -e "cd / | and echo ok")
 expect "a builtin (cd) chains as an | and operand" "ok" "$out"
 
@@ -736,11 +761,84 @@ WEOF
     out=$(cd "$execdir" && $BIN execcd.weir)
     expect "exec after cd runs in the new directory" "cdtarget" "$out"
 
+    # through a helper the refusal holds, before anything runs — no tmp
+    # dir is made, so none is left behind [D:exec-scope-transitive]
+    cat > "$execdir/exechelper.weir" <<'WEOF'
+let go () = sh -c "echo exec-ran" | exec
+within tmp d
+    print d
+    exit (go ())
+WEOF
+    rc=0; out=$($BIN "$execdir/exechelper.weir" 2>&1) || rc=$?
+    [ $rc -ne 0 ] || fail "exec through a helper inside within tmp must refuse: $out"
+    echo "$out" | grep -qF "'go' reaches 'exec' in its body, and 'exec' inside 'within tmp' is refused" || fail "helper exec refusal text: $out"
+    echo "$out" | grep -qF "exec-ran" && fail "the helper's exec must not run: $out"
+
     # a value pipe into exec is refused at parse (no parent to feed stdin);
     # `check` exits nonzero on that error by design — do not let set -e abort
     printf '["a"] | grep a | exec\n' > "$execdir/execbad.weir"
     out=$($BIN check "$execdir/execbad.weir" 2>&1 || true)
     echo "$out" | grep -qF "cannot take a piped stdin" || fail "value-headed exec must refuse at check"
+
+    # the run refuses exec while a scope or a fan-out arm is live
+    # [D:exec-scope-transitive] — the backstop for a helper reached as a
+    # value: the tmp dir is removed, the replacement never runs
+    cat > "$execdir/execval.weir" <<'WEOF'
+let go () = sh -c "echo exec-ran" | exec
+let inScope f =
+    within tmp d
+        print d
+        if true then f () else ()
+inScope go
+WEOF
+    rc=0
+    out=$($BIN "$execdir/execval.weir" 2>&1) || rc=$?
+    [ "$rc" = "1" ] || fail "exec under a live scope must exit 1 (got $rc): $out"
+    echo "$out" | grep -qF "'exec' while a scope is open (a within or always block) is refused" || fail "exec under a live scope must be refused in weir's words: $out"
+    echo "$out" | grep -qF "exec-ran" && fail "the replacement must not run under a live scope: $out"
+    xtmp=$(echo "$out" | head -1)
+    [ -n "$xtmp" ] && [ ! -e "$xtmp" ] || fail "the scope's teardown must run (tmp dir $xtmp left): $out"
+    cat > "$execdir/execarm.weir" <<'WEOF'
+let go _i = sh -c "echo exec-ran" | exec
+let fan f =
+    pfor i in [1; 2] do
+        if true then f i else ()
+fan go
+WEOF
+    rc=0
+    out=$($BIN "$execdir/execarm.weir" 2>&1) || rc=$?
+    [ "$rc" = "1" ] || fail "exec in a pfor arm must exit 1 (got $rc): $out"
+    echo "$out" | grep -qF "'exec' inside a parallel arm (pfor, Seq.pmap, Seq.piter, Seq.pfirst) is refused" || fail "exec in an arm must be refused in weir's words: $out"
+    echo "$out" | grep -qF "exec-ran" && fail "the replacement must not run in an arm: $out"
+
+    # a failed exec leaves the session as it found it [D:exec-failure-restores]:
+    # its env prefix and cwd do not leak into later commands
+    cat > "$execdir/execleak.weir" <<'WEOF'
+let go () =
+    let t = "weir-e2e-no-such-prog"
+    EXECLEAK=leaked ^$t | exec
+let r = go () |> try result
+match r with
+| Ok _ -> print "ok?"
+| Error _ -> print "caught"
+sh -c "echo EXECLEAK=${EXECLEAK:-unset}"
+print (show (Env.get "EXECLEAK"))
+WEOF
+    out=$(cd "$execdir" && $BIN execleak.weir 2>&1)
+    [ "$out" = "$(printf 'caught\nEXECLEAK=unset\nNone')" ] || fail "a failed exec must not leak its env prefix: $out"
+
+    # E2BIG is named, not "command not found" [D:start-failure-errno] —
+    # the spawn and the exec path alike. 4M chars passes every ARG_MAX:
+    # Linux refuses one argument past 128 KiB, macOS only the ~1 MiB total
+    for form in 'echo $big | wc -c' 'echo $big | exec'; do
+        rc=0
+        out=$($BIN -e "let big = Str.replicate 4000000 \"a\"
+$form" 2>&1) || rc=$?
+        [ "$rc" = "1" ] || fail "E2BIG ($form) must exit 1 (got $rc): $out"
+        echo "$out" | grep -qF "cannot start echo: its arguments and environment are too large for the OS (argument list too long;" || fail "E2BIG ($form) must be named: $out"
+        echo "$out" | grep -qF "not found" && fail "E2BIG ($form) is not 'command not found': $out"
+    done
+    echo "e2e ok: exec — refused at run time under a live scope or arm, a failed exec restores env, E2BIG named"
 fi
 
 # ---- the single-line capture reifier [D:reify-line] ------------------
@@ -1457,6 +1555,29 @@ echo "$errout" | grep -qF "error: stop here" || fail "fail must be located on st
 echo "e2e ok: fail exits located; printerr separates streams"
 rm -rf "$faildir"
 
+# the single-capture cap [D:capture-cap-error]: past 2 GiB a capture is a
+# located weir error naming the cap and the command, never empty or
+# truncated output; `| succeeds` holds nothing and owes no cap. Linux
+# with 4 GiB free only — the capture holds 2 GiB before it refuses
+if [ "$(uname -s)" = Linux ] && [ "$(awk '/MemAvailable/{print $2}' /proc/meminfo)" -gt 4194304 ]; then
+    capdir=$(mkweirtmp)
+    printf 'let _r = head -c 2200000000 /dev/zero | complete\nprint "unreached"\n' > "$capdir/cap.weir"
+    printf 'let _r = head -c 2200000000 /dev/zero | cat | complete\nprint "unreached"\n' > "$capdir/capchain.weir"
+    for f in cap capchain; do
+        rc=0
+        out=$($BIN "$capdir/$f.weir" 2>&1) || rc=$?
+        [ "$rc" = "1" ] || fail "capture cap ($f) must exit 1 (got $rc): $out"
+        echo "$out" | grep -qF "$f.weir:1:10: error: the output of 'head -c 2200000000 /dev/zero" || fail "capture cap ($f) must be located and name the command: $out"
+        echo "$out" | grep -qF "reached the 2 GiB single-capture cap" || fail "capture cap ($f) must name the cap: $out"
+        echo "$out" | grep -qF "unreached" && fail "capture cap ($f) must stop the script: $out"
+    done
+    out=$($BIN -e 'let ok = head -c 2200000000 /dev/zero | succeeds
+print (show ok)')
+    expect "| succeeds drains past the cap unheld" "true" "$out"
+    rm -rf "$capdir"
+    echo "e2e ok: capture cap — past 2 GiB a located error naming the cap and the command; | succeeds owes none"
+fi
+
 bigdir=$(mkweirtmp)
 truncate -s 3G "$bigdir/sparse.bin"
 touch "$bigdir/empty.txt"
@@ -1671,6 +1792,30 @@ grep -qF "gobeldy" "$infdir/explore.weir" && fail "#save kept the dropped it-bin
 echo "$infout" | grep -qF "dropped 1 line(s) that referenced session-only state" \
   || fail "#save did not print the dropped-count note: $infout"
 echo "e2e ok: #save DISTILLS a messy session to a checking .weir (dedup, drop it, note)"
+
+# #save keeps a shadowing chain and a redefined function's dependents
+# [D:repl-save-chain]: the saved file computes the session's values. Its
+# path may be quoted (a space); a directory or a missing parent is refused
+# in File.write's words, never .NET text [D:repl-save-path]
+svdir=$(mkweirtmp)
+svout=$(printf '%s\n' \
+  'let xs = [1; 2]' \
+  'let xs = xs |> Seq.map (fun x -> x * 10)' \
+  'let f x = x + 1' \
+  'let g x = f x' \
+  'let f x = x * 100' \
+  "#save \"$svdir/my file.weir\"" \
+  "#save $svdir" \
+  "#save $svdir/nope/x.weir" \
+  '#quit' | $BIN 2>&1)
+[ -f "$svdir/my file.weir" ] || fail "#save must unquote its path: $svout"
+$BIN check "$svdir/my file.weir" || fail "the saved chain must check: $(cat "$svdir/my file.weir")"
+printf 'print $"{_xs |> Seq.sum} {_g 1} {_f 1}"\n' >> "$svdir/my file.weir"
+[ "$($BIN "$svdir/my file.weir")" = "30 2 100" ] || fail "the saved chain must compute the session's values: $(cat "$svdir/my file.weir")"
+echo "$svout" | grep -qF "#save: $svdir is a directory" || fail "#save onto a directory must say so: $svout"
+echo "$svout" | grep -qF "#save: no such directory: $svdir/nope" || fail "#save under a missing directory must say so: $svout"
+echo "$svout" | grep -qF "Access to the path" && fail "#save leaked .NET text: $svout" || true
+echo "e2e ok: #save keeps shadowing chains; its path unquotes; write refusals in weir's words"
 
 # --- #infer drafted-type diagnostic (recast 2026-09-17) [D:infer-diagnostic]/[D:infer-wire-sanitize] --
 # when a drafted type fails to check for any reason, the diagnostic must
@@ -2061,6 +2206,22 @@ echo "$out" | grep -qF "[cmd-not-found]" || fail "cmd-not-found warning missing:
 rc=0; $BIN "$svdir/missing.weir" >/dev/null 2>&1 || rc=$?
 [ $rc -ne 0 ] || fail "the RUNNER must still reject missing commands"
 echo "e2e ok: check warns where run errors (DELIBERATE, the editing-without-tools rule)"
+
+# a path head that does not exist yet is the same rule [D:path-head-warn]:
+# check warns, run errors before any statement, no parser dump
+cat > "$svdir/pathhead.weir" <<'WEOF'
+print "start"
+./weir-not-yet-built.sh --flag
+WEOF
+rc=0; out=$($BIN check "$svdir/pathhead.weir") || rc=$?
+[ $rc -eq 0 ] || fail "check must exit 0 on a missing path head (got $rc): $out"
+echo "$out" | grep -qF "[cmd-not-found]: no executable at ./weir-not-yet-built.sh" || fail "path-head warning missing: $out"
+rc=0; out=$($BIN "$svdir/pathhead.weir" 2>&1) || rc=$?
+[ $rc -ne 0 ] || fail "the RUNNER must reject a missing path head"
+echo "$out" | grep -qF "no executable at ./weir-not-yet-built.sh" || fail "path-head run error: $out"
+echo "$out" | grep -qF "Expecting" && fail "no parser dump for a path head: $out"
+echo "$out" | grep -qF "start" && fail "the run must refuse before any statement: $out"
+echo "e2e ok: a missing path head warns at check, errors at run"
 
 # a near-miss binding bridges the verdict split: check's command
 # reading names the candidate the runner's expression reading will name
@@ -5488,13 +5649,29 @@ if [ "$IS_WINDOWS" = "0" ] && [ -d /dev/shm ] && [ -w /dev/shm ]; then
     mkdir -p "$xdsrc/tree/sub"
     printf 'k\n' > "$xdsrc/tree/sub/k.txt"
     ln -s sub/k.txt "$xdsrc/tree/link"
+    # directory modes survive, as mv / cp -R keep them [D:dir-copy-modes]
+    chmod 700 "$xdsrc/tree/sub"
+    chmod 750 "$xdsrc/tree"
+    out=$($BIN -e "Dir.copy \"$xdsrc/tree\" \"$xdsrc/copy\"" 2>&1) || fail "Dir.copy must succeed: $out"
+    [ "$(stat -c %a "$xdsrc/copy" "$xdsrc/copy/sub" | tr '\n' ' ')" = "750 700 " ] || fail "Dir.copy keeps directory modes: $(stat -c '%a %n' "$xdsrc/copy" "$xdsrc/copy/sub")"
     out=$($BIN -e "Dir.move \"$xdsrc/tree\" \"$xddst\"" 2>&1) || fail "Dir.move across filesystems must succeed: $out"
     [ -f "$xddst/sub/k.txt" ] || fail "Dir.move across filesystems: the tree arrived"
     [ -L "$xddst/link" ] || fail "Dir.move across filesystems: a symlink stays a link"
     [ -e "$xdsrc/tree" ] && fail "Dir.move across filesystems: the source is gone"
+    [ "$(stat -c %a "$xddst" "$xddst/sub" | tr '\n' ' ')" = "750 700 " ] || fail "Dir.move across filesystems keeps directory modes: $(stat -c '%a %n' "$xddst" "$xddst/sub")"
     echo "$out" | grep -qF "cannot access" && fail "EXDEV must never read as cannot access: $out"
     echo "e2e ok: Dir.move across filesystems copies then deletes"
-    rm -rf "$xdsrc" "$xddst"
+    # File.move of a link moves the LINK, dangling included [D:file-move-link]
+    printf 'data\n' > "$xdsrc/t"
+    ln -s t "$xdsrc/l"
+    ln -s nowhere "$xdsrc/dang"
+    out=$($BIN -e "File.move \"$xdsrc/l\" \"$xddst-l\"" 2>&1) || fail "File.move of a link across filesystems must succeed: $out"
+    out=$($BIN -e "File.move \"$xdsrc/dang\" \"$xddst-d\"" 2>&1) || fail "File.move of a dangling link across filesystems must succeed: $out"
+    [ "$(readlink "$xddst-l")" = "t" ] || fail "File.move across filesystems: the link, its target verbatim"
+    [ "$(readlink "$xddst-d")" = "nowhere" ] || fail "File.move across filesystems: the dangling link, verbatim"
+    [ -L "$xdsrc/l" ] || [ -L "$xdsrc/dang" ] && fail "File.move across filesystems: the source links are gone"
+    echo "e2e ok: File.move of a link across filesystems moves the link"
+    rm -rf "$xdsrc" "$xddst" "$xddst-l" "$xddst-d"
 fi
 
 # ---- FileRow reshape [D:filerow] --------------------------------------------
@@ -6671,6 +6848,29 @@ expect "a plain block stays env-less" "d-bare: []" "$out"
 
 $BIN fmt --check "$sdir/district.weir" >/dev/null 2>&1 || fail "fmt must accept the within env block"
 echo "e2e ok: fmt roundtrips the within env block"
+
+# Env.fromFile reads once, at the bind [D:env-fromfile-bind-once]: a
+# later edit/delete changes nothing; a bad line is located at the bind
+printf 'MARK=first\n' > "$sdir/once.env"
+cat > "$sdir/once.weir" <<'WEOF'
+let e = Env.fromFile "once.env"
+File.write "once.env" ["MARK=second"]
+within env e
+    sh -c "echo once: $MARK"
+File.delete "once.env"
+within env e
+    sh -c "echo still: $MARK"
+WEOF
+out=$(cd "$sdir" && $BIN once.weir 2>&1)
+expect "Env.fromFile snapshots at the bind" "once: first" "$out"
+expect "a deleted file after the bind changes nothing" "still: first" "$out"
+printf '=x\n' > "$sdir/badkey.env"
+printf 'let e = Env.fromFile "badkey.env"\nprint "built"\nprint (show e)\n' > "$sdir/badkey.weir"
+out=$(cd "$sdir" && $BIN badkey.weir 2>&1) && rc=0 || rc=$?
+[ "$rc" -ne 0 ] || fail "a bad .env line must fail the run"
+echo "$out" | grep -qF "built" && fail "a bad .env line must fail at the bind, before 'built': $out"
+echo "$out" | grep -qF "badkey.weir:1:" || fail "a bad .env line is located at the bind: $out"
+echo "e2e ok: Env.fromFile reads once, at the bind"
 
 rm -rf "$sdir"
 
@@ -8120,6 +8320,41 @@ want=$(printf '%s\n' \
     "run 'sec.weir --help' for usage")
 [ "$got" = "$want" ] || fail "unknown-flag value withheld: $got"
 echo "e2e ok: the value after an unknown flag is reported, never echoed"
+# every unknown-flag spelling withholds the token after it, and a bare
+# subcommand's trailing flag does too [D:args-unknown-flag-no-echo]
+got=$($BIN "$odir/sec.weir" -tok e2e-hunter6 --port 1 -pp e2e-hunter7 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] || fail "single-dash unknown flags exit 2 (got $rc)"
+echo "$got" | grep -qF "hunter" && fail "a single-dash unknown flag's value must never be echoed: $got"
+cat > "$odir/bare.weir" <<'WEOF'
+type Sub =
+    | Deploy of {| token: Secret |}
+    | Status
+let _c = Args.load Sub
+print "ok"
+WEOF
+got=$($BIN "$odir/bare.weir" status --token e2e-hunter8 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] || fail "a bare subcommand's stray flag exits 2 (got $rc)"
+echo "$got" | grep -qF "hunter" && fail "a bare subcommand must not echo the token after a flag: $got"
+got=$($BIN "$odir/bare.weir" --token=e2e-hunter9 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] || fail "a flag where the command goes exits 2 (got $rc)"
+echo "$got" | grep -qF "hunter" && fail "a flag where the command goes must not be echoed: $got"
+# a misspelled shared flag never swallows the command word
+# [D:args-unknown-flag-command]
+cat > "$odir/sw.weir" <<'WEOF'
+type Deploy = { tok: Secret; n: int }
+type Sub =
+    | Deploy of Deploy
+    | Status
+type Cli = { verbose: bool; cmd: Sub }
+let _c = Args.load Cli
+print "ok"
+WEOF
+got=$($BIN "$odir/sw.weir" --verbos deploy --tok x -n 5 2>&1 || true)
+want=$(printf '%s\n' \
+    "sw.weir: unknown flag '--verbos'. Did you mean '--verbose'?" \
+    "run 'sw.weir deploy --help' for usage")
+[ "$got" = "$want" ] || fail "a misspelled flag swallowed the command word: $got"
+echo "e2e ok: no unknown-flag spelling echoes the token after it; a command word anchors"
 # --help layout [D:args-help-column] [D:args-help-default]: a flag longer
 # than the column wraps its text; a string default renders as data
 cat > "$odir/lay.weir" <<'WEOF'
@@ -10019,6 +10254,16 @@ if [ "$IS_WINDOWS" != "1" ]; then
     out=$(printf 'let hi () = print "the-function"\n#alias hi = kubectl\nhi ()\n#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1)
     echo "$out" | grep -qF "would never resolve" || fail "a live #alias over a binding must refuse with the teaching: $out"
     echo "$out" | grep -qF "the-function" || fail "the binding must stay callable after the refused #alias: $out"
+
+    # a let named like a builtin/bare name (find, ls) is a session binding
+    # too: it shadows an alias, refuses a live #alias, and #save keeps it as
+    # the user's value; a parameter beats an alias inside its body
+    out=$(printf '#alias find = echo FOUND\nlet find = 3\nfind + 1\n#alias find = echo hi\n#alias g = echo ALIAS\nlet f g = g + 1\nf 1\n#save %s/sh.weir\n#quit\n' "$acfg" | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1)
+    echo "$out" | grep -qF "4 : int" || fail "a let over a bare name must shadow its alias: $out"
+    echo "$out" | grep -qF "#alias find: 'find' is a session binding" || fail "a live #alias over a let named like a builtin must refuse: $out"
+    echo "$out" | grep -qF "2 : int" || fail "a parameter must beat the alias: $out"
+    grep -qF "find = 3" "$acfg/sh.weir" || fail "#save must keep the user's find: $(cat "$acfg/sh.weir")"
+    grep -qF "FOUND" "$acfg/sh.weir" && fail "#save desugared a bound name as an alias: $(cat "$acfg/sh.weir")" || true
 
     echo "e2e ok: #alias resolves head->exe (+prefix), injection-safe, ^-bypass, REPL-only, malformed=loud, single-hop, #save desugars alias-free, bindings shadow the table"
     rm -rf "$acfg" "$astub"
@@ -12934,6 +13179,26 @@ out=$($BIN "$spdir/esc.weir" 2>&1) || fail "the escaped handle must not crash: $
 printf '%s' "$out" | head -1 | grep -qF "false" || fail "escaped running must be false: $out"
 printf '%s' "$out" | tail -1 | grep -qF "0" || fail "escaped tail must be empty (spill gone): $out"
 
+# Proc.tail reads back from the end of the spill, never the whole file
+# [D:scoped-procs] [D:proc-tail-window]: a 300 MB one-line spill gives its
+# cut line (marked …) and the last line, in bounded memory
+if [ "$(uname -s)" = Linux ]; then
+    cat > "$spdir/bigtail.weir" <<'WEOF'
+within proc p = sh -c "head -c 300000000 /dev/zero | tr '\\0' a; echo; echo LASTLINE"
+    let _code = Proc.wait p
+    let t = Proc.tail p
+    print (show (Seq.length t))
+    print (t |> Seq.last)
+    print (t |> Seq.head |> Str.sub 0 2)
+    File.read "/proc/self/status" |> Seq.where (Str.startsWith "VmHWM") |> Seq.iter print
+WEOF
+    out=$($BIN "$spdir/bigtail.weir" 2>&1) || fail "the big-spill tail must run: $out"
+    [ "$(printf '%s\n' "$out" | head -3)" = "$(printf '2\nLASTLINE\n…a')" ] || fail "the big-spill tail must hold the cut line and the last line: $out"
+    hwm=$(printf '%s\n' "$out" | awk '/VmHWM/{print $2}')
+    [ -n "$hwm" ] && [ "$hwm" -lt 400000 ] || fail "Proc.tail must not read the whole spill into memory (VmHWM ${hwm} kB): $out"
+    echo "e2e ok: Proc.tail reads a big spill back from its end, in bounded memory"
+fi
+
 # a proc scope spawns in a checked position too [D:scoped-procs]: an
 # else branch and a non-first match arm are typed by the check direction,
 # not infer, and the two directions must agree on the scope's contracts.
@@ -14230,6 +14495,16 @@ iout=$(printf '#help hi
 echo "$iout" | grep -qF "unknown #session key 'echoCpa'. Did you mean 'echoCap'?" || fail "init typo key lost its did-you-mean"
 echo "$iout" | grep -qF "init: not loaded" || fail "broken init must say not loaded"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke: a binding survived a failed init"
+# weir check refuses the #session values the loader refuses
+# [D:session-value-one-home]
+for bad in 'logLevel = "loud"' 'echoCap = 0' 'env = [ ("A=B", "x") ]' 'env = [ "OK", "x\u{0}y" ]'; do
+    printf '#init\n#session {\n    %s\n}\n' "$bad" > "$initcfg/badval.weir"
+    "$BIN" check "$initcfg/badval.weir" >/dev/null 2>&1 && fail "weir check must refuse the init value: $bad"
+    cp "$initcfg/badval.weir" "$INITHOME/weir/init.weir"
+    iout=$(printf '#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+    echo "$iout" | grep -qF "init: not loaded" || fail "the REPL must refuse the init value: $bad: $iout"
+done
+echo "e2e ok: weir check and the REPL load refuse the same #session values"
 # a raising value fails the load located, never as a .NET trace: both
 # eval sites (a #session field's value and a plain let) run user code at
 # startup, and an escaping exception killed the REPL before it reached a
@@ -14281,6 +14556,50 @@ echo "$iout" | grep -qF "#session env: the env key 'A=B' contains '=' — a chil
 echo "$iout" | grep -qE "init\.weir:3:" || fail "the env key refusal must be LOCATED at its line: $iout"
 echo "$iout" | grep -qF "init: not loaded" || fail "a refused env key must not load"
 echo "$iout" | grep -qF "(Parameter" && fail "the env key refusal leaked .NET text: $iout" || true
+
+# all-or-nothing reaches the settings [D:init-all-or-nothing]: a refused
+# field (or a later failing let) leaves the cwd, env and log level as they
+# were — every field is judged before any applies, and a later failure
+# restores what they changed
+initsub=$(mkweirtmp)
+cat > "$INITHOME/weir/init.weir" <<WEOF
+#init
+#session {
+    cwd = "$initsub"
+    env = [("WEIR_E2E_LEAK", "yes")]
+    echoCap = 0
+}
+WEOF
+iout=$(printf 'print (pwd)
+print (show (Env.get "WEIR_E2E_LEAK"))
+#quit
+' \
+    | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "init: not loaded" || fail "a refused echoCap must not load: $iout"
+echo "$iout" | grep -qF "$initsub" && fail "a refused init left its cwd applied: $iout" || true
+echo "$iout" | grep -qF "None" || fail "a refused init left its env applied: $iout"
+cat > "$INITHOME/weir/init.weir" <<WEOF
+#init
+#session {
+    cwd = "$initsub"
+    env = [("WEIR_E2E_LEAK", "yes")]
+}
+let bad = File.read "/no/such/file/xyz" |> Seq.head
+WEOF
+iout=$(printf 'print (pwd)
+print (show (Env.get "WEIR_E2E_LEAK"))
+#quit
+' \
+    | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "init: not loaded" || fail "a raising init let must not load: $iout"
+echo "$iout" | grep -qF "$initsub" && fail "a later failure left the init cwd applied: $iout" || true
+echo "$iout" | grep -qF "None" || fail "a later failure left the init env applied: $iout"
+# an init file's stray directive is named, never an expected-token dump
+printf '#init\n#bogus\nlet hi () = print "hi"\n' > "$INITHOME/weir/init.weir"
+iout=$(printf '#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "unknown directive: #bogus — an init file takes #init, #session and #alias" || fail "a stray init directive must be named: $iout"
+echo "$iout" | grep -qF "Expecting" && fail "a stray init directive dumped the grammar: $iout" || true
+echo "e2e ok: a refused init leaves no setting applied; stray init directives are named"
 
 # a lazy command let loads and spawns nothing; each use runs it; an
 # eager one is refused naming why [D:lazy-command-lets]
@@ -15776,7 +16095,8 @@ for case in 'Http.send { Http.get "http://127.0.0.1:9/" with method = Other "BAD
             'Http.send { Http.get "http://127.0.0.1:9/" with method = Other "" }|Http: the method is empty — Other needs a method token such as "PURGE"' \
             'Http.send (Http.get "not a url")|'"'"'not a url'"'"' is not a URL weir can send to — an absolute http(s) URL is needed (https://host/path)' \
             'Http.send (Http.get "file:///etc/hostname")|'"'"'file:///etc/hostname'"'"' uses the '"'"'file'"'"' scheme — Http sends to http:// and https:// URLs only' \
-            'Http.send { Http.get "http://127.0.0.1:9/" with headers = [("Transfer-Encoding", "chunked")] }|request header '"'"'Transfer-Encoding'"'"' cannot be sent — it frames the body'; do
+            'Http.send { Http.get "http://127.0.0.1:9/" with headers = [("Transfer-Encoding", "chunked")] }|request header '"'"'Transfer-Encoding'"'"' cannot be sent — it frames the body' \
+            'Http.send { Http.post "http://127.0.0.1:9/" with body = Text "a"; headers = [("Content-Length", "5")] }|request header '"'"'Content-Length'"'"' cannot be sent — it frames the body'; do
     expr=${case%%|*}; why=${case#*|}
     rc=0
     out=$($BIN -e "$expr" 2>&1) || rc=$?
@@ -15784,7 +16104,7 @@ for case in 'Http.send { Http.get "http://127.0.0.1:9/" with method = Other "BAD
     echo "$out" | grep -qF -- "$why" || fail "pre-send refusal: '$expr' must say '$why': $out"
     echo "$out" | grep -qE 'BaseAddress|Parameter|content object|cannot reach' && fail "pre-send refusal: .NET text or the transport umbrella leaked: $out" || true
 done
-echo "e2e ok: Http.send — a non-token method, an unaddressable URL and a Transfer-Encoding header are refused before send, in weir's words"
+echo "e2e ok: Http.send — a non-token method, an unaddressable URL and a Transfer-Encoding or Content-Length header are refused before send, in weir's words"
 
 # port is Option<int> [D:serve-port-option]: None binds a free port and
 # Server.port reports the BOUND one (a self-request through it answers);

@@ -8,7 +8,8 @@ error, before the script does anything.
 ## `Args.load`
 
 Field names become kebab-case flags (`dryRun` → `--dry-run`), plus a
-first-letter short flag where that is unambiguous. A `bool` field is
+first-letter short flag where that is unambiguous (a letter or digit
+only: `__y` gets none). A `bool` field is
 true when the flag is present. `string`, `int` and the other scalars
 are required, and `Option` makes a field optional. The first line of
 the field's `///` comment is its `--help` text:
@@ -46,7 +47,10 @@ the error reads like any tool's usage error: the script's name, one
 line per problem, the help lines of the flags involved, and a pointer
 to `--help`. It carries no weir source location, and the exit code
 is 2. The word after an unknown flag is reported without its text —
-the flag may be a misspelled secret. `deploy.weir --trget prod` gives:
+the flag may be a misspelled secret. That holds for every flag
+spelling (`-tok`, `-xv`, and `--tok=…` hides its attached text) and
+after a subcommand that takes no arguments; a known subcommand name
+after an unknown flag is still read as the subcommand. `deploy.weir --trget prod` gives:
 
 ```text
 deploy.weir: unknown flag '--trget'. Did you mean '--target'?
@@ -162,7 +166,9 @@ print "declared sets beat stringly config"
 
 `Env.get "NAME"` reads one variable as `Option<string>`.
 `Env.fromFile` reads a subset of dotenv (`KEY=VALUE`, quotes, `#`
-comments; no `export` and no `$VAR` expansion).
+comments; no `export` and no `$VAR` expansion). It reads the file once,
+when it is called: the result is a snapshot, and a bad line is an error
+at the call.
 
 ## What both refuse
 

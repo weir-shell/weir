@@ -84,7 +84,12 @@ let shortTables (def: RecordDef) : Map<string, string> * Map<string, ShortOwner>
         flagged
         |> List.filter (fun (f, _) -> (attrOf def f "Short").IsNone && (attrOf def f "NoShort").IsNone)
         |> List.map (fun (_, flag) -> flag, string flag[2])
-        |> List.filter (fun (_, letter) -> letter <> "h" && not (Set.contains letter taken))
+        // only a letter or digit derives, as only one is declarable
+        // [D:short-alnum]: `_y` takes no short
+        |> List.filter (fun (_, letter) ->
+            letter <> "h"
+            && System.Char.IsLetterOrDigit letter[0]
+            && not (Set.contains letter taken))
 
     let derivedGroups = derivers |> List.groupBy snd
 

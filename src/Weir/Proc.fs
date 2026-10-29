@@ -70,6 +70,28 @@ let private nulRefusal (what: string) (s: string) : unit =
         failwith
             $"{what} contains a NUL byte — it would silently truncate at the process boundary (argv and env are NUL-terminated); NUL-bearing data is binary: pass it via a file or stdin, not an argument"
 
+// why a start failed, named by its errno [D:start-failure-errno]: an
+// argv + env past the OS limit (E2BIG; Windows' command-line ceiling) is
+// the command's size, not a missing program; the rest stays the
+// not-found message
+let startFailureMessage (prog: string) (args: string list) (env: (string * string) list) (errno: int) : string =
+    let tooBig =
+        if System.OperatingSystem.IsWindows() then
+            errno = 206
+        else
+            errno = 7
+
+    if tooBig then
+        let bytes (t: string) = int64 (System.Text.Encoding.UTF8.GetByteCount t) + 1L
+
+        let size =
+            (prog :: args |> List.sumBy bytes)
+            + (env |> List.sumBy (fun (k, v) -> bytes k + bytes v + 1L))
+
+        $"cannot start {Weir.Types.quoteData prog}: its arguments and environment are too large for the OS (argument list too long; {Weir.Types.formatSize size} of them in this command alone) — pass big data on stdin (`xs | cmd`) or through a file, not as an argument"
+    else
+        $"command not found or not executable: {Weir.Types.quoteData prog}"
+
 /// an env key a child can receive [D:env-key-refusal]: never empty, never
 /// '=' (the child splits at the first one — another variable), never NUL
 let envKeyRefusal (where: string) (k: string) : unit =
@@ -267,8 +289,8 @@ let private spawn
             let p =
                 try
                     Process.Start psi
-                with :? System.ComponentModel.Win32Exception ->
-                    failwith $"command not found or not executable: {Weir.Types.quoteData prog}"
+                with :? System.ComponentModel.Win32Exception as e ->
+                    failwith (startFailureMessage prog args (List.append ambient env) e.NativeErrorCode)
 
             if viaShim && tries < 5 && not (Session.CleanupShim.passedTrap p) then
                 p.Dispose()
@@ -614,6 +636,11 @@ extern int private execvp(string file, string[] argv)
                                            CharSet = System.Runtime.InteropServices.CharSet.Ansi)>]
 extern int private setenv(string name, string value, int overwrite)
 
+[<System.Runtime.InteropServices.DllImport("libc",
+                                           SetLastError = true,
+                                           CharSet = System.Runtime.InteropServices.CharSet.Ansi)>]
+extern int private unsetenv(string name)
+
 let exec (s: Spec) : unit =
     // runtime plan refusal [D:plan-proc-runtime-guard]: process
     // replacement must obey the guard `spawn` enforces — POSIX execvp
@@ -626,6 +653,13 @@ let exec (s: Spec) : unit =
             $"'{s.Prog}' runs a command, and commands are refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
 
     importRefusal s.Prog
+
+    // the runtime backstop of the check's refusal [D:exec-scope-transitive]:
+    // a helper reached through a value or an import execs while a scope's
+    // teardown or a sibling arm is still owed
+    match Session.execScopeRefusal () with
+    | Some m -> failwith m
+    | None -> ()
 
     // the same boundary spawn enforces [D:spawn-nul-funnel]
     nulRefusal "the command program name" s.Prog
@@ -643,41 +677,73 @@ let exec (s: Spec) : unit =
 
     let isWindows = System.OperatingSystem.IsWindows()
 
-    for k, v in List.append ambient s.Env do
+    let pairs = List.append ambient s.Env
+
+    for k, v in pairs do
         nulRefusal $"the env key '{k}'" k
         nulRefusal $"the env value for '{k}'" v
-        System.Environment.SetEnvironmentVariable(k, v)
-        // POSIX execvp reads the C environ, not .NET's managed copy —
-        // setenv so the replacement inherits the overlay; Windows spawns
-        // (CreateProcess inherits the process env block set above)
-        if not isWindows then
-            setenv (k, v, 1) |> ignore
 
-    // the cwd the spawn path gives a child (Session.Cwd — `cd`, `within
-    // cd`) lands on THIS process before execve, so the image inherits it [D:exec]
-    let wd = match s.Cwd with Some c -> c | None -> Session.Cwd()
+    // a failed exec leaves the session as it found it [D:exec-failure-restores]:
+    // the overlay and cwd land on this process only for the image that
+    // replaces it — a refused start must not leak them into the rest of
+    // the script (an env prefix applies to that one command)
+    let savedEnv =
+        pairs |> List.map fst |> List.distinct |> List.map (fun k -> k, System.Environment.GetEnvironmentVariable k)
 
-    if System.IO.Directory.Exists wd then
-        System.IO.Directory.SetCurrentDirectory wd
-    else
-        failwith $"the working directory no longer exists: {Weir.Types.quoteData wd}"
+    let savedCwd = System.IO.Directory.GetCurrentDirectory()
 
-    if System.OperatingSystem.IsWindows() then
-        // no execve: run foreground, then hard-exit with the child's
-        // code (no scope unwind — exec discards the image, matching
-        // POSIX)
-        let p, _ = start false false s
-        p.WaitForExit()
-        let code = p.ExitCode
-        reap p
-        System.Environment.Exit code
-    else
-        // argv[0] is the program name by convention; the array is
-        // NULL-terminated (the null element marshals to a NULL pointer)
-        let argv = Array.append (List.toArray (s.Prog :: s.Args)) [| null |]
-        execvp (s.Prog, argv) |> ignore
-        // execvp returns only on failure — success replaced the image
-        failwith $"command not found or not executable: {Weir.Types.quoteData s.Prog}"
+    let restore () =
+        for k, old in savedEnv do
+            System.Environment.SetEnvironmentVariable(k, old)
+
+            if not isWindows then
+                match old with
+                | null -> unsetenv k |> ignore
+                | o -> setenv (k, o, 1) |> ignore
+
+        try
+            System.IO.Directory.SetCurrentDirectory savedCwd
+        with _ ->
+            ()
+
+    try
+        for k, v in pairs do
+            System.Environment.SetEnvironmentVariable(k, v)
+            // POSIX execvp reads the C environ, not .NET's managed copy —
+            // setenv so the replacement inherits the overlay; Windows spawns
+            // (CreateProcess inherits the process env block set above)
+            if not isWindows then
+                setenv (k, v, 1) |> ignore
+
+        // the cwd the spawn path gives a child (Session.Cwd — `cd`, `within
+        // cd`) lands on THIS process before execve, so the image inherits it [D:exec]
+        let wd = match s.Cwd with Some c -> c | None -> Session.Cwd()
+
+        if System.IO.Directory.Exists wd then
+            System.IO.Directory.SetCurrentDirectory wd
+        else
+            failwith $"the working directory no longer exists: {Weir.Types.quoteData wd}"
+
+        if isWindows then
+            // no execve: run foreground, then hard-exit with the child's
+            // code (no scope unwind — exec discards the image, matching
+            // POSIX)
+            let p, _ = start false false s
+            p.WaitForExit()
+            let code = p.ExitCode
+            reap p
+            System.Environment.Exit code
+        else
+            // argv[0] is the program name by convention; the array is
+            // NULL-terminated (the null element marshals to a NULL pointer)
+            let argv = Array.append (List.toArray (s.Prog :: s.Args)) [| null |]
+            execvp (s.Prog, argv) |> ignore
+            // execvp returns only on failure — success replaced the image
+            let errno = System.Runtime.InteropServices.Marshal.GetLastPInvokeError()
+            failwith (startFailureMessage s.Prog s.Args pairs errno)
+    with _ ->
+        restore ()
+        reraise ()
 
 // stdout relayed to the console as it arrives; the code as the result
 // [D:exit-reifiers]: output goes to the human, the code is the meaning
@@ -723,23 +789,38 @@ type private Segments =
 
     member this.At(g: int) : byte = this.Segs[g >>> segBits][g &&& segMask]
 
-// one stream's capture as it fills
-type private SegmentsBuilder() =
+// the single-capture cap [D:capture-cap-error]: offsets are int into
+// one logical array, so a capture holds less than 2 GiB. Reaching it is
+// a weir error naming the cap and the command — never a wrapped total
+// that reads back as empty or truncated output
+let captureCap = 1L <<< 31
+
+exception private CaptureCapReached
+
+// one stream's capture as it fills; `keep = false` drains without
+// holding (a reifier that discards the output owes no cap)
+type private SegmentsBuilder(cap: int64, keep: bool) =
     let segs = ResizeArray<byte[]>()
-    let mutable seg = Array.zeroCreate<byte> segSize
+    let mutable seg = Array.zeroCreate<byte> (if keep then segSize else 65536)
     let mutable fill = 0
 
     /// one read into the buffer; 0 at EOF
     member _.Fill(stream: System.IO.Stream) : int =
-        let n = readBytes stream seg fill (segSize - fill)
-        fill <- fill + n
+        if not keep then
+            readBytes stream seg 0 seg.Length
+        else
+            let n = readBytes stream seg fill (segSize - fill)
+            fill <- fill + n
 
-        if fill = segSize then
-            segs.Add seg
-            seg <- Array.zeroCreate segSize
-            fill <- 0
+            if int64 segs.Count * int64 segSize + int64 fill >= cap then
+                raise CaptureCapReached
 
-        n
+            if fill = segSize then
+                segs.Add seg
+                seg <- Array.zeroCreate segSize
+                fill <- 0
+
+            n
 
     member _.Done() : Segments =
         let total = segs.Count * segSize + fill
@@ -751,8 +832,8 @@ type private SegmentsBuilder() =
 
         { Segs = segs.ToArray(); Total = total }
 
-let private readAllBytes (stream: System.IO.Stream) : Segments =
-    let b = SegmentsBuilder()
+let private readAllBytes (cap: int64) (keep: bool) (stream: System.IO.Stream) : Segments =
+    let b = SegmentsBuilder(cap, keep)
 
     while b.Fill stream > 0 do
         ()
@@ -763,9 +844,9 @@ let private readAllBytes (stream: System.IO.Stream) : Segments =
 // choosing the next fill [D:pipe-threads]: a `| complete` costs its arm
 // no second thread, and a loser blocked on its child holds no thread but
 // its own. Windows reads every pipe after the first on a thread of its own
-let private readAllPipes (streams: System.IO.Stream[]) : Segments[] =
+let private readAllPipes (cap: int64) (keep: bool) (streams: System.IO.Stream[]) : Segments[] =
     if Session.pollablePipes streams then
-        let builders = streams |> Array.map (fun _ -> SegmentsBuilder())
+        let builders = streams |> Array.map (fun _ -> SegmentsBuilder(cap, keep))
         let live = Array.copy streams
         let ready = Array.zeroCreate<bool> streams.Length
         let mutable open' = streams.Length
@@ -781,9 +862,10 @@ let private readAllPipes (streams: System.IO.Stream[]) : Segments[] =
         builders |> Array.map (fun b -> b.Done())
     else
         let rest =
-            streams[1..] |> Array.map (fun s -> offPool "a command's output reader" (fun () -> readAllBytes s))
+            streams[1..]
+            |> Array.map (fun s -> offPool "a command's output reader" (fun () -> readAllBytes cap keep s))
 
-        let first = readAllBytes streams[0]
+        let first = readAllBytes cap keep streams[0]
         Array.append [| first |] (rest |> Array.map Session.cutJoin)
 
 // StreamReader's BOM detection is part of today's pinned contract: a
@@ -905,8 +987,26 @@ let private linesView (b: Segments) (isStdout: bool) : seq<string> =
                 yield decodeAt b starts[i] lens[i]
         }
 
-// both pipes captured to completion; the record's raw material
-let completedOf (s: Spec) : int * seq<string> * seq<string> =
+// the cap's refusal in the script author's words [D:capture-cap-error]:
+// the cap, the command, and the ways out that hold no capture
+let captureCapMessage (cap: int64) (shown: string) : string =
+    $"the output of '{shown}' reached the {Weir.Types.formatSize cap} single-capture cap — a capture holds the whole output in memory; stream it instead: run the command bare, iterate its lines (`cmd |> Seq.iter …`), or write them to a file (`cmd |> File.write path`) and read back what you need"
+
+let private capReached (e: exn) =
+    match e with
+    | CaptureCapReached -> true
+    | :? System.AggregateException as ae -> ae.InnerExceptions |> Seq.exists (function CaptureCapReached -> true | _ -> false)
+    | _ -> false
+
+let private capRefusal (cap: int64) (shown: string) (f: unit -> 'a) : 'a =
+    try
+        f ()
+    with e when capReached e ->
+        failwith (captureCapMessage cap shown)
+
+/// both pipes captured to completion under `cap`; `keep = false` drains
+/// them unheld (the code-only reifiers)
+let private completedRaw (cap: int64) (keep: bool) (s: Spec) : int * seq<string> * seq<string> =
     let p, producerFault = start true true s
     use _ = p
 
@@ -914,6 +1014,8 @@ let completedOf (s: Spec) : int * seq<string> * seq<string> =
         try
             let read =
                 readAllPipes
+                    cap
+                    keep
                     [| Session.cutStream p p.StandardOutput.BaseStream
                        Session.cutStream p p.StandardError.BaseStream |]
 
@@ -929,6 +1031,12 @@ let completedOf (s: Spec) : int * seq<string> * seq<string> =
     p.WaitForExit()
     producerFault ()
     Session.settleReplInterrupt p.ExitCode, linesView outBytes true, linesView errBytes false
+
+let completedCapped (cap: int64) (keep: bool) (s: Spec) : int * seq<string> * seq<string> =
+    capRefusal cap (showArgv (s.Prog :: s.Args)) (fun () -> completedRaw cap keep s)
+
+// both pipes captured to completion; the record's raw material
+let completedOf (s: Spec) : int * seq<string> * seq<string> = completedCapped captureCap true s
 
 // ---- the byte chain [D:byte-pipes]: raw command→command hops -------
 // A hop makes no value, so weir does not hold the bytes
@@ -1071,9 +1179,9 @@ let private chainCode procs pumps =
 
 // `chain | complete`: the tail's stdout, every stage's stderr in stage
 // order, the chain's code [D:chain-reifiers]
-let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
+let private chainCompletedRaw (cap: int64) (keep: bool) (specs: Spec list) : int * seq<string> * seq<string> =
     match specs with
-    | [ one ] -> completedOf one
+    | [ one ] -> completedRaw cap keep one
     | _ ->
         let procs, pumps, producerFault = startChain true true specs
 
@@ -1081,7 +1189,10 @@ let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
             let _, last = List.last procs
 
             let read =
-                readAllPipes (
+                readAllPipes
+                    cap
+                    keep
+                    (
                     Array.ofList (
                         Session.cutStream last last.StandardOutput.BaseStream
                         :: (procs |> List.map (fun (_, p) -> Session.cutStream p p.StandardError.BaseStream))
@@ -1102,6 +1213,17 @@ let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
         finally
             for _, p in procs do
                 reap p
+
+let chainCompletedCapped (cap: int64) (keep: bool) (specs: Spec list) : int * seq<string> * seq<string> =
+    let shown = specs |> List.map (fun sp -> showArgv (sp.Prog :: sp.Args)) |> String.concat " | "
+    capRefusal cap shown (fun () -> chainCompletedRaw cap keep specs)
+
+let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> = chainCompletedCapped captureCap true specs
+
+/// a chain's code, every output drained unheld (`| succeeds`)
+let chainCompletedCode (specs: Spec list) : int =
+    let code, _, _ = chainCompletedCapped captureCap false specs
+    code
 
 // `chain | exitCode` / `| orFail` / `| succeeds`: the tail's stdout
 // relayed as it arrives, the chain's code as the result
@@ -1200,6 +1322,27 @@ let completeWith
 
 let complete (prog: string) (args: string list) (input: seq<string> option) : int * seq<string> * seq<string> =
     completeWith [] prog args input
+
+/// a command's code, its output drained unheld — `| succeeds` reads the
+/// code alone, so it owes no capture cap [D:capture-cap-error]
+let completeCode
+    (overlay: (string * string) list)
+    (prog: string)
+    (args: string list)
+    (input: seq<string> option)
+    : int =
+    let code, _, _ =
+        completedCapped
+            captureCap
+            false
+            { Prog = prog
+              Args = args
+              Env = overlay
+              Input = input
+              Cwd = None
+              Ambient = None }
+
+    code
 
 // a scoped background child [D:scoped-procs]: both streams spill to
 // files (the parent's terminal never interleaves; Proc.tail and the
