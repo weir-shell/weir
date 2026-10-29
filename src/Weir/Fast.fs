@@ -26,6 +26,9 @@ type private St =
       // names bound by enclosing lambdas, lets and patterns — the
       // grammar's ambient-resolver extensions, for the command-head rule
       mutable Locals: Set<string>
+      // the names that mask a command-head alias [D:command-head-alias]: the
+      // grammar's aliasMasked — every scope's names but a top-level let's params
+      mutable AliasMasked: Set<string>
       mutable InArm: int
       mutable ExprParen: bool
       // where the first refusal happened — the coverage work's one instrument
@@ -202,7 +205,7 @@ let private couldBeCommand (st: St) (builtinHeads: bool) : bool =
                 false
             elif w.StartsWith "~/" then
                 true
-            elif isIdentLike w && (st.R.AliasHead w).IsSome then
+            elif isIdentLike w && not (st.AliasMasked.Contains w) && (st.R.AliasHead w).IsSome then
                 true
             elif builtinHeads && isIdentLike w && st.R.IsCommandCallable w then
                 true
@@ -1165,8 +1168,15 @@ and private negAtom (st: St) : Expr =
                 | EFloat f -> { Kind = EFloat(if f = 0.0 then 0.0 else -f); Span = span }
                 | EDur n -> { Kind = EDur(-n); Span = span }
                 | ESize b -> { Kind = ESize(-b); Span = span }
-                | _ ->
+                | EInt _ ->
                     { Kind = EBinOp("-", { Kind = EInt 0L; Span = e.Span }, e)
+                      Span = span }
+                // any other operand negates in its own type [D:prefix-minus-typed]
+                | _ ->
+                    let v = { Kind = EVar "|neg"; Span = e.Span }
+                    let sub a b = { Kind = EBinOp("-", a, b); Span = span }
+
+                    { Kind = ELet("|neg", e.Span, e, sub (sub v v) v)
                       Span = span }
 
 and private parenAtom (st: St) : Expr =
@@ -1414,7 +1424,9 @@ and private anonRecordLit (st: St) : Expr =
 
 // a range endpoint: a negative literal, or an atom with field suffixes
 and private rangeTerm (st: St) : Expr =
-    if peek st = '-' && isDigit (peekAt st 1) then
+    if peek st = '-' && not (isDigit (peekAt st 1)) then
+        refuse st
+    elif peek st = '-' then
         let start = st.I
         st.I <- st.I + 1
         let digits = digitsAhead st
@@ -1993,6 +2005,21 @@ and private patCore (st: St) : Pattern =
 // ---- the block forms ---------------------------------------------------
 and private withLocals (st: St) (names: string list) (body: St -> Expr) : Expr =
     let saved = st.Locals
+    let savedMask = st.AliasMasked
+
+    for n in names do
+        st.Locals <- Set.add n st.Locals
+        st.AliasMasked <- Set.add n st.AliasMasked
+
+    let e = body st
+    st.Locals <- saved
+    st.AliasMasked <- savedMask
+    e
+
+// a top-level let's params: known names, but no alias mask (the grammar's
+// spine extends the resolver alone)
+and private withSpineNames (st: St) (names: string list) (body: St -> Expr) : Expr =
+    let saved = st.Locals
 
     for n in names do
         st.Locals <- Set.add n st.Locals
@@ -2383,6 +2410,8 @@ and private fromExpr (st: St) : Expr =
                     let name, _ = identSpanned st
                     let sh = slotShape st name
                     if st.Ok then Some(sh, false) else None
+                elif w <> "stream" then
+                    refuse st
                 else
                     None
 
@@ -2812,7 +2841,7 @@ let private letStmt (st: St) : Stmt =
                 refuse st
             else
                 let names = ps |> List.collect patNames
-                let rhs = withLocals st names (fun st -> if couldBeCommand st false then refuse st else seqExpr st)
+                let rhs = withSpineNames st names (fun st -> if couldBeCommand st false then refuse st else seqExpr st)
 
                 if not st.Ok then
                     Unchecked.defaultof<_>
@@ -2876,6 +2905,7 @@ let private parse (r: Resolver) (input: string) : Stmt * St =
           Fatal = false
           Depth = 0
           Locals = Set.empty
+          AliasMasked = Set.empty
           InArm = 0
           ExprParen = false
           RefusedAt = 0
@@ -2891,6 +2921,7 @@ let private parse (r: Resolver) (input: string) : Stmt * St =
               Fatal = false
               Depth = 0
               Locals = Set.empty
+              AliasMasked = Set.empty
               InArm = 0
               ExprParen = false
               RefusedAt = -1

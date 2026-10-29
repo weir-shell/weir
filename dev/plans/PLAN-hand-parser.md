@@ -256,6 +256,13 @@ goes from 177.5 ms to 123 ms pinned.
   and their mutated neighbours agree statement by statement. CI: the
   unit suite, the fuzz smoke and the body/repl-b e2e shards each run
   once more in oracle mode.
+- **Rebase onto the 2026-10-28 bug hunt.** Four grammar changes
+  mirrored: the typed prefix minus (`-x` on a non-int-literal operand
+  → the `|neg` let), a range endpoint's `-` without digits (refused —
+  the grammar's fatal), the alias mask (a bound name hides a
+  command-head alias, except a top-level let's own params), and the
+  lowercase adapter slot (refused — teaching). Re-run of the whole
+  battery clean; coverage of the port unchanged at 794/802.
 - **Read on P2.** The refusals that remain on real code are command
   lines (30% of corpus statements contain one). The head rule is
   already mirrored; P2 is the command lexer (barewords, dashes, `~`,
