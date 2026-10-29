@@ -8,13 +8,19 @@ P1 is not blessed on this shape — see "Read on P1".
 
 ## Landing (2026-10-29)
 
-The patch reapplied unchanged on main d26b3a3 + perf/prelude-once; the
-dispatch moved to a top-level `atomDispatch` so `atom`'s body opens
-with `deepen` (ci/depth-coverage.py). Starship import 177 → 169 ms
-pinned, 132 → 127 ms on 15 (n=21 alternating); allocation 137 →
-129 MB, the atom's error merging 26.8 → 21.9 MB. Parity byte-identical
-over the 80-file corpus, 960 + 6480 mutants, and 510 mutants that
-insert atom openers into expressions; unit 2751, fuzz 55.
+The patch reapplied on main d26b3a3 + perf/prelude-once, the dispatch
+moved to a top-level `atomDispatch` so `atom`'s body opens with
+`deepen` (ci/depth-coverage.py). Review found the spike's opener
+groups exponential: a dispatched `(`/`[`/`{`/`{|`/`$"`/`-` whose
+interior fails is parsed once on the fast path and again in the
+oracle replay, so `((((1 +))))` doubled per level (depth 16: 3.7 s;
+`-(` nesting over 30 s at depth 12). Landed shape: only the
+non-nesting alternatives (word, number, `"`, `"""`, `@"`) dispatch;
+nested failing spines of every opener kind stay flat (depth 24 ≈
+16 ms, pinned by a unit test). What remains of the gain: starship
+import 178 → 176 ms pinned, 137 → 133 ms on 15 (n=21 alternating) —
+the openers were most of P0's win. Parity byte-identical over the
+80-file corpus, 960 + 6480 mutants, and 510 atom-opener mutants.
 
 ## Session report — P0 (2026-10-27)
 

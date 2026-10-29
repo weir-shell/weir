@@ -1635,18 +1635,15 @@ let private atomChoice =
           orFailAtomTeaching
           wordAtom ]
 
-// the alternatives sharing an opener, in the oracle's order
-let private parenAtom = choice [ unitLit; opValue; parens ]
-let private bracketAtom = choice [ attempt comprehensionLit; listLit ]
-
 // the atom dispatch [D:parse-fast-path]: the next character names the
-// one alternative (or opener group) that can succeed — the oracle's
-// first tokens are disjoint per character, and every alternative ahead
-// of the chosen one fails cleanly on it. Only a success is returned;
-// any failure rewinds and replays the unchanged oracle, so the error
-// (and its Expecting list) is always the grammar's. Openers whose only
-// alternatives are teachings (`[<`, `$@"`, `.`, `\`, `~`, `!`) go
-// straight to the oracle.
+// one alternative that can succeed — the oracle's first tokens are
+// disjoint per character, and every alternative ahead of the chosen
+// one fails cleanly on it. Only a success is returned; any failure
+// rewinds and replays the unchanged oracle, so the error (and its
+// Expecting list) is always the grammar's. Only alternatives that never
+// descend back into the atom take this path: an opener, a sigil, an
+// interpolation or a prefix minus would parse its interior once here
+// and again in the replay, doubling per nesting level.
 let private atomDispatch (stream: CharStream<unit>) : Parser<Expr, unit> =
     let c = stream.Peek()
 
@@ -1654,20 +1651,12 @@ let private atomDispatch (stream: CharStream<unit>) : Parser<Expr, unit> =
         wordAtom
     elif isDigit c then
         intLit
+    elif c = '"' then
+        if stream.Match "\"\"\"" then tripleLit else strLit
+    elif c = '@' && stream.Peek 1 = '"' then
+        verbatimLit
     else
-        match c with
-        | '"' -> if stream.Match "\"\"\"" then tripleLit else strLit
-        | '(' -> parenAtom
-        | '$' ->
-            match stream.Peek 1 with
-            | '"' -> if stream.Match "$\"\"\"" then interpRawLit else interpLit
-            | '@' -> Unchecked.defaultof<_>
-            | _ -> captureSigil
-        | '[' -> if stream.Peek 1 = '<' then Unchecked.defaultof<_> else bracketAtom
-        | '{' -> if stream.Peek 1 = '|' then anonRecordLit else recordLit
-        | '-' -> negAtom
-        | '@' -> if stream.Peek 1 = '"' then verbatimLit else Unchecked.defaultof<_>
-        | _ -> Unchecked.defaultof<_>
+        Unchecked.defaultof<_>
 
 let private atom: Parser<Expr, unit> =
     deepen (fun stream ->
