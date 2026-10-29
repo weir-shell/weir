@@ -38024,6 +38024,19 @@ let hunt3r5FormatTests =
               Expect.equal (json [ "- - k: v"; "    j: w" ]) "[[{\"k\":\"v\",\"j\":\"w\"}]]" "a compact map inside"
               Expect.equal (json [ "- -"; "- -   x" ]) "[[null],[\"x\"]]" "an empty inner item; the dash gap"
               Expect.equal (json [ "m:"; "- - a" ]) "{\"m\":[[\"a\"]]}" "under a flush-left key"
+
+              // depth x line length is bounded: each level keeps its own copy of the line
+              let ladder depth tail = String.replicate depth "- " + String.replicate tail "a"
+
+              match Weir.Yaml.parseDocs [ 1, ladder 300 400000 ] with
+              | Error msg ->
+                  Expect.equal
+                      msg
+                      "line 1: yaml nesting is too deep for a line this long — split the item over several lines"
+                      "a deep ladder on a long line refuses"
+              | Ok _ -> failtest "a 300-deep ladder on a 400k line must refuse, not allocate depth x length"
+
+              Expect.isOk (Weir.Yaml.parseDocs [ 1, ladder 300 1000 ]) "a deep ladder on a short line still reads"
           }
           test "yaml: quotes — `''` inside a single-quoted key or item, an escaped quote ending a folded line [D:quoted-fold]" {
               let json lines = run (lit lines + " |> Yaml.parse |> to json") |> text

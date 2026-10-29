@@ -827,10 +827,17 @@ let rec private parseBlock
                                         // dash's gap, as a compact map item's is
                                         let col = indent + 2 + indentOf inline'
 
-                                        let shifted =
-                                            Array.append [| no, String.replicate col " " + inlineT |] lines[i + 1 .. j - 1]
+                                        // each level keeps its own copy of the line's rest, so a
+                                        // dash ladder retains about (col / 2) x its length:
+                                        // bound the product [D:yaml-inline-nested-seq]
+                                        if int64 col * int64 inlineT.Length > 32_000_000L then
+                                            Error
+                                                $"line {no}: yaml nesting is too deep for a line this long — split the item over several lines"
+                                        else
+                                            let shifted =
+                                                Array.append [| no, String.replicate col " " + inlineT |] lines[i + 1 .. j - 1]
 
-                                        parseBlock rawSrc shifted 0 shifted.Length col (depth + 1)
+                                            parseBlock rawSrc shifted 0 shifted.Length col (depth + 1)
                                     | None when
                                         // populated flow in item position: `- {a: 1}`
                                         // would otherwise be mis-split into a compact
