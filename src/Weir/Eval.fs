@@ -4861,18 +4861,40 @@ let private scopeDef (sharedDef: RecordDef) (payloadDef: RecordDef option) : Rec
 // a token with no leading dash is a value, never a flag or a command
 let private argvIsValue (t: string) : bool = not (t.StartsWith "-")
 
-// the unknown-flag spellings whose value would be the NEXT token: a bare
-// long flag or a single letter; `--x=v` and `-xv` carry theirs attached
-let private argvUnknownTakesNext (t: string) : bool =
-    t <> "--" && (t.Length = 2 || (t.StartsWith "--" && not (t.Contains "=")))
+// one rule for every unknown flag-shaped spelling (`--x`, `--x=v`, `-x`,
+// `-xv`, `-long`, `-42`): the value-shaped token after it is taken off
+// the line and reported, never echoed [D:args-unknown-flag-no-echo] —
+// any of them may be a misspelled Secret. `--` is no flag.
+let private argvIsFlagShaped (t: string) : bool = t.StartsWith "-" && t <> "--"
+
+// how a follow-on message names an unknown flag: never its attached text
+let private argvFlagShown (t: string) : string =
+    if t.StartsWith "--" then
+        match t.IndexOf '=' with
+        | i when i > 2 -> t.Substring(0, i) + "=…"
+        | _ -> t
+    elif t.Length > 2 then
+        t.Substring(0, 2) + "…"
+    else
+        t
+
+let private argvAfterUnknown (t: string) : string =
+    $"unexpected argument after '{quoteData (argvFlagShown t)}'"
 
 // pass 1 of the shared-flags scan: shared flags float, and the first
 // non-flag token anchors as the case selector. An unknown flag takes
 // the value after it off the line [D:args-unknown-flag-no-echo] (it may
 // be a misspelled Secret, so the value never surfaces as the command);
 // the command slot's own flag takes none — the token after `--mode` IS
-// the command, and the message teaches the bare spelling
-let private argvFindCase (sharedDef: RecordDef) (unionField: string) (argv: string list) : (int * string) option =
+// the command, and the message teaches the bare spelling. Nor does an
+// unknown flag take a command word (`--verbos deploy`): a known command
+// is never a withheld value, so it anchors [D:args-unknown-flag-command]
+let private argvFindCase
+    (sharedDef: RecordDef)
+    (unionField: string)
+    (caseWords: string list)
+    (argv: string list)
+    : (int * string) option =
     let slot = "--" + Argv.kebabFlag unionField
 
     let sharedLong =
@@ -4905,7 +4927,7 @@ let private argvFindCase (sharedDef: RecordDef) (unionField: string) (argv: stri
             | None when t = slot || t.StartsWith(slot + "=") -> go (i + 1) rest
             | None when t.StartsWith "-" ->
                 (match rest with
-                 | v :: r when argvUnknownTakesNext t && argvIsValue v -> go (i + 2) r
+                 | v :: r when argvIsFlagShaped t && argvIsValue v && not (List.contains v caseWords) -> go (i + 2) r
                  | _ -> go (i + 1) rest)
             | None -> Some(i, t)
 
@@ -5026,7 +5048,7 @@ let argvUsage (target: ArgsTarget) (argv: string list) : string =
 
         // case-scoped help when a case token rides along [D:shared-flags]
         let scoped =
-            argvFindCase sharedDef uf (argv |> List.filter (fun t -> t <> "--help" && t <> "-h"))
+            argvFindCase sharedDef uf (udef.Cases |> List.map (fun (c, _) -> c.ToLowerInvariant())) (argv |> List.filter (fun t -> t <> "--help" && t <> "-h"))
             |> Option.bind (fun (_, tok) -> udef.Cases |> List.tryFind (fun (c, _) -> c.ToLowerInvariant() = tok))
 
         match scoped with
@@ -5351,7 +5373,7 @@ let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string
                 consume f ty neg t rest
             | Some(AmbiguousShort candidates) ->
                 problems.Add $"""'{quoteData t}' is ambiguous: {String.concat ", " candidates}"""
-                go rest
+                unknownValue t rest
             | None ->
                 problems.Add $"unknown flag '{quoteData t}'"
                 unknownValue t rest
@@ -5360,7 +5382,7 @@ let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string
                 Map.tryFind flag longIndex |> Option.map (fun (_, ty, _) -> ty)
 
             problems.Add(attachedShortMessage t shortIndex tyOf)
-            go rest
+            unknownValue t rest
         | t :: rest ->
             problems.Add $"unexpected argument '{quoteData t}'"
             go rest
@@ -5369,8 +5391,8 @@ let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string
     // be a misspelled Secret's [D:args-unknown-flag-no-echo]
     and unknownValue t rest =
         match rest with
-        | v :: rest' when argvUnknownTakesNext t && argvIsValue v ->
-            problems.Add $"unexpected argument after '{quoteData t}'"
+        | v :: rest' when argvIsFlagShaped t && argvIsValue v ->
+            problems.Add(argvAfterUnknown t)
             go rest'
         | _ -> go rest
 
@@ -5420,7 +5442,7 @@ let private argvLoadShared
         |> Map.ofList
 
     let caseTable = udef.Cases |> List.map (fun (c, p) -> c.ToLowerInvariant(), (c, p))
-    let caseAt = argvFindCase sharedDef unionField argv
+    let caseAt = argvFindCase sharedDef unionField (List.map fst caseTable) argv
 
     let selected =
         caseAt
@@ -5474,7 +5496,7 @@ let private argvLoadShared
                     | None ->
                         match Map.tryFind t payloadLong with
                         | Some(f, ty, neg) when i > caseIdx -> Choice1Of3(payloadValues, f, ty, neg)
-                        | _ -> Choice2Of3()
+                        | _ -> Choice2Of3 true
                 elif t.StartsWith "-" && t.Length = 2 then
                     match Map.tryFind (t.Substring 1) scopeShorts with
                     | Some(ShortOf flag) ->
@@ -5483,11 +5505,11 @@ let private argvLoadShared
                          | None ->
                              match Map.tryFind flag payloadLong with
                              | Some(f, ty, neg) when i > caseIdx -> Choice1Of3(payloadValues, f, ty, neg)
-                             | _ -> Choice2Of3())
+                             | _ -> Choice2Of3 true)
                     | Some(AmbiguousShort candidates) ->
                         problems.Add $"""'{quoteData t}' is ambiguous: {String.concat ", " candidates}"""
-                        Choice3Of3()
-                    | None -> Choice2Of3()
+                        Choice2Of3 false
+                    | None -> Choice2Of3 true
                 elif t.StartsWith "-" && t.Length > 2 then
                     let tyOf flag =
                         match Map.tryFind flag sharedLong, Map.tryFind flag payloadLong with
@@ -5496,7 +5518,7 @@ let private argvLoadShared
                         | _ -> None
 
                     problems.Add(attachedShortMessage t scopeShorts tyOf)
-                    Choice3Of3()
+                    Choice2Of3 false
                 else
                     problems.Add $"unexpected argument '{quoteData t}'"
                     Choice3Of3()
@@ -5515,7 +5537,7 @@ let private argvLoadShared
                          parseValue values f ty t raw
                          go (i + 2) rest'
                      | [] -> problems.AddFor(f, $"flag '{t}' needs a value"))
-            | Choice2Of3() ->
+            | Choice2Of3 report ->
                 let cands = if i < caseIdx then beforeCandidates else afterCandidates
                 let tyOf n =
                     match Map.tryFind n sharedLong, Map.tryFind n payloadLong with
@@ -5540,13 +5562,14 @@ let private argvLoadShared
                         $"unknown flag '{shown}' — the command is written bare, without a flag: '{usageName ()} {example}'"
                     go (i + 1) rest
                 else
-                    problems.Add(unknownFlagMessage t cands tyOf)
+                    if report then
+                        problems.Add(unknownFlagMessage t cands tyOf)
 
                     // the value after an unknown flag is reported, never
                     // echoed [D:args-unknown-flag-no-echo]
                     match rest with
-                    | v :: rest' when i + 1 <> caseIdx && argvUnknownTakesNext t && argvIsValue v ->
-                        problems.Add $"unexpected argument after '{quoteData t}'"
+                    | v :: rest' when i + 1 <> caseIdx && argvIsFlagShaped t && argvIsValue v ->
+                        problems.Add(argvAfterUnknown t)
                         go (i + 2) rest'
                     | _ -> go (i + 1) rest
             | Choice3Of3() -> go (i + 1) rest
@@ -5615,14 +5638,32 @@ let argvLoadWith (target: ArgsTarget) (argv: string list) : Value =
         | [] ->
             problems.AddCommands "missing command — one of:"
             fail ""
+        // a flag where the command goes is never echoed whole, nor the
+        // token after it [D:args-unknown-flag-no-echo]
+        | tok :: _ when argvIsFlagShaped tok ->
+            problems.AddCommands $"unexpected flag '{quoteData (argvFlagShown tok)}' — the command comes first, one of:"
+            fail ""
         | tok :: rest ->
             match table |> List.tryFind (fun (w, _) -> w = tok) with
             | Some(_, (c, None)) ->
                 match rest with
                 | [] -> VUnion(c, None)
                 | extra ->
-                    for t in extra do
-                        problems.Add $"unexpected argument '{quoteData t}' — '{quoteData tok}' takes nothing after it"
+                    // the no-echo rule holds here too [D:args-unknown-flag-no-echo]
+                    let rec strays (ts: string list) =
+                        match ts with
+                        | [] -> ()
+                        | t :: rest ->
+                            let shown = if argvIsFlagShaped t then argvFlagShown t else t
+                            problems.Add $"unexpected argument '{quoteData shown}' — '{quoteData tok}' takes nothing after it"
+
+                            match rest with
+                            | v :: rest' when argvIsFlagShaped t && argvIsValue v ->
+                                problems.Add(argvAfterUnknown t)
+                                strays rest'
+                            | _ -> strays rest
+
+                    strays extra
 
                     fail (tok + " ")
             | Some(_, (c, Some _)) ->
@@ -5638,7 +5679,7 @@ let argvLoadWith (target: ArgsTarget) (argv: string list) : Value =
 let private argvLoad (target: ArgsTarget) : Value = argvLoadWith target Session.ScriptArgs
 
 // the sigil env slot evaluated to overlay pairs — inside the stream's
-// delay, so Env.fromFile boundary errors keep raise-at-force semantics
+// delay
 let private envPairsOf (where: string) (v: Value) : (string * string) list =
     match v with
     | VSeq items ->

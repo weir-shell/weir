@@ -773,6 +773,36 @@ let warningTests =
 
               Expect.equal (ic.Diags |> List.map _.Code) [ "init-marker" ] ""
           }
+          test "check refuses the #session values the loader refuses [D:session-value-one-home]" {
+              let msgs (setting: string) =
+                  errorsIn "init.weir" [ "#init"; "#session {"; "    " + setting; "}" ]
+                  |> List.map (fun d -> d.Code, d.Message)
+
+              let one setting (msg: string) =
+                  Expect.equal (msgs setting) [ "session-value", msg ] setting
+
+              one "logLevel = \"loud\"" "logLevel=loud: unknown log level (one of trace|debug|info|warn|off)"
+              one "echoCap = 0" "echoCap must be positive; got 0"
+              one "echoCap = -3" "echoCap must be positive; got -3"
+              one "echoCap = 3000000000" "echoCap 3000000000 is too large (at most 2147483647)"
+
+              one
+                  "env = [ (\"A=B\", \"x\") ]"
+                  "#session env: the env key 'A=B' contains '=' — a child would read it as the variable 'A'; an env name has no '='"
+
+              one "env = [ (\"\", \"x\") ]" "#session env: an env key is empty — a child cannot receive an unnamed variable"
+
+              one
+                  "env = [ (\"A\\u{0}B\", \"x\") ]"
+                  "#session env: the env key 'A\\x00B' contains a NUL byte — an env name is NUL-free"
+
+              one
+                  "env = [ \"OK\", \"x\\u{0}y\" ]"
+                  "#session env: the value for 'OK' contains a NUL byte — the environment would cut it short there; an env value is NUL-free"
+
+              Expect.isEmpty (msgs "logLevel = Str.trim \" loud \"") "a computed value waits for the load"
+              Expect.isEmpty (msgs "echoCap = 5") "an in-range literal"
+          }
           test "a comma between record-literal fields teaches the separator" {
               for src in [ "let v = { a = 1, b = 2 }"; "let v = {| a = 1, b = 2 |}"; "let v = { T.zero with a = 1, b = 2 }" ] do
                   let e = firstErrorIn "comma.weir" [ "type T = { a: int; b: int }"; src; "print $\"{v.a}\"" ]
@@ -19512,14 +19542,29 @@ let childEnvTests =
               Expect.equal got [ VStr "1"; VStr "sq val"; VStr "dq"; VStr "" ] ""
               System.IO.File.Delete f
           }
-          test "fromFile: rejection raises at force, naming the sh escape" {
+          test "fromFile: a rejection raises at the call, naming the sh escape [D:env-fromfile-bind-once]" {
               let f = weirPath (System.IO.Path.GetTempFileName())
               System.IO.File.WriteAllLines(f, [ "GOOD=1"; "BAD=$HOME" ])
 
-              let ex =
-                  Expect.throws (fun () -> run ("Env.fromFile \"" + f + "\" |> Seq.freeze") |> ignore) ""
+              Expect.throws (fun () -> run ("Env.fromFile \"" + f + "\" |> ignore") |> ignore) "unforced, still refused"
 
               System.IO.File.Delete f
+          }
+          test "fromFile: the file is read once, at the bind [D:env-fromfile-bind-once]" {
+              let f = weirPath (System.IO.Path.GetTempFileName())
+              System.IO.File.WriteAllLines(f, [ "A=1" ])
+
+              let got =
+                  run (
+                      "let e = Env.fromFile \""
+                      + f
+                      + "\" in let _ = File.delete \""
+                      + f
+                      + "\" in e |> Seq.map _.value |> Seq.freeze"
+                  )
+                  |> forceSeq
+
+              Expect.equal got [ VStr "1" ] "a delete after the bind changes nothing"
           }
           test "a discarded $e(cmd) names the overlay form, not a paren drop [D:district-retirement]" {
               match errorMsgsIn "es.weir" [ "let e = Env.ofPairs [(\"Q\", \"1\")]"; "$e(sh -c \"echo $Q\")" ] with
@@ -35151,6 +35196,53 @@ let argsHelpTests =
                         "j3.weir: unexpected argument after '--tokn'"
                         "run 'j3.weir go --help' for usage" ])
                   "shared twin: the withheld value never anchors as the command"
+          }
+          test "usage error: every unknown flag spelling withholds the token after it [D:args-unknown-flag-no-echo]" {
+              let def = record "Cli" [ "tok", TSecret; "n", TInt ] []
+
+              Expect.equal
+                  (usageErr (Weir.Check.ArgsRecord def) [ "-tok"; "hunter2"; "-n"; "5"; "-zz"; "hunter3"; "--tok"; "s" ])
+                  (String.concat
+                      "\n"
+                      [ "j3.weir: unknown flag '-t***' — a flag's value is the next argument: write '-t <value>'"
+                        "j3.weir: unexpected argument after '-t…'"
+                        "j3.weir: unexpected argument '-z…'"
+                        "j3.weir: unexpected argument after '-z…'"
+                        "run 'j3.weir --help' for usage" ])
+                  "single-dash long and attached short"
+
+              Expect.equal
+                  (usageErr cmdUnion [ "status"; "--tok"; "hunter2"; "-pw=x"; "hunter3"; "plain" ])
+                  (String.concat
+                      "\n"
+                      [ "j3.weir: unexpected argument '--tok' — 'status' takes nothing after it"
+                        "j3.weir: unexpected argument after '--tok'"
+                        "j3.weir: unexpected argument '-p…' — 'status' takes nothing after it"
+                        "j3.weir: unexpected argument after '-p…'"
+                        "j3.weir: unexpected argument 'plain' — 'status' takes nothing after it"
+                        "run 'j3.weir status --help' for usage" ])
+                  "a bare case of a pure-union load"
+
+              Expect.equal
+                  (usageErr cmdUnion [ "--tokk=hunter2"; "hunter3" ])
+                  (String.concat
+                      "\n"
+                      [ "j3.weir: unexpected flag '--tokk=…' — the command comes first, one of:"
+                        "  deploy   Ships builds."
+                        "  status   show status"
+                        "run 'j3.weir --help' for usage" ])
+                  "a flag where a pure union's command goes"
+          }
+          test "usage error: an unknown flag never swallows a command word [D:args-unknown-flag-command]" {
+              let deploy = record "Deploy" [ "tok", TSecret; "n", TInt ] []
+              let sub = union "Sub" [ "Deploy", Some(TNamed("Deploy", [])); "Status", None ] []
+              let cli = record "Cli" [ "verbose", TBool; "cmd", TNamed("Sub", []) ] []
+              let shared = Weir.Check.ArgsShared(cli, "cmd", sub, Map.ofList [ "Deploy", deploy ])
+
+              Expect.equal
+                  (usageErr shared [ "--verbos"; "deploy"; "--tok"; "x"; "-n"; "5" ])
+                  "j3.weir: unknown flag '--verbos'. Did you mean '--verbose'?\nrun 'j3.weir deploy --help' for usage"
+                  "only the did-you-mean; the payload flags bind"
           }
           test "usage error: every bad value reads '--flag: not a <type>: <value>' [D:boundary-bad-value]" {
               let def =

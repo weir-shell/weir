@@ -6770,6 +6770,29 @@ expect "a plain block stays env-less" "d-bare: []" "$out"
 $BIN fmt --check "$sdir/district.weir" >/dev/null 2>&1 || fail "fmt must accept the within env block"
 echo "e2e ok: fmt roundtrips the within env block"
 
+# Env.fromFile reads once, at the bind [D:env-fromfile-bind-once]: a
+# later edit/delete changes nothing; a bad line is located at the bind
+printf 'MARK=first\n' > "$sdir/once.env"
+cat > "$sdir/once.weir" <<'WEOF'
+let e = Env.fromFile "once.env"
+File.write "once.env" ["MARK=second"]
+within env e
+    sh -c "echo once: $MARK"
+File.delete "once.env"
+within env e
+    sh -c "echo still: $MARK"
+WEOF
+out=$(cd "$sdir" && $BIN once.weir 2>&1)
+expect "Env.fromFile snapshots at the bind" "once: first" "$out"
+expect "a deleted file after the bind changes nothing" "still: first" "$out"
+printf '=x\n' > "$sdir/badkey.env"
+printf 'let e = Env.fromFile "badkey.env"\nprint "built"\nprint (show e)\n' > "$sdir/badkey.weir"
+out=$(cd "$sdir" && $BIN badkey.weir 2>&1) && rc=0 || rc=$?
+[ "$rc" -ne 0 ] || fail "a bad .env line must fail the run"
+echo "$out" | grep -qF "built" && fail "a bad .env line must fail at the bind, before 'built': $out"
+echo "$out" | grep -qF "badkey.weir:1:" || fail "a bad .env line is located at the bind: $out"
+echo "e2e ok: Env.fromFile reads once, at the bind"
+
 rm -rf "$sdir"
 
 # --- child-env injection (2026-07-20): the shEnv receipt ------------
@@ -8218,6 +8241,41 @@ want=$(printf '%s\n' \
     "run 'sec.weir --help' for usage")
 [ "$got" = "$want" ] || fail "unknown-flag value withheld: $got"
 echo "e2e ok: the value after an unknown flag is reported, never echoed"
+# every unknown-flag spelling withholds the token after it, and a bare
+# subcommand's trailing flag does too [D:args-unknown-flag-no-echo]
+got=$($BIN "$odir/sec.weir" -tok e2e-hunter6 --port 1 -pp e2e-hunter7 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] || fail "single-dash unknown flags exit 2 (got $rc)"
+echo "$got" | grep -qF "hunter" && fail "a single-dash unknown flag's value must never be echoed: $got"
+cat > "$odir/bare.weir" <<'WEOF'
+type Sub =
+    | Deploy of {| token: Secret |}
+    | Status
+let _c = Args.load Sub
+print "ok"
+WEOF
+got=$($BIN "$odir/bare.weir" status --token e2e-hunter8 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] || fail "a bare subcommand's stray flag exits 2 (got $rc)"
+echo "$got" | grep -qF "hunter" && fail "a bare subcommand must not echo the token after a flag: $got"
+got=$($BIN "$odir/bare.weir" --token=e2e-hunter9 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] || fail "a flag where the command goes exits 2 (got $rc)"
+echo "$got" | grep -qF "hunter" && fail "a flag where the command goes must not be echoed: $got"
+# a misspelled shared flag never swallows the command word
+# [D:args-unknown-flag-command]
+cat > "$odir/sw.weir" <<'WEOF'
+type Deploy = { tok: Secret; n: int }
+type Sub =
+    | Deploy of Deploy
+    | Status
+type Cli = { verbose: bool; cmd: Sub }
+let _c = Args.load Cli
+print "ok"
+WEOF
+got=$($BIN "$odir/sw.weir" --verbos deploy --tok x -n 5 2>&1 || true)
+want=$(printf '%s\n' \
+    "sw.weir: unknown flag '--verbos'. Did you mean '--verbose'?" \
+    "run 'sw.weir deploy --help' for usage")
+[ "$got" = "$want" ] || fail "a misspelled flag swallowed the command word: $got"
+echo "e2e ok: no unknown-flag spelling echoes the token after it; a command word anchors"
 # --help layout [D:args-help-column] [D:args-help-default]: a flag longer
 # than the column wraps its text; a string default renders as data
 cat > "$odir/lay.weir" <<'WEOF'
@@ -14348,6 +14406,16 @@ iout=$(printf '#help hi
 echo "$iout" | grep -qF "unknown #session key 'echoCpa'. Did you mean 'echoCap'?" || fail "init typo key lost its did-you-mean"
 echo "$iout" | grep -qF "init: not loaded" || fail "broken init must say not loaded"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke: a binding survived a failed init"
+# weir check refuses the #session values the loader refuses
+# [D:session-value-one-home]
+for bad in 'logLevel = "loud"' 'echoCap = 0' 'env = [ ("A=B", "x") ]' 'env = [ "OK", "x\u{0}y" ]'; do
+    printf '#init\n#session {\n    %s\n}\n' "$bad" > "$initcfg/badval.weir"
+    "$BIN" check "$initcfg/badval.weir" >/dev/null 2>&1 && fail "weir check must refuse the init value: $bad"
+    cp "$initcfg/badval.weir" "$INITHOME/weir/init.weir"
+    iout=$(printf '#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+    echo "$iout" | grep -qF "init: not loaded" || fail "the REPL must refuse the init value: $bad: $iout"
+done
+echo "e2e ok: weir check and the REPL load refuse the same #session values"
 # a raising value fails the load located, never as a .NET trace: both
 # eval sites (a #session field's value and a plain let) run user code at
 # startup, and an escaping exception killed the REPL before it reached a

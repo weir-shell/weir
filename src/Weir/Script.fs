@@ -10823,6 +10823,50 @@ let sessionDeclRefMessage (name: string) : string =
 
 let knownSessionKeys = Set [ "cwd"; "env"; "logLevel"; "echoCap"; "prompt" ]
 
+/// the #session rules that need the value, ONE home
+/// [D:session-value-one-home]: the REPL loader runs them on the evaluated
+/// value, `weir check` on a literal one (a computed value waits for the
+/// load). cwd's existence is the machine's, so it stays the loader's.
+let sessionValueRefusal (key: string) (v: Eval.Value) : string option =
+    match key, v with
+    | "logLevel", Eval.VStr lvl ->
+        match Builtins.parseLogLevel lvl with
+        | Ok _ -> None
+        | Error e -> Some(e.Replace("WEIR_LOG=", "logLevel="))
+    | "echoCap", Eval.VInt n when n > int64 System.Int32.MaxValue ->
+        Some $"echoCap {n} is too large (at most {System.Int32.MaxValue})"
+    | "echoCap", Eval.VInt n when n <= 0L -> Some $"echoCap must be positive; got {n}"
+    | "env", Eval.VSeq pairs ->
+        // the key law holds here as where any env is built
+        // [D:env-key-refusal]; a NUL value would be cut short at the
+        // process env, so it is refused rather than truncated
+        pairs
+        |> Seq.tryPick (function
+            | Eval.VTuple [ Eval.VStr k; Eval.VStr value ] ->
+                try
+                    Proc.envKeyRefusal "#session env" k
+
+                    if value.Contains '\u0000' then
+                        Some
+                            $"#session env: the value for '{quoteData k}' contains a NUL byte — the environment would cut it short there; an env value is NUL-free"
+                    else
+                        None
+                with Failure msg ->
+                    Some msg
+            | _ -> None)
+    | _ -> None
+
+// a value `weir check` can judge without running anything: literals and
+// the operators over them (`-3` is `0 - 3`)
+let rec private sessionLiteral (te: Check.TypedExpr) : bool =
+    match te.Kind with
+    | Check.TEStr _
+    | Check.TEInt _ -> true
+    | Check.TEBinOp(_, l, r) -> sessionLiteral l && sessionLiteral r
+    | Check.TEList items
+    | Check.TETuple items -> List.forall sessionLiteral items
+    | _ -> false
+
 let expectedFieldTypes (key: string) : Ty list =
     match key with
     | "cwd"
@@ -11223,9 +11267,21 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                                 | "echoCap", ty -> Some $"echoCap expects an int, got {formatTy ty}"
                                 | _, ty -> Some $"env expects seq<string * string> — pairs, order kept; got {formatTy ty}"
 
+                            let valueMsg () =
+                                if sessionLiteral te then
+                                    try
+                                        sessionValueRefusal key (Eval.eval Map.empty te)
+                                    with _ ->
+                                        None
+                                else
+                                    None
+
                             match typeMsg with
                             | Some msg -> diags.Add(initError file ll.Head vc None "session-type" msg)
-                            | None -> acc.Add(ll, key, te)
+                            | None ->
+                                match valueMsg () with
+                                | Some msg -> diags.Add(initError file ll.Head vc None "session-value" msg)
+                                | None -> acc.Add(ll, key, te)
                     | _ ->
                         diags.Add(
                             initError file ll.Head 1 None "session-shape" "a #session block takes 'key = value' lines only"

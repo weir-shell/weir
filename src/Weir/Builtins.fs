@@ -3796,37 +3796,39 @@ let private parseDotenvLine (path: string) (lineNo: int) (raw: string) : (string
 
             Some(key, value)
 
+// read once, at the call [D:env-fromfile-bind-once]: the bound env is a
+// snapshot, so a later edit or delete of the file changes nothing, and
+// a bad line is refused where the env is built, not at its first reader
 let private envFromFileImpl: Value =
     VBuiltin(fun v ->
         match v with
         | VStr path ->
+            let resolved = Session.resolveFs path
+            PlanMode.checkRead "Env.fromFile" resolved
+
+            // the File-family guards, in Env.fromFile's own words —
+            // a missing .env must not leak
+            // FileNotFoundException's text [D:transport-words]
+            if Directory.Exists resolved then
+                failwith $"Env.fromFile: {quoteData resolved} is a directory"
+
+            if not (File.Exists resolved) then
+                failwith $"Env.fromFile: no such file: {quoteData resolved}"
+
+            let lines =
+                try
+                    readLinesShared resolved |> List.ofSeq
+                with
+                | :? System.UnauthorizedAccessException ->
+                    failwith $"Env.fromFile: permission denied: {quoteData resolved}"
+                | :? System.IO.IOException as e ->
+                    failwith $"Env.fromFile: cannot access {quoteData resolved} — {quoteData e.Message}"
+
             VSeq(
-                Seq.delay (fun () ->
-                    let resolved = Session.resolveFs path
-                    PlanMode.checkRead "Env.fromFile" resolved
-
-                    // the File-family guards, in Env.fromFile's own words —
-                    // a missing .env must not leak
-                    // FileNotFoundException's text [D:transport-words]
-                    if Directory.Exists resolved then
-                        failwith $"Env.fromFile: {quoteData resolved} is a directory"
-
-                    if not (File.Exists resolved) then
-                        failwith $"Env.fromFile: no such file: {quoteData resolved}"
-
-                    let lines =
-                        try
-                            readLinesShared resolved
-                        with
-                        | :? System.UnauthorizedAccessException ->
-                            failwith $"Env.fromFile: permission denied: {quoteData resolved}"
-                        | :? System.IO.IOException as e ->
-                            failwith $"Env.fromFile: cannot access {quoteData resolved} — {quoteData e.Message}"
-
-                    lines
-                    |> Seq.indexed
-                    |> Seq.choose (fun (i, raw) -> parseDotenvLine path (i + 1) raw)
-                    |> Seq.map (fun (k, value) -> recordOf envVarDef [ VStr k; VStr value ]))
+                lines
+                |> List.indexed
+                |> List.choose (fun (i, raw) -> parseDotenvLine path (i + 1) raw)
+                |> List.map (fun (k, value) -> recordOf envVarDef [ VStr k; VStr value ])
             )
         | v -> unreachable $"the checker rejects 'Env.fromFile' on {formatValue v}")
 
@@ -8616,8 +8618,7 @@ let private printerrImpl: Value =
 
 // cmdEnv/runEnv [D:child-env-overlay] via Proc.linesWith (lines is
 // linesWith [] — one spawn path by construction). The overlay seq is
-// forced inside the delay, so Env.fromFile boundary errors keep
-// raise-at-force semantics.
+// forced inside the delay.
 let private envVarPairs (v: Value) : (string * string) list =
     match v with
     | VSeq items ->

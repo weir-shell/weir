@@ -4486,8 +4486,8 @@ let private initDiag (path: string) (line: int) (col: int) (srcLine: string) (ms
 
 /// apply one checked #session setting — the static rules (key, type,
 /// command-free) already held in Script.checkInit [D:repl-init]; what is
-/// left needs the value: a cwd that exists, a logLevel that parses, an
-/// echoCap in range
+/// left needs the value: a cwd that exists, and the value rules
+/// (Script.sessionValueRefusal) on a computed value
 let private applySessionField
     (path: string)
     (lines: string[])
@@ -4503,7 +4503,18 @@ let private applySessionField
         initDiag path ll.Head 5 (srcLine ll.Head) msg
         false
 
-    match name, Eval.eval venv te with
+    // forced once: the value rules and the apply read the same pairs
+    let value =
+        match Eval.eval venv te with
+        | Eval.VSeq items -> Eval.VSeq(List.ofSeq items)
+        | v -> v
+
+    // the value rules check runs too [D:session-value-one-home]
+    match Script.sessionValueRefusal name value with
+    | Some msg -> err msg
+    | None ->
+
+    match name, value with
     | "cwd", Eval.VStr p ->
         let home () = Builtins.homeDir ()
 
@@ -4524,12 +4535,10 @@ let private applySessionField
         | Ok i ->
             Builtins.setLogThreshold i
             true
-        | Error e -> err (e.Replace("WEIR_LOG=", "logLevel="))
-    | "echoCap", Eval.VInt n when n > 0 && n <= int64 System.Int32.MaxValue ->
+        | Error e -> err e
+    | "echoCap", Eval.VInt n ->
         echoCap <- Some(Eval.toIntArg "echoCap" Eval.Amount n)
         true
-    | "echoCap", Eval.VInt n when n > 0 -> err $"echoCap {n} is too large (at most {System.Int32.MaxValue})"
-    | "echoCap", Eval.VInt n -> err $"echoCap must be positive; got {n}"
     | "env", Eval.VSeq pairs ->
         // the session's base reality, not an overlay: set the
         // process env once, before the first prompt — exactly what
@@ -4537,33 +4546,15 @@ let private applySessionField
         // Env.vars, and every spawn see it with no new machinery;
         // within env and the sigils layer over it as they layer
         // over any inherited env. (No unset: an entry adds or
-        // overrides, never hides.)
-        let pairs =
-            pairs
-            |> Seq.choose (function
-                | Eval.VTuple [ Eval.VStr k; Eval.VStr v ] -> Some(k, v)
-                | _ -> None)
-            |> List.ofSeq
+        // overrides, never hides.) Every pair was judged above before
+        // any is set, so a refused one leaves the process env untouched
+        // (all-or-nothing)
+        for item in pairs do
+            match item with
+            | Eval.VTuple [ Eval.VStr k; Eval.VStr v ] -> Environment.SetEnvironmentVariable(k, v)
+            | _ -> ()
 
-        // the key law holds here as where any env is built
-        // [D:env-key-refusal]: every key is judged before any is set, so a
-        // refused one leaves the process env untouched (all-or-nothing)
-        let refusal =
-            pairs
-            |> List.tryPick (fun (k, _) ->
-                try
-                    Proc.envKeyRefusal "#session env" k
-                    None
-                with Failure msg ->
-                    Some msg)
-
-        match refusal with
-        | Some msg -> err msg
-        | None ->
-            for k, v in pairs do
-                Environment.SetEnvironmentVariable(k, v)
-
-            true
+        true
     | k, _ -> err $"#session {k}: unexpected value"
 
 /// load the init file into the session; all-or-nothing. Returns the
