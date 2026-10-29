@@ -947,7 +947,10 @@ let normalizeDiagVars (msg: string) : string =
                     let i = mapping.Count
 
                     let r =
-                        if i < pool.Length then
+                        // every letter already spelled: keep the name
+                        if pool.Length = 0 then
+                            m.Value
+                        elif i < pool.Length then
                             $"'{pool[i]}"
                         else
                             $"'{pool[i % pool.Length]}{i / pool.Length}"

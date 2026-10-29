@@ -9083,6 +9083,13 @@ let replEchoTests =
 
               Expect.equal (normalizeDiagVars "type '__hole2 * int") "type 'a * int" "a hole var too"
 
+              let allLetters = [ 'a' .. 'z' ] |> List.map (fun c -> $"'{c}") |> String.concat " -> "
+
+              Expect.equal
+                  (normalizeDiagVars $"{allLetters} -> 'a12")
+                  $"{allLetters} -> 'a12"
+                  "every letter taken: the fresh name stays, never a divide by zero"
+
               Expect.equal
                   (checkErr "Ok 1 < Error \"x\"").Message
                   "operator '<' is not defined for Result<int, 'a>"
