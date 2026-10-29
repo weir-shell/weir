@@ -5484,7 +5484,7 @@ echo "e2e ok: commit-area check — correct passes, wrong/subset/missing fail, t
 # teaches the areas
 (
     cd "$cadir"
-    echo e > .editorconfig
+    echo e > .mailmap
     git add -A && git -c user.email=ci@ci -c user.name=ci commit -q -m "docs: an unmapped root file"
     echo f >> docs/GUIDE.md
     git add -A && git -c user.email=ci@ci -c user.name=ci commit -q -m "fix: a retired type prefix"
