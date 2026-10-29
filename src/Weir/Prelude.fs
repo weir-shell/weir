@@ -126,11 +126,24 @@ let private extendClean (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval
 
         te, ve
 
-let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
-    let held = Types.drainAnonDefs ()
+let private extended =
+    System.Runtime.CompilerServices.ConditionalWeakTable<TypeEnv, Eval.Env * (TypeEnv * Eval.Env)>()
 
-    try
-        extendClean typeEnv valueEnv
-    finally
-        for name, fields in held do
-            Types.pushAnonDef name fields
+let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
+    let te, ve =
+        match extended.TryGetValue typeEnv with
+        | true, (forValues, result) when obj.ReferenceEquals(forValues, valueEnv) -> result
+        | _ ->
+            let held = Types.drainAnonDefs ()
+
+            let result =
+                try
+                    extendClean typeEnv valueEnv
+                finally
+                    for name, fields in held do
+                        Types.pushAnonDef name fields
+
+            extended.AddOrUpdate(typeEnv, (valueEnv, result))
+            result
+
+    { te with AnonLitDefs = System.Collections.Generic.Dictionary(te.AnonLitDefs) }, ve
