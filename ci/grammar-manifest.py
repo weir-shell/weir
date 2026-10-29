@@ -21,13 +21,13 @@ root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 parser_src = open(f"{root}/src/Weir/Parser.fs").read()
 # the keyword list lives in the grammar's shared half [D:hand-parser]
 keywords_src = open(f"{root}/src/Weir/Desugar.fs").read()
-# the list closes with `"word" ]` on its last entry; comments inside
-# carry [D:...] brackets, so capture to that closing shape, not to `]`
-kw_block = re.search(r"let (?:private )?keywords[^=]*=(.*?\"\w+\" \])", keywords_src, re.S)
+# the list's closer stands alone on its line; comments inside carry
+# [D:...] brackets, so capture to that line shape, not to the first `]`
+kw_block = re.search(r"let (?:private )?keywords[^=]*=(.*?)\n\s*\]", keywords_src, re.S)
 keywords = sorted(set(re.findall(r'"(\w+)"', kw_block.group(1))))
 
 ast_src = open(f"{root}/src/Weir/Ast.fs").read()
-wk_block = re.search(r"let withinKinds[^=]*=\n(.*?)\n\n", ast_src, re.S).group(1)
+wk_block = re.search(r"let withinKinds[^=]*=(.*?)\n\s*\]", ast_src, re.S).group(1)
 # Standalone kinds (pure) are their own heads — never `within <kind>`,
 # so the grammars' within lists exclude them; they ride keywords instead
 wk_entries = re.findall(r'\{[^}]*?Name = "(\w+)"[^}]*?Standalone = (true|false)', wk_block, re.S)
