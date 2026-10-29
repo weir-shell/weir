@@ -6099,7 +6099,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
         | VRecord(name, fields) ->
             match recTryGet field fields with
             | Some v -> v
-            | None -> unreachable $"the checker rejects unknown field '{field}' on {name}"
+            // reachable only through a value built under an earlier
+            // declaration of the type — the REPL replaces a redeclared
+            // type by design [D:dup-type-decl]; say so in the author's terms
+            | None ->
+                failwith
+                    $"this value has no field '{field}' — it was built under an earlier declaration of '{name}'; build it again after the redeclaration"
         | v -> unreachable $"the checker rejects field access on {formatValue v}"
     | TESlice(target, lo, hi, on, loFromEnd, hiFromEnd) ->
         // inclusive, clamping [D:range-slicing]: an absent bound is an open

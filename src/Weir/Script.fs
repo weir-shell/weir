@@ -3551,6 +3551,13 @@ let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
         IsExternal =
             fun n ->
                 Extern.exists n
+                // a path head that does not exist yet (`./gen.sh`, built
+                // earlier in the script) is the PATH rule's: check warns,
+                // run errors [D:path-head-warn]. Only path-led words — no
+                // expression starts with '/' or '.', while `total/2` is
+                // arithmetic
+                || ((n.StartsWith "./" || n.StartsWith "../" || n.StartsWith "/")
+                    && not (n.Contains '\000'))
                 || (n.Length > 0
                     && System.Char.IsLetter n[0]
                     && not (Parser.isKeyword n)
@@ -3932,8 +3939,10 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
         let acc = System.Collections.Generic.Dictionary<string, string>()
         let taken = System.Collections.Generic.HashSet<string>(ownTaken)
 
+        // an anonymous shape keys by its canonical spelling everywhere —
+        // one type, never qualified [D:anon-literals]
         for n, _ in lm.TypeDefs do
-            if not (own.Contains n) then
+            if not (own.Contains n) && not (n.StartsWith "{|") then
                 let o = originOf n |> Option.defaultValue n
 
                 match keyOfOrigin tenv o with
@@ -3974,6 +3983,7 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
             // joined an existing same-origin entry: nothing to add
             match Map.tryFind n' tenv.TypeOrigins, originOf n with
             | Some held, Some o when held = o -> None
+            | _ when n.StartsWith "{|" && Map.containsKey n tenv.Types -> None
             | _ when n' <> n && Map.containsKey n' tenv.Types && not (own.Contains n) -> None
             | _ -> Some(n', renameDef subst d))
 
@@ -4113,6 +4123,9 @@ let rec private checkStatementCore
                              $"'{c}' is a reifier, but this position is an expression — wrap the chain: $(<command> | {c}); bare command lets belong to statement bodies (top level, if/for/match arms, within blocks)"
                          | Some(c, _) when afterPipe ->
                              $"unknown command '{prog}' — not found on PATH. Did you mean the reifier '{c}'? (`<command> | {c}`)"
+                         // a path head [D:path-head-warn]: nothing to install
+                         | _ when Extern.isPathy prog ->
+                             $"no executable at {prog}{others} — weir resolves command names before running; if the script creates it, name it at run time — `let tool = \"{prog}\"` then `^$tool`"
                          | _ ->
                              $"unknown command '{prog}' — not found on PATH{others}. weir resolves command names before running: install the tool, or, if it only exists when the script runs, name it at run time — `let tool = \"{prog}\"` then `^$tool`")
                   File = None
@@ -4670,6 +4683,8 @@ let checkStatement
     (ll: LogicalLine)
     : Result<CheckedStatement, StmtDiag> =
     checkStatementCore gateExprs sigCtx mkR loadImport tenv ll
+    // no checker var reaches the author [D:user-language-messages]
+    |> Result.mapError (fun d -> { d with Message = Types.normalizeDiagVars d.Message })
     |> Result.bind (fun st ->
         let teTag =
             match st.Kind with
@@ -4693,7 +4708,9 @@ let checkStatement
             let violation =
                 match st.Kind with
                 | KType _ -> Purity.validatorViolation tenv.PureBindings te
-                | _ -> Purity.pureViolation tenv.PlanRefused tenv.PureBindings te
+                | _ ->
+                    Purity.pureViolation tenv.PlanRefused tenv.PureBindings te
+                    |> Option.orElseWith (fun () -> Purity.execScopeViolation tenv.ExecHelpers te)
 
             match violation with
             | Some(span, message) ->
@@ -4723,7 +4740,12 @@ let checkStatement
                                     PlanRefused =
                                         match Purity.planRefusalOf tenv.PlanRefused te with
                                         | Some why -> Map.add name why st.Env.PlanRefused
-                                        | None -> Map.remove name st.Env.PlanRefused } }
+                                        | None -> Map.remove name st.Env.PlanRefused
+                                    ExecHelpers =
+                                        if Purity.execHelperOf tenv.ExecHelpers te then
+                                            Set.add name st.Env.ExecHelpers
+                                        else
+                                            Set.remove name st.Env.ExecHelpers } }
                 | _ -> Ok st)
 
 // ---- unused bindings [D:unused-bindings]: whole-file threading ------------
@@ -5710,6 +5732,11 @@ let rec loadModuleCachedWith
                     // [D:unused-bindings]: signed members exempt at flush
                     let moduleUnused = UnusedTracker()
 
+                    // first declaration per type name: line * came-from-import
+                    // — a module refuses a duplicate as a script does
+                    // [D:dup-type-decl]
+                    let declaredTypes = System.Collections.Generic.Dictionary<string, int * bool>()
+
                     // helpers: the module's command-reaching functions and
                     // lazy command values so far, in declaration order
                     let rec go
@@ -5750,9 +5777,25 @@ let rec loadModuleCachedWith
                                     | _ -> None
 
                                 match chk.Kind with
+                                | KType(decl, _) when declaredTypes.ContainsKey decl.Name ->
+                                    let firstLine, viaImport = declaredTypes[decl.Name]
+
+                                    at
+                                        ll.Head
+                                        1
+                                        (if viaImport then
+                                             $"type '{decl.Name}' is already provided by the import at line {firstLine}; rename one"
+                                         else
+                                             $"type '{decl.Name}' is already declared at line {firstLine}")
                                 | KType(decl, validator) ->
+                                    declaredTypes[decl.Name] <- (ll.Head, false)
                                     go chk.Env sc helpers implLines ((ll, CType(decl, validator)) :: accBody) tail
-                                | KImport lm -> go chk.Env sc helpers implLines ((ll, CImport lm) :: accBody) tail
+                                | KImport lm ->
+                                    for tn in lm.TypeNames do
+                                        if not (declaredTypes.ContainsKey tn) then
+                                            declaredTypes[tn] <- (ll.Head, true)
+
+                                    go chk.Env sc helpers implLines ((ll, CImport lm) :: accBody) tail
                                 | KSig(name, sd) ->
                                     // the sig binds nothing yet [D:module-signatures];
                                     // the paired implementation is the value
@@ -5963,6 +6006,10 @@ let rec loadModuleCachedWith
 
                                       (typeDefs |> List.map (fun (n, _) -> n, ownOrigin n))
                                       @ (reachableDefs
+                                         // an anonymous shape carries no origin: same-shape
+                                         // anonymous types are one type, from any module
+                                         // [D:anon-literals]
+                                         |> List.filter (fun (n, _) -> not (n.StartsWith "{|"))
                                          |> List.map (fun (n, _) ->
                                              n, Map.tryFind n finalTenv.TypeOrigins |> Option.defaultValue (ownOrigin n)))
                                   Body = moduleBody
@@ -11893,7 +11940,7 @@ let analyzeLinesAs
                     match Map.tryFind prog Builtins.bareAliasHomes with
                     | Some home ->
                         $"'{prog}' is a bare module member, not a program — spell it '{home}.{prog}' (bare names live in the REPL session)"
-                    | None when prog.StartsWith "~/" ->
+                    | None when prog.StartsWith "~/" || Extern.isPathy prog ->
                         $"no executable at {prog} — weir resolves commands at check time; the script runs once it exists"
                     | None ->
                         $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed"

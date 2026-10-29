@@ -6949,7 +6949,22 @@ let derivedOrdTests =
                   "operator '<' is not defined for Option<Uuid>; a Uuid is an identifier, not a quantity — Seq.sort orders Uuids"
                   "an Option of a Uuid"
 
+              // the refusal carries through a generic [D:uuid-unordered-generic]
+              Expect.equal
+                  (checkErr "let before a b = Some a < Some b in before Uuid.nil Uuid.max").Message
+                  "this use compares values with '<', '>', '<=' or '>=', which are not defined for Uuid; a Uuid is an identifier, not a quantity — Seq.sort orders Uuids"
+                  "a generic helper instantiated at Uuid"
+
+              Expect.equal
+                  (checkErr "let f x = x < None in f (Some Uuid.nil)").Message
+                  "this use compares values with '<', '>', '<=' or '>=', which are not defined for Uuid; a Uuid is an identifier, not a quantity — Seq.sort orders Uuids"
+                  "an Option-typed parameter instantiated at Option<Uuid>"
+
+              expectValue "let before a b = Some a < Some b in before 1 2" (VBool true)
+              expectValue "let before a b = Some a < Some b in before (Instant.ofEpochMs 0) (Instant.ofEpochMs 1)" (VBool true)
+
               Expect.equal (checkErr "\"a\" < 1").Message "expected string, got int" "a mismatch"
+              Expect.equal (checkErr "Some 1 < 2").Message "expected Option<int>, got int" "an Option against its content"
           }
           test "a generic ordered type is conditional: admits at int, refuses at a function naming the key" {
               ordShow "[{ v = 1 }; { v = 0 }] |> Seq.sort |> Seq.head" "{ v = 0 }"
@@ -7199,12 +7214,12 @@ let attributeTests =
               Expect.stringContains terr.Message "reserved for --help" ""
           }
           test "Short takes a letter or digit: '-', a space or punctuation is no flag the scanner can match [D:short-alnum]" {
-              for c in [ "-"; " "; "." ] do
+              for c in [ "-"; " "; "."; "_" ] do
                   let terr = env |> declErr $"type T = {{ [<Short \"{c}\">] a: bool }}"
 
                   Expect.equal
                       terr.Message
-                      $"'Short' expects a letter, e.g. [<Short \"c\">] — '-{c}' can never be matched as a flag"
+                      $"'Short' expects a letter or digit, e.g. [<Short \"c\">] — '-{c}' can never be matched as a flag"
                       $"Short \"{c}\""
 
               env |> declare "type TShortUpper = { [<Short \"C\">] a: bool }" |> ignore
@@ -7398,6 +7413,10 @@ let typedArgvTests =
 
               let shorts5, _ = Weir.Argv.shortTables (def "S5" "type S5 = { host: bool }")
               Expect.equal (Map.tryFind "--host" shorts5) None "h never derives (help)"
+
+              let shorts6, index6 = Weir.Argv.shortTables (def "S6" "type S6 = { __y: bool }")
+              Expect.equal (Map.tryFind "--__y" shorts6) None "punctuation never derives [D:short-alnum]"
+              Expect.equal (Map.tryFind "_" index6) None "and owns no letter"
           }
           test "Args.load types as the record; the union as the union" {
               let e2 =
@@ -8946,6 +8965,58 @@ let replEchoTests =
                   "seq<'a> -> seq<string>"
                   "concrete types are untouched"
           }
+          test "no checker var reaches a diagnostic: fresh names rename in order [D:user-language-messages]" {
+              Expect.equal
+                  (normalizeDiagVars "expected 'a12, got Result<int, 'a3> and 'a12 again")
+                  "expected 'a, got Result<int, 'b> and 'a again"
+                  "first-appearance order, one name per var"
+
+              Expect.equal
+                  (normalizeDiagVars "'f' takes 'a -> 'r4 here; 'a1' is a binding")
+                  "'f' takes 'a -> 'b here; 'a1' is a binding"
+                  "a letter the message already uses is skipped; a quoted name stays"
+
+              Expect.equal (normalizeDiagVars "type '__hole2 * int") "type 'a * int" "a hole var too"
+
+              Expect.equal
+                  (checkErr "Ok 1 < Error \"x\"").Message
+                  "operator '<' is not defined for Result<int, 'a>"
+                  "an operator fall-through"
+
+              Expect.equal (checkErr "print None").Message "print takes a string, int, float, bool, Uuid, or seq<string>; this is Option<'a>" "print"
+              Expect.equal (checkErr "show (fun x -> x)").Message "show cannot render functions; this is 'a -> 'a" "show"
+
+              Expect.equal
+                  (checkErr "let f x = x < Ok 1 in 0").Message
+                  "operator '<' is not defined for Result<int, 'a>"
+                  "an open left side is no mismatch"
+
+              Expect.equal
+                  (errorMsgsIn "disc.weir" [ "let f x = x"; "f" ])
+                  [ "this statement computes a 'a -> 'a and discards it — bind it, or pipe it to print" ]
+                  "the statement layer's discard"
+
+              Expect.equal
+                  (errorMsgsIn "hole.weir" [ "let e = Nope.thing 1"; "[(e, 1)] |> to json |> Seq.iter print" ]
+                   |> List.filter (fun m -> m.Contains "to json" || m.Contains "admitted"))
+                  []
+                  "a hole inside a tuple stays silent at the wire"
+          }
+          test "a lambda right of |> knows its parameter: to json/yaml see the piped type" {
+              cleanIn
+                  "pipelam.weir"
+                  [ "type PJ = { a: int }"
+                    "let cfg = { a = 1 }"
+                    "cfg |> fun c -> c |> to yaml |> Seq.iter print"
+                    "let r = Some 1 |> function | Some v -> v |> to json | None -> []"
+                    "print (show r)" ]
+                  "the piped type reaches the boundary"
+
+              Expect.equal
+                  (run "Some 1 |> function | Some v -> v |> to json |> Str.join \"\" | None -> \"\"")
+                  (VStr "1")
+                  "function too"
+          }
           test "a builtin function value echoes the #help composition — one source, string-equal [D:repl-fn-echo]" {
               let te = Weir.Builtins.typeEnv
 
@@ -10246,6 +10317,14 @@ let readonlyBlockTests =
 
               Expect.stringContains e.Message "'Http.send' talks to the network" "a POST mutates"
               Expect.stringContains e.Message "mutating HTTP method" "the class names the method"
+
+              let e =
+                  firstErr [ "let r = Http.get \"http://x\""; "let x ="; "    readonly"; "        Http.send r"; "print $\"{x.status}\"" ]
+
+              Expect.equal
+                  e.Message
+                  "this 'readonly' block forbids external mutation, but 'Http.send' talks to the network, and its method is not known at check time (external mutation unless a query method) — reads are allowed"
+                  "an unresolved method is refused without being called mutating"
           }
           test "Http.query and a GET expect admit — idempotent by construction" {
               Expect.isEmpty
@@ -10592,9 +10671,7 @@ let planApplyTests =
               for req in
                   [ "(Http.post \"http://127.0.0.1:1/\")"
                     "(Http.delete \"http://127.0.0.1:1/\")"
-                    "{ Http.defaults with method = Other \"PURGE\"; url = \"http://127.0.0.1:1/\" }"
-                    // a computed method is unknown at check — refused
-                    "{ Http.defaults with method = (if true then Get else Post); url = \"http://127.0.0.1:1/\" }" ] do
+                    "{ Http.defaults with method = Other \"PURGE\"; url = \"http://127.0.0.1:1/\" }" ] do
                   match inPlan req with
                   | [ e ] ->
                       Expect.equal e.Message refusal req
@@ -10603,8 +10680,28 @@ let planApplyTests =
 
               for req in
                   [ "(Http.get \"http://127.0.0.1:1/\")"
-                    "{ Http.defaults with method = Other \"get\"; url = \"http://127.0.0.1:1/\" }" ] do
+                    "{ Http.defaults with method = Other \"get\"; url = \"http://127.0.0.1:1/\" }"
+                    // the defaults record is a GET, and so is a copy of it
+                    "Http.defaults"
+                    "{ Http.defaults with url = \"http://127.0.0.1:1/\" }"
+                    // a method unknown at check is the run time's refusal —
+                    // never claimed mutating here [D:plan-apply]
+                    "{ Http.defaults with method = (if true then Get else Post); url = \"http://127.0.0.1:1/\" }" ] do
                   Expect.isEmpty (inPlan req |> List.map _.Message) req
+
+              // a request in a variable, a copy-update of it, a helper's parameter
+              Expect.isEmpty
+                  (errsOf
+                      [ "let req = Http.get \"http://127.0.0.1:1/\""
+                        "let g r = Http.expect r"
+                        "let p ="
+                        "    plan"
+                        "        Http.expect req |> Seq.iter print"
+                        "        Http.expect { req with timeout = 5s } |> Seq.iter print"
+                        "        g req |> Seq.iter print"
+                        "print $\"{p |> Plan.isEmpty}\"" ]
+                   |> List.map _.Message)
+                  "an unresolved method is not called mutating"
 
               // the piped spelling
               Expect.exists
@@ -12128,6 +12225,45 @@ let withinAlwaysAnyTests =
                   "inside always"
 
               Expect.isEmpty (diagsOf [ "within tmp d"; "    print d"; "echo hi | exec" ]) "exec after the scope stays legal"
+          }
+          test "exec reached through a helper or in a fan-out arm is a check error too [D:exec-scope-transitive]" {
+              let helper = "let go () = echo hi | exec"
+
+              Expect.equal
+                  (diagsOf [ helper; "within tmp d"; "    print d"; "    exit (go ())" ])
+                  [ "'go' reaches 'exec' in its body, and 'exec' inside 'within tmp' is refused — exec replaces weir's process, so the temporary directory would never be removed; run its command without exec, or call 'go' after the scope" ]
+                  "a helper inside a resource scope"
+
+              Expect.equal
+                  (diagsOf [ helper; "let go2 () = go ()"; "within"; "    exit (go2 ())"; "always"; "    print \"c\"" ])
+                  [ "'go2' reaches 'exec' in its body, and 'exec' inside a scope with always is refused — exec replaces weir's process, so the always block would never run; run its command without exec, or call 'go2' after the scope" ]
+                  "a helper of a helper, in a bare within's body"
+
+              Expect.equal
+                  (diagsOf
+                      [ "let stop () = if true then echo bye | exec else ()"
+                        "within"
+                        "    print \"b\""
+                        "always"
+                        "    stop ()" ])
+                  [ "'stop' reaches 'exec' in its body, and 'exec' inside always is refused — exec replaces weir's process, so the rest of the teardown would never run; run its command without exec" ]
+                  "a unit helper in always"
+
+              Expect.equal
+                  (diagsOf [ helper; "pfor i in [1; 2] do"; "    if i == 2 then exit (go ())" ])
+                  [ "'go' reaches 'exec' in its body, and 'exec' inside a 'pfor' arm is refused — exec replaces weir's process, so the other arms would be orphaned, never cut or joined; run its command without exec" ]
+                  "a helper in a pfor arm"
+
+              Expect.equal
+                  (diagsOf [ "[1; 2] |> Seq.piter (fun i -> echo $i | exec)" ])
+                  [ "'exec' inside a 'Seq.piter' arm is refused — exec replaces weir's process, so the other arms would be orphaned, never cut or joined; run the command without exec" ]
+                  "a direct exec in a Seq.piter callback"
+
+              Expect.isEmpty (diagsOf [ helper; "within tmp d"; "    print d"; "exit (go ())" ]) "the helper after the scope stays legal"
+
+              Expect.isEmpty
+                  (diagsOf [ helper; "within tmp d"; "    let go () = print d"; "    go ()"; "exit (go ())" ])
+                  "a local binder shadows the helper"
           }
           test "the scope's value carries through" {
               expectValue "within tmp d\n    41 + 1\nalways\n    ()" (VInt 42L)
@@ -14674,6 +14810,20 @@ let semanticTokenTests =
                   diags2
                   (fun d -> d.Code = "cmd-not-found" && d.Message.Contains "targ")
                   "the errored statement's head warns"
+          }
+          test "a path head that does not exist yet warns at check, as a PATH command does [D:path-head-warn]" {
+              match diagsIn "ph.weir" [ "./weir-not-yet-built.sh --flag" ] with
+              | [ d ] ->
+                  Expect.equal d.Severity "warning" "a warning, not a parse error"
+                  Expect.equal d.Code "cmd-not-found" "the PATH rule's code"
+
+                  Expect.equal
+                      d.Message
+                      "no executable at ./weir-not-yet-built.sh — weir resolves commands at check time; the script runs once it exists"
+                      "named as a path"
+              | other -> failtest $"expected one warning, got {other |> List.map _.Message}"
+
+              cleanIn "ph2.weir" [ "let total = 4"; "print (show (total/2))" ] "a slash inside an expression stays arithmetic"
           }
           test "row provenance: a bad field access errors at the ACCESS, not the call [PLAN-diagnostics-arc D]" {
               // the bicep 62/107 shape reduced: quality's t.BicepPath2
@@ -24760,6 +24910,51 @@ let walkCohortTests =
               finally
                   System.IO.Directory.Delete(td, true)
           }
+          test "a module declaring a type twice is refused at the import, located in the module [D:dup-type-decl]" {
+              let td = tempDir "weir-dupmod"
+
+              System.IO.File.WriteAllLines(
+                  System.IO.Path.Combine(td, "e.weir"),
+                  [| "module"
+                     "type T = { id: string }"
+                     "let a : unit -> T"
+                     "let a () = { id = \"x\" }"
+                     "type T = { id: string; v: int }" |]
+              )
+
+              try
+                  let diags =
+                      diagsIn (System.IO.Path.Combine(td, "main.weir")) [ "import \"./e.weir\" as E"; "let r = E.a ()"; "print r.id" ]
+
+                  Expect.exists
+                      diags
+                      (fun d -> d.Message.Contains "type 'T' is already declared at line 2" && d.Severity = "error")
+                      $"the module's duplicate surfaces at the importer: {diags |> List.map (fun d -> d.Message)}"
+              finally
+                  System.IO.Directory.Delete(td, true)
+          }
+          test "two modules returning the same anonymous shape share one type [D:anon-literals]" {
+              let td = tempDir "weir-anonmods"
+
+              for f in [ "a.weir"; "a2.weir" ] do
+                  System.IO.File.WriteAllLines(
+                      System.IO.Path.Combine(td, f),
+                      [| "module"; ""; "let shape : int -> {| k: int |}"; "let shape n = {| k = n |}" |]
+                  )
+
+              try
+                  let diags =
+                      diagsIn
+                          (System.IO.Path.Combine(td, "main.weir"))
+                          [ "import \"./a.weir\" as A"
+                            "import \"./a2.weir\" as A2"
+                            "let xs = [A.shape 2; A2.shape 3; {| k = 4 |}]"
+                            "print (Seq.length xs)" ]
+
+                  Expect.isEmpty (diags |> List.map (fun d -> d.Message)) "one shape, one type"
+              finally
+                  System.IO.Directory.Delete(td, true)
+          }
           test "an import alias spelled like a union case in scope is refused (H56)" {
               let td = tempDir "weir-h56a"
               System.IO.File.WriteAllLines(System.IO.Path.Combine(td, "m.weir"), [| "module M"; "let x : int"; "let x = 1" |])
@@ -26121,6 +26316,27 @@ let matchArmCommandTests =
                         "    | _ -> echo inner-other"
                         "| _ -> echo outer-other" ])
                   "the inner match's arms parse and arm independently"
+          }
+          test "an if/else or match with command branches at a unit-demanded tail arms (loop body, lambda, always)" {
+              Expect.isEmpty
+                  (diags [ "for i in [1; 2] do"; "    if i == 1 then echo one else echo two" ])
+                  "if/else in a for body"
+
+              Expect.isEmpty
+                  (diags [ "for i in [1; 2] do"; "    if i == 1 then echo one else print \"two\"" ])
+                  "a command branch and a unit branch"
+
+              Expect.isEmpty
+                  (diags [ "for i in [1; 2] do"; "    match i with"; "    | 1 -> echo one"; "    | _ -> echo other" ])
+                  "match in a for body"
+
+              Expect.isEmpty
+                  (diags [ "[1; 2] |> Seq.iter (fun i -> if i == 1 then echo one else print \"two\")" ])
+                  "a Seq.iter lambda"
+
+              Expect.isEmpty
+                  (diags [ "within"; "    print \"body\""; "always"; "    if true then echo done else echo other" ])
+                  "an always cleanup"
           } ]
 
 let stopRequestTests =
@@ -30648,6 +30864,33 @@ let moduleSignatureTests =
                               d.Message
                               "'Lib.helper' is module-private (no signature) — add `let helper : int -> int` in the module to export it"
                               "the migration teaching, inferred type included"
+                      | [] -> failtest "the private member must refuse")
+          }
+          test "the private-member suggestion spells a writable signature: vars normalized, no row type" {
+              withDir
+                  [ "m.weir",
+                    [ "module M"
+                      "let _id x = x"
+                      "let _get r = r.id"
+                      "let pub : int -> int"
+                      "let pub n = _id (_get {| id = n |})" ]
+                    "a.weir", [ "import \"./m.weir\""; "print (show (M._id 3))" ]
+                    "b.weir", [ "import \"./m.weir\""; "print (show (M._get 3))" ] ]
+                  (fun td ->
+                      match diagsOf td "a.weir" with
+                      | d :: _ ->
+                          Expect.equal
+                              d.Message
+                              "'M._id' is module-private (no signature) — add `let _id : 'a -> 'a` in the module to export it"
+                              "normalized vars"
+                      | [] -> failtest "the private member must refuse"
+
+                      match diagsOf td "b.weir" with
+                      | d :: _ ->
+                          Expect.equal
+                              d.Message
+                              "'M._get' is module-private (no signature) — to export it, declare the record it reads as a type and add `let _get : …` naming it in the module (its inferred type reads fields of any record, which a signature cannot spell)"
+                              "a row type has no signature spelling"
                       | [] -> failtest "the private member must refuse")
           }
           test "a type a module imports crosses with the signatures that mention it (B23)" {

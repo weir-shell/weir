@@ -909,6 +909,53 @@ let normalizeEchoVars (ty: Ty) : Ty =
 
     go ty
 
+/// The diagnostics' var spelling [D:user-language-messages]: a checker
+/// fresh name ('a12, 'r3, '__hole2) never reaches a message — each renames
+/// to a single letter in first-appearance order, skipping letters the
+/// message already uses (a signature's own 'a). Text-level, so every
+/// message site (type errors, the statement layer's discard and
+/// suggestion texts) shares the one pass; a quoted name ('a1') is a
+/// binding, not a var, and stays.
+let private freshVarRe =
+    System.Text.RegularExpressions.Regex(@"'(?:__hole|[abcrs])\d+(?![A-Za-z0-9_'])")
+
+let private letterVarRe =
+    System.Text.RegularExpressions.Regex(@"'([a-z])(?![A-Za-z0-9_'])")
+
+let normalizeDiagVars (msg: string) : string =
+    let fresh = freshVarRe
+
+    if not (fresh.IsMatch msg) then
+        msg
+    else
+        let used =
+            letterVarRe.Matches msg
+            |> Seq.map (fun m -> m.Groups[1].Value[0])
+            |> Set.ofSeq
+
+        let pool =
+            [ 'a' .. 'z' ] |> List.filter (fun c -> not (used.Contains c)) |> Array.ofList
+
+        let mapping = System.Collections.Generic.Dictionary<string, string>()
+
+        fresh.Replace(
+            msg,
+            fun (m: System.Text.RegularExpressions.Match) ->
+                match mapping.TryGetValue m.Value with
+                | true, r -> r
+                | _ ->
+                    let i = mapping.Count
+
+                    let r =
+                        if i < pool.Length then
+                            $"'{pool[i]}"
+                        else
+                            $"'{pool[i % pool.Length]}{i / pool.Length}"
+
+                    mapping[m.Value] <- r
+                    r
+        )
+
 /// The one echo type spelling [D:repl-fn-echo] — normalizeEchoVars
 /// composed with formatTy; every echo meta line renders through it
 let formatEchoTy (ty: Ty) : string = formatTy (normalizeEchoVars ty)
@@ -944,6 +991,11 @@ type Cls =
     // Secret at the top (a nested one renders masked, as show does);
     // compiler-owned, never written
     | Render
+    // "orders under the comparison operators" [D:uuid-unordered-generic]:
+    // Ord minus Uuid (at the top and through Option) — the operator
+    // refusal rides a generic's var to its instantiation; compiler-owned,
+    // never written
+    | Cmp
 
 // Cs: constraints on quantified vars — `Eq a => a -> a -> bool` is
 // { Forall = {a}; Cs = [a, {Eq}]; Ty = a -> a -> bool }.
@@ -1211,6 +1263,10 @@ type TypeEnv =
       // message, so a call inside `plan` refuses through the helper as
       // `pure` does through PureBindings [D:plan-helper-refusal]
       PlanRefused: Map<string, string>
+      // earlier top-level FUNCTIONS whose body reaches `cmd | exec`, so
+      // a call inside a resource scope, always block or fan-out arm
+      // refuses through the helper [D:exec-scope-transitive]
+      ExecHelpers: Set<string>
       Modules: Map<string, Map<string, Scheme>>
       Types: Map<string, TypeDef>
       // the record types the file passes to a typed boundary — type name

@@ -9018,6 +9018,7 @@ let typeEnv: TypeEnv =
       ModulePrivate = Map.empty
       PureBindings = Map.empty
       PlanRefused = Map.empty
+      ExecHelpers = Set.empty
       OpenIndex = None
       AnonLitDefs = System.Collections.Generic.Dictionary() }
 

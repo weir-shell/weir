@@ -758,6 +758,19 @@ WEOF
     out=$(cd "$execdir" && $BIN execcd.weir)
     expect "exec after cd runs in the new directory" "cdtarget" "$out"
 
+    # through a helper the refusal holds, before anything runs — no tmp
+    # dir is made, so none is left behind [D:exec-scope-transitive]
+    cat > "$execdir/exechelper.weir" <<'WEOF'
+let go () = sh -c "echo exec-ran" | exec
+within tmp d
+    print d
+    exit (go ())
+WEOF
+    rc=0; out=$($BIN "$execdir/exechelper.weir" 2>&1) || rc=$?
+    [ $rc -ne 0 ] || fail "exec through a helper inside within tmp must refuse: $out"
+    echo "$out" | grep -qF "'go' reaches 'exec' in its body, and 'exec' inside 'within tmp' is refused" || fail "helper exec refusal text: $out"
+    echo "$out" | grep -qF "exec-ran" && fail "the helper's exec must not run: $out"
+
     # a value pipe into exec is refused at parse (no parent to feed stdin);
     # `check` exits nonzero on that error by design — do not let set -e abort
     printf '["a"] | grep a | exec\n' > "$execdir/execbad.weir"
@@ -2165,6 +2178,22 @@ echo "$out" | grep -qF "[cmd-not-found]" || fail "cmd-not-found warning missing:
 rc=0; $BIN "$svdir/missing.weir" >/dev/null 2>&1 || rc=$?
 [ $rc -ne 0 ] || fail "the RUNNER must still reject missing commands"
 echo "e2e ok: check warns where run errors (DELIBERATE, the editing-without-tools rule)"
+
+# a path head that does not exist yet is the same rule [D:path-head-warn]:
+# check warns, run errors before any statement, no parser dump
+cat > "$svdir/pathhead.weir" <<'WEOF'
+print "start"
+./weir-not-yet-built.sh --flag
+WEOF
+rc=0; out=$($BIN check "$svdir/pathhead.weir") || rc=$?
+[ $rc -eq 0 ] || fail "check must exit 0 on a missing path head (got $rc): $out"
+echo "$out" | grep -qF "[cmd-not-found]: no executable at ./weir-not-yet-built.sh" || fail "path-head warning missing: $out"
+rc=0; out=$($BIN "$svdir/pathhead.weir" 2>&1) || rc=$?
+[ $rc -ne 0 ] || fail "the RUNNER must reject a missing path head"
+echo "$out" | grep -qF "no executable at ./weir-not-yet-built.sh" || fail "path-head run error: $out"
+echo "$out" | grep -qF "Expecting" && fail "no parser dump for a path head: $out"
+echo "$out" | grep -qF "start" && fail "the run must refuse before any statement: $out"
+echo "e2e ok: a missing path head warns at check, errors at run"
 
 # a near-miss binding bridges the verdict split: check's command
 # reading names the candidate the runner's expression reading will name
