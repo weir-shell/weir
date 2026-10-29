@@ -9,7 +9,8 @@
   `Infinity` raises an error, and `==` on floats is a check error that
   suggests `Float.near`
 - `string` — positions and lengths (`Str.length`, `Str.sub`, slices,
-  `Str.padLeft`) count Unicode code points; `Str.width` counts the
+  `Str.padLeft`, and the regex members' positions, lengths and
+  captures) count Unicode code points; `Str.width` counts the
   terminal columns the text takes when printed (two for a wide CJK
   character or an emoji, none for a combining mark or a colour escape)
 - `bool`
@@ -62,7 +63,9 @@ print $"{Uuid.v5 Uuid.ns.url "https://example.com"}"
 
 Uuids compare for equality and sort (`Seq.sort`, `Seq.min`), by their
 big-endian bytes, which is the same order as their text. There is no
-`<`, since identifiers are not quantities. In JSON and YAML they are
+`<`, since identifiers are not quantities, and that holds through a
+generic function too (`let before a b = Some a < Some b` called with
+Uuids is a check error). In JSON and YAML they are
 written as the lowercase string, and they splice into a command's argv
 as that same text.
 
@@ -113,7 +116,7 @@ than an error), and either end can be left open: `xs[..b]` / `xs[a..]`.
 A bounded slice stops reading a lazy source, so
 `(Seq.initInfinite id)[0..4]` terminates. A slice has the type of what you slice: a `seq` gives a
 `seq`, a `string` a `string` (`"weir"[1..2]` is `"ei"`, counted in
-UTF-16 chars), and `Bytes` gives `Bytes`. `^n` counts from the end
+code points), and `Bytes` gives `Bytes`. `^n` counts from the end
 (`^n` = length − n): `xs[^1]` is the last element, `xs[..^2]` all but
 the last, `xs[^2..]` the last two, `xs[^3..^1]` uses the end for both
 bounds. A `^` bound needs the length, so slicing a seq from the end

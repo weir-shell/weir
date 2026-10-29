@@ -86,6 +86,10 @@ and hovers show the qualified name. A type you declare yourself keeps
 the plain name, and an import of the same name declared below it is
 reached qualified; a declaration below an import that already provides
 the name is an error.
+The same rules hold inside a module: declaring a type twice, or below
+an import that provides it, is an error reported at the module.
+Anonymous record shapes (`{| k: int |}`) belong to no module: two
+modules returning the same shape return one type.
 
 An imported union's cases are qualified when you construct a value
 (`X.Red`). In a pattern you may name them bare (`| Red ->`) or

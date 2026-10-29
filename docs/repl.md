@@ -178,8 +178,8 @@ The echo is only a preview. There are three ways to see a result:
 - the **echo**, for a quick look. By default it shows up to 100
   elements of a lazy seq — at a terminal, piped and in `weir -e`
   alike — which is enough for typical command output
-  without a `Seq.freeze`. Long strings are cut, and a hint tells you
-  the current limit.
+  without a `Seq.freeze`. A long string is cut short with `…`; print
+  it to see all of it.
 - **`|> print`**, which shows everything, one element per line. For a
   seq of anything other than strings, use `|> Seq.map show |> print`.
 - a **bare command**, which streams its output live, as the program
@@ -189,7 +189,7 @@ The echo is only a preview. There are three ways to see a result:
 `#echo all` for no limit (an infinite seq will then hang). `#echo` on
 its own shows the current limit, and `echoElems` in the config sets
 the starting value. A frozen seq is always echoed in full; the limit
-only applies to lazy ones. Piped output is not affected.
+only applies to lazy ones. It applies to a piped session too.
 
 ## Help
 
@@ -439,7 +439,12 @@ The file gets:
 - the `type` declarations, including the ones `#infer` added
 - the named `let` bindings, with their original multi-line source (so
   a heredoc keeps its newlines). A name defined more than once is
-  saved in its latest form.
+  saved in its latest form, and an earlier form that a saved line still
+  reads is saved too, so a chain like `let xs = [1; 2]` then
+  `let xs = xs |> Seq.map …` is kept whole, as is a `g` that calls an
+  `f` you redefined later. A type is saved in its latest form only; a
+  value built from an earlier declaration of it is dropped with the
+  note below.
 - the imports, with relative paths written out absolute (they meant
   the session's directory, not the saved file's)
 
@@ -448,8 +453,8 @@ names are replaced with qualified ones (`map` → `Seq.map`,
 `startsWith` → `Str.startsWith`), and the result is formatted.
 
 The file always passes `weir check`. Any statement that depends on
-something that only exists in the session (such as `let x = it`) is
-dropped, and `#save` prints a note saying how many were dropped. A
+something that only exists in the session (such as `let x = it`, where
+`it` is the result of an echoed line) is dropped, and `#save` prints a note saying how many were dropped. A
 binding nothing in the file reads is kept with a `_` added to its
 name (`let _total = …`, or `let (a, _b) = …` inside a pattern), so
 the unused-binding check accepts it.
@@ -602,7 +607,13 @@ that scope.
 
 Loading is all-or-nothing. If the init file has an error, the REPL
 prints the error with its location plus `init: not loaded`, and the
-session starts without any of it. This is safe because nothing in the
+session starts without any of it: a `#session` setting (`cwd`, `env`,
+`logLevel`, …) is not left applied, whichever part of the file failed.
+Every bad `#session` value is reported, not just the first, and
+`weir check` on the init file reports the same value errors (code
+`session-value`) for values written literally. An init file takes
+`#init`, `#session` and `#alias` lines; any other directive is an
+error. This is safe because nothing in the
 file runs while loading. A successful load prints nothing (and so does
 a missing init file); you'll see your names, settings and prompt
 working. Only failures are reported. `#help` on a name from the init
@@ -778,6 +789,13 @@ let root () = cd $(git rev-parse --show-toplevel | line)
 
 The alias target *may* be a builtin like `cd`: `#alias up = cd ..`
 runs the `cd` builtin, not an external `cd`.
+
+A binding beats an alias of the same name. A session `let` (even one
+named like a command, such as `let find = 3`), a function parameter, a
+lambda parameter, a `match` binder or a block `let` all shadow an alias
+where they are in scope, and `#alias` at the prompt refuses a name that
+a session binding already holds. An alias over a builtin command
+(`#alias ls = ls --color`) is fine.
 
 Aliases are looked up **before PATH**, and a `^` prefix skips them:
 with `#alias ls = ls --color`, `ls x` runs `ls --color x` and `^ls x`

@@ -74,6 +74,11 @@ What command lines do not do:
 - no redirects — `>` is passed as a literal argument, with a warning
   that suggests `File.write`
 
+If the arguments and environment of one command are too large for the
+OS (Linux's argument-list limit), the command fails with an error that
+says so and gives their size; pass big data on stdin (`xs | cmd`) or
+through a file.
+
 When you need bash behaviour, run bash: `sh -c "the line"`. Inside
 that quoted string, `$w` is a shell variable, not a weir binding — to
 pass a weir value, interpolate it (`sh -c $"echo {w}"`).
@@ -148,6 +153,11 @@ splice (as in the example above). A command line runs to the end of
 the line — `;` there is just an argv word — so each command needs a
 line of its own.
 
+A capture holds the whole output in memory. Past about 2 GiB it stops
+with an error naming the command; stream such output instead (iterate
+its lines, or write them to a file with `File.write` and read back what
+you need). `| succeeds` keeps no output, so it has no limit.
+
 Environment variables for a single command go before it, as in bash:
 `EDITOR=nano git commit`. Each stage of a pipeline takes its own; after
 the program name, `CC=gcc` is an ordinary argument. An env overlay
@@ -188,6 +198,12 @@ reports the head as not statically known (`--strict` treats it like
 other sites it cannot see through). Reifiers, pipes, captures and env
 overlays work exactly as with a literal head:
 `^$tool build | complete` gives you the computed program's exit.
+
+A literal path head that does not exist yet (`./gen.sh`) is a
+command-not-found warning at check time, like a program missing from
+PATH, and an error at run time before anything runs. If the script
+creates that file itself, name it with a value: `let tool = "./gen.sh"`
+then `^$tool`.
 
 <!-- the section's earlier name; kept so published #exit-codes links land here -->
 <a id="exit-codes"></a>
@@ -273,7 +289,16 @@ code:
   can't take piped input, isn't allowed inside `plan`, and is a check
   error inside any `within` block (`tmp`, `proc`, `lock`, `serve`,
   `cd`, `env`, or a bare `within … always`): the replaced process
-  would skip the scope's cleanup, so close the scope first.
+  would skip the scope's cleanup, so close the scope first. The
+  check follows calls: a function that execs, called inside a scope,
+  an `always` cleanup or a parallel arm (`pfor`, `Seq.pmap`, `piter`,
+  `pfirst`), is refused too. A helper the check can't see (passed as
+  an argument, or imported) is refused when it runs:
+  `'exec' while a scope is open (a within or always block) is refused`,
+  or `'exec' inside a parallel arm (pfor, Seq.pmap, Seq.piter,
+  Seq.pfirst) is refused`. If the exec itself fails (the command isn't
+  found), the env prefix and directory it set are undone, so the rest
+  of the script runs as before.
 
 All three accept an env overlay (`$e(cmd | line)`), and `line` and
 `text` accept piped input (`xs | grep foo | line`).

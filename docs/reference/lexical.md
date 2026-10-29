@@ -209,6 +209,11 @@ print $"{-5} {2 * -3}"
 Spaced the same on both sides, it subtracts: `x-1` and `x - 1` both
 mean x minus 1. (So `x -1` is not subtraction — it passes −1 to `x`.)
 
+A minus before a name negates in that name's type, so `-x` works for
+a float, `Duration` or `Size` `x` as for an int. One gap remains: a
+lambda parameter whose type isn't known yet (`fun x -> -x`) is typed
+as an int.
+
 Float literals have a decimal point (`1.5`). Nothing converts
 implicitly: mixing int and float is a type error that suggests
 `Float.ofInt`:
@@ -351,6 +356,9 @@ There is no `#schema` directive: a `yaml` block names its schema on
 its marker line, `yaml schema=<name>` ([schemas](../tooling.md#yaml-schemas)).
 The [REPL manual](../repl.md) covers the prompt set and the init
 file; [signatures](../tooling.md#command-signatures) cover `#sig`.
+A directive outside its context is an error, the same at check and at
+run: `weir -e` takes none, and an init file takes only `#init`,
+`#session` and `#alias`.
 
 ## Attributes
 
@@ -359,8 +367,8 @@ runtime. The set is fixed.
 
 For command-line flags (`Args.load`):
 
-- `[<Short "c">]` — pin a one-character short flag (`"h"` is
-  reserved for `--help`)
+- `[<Short "c">]` — pin a one-character short flag, a letter or digit
+  (`"h"` is reserved for `--help`)
 - `[<NoShort>]` — suppress the derived short
 - `[<Default lit>]` — a literal default: string, int, float, bool,
   duration, or size

@@ -550,8 +550,8 @@ print v
   (key first, then message; a Secret key exits via
   `Secret.reveal |> Str.toUtf8`, deliberately), and
   `File.sha256 path` (streams internally — hash a file without loading
-  it). The capture law scopes the type: bounded and in-memory (~2GB
-  cap); a gigabyte artifact is not a value. Laws: `==` is byte
+  it). The capture law scopes the type: bounded and in-memory (~2 GiB
+  cap, crossing it is a located error); a gigabyte artifact is not a value. Laws: `==` is byte
   equality; no ordering; `print`, `to json`/`to yaml` and argv splices
   REFUSE, each naming `Bytes.toBase64` or `File.writeBytes` as the
   exit (`Args.load`/`Env.load` refuse too, listing the field types
@@ -732,7 +732,9 @@ within tmp d
   `t`/`z`, a seconds-less `HH:MM` (as :00) and fractions past 7 digits read, truncated); `Instant.parseWith`/`tryParseWith`
   read NAMED formats for log lines and cert dates — `%Y %m %d %e %b
   %H %M %S %f %z`, prefix semantics (the line's tail rides free), no
-  `%z` means UTC. `instant - instant` IS a `Duration`
+  `%z` means UTC. A defect in the FORMAT (an unknown directive; a lone
+  trailing `%`, where `%%` is the literal; no full date) raises from `tryParseWith`
+  too, whatever the input. `instant - instant` IS a `Duration`
   (`expiry - Instant.now () > 24h * 300`); `instant ± duration`
   shifts; two points never add (teaching error); in `Instant.now () + d`
   an unknown `d` infers as a Duration (`let at d = Instant.now () + d`
@@ -765,7 +767,9 @@ within tmp d
   for v7 only), `Uuid.toString` (lowercase canonical — what `show`,
   JSON and argv use), `Uuid.nil`/`Uuid.max`, `Uuid.toBytes`/
   `fromBytes` (16 bytes, big-endian). Eq/Show/Ord admit (sort/min/max)
-  but there is no `<` — identifiers are not quantities, as strings.
+  but there is no `<` — identifiers are not quantities, as strings —
+  and that holds through a generic function (`let before a b = Some a <
+  Some b` called with Uuids is a check error) [D:uuid-unordered-generic].
   JSON and YAML fields CROSS (the canonical string); `$id` splices into argv as
   that text; `print id` prints it [D:print-canonical]. `v4`/`v7`/`v7At`
   are ambient effects like `Instant.now` (`pure` refuses them,
@@ -806,7 +810,10 @@ within tmp d
   bare GET read [D:fetch-retired]; when the error body is data to
   inspect, `Http.send` binds it instead. A mutating-method
   `Http.expect` inside a `plan` is a check error (no response to
-  return; `Http.send` captures the Op). An `Other` verb counts as mutating
+  return; `Http.send` captures the Op) when check can tell the method
+  (`Http.post u`, a literal request; `Http.defaults` and copies of it
+  are GET); a request whose method it cannot tell (held in a variable,
+  a helper's parameter) is refused at run if it mutates. An `Other` verb counts as mutating
   unless it is GET/HEAD/OPTIONS/QUERY/TRACE (any casing), so
   `Other "PURGE"` is captured by `plan` (`readonly` refuses every
   `Other`: the verb is not known at check).
@@ -830,7 +837,9 @@ within tmp d
   for `Text`, `application/json` for `Json`,
   `application/x-www-form-urlencoded` for `Form`), an explicit header
   (any casing) WINS, and exactly one is ever sent — never a
-  comma-joined pair [D:http-content-type-override]. The
+  comma-joined pair [D:http-content-type-override]. The framing
+  headers `Content-Length` and `Transfer-Encoding` are refused before
+  send — the transport frames the body itself. The
   default is applied at SEND time, not a field of `Http.defaults` —
   so a shown/pinned request stays stable across releases, and `show
   req` does NOT display the UA the wire will carry [D:http-ua]. `auth` is a UNION,
@@ -925,7 +934,7 @@ within tmp d
   at every exit (normal or raise) the process TREE is killed and
   reaped (`cmd | exec` inside the scope — inside any `within` — is a
   check error, the one exit that would skip the kill
-  [D:exec-scope-refused]); there is no `&` — an unscoped BACKGROUND
+  [D:exec-scope-refused], through helpers too [D:exec-scope-transitive]); there is no `&` — an unscoped BACKGROUND
   child is unrepresentable. A bare FOREGROUND command is synchronous (weir
   waits for it), so the no-orphan claim's one gap is weir dying WHILE
   it waits: the group signal or the controlling terminal's HUP reaps
@@ -940,7 +949,9 @@ within tmp d
   the child's streams spill to files in a managed tmp dir — never the
   parent's terminal or its stdout DATA channel (a server logging to
   stdout cannot break `weir script | next`); the spill is bounded by
-  disk, not memory, and `Proc.tail` reads its last ~100 lines. THE
+  disk, not memory, and `Proc.tail` reads its last ~100 lines (from
+  the spill's end, at most 1 MiB; a line cut by that window starts
+  with `…`) [D:proc-tail-window]. THE
   SURFACING RULE: a scoped child's own exit is DATA, the one place
   raise-by-default does not apply — failure becomes visible through
   `watch=` or `Proc.wait`, nowhere else. Nested scopes release LIFO.
@@ -1499,8 +1510,11 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   (idempotent, makes parents) /`exists`/
   `delete` (empty only)/`deleteAll` (RECURSIVE, destructive)/`list`
   (full paths, sorted, both kinds; `Path.glob "**"` recurses)/`move`
-  (a rename; across filesystems it copies then deletes, as `mv` does
-  [D:dir-move-cross-device]).
+  (a rename; across filesystems it copies then deletes, as `mv` does,
+  keeping directory modes and mtimes [D:dir-move-cross-device]);
+  `Dir.copy` keeps directory modes, as `cp -R` [D:dir-copy-modes]. A
+  symlink moves as the link (target text verbatim) with `File.move` and
+  `Dir.move`, across filesystems too [D:file-move-link].
   Every failure names its path.
 
 ```weir
@@ -2019,7 +2033,13 @@ within tmp d
   tmp/proc/lock/serve/cd/env`, a bare `within … always` — it is a
   CHECK error [D:exec-scope-refused]: the replaced image would skip
   every teardown (the tmp dir, the proc tree, the `always` block), so
-  close the scope first and exec after it. `cmd | line` reifies a one-value CLI to its single trimmed
+  close the scope first and exec after it. The check follows helper
+  calls (a function that execs, called inside a scope, an `always`
+  cleanup or a `pfor`/`Seq.pmap`/`piter`/`pfirst` arm, is refused the
+  same way) [D:exec-scope-transitive]; a helper the check cannot see
+  (passed as an argument, imported) is refused at RUN while any scope or
+  parallel arm is open. A failed exec (command not found) leaves the
+  session's env and cwd as they were [D:exec-failure-restores]. `cmd | line` reifies a one-value CLI to its single trimmed
   line of stdout as a `string` [D:reify-line] — the
   `$(cmd) |> Seq.exactlyOne` idiom for `az … -o tsv`/`git rev-parse`;
   it raises on a nonzero exit or on 0-or-2+ lines, and composes with
@@ -2074,6 +2094,9 @@ within tmp d
   complete` would capture only `b` and drop it) — it's an error; `| exec`
   is the exception. Nor can `| and`/`| or` follow a reifier
   (`a | succeeds | and b` is an error — use `if a | succeeds then`).
+  A weir VALUE has no exit code, so `<value> | and …`/`| or …` (and
+  `<value> | line` or any reifier) is a parse error at check and run
+  alike [D:value-chain-word]; branch on a value with `if`.
   This is not for aliases — `#alias` is a
   resolution table, not a macro.
 
@@ -2085,8 +2108,10 @@ echo built | and echo linked
   byte buffer + line offsets (~2x the text in RSS; lines decode
   per pull). Unbounded output is still unbounded — for gigabyte or
   endless children STREAM it (`|> Seq.iter`, `| File.write`) instead
-  of capturing; the ceiling is the box, and a single capture caps at
-  ~2GB. `Seq.freeze` on decoded lines re-pays string overhead — force
+  of capturing; the ceiling is the box, and a single capture past
+  ~2 GiB is a located error naming the command, never a truncation
+  [D:capture-cap-error]. `| succeeds` reads and discards the output, so
+  it holds nothing and has no cap. `Seq.freeze` on decoded lines re-pays string overhead — force
   what you need, not the world.
 - Typed output: `... |> from json T` needs
   `type T = { field: ty; ... }` declared first (exact field set) — OR
@@ -2285,7 +2310,10 @@ m |> to json |> Seq.iter print // JSON object keys are strings — show the key 
   `true:`) writes back plain — a key built in weir is quoted; 1.1-only forms
   (`1_000`, `0b101`, `1:20`) are strings, written quoted. A plain value holding `: ` (`f: a: b`) refuses, as every YAML reader does — quote it. A block sequence reads in BOTH indent
   styles — indented under its key OR at the SAME column as its key
-  (kubectl's `items:` / `- apiVersion: v1` flush-left form). Only the
+  (kubectl's `items:` / `- apiVersion: v1` flush-left form), and a
+  sequence may nest on the dash line (`- - x`, any depth, read as PyYAML
+  reads it) [D:yaml-inline-nested-seq]; a `yaml` block reads the same
+  forms. Text after a closing quote (`'a'b`) refuses. Only the
   EMPTY flow collections `{}` and `[]` are read (into an empty
   mapping/seq, or an opaque `Yaml` field) — POPULATED flow (`{a: 1}`,
   `[1, 2]`) still rejects. `from yaml stream T` reads a
@@ -2330,7 +2358,9 @@ m |> to json |> Seq.iter print // JSON object keys are strings — show the key 
   never writes the multi-line quoted form. A `yaml` BLOCK is a
   checked template: `let d = yaml` + an indented
   YAML block (canonical: the marker on the binding line; fmt
-  rewrites the next-line spelling). Arming is token-precise: a bare
+  rewrites the next-line spelling; blanks around the `=` are free —
+  `let y =  yaml`, `let y= yaml` — but the marker line may not end in a blank
+  (as `<<<`) [D:yaml-marker-blanks]). Arming is token-precise: a bare
   `yaml` or a `= yaml` RHS arms; `yaml` as a command ARGUMENT stays
   argv (`kubectl get po -o yaml`, `--format yaml` are commands, not
   districts). `$name`/`$(expr)` splice VALUES (never text — no
@@ -2953,7 +2983,10 @@ print $"{fixed} {Path.isName fixed}"
   `weir check --json file.weir` (structured: file/line/col/code/
   severity) BEFORE running — no evaluation happens, by construction.
   check WARNS on commands missing from PATH (cmd-not-found, exit 0)
-  where run ERRORS — scripts for uninstalled tools stay editable.
+  where run ERRORS — scripts for uninstalled tools stay editable. A path
+  head (`./gen.sh`) that does not exist yet warns the same way
+  [D:path-head-warn]; to run a script the same run creates, bind the
+  path (`let tool = "./gen.sh"` then `^$tool`).
   Stranded-script reports should cite the error codes.
 - Casing law: binding names start LOWERCASE (`let foo`, `fun x ->`);
   uppercase is types/modules/constructors. Record fields keep their
@@ -2962,7 +2995,10 @@ print $"{fixed} {Path.isName fixed}"
   record and number them with `[<Ord n>]`. Records remain the spelling
   for anything with NAMES. Prefix minus
   follows F#'s adjacency rule: `-n`, `2 * -3`, and `f -1` (passes -1
-  as the ARGUMENT) are prefix; `x-1` and `x - 1` are subtraction.
+  as the ARGUMENT) are prefix; `x-1` and `x - 1` are subtraction. `-x`
+  negates in x's own type (float, Duration, Size too)
+  [D:prefix-minus-typed]; a lambda parameter of not-yet-known type
+  (`fun x -> -x`) still types as int.
 ```weir-error
 // tuples have no order — name the parts in a record and number them with [<Ord n>]
 [(1, "b"); (2, "a")] |> Seq.sort |> Seq.iter (fun p -> print (show p))
@@ -2980,7 +3016,9 @@ print $"{fixed} {Path.isName fixed}"
   start len` takes one byte's window). String positions and widths —
   slices, `Str.length`/`sub`/`tryIndexOf`/`padLeft`/`padRight` — count
   Unicode code points [D:str-code-points]: `Str.length "a😀b"` is 3 and
-  no cut splits an emoji. `Str.width s : int` is the TERMINAL COLUMNS
+  no cut splits an emoji; regex members count the same way (`.` and
+  negated classes match a whole code point, `Str.rreplace "." "*" "😀"`
+  is `*`) [D:regex-code-points]. `Str.width s : int` is the TERMINAL COLUMNS
   instead [D:str-width] — wide CJK/fullwidth/emoji 2, combining marks,
   controls and escape sequences (SGR colour) 0, an emoji sequence (ZWJ,
   VS16, flag) one glyph: `Str.width "a😀b"` is 4. Align printed text
@@ -3019,7 +3057,8 @@ print $"{fixed} {Path.isName fixed}"
   `Args.load` type's own `///` first paragraph is the program's
   description [D:help-case-docs]. Field names
   derive kebab flags (`dryRun` → `--dry-run`) and unambiguous
-  first-letter shorts (contested letters derive for nobody;
+  first-letter shorts (contested letters derive for nobody, nor does a
+  leading `_`;
   `[<Short "C">]` overrides — one letter or digit, punctuation is a
   check error [D:short-alnum] — `[<NoShort>]` suppresses, `-h` is
   help). `[<Default v>]` moves the resting point: the field stays
@@ -3033,7 +3072,10 @@ print $"{fixed} {Path.isName fixed}"
   is refused, teaching the spaced form; the message never repeats the
   value of a `Secret` field or of an unknown flag — the token after a
   misspelled flag is reported as an unexpected argument WITHOUT its
-  text [D:args-unknown-flag-no-echo]). That error is the
+  text, in every spelling (`--x`, `--x=v` shown as `--x=…`, `-x`, `-xv`,
+  `-42`) and after a subcommand that takes nothing
+  [D:args-unknown-flag-no-echo]; a known subcommand word after an
+  unknown flag is still the subcommand [D:args-unknown-flag-command]). That error is the
   script USER's usage error [D:args-usage-error]: `tool.weir: <problem>`
   lines, the involved flags' help lines, `run 'tool.weir --help' for
   usage`, exit 2, no weir location (`try` still captures it). A file
@@ -3199,7 +3241,9 @@ print $"exit={r.exitCode}"
   set those names, inherit the rest; parent untouched). `Env.fromFile "x.env"`
   loads the dotenv SUBSET (KEY=VALUE, optional quotes, # comments — NO
   export/$VAR; those lines error, naming the `sh -c "set -a; . file;
-  ..."` escape). Bind once: `let e = Env.fromFile p`, then
+  ..."` escape). It reads the file once, at the call — the value is a
+  snapshot, and a bad line in the file is an error at the call
+  [D:env-fromfile-bind-once]. Bind once: `let e = Env.fromFile p`, then
   `within env e` around the commands that run, or `$e(az ...)` to
   capture.
 - Multi-line record literals separate fields by newline, F#-style

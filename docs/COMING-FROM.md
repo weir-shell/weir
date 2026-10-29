@@ -632,7 +632,8 @@ must match the number of capture groups.
 |---|---|
 | `if (/pat/)` on `$_` | `if s \|> Str.isMatch @"pat"` (no `$_`; you always name the value) |
 | `($k) = $l =~ m/(\w+)=/` | `match l with \| Regex @"(\w+)=" k -> …` |
-| `s/old/new/` (literal) | `Str.replace "old" "new" s` (literal text; for regex substitution, use `sed`) |
+| `s/old/new/` (literal) | `Str.replace "old" "new" s` (literal text) |
+| `s/o+/0/g` (regex) | `Str.rreplace @"o+" "0" s` |
 | `qx/git status/`, backticks | `$(git status)` |
 | `@ARGV` | `Self.args`, or `Args.load Cli` for typed flags |
 
@@ -756,8 +757,8 @@ print $"typed rows: {rows}"
   whole answer. The cost: `succeeds` means exactly `exitCode == 0`
   (grep's "no match" counts as false; use `complete` when exit codes
   carry meaning), and `complete` holds the output in memory (about
-  twice the text's size, at most ~2GB per capture), so stream huge
-  outputs instead.
+  twice the text's size; past ~2 GiB a capture is an error), so stream
+  huge outputs instead.
 - **Floats are finite-only.** A calculation that would give NaN or
   Infinity raises an error, so floats always sort consistently and
   `show` never prints a special value. The cost: `1.0 / 0.0` is a
