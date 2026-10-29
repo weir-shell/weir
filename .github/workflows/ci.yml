@@ -140,6 +140,11 @@ jobs:
         run: |
           dotnet test tests/Weir.Tests/Weir.Tests.fsproj -c Debug
           dotnet test tests/Weir.Tests/Weir.Tests.fsproj -c Debug
+      # both parsers on every statement, any difference a failure
+      # [D:hand-parser] — two parsers that must agree drift by default;
+      # this run is what makes a drift a red build
+      - name: unit suite (parse oracle)
+        run: WEIR_PARSE_ORACLE=1 dotnet test tests/Weir.Tests/Weir.Tests.fsproj -c Debug
 
   macos-unit:
     runs-on: macos-latest
@@ -234,6 +239,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
       - name: fuzz smoke (pinned seed)
         run: dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj
+      - name: fuzz smoke (parse oracle) [D:hand-parser]
+        run: WEIR_PARSE_ORACLE=1 dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj
       - name: doc-tests
         run: ./ci/skill-doc.sh
       # the message census [D:census-first-diagnostic]: a REGRESSION baseline,
@@ -296,13 +303,21 @@ jobs:
   # wall-clock thresholds never share a machine
   e2e-linux:
     needs: linux
-    name: e2e-linux (${{ matrix.shard }})
+    name: e2e-linux (${{ matrix.shard }}${{ matrix.oracle == '1' && ', parse oracle' || '' }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         shard: [body, repl-a, repl-b]
+        oracle: [""]
+        # the battery once more with both parsers on every statement
+        # [D:hand-parser]: the shards that parse user text
+        include:
+          - shard: body
+            oracle: "1"
+          - shard: repl-b
+            oracle: "1"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -327,6 +342,7 @@ jobs:
       - name: e2e battery (${{ matrix.shard }})
         env:
           E2E_SHARD: ${{ matrix.shard }}
+          WEIR_PARSE_ORACLE: ${{ matrix.oracle }}
           # the add-module live cells list refs over git smart HTTP (no
           # API rate limit); the token rides so the authenticated listing
           # is the path exercised here

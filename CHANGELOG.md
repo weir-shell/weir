@@ -4,6 +4,19 @@
 
 ### Fixed
 
+- **A second, hand-written parser takes the common statements.** The
+  grammar library parses a statement through a closure per grammar
+  rule and a reply per step; most of a check's time went there. A
+  scanner-driven parser now handles the statements real scripts are
+  made of — bindings, expressions, types, signatures, imports — and
+  hands anything else, and anything a command could be, to the
+  grammar unchanged, which still produces every diagnostic. The two
+  are checked against each other: `WEIR_PARSE_ORACLE=1` runs both on
+  every statement and fails on any difference, and CI runs its
+  batteries that way. Same diagnostics, same trees: the starship
+  import goes from 178 ms to 123 ms pinned to one core and from 131 ms
+  to 102 ms on 15 (medians of 21), a direct check of its largest
+  module from 76 ms to 65 ms.
 - **Line assembly allocates far less.** Before parsing, every physical
   line was trimmed, split into its comment and code and re-scanned by
   the district mask, the doc attachment and the binder-head checks,

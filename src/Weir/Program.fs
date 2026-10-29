@@ -952,4 +952,11 @@ let main argv =
 
     worker.Start()
     worker.Join()
+
+    // the coverage counter [D:hand-parser] — its own switch, so oracle
+    // runs leave every captured stream byte-identical
+    if Environment.GetEnvironmentVariable "WEIR_PARSE_STATS" = "1" then
+        let taken, refused = Fast.stats ()
+        Console.Error.WriteLine $"parse oracle: fast path took {taken} of {taken + refused} statements"
+
     code.Value

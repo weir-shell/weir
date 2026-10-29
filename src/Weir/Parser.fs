@@ -6368,6 +6368,110 @@ let private dumpTeach (r: Resolver) (input: string) (idx: int) (msg: string) : s
     else
         None
 
+// the oracle mode [D:hand-parser]: both parsers on every statement,
+// any difference a failure — CI runs the whole battery this way
+let private oracleMode =
+    System.Environment.GetEnvironmentVariable "WEIR_PARSE_ORACLE" = "1"
+
+let private viaGrammar (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
+    match run stmtShared input with
+    | Success(s, _, _) -> Result.Ok s
+    | Failure(_, _, _) when chainTeach.Value.IsSome ->
+        let m, sp = chainTeach.Value.Value
+
+        Result.Error
+            { Message = m
+              Col = if sp.Start.Line = 1 then Some sp.Start.Col else None }
+    | Failure(msg, err, _) ->
+        let col =
+            if err.Position.Line = 1L then
+                Some(int err.Position.Column)
+            else
+                None
+
+        let msg =
+            match col with
+            | Some c ->
+                // keep FParsec's position + snippet + caret head, the
+                // shape every consumer strips, and swap the body
+                let ls = msg.Replace("\r\n", "\n").Split '\n'
+
+                let caret =
+                    ls |> Array.tryFindIndex (fun l -> l.Trim() <> "" && l.Trim() |> Seq.forall ((=) '^'))
+
+                match dumpTeach r input (c - 1) msg, caret with
+                | Some m, Some k -> String.concat "\n" (Array.append ls[..k] [| m |])
+                | _ -> msg
+            | None -> msg
+
+        Result.Error { Message = msg; Col = col }
+
+/// the fast parser against the grammar on one statement: None when they
+/// agree (tree, and the anonymous shapes each pushed), else the report
+let parseOracle (r: Resolver) (input: string) : string option =
+    ambientResolver.Value <- r
+    parseDepth.Value <- 0
+    grantedRhsRanges.Value.Clear()
+    chainTeach.Value <- None
+
+    try
+        let held = Types.drainAnonDefs ()
+        let fast = Fast.tryStmt r input
+        let fastPushes = Types.drainAnonDefs ()
+
+        let slow =
+            try
+                viaGrammar r input
+            with
+            | UnclosedString _ -> Result.Error { Message = "unclosed string"; Col = None }
+            | DepthExceeded _ -> Result.Error { Message = "depth"; Col = None }
+
+        let slowPushes = Types.drainAnonDefs ()
+
+        for name, fields in held @ slowPushes do
+            Types.pushAnonDef name fields
+
+        // structural equality recurses per node: a tree past the depth
+        // ceiling is refused by both paths' post-parse probe, so only the
+        // probe's verdict is compared there
+        let tooDeep (s: Stmt) = s |> stmtNodes |> List.exists (fun n -> (nodeTooDeep n).IsSome)
+
+        match fast, slow with
+        | None, _ -> None
+        | Some f, Result.Ok g when tooDeep f && tooDeep g -> None
+        | Some f, Result.Ok g when
+            (fastPushes = slowPushes
+             && (if input.Length < 2048 then
+                     f = g
+                 else
+                     // a long statement nests along a sequence spine (width
+                     // to the probe, depth to the comparison): compare on a
+                     // thread with room for it
+                     let mutable eq = false
+                     let t = System.Threading.Thread((fun () -> eq <- (f = g)), 256 * 1024 * 1024)
+                     t.Start()
+                     t.Join()
+                     eq))
+            ->
+            None
+        | Some f, Result.Ok g ->
+            let shapes =
+                if (stmtExprs f |> List.map Ast.sexpr) = (stmtExprs g |> List.map Ast.sexpr) then
+                    "agree"
+                else
+                    "differ"
+
+            Some(
+                $"the fast parser's tree differs from the grammar's (span-free shapes {shapes})\ninput: {input}\nfast:\n%A{f}\ngrammar:\n%A{g}"
+                + (if fastPushes <> slowPushes then
+                       $"\nfast pushes: %A{fastPushes}\ngrammar pushes: %A{slowPushes}"
+                   else
+                       "")
+            )
+        | Some f, Result.Error e -> Some $"the fast parser accepted what the grammar refuses\ninput: {input}\nfast:\n%A{f}\ngrammar: {e.Message}"
+    finally
+        ambientResolver.Value <- noExternals
+
 let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
     ambientResolver.Value <- r
     aliasMasked.Value <- Set.empty
@@ -6378,8 +6482,20 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
 
     try
         try
-            match run stmtShared input with
-            | Success(s, _, _) ->
+            let parsed =
+                if oracleMode then
+                    match parseOracle r input with
+                    | Some report -> failwith $"parse oracle: {report}"
+                    | None ->
+                        ambientResolver.Value <- r
+                        viaGrammar r input
+                else
+                    match Fast.tryStmt r input with
+                    | Some s -> Result.Ok s
+                    | None -> viaGrammar r input
+
+            match parsed with
+            | Result.Ok s ->
                 match s |> stmtNodes |> List.tryPick nodeTooDeep with
                 | Some span ->
                     let col = if span.Start.Line = 1 then Some span.Start.Col else None
@@ -6399,35 +6515,7 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
                             { Message = teach |> Option.defaultValue "'|>' applies functions; feed a program with '|'"
                               Col = col }
                     | None -> Result.Ok s
-            | Failure(_, _, _) when chainTeach.Value.IsSome ->
-                let m, sp = chainTeach.Value.Value
-
-                Result.Error
-                    { Message = m
-                      Col = if sp.Start.Line = 1 then Some sp.Start.Col else None }
-            | Failure(msg, err, _) ->
-                let col =
-                    if err.Position.Line = 1L then
-                        Some(int err.Position.Column)
-                    else
-                        None
-
-                let msg =
-                    match col with
-                    | Some c ->
-                        // keep FParsec's position + snippet + caret head, the
-                        // shape every consumer strips, and swap the body
-                        let ls = msg.Replace("\r\n", "\n").Split '\n'
-
-                        let caret =
-                            ls |> Array.tryFindIndex (fun l -> l.Trim() <> "" && l.Trim() |> Seq.forall ((=) '^'))
-
-                        match dumpTeach r input (c - 1) msg, caret with
-                        | Some m, Some k -> String.concat "\n" (Array.append ls[..k] [| m |])
-                        | _ -> msg
-                    | None -> msg
-
-                Result.Error { Message = msg; Col = col }
+            | Result.Error e -> Result.Error e
         with
         | UnclosedString(p, kind, closer) ->
             let col = if p.Line = 1 then Some p.Col else None

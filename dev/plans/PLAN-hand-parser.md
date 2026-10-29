@@ -1,6 +1,8 @@
 # PLAN: the hand-written happy-path parser — a lexer and a recursive-descent parser for the statements that parse, FParsec for everything that does not
 
-**Status: PROPOSED** (2026-10-29) — the successor to
+**Status: BUILT-P1** (2026-10-29, feat/hand-parser-p1) — P1 landed well
+past its bar; see the session report at the end. P2 (command lines)
+is the next phase. The successor to
 [PLAN-parse-fast-path.md](PLAN-parse-fast-path.md), whose "Not here"
 named this redesign as the thing it avoided. That plan's law is kept
 unchanged and applied one level up: the unchanged FParsec grammar is
@@ -193,3 +195,71 @@ character-level combinators), and not a second source of errors.
   shared desugars.
 - An on-disk cache of parsed or checked modules.
 - Trading binary size for speed.
+
+## Session report — P1 (2026-10-29, feat/hand-parser-p1)
+
+One line: the fast parser takes 99% of the starship port's statements
+(794 of 802 under the check resolver; 60% of the repo corpus under a
+prelude-only resolver, where module names read as externals), agrees
+with the grammar on every statement in every corpus, and the import
+goes from 177.5 ms to 123 ms pinned.
+
+- **Built.** `Desugar.fs` (the shared half: `Resolver`, `keywords`,
+  the identifier classes, the sentinels, `binOp`/`pipeOp`,
+  `curryParams`, the index/slice/range/tilde desugars, `foldSeqExpr`;
+  Parser.fs keeps its names as aliases), `Fast.fs` (the scanner-driven
+  parser: literals, strings and interpolations, records and updates,
+  anonymous records, lists and ranges, index/slice/field suffixes,
+  application chains, the operator table by precedence climbing,
+  lambdas, let-in with plain and pattern binders, if/elif/else, match
+  with guards and binder-free or-patterns, `function`, try/orFail
+  forms, from/to adapters, patterns including cons, seq, record,
+  qualified case and Regex forms, the type grammar with attributes,
+  type/signature/module/import statements), `parseLineFull`'s fast
+  path and oracle mode, `WEIR_PARSE_STATS=1` (the coverage counter,
+  its own switch so oracle runs leave every captured stream
+  byte-identical).
+- **Refused on purpose (P2+).** Anything the command grammar could
+  claim — the head rule mirrored call for call against the resolver,
+  with lambda params, let-in names and pattern binders extending it
+  as the grammar's ambient resolver does — plus `$(…)`, `within` and
+  the standalone heads, retry/poll/repeat, for/pfor, yaml and heredoc
+  districts, comprehensions, `Env.load {| … |}`, validate clauses,
+  `as` in the adapter slot, and every teaching the grammar fires
+  before the expression grammar gets a look (foreign keywords, env
+  prefixes, `\`-heads).
+- **What the oracle caught before anything shipped.** A type
+  declaration accepted trailing junk (no end-of-input check — 23
+  mutant mismatches); the let-in name span runs through its trailing
+  whitespace (`spanned ident`, where `ident` has consumed the ws — 48
+  corpus mismatches, all spans); patterns had no depth bound, so a
+  20k-deep paren pattern the grammar refuses was accepted (the fuzz
+  depth axis); the index/slice suffix parsed its interior twice when
+  the slice attempt failed — 2^depth on a nested index chain, the
+  atom dispatch's lesson met again, fixed by one parse of the
+  interior and a sticky depth refusal no speculative path retries.
+- **Numbers** (AOT, alternating A/B, medians of 21, main = 784e861):
+  starship import 177.5 → 123.3 ms pinned, 131.2 → 101.8 ms on 15;
+  `sys.weir` 76.5 → 64.9 ms; bare startup 9.8 → 9.2 ms. Coverage:
+  794/802 statements of the port; 1363/2253 of the corpus under the
+  harness's prelude-only resolver.
+- **Agreement.** Oracle-clean: the repo corpus (2,253 statements), the
+  960 random, 1,280 scanning and 510 atom-opener mutant files (36,500
+  statements); the unit suite (2,752 + the new pins), the fuzz suite
+  (55, with the new agreement property), the LSP suites and the e2e
+  battery, each under `WEIR_PARSE_ORACLE=1`. Parity byte-identical
+  against main over all 8,030 corpus files; `fmt --check` output
+  identical over 1,080.
+- **Pins.** Unit: the nesting bound (30 deep taken, 200 refused), the
+  index chain's linear refusal, no pending shape left by a refusal,
+  the oracle's agreement on the owned shapes. Fuzz: generated programs
+  and their mutated neighbours agree statement by statement. CI: the
+  unit suite, the fuzz smoke and the body/repl-b e2e shards each run
+  once more in oracle mode.
+- **Read on P2.** The refusals that remain on real code are command
+  lines (30% of corpus statements contain one). The head rule is
+  already mirrored; P2 is the command lexer (barewords, dashes, `~`,
+  splices, `|` vs `|>`, the stop words) and the chain/reifier desugars
+  (`foldChain`, `buildBuiltinApp`), with sigils and interpolation holes
+  following since both re-enter it.
+

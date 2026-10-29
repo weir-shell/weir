@@ -32,7 +32,9 @@ let cli = Args.load Cli
 // entry lands in the same commit
 let areaOfSrc p =
     match p with
-    | "src/Weir/Parser.fs" | "src/Weir/Script.fs" | "src/Weir/Ast.fs" | "src/Weir/Scan.fs" -> Some "parser"
+    | "src/Weir/Parser.fs" | "src/Weir/Script.fs" | "src/Weir/Ast.fs" | "src/Weir/Scan.fs"
+    // the grammar's shared half and the hand-written happy path [D:hand-parser]
+    | "src/Weir/Desugar.fs" | "src/Weir/Fast.fs" -> Some "parser"
     // Effects is the ambient/mutation partition [D:pure-stage2] — Purity's
     // sibling, the classification the checker enforces (and eval consults)
     | "src/Weir/Check.fs" | "src/Weir/Purity.fs" | "src/Weir/Effects.fs"

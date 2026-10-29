@@ -19,9 +19,11 @@ import json, re, sys, os
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 parser_src = open(f"{root}/src/Weir/Parser.fs").read()
+# the keyword list lives in the grammar's shared half [D:hand-parser]
+keywords_src = open(f"{root}/src/Weir/Desugar.fs").read()
 # the list closes with `"word" ]` on its last entry; comments inside
 # carry [D:...] brackets, so capture to that closing shape, not to `]`
-kw_block = re.search(r"let (?:private )?keywords[^=]*=(.*?\"\w+\" \])", parser_src, re.S)
+kw_block = re.search(r"let (?:private )?keywords[^=]*=(.*?\"\w+\" \])", keywords_src, re.S)
 keywords = sorted(set(re.findall(r'"(\w+)"', kw_block.group(1))))
 
 ast_src = open(f"{root}/src/Weir/Ast.fs").read()
