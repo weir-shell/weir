@@ -1,0 +1,7 @@
+root = true
+
+# F# sources are formatted by the fantomas pinned in .config/dotnet-tools.json,
+# on its defaults except where a key below says why [D:fantomas-pinned]
+[*.{fs,fsi,fsx}]
+# house bracket style (fantomas's default since 8.0 is aligned) [D:fmt-stroustrup]
+fsharp_multiline_bracket_style = stroustrup

@@ -223,6 +223,13 @@
 - **`exec` under a scope fails at run when check can't see it.** The
   error names the parallel arm or the open scope.
 
+### Chores
+
+- The F# sources are formatted by fantomas 8.1.0, pinned in
+  `.config/dotnet-tools.json` with the house Stroustrup bracket style in
+  `.editorconfig`; CI fails on formatting drift. To reformat:
+  `dotnet tool restore && dotnet fantomas src tests`.
+
 ## v0.0.81
 
 ### Fixed

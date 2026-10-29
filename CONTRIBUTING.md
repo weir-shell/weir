@@ -49,3 +49,8 @@ Match the file you are in. Comments state constraints the code
 cannot (`[D:key]` citations welcome); no history narration. Messages
 speak the user's language — see the error-message rows in
 DECISIONS for the house rules.
+
+F# is formatted by the fantomas pinned in `.config/dotnet-tools.json`
+(settings in `.editorconfig`): run `dotnet tool restore && dotnet
+fantomas src tests` before committing; CI fails on drift
+[D:fantomas-pinned].

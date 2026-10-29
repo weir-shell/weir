@@ -3,11 +3,11 @@
 `.github/workflows/ci.yml` runs the battery `ci/local.sh` mirrors, on
 a three-platform matrix [D:github-ci]:
 
-- **linux** — the full battery at GitLab parity: unit twice in Debug
-  (flake detection), AOT publish + the freshness gate, e2e (the
-  conflict-marker gate at its top), fuzz smoke, doc-tests, the
-  dead-private check, the sweep and hunt2 repro harnesses, the F#
-  oracle, timing.
+- **linux** — the full battery at GitLab parity: the fantomas check
+  [D:fantomas-pinned], unit twice in Debug (flake detection), AOT
+  publish + the freshness gate, e2e (the conflict-marker gate at its
+  top), fuzz smoke, doc-tests, the dead-private check, the sweep and
+  hunt2 repro harnesses, the F# oracle, timing.
 - **macos** — unit, publish+gate, e2e, doc-tests; timing advisory.
   The e2e arm is the GNU-ism sweep's real signal: first-run reds are
   findings to triage, not flakes.
