@@ -5570,13 +5570,29 @@ if [ "$IS_WINDOWS" = "0" ] && [ -d /dev/shm ] && [ -w /dev/shm ]; then
     mkdir -p "$xdsrc/tree/sub"
     printf 'k\n' > "$xdsrc/tree/sub/k.txt"
     ln -s sub/k.txt "$xdsrc/tree/link"
+    # directory modes survive, as mv / cp -R keep them [D:dir-copy-modes]
+    chmod 700 "$xdsrc/tree/sub"
+    chmod 750 "$xdsrc/tree"
+    out=$($BIN -e "Dir.copy \"$xdsrc/tree\" \"$xdsrc/copy\"" 2>&1) || fail "Dir.copy must succeed: $out"
+    [ "$(stat -c %a "$xdsrc/copy" "$xdsrc/copy/sub" | tr '\n' ' ')" = "750 700 " ] || fail "Dir.copy keeps directory modes: $(stat -c '%a %n' "$xdsrc/copy" "$xdsrc/copy/sub")"
     out=$($BIN -e "Dir.move \"$xdsrc/tree\" \"$xddst\"" 2>&1) || fail "Dir.move across filesystems must succeed: $out"
     [ -f "$xddst/sub/k.txt" ] || fail "Dir.move across filesystems: the tree arrived"
     [ -L "$xddst/link" ] || fail "Dir.move across filesystems: a symlink stays a link"
     [ -e "$xdsrc/tree" ] && fail "Dir.move across filesystems: the source is gone"
+    [ "$(stat -c %a "$xddst" "$xddst/sub" | tr '\n' ' ')" = "750 700 " ] || fail "Dir.move across filesystems keeps directory modes: $(stat -c '%a %n' "$xddst" "$xddst/sub")"
     echo "$out" | grep -qF "cannot access" && fail "EXDEV must never read as cannot access: $out"
     echo "e2e ok: Dir.move across filesystems copies then deletes"
-    rm -rf "$xdsrc" "$xddst"
+    # File.move of a link moves the LINK, dangling included [D:file-move-link]
+    printf 'data\n' > "$xdsrc/t"
+    ln -s t "$xdsrc/l"
+    ln -s nowhere "$xdsrc/dang"
+    out=$($BIN -e "File.move \"$xdsrc/l\" \"$xddst-l\"" 2>&1) || fail "File.move of a link across filesystems must succeed: $out"
+    out=$($BIN -e "File.move \"$xdsrc/dang\" \"$xddst-d\"" 2>&1) || fail "File.move of a dangling link across filesystems must succeed: $out"
+    [ "$(readlink "$xddst-l")" = "t" ] || fail "File.move across filesystems: the link, its target verbatim"
+    [ "$(readlink "$xddst-d")" = "nowhere" ] || fail "File.move across filesystems: the dangling link, verbatim"
+    [ -L "$xdsrc/l" ] || [ -L "$xdsrc/dang" ] && fail "File.move across filesystems: the source links are gone"
+    echo "e2e ok: File.move of a link across filesystems moves the link"
+    rm -rf "$xdsrc" "$xddst" "$xddst-l" "$xddst-d"
 fi
 
 # ---- FileRow reshape [D:filerow] --------------------------------------------

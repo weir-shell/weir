@@ -1549,6 +1549,16 @@ let private substringImpl: Value =
                         VStr(CodePoints.sub s (toIntArg "Str.sub" Position st64) (toIntArg "Str.sub" Amount ln64))
                 | _ -> unreachable "the checker rejects 'substring' on these arguments")))
 
+// base64 is 4 chars per 3 bytes: a result past the string ceiling is
+// refused, sized, in weir's words [D:int-narrowing]
+let private base64Of (who: string) (bytes: byte array) : string =
+    let chars = (int64 bytes.Length + 2L) / 3L * 4L
+
+    if chars > maxStrLen then
+        failwith (strTooLarge who chars)
+
+    System.Convert.ToBase64String bytes
+
 // Str.replicate / padLeft / padRight [D:port-members]: the width
 // primitives every columnar CLI hand-rolled (the asdf port's receipt).
 // Negative counts/widths refuse like Seq.replicate — the one convention.
@@ -3200,7 +3210,7 @@ let private strMembers: (string * Ty * Value) list =
       // tax); Convert.ToBase64String simply does not have the problem
       "toBase64",
       TFun(TStr, TStr),
-      str1 "toBase64" (fun s -> System.Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes s))
+      str1 "toBase64" (fun s -> base64Of "Str.toBase64" (System.Text.Encoding.UTF8.GetBytes s))
       "fromBase64",
       TFun(TStr, TStr),
       VBuiltin(fun v ->
@@ -4135,9 +4145,55 @@ let private preFileMove (pr: FsProbe) (op: string) (src: string) (dst: string) :
     refuseExistingDst pr op dst
     requireParent pr op dst
 
+// a rename's cross-filesystem failure (EXDEV) [D:dir-move-cross-device]
+let private crossDevice (src: string) (dst: string) (e: System.IO.IOException) : bool =
+    if System.OperatingSystem.IsWindows() then
+        not (
+            System.String.Equals(
+                System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath src),
+                System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath dst),
+                System.StringComparison.OrdinalIgnoreCase
+            )
+        )
+    else
+        e.HResult = 18 // EXDEV on Linux and macOS
+
 let private doFileMove (op: string) (src: string) (dst: string) : unit =
     preFileMove realProbe op src dst
-    ioGuarded op src (fun () -> System.IO.File.Move(src, dst))
+
+    match System.IO.FileInfo(src).LinkTarget with
+    | null -> ioGuarded op src (fun () -> System.IO.File.Move(src, dst))
+    | target ->
+        // a symlink moves as the LINK, its target text verbatim, dangling
+        // or not — File.Move's cross-filesystem fallback would copy what
+        // it points at [D:file-move-link]. Directory.Move is the bare
+        // rename(2), EXDEV surfacing as an IOException, as Dir.move uses.
+        let renamed =
+            try
+                System.IO.Directory.Move(src, dst)
+                true
+            with
+            | :? System.UnauthorizedAccessException -> failwith $"{op}: permission denied: {quoteData src}"
+            | :? System.IO.IOException as e when crossDevice src dst e -> false
+            | :? System.IO.IOException as e -> failwith $"{op}: cannot access {quoteData src} — {quoteData e.Message}"
+
+        if not renamed then
+            let reason (e: exn) =
+                match e with
+                | :? System.UnauthorizedAccessException -> "permission denied"
+                | e -> e.Message
+
+            try
+                System.IO.File.CreateSymbolicLink(dst, target) |> ignore
+            with e ->
+                failwith
+                    $"{op}: cannot move the link {quoteData src} to {quoteData dst} across filesystems ({quoteData (reason e)}); the source is unchanged"
+
+            try
+                System.IO.File.Delete src
+            with e ->
+                failwith
+                    $"{op}: linked {quoteData dst} across filesystems, but could not remove the source link {quoteData src} — {quoteData (reason e)}"
 
 // mkdir -p: a file at the path or at any ancestor blocks it
 let private preDirCreate (pr: FsProbe) (op: string) (r: string) : unit =
@@ -4233,12 +4289,18 @@ let private preDirCopy (pr: FsProbe) (op: string) (src: string) (dst: string) : 
 
 // the tree copy itself (no preflight): Dir.copy's body and Dir.move's
 // cross-filesystem fallback share it, so both keep one reading of links
-// and special files
-let private copyTree (op: string) (src: string) (dst: string) : unit =
+// and special files. Each directory keeps its permission bits, set once
+// its contents are in (a read-only source directory must still be
+// filled) — `cp -R`'s and `mv`'s reading, never the umask default
+// [D:dir-copy-modes]; the move also keeps directory mtimes, as `mv` does.
+let private copyTree (op: string) (keepTimes: bool) (src: string) (dst: string) : unit =
+    let unix = not (System.OperatingSystem.IsWindows())
+
     let rec go (s: string) (d: string) =
         System.IO.Directory.CreateDirectory d |> ignore
+        let srcInfo = DirectoryInfo s
 
-        for e in DirectoryInfo(s).EnumerateFileSystemInfos() do
+        for e in srcInfo.EnumerateFileSystemInfos() do
             let target = System.IO.Path.Combine(d, e.Name)
 
             match e.LinkTarget with
@@ -4259,28 +4321,22 @@ let private copyTree (op: string) (src: string) (dst: string) : unit =
                 | :? DirectoryInfo -> System.IO.Directory.CreateSymbolicLink(target, link) |> ignore
                 | _ -> System.IO.File.CreateSymbolicLink(target, link) |> ignore
 
+        if unix then
+            System.IO.File.SetUnixFileMode(d, srcInfo.UnixFileMode)
+
+        if keepTimes then
+            System.IO.Directory.SetLastWriteTimeUtc(d, srcInfo.LastWriteTimeUtc)
+
     go src dst
 
 let private doDirCopy (op: string) (src: string) (dst: string) : unit =
     preDirCopy realProbe op src dst
-    ioGuarded op src (fun () -> copyTree op src dst)
+    ioGuarded op src (fun () -> copyTree op false src dst)
 
 // rename(2) cannot cross a filesystem (EXDEV); `mv`'s answer is the
 // move's: copy the tree, then delete the source [D:dir-move-cross-device].
 // A failed copy removes its partial destination and leaves the source
 // whole; every message names both paths.
-let private crossDevice (src: string) (dst: string) (e: System.IO.IOException) : bool =
-    if System.OperatingSystem.IsWindows() then
-        not (
-            System.String.Equals(
-                System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath src),
-                System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath dst),
-                System.StringComparison.OrdinalIgnoreCase
-            )
-        )
-    else
-        e.HResult = 18 // EXDEV on Linux and macOS
-
 let private doDirMove (op: string) (src: string) (dst: string) : unit =
     preDirMove realProbe op src dst
 
@@ -4310,7 +4366,7 @@ let private doDirMove (op: string) (src: string) (dst: string) : unit =
             refuseIntoSelf realProbe op true src dst
 
             try
-                copyTree op src dst
+                copyTree op true src dst
             with e ->
                 let leftover =
                     try
@@ -4932,14 +4988,18 @@ let private floatMembers: (string * Ty * Value) list =
       floatFn "toInt" (fun x ->
           // truncates toward zero, the int-division rule; out of the
           // 64-bit range raises (the checkedInt posture)
-          if x >= 9.2233720368547758e18 || x <= -9.2233720368547758e18 then
+          // (-2^63 itself is Int64.MinValue, in range; 2^63 is not)
+          if x >= 9.2233720368547758e18 || x < -9.2233720368547758e18 then
               failwith $"Float.toInt: out of int range: {formatFloat x}"
           else
               VInt(int64 (truncate x)))
       "round",
       TFun(TFloat, TFloat),
       // away-from-zero, the school rule — banker's rounding surprises
-      floatFn "round" (fun x -> VFloat(System.Math.Round(x, System.MidpointRounding.AwayFromZero)))
+      // -0.4 rounds to -0.0, which normalizes to 0.0 [D:floats]
+      floatFn "round" (fun x ->
+          let r = System.Math.Round(x, System.MidpointRounding.AwayFromZero)
+          VFloat(if r = 0.0 then 0.0 else r))
       "abs", TFun(TFloat, TFloat), floatFn "abs" (fun x -> VFloat(abs x))
       "near",
       TFun(TFloat, TFun(TFloat, TFun(TFloat, TBool))),
@@ -5028,7 +5088,7 @@ let private bytesMembers: (string * Ty * Value) list =
       TFun(TBytes, TStr),
       VBuiltin(fun v ->
           match v with
-          | VBytes b -> VStr(System.Convert.ToBase64String b)
+          | VBytes b -> VStr(base64Of "Bytes.toBase64" b)
           | v -> unreachable $"the checker rejects 'Bytes.toBase64' on {formatValue v}")
       "sha256",
       TFun(TBytes, TStr),
@@ -6034,12 +6094,14 @@ let private instantMembers: (string * Ty * Value) list =
           VBuiltin(fun v ->
               match fmtV, v with
               | VStr fmt, VStr text ->
-                  (match parseInstantWithMs fmt text with
-                   | Ok ms -> VUnion("Some", Some(VInstant ms))
-                   // a FORMAT defect raises here too — only an input miss is None
-                   | Error e when e.StartsWith "unknown directive" || e.StartsWith "the format must carry" ->
-                       failwith $"Instant.tryParseWith: {e}"
-                   | Error _ -> VUnion("None", None))
+                  // a FORMAT defect raises here too, whatever the input —
+                  // only an input miss is None
+                  (match instantFormatDefect fmt with
+                   | Some defect -> failwith $"Instant.tryParseWith: {defect}"
+                   | None ->
+                       match parseInstantWithMs fmt text with
+                       | Ok ms -> VUnion("Some", Some(VInstant ms))
+                       | Error _ -> VUnion("None", None))
               | _ -> unreachable "the checker rejects 'Instant.tryParseWith' on these arguments"))
       "epochMs",
       TFun(TInstant, TInt),

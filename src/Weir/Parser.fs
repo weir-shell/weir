@@ -3667,14 +3667,28 @@ and private parseTplBlockBody
                                     else
                                         Result.Ok(YtItem(YtScalar("", false, spanAt col)))
                                 else
-                                    match Yaml.splitKey inlinePart with
-                                    | Some _ ->
-                                        // compact map item: the first entry lives on
-                                        // this line at a virtual rel of item+2
-                                        let shifted =
-                                            Array.append [| (inlineCol, indent + 2, inlinePart) |] lines[i + 1 .. j - 1]
+                                    // the dash's gap sets the nested column: `-   x: 1`
+                                    // puts its siblings at item+4, as Yaml.parse reads
+                                    let gap = inlinePart.Length - inlinePart.TrimStart(' ').Length
+                                    let inlineBody = inlinePart.Substring gap
 
-                                        parseTplBlock shifted 0 shifted.Length (indent + 2) |> Result.map YtItem
+                                    // compact item: the first entry (or a nested
+                                    // sequence's first item, `- - x`
+                                    // [D:yaml-inline-nested-seq]) lives on this line
+                                    // at a virtual rel of item+2+gap
+                                    let compact () =
+                                        let shifted =
+                                            Array.append
+                                                [| (inlineCol + gap, indent + 2 + gap, inlineBody) |]
+                                                lines[i + 1 .. j - 1]
+
+                                        parseTplBlock shifted 0 shifted.Length (indent + 2 + gap) |> Result.map YtItem
+
+                                    if inlineBody.StartsWith "- " || inlineBody.TrimEnd() = "-" then
+                                        compact ()
+                                    else
+                                    match Yaml.splitKey inlinePart with
+                                    | Some _ -> compact ()
                                     | None ->
                                         if hasNested then
                                             Result.Error("a scalar sequence item cannot have a nested block", col)
@@ -3701,6 +3715,29 @@ and private parseTplBlockBody
                         match Yaml.splitKey text with
                         | None -> Result.Error("expected 'key:', '- ', or 'for … in …' in this yaml block", col)
                         | Some(rawKey, rest) ->
+                            // a valueless key over a sequence at its own column
+                            // (kubectl's flush-left form, [D:yaml-seq]): the
+                            // sequence's items and their nested lines are the value
+                            let isItemAt k =
+                                let (_, r, t) = lines[k]
+                                r = indent && (t.StartsWith "- " || t.TrimEnd() = "-")
+
+                            let j0 = j
+
+                            let j =
+                                if rest.Trim() = "" && not hasNested && j < fin && isItemAt j then
+                                    let mutable k = j
+
+                                    while k < fin
+                                          && (let (_, r, t) = lines[k] in tplTransparent t || r > indent || isItemAt k) do
+                                        k <- k + 1
+
+                                    k
+                                else
+                                    j
+
+                            let flushSeq = j > j0
+
                             // a quoted key is literal, as a quoted value is:
                             // only a bare `$name` key splices
                             let quotedKey = text.StartsWith "\"" || text.StartsWith "'"
@@ -3740,7 +3777,9 @@ and private parseTplBlockBody
                                         tplBlockScalar lines (i + 1) j keep (col + text.Length - rest.Length)
                                     | None ->
 
-                                        if rest.Trim() = "" then
+                                        if flushSeq then
+                                            parseTplBlock lines j0 j indent
+                                        elif rest.Trim() = "" then
                                             if hasNested then
                                                 let r1 = firstContentRel (i + 1) j (indent + 4)
                                                 parseTplBlock lines (i + 1) j r1

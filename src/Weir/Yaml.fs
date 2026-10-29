@@ -154,6 +154,33 @@ let stripDistrictComment (s: string) =
     let cut = commentCutAt true s
     (if cut >= 0 then s.Substring(0, cut) else s).TrimEnd yamlWs
 
+// find the closing quote in a fragment already inside a quoted scalar:
+// double skips backslash escapes, single treats '' as the escaped
+// quote — the scan that decides where the value ends
+let private closeQuoteAt (dq: bool) (s: string) : int option =
+    let mutable i = 0
+    let mutable found = -1
+
+    while found < 0 && i < s.Length do
+        let c = s[i]
+
+        if dq then
+            if c = '\\' then i <- i + 2
+            elif c = '"' then found <- i
+            else i <- i + 1
+        elif c = '\'' then
+            if i + 1 < s.Length && s[i + 1] = '\'' then
+                i <- i + 2
+            else
+                found <- i
+        else
+            i <- i + 1
+
+    if found < 0 then None else Some found
+
+let private afterClose (q: string) =
+    $"content after the closing {q} — the quoted value ends at its closing quote"
+
 // a scalar token: quoted (double: \" \\ \n \t \r \N \L \P \xNN \uNNNN
 // unescaped — the emitter's own escape set, so weir reads what weir
 // writes; single: '' = ') or plain (raw, trimmed). Rejections carry
@@ -169,9 +196,12 @@ let scalarCore (raw: string) : Result<(string * bool) option, string> =
     if t = "" || t = "null" || t = "Null" || t = "NULL" || t = "~" then
         Ok None
     elif t.StartsWith "\"" then
-        if t.Length < 2 || not (t.EndsWith "\"") then
-            Error "unclosed double-quoted scalar"
-        else
+        // the closing quote is the first unescaped one: `"a\"` is unclosed
+        // (its last quote is escaped), the multi-line form's opening
+        match closeQuoteAt true (t.Substring 1) with
+        | None -> Error "unclosed double-quoted scalar"
+        | Some idx when idx + 2 < t.Length -> Error(afterClose "\"")
+        | Some _ ->
             let body = t.Substring(1, t.Length - 2)
             let sb = System.Text.StringBuilder()
             let mutable i = 0
@@ -271,10 +301,11 @@ let scalarCore (raw: string) : Result<(string * bool) option, string> =
                 Error "a string escape is a lone surrogate (\\uD800-\\uDFFF without its pair), which is not text"
             | None -> Ok(Some(sb.ToString(), true))
     elif t.StartsWith "'" then
-        if t.Length < 2 || not (t.EndsWith "'") then
-            Error "unclosed single-quoted scalar"
-        else
-            Ok(Some(t.Substring(1, t.Length - 2).Replace("''", "'"), true))
+        // `''` is the escaped quote: `'a''` is unclosed
+        match closeQuoteAt false (t.Substring 1) with
+        | None -> Error "unclosed single-quoted scalar"
+        | Some idx when idx + 2 < t.Length -> Error(afterClose "'")
+        | Some _ -> Ok(Some(t.Substring(1, t.Length - 2).Replace("''", "'"), true))
     elif t.StartsWith "&" || t.StartsWith "*" then
         Error "anchors/aliases are outside the yaml subset (repeat the value, or build with weir)"
     elif t.StartsWith "{" || t.StartsWith "[" then
@@ -321,6 +352,8 @@ let private emptyFlow (lineNo: int) (raw: string) : Node option =
 let splitKeyR (s: string) : Result<(string * string) option, string> =
     let mutable inD = false
     let mutable inS = false
+    // a quoted key opens at the first non-blank character
+    let lead = s.Length - s.TrimStart(yamlWs).Length
     let mutable i = 0
     let mutable found = -1
 
@@ -333,11 +366,15 @@ let splitKeyR (s: string) : Result<(string * string) option, string> =
             elif c = '"' then
                 inD <- false
         elif inS then
+            // `''` is the escaped quote, not the closing one
             if c = '\'' then
-                inS <- false
-        elif c = '"' && i = 0 then
+                if i + 1 < s.Length && s[i + 1] = '\'' then
+                    i <- i + 1
+                else
+                    inS <- false
+        elif c = '"' && i = lead then
             inD <- true
-        elif c = '\'' && i = 0 then
+        elif c = '\'' && i = lead then
             inS <- true
         elif c = ':' && (i + 1 = s.Length || s[i + 1] = ' ') then
             found <- i
@@ -381,30 +418,6 @@ let private isQuotedKey (line: string) =
     t.StartsWith "\"" || t.StartsWith "'"
 
 // ---- multi-line quoted flow scalars [D:quoted-fold] ------------------------
-
-// find the closing quote in a fragment already inside a quoted scalar:
-// double skips backslash escapes, single treats '' as the escaped
-// quote — the scan that decides where the value ends
-let private closeQuoteAt (dq: bool) (s: string) : int option =
-    let mutable i = 0
-    let mutable found = -1
-
-    while found < 0 && i < s.Length do
-        let c = s[i]
-
-        if dq then
-            if c = '\\' then i <- i + 2
-            elif c = '"' then found <- i
-            else i <- i + 1
-        elif c = '\'' then
-            if i + 1 < s.Length && s[i + 1] = '\'' then
-                i <- i + 2
-            else
-                found <- i
-        else
-            i <- i + 1
-
-    if found < 0 then None else Some found
 
 /// A quoted scalar whose closing quote sits on a later line
 /// [D:quoted-fold]. Continuation lines come from the raw source (blank
@@ -455,7 +468,7 @@ let private multilineQuoted
                 result <- Some(Ok fragNo)
         | None ->
             // a break follows: trailing whitespace folds away
-            segs.Add(frag.TrimEnd())
+            segs.Add(frag.TrimEnd(yamlWs))
 
             if i >= raw.Length then
                 result <- Some unterminated
@@ -463,14 +476,14 @@ let private multilineQuoted
                 let no, line = raw[i]
                 let l = (line.TrimEnd '\r')
 
-                if l.Trim() = "" then
+                if l.Trim(yamlWs) = "" then
                     frag <- ""
                     fragNo <- no
                     i <- i + 1
                 elif indentOf l <= parentIndent then
                     result <- Some unterminated
                 else
-                    frag <- l.TrimStart()
+                    frag <- l.TrimStart(yamlWs)
                     fragNo <- no
                     i <- i + 1
 
@@ -507,7 +520,7 @@ let private multilineQuoted
 /// `|-2`) [D:yaml-indent-indicator], a teaching error for the rejected
 /// forms, None for a non-header
 let blockHeaderIndicated (rest: string) : Result<bool * int option, string> option =
-    let t = rest.Trim()
+    let t = rest.Trim(yamlWs)
     let keepPlus = "'|+' (keep all trailing newlines) is outside the yaml subset — use | (one trailing newline) or |- (none)"
 
     if t.StartsWith ">" then
@@ -574,7 +587,7 @@ let private blockScalar
     while not stop && i < raw.Length do
         let no, line = raw[i]
 
-        if line.Trim() = "" then
+        if line.Trim(yamlWs) = "" then
             // a whitespace-only line is kept raw: bytes beyond the
             // block's indentation are content (PyYAML agrees), bytes
             // at-or-below it are an empty line — extraction decides
@@ -586,7 +599,7 @@ let private blockScalar
         else
             stop <- true
 
-    let isWsOnly (l: string) = l.Trim() = ""
+    let isWsOnly (l: string) = l.Trim(yamlWs) = ""
 
     // an indentation indicator states the content indentation relative to
     // the parent (PyYAML's reading), so the first line may carry leading
@@ -632,7 +645,7 @@ let private blockLastNo (raw: (int * string)[]) (headerNo: int) (parentIndent: i
     while not stop && i < raw.Length do
         let no, line = raw[i]
 
-        if line.Trim() = "" then
+        if line.Trim(yamlWs) = "" then
             i <- i + 1
         elif indentOf line > parentIndent then
             last <- no
@@ -692,7 +705,7 @@ let rec private parseBlock
     // single-line paths handle it (a closed scalar, the other teachings,
     // scalarCore's own unclosed error when no continuation exists)
     let quotedValue (no: int) (parentIndent: int) (i: int) (j: int) (s: string) : Result<Node, string> option =
-        let t = s.Trim()
+        let t = s.Trim(yamlWs)
         let dq = t.StartsWith "\""
 
         if not (dq || t.StartsWith "'") then
@@ -719,7 +732,7 @@ let rec private parseBlock
         k < fin
         && indentOf (snd lines[k]) = col
         && (let b = (snd lines[k]).Substring col
-            b.StartsWith "- " || b.TrimEnd() = "-")
+            b.StartsWith "- " || b.TrimEnd(yamlWs) = "-")
 
     // the extent of a same-indent block sequence starting at `k`: the
     // run of lines at indent >= col, stopping at the first line that
@@ -763,7 +776,7 @@ let rec private parseBlock
 
         if tabAt firstRaw (indentOf firstRaw) then
             Error(tabIndented firstNo)
-        elif firstBody.StartsWith "- " || firstBody.TrimEnd() = "-" then
+        elif firstBody.StartsWith "- " || firstBody.TrimEnd(yamlWs) = "-" then
             // a block sequence: items at exactly this indent
             let rec items i acc =
                 if i >= fin then
@@ -778,7 +791,7 @@ let rec private parseBlock
                         Error(misIndented no indent)
                     elif ind > indent then
                         Error $"line {no}: unexpected indentation (a sequence item line must start with '- ')"
-                    elif not (raw.Substring(indent).StartsWith "- " || raw.Substring(indent).TrimEnd() = "-") then
+                    elif not (raw.Substring(indent).StartsWith "- " || raw.Substring(indent).TrimEnd(yamlWs) = "-") then
                         Error $"line {no}: expected a '- ' sequence item at this indentation"
                     else
                         // the item's content: rest of this line at virtual
@@ -789,7 +802,7 @@ let rec private parseBlock
                             j <- j + 1
 
                         let inline' =
-                            raw.Substring(indent + (if raw.Substring(indent).TrimEnd() = "-" then 1 else 2))
+                            raw.Substring(indent + (if raw.Substring(indent).TrimEnd(yamlWs) = "-" then 1 else 2))
 
                         let itemR =
                             match blockHeaderIndicated inline' with
@@ -801,16 +814,29 @@ let rec private parseBlock
                                     // the item is the nested block below (or null)
                                     parseBlock rawSrc lines (i + 1) j (indent + 2) (depth + 1)
                                 else
+                                    let inlineT = inline'.TrimStart(yamlWs)
+
                                     match (if j = i + 1 then emptyFlow no inline' else None) with
                                     | Some node ->
                                         // an empty flow collection as a sequence item
                                         Ok node
+                                    | None when inlineT.StartsWith "- " || inlineT.TrimEnd(yamlWs) = "-" ->
+                                        // a sequence nested on the dash line, `- - x`, any
+                                        // depth — PyYAML's reading [D:yaml-inline-nested-seq]:
+                                        // the inner sequence's column is the one after the
+                                        // dash's gap, as a compact map item's is
+                                        let col = indent + 2 + indentOf inline'
+
+                                        let shifted =
+                                            Array.append [| no, String.replicate col " " + inlineT |] lines[i + 1 .. j - 1]
+
+                                        parseBlock rawSrc shifted 0 shifted.Length col (depth + 1)
                                     | None when
                                         // populated flow in item position: `- {a: 1}`
                                         // would otherwise be mis-split into a compact
                                         // map key `{a` — route it to the scalar path so
                                         // the block-only teaching fires [D:yaml-empty-flow]
-                                        (let t = inline'.Trim() in t.StartsWith "{" || t.StartsWith "[")
+                                        (let t = inline'.Trim(yamlWs) in t.StartsWith "{" || t.StartsWith "[")
                                         ->
                                         parseScalar no inline'
                                     | None ->
@@ -826,7 +852,7 @@ let rec private parseBlock
 
                                         let shifted =
                                             Array.append
-                                                [| no, String.replicate col " " + inline'.TrimStart() |]
+                                                [| no, String.replicate col " " + inline'.TrimStart(yamlWs) |]
                                                 lines[i + 1 .. j - 1]
 
                                         parseBlock rawSrc shifted 0 shifted.Length col (depth + 1)
@@ -953,7 +979,7 @@ let private parseDocsRaw (numbered: (int * string) list) : Result<Node list, str
 
         match
             content
-            |> List.tryFind (fun (_, raw) -> raw.StartsWith "? " || raw.TrimStart().StartsWith "? ")
+            |> List.tryFind (fun (_, raw) -> raw.StartsWith "? " || raw.TrimStart(yamlWs).StartsWith "? ")
         with
         | Some(no, _) -> Error $"line {no}: complex keys are outside the yaml subset"
         | None ->
@@ -966,7 +992,7 @@ let private parseDocsRaw (numbered: (int * string) list) : Result<Node list, str
                 // `...` is the spec's document-end marker: it closes the
                 // document as `---` does, and a following `---` opens no
                 // empty one
-                if raw.TrimEnd() = "---" || raw.TrimEnd() = "..." then
+                if raw.TrimEnd(yamlWs) = "---" || raw.TrimEnd(yamlWs) = "..." then
                     if docs[docs.Count - 1].Count > 0 then
                         docs.Add(ResizeArray())
                 else
@@ -1093,6 +1119,10 @@ let private structuralQuote (s: string) =
     || s.Contains " #" // a mid-line comment marker would truncate the value
     || "-?[]{},#&*!|>'\"%@`".Contains s[0]
     || (s.StartsWith "- ")
+    // a leading `...` reads as a document end, a leading U+FEFF as a
+    // byte-order mark a reader strips
+    || s.StartsWith "..."
+    || s[0] = '\uFEFF'
     // past Char.IsControl: U+2028/U+2029 are line breaks to a YAML
     // reader but not IsControl, so they must force quoting too
     || s
@@ -1127,6 +1157,8 @@ let renderScalar (s: string) : string =
              | '\u0085' -> sb.Append "\\N" |> ignore
              | '\u2028' -> sb.Append "\\L" |> ignore
              | '\u2029' -> sb.Append "\\P" |> ignore
+             // escaped, so no reader takes it for a byte-order mark
+             | '\uFEFF' -> sb.Append "\\uFEFF" |> ignore
              // ToString, not sprintf: printf's generic specialization
              // is reflection under AOT and this arm must run there
              | c when System.Char.IsControl c ->

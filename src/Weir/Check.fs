@@ -2636,6 +2636,18 @@ let compileRegex (pat: string) : Result<System.Text.RegularExpressions.Regex, st
             let rx =
                 System.Text.RegularExpressions.Regex(pat, System.Text.RegularExpressions.RegexOptions.None, regexTimeout)
 
+            // the user's pattern validated above; the engine runs its
+            // code-point form [D:regex-code-points]
+            let rx =
+                try
+                    System.Text.RegularExpressions.Regex(
+                        Types.regexCodePoints pat,
+                        System.Text.RegularExpressions.RegexOptions.None,
+                        regexTimeout
+                    )
+                with _ ->
+                    rx
+
             // named groups are rejected [D:no-named-groups]: .NET
             // numbers positional groups first and named ones after —
             // the outlier among engines, so binders would follow

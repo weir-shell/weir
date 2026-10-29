@@ -483,6 +483,165 @@ let sanitizeTtyEcho (s: string) : string = sanitizeWith true s
 let quoteData (s: string) : string =
     (sanitizeTtyEcho s).Replace("\n", "\\x0a")
 
+// Regex counts code points [D:regex-code-points]: .NET's engine walks
+// UTF-16 units, so `.`, a negated class or `\S` would take half an emoji
+// and an empty match could land inside one. The pattern is rewritten so
+// every atom that can match a surrogate takes a whole pair instead, an
+// astral literal is one unit for a quantifier, and no match starts
+// between the halves of a pair. Groups keep their numbers (only
+// non-capturing groups are added); the user's own pattern is validated
+// first, so errors still quote what they wrote.
+let regexCodePoints (pat: string) : string =
+    let pair = @"[\uD800-\uDBFF][\uDC00-\uDFFF]"
+    let notSurrogate = @"(?![\uD800-\uDFFF])"
+
+    let takesSurrogate (atom: string) =
+        try
+            System.Text.RegularExpressions.Regex(atom).IsMatch "\uD83D"
+        with _ ->
+            false
+
+    let isPairAt (s: string) (i: int) =
+        i + 1 < s.Length
+        && System.Char.IsHighSurrogate s[i]
+        && System.Char.IsLowSurrogate s[i + 1]
+
+    // the index just past the class opened at s[i] = '[', if it closes
+    let rec classEnd (s: string) (i: int) : int option =
+        let mutable j = i + 1
+
+        if j < s.Length && s[j] = '^' then
+            j <- j + 1
+
+        if j < s.Length && s[j] = ']' then
+            j <- j + 1
+
+        let mutable result = None
+        let mutable fin = false
+
+        while not fin && j < s.Length do
+            match s[j] with
+            | '\\' when j + 2 < s.Length && (s[j + 1] = 'p' || s[j + 1] = 'P') && s[j + 2] = '{' ->
+                match s.IndexOf('}', j + 3) with
+                | -1 -> fin <- true
+                | k -> j <- k + 1
+            | '\\' -> j <- j + 2
+            | '[' when s[j - 1] = '-' ->
+                // a subtraction's nested class
+                match classEnd s j with
+                | Some k -> j <- k
+                | None -> fin <- true
+            | ']' ->
+                result <- Some(j + 1)
+                fin <- true
+            | _ -> j <- j + 1
+
+        result
+
+    let wrapAtom (atom: string) =
+        if takesSurrogate atom then
+            $"(?:{pair}|{notSurrogate}{atom})"
+        else
+            atom
+
+    let wrapClass (cls: string) =
+        let neg = cls.Length > 2 && cls[1] = '^'
+        let body = cls.Substring((if neg then 2 else 1), cls.Length - (if neg then 3 else 2))
+        let astral = ResizeArray<string>()
+        let rest = System.Text.StringBuilder()
+        let mutable k = 0
+
+        while k < body.Length do
+            if body[k] = '\\' && k + 1 < body.Length then
+                rest.Append(body, k, 2) |> ignore
+                k <- k + 2
+            elif isPairAt body k then
+                astral.Add(body.Substring(k, 2))
+                k <- k + 2
+            else
+                rest.Append body[k] |> ignore
+                k <- k + 1
+
+        let rest = rest.ToString()
+
+        if astral.Count = 0 && not (takesSurrogate cls) then
+            cls
+        else
+            let lits = System.String.Join("|", astral)
+            let bmp = if neg then $"[^{rest}]" else $"[{rest}]"
+            let bmpTakes = rest <> "" && takesSurrogate bmp
+
+            let alts =
+                [ if neg then
+                      yield (if astral.Count = 0 then pair else $"(?!{lits}){pair}")
+                  else
+                      if astral.Count > 0 then
+                          yield lits
+
+                      if bmpTakes then
+                          yield pair
+                  if rest = "" then
+                      if neg then
+                          yield $"{notSurrogate}[\\s\\S]"
+                  elif bmpTakes || neg then
+                      yield $"{notSurrogate}{bmp}"
+                  else
+                      yield bmp ]
+
+            "(?:" + System.String.Join("|", alts) + ")"
+
+    let sb = System.Text.StringBuilder()
+    let mutable i = 0
+
+    while i < pat.Length do
+        let c = pat[i]
+
+        if c = '\\' && i + 1 < pat.Length then
+            let e = pat[i + 1]
+            let close = if i + 2 < pat.Length then pat.IndexOf('}', i + 2) else -1
+
+            if (e = 'p' || e = 'P') && i + 2 < pat.Length && pat[i + 2] = '{' && close > 0 then
+                sb.Append(wrapAtom (pat.Substring(i, close + 1 - i))) |> ignore
+                i <- close + 1
+            elif e = 'S' || e = 'W' || e = 'D' then
+                sb.Append(wrapAtom (pat.Substring(i, 2))) |> ignore
+                i <- i + 2
+            else
+                sb.Append(pat, i, 2) |> ignore
+                i <- i + 2
+        elif c = '(' && i + 2 < pat.Length && pat[i + 1] = '?' && pat[i + 2] = '#' then
+            let k = pat.IndexOf(')', i)
+            let k = if k < 0 then pat.Length - 1 else k
+            sb.Append(pat, i, k + 1 - i) |> ignore
+            i <- k + 1
+        elif c = '[' then
+            match classEnd pat i with
+            | Some k ->
+                sb.Append(wrapClass (pat.Substring(i, k - i))) |> ignore
+                i <- k
+            | None ->
+                sb.Append(pat, i, pat.Length - i) |> ignore
+                i <- pat.Length
+        elif c = '.' then
+            sb.Append(wrapAtom ".") |> ignore
+            i <- i + 1
+        elif isPairAt pat i then
+            sb.Append("(?:").Append(pat, i, 2).Append(")") |> ignore
+            i <- i + 2
+        else
+            sb.Append c |> ignore
+            i <- i + 1
+
+    let body = sb.ToString()
+
+    // no match starts between the halves of a pair; a free-spacing
+    // pattern ((?x)) could comment out the closing paren, so it goes
+    // without that guard
+    if System.Text.RegularExpressions.Regex.IsMatch(pat, @"\(\?[imnsx-]*x") then
+        body
+    else
+        @"(?!(?<=[\uD800-\uDBFF])[\uDC00-\uDFFF])(?:" + body + ")"
+
 /// .NET's string ceiling in chars: a result past it is refused in
 /// weir's words [D:int-narrowing], never the runtime's exception text
 let maxStrLen = 0x3FFFFFDFL
@@ -492,7 +651,7 @@ let strTooLarge (who: string) (chars: int64) : string =
 
 /// a builder whose result length is not known up front: the ceiling (or
 /// a failed allocation) surfaces as the same refusal, sized when known
-let guardStrBuild (who: string) (f: unit -> string) : string =
+let guardStrBuild (who: string) (f: unit -> 'a) : 'a =
     try
         f ()
     with
@@ -1393,6 +1552,32 @@ let formatSize (totalBytes: int64) : string =
 // SI spellings as powers of ten (the writer chose the unit — unlike a
 // literal, where weir would be guessing), optional space, decimals
 // down to whole bytes (sub-byte precision rejects, as sub-ms does)
+/// `whole.frac` × unit as an exact magnitude, for the Size and Duration
+/// parsers: None when the fraction leaves a remainder (finer than the
+/// base unit). Exact arithmetic, so zero padding of any length is
+/// harmless; the int64 range is the caller's check AFTER the sign is
+/// applied, so the minimum value show prints reads back.
+let private scaleExact (whole: string) (frac: string) (unit: int64) : bigint option =
+    let whole = whole.TrimStart '0'
+    let frac = frac.TrimEnd '0'
+
+    // past 40 digits no int64 can come out; spare bigint the work
+    if whole.Length > 40 || frac.Length > 40 then
+        Some(bigint.Pow(10I, 41))
+    else
+        let w = if whole = "" then 0I else bigint.Parse whole
+        let f = if frac = "" then 0I else bigint.Parse frac
+        let pow10 = bigint.Pow(10I, frac.Length)
+        let scaled = f * bigint unit
+
+        if scaled % pow10 <> 0I then
+            None
+        else
+            Some(w * bigint unit + scaled / pow10)
+
+let private inInt64 (v: bigint) =
+    v >= bigint System.Int64.MinValue && v <= bigint System.Int64.MaxValue
+
 let parseSize (text: string) : Result<int64, string> =
     let t = text.Trim()
     let neg = t.StartsWith "-"
@@ -1420,30 +1605,19 @@ let parseSize (text: string) : Result<int64, string> =
             Error
                 $"not a size: '{excerpt text}' — unknown unit '{m.Groups[3].Value}' (binary KiB/MiB/GiB/TiB, SI KB/MB/GB/TB, or B)"
         | Some(_, unit) ->
-            // checked arithmetic — the parser obeys the same no-silent-wrap
-            // law as int arithmetic, and overflow gets its own words
-            // (never Int64.Parse's) [D:transport-words]
-            try
-                let whole = int64 m.Groups[1].Value
+            // the no-silent-wrap law of int arithmetic: overflow gets its
+            // own words, never Int64.Parse's [D:transport-words]
+            let frac = if m.Groups[2].Success then m.Groups[2].Value else ""
 
-                let bytes =
-                    if m.Groups[2].Success then
-                        let frac = m.Groups[2].Value
-                        let fracVal = int64 frac
-                        let pow10 = pown 10L frac.Length
+            match scaleExact m.Groups[1].Value frac unit with
+            | None -> Error $"not a size: '{excerpt text}' — sub-byte precision (bytes are the unit)"
+            | Some mag ->
+                let v = if neg then -mag else mag
 
-                        if (Checked.(*) fracVal unit) % pow10 <> 0L then
-                            Error $"not a size: '{excerpt text}' — sub-byte precision (bytes are the unit)"
-                        else
-                            Ok(Checked.(+) (Checked.(*) whole unit) (Checked.(*) fracVal unit / pow10))
-                    else
-                        Ok(Checked.(*) whole unit)
-
-                match bytes with
-                | Error e -> Error e
-                | Ok b -> Ok(if neg then -b else b)
-            with :? System.OverflowException ->
-                Error $"not a size: '{excerpt text}' — beyond the 64-bit byte range"
+                if inInt64 v then
+                    Ok(int64 v)
+                else
+                    Error $"not a size: '{excerpt text}' — beyond the 64-bit byte range"
 
 let formatDuration (totalMs: int64) : string =
     if totalMs = 0L then
@@ -1605,6 +1779,54 @@ let formatUuid (g: System.Guid) : string = g.ToString "D"
 // means UTC, stated. The format must carry a full date — year-less
 // log formats (syslog) need the year supplied; revisit given real
 // cases.
+//
+// A format defect (an unknown directive, a lone trailing `%`, no full
+// date) is found from the format alone, before any input is read — so
+// tryParseWith raises on it whatever the input [D:instant].
+let instantFormatDefect (fmt: string) : string option =
+    let mutable i = 0
+    let mutable defect = None
+    let mutable year = false
+    let mutable month = false
+    let mutable day = false
+
+    while defect.IsNone && i < fmt.Length do
+        if fmt[i] = '%' then
+            if i + 1 >= fmt.Length then
+                defect <- Some "a lone '%' ends the format — write %% for a literal percent"
+            else
+                match fmt[i + 1] with
+                | 'Y' -> year <- true
+                | 'm'
+                | 'b' -> month <- true
+                | 'd'
+                | 'e' -> day <- true
+                | 'H'
+                | 'M'
+                | 'S'
+                | 'f'
+                | 'z'
+                | '%' -> ()
+                | c ->
+                    let shown =
+                        if System.Char.IsHighSurrogate c && i + 2 < fmt.Length then
+                            fmt.Substring(i + 1, 2)
+                        else
+                            string c
+
+                    defect <-
+                        Some
+                            $"unknown directive '%%{quoteData shown}' — the format takes %%Y %%m %%d %%e %%b %%H %%M %%S %%f %%z (and %%%% for a literal percent)"
+
+            i <- i + 2
+        else
+            i <- i + 1
+
+    match defect with
+    | None when not (year && month && day) ->
+        Some "the format must carry a full date (%Y %m %d) — a year-less log format needs the year supplied elsewhere"
+    | d -> d
+
 let parseInstantWithMs (fmt: string) (text: string) : Result<int64, string> =
     let mutable fi = 0
     let mutable ti = 0
@@ -1618,12 +1840,13 @@ let parseInstantWithMs (fmt: string) (text: string) : Result<int64, string> =
     let mutable offMin = 0
     let mutable offText = "Z"
     let mutable offShapeOk = true
-    let mutable error: string option = None
+    // a format defect wins before any input is read
+    let mutable error: string option = instantFormatDefect fmt
 
     let readDigits (n: int) (what: string) =
         if
             ti + n > text.Length
-            || text.Substring(ti, n) |> Seq.exists (System.Char.IsDigit >> not)
+            || text.Substring(ti, n) |> Seq.exists (System.Char.IsAsciiDigit >> not)
         then
             let got =
                 if ti < text.Length then
@@ -1689,7 +1912,7 @@ let parseInstantWithMs (fmt: string) (text: string) : Result<int64, string> =
 
                  let start = ti
 
-                 while ti < text.Length && System.Char.IsDigit text[ti] && ti - start < 2 do
+                 while ti < text.Length && System.Char.IsAsciiDigit text[ti] && ti - start < 2 do
                      ti <- ti + 1
 
                  if ti = start then
@@ -1703,7 +1926,7 @@ let parseInstantWithMs (fmt: string) (text: string) : Result<int64, string> =
              | 'f' ->
                  let start = ti
 
-                 while ti < text.Length && System.Char.IsDigit text[ti] && ti - start < 9 do
+                 while ti < text.Length && System.Char.IsAsciiDigit text[ti] && ti - start < 9 do
                      ti <- ti + 1
 
                  if ti = start then
@@ -1789,27 +2012,29 @@ let parseDurationMs (text: string) : Result<int64, string> =
         | "h" -> Some 3600000L
         | _ -> None
 
-    let rec go (i: int) (acc: int64) =
+    // the magnitude accumulates exactly; the int64 range is checked once,
+    // after the sign — so the minimum Duration show prints reads back
+    let rec go (i: int) (acc: bigint) =
         if i >= body.Length then
             if i = 0 then Error $"not a duration: '{excerpt text}'" else Ok acc
         else
             let j0 = i
             let mutable j = i
 
-            while j < body.Length && System.Char.IsDigit body[j] do
+            while j < body.Length && System.Char.IsAsciiDigit body[j] do
                 j <- j + 1
 
             if j = j0 then
                 Error $"not a duration: '{excerpt text}' — expected digits at position {i + 1}"
             else
-                let whole = System.Int64.Parse(body.Substring(j0, j - j0))
+                let whole = body.Substring(j0, j - j0)
 
                 let fracDigits, j =
                     if j < body.Length && body[j] = '.' then
                         let f0 = j + 1
                         let mutable k = f0
 
-                        while k < body.Length && System.Char.IsDigit body[k] do
+                        while k < body.Length && System.Char.IsAsciiDigit body[k] do
                             k <- k + 1
 
                         (if k = f0 then None else Some(body.Substring(f0, k - f0))), k
@@ -1828,24 +2053,29 @@ let parseDurationMs (text: string) : Result<int64, string> =
                     match unitMs (body.Substring(u0, k - u0)) with
                     | None -> Error $"not a duration: '{excerpt text}' — units are ms, s, m, h"
                     | Some unit ->
-                        let pow10 = pown 10L frac.Length
-                        let fracVal = if frac = "" then 0L else System.Int64.Parse frac
-
-                        if (Checked.(*) fracVal unit) % pow10 <> 0L then
+                        match scaleExact whole frac unit with
+                        | None ->
                             Error $"not a duration: '{excerpt text}' — sub-millisecond precision (ms is the base unit)"
-                        else
-                            go
-                                k
-                                (Checked.(+)
-                                    acc
-                                    (Checked.(+) (Checked.(*) whole unit) ((Checked.(*) fracVal unit) / pow10)))
+                        | Some part ->
+                            let acc = acc + part
 
-    // checked like the size parser — overflow in its own words, never
-    // Int64.Parse's [D:transport-words]
-    try
-        go 0 0L |> Result.map (fun v -> if neg then -v else v)
-    with :? System.OverflowException ->
-        Error $"not a duration: '{excerpt text}' — beyond the 64-bit millisecond range"
+                            // past the range already: stop growing (a long
+                            // compound stays linear) and report it
+                            if acc > bigint System.Int64.MaxValue + 1I then
+                                Ok acc
+                            else
+                                go k acc
+
+    // overflow in its own words, never Int64.Parse's [D:transport-words]
+    match go 0 0I with
+    | Error e -> Error e
+    | Ok mag ->
+        let v = if neg then -mag else mag
+
+        if inInt64 v then
+            Ok(int64 v)
+        else
+            Error $"not a duration: '{excerpt text}' — beyond the 64-bit millisecond range"
 
 // The one JSON string encoder: CLI/LSP payloads and user `to json` /
 // `to jsonl` / `--can --json` [D:json-raw-user].

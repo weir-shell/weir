@@ -516,6 +516,23 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
                 | Some m when CodePoints.length s > m -> CodePoints.head s m, true
                 | _ -> s, false
 
+            // the escaped form past the string ceiling is refused in
+            // weir's words, sized [D:int-narrowing]
+            if int64 raw.Length * 2L + 3L > maxStrLen then
+                let mutable chars = int64 raw.Length + 2L
+
+                for c in raw do
+                    match c with
+                    | '\\'
+                    | '"'
+                    | '\n'
+                    | '\r'
+                    | '\t' -> chars <- chars + 1L
+                    | _ -> ()
+
+                if chars > maxStrLen then
+                    failwith (strTooLarge "show" chars)
+
             let escaped =
                 raw
                     .Replace("\\", "\\\\")
@@ -594,7 +611,10 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
         | VUnit -> "()"
         | VTuple items -> "(" + (items |> List.map sub |> String.concat ", ") + ")"
 
-let formatValue (v: Value) : string = formatWith showLimits 0 v
+// a container whose rendering crosses the string ceiling: the same
+// refusal [D:int-narrowing]
+let formatValue (v: Value) : string =
+    guardStrBuild "show" (fun () -> formatWith showLimits 0 v)
 
 // ---- plan/apply capture [D:plan-apply] ------------------------------
 // A `plan` block runs its body but captures external mutations as Op
@@ -2723,6 +2743,8 @@ let private refuseDupKeys (who: string) (keys: string seq) =
             failwith
                 $"{who}: the mapping holds the key '{quoteData k}' twice — a document's keys are unique; keep one pair per key before writing"
 
+let private jsonSegment = 1 <<< 24
+
 let private jsonLine
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, WireCase>)
@@ -2740,6 +2762,20 @@ let private jsonLine
         // a valid JSON number since non-finite values are
         // unrepresentable
         | VFloat f -> writer.WriteRawValue(formatFloat f)
+        // past System.Text.Json's single-token ceiling (~166M chars) a
+        // string writes in segments; the line's own size is checked below
+        | VStr s when s.Length > jsonSegment ->
+            let mutable i = 0
+
+            while i < s.Length do
+                let mutable n = min jsonSegment (s.Length - i)
+
+                // a surrogate pair never straddles two segments
+                if i + n < s.Length && System.Char.IsHighSurrogate s[i + n - 1] then
+                    n <- n - 1
+
+                writer.WriteStringValueSegment(System.MemoryExtensions.AsSpan(s, i, n), (i + n = s.Length))
+                i <- i + n
         | VStr s -> writer.WriteStringValue s
         // the canonical text [D:uuid]: JSON has no uuid type
         | VUuid g -> writer.WriteStringValue(formatUuid g)
@@ -2872,9 +2908,17 @@ let private jsonLine
                 writer.WritePropertyName(Map.tryFind (fst kv) rens |> Option.defaultValue (fst kv))
                 write (snd kv)
 
-    write v
-    writer.Flush()
-    System.Text.Encoding.UTF8.GetString buffer.WrittenSpan
+    // a line past the string ceiling is refused in weir's words, sized
+    // when known [D:int-narrowing] — never the runtime's text
+    guardStrBuild "to json" (fun () ->
+        write v
+        writer.Flush()
+        let chars = int64 (System.Text.Encoding.UTF8.GetCharCount buffer.WrittenSpan)
+
+        if chars > maxStrLen then
+            failwith (strTooLarge "to json" chars)
+
+        System.Text.Encoding.UTF8.GetString buffer.WrittenSpan)
 
 let private jsonKindName (k: System.Text.Json.JsonValueKind) : string =
     match k with
@@ -4524,7 +4568,9 @@ let private yamlToLines
     (guide: Yaml.Shape option)
     (v: Value)
     : string list =
-    match yamlRender renames unions 0 guide v with
+    // the string ceiling crossed while rendering is refused in weir's
+    // words [D:int-narrowing]
+    match guardStrBuild "to yaml" (fun () -> yamlRender renames unions 0 guide v) with
     // a null document is the word, never empty text [D:yaml-empty-doc] —
     // the bare inline is a mapping value's form (`key:`), not a document's
     | Inline "" -> [ "null" ]

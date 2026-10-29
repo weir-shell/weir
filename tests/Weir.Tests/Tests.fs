@@ -2508,6 +2508,31 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
+          // the district reads what Yaml.parse reads: `- - x`
+          // [D:yaml-inline-nested-seq], a flush-left sequence under a key
+          // and the dash gap's 4-space style [D:yaml-seq]
+          test "district: nested dash items, flush-left and 4-space sequences read as Yaml.parse reads them" {
+              let lit (lines: string list) =
+                  "[" + (lines |> List.map (fun l -> "\"" + l.Replace("\"", "\\\"") + "\"") |> String.concat "; ") + "]"
+
+              for body in
+                  [ [ "m:"; "  - - c"; "    - d" ]
+                    [ "list:"; "- k: v"; "- j: w"; "other: 1" ]
+                    [ "list:"; "  -   x: y"; "      z: w" ]
+                    [ "- - - a"; "    - b" ] ] do
+                  let src = asm ("let d = yaml" :: (body |> List.map (fun l -> "    " + l)))
+
+                  match Weir.Parser.parseLine realResolver src with
+                  | Ok(SLet(_, e)) ->
+                      match typecheck env e with
+                      | Ok te ->
+                          Expect.equal
+                              (formatValue (Weir.Eval.eval valueEnv te))
+                              (formatValue (run (lit body + " |> Yaml.parse")))
+                              $"{body}"
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"{body}: {other}"
+          }
           test "a quoted district key is literal, like a quoted value; a bare $name key splices [D:yaml-district]" {
               let src =
                   asm
@@ -6269,6 +6294,30 @@ let stringTests =
               Expect.stringContains (msgOf "Str.rreplace \"(a)\" \"${1\" \"a\"") "needs its closing '}'" "an open ${"
               Expect.stringStarts (msgOf "Str.rreplace \"(\" \"x\" \"a\"") "invalid regex:" "the r-family's error class"
               Expect.stringContains (msgOf "Str.rreplace \"(?P<n>a)\" \"x\" \"a\"") "named" "the (?P<name>) teaching"
+          }
+          // the r-family counts code points [D:regex-code-points]: `.`, a
+          // negated class and \S take a whole pair; no match or capture
+          // splits one; an astral literal is one unit for a quantifier
+          test "regex members never split a surrogate pair [D:regex-code-points]" {
+              expectValue "Str.rreplace \".\" \"*\" \"😀\"" (VStr "*")
+              expectValue "Str.rreplace \"\" \"-\" \"😀\"" (VStr "-😀-")
+              expectValue "Str.isMatch \"^.$\" \"😀\"" (VBool true)
+              expectValue "Str.isMatch \"^..$\" \"😀\"" (VBool false)
+              expectValue "Str.rsplit \"\" \"😀\" |> Seq.length" (VInt 3L)
+              expectValue "Str.rreplace \"[^a]\" \"*\" \"a😀b\"" (VStr "a**")
+              expectValue "Str.rreplace @\"\\S\" \"*\" \"a😀\"" (VStr "**")
+              expectValue "Str.rreplace \"[^😀]\" \"*\" \"a😀🎉\"" (VStr "*😀*")
+              expectValue "Str.rreplace \"[😀b]\" \"*\" \"a😀b🎉\"" (VStr "a**🎉")
+              expectValue "Str.rreplace \"😀+\" \"*\" \"a😀😀b\"" (VStr "a*b")
+              expectValue "Str.rmatch \"(.)\" \"😀x\"" (VUnion("Some", Some(VSeq [ VStr "😀" ])))
+              expectValue "Str.rmatchAll \"(.)\" \"😀x\" |> Seq.length" (VInt 2L)
+              expectValue "Str.rreplace \"(?i)A.\" \"_\" \"xa😀Ab\"" (VStr "x__")
+
+              expectValue
+                  "match \"ab😀cd\" with | Regex @\"^(.{3})\" (h) -> h | _ -> \"\""
+                  (VStr "ab😀")
+              // the user's own pattern is what an error quotes
+              Expect.stringStarts (msgOf "Str.rreplace \"[\" \"x\" \"a\"") "invalid regex:" "still the r-family's class"
           }
           test "rsplitOnce splits at the LAST separator [D:split-once]" {
               // the from-the-right receipt: user@host:port, [::1]:port
@@ -21563,6 +21612,25 @@ let durationTests =
 
               Expect.stringContains ex.Message "sub-millisecond" "the precision floor"
           }
+          test "parse reads the extremes show prints; exact zero padding; ASCII digits only" {
+              // the minimum reads back: the sign applies before the range check
+              Expect.equal
+                  (run "Duration.parse (show (Duration.ms (0 - 9223372036854775807 - 1))) == Duration.ms (0 - 9223372036854775807 - 1)")
+                  (VBool true)
+                  "the minimum Duration round-trips"
+
+              Expect.equal (run "Size.parse \"-9223372036854775808B\"") (VSize System.Int64.MinValue) "the minimum Size"
+              Expect.stringContains (msgOf "Size.parse \"9223372036854775808B\"") "beyond the 64-bit byte range" "one past the maximum"
+              Expect.stringContains (msgOf "Duration.parse \"-9223372036854775809ms\"") "beyond the 64-bit millisecond range" "one past the minimum"
+              // zero padding of any length is exact, not an overflow
+              Expect.equal (run "Duration.parse \"1.0000000000000000000s\"") (VDur 1000L) "19 zero digits"
+              Expect.equal (run "Size.parse \"1.00000000000000000000000KiB\"") (VSize 1024L) "23 zero digits"
+              Expect.stringContains (msgOf "Duration.parse \"1.0000000000000000001s\"") "sub-millisecond precision" "a real remainder"
+              // non-ASCII digits are not digits: a parse error, None from the twin
+              Expect.stringContains (msgOf "Duration.parse \"１s\"") "not a duration: '１s' — expected digits at position 1" "fullwidth"
+              Expect.equal (run "Duration.tryParse \"١s\"") (VUnion("None", None)) "Arabic-Indic: None, no raise"
+              Expect.stringContains (msgOf "Duration.parse \"1.١s\"") "a decimal point needs digits" "in the fraction too"
+          }
           test "the teaching rejections, each located" {
               Expect.stringContains
                   (perr "2.5s")
@@ -24070,6 +24138,17 @@ let accessorTeachingTests =
                   (Weir.Types.strTooLarge "string +" 1200000000L)
                   "string +: a 1200000000-char result is too large (at most 1073741791)"
                   "the shared refusal string + and interpolation raise"
+
+              // show's escaping past the ceiling: refused, sized, before building
+              Expect.equal
+                  (msgOf "Str.replicate 540000000 \"\\\"\" |> show |> Str.length")
+                  "show: a 1080000002-char result is too large (at most 1073741791)"
+                  "show"
+              // to json writes a string past System.Text.Json's single-token
+              // ceiling in segments, a pair never split between them
+              expectValue
+                  "let s = Str.replicate 16777215 \"a\" + \"😀\" + Str.replicate 167000000 \"b\" in {| s = s |} |> to json |> from json {| s: string |} |> fun r -> r.s == s"
+                  (VBool true)
               expectValue "[1] |> Seq.chunkBySize 2147483647 |> Seq.length" (VInt 1L)
           }
           // the gate: no builtin narrows a user int with a bare `int` cast —
@@ -24400,6 +24479,13 @@ let pinsWalkTests =
                       e.Message
 
               Expect.stringContains m "Float.toInt: out of int range" ""
+          }
+          test "Float.toInt reaches the int minimum; Float.round never yields -0.0 [D:floats]" {
+              expectValue "Float.toInt -9223372036854775808.0" (VInt System.Int64.MinValue)
+              Expect.stringContains (msgOf "Float.toInt 9223372036854775808.0") "out of int range" "2^63 is past the maximum"
+              expectValue "$\"{Float.round -0.4}\"" (VStr "0.0")
+              expectValue "Float.round -0.4 |> show" (VStr "0.0")
+              expectValue "Float.round -0.5" (VFloat -1.0)
           }
           test "print seq<unit> teaches Seq.iter" {
               Expect.stringContains
@@ -24869,6 +24955,66 @@ let sizedFindingsTests =
                               "nothing was copied into the target"
                       finally
                           Directory.Delete(target, true))
+          }
+          // directories keep their permission bits through the copy, as
+          // `cp -R` / `mv` keep them; the move keeps directory mtimes too
+          // [D:dir-copy-modes]
+          test "Dir.copy and Dir.move across filesystems keep directory modes" {
+              if not (System.OperatingSystem.IsWindows()) && Directory.Exists "/dev/shm" then
+                  withTempDir "weir-dirmodes" (fun root ->
+                      let mk (top: string) =
+                          Directory.CreateDirectory(Path.Combine(top, "priv")) |> ignore
+                          File.WriteAllText(Path.Combine(top, "priv", "f"), "a")
+                          File.SetUnixFileMode(Path.Combine(top, "priv"), enum<UnixFileMode> 0o700)
+                          File.SetUnixFileMode(top, enum<UnixFileMode> 0o750)
+
+                      let src = Path.Combine(root, "src")
+                      mk src
+                      let old = System.DateTime(2020, 1, 2, 3, 4, 5, System.DateTimeKind.Utc)
+                      Directory.SetLastWriteTimeUtc(Path.Combine(src, "priv"), old)
+                      let w = weirPath root
+                      run $"Dir.copy \"{w}/src\" \"{w}/cp\"" |> ignore
+                      Expect.equal (int (File.GetUnixFileMode(Path.Combine(root, "cp")))) 0o750 "the root keeps 0750"
+                      Expect.equal (int (File.GetUnixFileMode(Path.Combine(root, "cp", "priv")))) 0o700 "a private dir stays 0700"
+
+                      let dst = $"/dev/shm/weir-dirmodes-{System.Guid.NewGuid():N}"
+
+                      try
+                          run $"Dir.move \"{w}/src\" \"{dst}\"" |> ignore
+                          Expect.equal (int (File.GetUnixFileMode dst)) 0o750 "the moved root keeps 0750"
+                          Expect.equal (int (File.GetUnixFileMode(Path.Combine(dst, "priv")))) 0o700 "the moved private dir stays 0700"
+                          Expect.equal (Directory.GetLastWriteTimeUtc(Path.Combine(dst, "priv"))) old "the move keeps the dir mtime"
+                          Expect.isFalse (Directory.Exists src) "the source is gone"
+                      finally
+                          if Directory.Exists dst then
+                              Directory.Delete(dst, true))
+          }
+          // a symlink moves as the LINK across filesystems, its target text
+          // verbatim, dangling included [D:file-move-link]
+          test "File.move across filesystems moves a link as the link" {
+              if not (System.OperatingSystem.IsWindows()) && Directory.Exists "/dev/shm" then
+                  withTempDir "weir-fmove-link" (fun root ->
+                      File.WriteAllText(Path.Combine(root, "t"), "data")
+                      File.CreateSymbolicLink(Path.Combine(root, "l"), "t") |> ignore
+                      File.CreateSymbolicLink(Path.Combine(root, "dang"), "nowhere") |> ignore
+                      let w = weirPath root
+                      let tag = System.Guid.NewGuid().ToString "N"
+                      let d1, d2 = $"/dev/shm/weir-fl-{tag}", $"/dev/shm/weir-fd-{tag}"
+
+                      try
+                          run $"File.move \"{w}/l\" \"{d1}\"" |> ignore
+                          run $"File.move \"{w}/dang\" \"{d2}\"" |> ignore
+                          Expect.equal (FileInfo(d1).LinkTarget) "t" "a link, its target text verbatim"
+                          Expect.equal (FileInfo(d2).LinkTarget) "nowhere" "a dangling link moves too"
+                          Expect.isFalse (File.Exists(Path.Combine(root, "l")) || FileInfo(Path.Combine(root, "l")).Exists) "the source link is gone"
+                          Expect.isNull (FileInfo(Path.Combine(root, "dang")).LinkTarget) "the dangling source is gone"
+                          Expect.equal (File.ReadAllText(Path.Combine(root, "t"))) "data" "the target is untouched"
+                          // same filesystem: still the rename
+                          run $"File.move \"{d1}\" \"{d1}-2\"" |> ignore
+                          Expect.equal (FileInfo(d1 + "-2").LinkTarget) "t" "a same-fs move renames the link"
+                      finally
+                          for f in [ d1; d1 + "-2"; d2 ] do
+                              File.Delete f)
           }
           test "Http.withQuery is data-last: the url pipes in" {
               Expect.equal
@@ -27457,6 +27603,36 @@ let instantTests =
                   (msgOf "Instant.tryParseWith \"%H:%M:%S\" \"03:04:05\"")
                   "Instant.tryParseWith: the format must carry a full date (%Y %m %d) — a year-less log format needs the year supplied elsewhere"
                   "a year-less format is a format defect, not None"
+
+              // a format defect raises whatever the input — checked before
+              // any input is read
+              for fmt, want in
+                  [ "%Y-%m-%d %q", "unknown directive '%q'"
+                    "%Y-%m-%d %", "a lone '%' ends the format — write %% for a literal percent"
+                    "%H:%M:%S", "the format must carry a full date" ] do
+                  for input in [ "garbage"; "2026-01-02 x"; "03:04:05"; "" ] do
+                      Expect.stringContains (msgOf $"Instant.tryParseWith \"{fmt}\" \"{input}\"") want $"{fmt} on '{input}'"
+
+              Expect.stringContains
+                  (msgOf "Instant.parseWith \"%Y-%m-%d %q\" \"2026-01-02\"")
+                  "unknown directive '%q'"
+                  "parseWith names the directive, not the input"
+
+              // non-ASCII digits are an input miss, never .NET's text
+              Expect.equal
+                  (run "Instant.tryParseWith \"%Y-%m-%d\" \"٢٠٢٦-01-01\"")
+                  (VUnion("None", None))
+                  "Arabic-Indic digits: None"
+
+              Expect.equal
+                  (msgOf "Instant.parseWith \"%Y-%m-%d %H:%M:%S.%f\" \"2026-01-01 00:00:00.١\"")
+                  "Instant.parseWith: input does not match the format at position 21: expected digits for %f"
+                  "%f reads ASCII digits"
+
+              Expect.equal
+                  (msgOf "Instant.parseWith \"%Y-%m-%e\" \"2026-01-١\"")
+                  "Instant.parseWith: input does not match the format at position 9: expected a day for %e"
+                  "%e reads ASCII digits"
           }
           test "epoch round-trip; Ord sorts; Eq holds" {
               Expect.equal (run "Instant.ofEpochMs 1500 |> Instant.epochMs") (VInt 1500L) ""
@@ -36981,6 +37157,58 @@ let hunt3r5FormatTests =
                   (run (lit [ "s: x\u00a0"; "t: \u3000y"; "\u3000k: v"; "u:   z  " ] + " |> Yaml.parse |> to json") |> text)
                   "{\"s\":\"x\u00a0\",\"t\":\"\u3000y\",\"\u3000k\":\"v\",\"u\":\"z\"}"
                   "NBSP and U+3000 are content"
+          }
+          test "yaml: Unicode white space survives keys, quoted continuations and block lines; weir reads its own output [D:yaml-ws]" {
+              Expect.equal
+                  (run (lit [ "- \u00a0x: 1"; "- 'x\u00a0"; "  y'" ] + " |> Yaml.parse |> to json") |> text)
+                  "[{\"\u00a0x\":1},\"x\u00a0 y\"]"
+                  "a leading NBSP key, a trailing NBSP before a fold"
+
+              for v in [ "\"x\\n\u00a0\""; "\"x\\n\u3000\""; "\"\u2003\\ny\"" ] do
+                  Expect.equal
+                      (run $"{{| a = {v} |}} |> to yaml |> from yaml {{| a: string |}} |> fun b -> b.a == {v}")
+                      (VBool true)
+                      $"reads back: {v}"
+          }
+          test "yaml: `- - x` nests a sequence on the dash line, any depth, as PyYAML reads it [D:yaml-inline-nested-seq]" {
+              let json lines = run (lit lines + " |> Yaml.parse |> to json") |> text
+              Expect.equal (json [ "- - 1" ]) "[[1]]" "one level"
+              Expect.equal (json [ "- - - a"; "    - b"; "  - c"; "- d" ]) "[[[\"a\",\"b\"],\"c\"],\"d\"]" "three levels, siblings at each column"
+              Expect.equal (json [ "- - k: v"; "    j: w" ]) "[[{\"k\":\"v\",\"j\":\"w\"}]]" "a compact map inside"
+              Expect.equal (json [ "- -"; "- -   x" ]) "[[null],[\"x\"]]" "an empty inner item; the dash gap"
+              Expect.equal (json [ "m:"; "- - a" ]) "{\"m\":[[\"a\"]]}" "under a flush-left key"
+          }
+          test "yaml: quotes — `''` inside a single-quoted key or item, an escaped quote ending a folded line [D:quoted-fold]" {
+              let json lines = run (lit lines + " |> Yaml.parse |> to json") |> text
+              Expect.equal (json [ "- 'it''s: here'" ]) "[\"it's: here\"]" "an item, not a mapping"
+              Expect.equal (json [ "'a''b: c': d" ]) "{\"a'b: c\":\"d\"}" "a quoted key with '' and ': '"
+              Expect.equal (json [ "r: 'a''"; "  b'" ]) "{\"r\":\"a' b\"}" "'' ends the first line"
+              Expect.equal (json [ "r: \"a\\\""; "  b\"" ]) "{\"r\":\"a\\\" b\"}" "an escaped double quote ends the first line"
+
+              Expect.equal
+                  (msgOf (lit [ "r: 'a''" ] + " |> Yaml.parse"))
+                  "Yaml.parse: line 1: unclosed single-quoted scalar — the closing ' must appear before the block dedents to the key's column"
+                  "the unclosed one-liner refuses"
+
+              Expect.equal
+                  (msgOf (lit [ "r: 'a'b'" ] + " |> Yaml.parse"))
+                  "Yaml.parse: line 1: content after the closing ' — the quoted value ends at its closing quote"
+                  "text after the closing quote refuses"
+          }
+          test "to yaml quotes a leading `...` and U+FEFF so they read back [D:yaml-v1]" {
+              Expect.equal (run "\"...\" |> to yaml" |> text) "\"...\"" "a document end otherwise"
+              Expect.equal (run "\"\\u{FEFF}a\" |> to yaml" |> text) "\"\\uFEFFa\"" "a byte-order mark otherwise"
+
+              for v in [ "\"...\""; "\"... x\""; "\"\\u{FEFF}a\"" ] do
+                  Expect.equal
+                      (run $"{v} |> to yaml |> Yaml.parse |> fun y -> match y with | YStr t -> t == {v} | _ -> false")
+                      (VBool true)
+                      $"round-trips: {v}"
+
+              Expect.equal
+                  (run "[\"a\"; \"...\"; \"b\"] |> to yaml stream |> Str.join \"|\"")
+                  (VStr "a|---|\"...\"|---|b")
+                  "no stream element lost"
           }
           test "yaml: a block-scalar line starting with % is content; a column-0 directive still refuses [D:block-scalars]" {
               Expect.equal
