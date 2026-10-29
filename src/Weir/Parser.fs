@@ -4527,9 +4527,9 @@ let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) (stopAtElse: bool) =
                 "a text block cannot be a command argument — bind it first (`let body = <<<`, the block below it) and pass the value: `$body`"
                 { Start = pos at; End = pos at }
 
+    // rawness is a kind, never positional [D:raw-strings]: a triple
+    // quote is one word here as anywhere [D:argv-at-raw]
     choice
-        // rawness is a kind, never positional [D:raw-strings]: a triple
-        // quote is one word here as anywhere [D:argv-at-raw]
         [ cmdBlockArgGuard
           lookAhead (pstring "\"\"\"") >>. notGluedPiece >>. tripleLit
           lookAhead (pchar '"') >>. notGluedPiece >>. strLit

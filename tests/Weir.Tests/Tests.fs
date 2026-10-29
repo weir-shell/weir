@@ -19991,11 +19991,11 @@ let scannerTests =
           } ]
 
 let childEnvTests =
+    // cmdEnv/runEnv dropped [D:drop-command-builtins]: child env goes
+    // through `NAME=value cmd`, `within env` or the capture sigil
+    // `$e(...)` (tested in e2e). Env.fromFile / Env.vars remain.
     testList
         "Child-env injection"
-        // cmdEnv/runEnv dropped [D:drop-command-builtins]: child env goes
-        // through `NAME=value cmd`, `within env` or the capture sigil
-        // `$e(...)` (tested in e2e). Env.fromFile / Env.vars remain.
         [ test "Env.fromFile types to seq<EnvVar>" {
               let te = checkOk "Env.fromFile \"x.env\""
               Expect.equal (formatTy te.Ty) "seq<EnvVar>" ""
