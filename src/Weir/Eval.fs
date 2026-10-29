@@ -2047,7 +2047,9 @@ let rec private tableCell (v: Value) : (string * bool) option =
         // the table is a tty-only renderer [D:binary-echo]: a data cell's
         // hostile bytes are neutralized (the tint is added later, around
         // this sanitized text — weir's own colouring is untouched)
-        Some(sanitizeTtyEcho clipped, false)
+        // a raw TAB would jump the cell off its column: it shows as weir
+        // spells it [D:str-width]
+        Some((sanitizeTtyEcho clipped).Replace("\t", "\\t"), false)
     | VInt _
     | VFloat _
     | VSize _
@@ -2151,11 +2153,16 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                             let t, num = r[i]
                             num || t = ""))
 
+                // columns measure terminal cells, not code points: a wide
+                // (CJK) character takes two, a combining mark none
+                // [D:str-width]
+                let cells (t: string) = CellWidth.ofString t
+
                 let widths =
                     [ 0 .. showKeys.Length - 1 ]
                     |> List.map (fun i ->
                         rows
-                        |> List.fold (fun w r -> max w (CodePoints.length (fst r[i]))) (CodePoints.length showKeys[i]))
+                        |> List.fold (fun w r -> max w (cells (fst r[i]))) (cells showKeys[i]))
 
                 // terminal-width clamping [D:table-polish]: the widest
                 // column above its floor absorbs the clip (usually the
@@ -2167,7 +2174,7 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                     match width with
                     | Some termW ->
                         let sep = 2 * (showKeys.Length - 1)
-                        let floorOf i = max 5 (CodePoints.length showKeys[i])
+                        let floorOf i = max 5 (cells showKeys[i])
 
                         let rec shrink (ws: int list) =
                             let total = List.sum ws + sep
@@ -2193,18 +2200,26 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                 // a cell longer than its (possibly clamped) column ends
                 // in the ellipsis — never a silent cut
                 let clip (w: int) (t: string) =
-                    if CodePoints.length t > w then
-                        CodePoints.head t (max 0 (w - 1)) + "…"
+                    if cells t > w then
+                        // the longest prefix that leaves a cell for the `…`
+                        let mutable kept = ""
+                        let mutable full = false
+
+                        for r in t.EnumerateRunes() do
+                            if not full then
+                                let next = kept + r.ToString()
+
+                                if cells next <= w - 1 then kept <- next else full <- true
+
+                        kept + "…"
                     else
                         t
 
                 let pad (i: int) (t: string) =
                     let t = clip widths[i] t
+                    let fill = System.String(' ', max 0 (widths[i] - cells t))
 
-                    if numeric[i] then
-                        CodePoints.padLeft widths[i] t
-                    else
-                        CodePoints.padRight widths[i] t
+                    if numeric[i] then fill + t else t + fill
 
                 let line (cells: string list) =
                     (cells |> List.mapi pad |> String.concat "  ").TrimEnd()

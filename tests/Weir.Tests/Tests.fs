@@ -2913,6 +2913,10 @@ let boundaryTests =
                   "a directive after match arms does not attach"
               Expect.isFalse (Weir.Script.pipedAttaches [ "let xs ="; "    [1]"; "    |> Seq.map id" ] "#help") "a directive after a |> chain does not attach"
               Expect.isTrue (Weir.Script.pipedAttaches [ "let block = <<<"; "    a" ] "    #b") "an indented # line in a heredoc body still attaches"
+              // a column-0 opener that pends on its own starts its own
+              // statement: the line above never joins its entry
+              Expect.isFalse (Weir.Script.pipedAttaches [ "let a = nope" ] "let t = <<<") "a heredoc opener does not glue the line above"
+              Expect.isFalse (Weir.Script.pipedAttaches [ "1 + 1" ] "let y = yaml") "nor does a yaml opener"
           }
           test "block scalars read: | and |- chomp semantically; content is bytes [D:block-scalars]" {
               let blockText d =
@@ -8265,6 +8269,89 @@ let fmtSourceTests =
                   Expect.isFalse changed "is canonical"
               | Error e -> failtest e
           }
+          test "a bare CR ends a line, as the script reader reads it [D:one-pipeline]" {
+              // check/run split \r\n, \n and a bare \r; fmt must see the same
+              // lines, or it formats a running file into a failing one
+              match Weir.Fmt.formatSource "t.weir" "let f x =\n    let y = x\r            + 1\n    y * 10\nprint $\"{f 1}\"\n" with
+              | Ok(lines, _) ->
+                  Expect.equal
+                      lines
+                      [ "let f x ="; "    let y = x"; "        + 1"; "    y * 10"; "print $\"{f 1}\"" ]
+                      "the CR line break is a line break"
+              | Error e -> failtest e
+
+              match Weir.Fmt.formatSource "t.weir" "print \"a\"\rprint \"b\"\r" with
+              | Ok(lines, _) -> Expect.equal lines [ "print \"a\""; "print \"b\"" ] "a CR-only file"
+              | Error e -> failtest e
+
+              Expect.equal (Weir.Script.splitSourceText "a\r\nb\rc\nd\n") [ "a"; "b"; "c"; "d"; "" ] "the one splitter"
+          }
+          test "a yaml block whose first line is a deeper comment formats, never crashes [D:yaml-district]" {
+              // the comment is invisible to the reader's layout: the block's
+              // base is its first code line
+              for src in
+                  [ "let y = yaml\n          // note\n    a: 1\nprint (show y)\n"
+                    "let y = yaml\n        // note\n    a: 1\nprint (show y)\n" ] do
+                  match Weir.Fmt.formatSource "t.weir" src with
+                  | Ok(lines, _) -> Expect.equal (lines |> List.item 2) "    a: 1" $"the block keeps its base: {lines}"
+                  | Error e -> failtest $"{src}: {e}"
+          }
+          test "a heredoc whose comment line breaks its layout is refused, located — never a crash" {
+              match Weir.Fmt.formatSource "t.weir" "let m = <<<\n            //\n    a\nprint m\n" with
+              | Error e ->
+                  Expect.equal
+                      e
+                      "cannot format: line 3:5: this heredoc line outdents below the block's first line (fix errors first)"
+                      "the reader's own error"
+              | Ok r -> failtestf "must refuse: %A" r
+          }
+          test "a match later on its line takes its arms' `|>` continuation [D:fmt-arm-pipe]" {
+              let src =
+                  [ "let x = 2"
+                    "let r = match x with"
+                    "        | 1 -> \"a\""
+                    "        | _ -> \"b\""
+                    "               |> Str.toUpper"
+                    "print r" ]
+
+              match Weir.Fmt.formatLines src with
+              | Ok out -> Expect.equal out src "already canonical"
+              | Error e -> failtest e
+          }
+          test "an else between its if and a deeper then-body formats, keeping the parse [D:fmt-depth-model]" {
+              match
+                  Weir.Fmt.formatLines
+                      [ "let x = 1"; "let v ="; "    if x > 0 then"; "          \"a\""; "        else"; "        \"b\""; "print v" ]
+              with
+              | Ok out ->
+                  Expect.equal
+                      out
+                      [ "let x = 1"; "let v ="; "    if x > 0 then"; "            \"a\""; "        else"; "        \"b\""; "print v" ]
+                      "the then-body steps past the else"
+              | Error e -> failtest e
+          }
+          test "an init file's #session fields seat at 4, however they were indented [D:init-session-fields]" {
+              match
+                  Weir.Fmt.formatSource
+                      "init.weir"
+                      "#init\n#session {\n      cwd = \"/tmp\"\n    logLevel = \"info\"\n}\nlet  twice x = x * 2\n"
+              with
+              | Ok(lines, _) ->
+                  Expect.equal
+                      lines
+                      [ "#init"; "#session {"; "    cwd = \"/tmp\""; "    logLevel = \"info\""; "}"; "let twice x = x * 2" ]
+                      "aligned"
+              | Error e -> failtest e
+          }
+          test "a misplaced directive refuses fmt with check's message, not a parser dump [D:directive-diagnostic]" {
+              match Weir.Fmt.formatSource "t.weir" "print \"a\"\n#sig git\n" with
+              | Error e ->
+                  Expect.equal
+                      e
+                      "cannot format: line 2:1: misplaced directive: #sig — #sig lines belong at the file head, before any code, comment or blank line (fix errors first)"
+                      "the directive message"
+              | Ok r -> failtestf "must refuse: %A" r
+          }
           test "only parser whitespace is trimmed: U+3000/U+2028/U+FEFF are tokens and stay" {
               for tail in [ "\u3000"; "\u2028"; "\uFEFF" ] do
                   match Weir.Fmt.formatSource "t.weir" ("print \"a\"" + tail + "\n") with
@@ -8798,6 +8885,24 @@ let replEchoTests =
               match Weir.Eval.echoTable Weir.Eval.echoPipedCap None rows with
               | Some(lines, None) ->
                   Expect.isFalse (lines |> List.exists (fun l -> l.Contains "…")) "no clip without a width"
+              | other -> failtest $"expected a table, got {other}"
+          }
+          test "table columns measure terminal cells: wide and combining text align, a TAB is spelled [D:str-width]" {
+              let rows =
+                  VSeq
+                      [ VRecord("R", [ "name", VStr "日本語日本語"; "n", VInt 1L ])
+                        VRecord("R", [ "name", VStr "e\u0301x"; "n", VInt 22L ])
+                        VRecord("R", [ "name", VStr "a\tc"; "n", VInt 3L ]) ]
+
+              match Weir.Eval.echoTable Weir.Eval.echoPipedCap None rows with
+              | Some(lines, None) ->
+                  Expect.equal
+                      lines
+                      [ "name           n"; "────────────  ──"; "日本語日本語   1"; "e\u0301x            22"; "a\\tc           3" ]
+                      "every row is 16 cells wide"
+
+                  for l in lines do
+                      Expect.equal (Weir.Types.CellWidth.ofString l) 16 $"cells: {l}"
               | other -> failtest $"expected a table, got {other}"
           }
           test "show is byte-identical to its shipped contract (NOT the echo)" {
@@ -12493,7 +12598,20 @@ let hoverResidueTests =
     // fixed here
     testList
         "hover residue: retry/poll/until forms + the type argument [D:form-word-hover]"
-        [ test "retry and poll hover their meaning + KEYS derived from the prelude options records" {
+        [ test "hover and signature help name generic types 'a, 'b — never the checker's 'a1 [D:no-raw-tyvars]" {
+              let lines = [ "let pair x y = (x, y)"; "print (show (pair 1 \"a\"))" ]
+
+              match Weir.Lsp.hoverType lines 1 5 with
+              | Some hv ->
+                  Expect.stringContains hv "pair (x: 'a) (y: 'b) : 'a * 'b" "the signature"
+                  Expect.isFalse (hv.Contains "'a1" || hv.Contains "'a2") $"no raw var: {hv}"
+              | None -> failtest "pair must answer"
+
+              match Weir.Lsp.hoverType [ "type Box<'b> = { v: 'b }"; "let b = { v = 1 }"; "print (show b.v)" ] 1 6 with
+              | Some hv -> Expect.stringContains hv "v: 'b" $"a declared parameter keeps its name: {hv}"
+              | None -> failtest "Box must answer"
+          }
+          test "retry and poll hover their meaning + KEYS derived from the prelude options records" {
               let retryLines =
                   [ "let out = retry attempts=2 delay=0ms (1 == 1)"; "print (show out)" ]
 
@@ -13376,6 +13494,68 @@ let lspRenameTests =
                       "nothing to rename here — put the cursor on a value, a type, a field or a case declared in this file")
                   "a comment mention"
           }
+          test "rename reaches T.create and a type inside an anonymous adapter type [D:lsp-rename-members]" {
+              let email =
+                  [ "type Email = Email of string"
+                    "    validate s = if not (Str.contains \"@\" s) then fail $\"bad: {s}\""
+                    "let (Email raw) = Email.create \"a@b\""
+                    "print raw" ]
+
+              Expect.equal (Weir.Lsp.renameFor "rename.weir" email 1 6 "Mail") (Ok [ (1, 6, 5); (3, 19, 5) ]) "T.create"
+
+              let anon =
+                  [ "type User = { name: string }"
+                    "let r = [\"{\\\"users\\\": []}\"] |> from json {| users: seq<User> |}"
+                    "print $\"{r.users}\"" ]
+
+              Expect.equal (Weir.Lsp.renameFor "rename.weir" anon 1 6 "Person") (Ok [ (1, 6, 4); (2, 56, 4) ]) "the adapter slot"
+          }
+          test "a length-changing rename inside a column-aligned layout is refused, never left broken [D:lsp-rename-aligned]" {
+              let aligned = [ "type P = { x: int; y: int }"; "let pt = { x = 1"; "           y = 2 }"; "print $\"{pt.x}\"" ]
+
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" aligned 2 5 "point")
+                  (Error
+                      "renaming 'pt' to 'point' would break the column alignment at line 3 — a rename does not re-align other lines; pick a name of the same length, or rename by hand and re-align")
+                  "refused, located"
+
+              Expect.equal (Weir.Lsp.renameFor "rename.weir" aligned 2 5 "pq") (Ok [ (2, 5, 2); (4, 10, 2) ]) "same length renames"
+          }
+          test "rename takes the parser's digits only: a non-ASCII digit is no name" {
+              Expect.equal
+                  (Weir.Lsp.renameFor "rename.weir" [ "let x = 1"; "print (show x)" ] 1 5 "x\u0661")
+                  (Error "'x\u0661' is not a name — a name starts with a letter or '_' and continues with letters, digits or '_'")
+                  "Arabic-Indic one"
+          }
+          test "references on an imported case meet across expression and pattern uses [D:qualified-case-patterns]" {
+              let dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-refs-{System.Guid.NewGuid():N}")
+              System.IO.Directory.CreateDirectory dir |> ignore
+
+              try
+                  System.IO.File.WriteAllLines(
+                      System.IO.Path.Combine(dir, "lib.weir"),
+                      [ "module"; ""; "type Pt = { x: int; y: int }"; ""; "type Shape ="; "    | Circle of int"; "    | Square of Pt" ]
+                  )
+
+                  let main = System.IO.Path.Combine(dir, "main.weir")
+
+                  let lines =
+                      [ "import \"./lib.weir\" as Lib"
+                        "let a = { x = 1; y = 2 }"
+                        "let s1 = Lib.Square a"
+                        "let s2 = Lib.Square a"
+                        "let f sh ="
+                        "    match sh with"
+                        "    | Lib.Square q -> q.x"
+                        "    | Lib.Circle r -> r"
+                        "print $\"{f s1}{f s2}\"" ]
+
+                  let all = Some [ (3, 14, 6); (4, 14, 6); (7, 11, 6) ]
+                  Expect.equal (Weir.Lsp.referencesFor main lines 3 15 true) all "from an expression use"
+                  Expect.equal (Weir.Lsp.referencesFor main lines 7 12 true) all "from a pattern use"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
           test "corpus: bindingUsage's free set equals occurrences' TopLevel set, statement by statement" {
               let root = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..")
 
@@ -14217,12 +14397,15 @@ let semanticTokenTests =
                   | Error e -> failtestf "second fmt failed: %s" e
           }
           test "doc comments: fmt never anchors a /// inside a heredoc/yaml block into its content [D:content-bytes]" {
-              for src in
-                  [ [ "let t = <<<"; "    abc"; "/// doc"; "    def"; "print t" ]
-                    [ "let t = yaml"; "    a: 1"; "/// doc"; "    b: 2"; "print t" ] ] do
-                  match Weir.Fmt.formatLines src with
-                  | Ok out -> Expect.equal out src "the /// line stays where it is"
-                  | Error e -> failtestf "fmt failed: %s" e
+              match Weir.Fmt.formatLines [ "let t = yaml"; "    a: 1"; "/// doc"; "    b: 2"; "print t" ] with
+              | Ok out -> Expect.equal out [ "let t = yaml"; "    a: 1"; "/// doc"; "    b: 2"; "print t" ] "the /// line stays where it is"
+              | Error e -> failtestf "fmt failed: %s" e
+
+              // in a heredoc the comment is content, and outdented it breaks
+              // the block's layout — check refuses it, so fmt does, located
+              match Weir.Fmt.formatLines [ "let t = <<<"; "    abc"; "/// doc"; "    def"; "print t" ] with
+              | Error e -> Expect.stringContains e "line 3:1: this comment line outdents below the heredoc's first line" "located"
+              | Ok out -> failtestf "must refuse: %A" out
           }
           test "fmt: a yaml district keeps relative indentation, re-anchors the base [D:yaml-district]" {
               // the block's relative indentation is semantic (JYamlLine rel),
@@ -14257,7 +14440,9 @@ let semanticTokenTests =
                   | Error e -> failtestf "second fmt failed: %s" e
           }
           test "fmt: a comment outdented past a district's base clamps inside the district" {
-              for marker, a, b in [ "<<<", "abc", "def"; "yaml", "a: 1", "b: 2" ] do
+              // a yaml block only: in a heredoc the comment is content and the
+              // outdent a layout error, refused (the test above)
+              for marker, a, b in [ "yaml", "a: 1", "b: 2" ] do
                   let src =
                       [ $"let t = {marker}"
                         $"          {a}"
@@ -17534,6 +17719,23 @@ let scriptTests =
                   []
                   "shebang + head #sig are the head"
           }
+          test "every consumer of the analysis sees the directive message, never a dump (fmt, the LSP, init files) [D:directive-diagnostic]" {
+              let diags, _, _, _, _ = Weir.Script.analyzeLines "d.weir" [ "print \"a\""; "#sig git"; "print \"b\"" ]
+
+              Expect.equal
+                  (diags |> List.map (fun d -> d.Line, d.Code, d.Message))
+                  [ 2, "directive", "misplaced directive: #sig — #sig lines belong at the file head, before any code, comment or blank line" ]
+                  "analyzeLines names it, and the rest checks"
+
+              let diags, _, _, _, _ =
+                  Weir.Script.analyzeLines "init.weir" [ "#init"; "#loose"; "#sig \"abc\""; "let x = 1" ]
+
+              Expect.equal
+                  (diags |> List.map (fun d -> d.Line, d.Code, d.Message))
+                  [ 2, "directive", "unknown directive: #loose — an init file takes #init, #session and #alias"
+                    3, "directive", "#sig belongs at a script's head — an init file takes #init, #session and #alias" ]
+                  "an init file names its own"
+          }
           test "#loose is GONE: the directive is unknown, files are always strict [D:bare-partition]" {
               // no migration message — a mode that never executed gets
               // whatever the generic stray-directive path does (a parse
@@ -18735,6 +18937,7 @@ let agentFindingsTests =
               match diags |> List.filter (fun d -> d.Severity = "error") with
               | [ d ] ->
                   Expect.equal (d.Line, d.Col) (1, 14) "caret on the `complete` stage, matching succeeds"
+                  Expect.equal (d.EndLine, d.EndCol) (Some 1, Some 22) "running forward over the stage, never inverted"
                   Expect.stringContains d.Message "computes a Completed record and discards it" "the record voice"
                   Expect.stringContains d.Message "read a field (.exitCode, .stdout)" "the per-cell use clause"
               | other -> failtest $"expected ONE discard error, got {other}"
@@ -29994,6 +30197,17 @@ let portMembersTests =
                   "#infer spelling"
                   "the directive-in-a-file misuse is taught"
           }
+          test "a weir name heading $( ) names the program spellings, never an expectation dump" {
+              let diags = diagsIn "d.weir" [ "let date = 3"; "print $(date)" ]
+
+              match diags |> List.filter (fun d -> d.Severity = "error") with
+              | [ d ] ->
+                  let m = d.Message.Replace("\n", " ")
+                  Expect.stringContains m "'date' is a weir name, not a program — $(…) runs a program and captures its output" "named"
+                  Expect.stringContains m "write $(^date …) for a program of that name" "the program spelling"
+                  Expect.isFalse (m.Contains "Expecting") "no dump"
+              | other -> failtest $"expected one error, got {other}"
+          }
           test "a capture sigil x reifier teaches the in-parens spelling [D:exit-reifiers]" {
               mustSay
                   [ "let e = Env.ofPairs [(\"A\", \"1\")]"
@@ -32886,21 +33100,78 @@ let replSaveDistillTests =
               Expect.equal dropped 0 "a self-contained binding is not a session-only drop"
               Expect.isTrue (distilledChecks lines) "and it checks clean"
           }
-          test "(d2) DROP: a dependent of a redeclared name is dropped, not saved above the redeclaration" {
-              // the dedup keeps `a`'s LAST form at its last position, so the
-              // earlier dependent would read an unbound `a` (a phantom command:
-              // check warns, run fails) — the guarantee drops it with the note
+          test "(d2) CHAIN: a dependent of a redefined name keeps the definition it read [D:repl-save-chain]" {
+              // the session's `b` read the FIRST `a`: the dedup alone would
+              // leave it reading a name bound only below it, so the earlier
+              // `a` is restored and the file computes the session's values
               let lines, dropped =
                   distill [ ("a", "let a = 1"); ("b", "let b = a + 1"); ("a", "let a = \"s\"") ]
 
-              Expect.equal lines [ "let _a = \"s\"" ] "only the redeclaration survives"
-              Expect.equal dropped 1 "the dependent counts for the note"
+              Expect.equal lines [ "let a = 1"; "let _b = a + 1"; "let _a = \"s\"" ] "the chain survives in order"
+              Expect.equal dropped 0 "nothing referenced session-only state"
+              Expect.isTrue (distilledChecks lines) "and it checks clean"
 
               let lines, dropped =
-                  distill [ ("f", "let f n = n + 1"); ("g", "let g = f 1"); ("f", "let f s = s + \"x\"") ]
+                  distill [ ("f", "let f x = x + 1"); ("g", "let g x = f x"); ("f", "let f x = x * 10") ]
 
-              Expect.isFalse (lines |> List.exists (fun l -> l.Contains "f 1")) $"the dependent call is dropped: {lines}"
-              Expect.equal dropped 1 "one drop"
+              Expect.equal lines [ "let f x = x + 1"; "let _g x = f x"; "let _f x = x * 10" ] "g keeps the f it called"
+              Expect.equal dropped 0 "no drop"
+          }
+          test "(d3) CHAIN: a shadowing chain is saved whole, not dropped [D:repl-save-chain]" {
+              let lines, dropped =
+                  distill [ ("xs", "let xs = [1; 2]"); ("xs", "let xs = xs |> Seq.map (fun x -> x * 2)") ]
+
+              Expect.equal lines [ "let xs = [1; 2]"; "let _xs = xs |> Seq.map (fun x -> x * 2)" ] "both links"
+              Expect.equal dropped 0 "no drop"
+
+              let lines, _ = distill [ ("a", "let a = 1"); ("a", "let a = a + 1"); ("a", "let a = a + 1") ]
+              Expect.equal lines [ "let a = 1"; "let a = a + 1"; "let _a = a + 1" ] "a three-link chain"
+          }
+          test "(d4) a superseded type's values are dropped, never saved under the new type" {
+              let lines, dropped =
+                  Weir.Repl.distillSession
+                      realResolver
+                      (fun _ -> None)
+                      [ Weir.Repl.SaveDef("T", "type T = A | B", [ "A"; "B" ])
+                        Weir.Repl.SaveDef("t", "let t = A", [])
+                        Weir.Repl.SaveDef("T", "type T = C | D", [ "C"; "D" ])
+                        Weir.Repl.SaveDef("u", "let u = C", []) ]
+
+              Expect.equal lines [ "type T = C | D"; "let _u = C" ] "the old-shape value is gone"
+              Expect.equal dropped 1 "and counted"
+          }
+          test "(d5) a user `it` an echo rebound is session-only state [D:repl-it]" {
+              // session: let it = 5; 3 (echo rebinds it); let y = it + 1 -> 4.
+              // Saving `let it = 5` + `let y = it + 1` would compute 6
+              let lines, dropped =
+                  Weir.Repl.distillSession
+                      realResolver
+                      (fun _ -> None)
+                      [ Weir.Repl.SaveDef("it", "let it = 5", [])
+                        Weir.Repl.SaveEcho
+                        Weir.Repl.SaveDef("y", "let y = it + 1", []) ]
+
+              Expect.isFalse (lines |> List.exists (fun l -> l.Contains "it + 1")) $"the reader is dropped: {lines}"
+              Expect.equal dropped 1 "and counted"
+
+              // with no echo in between the user's `it` is the value read
+              let lines, _ =
+                  Weir.Repl.distillSession
+                      realResolver
+                      (fun _ -> None)
+                      [ Weir.Repl.SaveDef("it", "let it = 5", []); Weir.Repl.SaveDef("y", "let y = it + 1", []) ]
+
+              Expect.equal lines [ "let it = 5"; "let _y = it + 1" ] "kept"
+          }
+          test "(d6) a session let named like a bare alias is the user's value, never qualified or alias-desugared" {
+              let aliasOf n =
+                  if n = "find" then Some("echo", [ "FOUND" ]) else None
+
+              let lines, dropped =
+                  Weir.Repl.distillDefs realResolver aliasOf [ ("find", "let find = 3"); ("r", "let r = find + 1") ]
+
+              Expect.equal lines [ "let find = 3"; "let _r = find + 1" ] "no Seq.find, no echo FOUND"
+              Expect.equal dropped 0 "no drop"
           }
           test "(f) PROTECT is surgical: a binder a later survivor reads keeps its name" {
               // the chained-session shape: `base` is read by `total`, only
@@ -33158,6 +33429,26 @@ let aliasTests =
               | Ok other -> failtest $"expected a git ECmd, got {other}"
               | Error e -> failtest $"parse failed: {e}"
           }
+          test "(e2) a name bound in scope beats the alias table [D:alias-binding-shadow]" {
+              // a parameter, a lambda binder, a match-arm binder and a
+              // block let are names bound in scope: `k + 1` reads them,
+              // never runs `kubectl + 1`
+              for src in
+                  [ "let f k = k + 1"
+                    "[1] |> Seq.map (fun k -> k + 1)"
+                    "match 3 with | k -> k + 1"
+                    "let g () = let k = 5 in k + 1" ] do
+                  match Weir.Parser.parseLine aliasResolver src with
+                  | Ok stmt ->
+                      let s = sprintf "%A" stmt
+                      Expect.isFalse (s.Contains "kubectl") $"{src}: the binding wins"
+                  | Error e -> failtest $"{src}: {e}"
+
+              // and outside the binding the alias still heads a command
+              match parseWith aliasResolver "k get po" with
+              | Ok s -> Expect.stringContains s "kubectl" "the alias still resolves an unbound head"
+              | Error e -> failtest e
+          }
           test "(f) REPL-only: the base script resolver carries no aliases" {
               // realResolver (no AliasHead) — `k` is not a known external,
               // so it never resolves as an aliased command head.
@@ -33323,6 +33614,15 @@ let lsCommandTeachTests =
               let g = (checkErr "let xs = [1; 2] in xs -5").Message
               Expect.stringContains g "not a function taking" "a user value is unaffected"
               Expect.isFalse (g.Contains "shell command") "no ^-advice for a non-command value"
+          }
+          test "a user's own `ls` binding is named as the binding it is, with no #alias advice" {
+              match diagsIn "ls.weir" [ "let ls = \"x\""; "ls -la" ] |> List.filter (fun d -> d.Severity = "error") with
+              | [ d ] ->
+                  Expect.equal
+                      d.Message
+                      "'ls' is bound here to a string value, not the shell command — to run the external 'ls' with arguments, force it external: ^ls …"
+                      "no 'weir's typed', no #alias in a script"
+              | other -> failtest $"expected one error, got {other}"
           } ]
 
 let tildeTests =

@@ -330,6 +330,10 @@ let stripInitDirectives (lines: string list) : string list =
               yield ""
           elif t = "#alias" || t.StartsWith "#alias " then
               yield ""
+          elif l.StartsWith "#" then
+              // any other directive line is splitInit's to report
+              // [D:directive-diagnostic]
+              yield ""
           else
               yield l ]
 
@@ -2745,6 +2749,11 @@ let pipedAttaches (buf: string list) (next: string) : bool =
         false
     else
         match statementCount buf, statementCount (buf @ [ next ]) with
+        // a complete buffer plus a column-0 line that is pending on its
+        // own (a heredoc/yaml opener, `let f x =`): the new statement
+        // is what waits for more, not the old one [D:repl-multiline]
+        | Some _, None when next.Length > 0 && next[0] <> ' ' && next[0] <> '\t' && statementCount [ next ] = None ->
+            false
         | _, None -> true
         | None, Some _ -> true
         | Some a, Some b -> b <= a
@@ -4457,12 +4466,26 @@ let rec private checkStatementCore
                     | Check.TEApp(f, _) -> exitCodeSpine f
                     | _ -> false
 
+                // the reifier desugar's span starts at the reifier stage
+                // (the caret's place) but ends where the command did — before
+                // its start; it runs on to the statement's last node
+                let wholeSpan =
+                    let rec spans (t: Check.TypedExpr) = t.Span :: (Check.childExprs t |> List.collect spans)
+                    let key (p: Pos) = p.Line, p.Col
+                    let all = spans te |> List.filter (fun sp -> sp.Start.Line > 0)
+
+                    match all with
+                    | [] -> te.Span
+                    | _ ->
+                        let last = all |> List.map (fun sp -> sp.End) |> List.maxBy key
+                        if key last > key te.Span.End then { te.Span with End = last } else te.Span
+
                 match te.Ty with
                 | TBool ->
                     Error(
                         typed
                             StmtTag.Cmd
-                            { Span = te.Span
+                            { Span = wholeSpan
                               Message =
                                 "this statement computes a bool and discards it — bind it "
                                 + "(let ok = ... | succeeds) or use it in a condition"
@@ -4473,7 +4496,7 @@ let rec private checkStatementCore
                     Error(
                         typed
                             StmtTag.Cmd
-                            { Span = te.Span
+                            { Span = wholeSpan
                               Message =
                                 "this statement computes the exit code and discards it — bind it "
                                 + "(let rc = <command> | exitCode), match on it, or drop '| exitCode' if you don't need the code"
@@ -4485,7 +4508,7 @@ let rec private checkStatementCore
                     Error(
                         typed
                             StmtTag.Cmd
-                            { Span = te.Span
+                            { Span = wholeSpan
                               Message =
                                 "this statement computes a Completed record and discards it — bind it "
                                 + "(let r = ... | complete) or read a field (.exitCode, .stdout)"
@@ -5305,6 +5328,34 @@ let private readSourceBytes (path: string) : byte[] =
 // invalid byte is a located refusal, never a silent U+FFFD. One leading
 // BOM is skipped; lines split as ReadAllLines splits (\r\n, \n, \r).
 exception private BadUtf8 of line: int * col: int
+
+/// the one line splitter [D:one-pipeline]: a line ends at \r\n, \n or a
+/// bare \r — as ReadAllLines reads a script — so fmt and the LSP see
+/// the lines check and run see. Every piece is kept: a text ending in a
+/// break yields a final "" (an editor's last, empty line)
+let splitSourceText (text: string) : string list =
+    let acc = Collections.Generic.List<string>()
+    let mutable start = 0
+    let mutable i = 0
+
+    while i < text.Length do
+        match text[i] with
+        | '\r' ->
+            acc.Add(text.Substring(start, i - start))
+            i <- if i + 1 < text.Length && text[i + 1] = '\n' then i + 2 else i + 1
+            start <- i
+        | '\n' ->
+            acc.Add(text.Substring(start, i - start))
+            i <- i + 1
+            start <- i
+        | _ -> i <- i + 1
+
+    acc.Add(text.Substring start)
+    List.ofSeq acc
+
+/// does the text end in a line break (any of the three)?
+let endsWithLineBreak (text: string) : bool =
+    text.EndsWith "\n" || text.EndsWith "\r"
 
 let private strictUtf8 = Text.UTF8Encoding(false, true)
 
@@ -11014,6 +11065,19 @@ let splitInit (file: string) (lines: string list) : InitSplit * Diagnostic list 
                 )
 
             rest <- (i + 1, "") :: rest
+        elif not inBlock && l.StartsWith "#" then
+            // a stray directive gets its own message, never a parse dump
+            // [D:directive-diagnostic]
+            let word = t.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries).[0]
+
+            let msg =
+                if word = "#sig" then
+                    "#sig belongs at a script's head — an init file takes #init, #session and #alias"
+                else
+                    $"unknown directive: {word} — an init file takes #init, #session and #alias"
+
+            diags.Add(initError file (i + 1) 1 None "directive" msg)
+            rest <- (i + 1, "") :: rest
         elif inBlock && t = "}" then
             inBlock <- false
             blockLines <- Set.add (i + 1) blockLines
@@ -11651,12 +11715,44 @@ let private recoverStatement
     | SModule _
     | SImport _ -> None, false
 
+/// a `#` line past the directive head [D:directive-diagnostic]: the one
+/// pass for `check` and `run`, so both name the same mistake the same way.
+/// Column-0 only: a directive is a statement-position thing. Indented `#`
+/// lines are continuations — inside a yaml district they are content
+/// (`#!/bin/sh` in a block scalar, `#` comments) [D:block-scalars];
+/// anywhere else they fail the parse. Returns (physical line, message)
+/// per stray line; `run` stops at the first, `check` reports them all.
+let directiveMisuses (rawLines: string list) : (int * string) list =
+    let body, bodyOffset, _ = scriptBody rawLines
+
+    body
+    |> List.mapi (fun i l -> i, l.TrimEnd())
+    |> List.filter (fun (_, l) -> l.StartsWith "#")
+    |> List.map (fun (i, l) ->
+        let word = l.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries).[0]
+
+        let msg =
+            if word = "#init" then
+                "an init file is not runnable — the REPL loads it; author it anywhere with #init on the first line and symlink it to the config dir (weir/init.weir)"
+            elif word = "#session" then
+                "#session lives in the REPL init file (config dir, weir/init.weir) — a script takes its settings from flags and env"
+            elif word = "#alias" then
+                "#alias lives in the REPL init file (config dir, weir/init.weir) and at the REPL prompt — a script names its programs directly"
+            elif word = "#sig" then
+                "misplaced directive: #sig — #sig lines belong at the file head, before any code, comment or blank line"
+            elif word.StartsWith "#!" then
+                "a shebang (#!) is only the first line of the file"
+            else
+                $"unknown directive: {word} — a script's only directive is #sig (the REPL init file takes #init, #session and #alias)"
+
+        bodyOffset + i + 1, msg)
+
 /// analyzeLines, with `asInit` forcing the init-file reading (the LSP's
 /// canonical init path, marked or not [D:init-marker]). The fifth
 /// product is the partials [D:block-recovery]: statements that did NOT
 /// check, with their recovered trees — never among `stmts`, so every
 /// diagnostic consumer sees exactly the checked ones
-let analyzeLinesAs
+let private analyzeLinesBare
     (asInit: bool)
     (path: string)
     (rawLines: string list)
@@ -12465,6 +12561,44 @@ let analyzeLinesAs
         logicalLines,
         List.ofSeq partials
 
+/// the stray directive lines report as run reports them, and the rest of
+/// the file still checks with those lines blanked (line numbers kept) —
+/// never an expected-token dump at the `#` — for every consumer: check,
+/// fmt's parse gate, the LSP [D:directive-diagnostic]. An init-marked
+/// file checks as the init it is [D:init-marker]; its directives are
+/// checkInit's to judge
+let analyzeLinesAs (asInit: bool) (path: string) (rawLines: string list) =
+    let misuses =
+        if asInit || isInitMarked rawLines then
+            []
+        else
+            directiveMisuses rawLines
+
+    if List.isEmpty misuses then
+        analyzeLinesBare asInit path rawLines
+    else
+        let stray = misuses |> List.map fst |> Set.ofList
+
+        let directiveDiags =
+            misuses
+            |> List.map (fun (line, msg) ->
+                { File = path
+                  Line = line
+                  Col = 1
+                  EndLine = None
+                  EndCol = None
+                  Severity = "error"
+                  Code = "directive"
+                  Message = msg
+                  Related = []
+                  Fix = None })
+
+        let checkedLines =
+            rawLines |> List.mapi (fun i l -> if stray.Contains(i + 1) then "" else l)
+
+        let diags, stmts, env, lls, partials = analyzeLinesBare asInit path checkedLines
+        (directiveDiags @ diags |> List.sortBy (fun d -> d.Line)), stmts, env, lls, partials
+
 let analyzeLines (path: string) (rawLines: string list) =
     analyzeLinesAs false path rawLines
 
@@ -12531,38 +12665,6 @@ let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
                 |> Eval.sanitizeIfTty Console.IsOutputRedirected
             )
 
-/// a `#` line past the directive head [D:directive-diagnostic]: the one
-/// pass for `check` and `run`, so both name the same mistake the same way.
-/// Column-0 only: a directive is a statement-position thing. Indented `#`
-/// lines are continuations — inside a yaml district they are content
-/// (`#!/bin/sh` in a block scalar, `#` comments) [D:block-scalars];
-/// anywhere else they fail the parse. Returns (physical line, message)
-/// per stray line; `run` stops at the first, `check` reports them all.
-let directiveMisuses (rawLines: string list) : (int * string) list =
-    let body, bodyOffset, _ = scriptBody rawLines
-
-    body
-    |> List.mapi (fun i l -> i, l.TrimEnd())
-    |> List.filter (fun (_, l) -> l.StartsWith "#")
-    |> List.map (fun (i, l) ->
-        let word = l.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries).[0]
-
-        let msg =
-            if word = "#init" then
-                "an init file is not runnable — the REPL loads it; author it anywhere with #init on the first line and symlink it to the config dir (weir/init.weir)"
-            elif word = "#session" then
-                "#session lives in the REPL init file (config dir, weir/init.weir) — a script takes its settings from flags and env"
-            elif word = "#alias" then
-                "#alias lives in the REPL init file (config dir, weir/init.weir) and at the REPL prompt — a script names its programs directly"
-            elif word = "#sig" then
-                "misplaced directive: #sig — #sig lines belong at the file head, before any code, comment or blank line"
-            elif word.StartsWith "#!" then
-                "a shebang (#!) is only the first line of the file"
-            else
-                $"unknown directive: {word} — a script's only directive is #sig (the REPL init file takes #init, #session and #alias)"
-
-        bodyOffset + i + 1, msg)
-
 let directiveMisuse (rawLines: string list) : (int * string) option =
     directiveMisuses rawLines |> List.tryHead
 
@@ -12577,33 +12679,9 @@ let checkOnly (json: bool) (path: string) : int =
         // numbers kept) — never an expected-token dump at the `#`. An
         // init-marked file checks as the init it is [D:init-marker]; its
         // directives are analyzeLines' to judge
-        let misuses =
-            if isInitMarked rawLines then
-                []
-            else
-                directiveMisuses rawLines
-        let stray = misuses |> List.map fst |> Set.ofList
-
-        let directiveDiags =
-            misuses
-            |> List.map (fun (line, msg) ->
-                { File = path
-                  Line = line
-                  Col = 1
-                  EndLine = None
-                  EndCol = None
-                  Severity = "error"
-                  Code = "directive"
-                  Message = msg
-                  Related = []
-                  Fix = None })
-
-        let checkedLines =
-            rawLines |> List.mapi (fun i l -> if stray.Contains(i + 1) then "" else l)
-
-        let diags, stmts, _, _, _ = analyzeLines path checkedLines
-        let diags = directiveDiags @ diags |> List.sortBy (fun d -> d.Line)
-        printDiags json (not (List.isEmpty stmts) || not (List.isEmpty misuses)) diags
+        let diags, stmts, _, _, _ = analyzeLines path rawLines
+        let anyDirective = diags |> List.exists (fun d -> d.Code = "directive")
+        printDiags json (not (List.isEmpty stmts) || anyDirective) diags
 
         if diags |> List.exists (fun d -> d.Severity = "error") then
             1

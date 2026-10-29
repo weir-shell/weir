@@ -29,6 +29,16 @@ let private evalOnce (input: string) : int =
     if srcLines |> List.forall (fun l -> (Script.stripComment l).Trim() = "") then
         Console.Error.WriteLine "weir -e: nothing to evaluate — give it an expression: weir -e '1 + 2'"
         2
+    elif srcLines |> List.exists (fun l -> l.StartsWith "#") then
+        // a directive is a prompt (or script-head) thing: named, never an
+        // expected-token dump [D:directive-diagnostic]
+        let word =
+            (srcLines |> List.find (fun l -> l.StartsWith "#")).Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries).[0]
+
+        Console.Error.WriteLine
+            $"weir -e: {word} is a directive — -e evaluates weir code and takes none (the REPL's directives work at the weir prompt)"
+
+        1
     else
         let assembled =
             if normalized.Contains '\n' then

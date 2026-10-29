@@ -311,6 +311,9 @@ echo "e2e ok: continued command — check warns at the second command (exit 0, -
 
 # walk candidates: exit codes exact; File.readSecret (never covered); Dir.copy success
 pw2=$(mkweirtmp)
+# a directive in -e is named, never an expected-token dump [D:directive-diagnostic]
+out=$($BIN -e '#echo 3' 2>&1) && fail "a directive in -e must fail" || true
+[ "$out" = "weir -e: #echo is a directive — -e evaluates weir code and takes none (the REPL's directives work at the weir prompt)" ] || fail "-e directive message: $out"
 rc=0; $BIN -e 'exit 4' >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 4 ] || fail "exit 4 must propagate rc 4, got $rc"
 rc=0; $BIN -e 'fail "m"' >/dev/null 2>&1 || rc=$?
@@ -1788,6 +1791,30 @@ grep -qF "gobeldy" "$infdir/explore.weir" && fail "#save kept the dropped it-bin
 echo "$infout" | grep -qF "dropped 1 line(s) that referenced session-only state" \
   || fail "#save did not print the dropped-count note: $infout"
 echo "e2e ok: #save DISTILLS a messy session to a checking .weir (dedup, drop it, note)"
+
+# #save keeps a shadowing chain and a redefined function's dependents
+# [D:repl-save-chain]: the saved file computes the session's values. Its
+# path may be quoted (a space); a directory or a missing parent is refused
+# in File.write's words, never .NET text [D:repl-save-path]
+svdir=$(mkweirtmp)
+svout=$(printf '%s\n' \
+  'let xs = [1; 2]' \
+  'let xs = xs |> Seq.map (fun x -> x * 10)' \
+  'let f x = x + 1' \
+  'let g x = f x' \
+  'let f x = x * 100' \
+  "#save \"$svdir/my file.weir\"" \
+  "#save $svdir" \
+  "#save $svdir/nope/x.weir" \
+  '#quit' | $BIN 2>&1)
+[ -f "$svdir/my file.weir" ] || fail "#save must unquote its path: $svout"
+$BIN check "$svdir/my file.weir" || fail "the saved chain must check: $(cat "$svdir/my file.weir")"
+printf 'print $"{_xs |> Seq.sum} {_g 1} {_f 1}"\n' >> "$svdir/my file.weir"
+[ "$($BIN "$svdir/my file.weir")" = "30 2 100" ] || fail "the saved chain must compute the session's values: $(cat "$svdir/my file.weir")"
+echo "$svout" | grep -qF "#save: $svdir is a directory" || fail "#save onto a directory must say so: $svout"
+echo "$svout" | grep -qF "#save: no such directory: $svdir/nope" || fail "#save under a missing directory must say so: $svout"
+echo "$svout" | grep -qF "Access to the path" && fail "#save leaked .NET text: $svout" || true
+echo "e2e ok: #save keeps shadowing chains; its path unquotes; write refusals in weir's words"
 
 # --- #infer drafted-type diagnostic (recast 2026-09-17) [D:infer-diagnostic]/[D:infer-wire-sanitize] --
 # when a drafted type fails to check for any reason, the diagnostic must
@@ -10227,6 +10254,16 @@ if [ "$IS_WINDOWS" != "1" ]; then
     echo "$out" | grep -qF "would never resolve" || fail "a live #alias over a binding must refuse with the teaching: $out"
     echo "$out" | grep -qF "the-function" || fail "the binding must stay callable after the refused #alias: $out"
 
+    # a let named like a builtin/bare name (find, ls) is a session binding
+    # too: it shadows an alias, refuses a live #alias, and #save keeps it as
+    # the user's value; a parameter beats an alias inside its body
+    out=$(printf '#alias find = echo FOUND\nlet find = 3\nfind + 1\n#alias find = echo hi\n#alias g = echo ALIAS\nlet f g = g + 1\nf 1\n#save %s/sh.weir\n#quit\n' "$acfg" | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1)
+    echo "$out" | grep -qF "4 : int" || fail "a let over a bare name must shadow its alias: $out"
+    echo "$out" | grep -qF "#alias find: 'find' is a session binding" || fail "a live #alias over a let named like a builtin must refuse: $out"
+    echo "$out" | grep -qF "2 : int" || fail "a parameter must beat the alias: $out"
+    grep -qF "find = 3" "$acfg/sh.weir" || fail "#save must keep the user's find: $(cat "$acfg/sh.weir")"
+    grep -qF "FOUND" "$acfg/sh.weir" && fail "#save desugared a bound name as an alias: $(cat "$acfg/sh.weir")" || true
+
     echo "e2e ok: #alias resolves head->exe (+prefix), injection-safe, ^-bypass, REPL-only, malformed=loud, single-hop, #save desugars alias-free, bindings shadow the table"
     rm -rf "$acfg" "$astub"
 fi
@@ -14518,6 +14555,50 @@ echo "$iout" | grep -qF "#session env: the env key 'A=B' contains '=' — a chil
 echo "$iout" | grep -qE "init\.weir:3:" || fail "the env key refusal must be LOCATED at its line: $iout"
 echo "$iout" | grep -qF "init: not loaded" || fail "a refused env key must not load"
 echo "$iout" | grep -qF "(Parameter" && fail "the env key refusal leaked .NET text: $iout" || true
+
+# all-or-nothing reaches the settings [D:init-all-or-nothing]: a refused
+# field (or a later failing let) leaves the cwd, env and log level as they
+# were — every field is judged before any applies, and a later failure
+# restores what they changed
+initsub=$(mkweirtmp)
+cat > "$INITHOME/weir/init.weir" <<WEOF
+#init
+#session {
+    cwd = "$initsub"
+    env = [("WEIR_E2E_LEAK", "yes")]
+    echoCap = 0
+}
+WEOF
+iout=$(printf 'print (pwd)
+print (show (Env.get "WEIR_E2E_LEAK"))
+#quit
+' \
+    | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "init: not loaded" || fail "a refused echoCap must not load: $iout"
+echo "$iout" | grep -qF "$initsub" && fail "a refused init left its cwd applied: $iout" || true
+echo "$iout" | grep -qF "None" || fail "a refused init left its env applied: $iout"
+cat > "$INITHOME/weir/init.weir" <<WEOF
+#init
+#session {
+    cwd = "$initsub"
+    env = [("WEIR_E2E_LEAK", "yes")]
+}
+let bad = File.read "/no/such/file/xyz" |> Seq.head
+WEOF
+iout=$(printf 'print (pwd)
+print (show (Env.get "WEIR_E2E_LEAK"))
+#quit
+' \
+    | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "init: not loaded" || fail "a raising init let must not load: $iout"
+echo "$iout" | grep -qF "$initsub" && fail "a later failure left the init cwd applied: $iout" || true
+echo "$iout" | grep -qF "None" || fail "a later failure left the init env applied: $iout"
+# an init file's stray directive is named, never an expected-token dump
+printf '#init\n#bogus\nlet hi () = print "hi"\n' > "$INITHOME/weir/init.weir"
+iout=$(printf '#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "unknown directive: #bogus — an init file takes #init, #session and #alias" || fail "a stray init directive must be named: $iout"
+echo "$iout" | grep -qF "Expecting" && fail "a stray init directive dumped the grammar: $iout" || true
+echo "e2e ok: a refused init leaves no setting applied; stray init directives are named"
 
 # a lazy command let loads and spawns nothing; each use runs it; an
 # eager one is refused naming why [D:lazy-command-lets]

@@ -1752,6 +1752,9 @@ let mutable private logThreshold = 2
 /// through parseLogLevel first, so the two spellings cannot diverge
 let setLogThreshold (i: int) : unit = logThreshold <- i
 
+/// the current threshold, so a refused init load restores it [D:init-all-or-nothing]
+let logThresholdNow () : int = logThreshold
+
 /// read WEIR_LOG once; Program calls this before dispatch so an
 /// invalid value is a loud startup error, never a silent fallback
 let initLogLevel () : Result<unit, string> =
@@ -7280,7 +7283,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "f"; "xs" ]
           "Seq.except",
           bd
-              "The elements of the sequence that are not in the excluded values. The excluded values come first and are read in full on the first request; the sequence itself is read lazily."
+              "The elements of the sequence that are not in the excluded values, each kept once (a repeat is dropped, as F#'s Seq.except does). The excluded values come first and are read in full on the first request; the sequence itself is read lazily."
               (Some "[1; 2; 3; 4] |> Seq.except [2; 4] |> Seq.freeze")
               None
           |> named [ "excluded"; "xs" ]

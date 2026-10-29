@@ -6924,10 +6924,24 @@ and private checkSpineOn
                     // always a shell-command reflex (`ls -la`) [D:ls-command-teach]
                     // — it is weir's typed listing, not the external command,
                     // so point at the force-external escape
-                    return!
-                        err
-                            head.Span
-                            $"'{name}' is weir's typed {formatTy (finalTy ctx thead.Ty)} value, not the shell command — to run the external '{name}' with arguments, force it external: ^{name} … (or alias it: #alias x = {name} …)"
+                    // a user's own `let ls = …` is no builtin: it is named
+                    // as the binding it is, with no alias to suggest
+                    let builtinShape =
+                        match name, finalTy ctx thead.Ty with
+                        | "ls", TSeq(TNamed("FileRow", [])) -> true
+                        | "pwd", TStr -> true
+                        | _ -> false
+
+                    if builtinShape then
+                        return!
+                            err
+                                head.Span
+                                $"'{name}' is weir's typed {formatTy (finalTy ctx thead.Ty)} value, not the shell command — to run the external '{name}' with arguments, force it external: ^{name} … (or alias it: #alias x = {name} …)"
+                    else
+                        return!
+                            err
+                                head.Span
+                                $"'{name}' is bound here to a {formatTy (finalTy ctx thead.Ty)} value, not the shell command — to run the external '{name}' with arguments, force it external: ^{name} …"
                 | _ ->
                     return!
                         err

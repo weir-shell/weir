@@ -307,7 +307,9 @@ let private withAmbientName (name: string) (p: Parser<'a, unit>) : Parser<'a, un
 
         ambientResolver.Value <-
             { saved with
-                IsKnown = fun n -> n = name || saved.IsKnown n }
+                IsKnown = fun n -> n = name || saved.IsKnown n
+                // a bound name beats the alias table [D:alias-binding-shadow]
+                AliasHead = fun n -> if n = name then None else saved.AliasHead n }
 
         try
             p stream
@@ -1429,11 +1431,28 @@ let rec private chainReifier (e: Expr) : string option =
     | EPipe(l, r) -> chainReifier r |> Option.orElseWith (fun () -> chainReifier l)
     | _ -> None
 
+// a weir name heading a `$( )` (`let date = 3` then `$(date)`, the
+// builtin `ls`): the command grammar refuses it, and the refusal names
+// the two spellings that run a program [D:directive-diagnostic]
+let private sigilKnownHead: Parser<Expr, unit> =
+    lookAhead (getPosition .>>. many1Satisfy2 isIdentStart isIdentCont .>> notFollowedBy (pchar '.'))
+    >>= fun (at, w) ->
+        let r = ambientResolver.Value
+
+        if r.IsKnown w && not (keywords.Contains w) then
+            // consume the word so the fatal clears the competing expectations
+            many1Satisfy isIdentCont
+            >>. failFatallyAt
+                    at
+                    $"'{w}' is a weir name, not a program — $(…) runs a program and captures its output; call {w} as weir code, or write $(^{w} …) for a program of that name"
+        else
+            fail "not a known head"
+
 let private captureSigil =
     spanned (
         sigilOpen '$'
         >>= fun envO ->
-            ws >>. sigilChain envO
+            ws >>. (sigilChain envO <|> sigilKnownHead)
             >>= fun chain ->
                 (if exitCodeSpine chain then
                      failFatally
@@ -2087,7 +2106,9 @@ let private lambdaBody =
 
                     ambientResolver.Value <-
                         { saved with
-                            IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
+                            IsKnown = fun n -> Set.contains n names || saved.IsKnown n
+                            // a bound name beats the alias table [D:alias-binding-shadow]
+                            AliasHead = fun n -> if Set.contains n names then None else saved.AliasHead n }
 
                     try
                         inner stream
@@ -2150,7 +2171,9 @@ let private withPatNames (p: Pattern) (inner: Parser<'a, unit>) : Parser<'a, uni
 
         ambientResolver.Value <-
             { saved with
-                IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
+                IsKnown = fun n -> Set.contains n names || saved.IsKnown n
+                // a bound name beats the alias table [D:alias-binding-shadow]
+                AliasHead = fun n -> if Set.contains n names then None else saved.AliasHead n }
 
         try
             inner stream
@@ -2253,7 +2276,9 @@ let private letInBody =
 
                           ambientResolver.Value <-
                               { saved with
-                                  IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
+                                  IsKnown = fun n -> Set.contains n names || saved.IsKnown n
+                                  // a bound name beats the alias table [D:alias-binding-shadow]
+                                  AliasHead = fun n -> if Set.contains n names then None else saved.AliasHead n }
 
                           try
                               inner stream
@@ -5668,25 +5693,25 @@ let private valueHeadedStages = pipedStages true cmdArg None ambientProxy
 valueHeadedTailImpl <-
     // deepen: the tail re-enters the command grammar [D:depth-guard]
     fun lhs ->
-        // a capture then a reifier: the gate refuses the reifier head, so
-        // the capture's own teaching is raised here, check and run alike
-        // [D:value-chain-word]
-        (match lhs.Kind with
-         | ECapture inner ->
-             attempt (
-                 lookAhead (
-                     singlePipe >>. getPosition
-                     .>>. (choice (reifierNames |> List.map pstring) .>> reifierWordEnd)
+        deepen (
+            // a capture then a reifier: the gate refuses the reifier head, so
+            // the capture's own teaching is raised here, check and run alike
+            // [D:value-chain-word]
+            (match lhs.Kind with
+             | ECapture inner ->
+                 attempt (
+                     lookAhead (
+                         singlePipe >>. getPosition
+                         .>>. (choice (reifierNames |> List.map pstring) .>> reifierWordEnd)
+                     )
                  )
-             )
-             >>= fun (at, name) -> failFatallyAt at (captureReifierMsg inner name)
-         | _ -> ifail "not a capture head")
-        <|> deepen (
-            valueHeadedGate >>. valueHeadedStages
-            >>= fun stages ->
-                match foldChain lhs stages with
-                | Result.Ok e -> preturn e
-                | Result.Error(m, sp) -> failChain m sp
+                 >>= fun (at, name) -> failFatallyAt at (captureReifierMsg inner name)
+             | _ -> ifail "not a capture head")
+            <|> (valueHeadedGate >>. valueHeadedStages
+                 >>= fun stages ->
+                     match foldChain lhs stages with
+                     | Result.Ok e -> preturn e
+                     | Result.Error(m, sp) -> failChain m sp)
         )
 
 // let-RHS command lines stop at a bareword `in` (see cmdArgWith), and
@@ -6045,7 +6070,9 @@ let private topLet (r: Resolver) =
 
                 let r' =
                     { r with
-                        IsKnown = fun n -> Set.contains n paramNames || r.IsKnown n }
+                        IsKnown = fun n -> Set.contains n paramNames || r.IsKnown n
+                        // a bound name beats the alias table [D:alias-binding-shadow]
+                        AliasHead = fun n -> if Set.contains n paramNames then None else r.AliasHead n }
 
                 // command-first body [D:sibling-sentinel]: the command
                 // is one statement; the sentinel-separated tail (inner
