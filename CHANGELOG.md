@@ -42,6 +42,14 @@
   caller getting its own scratch table. Same diagnostics: bare startup
   goes from 10.0 ms to 9.3 ms pinned, a direct check of the starship
   port's largest module from 95 ms to 90 ms.
+- **Words, numbers and plain strings skip the operand search.** Each
+  operand tried some two dozen kinds of literal, bracket and word in
+  turn, merging every refusal into an error that was then thrown away.
+  An identifier, a number or a non-interpolated string now goes straight
+  to its own parser; anything that can nest goes through the full list
+  as before, and a failure always replays it, so error messages are
+  unchanged. The starship import goes from 178 ms to 176 ms pinned and
+  from 137 ms to 133 ms on 15 (medians of 21).
 
 ## v0.0.81
 

@@ -17762,6 +17762,25 @@ let depthGuardTests =
               th.Start()
               th.Join()
               Expect.isNonEmpty diags.Value "print rejects the tuple with a diagnostic, not a crash"
+          }
+          test "nested failing openers parse each level once [D:parse-fast-path]" {
+              let d = 24
+
+              let spines =
+                  [ "parens", String.replicate d "(" + "1 +" + String.replicate d ")"
+                    "list", String.replicate d "[" + "1 +" + String.replicate d "]"
+                    "neg", String.replicate d "-(" + "1 +" + String.replicate d ")"
+                    "record", String.replicate d "{ a = " + "1 +" + String.replicate d " }"
+                    "anon", String.replicate d "{| a = " + "1 +" + String.replicate d " |}"
+                    "interp", String.replicate d "$\"{" + "1 +" + String.replicate d "}\""
+                    "sigil", String.replicate d "$(echo " + "(1 +" + String.replicate (d + 1) ")" ]
+
+              for name, spine in spines do
+                  let sw = System.Diagnostics.Stopwatch.StartNew()
+                  let diags = diagsIn "pin.weir" [ "let x = " + spine ]
+                  sw.Stop()
+                  Expect.isNonEmpty diags $"{name}: the failing spine is diagnosed"
+                  Expect.isLessThan sw.ElapsedMilliseconds 10000L $"{name}: depth {d} stays linear (2^{d} replays would not finish)"
           } ]
 
 let boolBranchTests =

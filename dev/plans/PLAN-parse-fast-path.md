@@ -1,9 +1,26 @@
 # PLAN: the parse fast path — dispatch on the next character, fall back to the grammar for the error
 
-**Status: CLOSED-P0** (2026-10-27) — the spike was built, correct,
-and parity-identical, and gained 10 ms of the 20 the bar asked for.
-Nothing landed; the report below is the ledger. P1 is not blessed on
-this shape — see "Read on P1".
+**Status: LANDED-P0** (2026-10-29) — the spike was built, correct,
+and parity-identical, and gained 10 ms of the 20 the bar asked for;
+closed on 2026-10-27 with nothing landed, then landed as-is once the
+allocation work had cut the rest of the parse (see "Landing" below).
+P1 is not blessed on this shape — see "Read on P1".
+
+## Landing (2026-10-29)
+
+The patch reapplied on main d26b3a3 + perf/prelude-once, the dispatch
+moved to a top-level `atomDispatch` so `atom`'s body opens with
+`deepen` (ci/depth-coverage.py). Review found the spike's opener
+groups exponential: a dispatched `(`/`[`/`{`/`{|`/`$"`/`-` whose
+interior fails is parsed once on the fast path and again in the
+oracle replay, so `((((1 +))))` doubled per level (depth 16: 3.7 s;
+`-(` nesting over 30 s at depth 12). Landed shape: only the
+non-nesting alternatives (word, number, `"`, `"""`, `@"`) dispatch;
+nested failing spines of every opener kind stay flat (depth 24 ≈
+16 ms, pinned by a unit test). What remains of the gain: starship
+import 178 → 176 ms pinned, 137 → 133 ms on 15 (n=21 alternating) —
+the openers were most of P0's win. Parity byte-identical over the
+80-file corpus, 960 + 6480 mutants, and 510 atom-opener mutants.
 
 ## Session report — P0 (2026-10-27)
 

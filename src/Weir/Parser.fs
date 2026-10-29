@@ -1605,34 +1605,76 @@ let private orFailAtomTeaching: Parser<Expr, unit> =
             at
             "'orFail' goes after a pipeline: `<expr> |> orFail` unwraps a Result or an Option and raises on Error/None (`|> orFail \"msg\"` adds your message); after a command, `<command> | orFail \"msg\"`"
 
-let private atom =
-    deepen (
-        choice
-            [ attrsRejectHere >>% Unchecked.defaultof<Expr>
-              negAtom
-              intLit
-              dotFloatTeaching
-              holeBackslashTeaching
-              tildeTeaching
-              bangNegationTeaching
-              tripleLit
-              verbatimLit
-              strLit
-              dollarAtTeach
-              interpRawLit
-              interpLit
-              captureSigil
-              unitLit
-              opValue
-              parens
-              anonRecordLit
-              recordLit
-              attempt comprehensionLit
-              listLit
-              tryAtomTeaching
-              orFailAtomTeaching
-              wordAtom ]
-    )
+// the grammar's atom — the error oracle [D:parse-fast-path]: this
+// choice, in this order, produces every atom failure (its merged
+// Expecting list reaches users verbatim), so it is never reordered
+let private atomChoice =
+    choice
+        [ attrsRejectHere >>% Unchecked.defaultof<Expr>
+          negAtom
+          intLit
+          dotFloatTeaching
+          holeBackslashTeaching
+          tildeTeaching
+          bangNegationTeaching
+          tripleLit
+          verbatimLit
+          strLit
+          dollarAtTeach
+          interpRawLit
+          interpLit
+          captureSigil
+          unitLit
+          opValue
+          parens
+          anonRecordLit
+          recordLit
+          attempt comprehensionLit
+          listLit
+          tryAtomTeaching
+          orFailAtomTeaching
+          wordAtom ]
+
+// the atom dispatch [D:parse-fast-path]: the next character names the
+// one alternative that can succeed — the oracle's first tokens are
+// disjoint per character, and every alternative ahead of the chosen
+// one fails cleanly on it. Only a success is returned; any failure
+// rewinds and replays the unchanged oracle, so the error (and its
+// Expecting list) is always the grammar's. Only alternatives that never
+// descend back into the atom take this path: an opener, a sigil, an
+// interpolation or a prefix minus would parse its interior once here
+// and again in the replay, doubling per nesting level.
+let private atomDispatch (stream: CharStream<unit>) : Parser<Expr, unit> =
+    let c = stream.Peek()
+
+    if isIdentStart c then
+        wordAtom
+    elif isDigit c then
+        intLit
+    elif c = '"' then
+        if stream.Match "\"\"\"" then tripleLit else strLit
+    elif c = '@' && stream.Peek 1 = '"' then
+        verbatimLit
+    else
+        Unchecked.defaultof<_>
+
+let private atom: Parser<Expr, unit> =
+    deepen (fun stream ->
+        let p = atomDispatch stream
+
+        if obj.ReferenceEquals(p, null) then
+            atomChoice stream
+        else
+            let state = stream.State
+            let reply = p stream
+
+            if reply.Status = Ok then
+                reply
+            else
+                if state.Tag <> stream.StateTag then
+                    stream.BacktrackTo state
+
+                atomChoice stream)
 
 let private fieldSuffix = pchar '.' >>. spanned rawWord .>> ws
 
