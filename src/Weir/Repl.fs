@@ -18,7 +18,8 @@ let private defaultPrompt = "weir> "
 // command's nonzero code, duration the last entry's wall time — a
 // custom prompt owns its colors, so the status arrives as data instead
 // of a paint.
-let mutable private promptProvider: ((bool * int option * int64) -> string) option = None
+let mutable private promptProvider: ((bool * int option * int64) -> string) option =
+    None
 
 // the prompt in effect for the entry being read; sanitized text (SGR
 // allowed), its visible width, and a same-width continuation prompt.
@@ -51,10 +52,7 @@ let visibleWidthForTest = visibleWidth
 /// one note per session.
 let private keepSgrOnly (s: string) =
     let rx (pat: string) =
-        System.Text.RegularExpressions.Regex(
-            pat,
-            System.Text.RegularExpressions.RegexOptions.Singleline
-        )
+        System.Text.RegularExpressions.Regex(pat, System.Text.RegularExpressions.RegexOptions.Singleline)
 
     // \G anchors each Match(s, i) at i — no scanning past the ESC
     let sgr = rx "\\G\x1b\\[[0-9;:]*m"
@@ -95,8 +93,7 @@ let sanitizePromptForTest (raw: string) =
 
     let flat =
         safe
-        |> String.map (fun c ->
-            if System.Char.IsControl c && c <> '\x1b' then ' ' else c)
+        |> String.map (fun c -> if System.Char.IsControl c && c <> '\x1b' then ' ' else c)
 
     if flat.Contains '\x1b' then flat + "\x1b[0m" else flat
 
@@ -215,23 +212,25 @@ type private TranscriptKind =
     | TDiscard
     | TOther
 
-type private TranscriptLine =
-    { Text: string
-      PhysText: string
-      Kind: TranscriptKind
-      // the constructors a `type` decl binds — session names #save
-      // must not let dangle [D:repl-save-chain]
-      Binds: string list }
+type private TranscriptLine = {
+    Text: string
+    PhysText: string
+    Kind: TranscriptKind
+    // the constructors a `type` decl binds — session names #save
+    // must not let dangle [D:repl-save-chain]
+    Binds: string list
+}
 
 let private transcript = System.Collections.Generic.List<TranscriptLine>()
 
 // record a kept definition (type or named let) with its physical source
 let private recordDef (name: string) (physText: string) (text: string) =
-    transcript.Add
-        { Text = text
-          PhysText = physText
-          Kind = TDef name
-          Binds = [] }
+    transcript.Add {
+        Text = text
+        PhysText = physText
+        Kind = TDef name
+        Binds = []
+    }
 
 // record a checked definition: a union decl carries its constructors
 let private recordChecked (chk: Script.CheckedStatement) (name: string) (physText: string) (text: string) =
@@ -240,27 +239,30 @@ let private recordChecked (chk: Script.CheckedStatement) (name: string) (physTex
         | Script.KType({ Body = DUnion cases }, _) -> cases |> List.map (fun (c, _, _) -> c)
         | _ -> []
 
-    transcript.Add
-        { Text = text
-          PhysText = physText
-          Kind = TDef name
-          Binds = binds }
+    transcript.Add {
+        Text = text
+        PhysText = physText
+        Kind = TDef name
+        Binds = binds
+    }
 
 // record a bare non-unit echo — scratch, dropped by #save
 let private recordDiscard (physText: string) (text: string) =
-    transcript.Add
-        { Text = text
-          PhysText = physText
-          Kind = TDiscard
-          Binds = [] }
+    transcript.Add {
+        Text = text
+        PhysText = physText
+        Kind = TDiscard
+        Binds = []
+    }
 
 // record a unit statement — an effect echo, dropped by #save
 let private recordOther (physText: string) (text: string) =
-    transcript.Add
-        { Text = text
-          PhysText = physText
-          Kind = TOther
-          Binds = [] }
+    transcript.Add {
+        Text = text
+        PhysText = physText
+        Kind = TOther
+        Binds = []
+    }
 
 // the physical source of a logical line [D:repl-save]: a multi-line
 // statement (a heredoc, a `type` decl, a block let) assembled `ll.Text`
@@ -290,8 +292,7 @@ let private physicalSource (srcLines: string[]) (ll: Script.LogicalLine) : strin
 // a named binder is a real name — not `_` and not `_`-prefixed (the
 // deliberate-discard escape and the REPL's own `_r<n>` scratch both lead
 // with `_`, so both drop from the distilled file)
-let private isNamedBinder (name: string) =
-    name <> "" && not (name.StartsWith "_")
+let private isNamedBinder (name: string) = name <> "" && not (name.StartsWith "_")
 
 let private recordKind (chk: Script.CheckedStatement) : TranscriptKind option =
     match chk.Kind with
@@ -346,11 +347,12 @@ let private recordImport (chk: Script.CheckedStatement) (text: string) =
 
         match transcript |> Seq.tryFindIndex (fun t -> t.Kind = TDef key) with
         | Some i ->
-            transcript[i] <-
-                { Text = line
-                  PhysText = line
-                  Kind = TDef key
-                  Binds = [] }
+            transcript[i] <- {
+                Text = line
+                PhysText = line
+                Kind = TDef key
+                Binds = []
+            }
         | None -> recordDef key line line
     | _ -> ()
 
@@ -477,20 +479,23 @@ let private parseAliasLine = Script.parseAliasLine
 let parseAliasLineForTest (body: string) : Result<string * (string * string list), string> =
     parseAliasLine body |> Result.map (fun (n, a) -> (n, (a.Exe, a.Prefix)))
 
-type private State =
-    { TypeEnv: TypeEnv
-      Values: Eval.Env
-      // REPL-only, populated from init.weir's #alias lines (and a live
-      // `#alias` at the prompt). Consulted only in command-head position,
-      // before PATH; never threaded to scripts/-e.
-      Aliases: Map<string, Alias> }
+type private State = {
+    TypeEnv: TypeEnv
+    Values: Eval.Env
+    // REPL-only, populated from init.weir's #alias lines (and a live
+    // `#alias` at the prompt). Consulted only in command-head position,
+    // before PATH; never threaded to scripts/-e.
+    Aliases: Map<string, Alias>
+}
 
 let private initial =
     let typeEnv, valueEnv = Prelude.extend Builtins.typeEnv Builtins.valueEnv
 
-    { TypeEnv = typeEnv
-      Values = valueEnv
-      Aliases = Map.empty }
+    {
+        TypeEnv = typeEnv
+        Values = valueEnv
+        Aliases = Map.empty
+    }
 
 let private currentEnv = ref initial.TypeEnv
 
@@ -635,33 +640,42 @@ let docsJson () : string =
 // in this module by design — scripts never touch Repl.fs, so `weir
 // script.weir` provably ignores it; that is the property the whole
 // language exists to keep.
-type private ReplConfig =
-    { HistorySize: int
-      HistoryDedup: bool
-      // None = the default under the state home, resolved on first use
-      HistoryPath: string option
-      FinderFlags: string list
-      // feeds the session echo cap [D:echo-cap]
-      EchoElems: int
-      // seeds the session's type echo [D:repl-types]
-      Types: bool }
+type private ReplConfig = {
+    HistorySize: int
+    HistoryDedup: bool
+    // None = the default under the state home, resolved on first use
+    HistoryPath: string option
+    FinderFlags: string list
+    // feeds the session echo cap [D:echo-cap]
+    EchoElems: int
+    // seeds the session's type echo [D:repl-types]
+    Types: bool
+}
 
 // config/state dirs come from Builtins [D:path-home] — the same impl
 // the Path.home/configHome/stateHome members also expose
 let private configHome () = Builtins.configDir ()
 let private stateHome () = Builtins.stateDir ()
 
-let private defaultConfig =
-    { HistorySize = 5000
-      HistoryDedup = true
-      // state, not config — history is data the REPL produced, not settings
-      HistoryPath = None
-      FinderFlags = [ "--height"; "40%"; "--reverse" ]
-      EchoElems = 100
-      Types = false }
+let private defaultConfig = {
+    HistorySize = 5000
+    HistoryDedup = true
+    // state, not config — history is data the REPL produced, not settings
+    HistoryPath = None
+    FinderFlags = [ "--height"; "40%"; "--reverse" ]
+    EchoElems = 100
+    Types = false
+}
 
 let private configKeys =
-    set [ "historySize"; "historyDedup"; "historyPath"; "finderFlags"; "echoElems"; "types" ]
+    set [
+        "historySize"
+        "historyDedup"
+        "historyPath"
+        "finderFlags"
+        "echoElems"
+        "types"
+    ]
 
 // read $XDG_CONFIG_HOME/weir/config.json (fallback ~/.config/weir/config.json);
 // unknown keys are rejected with did-you-mean — a typo must not silently
@@ -704,30 +718,33 @@ let private loadConfig () : ReplConfig =
 
             let getStrList (k: string) d =
                 match root.TryGetProperty k with
-                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.Array ->
-                    [ for e in v.EnumerateArray() do
-                          if e.ValueKind = System.Text.Json.JsonValueKind.String then
-                              e.GetString() ]
+                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.Array -> [
+                    for e in v.EnumerateArray() do
+                        if e.ValueKind = System.Text.Json.JsonValueKind.String then
+                            e.GetString()
+                  ]
                 | _ -> d
 
-            { HistorySize = getInt "historySize" defaultConfig.HistorySize
-              HistoryDedup = getBool "historyDedup" defaultConfig.HistoryDedup
-              HistoryPath =
-                match getStr "historyPath" "" with
-                | "" -> defaultConfig.HistoryPath
-                | p -> Some p
-              FinderFlags = getStrList "finderFlags" defaultConfig.FinderFlags
-              EchoElems = getInt "echoElems" defaultConfig.EchoElems
-              Types =
-                match root.TryGetProperty "types" with
-                | false, _ -> defaultConfig.Types
-                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.String && v.GetString() = "on" -> true
-                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.String && v.GetString() = "off" -> false
-                | true, v ->
-                    Console.Error.WriteLine
-                        $"weir: config: types takes \"on\" or \"off\"; got {v.GetRawText()} (using \"off\")"
+            {
+                HistorySize = getInt "historySize" defaultConfig.HistorySize
+                HistoryDedup = getBool "historyDedup" defaultConfig.HistoryDedup
+                HistoryPath =
+                    match getStr "historyPath" "" with
+                    | "" -> defaultConfig.HistoryPath
+                    | p -> Some p
+                FinderFlags = getStrList "finderFlags" defaultConfig.FinderFlags
+                EchoElems = getInt "echoElems" defaultConfig.EchoElems
+                Types =
+                    match root.TryGetProperty "types" with
+                    | false, _ -> defaultConfig.Types
+                    | true, v when v.ValueKind = System.Text.Json.JsonValueKind.String && v.GetString() = "on" -> true
+                    | true, v when v.ValueKind = System.Text.Json.JsonValueKind.String && v.GetString() = "off" -> false
+                    | true, v ->
+                        Console.Error.WriteLine
+                            $"weir: config: types takes \"on\" or \"off\"; got {v.GetRawText()} (using \"off\")"
 
-                    defaultConfig.Types }
+                        defaultConfig.Types
+            }
         with ex ->
             Console.Error.WriteLine $"weir: config: {ex.Message} (using defaults)"
             defaultConfig
@@ -1020,10 +1037,12 @@ let private compactHistory (cap: int) (dedup: bool) (lines: HistoryLine[]) : His
     if dedup then
         let seen = Collections.Generic.HashSet<string>()
 
-        [| for l in Array.rev capped do
-               match l with
-               | HEntry e when not (seen.Add e) -> ()
-               | _ -> yield l |]
+        [|
+            for l in Array.rev capped do
+                match l with
+                | HEntry e when not (seen.Add e) -> ()
+                | _ -> yield l
+        |]
         |> Array.rev
     else
         capped
@@ -1182,10 +1201,11 @@ let private historyDirective (arg: string) : string =
         else
             let width = history.Count.ToString().Length
 
-            let lines =
-                [ for i in startIdx .. history.Count - 1 ->
-                      let n = (i + 1).ToString().PadLeft width
-                      $"  {n}  {displayEntry history[i]}" ]
+            let lines = [
+                for i in startIdx .. history.Count - 1 ->
+                    let n = (i + 1).ToString().PadLeft width
+                    $"  {n}  {displayEntry history[i]}"
+            ]
 
             String.concat "\n" ($"{where} ({history.Count} entries)" :: lines)
 
@@ -1199,22 +1219,23 @@ let private historyDirective (arg: string) : string =
 /// the tty editor's key bindings, one source [D:repl-keys]: `#keys`
 /// prints this list and docs/repl.md's key table carries the same keys
 /// (a unit pin compares them). Each row: the keys, what they do
-let keyBindings: (string list * string) list =
-    [ [ "Enter" ], "submit if complete, else start a new line; on an empty last line, submit anyway"
-      [ "Alt+Enter"; "Ctrl+J" ], "insert a newline (the entry stays one statement)"
-      [ "Backspace" ], "delete back; in a line's leading spaces, back one indent level (4 columns)"
-      [ "Left"; "Right" ], "move a character (across lines)"
-      [ "Ctrl+Left"; "Ctrl+Right" ], "move a word"
-      [ "Home"; "Ctrl+A" ], "start of the line"
-      [ "End"; "Ctrl+E" ], "end of the line"
-      [ "Up"; "Down" ], "move between lines; Up on the first line recalls history"
-      [ "Tab" ], "complete the word under the cursor"
-      [ "Ctrl+R" ], "search history (fzf when installed)"
-      [ "Ctrl+W"; "Ctrl+U"; "Ctrl+K" ], "cut the previous word / to line start / to line end"
-      [ "Ctrl+Y" ], "paste the last cut text"
-      [ "Esc"; "Ctrl+C" ], "abandon the whole buffer"
-      [ "Ctrl+D" ], "exit on an empty buffer; delete or join otherwise"
-      [ "F1" ], "show these bindings; the buffer stays as it was" ]
+let keyBindings: (string list * string) list = [
+    [ "Enter" ], "submit if complete, else start a new line; on an empty last line, submit anyway"
+    [ "Alt+Enter"; "Ctrl+J" ], "insert a newline (the entry stays one statement)"
+    [ "Backspace" ], "delete back; in a line's leading spaces, back one indent level (4 columns)"
+    [ "Left"; "Right" ], "move a character (across lines)"
+    [ "Ctrl+Left"; "Ctrl+Right" ], "move a word"
+    [ "Home"; "Ctrl+A" ], "start of the line"
+    [ "End"; "Ctrl+E" ], "end of the line"
+    [ "Up"; "Down" ], "move between lines; Up on the first line recalls history"
+    [ "Tab" ], "complete the word under the cursor"
+    [ "Ctrl+R" ], "search history (fzf when installed)"
+    [ "Ctrl+W"; "Ctrl+U"; "Ctrl+K" ], "cut the previous word / to line start / to line end"
+    [ "Ctrl+Y" ], "paste the last cut text"
+    [ "Esc"; "Ctrl+C" ], "abandon the whole buffer"
+    [ "Ctrl+D" ], "exit on an empty buffer; delete or join otherwise"
+    [ "F1" ], "show these bindings; the buffer stays as it was"
+]
 
 /// `#keys` [D:repl-keys]: the bindings in two aligned columns, the keys
 /// dim at a tty (meta output), plain when piped; then the typed-newline
@@ -1224,7 +1245,10 @@ let keysText (color: bool) : string =
     let w = keys |> List.map String.length |> List.max
 
     let rows =
-        List.map2 (fun (k: string) (_, what) -> "  " + Types.Color.dim color (k.PadRight w) + "  " + what) keys keyBindings
+        List.map2
+            (fun (k: string) (_, what) -> "  " + Types.Color.dim color (k.PadRight w) + "  " + what)
+            keys
+            keyBindings
 
     String.concat "\n" rows
 
@@ -1398,9 +1422,10 @@ let private bufferComplete (bufLines: string list) : bool =
         match Script.assemble numbered with
         | Error _ -> false
         | Ok lls ->
-            let r =
-                { Script.resolver currentEnv.Value with
-                    AliasHead = currentAliasHead.Value }
+            let r = {
+                Script.resolver currentEnv.Value with
+                    AliasHead = currentAliasHead.Value
+            }
 
             lls
             |> List.forall (fun ll ->
@@ -1488,9 +1513,17 @@ let private escF1Tail () : bool =
     while ttyIo (fun () -> Console.KeyAvailable) do
         typeAhead.Enqueue(ttyIo (fun () -> Console.ReadKey(intercept = true)))
 
-    match f1Tail (typeAhead |> Seq.truncate 4 |> Seq.map (fun k -> k.KeyChar) |> Array.ofSeq |> String) with
+    match
+        f1Tail (
+            typeAhead
+            |> Seq.truncate 4
+            |> Seq.map (fun k -> k.KeyChar)
+            |> Array.ofSeq
+            |> String
+        )
+    with
     | Some n ->
-        for _ in 1 .. n do
+        for _ in 1..n do
             typeAhead.Dequeue() |> ignore
 
         true
@@ -1566,10 +1599,16 @@ let private readLineTty () : string option =
     // the editor moves and deletes by code point [D:str-code-points]: a
     // surrogate pair (an emoji) is one step, never split
     let pairAt (t: Text.StringBuilder) (i: int) =
-        i >= 1 && i < t.Length && Char.IsHighSurrogate t[i - 1] && Char.IsLowSurrogate t[i]
+        i >= 1
+        && i < t.Length
+        && Char.IsHighSurrogate t[i - 1]
+        && Char.IsLowSurrogate t[i]
 
-    let stepBack () = if pairAt (cur ()) (col - 1) then 2 else 1
-    let stepFwd () = if pairAt (cur ()) (col + 1) then 2 else 1
+    let stepBack () =
+        if pairAt (cur ()) (col - 1) then 2 else 1
+
+    let stepFwd () =
+        if pairAt (cur ()) (col + 1) then 2 else 1
 
     // a column carried across lines (Up/Down) lands on a boundary
     let snapCol (c: int) =
@@ -1685,17 +1724,21 @@ let private readLineTty () : string option =
         let tail = line.Substring col
         cur().Remove(col, cur().Length - col) |> ignore
 
-        let queued =
-            typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable)
+        let queued = typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable)
 
         let indent, tail =
             if queued then
                 "", tail
             else
                 let before = line.Substring(0, col)
-                let carried = before.Substring(0, before.Length - before.TrimStart([| ' '; '\t' |]).Length)
+
+                let carried =
+                    before.Substring(0, before.Length - before.TrimStart([| ' '; '\t' |]).Length)
                 // smart indent: one level more after a body opener
-                (if Script.opensIndentedBody before then carried + "    " else carried),
+                (if Script.opensIndentedBody before then
+                     carried + "    "
+                 else
+                     carried),
                 tail.TrimStart([| ' '; '\t' |])
 
         lines.Insert(row + 1, Text.StringBuilder(indent + tail))
@@ -1970,9 +2013,12 @@ let private readLineTty () : string option =
             // ` })` would join the prefix and kill every match);
             // insertion below re-attaches the tail
             let sigil =
-                if ws >= 2 && text.Substring(ws - 2, 2) = "$@" then 2
-                elif ws >= 1 && ws <= text.Length && text[ws - 1] = '$' then 1
-                else 0
+                if ws >= 2 && text.Substring(ws - 2, 2) = "$@" then
+                    2
+                elif ws >= 1 && ws <= text.Length && text[ws - 1] = '$' then
+                    1
+                else
+                    0
 
             let notes = ResizeArray<string>()
 
@@ -1987,40 +2033,43 @@ let private readLineTty () : string option =
                 then
                     []
                 else
-                // the session entry: alias heads join the head-slot pool
-                // [D:command-head-alias]; the session values feed the
-                // map-key slot [D:value-key-complete]; the whole entry up
-                // to the cursor is the context [D:entry-complete] —
-                // earlier statements' bindings join the env, and a
-                // `head.`/`_.` word repairs over its whole statement
-                // the tool's own values [D:sig-dynamic-complete]: a child
-                // bounded by the timeout and the next key, which stays
-                // queued for the editor
-                let all =
-                    Script.suggestEntryWith
-                        (Some
-                            { Run = DynComplete.ask (fun () -> typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable))
-                              Note = notes.Add })
-                        currentAliases.Value
-                        currentVals.Value
-                        currentEnv.Value
-                        (dedentEntry (List.init row (fun i -> lines[i].ToString()) @ [ text.Substring(0, col) ]))
-                        (text.Substring(0, col))
-                        ws
+                    // the session entry: alias heads join the head-slot pool
+                    // [D:command-head-alias]; the session values feed the
+                    // map-key slot [D:value-key-complete]; the whole entry up
+                    // to the cursor is the context [D:entry-complete] —
+                    // earlier statements' bindings join the env, and a
+                    // `head.`/`_.` word repairs over its whole statement
+                    // the tool's own values [D:sig-dynamic-complete]: a child
+                    // bounded by the timeout and the next key, which stays
+                    // queued for the editor
+                    let all =
+                        Script.suggestEntryWith
+                            (Some {
+                                Run =
+                                    DynComplete.ask (fun () ->
+                                        typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable))
+                                Note = notes.Add
+                            })
+                            currentAliases.Value
+                            currentVals.Value
+                            currentEnv.Value
+                            (dedentEntry (List.init row (fun i -> lines[i].ToString()) @ [ text.Substring(0, col) ]))
+                            (text.Substring(0, col))
+                            ws
 
-                // a directive is only a whole entry's first line
-                // [D:repl-directives]: a continuation line offers none
-                // an offer is inserted verbatim: one carrying a control
-                // character (a newline submits a statement, an escape
-                // repaints) is never offered, whatever produced it
-                let offered = all |> List.filter (fun c -> not (c |> Seq.exists Char.IsControl))
+                    // a directive is only a whole entry's first line
+                    // [D:repl-directives]: a continuation line offers none
+                    // an offer is inserted verbatim: one carrying a control
+                    // character (a newline submits a statement, an escape
+                    // repaints) is never offered, whatever produced it
+                    let offered = all |> List.filter (fun c -> not (c |> Seq.exists Char.IsControl))
 
-                if row = 0 then
-                    offered
-                elif text.Substring(0, ws).Trim() = "#" then
-                    []
-                else
-                    offered |> List.filter (fun c -> not (c.StartsWith "#"))
+                    if row = 0 then
+                        offered
+                    elif text.Substring(0, ws).Trim() = "#" then
+                        []
+                    else
+                        offered |> List.filter (fun c -> not (c.StartsWith "#"))
 
             // a note under the buffer, the Tab listing's park-and-restore
             if notes.Count > 0 then
@@ -2068,7 +2117,8 @@ let private readLineTty () : string option =
                  // literal — extend the CONTENT instead and close it, the
                  // caret inside the closer as for one quoted directory
                  let quoted =
-                     many |> List.forall (fun c -> c.Length >= 2 && c.StartsWith "\"" && c.EndsWith "\"")
+                     many
+                     |> List.forall (fun c -> c.Length >= 2 && c.StartsWith "\"" && c.EndsWith "\"")
 
                  // (replacement, caret offset within it), or None to list
                  let extension =
@@ -2088,7 +2138,11 @@ let private readLineTty () : string option =
                              None
                      else
                          let prefix = common many
-                         if prefix.Length > col - ws then Some(prefix, prefix.Length) else None
+
+                         if prefix.Length > col - ws then
+                             Some(prefix, prefix.Length)
+                         else
+                             None
 
                  match extension with
                  | Some(insert, caret) ->
@@ -2373,7 +2427,10 @@ let private glanceWidth () =
             100
 
 let private clipTo (width: int) (s: string) : string =
-    if s.Length <= width then s else s.Substring(0, width - 1) + "…"
+    if s.Length <= width then
+        s
+    else
+        s.Substring(0, width - 1) + "…"
 
 /// a member's glance: the first line of its builtinDocs Summary — the
 /// same text hover and `#help Module.member` lead with, never a copy
@@ -2445,7 +2502,8 @@ let functionEchoLines
     // a bare alias echoes as its home — the qualified spelling is the
     // one #help documents [D:bare-partition]
     let qualified =
-        if name.Contains "." then name
+        if name.Contains "." then
+            name
         elif Builtins.bareAliases.Contains name then
             match Map.tryFind name Builtins.bareAliasHomes with
             | Some m -> $"{m}.{name}"
@@ -2463,17 +2521,16 @@ let functionEchoLines
         // the #help composition: the annotated signature + the glance
         let style = if color then sigTintStyle else plainSigStyle
 
-        Some
-            [ formatSignatureWith style qualified d.Params sch.Ty
-              renderHelpText color (memberGlance qualified) ]
+        Some [
+            formatSignatureWith style qualified d.Params sch.Ty
+            renderHelpText color (memberGlance qualified)
+        ]
     | _ ->
         match Map.tryFind name te.Values, defLine name with
         | Some sch, Some(first, multi) ->
             let def = if multi then first + " …" else first
 
-            Some
-                [ $"{name} : {formatEchoTy sch.Ty}"
-                  Types.Color.dim color (clipTo width def) ]
+            Some [ $"{name} : {formatEchoTy sch.Ty}"; Types.Color.dim color (clipTo width def) ]
         | _ -> None
 
 /// the live wrapper: keys on the value being a function and the
@@ -2501,8 +2558,8 @@ let private isSessionBinding (state: State) (n: string) : bool =
     | Some mine, Some builtin -> not (obj.ReferenceEquals(mine, builtin))
     | None, _ -> false
 
-let private resolver (state: State) : Parser.Resolver =
-    { Script.resolver state.TypeEnv with
+let private resolver (state: State) : Parser.Resolver = {
+    Script.resolver state.TypeEnv with
         // the session alias table beats PATH in command-head position
         // [D:command-head-alias]; `^` skips it (parser-side). Single-hop:
         // the stored Exe is a real program, never another alias name.
@@ -2514,7 +2571,8 @@ let private resolver (state: State) : Parser.Resolver =
                 if isSessionBinding state n then
                     None
                 else
-                    Map.tryFind n state.Aliases |> Option.map (fun a -> (a.Exe, a.Prefix)) }
+                    Map.tryFind n state.Aliases |> Option.map (fun a -> (a.Exe, a.Prefix))
+}
 
 // a diagnostic line echoes the entry, a path, a pattern
 // [D:tty-diag-sanitize]
@@ -2548,11 +2606,14 @@ let private printHint (state: State) (line: string) =
 let private bindIt (ty: Ty) (v: Eval.Value) (env: State) : State =
     lastStreamed <- None
 
-    { env with
-        TypeEnv =
-            { env.TypeEnv with
-                Values = Map.add "it" (Types.generalize ty) env.TypeEnv.Values }
-        Values = Map.add "it" v env.Values }
+    {
+        env with
+            TypeEnv = {
+                env.TypeEnv with
+                    Values = Map.add "it" (Types.generalize ty) env.TypeEnv.Values
+            }
+            Values = Map.add "it" v env.Values
+    }
 
 // the Ok-side rendering, shared by the single-line and multiline
 // submission paths [D:repl-multiline]
@@ -2587,9 +2648,11 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
         else
             Console.WriteLine $"type {decl.Name} declared"
 
-        { state with
-            TypeEnv = chk.Env
-            Values = Eval.declare state.Values decl validator }
+        {
+            state with
+                TypeEnv = chk.Env
+                Values = Eval.declare state.Values decl validator
+        }
     | Script.KLetPat(pat, schemes, te) ->
         printWarnings state te
 
@@ -2622,19 +2685,23 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                             $"{letEchoHead n sch.Ty} = {Eval.echoRender Console.IsOutputRedirected rendered}{Eval.echoTail hint}"
                 | _ -> Console.WriteLine(letEchoHead n sch.Ty)
 
-            { state with
-                TypeEnv = chk.Env
-                Values = bindings |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
+            {
+                state with
+                    TypeEnv = chk.Env
+                    Values = bindings |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values
+            }
          with
          | Eval.ExitRequest _ -> reraise ()
          | :? Session.Interrupted -> reraise ()
          | ex ->
              lastErrored <- true
              lastExit <- None
+
              Console.WriteLine(
                  Types.Color.red Types.Color.onStdout.Value "error"
                  + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
              )
+
              state)
     | Script.KLet(name, _, te) ->
         printWarnings state te
@@ -2698,23 +2765,29 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 | None ->
                     let rendered, hint = Eval.echoValue cap ev
                     let tail = Eval.echoTail hint
-                    Console.WriteLine $"{letEchoHead name te.Ty} = {Eval.echoRender Console.IsOutputRedirected rendered}{tail}"
+
+                    Console.WriteLine
+                        $"{letEchoHead name te.Ty} = {Eval.echoRender Console.IsOutputRedirected rendered}{tail}"
 
             // a `let` binds its name only — it does not rebind `it`
             // (FSI parity) [D:repl-it]
-            { state with
-                TypeEnv = chk.Env
-                Values = Map.add name v state.Values }
+            {
+                state with
+                    TypeEnv = chk.Env
+                    Values = Map.add name v state.Values
+            }
          with
          | Eval.ExitRequest _ -> reraise ()
          | :? Session.Interrupted -> reraise ()
          | ex ->
              lastErrored <- true
              lastExit <- None
+
              Console.WriteLine(
                  Types.Color.red Types.Color.onStdout.Value "error"
                  + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
              )
+
              state)
     | Script.KExpr te
     | Script.KCmd te ->
@@ -2819,12 +2892,19 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
 
                             // the value stays plain; the type tail recedes
                             // like every other metadata line [D:table-polish]
-                            let meta = if echoTypes () then $" : {formatEchoTy te.Ty}{tail}" else tail
+                            let meta =
+                                if echoTypes () then
+                                    $" : {formatEchoTy te.Ty}{tail}"
+                                else
+                                    tail
 
                             // one renderer with -e [D:echo-one-renderer]
                             Console.WriteLine(
                                 Eval.echoRender Console.IsOutputRedirected rendered
-                                + (if meta = "" then "" else Types.Color.dim Types.Color.onStdout.Value meta)
+                                + (if meta = "" then
+                                       ""
+                                   else
+                                       Types.Color.dim Types.Color.onStdout.Value meta)
                             )
                 elif not Console.IsOutputRedirected then
                     // FSI parity [D:repl-it]: a unit expression/command
@@ -2882,9 +2962,11 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
 
             Console.WriteLine $"module {lm.Alias} {verb} ({listed})"
 
-            { state with
-                TypeEnv = chk.Env
-                Values = venv }
+            {
+                state with
+                    TypeEnv = chk.Env
+                    Values = venv
+            }
          with
          | Eval.ExitRequest _ -> reraise ()
          | :? Session.Interrupted -> reraise ()
@@ -2950,7 +3032,9 @@ let continuedCommandForTest (entry: string) : string option =
 
     match Script.assemble numbered with
     | Error _ -> None
-    | Ok lls -> entryContinuedCommand initial lls |> Option.map (fun h -> $"{h.CLine}:{h.CCol}: {h.CMessage}")
+    | Ok lls ->
+        entryContinuedCommand initial lls
+        |> Option.map (fun h -> $"{h.CLine}:{h.CCol}: {h.CMessage}")
 
 /// the it-matrix seam [D:repl-it]: fold statements through the real
 /// check+eval path against a fresh session and answer `it`'s bound type
@@ -3110,8 +3194,7 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
         // line from builtinDocs, the one member-text source [D:help-glance]
         let members = moduleMembersOf te name
 
-        let rows =
-            members |> List.map (fun m -> m, memberGlance $"{name}.{m}")
+        let rows = members |> List.map (fun m -> m, memberGlance $"{name}.{m}")
 
         $"{name} ({List.length members} members):\n"
         + glanceTable (glanceWidth ()) rows
@@ -3162,8 +3245,7 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
                     // not unknown: name its homes, as the checker does
                     let homes =
                         Builtins.bareAliasModules
-                        |> Seq.filter (fun m ->
-                            te.Modules |> Map.tryFind m |> Option.exists (Map.containsKey name))
+                        |> Seq.filter (fun m -> te.Modules |> Map.tryFind m |> Option.exists (Map.containsKey name))
                         |> Seq.map (fun m -> $"{m}.{name}")
                         |> String.concat " or "
 
@@ -3201,14 +3283,15 @@ let private renderHelpDirective (te: TypeEnv) (arg: string) : string =
 // substring fallback otherwise [D:repl-quality] — never an "install
 // fzf" message. Piped sessions always take the fallback (deterministic).
 
-let private findCandidates (te: TypeEnv) : string list =
-    [ for m in te.Modules |> Map.keys |> Seq.sort do
-          let blurb = Builtins.moduleBlurbs |> Map.tryFind m |> Option.defaultValue ""
-          yield (if blurb = "" then m else $"{m} — {blurb}")
+let private findCandidates (te: TypeEnv) : string list = [
+    for m in te.Modules |> Map.keys |> Seq.sort do
+        let blurb = Builtins.moduleBlurbs |> Map.tryFind m |> Option.defaultValue ""
+        yield (if blurb = "" then m else $"{m} — {blurb}")
 
-          for mem in moduleMembersOf te m do
-              let g = memberGlance $"{m}.{mem}"
-              yield (if g = "" then $"{m}.{mem}" else $"{m}.{mem} — {g}") ]
+        for mem in moduleMembersOf te m do
+            let g = memberGlance $"{m}.{mem}"
+            yield (if g = "" then $"{m}.{mem}" else $"{m}.{mem} — {g}")
+]
 
 /// the fallback (and the piped behavior): case-insensitive substring
 /// filter over the candidate lines — name and glance text both match
@@ -3441,8 +3524,7 @@ let private evalSource (state: State) (source: string) : Result<string list, str
                         | _ -> Error "#infer: the source did not produce a sequence")
                 with
                 | Eval.ExitRequest _ -> reraise ()
-                | ex ->
-                    Error $"#infer: evaluating the source raised: {ex.Message}"
+                | ex -> Error $"#infer: evaluating the source raised: {ex.Message}"
 
 /// the drafted-type diagnostic [D:infer-diagnostic]: the drafted text
 /// is weir's own synthesis, so a check failure is a generated-field bug
@@ -3461,11 +3543,11 @@ let formatDraftedDiag (physical: string list) (d: Script.StmtDiag) : string =
     let caret = String(' ', max 0 (d.PhysCol - 1)) + String('^', caretWidth)
     let on = Types.Color.onStdout.Value
 
-    String.concat
-        "\n"
-        [ $"#infer: a drafted type did not check at line {d.PhysLine}, col {d.PhysCol}: {d.Message}"
-          "  " + line
-          "  " + Types.Color.red on caret ]
+    String.concat "\n" [
+        $"#infer: a drafted type did not check at line {d.PhysLine}, col {d.PhysCol}: {d.Message}"
+        "  " + line
+        "  " + Types.Color.red on caret
+    ]
 
 /// inject the decl text (multi-line `type` blocks) into the session,
 /// returning the new state and the ordered list of defined type names.
@@ -3488,17 +3570,16 @@ let private injectDecls (state: State) (declText: string list) : Result<State * 
             match rest with
             | [] -> Ok(st, List.rev defined)
             | (ll: Script.LogicalLine) :: tail ->
-                match
-                    Script.checkStatement false None (fun _ -> resolver st) Script.scriptOnlyImport st.TypeEnv ll
-                with
+                match Script.checkStatement false None (fun _ -> resolver st) Script.scriptOnlyImport st.TypeEnv ll with
                 | Error d -> Error(formatDraftedDiag physical d)
                 | Ok chk ->
                     match chk.Kind with
                     | Script.KType(decl, validator) ->
-                        let st' =
-                            { st with
+                        let st' = {
+                            st with
                                 TypeEnv = chk.Env
-                                Values = Eval.declare st.Values decl validator }
+                                Values = Eval.declare st.Values decl validator
+                        }
 
                         go st' (decl.Name :: defined) tail
                     | _ -> Error "#infer: a drafted statement was not a type declaration"
@@ -3571,7 +3652,14 @@ let private parseInferLet (rest: string) : Result<string * string * string * str
 /// sample rides a hidden materialized binding so the command never
 /// re-runs [D:infer-one-shot]; the ordinary let path does the check,
 /// eval, and echo, then the hidden name scrubs
-let private bindParsed (state: State) (binder: string) (source: string) (fmt: Infer.Format) (spelling: string) (lines: string list) : State =
+let private bindParsed
+    (state: State)
+    (binder: string)
+    (source: string)
+    (fmt: Infer.Format)
+    (spelling: string)
+    (lines: string list)
+    : State =
     let fmtWord =
         match fmt with
         | Infer.Json -> "json"
@@ -3588,19 +3676,23 @@ let private bindParsed (state: State) (binder: string) (source: string) (fmt: In
         Seq.initInfinite (fun i -> if i = 0 then "inferSample" else $"inferSample{i}")
         |> Seq.find free
 
-    let scratch =
-        { state with
-            TypeEnv =
-                { state.TypeEnv with
-                    Values = Map.add hidden (Types.generalize (TSeq TStr)) state.TypeEnv.Values }
-            Values = Map.add hidden (Eval.VSeq(lines |> List.map Eval.VStr |> Seq.ofList)) state.Values }
+    let scratch = {
+        state with
+            TypeEnv = {
+                state.TypeEnv with
+                    Values = Map.add hidden (Types.generalize (TSeq TStr)) state.TypeEnv.Values
+            }
+            Values = Map.add hidden (Eval.VSeq(lines |> List.map Eval.VStr |> Seq.ofList)) state.Values
+    }
 
-    let scrub (st: State) =
-        { st with
-            TypeEnv =
-                { st.TypeEnv with
-                    Values = Map.remove hidden st.TypeEnv.Values }
-            Values = Map.remove hidden st.Values }
+    let scrub (st: State) = {
+        st with
+            TypeEnv = {
+                st.TypeEnv with
+                    Values = Map.remove hidden st.TypeEnv.Values
+            }
+            Values = Map.remove hidden st.Values
+    }
 
     let adapter = $"from {fmtWord} {spelling}"
     let stmt = $"let {binder} = {hidden} |> {adapter}"
@@ -3636,7 +3728,10 @@ let private inferLetDirective (state: State) (rest: string) : State =
             if name <> "_" && (name = "" || not (Char.IsUpper name[0])) then
                 Console.WriteLine $"#infer: the type name '{name}' must start with an uppercase letter ('_' auto-names)"
                 state
-            elif name <> "_" && Set.contains name (Infer.takenTypeNames Check.builtinTypeNames.Keys) then
+            elif
+                name <> "_"
+                && Set.contains name (Infer.takenTypeNames Check.builtinTypeNames.Keys)
+            then
                 Console.WriteLine
                     $"#infer: '{name}' is a built-in type — a drafted '{name}' could never be referenced (the built-in wins every use); pick another 'as' name"
 
@@ -3719,90 +3814,98 @@ let private inferDirective (state: State) (rest: string) : State =
         inferLetDirective state rest
     else
 
-    match parseInfer rest with
-    | Error msg ->
-        Console.WriteLine msg
-        state
-    | Ok(source, fmtStr, name) ->
-        match Infer.parseFormat fmtStr with
+        match parseInfer rest with
         | Error msg ->
             Console.WriteLine msg
             state
-        | Ok fmt ->
-            // an empty source defaults to `it` — the last result
-            let sourceExpr, sourceMissing =
-                if source = "" then
-                    (if Map.containsKey "it" state.TypeEnv.Values then "it", false else "", true)
-                else
-                    source, false
-
-            if sourceMissing then
-                Console.WriteLine
-                    "#infer: no prior result — write '#infer <source> from … as <Name>', or run an expression first (it binds 'it')"
-
+        | Ok(source, fmtStr, name) ->
+            match Infer.parseFormat fmtStr with
+            | Error msg ->
+                Console.WriteLine msg
                 state
-            elif name <> "_" && (name = "" || not (Char.IsUpper name[0])) then
-                Console.WriteLine $"#infer: the type name '{name}' must start with an uppercase letter ('_' auto-names)"
-                state
-            elif name <> "_" && Set.contains name (Infer.takenTypeNames Check.builtinTypeNames.Keys) then
-                // the 'as'-name is the user's choice [D:repl-infer]: a
-                // builtin name could never be referenced (the builtin
-                // wins every use), and renaming their choice silently
-                // would be worse — refuse with the teaching
-                Console.WriteLine
-                    $"#infer: '{name}' is a built-in type — a drafted '{name}' could never be referenced (the built-in wins every use); pick another 'as' name"
+            | Ok fmt ->
+                // an empty source defaults to `it` — the last result
+                let sourceExpr, sourceMissing =
+                    if source = "" then
+                        (if Map.containsKey "it" state.TypeEnv.Values then
+                             "it", false
+                         else
+                             "", true)
+                    else
+                        source, false
 
-                state
-            else
-                match evalSource state sourceExpr with
-                | Error msg ->
-                    Console.WriteLine msg
+                if sourceMissing then
+                    Console.WriteLine
+                        "#infer: no prior result — write '#infer <source> from … as <Name>', or run an expression first (it binds 'it')"
+
                     state
-                | Ok lines ->
-                    // derived names dodge every name the session already
-                    // resolves [D:repl-infer] — a taken landing would be
-                    // injected-and-shadowed, never usable
-                    let taken =
-                        Infer.takenTypeNames (Seq.append Check.builtinTypeNames.Keys (Map.keys state.TypeEnv.Types))
+                elif name <> "_" && (name = "" || not (Char.IsUpper name[0])) then
+                    Console.WriteLine
+                        $"#infer: the type name '{name}' must start with an uppercase letter ('_' auto-names)"
 
-                    // `as _` joins the derived-name family here too
-                    // [D:infer-one-shot]
-                    let name = if name = "_" then autoTypeName taken else name
+                    state
+                elif
+                    name <> "_"
+                    && Set.contains name (Infer.takenTypeNames Check.builtinTypeNames.Keys)
+                then
+                    // the 'as'-name is the user's choice [D:repl-infer]: a
+                    // builtin name could never be referenced (the builtin
+                    // wins every use), and renaming their choice silently
+                    // would be worse — refuse with the teaching
+                    Console.WriteLine
+                        $"#infer: '{name}' is a built-in type — a drafted '{name}' could never be referenced (the built-in wins every use); pick another 'as' name"
 
-                    match Infer.infer Parser.keywords taken fmt name lines with
+                    state
+                else
+                    match evalSource state sourceExpr with
                     | Error msg ->
                         Console.WriteLine msg
                         state
-                    | Ok(decls, notes) ->
-                        match injectDecls state decls with
+                    | Ok lines ->
+                        // derived names dodge every name the session already
+                        // resolves [D:repl-infer] — a taken landing would be
+                        // injected-and-shadowed, never usable
+                        let taken =
+                            Infer.takenTypeNames (Seq.append Check.builtinTypeNames.Keys (Map.keys state.TypeEnv.Types))
+
+                        // `as _` joins the derived-name family here too
+                        // [D:infer-one-shot]
+                        let name = if name = "_" then autoTypeName taken else name
+
+                        match Infer.infer Parser.keywords taken fmt name lines with
                         | Error msg ->
                             Console.WriteLine msg
                             state
-                        | Ok(state', defined) ->
-                            // the drafted types are session declarations —
-                            // record each as a `TDef` carrying its clean
-                            // multi-line text (not the assembler's
-                            // control-char-joined logical line) so #save
-                            // distills runnable `type` decls, deduped by name
-                            for d in decls do
-                                // "type <Name> = …" — the name keys dedup
-                                let declName =
-                                    match d.Trim().Split([| ' '; '\n' |]) with
-                                    | [| _typeKw; nm |] -> nm
-                                    | arr when arr.Length >= 2 -> arr[1]
-                                    | _ -> ""
+                        | Ok(decls, notes) ->
+                            match injectDecls state decls with
+                            | Error msg ->
+                                Console.WriteLine msg
+                                state
+                            | Ok(state', defined) ->
+                                // the drafted types are session declarations —
+                                // record each as a `TDef` carrying its clean
+                                // multi-line text (not the assembler's
+                                // control-char-joined logical line) so #save
+                                // distills runnable `type` decls, deduped by name
+                                for d in decls do
+                                    // "type <Name> = …" — the name keys dedup
+                                    let declName =
+                                        match d.Trim().Split([| ' '; '\n' |]) with
+                                        | [| _typeKw; nm |] -> nm
+                                        | arr when arr.Length >= 2 -> arr[1]
+                                        | _ -> ""
 
-                                recordDef declName d d
+                                    recordDef declName d d
 
-                            let count = List.length defined
+                                let count = List.length defined
 
-                            Console.WriteLine
-                                $"""defined: {String.concat ", " defined} ({count} type{if count = 1 then "" else "s"})"""
+                                Console.WriteLine
+                                    $"""defined: {String.concat ", " defined} ({count} type{if count = 1 then "" else "s"})"""
 
-                            for n in notes do
-                                Console.WriteLine $"  note: {n}"
+                                for n in notes do
+                                    Console.WriteLine $"  note: {n}"
 
-                            state'
+                                state'
 
 // ---- #save [D:repl-save]: distill the session to a runnable script ----
 // Option B: a REPL session is scratch; `#save <path>` crystallizes its
@@ -3820,10 +3923,11 @@ let private inferDirective (state: State) (rest: string) : State =
 
 // one distilled statement: its dedup key (a type/binder name) and its
 // physical source lines (already qualified)
-type private DistillStmt =
-    { Key: string
-      Lines: string list
-      IsType: bool }
+type private DistillStmt = {
+    Key: string
+    Lines: string list
+    IsType: bool
+}
 
 // dedup by key, keeping the last definition, preserving survivor order.
 // A re-declared `type Color`/rebound `let x` keeps only its final form.
@@ -3917,9 +4021,11 @@ let private protectUnusedAt (s: DistillStmt) (localLine: int) (col: int) (name: 
         && at >= 0
         && at + name.Length <= line.Length
         && String.CompareOrdinal(line, at, name, 0, name.Length) = 0
-        ->
-        { s with
-            Lines = s.Lines |> List.mapi (fun i l -> if i = localLine then l.Insert(at, "_") else l) }
+          ->
+          {
+              s with
+                  Lines = s.Lines |> List.mapi (fun i l -> if i = localLine then l.Insert(at, "_") else l)
+          }
     | _ -> s
 
 // The check guarantee [D:repl-save]: return the survivors that check
@@ -3952,8 +4058,7 @@ let private ownerAt (kept: DistillStmt list) (fileLine: int) : (int * int) optio
 
     go 0 0 kept
 
-let private ownerOf (kept: DistillStmt list) (fileLine: int) : int option =
-    ownerAt kept fileLine |> Option.map fst
+let private ownerOf (kept: DistillStmt list) (fileLine: int) : int option = ownerAt kept fileLine |> Option.map fst
 
 // the binder an unused-binding finding names: 'b' is bound but never used
 let private unusedName (d: Script.Diagnostic) : string =
@@ -4014,7 +4119,10 @@ let rec private guaranteeChecks
                             | Some(j, localLine) ->
                                 acc
                                 |> List.mapi (fun i s ->
-                                    if i = j then protectUnusedAt s localLine d.Col (unusedName d) else s)
+                                    if i = j then
+                                        protectUnusedAt s localLine d.Col (unusedName d)
+                                    else
+                                        s)
                             | None -> acc)
                         kept
 
@@ -4025,7 +4133,10 @@ let rec private guaranteeChecks
                         unusedOwners |> List.tryHead |> Option.defaultValue (List.length kept - 1)
 
                     let kept' =
-                        kept |> List.mapi (fun j s -> j, s) |> List.filter (fun (j, _) -> j <> victim) |> List.map snd
+                        kept
+                        |> List.mapi (fun j s -> j, s)
+                        |> List.filter (fun (j, _) -> j <> victim)
+                        |> List.map snd
 
                     guaranteeChecks sessionNames kept' (dropped + 1)
 
@@ -4043,7 +4154,12 @@ let rec private guaranteeChecks
 // restores nothing and is dropped.
 let private restoreChains (all: DistillStmt list) (kept0: Set<int>) : Set<int> =
     let indexed = all |> List.indexed
-    let letNames = all |> List.filter (fun s -> not s.IsType) |> List.map (fun s -> s.Key) |> Set.ofList
+
+    let letNames =
+        all
+        |> List.filter (fun s -> not s.IsType)
+        |> List.map (fun s -> s.Key)
+        |> Set.ofList
 
     let rec go (kept: Set<int>) =
         let cand = indexed |> List.filter (fun (i, _) -> kept.Contains i)
@@ -4068,11 +4184,17 @@ let private restoreChains (all: DistillStmt list) (kept0: Set<int>) : Set<int> =
                     |> List.filter (fun (p, s) -> p < reader && s.Key = name && not s.IsType)
                     |> List.tryLast
                     |> Option.bind (fun (p, s) ->
-                        if List.isEmpty s.Lines || kept.Contains p then None else Some p)
+                        if List.isEmpty s.Lines || kept.Contains p then
+                            None
+                        else
+                            Some p)
                 | _ -> None)
             |> Set.ofList
 
-        if Set.isEmpty additions then kept else go (Set.union kept additions)
+        if Set.isEmpty additions then
+            kept
+        else
+            go (Set.union kept additions)
 
     go kept0
 
@@ -4100,10 +4222,11 @@ let distillSession
     // without it `ls /tmp` reads as the typed `ls` applied, and no head is found
     // a name an earlier definition bound is no alias head below it — the
     // session read it as the binding [D:alias-binding-shadow]
-    let desugarR (aliasOf: string -> (string * string list) option) =
-        { r with
+    let desugarR (aliasOf: string -> (string * string list) option) = {
+        r with
             IsExternal = (fun n -> r.IsExternal n || (aliasOf n).IsSome)
-            AliasHead = fun n -> aliasOf n |> Option.map (fun _ -> (n, [])) }
+            AliasHead = fun n -> aliasOf n |> Option.map (fun _ -> (n, []))
+    }
 
     // qualify bare module aliases, then desugar command-head aliases (both
     // per physical line, span-based; a multi-line heredoc/type keeps its
@@ -4125,25 +4248,33 @@ let distillSession
                 | SaveEcho -> acc)
             Set.empty
 
-    let qualified =
-        [ for e, bound in List.zip entries (List.take entries.Length boundBefore) ->
-              match e with
-              | SaveDef(name, physText, _) ->
-                  let lines = physText.Split '\n' |> Array.toList |> List.map (rewrite bound)
+    let qualified = [
+        for e, bound in List.zip entries (List.take entries.Length boundBefore) ->
+            match e with
+            | SaveDef(name, physText, _) ->
+                let lines = physText.Split '\n' |> Array.toList |> List.map (rewrite bound)
 
-                  // a type decl, past any attribute lines above it
-                  let isType =
-                      lines
-                      |> List.map (fun l -> l.TrimStart())
-                      |> List.tryFind (fun l -> l <> "" && not (l.StartsWith "[<"))
-                      |> Option.exists (fun l -> l.StartsWith "type ")
+                // a type decl, past any attribute lines above it
+                let isType =
+                    lines
+                    |> List.map (fun l -> l.TrimStart())
+                    |> List.tryFind (fun l -> l <> "" && not (l.StartsWith "[<"))
+                    |> Option.exists (fun l -> l.StartsWith "type ")
 
-                  { Key = name
+                {
+                    Key = name
                     Lines = lines
-                    IsType = isType }
-              | SaveEcho -> { Key = "it"; Lines = []; IsType = false } ]
+                    IsType = isType
+                }
+            | SaveEcho -> {
+                Key = "it"
+                Lines = []
+                IsType = false
+              }
+    ]
 
     let kept = restoreChains qualified (dedupLast qualified)
+
     let deduped =
         qualified
         |> List.indexed
@@ -4176,7 +4307,8 @@ let private savePath (arg: string) : Result<string, string> =
     if arg.StartsWith "\"" then
         match Parser.parseExpr arg with
         | Ok { Kind = EStr p } -> Ok p
-        | _ -> Error $"#save: write the path bare or as one plain string literal (e.g. #save \"my file.weir\"); got {arg}"
+        | _ ->
+            Error $"#save: write the path bare or as one plain string literal (e.g. #save \"my file.weir\"); got {arg}"
     else
         Ok arg
 
@@ -4210,12 +4342,13 @@ let private saveDirective (state: State) (arg: string) : unit =
     | Ok path ->
         // keep only definitions (types + named lets); drop scratch echoes
         // and unit effect echoes
-        let entries =
-            [ for entry in transcript do
-                  match entry.Kind with
-                  | TDef name -> yield SaveDef(name, entry.PhysText, entry.Binds)
-                  | TDiscard
-                  | TOther -> yield SaveEcho ]
+        let entries = [
+            for entry in transcript do
+                match entry.Kind with
+                | TDef name -> yield SaveDef(name, entry.PhysText, entry.Binds)
+                | TDiscard
+                | TOther -> yield SaveEcho
+        ]
 
         if not (entries |> List.exists (fun e -> e <> SaveEcho)) then
             Console.WriteLine
@@ -4235,7 +4368,9 @@ let private saveDirective (state: State) (arg: string) : unit =
 
             if List.isEmpty distilled then
                 note ()
-                Console.WriteLine "#save: nothing left to save after distilling — every definition referenced session-only state"
+
+                Console.WriteLine
+                    "#save: nothing left to save after distilling — every definition referenced session-only state"
             else
                 match Fmt.formatLines distilled with
                 | Error msg ->
@@ -4257,9 +4392,10 @@ let private saveDirective (state: State) (arg: string) : unit =
 
 let rec private loop (state: State) =
     // an anonymous record bound last line completes its fields now
-    let state =
-        { state with
-            TypeEnv = Check.withPendingAnonDefs state.TypeEnv }
+    let state = {
+        state with
+            TypeEnv = Check.withPendingAnonDefs state.TypeEnv
+    }
 
     currentEnv.Value <- state.TypeEnv
     // the alias names ride along [D:command-head-alias]: the head tint
@@ -4268,8 +4404,7 @@ let rec private loop (state: State) =
 
     // and the head lookup for the parse/completeness resolver, the same
     // shape the eval resolver builds [D:command-head-alias]
-    currentAliasHead.Value <-
-        fun n -> Map.tryFind n state.Aliases |> Option.map (fun a -> (a.Exe, a.Prefix))
+    currentAliasHead.Value <- fun n -> Map.tryFind n state.Aliases |> Option.map (fun a -> (a.Exe, a.Prefix))
     currentVals.Value <- state.Values
 
     match entryStarted with
@@ -4368,7 +4503,8 @@ let rec private loop (state: State) =
 
             if body.Trim() = "" then
                 if Map.isEmpty state.Aliases then
-                    Console.WriteLine "no aliases — declare them in the init file (weir/init.weir) or here: #alias k = kubectl"
+                    Console.WriteLine
+                        "no aliases — declare them in the init file (weir/init.weir) or here: #alias k = kubectl"
                 else
                     for KeyValue(name, a) in state.Aliases do
                         let tgt = String.concat " " (a.Exe :: a.Prefix)
@@ -4396,7 +4532,11 @@ let rec private loop (state: State) =
                 | Ok(name, alias) ->
                     let tgt = String.concat " " (alias.Exe :: alias.Prefix)
                     Console.WriteLine $"alias {name} = {tgt}"
-                    loop { state with Aliases = Map.add name alias state.Aliases }
+
+                    loop {
+                        state with
+                            Aliases = Map.add name alias state.Aliases
+                    }
         else
             let word = t.Split(' ').[0]
 
@@ -4470,9 +4610,7 @@ let rec private loop (state: State) =
                 state
             | Ok lls, None ->
                 let entryStatement (st: State) (ll: Script.LogicalLine) =
-                    match
-                        Script.checkStatement false None (fun _ -> resolver st) sessionImport st.TypeEnv ll
-                    with
+                    match Script.checkStatement false None (fun _ -> resolver st) sessionImport st.TypeEnv ll with
                     | Error({ File = Some mf } as d) ->
                         // a prompt import's module error, at the module's
                         // own site [D:repl-import]
@@ -4580,9 +4718,7 @@ let rec private loop (state: State) =
             // lines open the multiline buffer)
             let ll = Script.singleLine (Script.stripComment line)
 
-            match
-                Script.checkStatement false None (fun _ -> resolver state) sessionImport state.TypeEnv ll
-            with
+            match Script.checkStatement false None (fun _ -> resolver state) sessionImport state.TypeEnv ll with
             | Error d when d.Parse ->
                 lastErrored <- true
                 lastExit <- None
@@ -4612,10 +4748,11 @@ let rec private loop (state: State) =
                 (match d.Span, d.File with
                  | Some sp, _ ->
                      diagLine (
-                         Check.formatError
-                             { Span = sp
-                               Message = d.Message
-                               Origin = None }
+                         Check.formatError {
+                             Span = sp
+                             Message = d.Message
+                             Origin = None
+                         }
                      )
                  // a prompt import's module error, at the module's own
                  // site [D:repl-import]
@@ -4708,44 +4845,47 @@ let private prepareSessionField
     | Some msg -> err msg
     | None ->
 
-    match name, value with
-    | "cwd", Eval.VStr p ->
-        let home () = Builtins.homeDir ()
+        match name, value with
+        | "cwd", Eval.VStr p ->
+            let home () = Builtins.homeDir ()
 
-        let expanded =
-            if p = "~" then home ()
-            elif p.StartsWith "~/" then Path.Combine(home (), p.Substring 2)
-            else p
+            let expanded =
+                if p = "~" then
+                    home ()
+                elif p.StartsWith "~/" then
+                    Path.Combine(home (), p.Substring 2)
+                else
+                    p
 
-        let resolved = Session.resolve expanded
+            let resolved = Session.resolve expanded
 
-        if Directory.Exists resolved then
-            Some(fun () -> Session.setCwd resolved)
-        else
-            err $"cwd: no such directory: {resolved}"
-    | "logLevel", Eval.VStr lvl ->
-        match Builtins.parseLogLevel lvl with
-        | Ok i -> Some(fun () -> Builtins.setLogThreshold i)
-        | Error e -> err e
-    | "echoCap", Eval.VInt n ->
-        let cap = Eval.toIntArg "echoCap" Eval.Amount n
-        Some(fun () -> echoCap <- Some cap)
-    | "env", Eval.VSeq pairs ->
-        // the session's base reality, not an overlay: set the
-        // process env once, before the first prompt — exactly what
-        // exec'ing weir with this environment would mean. Env.get,
-        // Env.vars, and every spawn see it with no new machinery;
-        // within env and the sigils layer over it as they layer
-        // over any inherited env. (No unset: an entry adds or
-        // overrides, never hides.) Every pair was judged above before
-        // any is set, so a refused one leaves the process env untouched
-        // (all-or-nothing)
-        Some(fun () ->
-            for item in pairs do
-                match item with
-                | Eval.VTuple [ Eval.VStr k; Eval.VStr v ] -> Environment.SetEnvironmentVariable(k, v)
-                | _ -> ())
-    | k, _ -> err $"#session {k}: unexpected value"
+            if Directory.Exists resolved then
+                Some(fun () -> Session.setCwd resolved)
+            else
+                err $"cwd: no such directory: {resolved}"
+        | "logLevel", Eval.VStr lvl ->
+            match Builtins.parseLogLevel lvl with
+            | Ok i -> Some(fun () -> Builtins.setLogThreshold i)
+            | Error e -> err e
+        | "echoCap", Eval.VInt n ->
+            let cap = Eval.toIntArg "echoCap" Eval.Amount n
+            Some(fun () -> echoCap <- Some cap)
+        | "env", Eval.VSeq pairs ->
+            // the session's base reality, not an overlay: set the
+            // process env once, before the first prompt — exactly what
+            // exec'ing weir with this environment would mean. Env.get,
+            // Env.vars, and every spawn see it with no new machinery;
+            // within env and the sigils layer over it as they layer
+            // over any inherited env. (No unset: an entry adds or
+            // overrides, never hides.) Every pair was judged above before
+            // any is set, so a refused one leaves the process env untouched
+            // (all-or-nothing)
+            Some(fun () ->
+                for item in pairs do
+                    match item with
+                    | Eval.VTuple [ Eval.VStr k; Eval.VStr v ] -> Environment.SetEnvironmentVariable(k, v)
+                    | _ -> ())
+        | k, _ -> err $"#session {k}: unexpected value"
 
 /// load the init file into the session; all-or-nothing. Returns the
 /// state to start with and prints the one report line (stderr — a piped
@@ -4785,220 +4925,228 @@ let private loadInit (baseState: State) : State =
             notLoaded ()
         | [] ->
 
-        let strictVenv = snd (Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv)
+            let strictVenv = snd (Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv)
 
-        let aliasMap: Map<string, Alias> =
-            ic.Aliases |> List.fold (fun m (_, n, a) -> Map.add n a m) Map.empty
+            let aliasMap: Map<string, Alias> =
+                ic.Aliases |> List.fold (fun m (_, n, a) -> Map.add n a m) Map.empty
 
-        // the settings first — settings before names. Every field is
-        // judged before any applies, and a later failure (a name, the
-        // prompt) restores what the settings changed: a refused init
-        // leaves no partial state [D:init-all-or-nothing]
-        let prepared =
-            ic.Settings
-            |> List.map (fun (ll, name, te) ->
-                try
-                    prepareSessionField path lines ll name te strictVenv
-                with ex ->
-                    // a raising value (File.read on a missing path…) fails
-                    // the load like any other located error, never a raw
-                    // trace [D:init-eval-guard]
-                    initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
-                    None)
+            // the settings first — settings before names. Every field is
+            // judged before any applies, and a later failure (a name, the
+            // prompt) restores what the settings changed: a refused init
+            // leaves no partial state [D:init-all-or-nothing]
+            let prepared =
+                ic.Settings
+                |> List.map (fun (ll, name, te) ->
+                    try
+                        prepareSessionField path lines ll name te strictVenv
+                    with ex ->
+                        // a raising value (File.read on a missing path…) fails
+                        // the load like any other located error, never a raw
+                        // trace [D:init-eval-guard]
+                        initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
+                        None)
 
-        if prepared |> List.exists Option.isNone then
-            notLoaded ()
-        else
+            if prepared |> List.exists Option.isNone then
+                notLoaded ()
+            else
 
-        let savedCwd = Session.Cwd()
-        let savedLog = Builtins.logThresholdNow ()
-        let savedCap = echoCap
+                let savedCwd = Session.Cwd()
+                let savedLog = Builtins.logThresholdNow ()
+                let savedCap = echoCap
 
-        let savedEnv =
-            [ for e in Environment.GetEnvironmentVariables() |> Seq.cast<Collections.DictionaryEntry> ->
-                  string e.Key, string e.Value ]
+                let savedEnv = [
+                    for e in Environment.GetEnvironmentVariables() |> Seq.cast<Collections.DictionaryEntry> ->
+                        string e.Key, string e.Value
+                ]
 
-        for apply in List.choose id prepared do
-            apply ()
+                for apply in List.choose id prepared do
+                    apply ()
 
-        let notLoaded () =
-            Session.setCwd savedCwd
-            Builtins.setLogThreshold savedLog
-            echoCap <- savedCap
-            let before = Map.ofList savedEnv
+                let notLoaded () =
+                    Session.setCwd savedCwd
+                    Builtins.setLogThreshold savedLog
+                    echoCap <- savedCap
+                    let before = Map.ofList savedEnv
 
-            for e in Environment.GetEnvironmentVariables() |> Seq.cast<Collections.DictionaryEntry> do
-                if not (before.ContainsKey(string e.Key)) then
-                    Environment.SetEnvironmentVariable(string e.Key, null)
+                    for e in Environment.GetEnvironmentVariables() |> Seq.cast<Collections.DictionaryEntry> do
+                        if not (before.ContainsKey(string e.Key)) then
+                            Environment.SetEnvironmentVariable(string e.Key, null)
 
-            for k, v in savedEnv do
-                if Environment.GetEnvironmentVariable k <> v then
-                    Environment.SetEnvironmentVariable(k, v)
+                    for k, v in savedEnv do
+                        if Environment.GetEnvironmentVariable k <> v then
+                            Environment.SetEnvironmentVariable(k, v)
 
-            notLoaded ()
+                    notLoaded ()
 
-        // the declarations checked strict (a script's rules); the session
-        // binds them in its own env, where bare names stay available at the
-        // prompt [D:init-check-one-home] — strict-clean means this re-check
-        // passes
-        let importer = Script.fileImportLoader Script.resolver (Script.importAnchor path)
+                // the declarations checked strict (a script's rules); the session
+                // binds them in its own env, where bare names stay available at the
+                // prompt [D:init-check-one-home] — strict-clean means this re-check
+                // passes
+                let importer = Script.fileImportLoader Script.resolver (Script.importAnchor path)
 
-        let sessionDecls =
-            ic.Decls
-            |> List.fold
-                (fun acc (ll, _) ->
-                    match acc with
-                    | Error _ -> acc
-                    | Ok(env, done') ->
-                        match Script.checkStatement false None Script.resolver importer env ll with
-                        | Ok chk -> Ok(chk.Env, (ll, chk) :: done')
-                        | Error d -> Error d)
-                (Ok(baseState.TypeEnv, []))
-            |> Result.map (snd >> List.rev)
+                let sessionDecls =
+                    ic.Decls
+                    |> List.fold
+                        (fun acc (ll, _) ->
+                            match acc with
+                            | Error _ -> acc
+                            | Ok(env, done') ->
+                                match Script.checkStatement false None Script.resolver importer env ll with
+                                | Ok chk -> Ok(chk.Env, (ll, chk) :: done')
+                                | Error d -> Error d)
+                        (Ok(baseState.TypeEnv, []))
+                    |> Result.map (snd >> List.rev)
 
-        match sessionDecls with
-        | Error d ->
-            initDiag path d.PhysLine d.PhysCol (srcLine d.PhysLine) d.Message
-            notLoaded ()
-        | Ok sessionDecls ->
+                match sessionDecls with
+                | Error d ->
+                    initDiag path d.PhysLine d.PhysCol (srcLine d.PhysLine) d.Message
+                    notLoaded ()
+                | Ok sessionDecls ->
 
-        let attachments = Script.docAttachments (List.ofArray lines)
-        let mutable venv = baseState.Values
-        let mutable tenv = baseState.TypeEnv
-        let mutable names = 0
-        let mutable docs: Map<string, string list> = Map.empty
-        let mutable evalFailed = false
+                    let attachments = Script.docAttachments (List.ofArray lines)
+                    let mutable venv = baseState.Values
+                    let mutable tenv = baseState.TypeEnv
+                    let mutable names = 0
+                    let mutable docs: Map<string, string list> = Map.empty
+                    let mutable evalFailed = false
 
-        for ll, chk in sessionDecls do
-            if not evalFailed then
-                tenv <- chk.Env
+                    for ll, chk in sessionDecls do
+                        if not evalFailed then
+                            tenv <- chk.Env
 
-                try
-                    match chk.Kind with
-                    | Script.KType(decl, validator) ->
-                        names <- names + 1
-                        venv <- Eval.declare venv decl validator
-                    | Script.KLet(name, _, te) ->
-                        names <- names + 1
-                        let v = Eval.eval venv te
-                        noteCommandSeq name te v
-                        venv <- Map.add name v venv
+                            try
+                                match chk.Kind with
+                                | Script.KType(decl, validator) ->
+                                    names <- names + 1
+                                    venv <- Eval.declare venv decl validator
+                                | Script.KLet(name, _, te) ->
+                                    names <- names + 1
+                                    let v = Eval.eval venv te
+                                    noteCommandSeq name te v
+                                    venv <- Map.add name v venv
 
-                        (match attachments |> List.tryFind (fun (a: Script.DocAttach) -> a.Line = ll.Head) with
-                         | Some a -> docs <- Map.add name a.Doc docs
-                         | None -> ())
-                    | Script.KLetPat(pat, _, te) ->
-                        let bindings = Eval.bindPattern pat (Eval.eval venv te)
-                        names <- names + bindings.Length
-                        venv <- bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv
-                    | Script.KImport lm ->
-                        // replay the module and expose `Alias.member`,
-                        // as the script runner does [D:init-import]
-                        let procFacts =
-                            [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
-                            |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
+                                    (match
+                                        attachments |> List.tryFind (fun (a: Script.DocAttach) -> a.Line = ll.Head)
+                                     with
+                                     | Some a -> docs <- Map.add name a.Doc docs
+                                     | None -> ())
+                                | Script.KLetPat(pat, _, te) ->
+                                    let bindings = Eval.bindPattern pat (Eval.eval venv te)
+                                    names <- names + bindings.Length
+                                    venv <- bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                                | Script.KImport lm ->
+                                    // replay the module and expose `Alias.member`,
+                                    // as the script runner does [D:init-import]
+                                    let procFacts =
+                                        [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
+                                        |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
 
-                        let moduleVenv = Script.replayModule procFacts lm
+                                    let moduleVenv = Script.replayModule procFacts lm
 
-                        venv <-
-                            lm.Members
-                            |> List.fold
-                                (fun acc (n, _) ->
-                                    match Map.tryFind n moduleVenv with
-                                    | Some v -> Map.add $"{lm.Alias}.{n}" v acc
-                                    | None -> acc)
-                                venv
+                                    venv <-
+                                        lm.Members
+                                        |> List.fold
+                                            (fun acc (n, _) ->
+                                                match Map.tryFind n moduleVenv with
+                                                | Some v -> Map.add $"{lm.Alias}.{n}" v acc
+                                                | None -> acc)
+                                            venv
 
-                        docs <-
-                            lm.MemberDocs
-                            |> Map.fold (fun acc n d -> Map.add $"{lm.Alias}.{n}" d acc) docs
+                                    docs <-
+                                        lm.MemberDocs |> Map.fold (fun acc n d -> Map.add $"{lm.Alias}.{n}" d acc) docs
 
-                        names <- names + List.length lm.Members
-                    | _ -> ()
-                with ex ->
-                    // a raising let fails the load with a
-                    // located error [D:init-eval-guard];
-                    // names stay all-or-nothing (nothing
-                    // below binds). An effect an earlier
-                    // let already ran is the file's own
-                    // doing — the load reports, it cannot
-                    // unwrite
-                    initDiag path ll.Head 1 (srcLine ll.Head) ex.Message
-                    evalFailed <- true
+                                    names <- names + List.length lm.Members
+                                | _ -> ()
+                            with ex ->
+                                // a raising let fails the load with a
+                                // located error [D:init-eval-guard];
+                                // names stay all-or-nothing (nothing
+                                // below binds). An effect an earlier
+                                // let already ran is the file's own
+                                // doing — the load reports, it cannot
+                                // unwrite
+                                initDiag path ll.Head 1 (srcLine ll.Head) ex.Message
+                                evalFailed <- true
 
-        if evalFailed then
-            notLoaded ()
-        else
+                    if evalFailed then
+                        notLoaded ()
+                    else
 
-        // the prompt field last [D:session-prompt]: a string renders
-        // as-is; a function runs once per entry read
-        let promptOutcome =
-            match ic.Prompt with
-            | None -> true
-            | Some(ll, te) ->
-                try
-                    match te.Ty with
-                    | Types.TStr ->
-                        match Eval.eval venv te with
-                        | Eval.VStr s ->
-                            promptProvider <- Some(fun _ -> s)
-                            true
-                        | _ -> false
-                    | Types.TFun(Types.TUnit, Types.TStr) ->
-                        let f = Eval.eval venv te
+                        // the prompt field last [D:session-prompt]: a string renders
+                        // as-is; a function runs once per entry read
+                        let promptOutcome =
+                            match ic.Prompt with
+                            | None -> true
+                            | Some(ll, te) ->
+                                try
+                                    match te.Ty with
+                                    | Types.TStr ->
+                                        match Eval.eval venv te with
+                                        | Eval.VStr s ->
+                                            promptProvider <- Some(fun _ -> s)
+                                            true
+                                        | _ -> false
+                                    | Types.TFun(Types.TUnit, Types.TStr) ->
+                                        let f = Eval.eval venv te
 
-                        promptProvider <-
-                            Some(fun _ ->
-                                match Eval.apply f Eval.VUnit with
-                                | Eval.VStr s -> s
-                                | _ -> defaultPrompt)
+                                        promptProvider <-
+                                            Some(fun _ ->
+                                                match Eval.apply f Eval.VUnit with
+                                                | Eval.VStr s -> s
+                                                | _ -> defaultPrompt)
 
-                        true
-                    // the status-carrying provider [D:prompt-status-arg]:
-                    // ok is the tint — true when the last entry ran
-                    // clean (a bare command's nonzero exit counts as
-                    // not-clean and rides in exit; a reified exit
-                    // stays data)
-                    | _ ->
-                        let f = Eval.eval venv te
+                                        true
+                                    // the status-carrying provider [D:prompt-status-arg]:
+                                    // ok is the tint — true when the last entry ran
+                                    // clean (a bare command's nonzero exit counts as
+                                    // not-clean and rides in exit; a reified exit
+                                    // stays data)
+                                    | _ ->
+                                        let f = Eval.eval venv te
 
-                        promptProvider <-
-                            Some(fun (ok, exit, durationMs) ->
-                                let ex =
-                                    match exit with
-                                    | Some n -> Eval.VUnion("Some", Some(Eval.VInt(int64 n)))
-                                    | None -> Eval.VUnion("None", None)
+                                        promptProvider <-
+                                            Some(fun (ok, exit, durationMs) ->
+                                                let ex =
+                                                    match exit with
+                                                    | Some n -> Eval.VUnion("Some", Some(Eval.VInt(int64 n)))
+                                                    | None -> Eval.VUnion("None", None)
 
-                                let st =
-                                    Eval.VRecord(
-                                        "PromptStatus",
-                                        [ "ok", Eval.VBool ok; "exit", ex; "duration", Eval.VDur durationMs ]
-                                    )
+                                                let st =
+                                                    Eval.VRecord(
+                                                        "PromptStatus",
+                                                        [
+                                                            "ok", Eval.VBool ok
+                                                            "exit", ex
+                                                            "duration", Eval.VDur durationMs
+                                                        ]
+                                                    )
 
-                                match Eval.apply f st with
-                                | Eval.VStr s -> s
-                                | _ -> defaultPrompt)
+                                                match Eval.apply f st with
+                                                | Eval.VStr s -> s
+                                                | _ -> defaultPrompt)
 
-                        true
-                with ex ->
-                    initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
-                    false
+                                        true
+                                with ex ->
+                                    initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
+                                    false
 
-        if not promptOutcome then
-            promptProvider <- None
-            notLoaded ()
-        else
+                        if not promptOutcome then
+                            promptProvider <- None
+                            notLoaded ()
+                        else
 
-            initDocs <- docs
+                            initDocs <- docs
 
-            // a successful load is silent [D:repl-init]:
-            // only failure reports (notLoaded above), so
-            // the session opens straight on the prompt —
-            // the loaded names/settings/prompt are their
-            // own evidence it worked
-            { TypeEnv = tenv
-              Values = venv
-              Aliases = aliasMap }
+                            // a successful load is silent [D:repl-init]:
+                            // only failure reports (notLoaded above), so
+                            // the session opens straight on the prompt —
+                            // the loaded names/settings/prompt are their
+                            // own evidence it worked
+                            {
+                                TypeEnv = tenv
+                                Values = venv
+                                Aliases = aliasMap
+                            }
 
 let run () =
     // the waiting indicator draws in the REPL only [D:waiting-repl-only]

@@ -43,11 +43,12 @@ and ArmRhs =
     | RExpr of Expr
     | RMatch of MatchE // nested, rendered multi-line
 
-and MatchE =
-    { Bid: int // the arm group is a reindentable block
-      Scrut: Expr
-      Arms: LitArm list
-      Catch: ArmRhs }
+and MatchE = {
+    Bid: int // the arm group is a reindentable block
+    Scrut: Expr
+    Arms: LitArm list
+    Catch: ArmRhs
+}
 
 type RecStyle =
     | RInline
@@ -132,10 +133,11 @@ and YVal =
     | YSplice of string
     | YNest of (string * YVal) list
 
-and Block =
-    { Bid: int
-      Body: Stmt list
-      Result: Expr }
+and Block = {
+    Bid: int
+    Body: Stmt list
+    Result: Expr
+}
 
 type Program = { Stmts: Stmt list }
 
@@ -180,21 +182,23 @@ let private renderPat (a: LitArm) : string =
 // Render configuration: every field is a semantics-neutral spelling
 // choice the ledger claims equivalent, so a transformed program is
 // well-formed by construction.
-type RenderCfg =
-    { Extra: int -> int // re-indent: added indent for that block id
-      SigilCmdLet: string -> bool // cmd-let binder -> `$(...)` RHS spelling
-      InlineBracket: int -> bool // Stroustrup bid -> inline bracket spelling
-      JoinBlock: int -> bool // block bid -> single-line `;` join
-      SingleLambda: int -> bool // lambda bid -> single-line `;`/`in` spelling
-      SplatEcho: string -> bool } // echo marker -> $@[literal] spelling
+type RenderCfg = {
+    Extra: int -> int // re-indent: added indent for that block id
+    SigilCmdLet: string -> bool // cmd-let binder -> `$(...)` RHS spelling
+    InlineBracket: int -> bool // Stroustrup bid -> inline bracket spelling
+    JoinBlock: int -> bool // block bid -> single-line `;` join
+    SingleLambda: int -> bool // lambda bid -> single-line `;`/`in` spelling
+    SplatEcho: string -> bool
+} // echo marker -> $@[literal] spelling
 
-let defaultCfg =
-    { Extra = (fun _ -> 0)
-      SigilCmdLet = (fun _ -> false)
-      InlineBracket = (fun _ -> false)
-      JoinBlock = (fun _ -> false)
-      SingleLambda = (fun _ -> false)
-      SplatEcho = (fun _ -> false) }
+let defaultCfg = {
+    Extra = (fun _ -> 0)
+    SigilCmdLet = (fun _ -> false)
+    InlineBracket = (fun _ -> false)
+    JoinBlock = (fun _ -> false)
+    SingleLambda = (fun _ -> false)
+    SplatEcho = (fun _ -> false)
+}
 
 // a block is `;`-joinable only when every body statement is a print —
 // lets spell `in` inline, and command lines take `;` as a literal argv
@@ -398,7 +402,10 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
     // [D:unused-bindings]; usage is a fact of the tree, so every render
     // config agrees
     let unread = unreadBinders p
-    let bindName (v: string) = if unread.Contains v then "_" + v else v
+
+    let bindName (v: string) =
+        if unread.Contains v then "_" + v else v
+
     let sp n = String(' ', n)
     let out = ResizeArray<string * bool>()
     let emit ind (text: string) = out.Add(sp ind + text, true)
@@ -845,31 +852,33 @@ let blockIds (p: Program) : int list =
 // `;`-joins its successor; headed districts (`if ... then !`) are legal
 // in nested positions; type declarations are top-level only.
 
-type Scope =
-    { Ints: string list
-      Strs: string list
-      IntSeqs: string list // seq<int> binders
-      StrSeqs: string list // seq<string> binders (lists + command lets)
-      Recs: (string * (string * VTy) list) list
-      RecVals: (string * string) list // binder -> record type
-      Unions: (string * (string * VTy option) list) list
-      UnionVals: (string * string) list // binder -> union type
-      Fresh: int
-      Marker: int
-      Bid: int }
+type Scope = {
+    Ints: string list
+    Strs: string list
+    IntSeqs: string list // seq<int> binders
+    StrSeqs: string list // seq<string> binders (lists + command lets)
+    Recs: (string * (string * VTy) list) list
+    RecVals: (string * string) list // binder -> record type
+    Unions: (string * (string * VTy option) list) list
+    UnionVals: (string * string) list // binder -> union type
+    Fresh: int
+    Marker: int
+    Bid: int
+}
 
-let emptyScope =
-    { Ints = []
-      Strs = []
-      IntSeqs = []
-      StrSeqs = []
-      Recs = []
-      RecVals = []
-      Unions = []
-      UnionVals = []
-      Fresh = 0
-      Marker = 0
-      Bid = 0 }
+let emptyScope = {
+    Ints = []
+    Strs = []
+    IntSeqs = []
+    StrSeqs = []
+    Recs = []
+    RecVals = []
+    Unions = []
+    UnionVals = []
+    Fresh = 0
+    Marker = 0
+    Bid = 0
+}
 
 let private freshVal (sc: Scope) =
     $"v{sc.Fresh}", { sc with Fresh = sc.Fresh + 1 }
@@ -921,28 +930,33 @@ let private intCap = 1_000_000_000L
 
 let rec genIntExpr (sc: Scope) (hi: int64) (depth: int) : Gen<Expr> =
     let atoms =
-        [ 3,
-          gen {
-              let! n = Gen.choose (0, int (min hi 99L))
-              return EInt n
-          } ]
+        [
+            3,
+            gen {
+                let! n = Gen.choose (0, int (min hi 99L))
+                return EInt n
+            }
+        ]
         // a var/field holds <= intCap; usable only where the budget admits it
         @ (if hi >= intCap && not sc.Ints.IsEmpty then
-               [ 4,
-                 gen {
-                     let! v = Gen.elements sc.Ints
-                     return EVar(v, VInt)
-                 } ]
+               [
+                   4,
+                   gen {
+                       let! v = Gen.elements sc.Ints
+                       return EVar(v, VInt)
+                   }
+               ]
            else
                [])
-        @ (let intFields =
-            [ for (r, tyName) in sc.RecVals do
-                  match sc.Recs |> List.tryFind (fst >> (=) tyName) with
-                  | Some(_, fields) ->
-                      for (f, fty) in fields do
-                          if fty = VInt then
-                              yield EField(r, f, VInt)
-                  | None -> () ]
+        @ (let intFields = [
+            for (r, tyName) in sc.RecVals do
+                match sc.Recs |> List.tryFind (fst >> (=) tyName) with
+                | Some(_, fields) ->
+                    for (f, fty) in fields do
+                        if fty = VInt then
+                            yield EField(r, f, VInt)
+                | None -> ()
+           ]
 
            if hi >= intCap && not intFields.IsEmpty then
                [ 2, Gen.elements intFields ]
@@ -950,44 +964,48 @@ let rec genIntExpr (sc: Scope) (hi: int64) (depth: int) : Gen<Expr> =
                [])
         // seq lengths are small (bounded by generation), always in budget
         @ (if hi >= 1024L && not (sc.IntSeqs.IsEmpty && sc.StrSeqs.IsEmpty) then
-               [ 1,
-                 gen {
-                     let! x = Gen.elements (sc.IntSeqs @ sc.StrSeqs)
-                     return ESeqLen x
-                 } ]
+               [
+                   1,
+                   gen {
+                       let! x = Gen.elements (sc.IntSeqs @ sc.StrSeqs)
+                       return ESeqLen x
+                   }
+               ]
            else
                [])
 
     if depth <= 0 || hi < 4L then
         Gen.frequency atoms
     else
-        let compound =
-            [ 2,
-              gen {
-                  let! op = Gen.elements [ "+"; "*" ]
+        let compound = [
+            2,
+            gen {
+                let! op = Gen.elements [ "+"; "*" ]
 
-                  if op = "+" then
-                      // sum of two <= hi/2 is <= hi
-                      let h = hi / 2L
-                      let! a = genIntExpr sc h (depth - 1)
-                      let! b = genIntExpr sc h (depth - 1)
-                      return EBin("+", a, b)
-                  else
-                      // product of two <= sqrt(hi) is <= hi
-                      let r = int64 (System.Math.Sqrt(float hi))
-                      let! a = genIntExpr sc r (depth - 1)
-                      let! b = genIntExpr sc r (depth - 1)
-                      return EBin("*", a, b)
-              } ]
+                if op = "+" then
+                    // sum of two <= hi/2 is <= hi
+                    let h = hi / 2L
+                    let! a = genIntExpr sc h (depth - 1)
+                    let! b = genIntExpr sc h (depth - 1)
+                    return EBin("+", a, b)
+                else
+                    // product of two <= sqrt(hi) is <= hi
+                    let r = int64 (System.Math.Sqrt(float hi))
+                    let! a = genIntExpr sc r (depth - 1)
+                    let! b = genIntExpr sc r (depth - 1)
+                    return EBin("*", a, b)
+            }
+        ]
 
-        let ifElse =
-            [ 1,
-              gen {
-                  let! c = genCond sc (depth - 1)
-                  let! a = genIntExpr sc hi (depth - 1)
-                  let! b = genIntExpr sc hi (depth - 1)
-                  return EIfElse(c, a, b)
-              } ]
+        let ifElse = [
+            1,
+            gen {
+                let! c = genCond sc (depth - 1)
+                let! a = genIntExpr sc hi (depth - 1)
+                let! b = genIntExpr sc hi (depth - 1)
+                return EIfElse(c, a, b)
+            }
+        ]
 
         Gen.frequency (atoms @ compound @ ifElse)
 
@@ -1000,19 +1018,22 @@ and genExpr (sc: Scope) (ty: VTy) (depth: int) : Gen<Expr> =
             @ (if sc.Strs.IsEmpty then
                    []
                else
-                   [ 4,
-                     gen {
-                         let! v = Gen.elements sc.Strs
-                         return EVar(v, VStr)
-                     } ])
-            @ (let strFields =
-                [ for (r, tyName) in sc.RecVals do
-                      match sc.Recs |> List.tryFind (fst >> (=) tyName) with
-                      | Some(_, fields) ->
-                          for (f, fty) in fields do
-                              if fty = VStr then
-                                  yield EField(r, f, VStr)
-                      | None -> () ]
+                   [
+                       4,
+                       gen {
+                           let! v = Gen.elements sc.Strs
+                           return EVar(v, VStr)
+                       }
+                   ])
+            @ (let strFields = [
+                for (r, tyName) in sc.RecVals do
+                    match sc.Recs |> List.tryFind (fst >> (=) tyName) with
+                    | Some(_, fields) ->
+                        for (f, fty) in fields do
+                            if fty = VStr then
+                                yield EField(r, f, VStr)
+                    | None -> ()
+               ]
 
                if strFields.IsEmpty then
                    []
@@ -1024,36 +1045,39 @@ and genExpr (sc: Scope) (ty: VTy) (depth: int) : Gen<Expr> =
         else
             // interp holes are int-typed by construction (a string literal
             // inside a hole would nest quotes)
-            let compound =
-                [ 2,
-                  gen {
-                      let! e = genExpr sc VInt (depth - 1)
-                      let! t = genSafeWord
-                      let! tail = genSafeWord
-                      return EInterp([ t, e ], tail)
-                  } ]
+            let compound = [
+                2,
+                gen {
+                    let! e = genExpr sc VInt (depth - 1)
+                    let! t = genSafeWord
+                    let! tail = genSafeWord
+                    return EInterp([ t, e ], tail)
+                }
+            ]
 
-            let ifElse =
-                [ 1,
-                  gen {
-                      let! c = genCond sc (depth - 1)
-                      let! a = genExpr sc VStr (depth - 1)
-                      let! b = genExpr sc VStr (depth - 1)
-                      return EIfElse(c, a, b)
-                  } ]
+            let ifElse = [
+                1,
+                gen {
+                    let! c = genCond sc (depth - 1)
+                    let! a = genExpr sc VStr (depth - 1)
+                    let! b = genExpr sc VStr (depth - 1)
+                    return EIfElse(c, a, b)
+                }
+            ]
 
             Gen.frequency (atoms @ compound @ ifElse)
 
 and genCond (sc: Scope) (depth: int) : Gen<Cond> =
-    Gen.frequency
-        [ 4,
-          gen {
-              let! op = Gen.elements [ ">"; "==" ]
-              let! a = genExpr sc VInt (max 0 depth)
-              let! b = genExpr sc VInt (max 0 depth)
-              return CCmp(op, a, b)
-          }
-          1, Gen.map CLit Arb.generate<bool> ]
+    Gen.frequency [
+        4,
+        gen {
+            let! op = Gen.elements [ ">"; "==" ]
+            let! a = genExpr sc VInt (max 0 depth)
+            let! b = genExpr sc VInt (max 0 depth)
+            return CCmp(op, a, b)
+        }
+        1, Gen.map CLit Arb.generate<bool>
+    ]
 
 let rec genMatch (sc: Scope) (resTy: VTy) (depth: int) : Gen<MatchE * Scope> =
     let genArmRhs (sc: Scope) : Gen<ArmRhs * Scope> =
@@ -1064,13 +1088,14 @@ let rec genMatch (sc: Scope) (resTy: VTy) (depth: int) : Gen<MatchE * Scope> =
             }
 
         if depth > 0 then
-            Gen.frequency
-                [ 4, plain
-                  1,
-                  gen {
-                      let! inner, sc = genMatch sc resTy (depth - 1)
-                      return RMatch inner, sc
-                  } ]
+            Gen.frequency [
+                4, plain
+                1,
+                gen {
+                    let! inner, sc = genMatch sc resTy (depth - 1)
+                    return RMatch inner, sc
+                }
+            ]
         else
             plain
 
@@ -1113,513 +1138,520 @@ let rec genMatch (sc: Scope) (resTy: VTy) (depth: int) : Gen<MatchE * Scope> =
         let! catch, sc = genArmRhs sc
 
         return
-            { Bid = bid
-              Scrut = scrut
-              Arms = litArms @ guardArms
-              Catch = catch },
+            {
+                Bid = bid
+                Scrut = scrut
+                Arms = litArms @ guardArms
+                Catch = catch
+            },
             sc
     }
 
 // inBlock: inside a let-block body (bare command statements and type
 // declarations excluded there)
 let rec genStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
-    let candidates =
-        [ // yaml district [D:yaml-district] — top-level only for now
-          if not inBlock && depth >= 1 then
-              yield
-                  3,
-                  gen {
-                      let d, sc = freshVal sc
-                      let bid = sc.Bid
-                      let sc = { sc with Bid = sc.Bid + 1 }
-                      let! nEntries = Gen.choose (1, 3)
-
-                      let genLeaf =
-                          gen {
-                              let! pick = Gen.choose (0, 2)
-
-                              match pick with
-                              | 0 ->
-                                  let! n = Gen.choose (0, 99)
-                                  return YLitInt n
-                              | 1 ->
-                                  let! w = genSafeWord
-                                  return YLitWord w
-                              | _ ->
-                                  match sc.Ints @ sc.Strs with
-                                  | [] ->
-                                      let! n = Gen.choose (0, 99)
-                                      return YLitInt n
-                                  | vars ->
-                                      let! v = Gen.elements vars
-                                      return YSplice v
-                          }
-
-                      let! entries =
-                          gen {
-                              let mutable acc = []
-
-                              for i in 0 .. nEntries - 1 do
-                                  let! v =
-                                      gen {
-                                          let! nest = Gen.choose (0, 4)
-
-                                          if nest = 0 then
-                                              let! nk = Gen.choose (1, 2)
-
-                                              let! inner =
-                                                  Gen.listOfLength nk genLeaf
-                                                  |> Gen.map (List.mapi (fun j l -> $"n{j}", l))
-
-                                              return YNest inner
-                                          else
-                                              return! genLeaf
-                                      }
-
-                                  acc <- acc @ [ $"k{i}", v ]
-
-                              return acc
-                          }
-
-                      return SYaml(bid, d, entries), { sc with StrSeqs = sc.StrSeqs }
-                  }
-          if not inBlock then
-              yield
-                  2,
-                  gen {
-                      let v, sc = freshVal sc
-                      let! isPoll = Gen.elements [ false; true ]
-                      let! value = Gen.choose (1, 99)
-                      return SRetryPoll(v, isPoll, value), sc
-                  }
-
-          // a `readonly` block [D:pure-stage2]: a pure int body,
-          // trivially read-only, so it checks clean under the ambient
-          // ceiling — exercises the standalone head + the enforcement
-          if not inBlock then
-              yield
-                  2,
-                  gen {
-                      let v, sc = freshVal sc
-                      let! body = genExpr sc VInt 1
-                      return SReadonly(v, body), { sc with Ints = v :: sc.Ints }
-                  }
-
-          // a `plan` block [D:plan-apply]: a captured File.write, bound and
-          // read via Plan.isEmpty — exercises the plan head + the eval
-          // interception (the write does not perform). The binder is
-          // Plan-typed, read only by its trailing self-print, so it joins
-          // no scope collection.
-          if not inBlock then
-              yield
-                  2,
-                  gen {
-                      let v, sc = freshVal sc
-                      return SPlan v, sc
-                  }
-
-          if not inBlock then
-              yield
-                  3,
-                  gen {
-                      let v, sc = freshVal sc
-                      // quarters are exact in binary — renders stay
-                      // deterministic and short
-                      let! an = Gen.choose (0, 40)
-                      let! bn = Gen.choose (1, 40)
-                      let! op = Gen.elements [ "+"; "-"; "*" ]
-                      let! withCmp = Gen.frequency [ 2, Gen.constant true; 1, Gen.constant false ]
-                      let! cn = Gen.choose (0, 160)
-
-                      return
-                          SFloat(
-                              v,
-                              float an / 4.0,
-                              op,
-                              float bn / 4.0,
-                              (if withCmp then Some(float cn / 4.0) else None)
-                          ),
-                          sc
-                  }
-
-          // simple let
-          yield
-              5,
-              gen {
-                  let v, sc = freshVal sc
-                  let! ty = Gen.elements [ VInt; VStr ]
-                  let! e = genExpr sc ty 2
-
-                  let sc =
-                      match ty with
-                      | VInt -> { sc with Ints = v :: sc.Ints }
-                      | VStr -> { sc with Strs = v :: sc.Strs }
-
-                  return SLet(v, e), sc
-              }
-
-          // print with a unique marker riding along
-          yield
-              4,
-              gen {
-                  let m, sc = freshMarker sc
-                  let! e = genExpr sc VInt 1
-                  return SPrint(EInterp([ m, e ], "")), sc
-              }
-
-          if not inBlock then
-              // echo (external command statement — top level / if bodies)
-              yield
-                  2,
-                  gen {
-                      let m, sc = freshMarker sc
-                      let! w = genSafeWord
-                      return SEcho [ m; w ], sc
-                  }
-
-              // record type declaration
-              yield
-                  2,
-                  gen {
-                      let n, sc = freshTy sc
-                      let bid, sc = freshBid sc
-                      let! nFields = Gen.choose (1, 3)
-                      let! styleIx = Gen.elements [ 0; 1; 2 ]
-
-                      let style =
-                          match styleIx with
-                          | 0 -> RInline
-                          | 1 -> RStroustrup bid
-                          | _ -> RAligned
-
-                      let! specs =
-                          Gen.listOfLength
-                              nFields
-                              (gen {
-                                  let! ty = Gen.elements [ VInt; VStr ]
-                                  let! attr = Gen.frequency [ 5, Gen.constant None; 1, Gen.map Some genSafeWord ]
-                                  return attr, ty
-                              })
-
-                      // field names carry the type's tag: same-field-set
-                      // record types make literals ambiguous
-                      let fields =
-                          specs |> List.mapi (fun i (attr, ty) -> attr, $"F{n.Substring 1}_{i}", ty)
-
-                      return
-                          STypeRec(n, fields, style),
-                          { sc with
-                              Recs = (n, fields |> List.map (fun (_, f, t) -> f, t)) :: sc.Recs }
-                  }
-
-              // union type declaration
-              yield
-                  2,
-                  gen {
-                      let n, sc = freshTy sc
-                      let bid, sc = freshBid sc
-                      let! nCases = Gen.choose (2, 3)
-
-                      let! payloads =
-                          Gen.listOfLength
-                              nCases
-                              (Gen.frequency
-                                  [ 2, Gen.constant None
-                                    1, Gen.constant (Some VInt)
-                                    1, Gen.constant (Some VStr) ])
-
-                      let cases = payloads |> List.mapi (fun i p -> $"C{sc.Fresh}_{i}", p)
-                      let sc = { sc with Fresh = sc.Fresh + 1 }
-                      let! multiline = Arb.generate<bool>
-
-                      return
-                          STypeUnion(n, cases, multiline, bid),
-                          { sc with
-                              Unions = (n, cases) :: sc.Unions }
-                  }
-
-              // standalone district
-              yield
-                  1,
-                  gen {
-                      let bid, sc = freshBid sc
-
-                      let! n = Gen.choose (1, 3)
-
-                      let! cmds, sc =
-                          genN
-                              n
-                              (fun sc ->
-                                  gen {
-                                      let m, sc = freshMarker sc
-                                      let! w = genSafeWord
-                                      return [ m; w ], sc
-                                  })
-                              sc
-
-                      return SDistrict(bid, None, cmds), sc
-                  }
-
-          // record literal (needs a record type in scope)
-          if not sc.Recs.IsEmpty then
-              yield
-                  3,
-                  gen {
-                      let! (tyName, fields) = Gen.elements sc.Recs
-                      let r, sc = freshVal sc
-                      let bid, sc = freshBid sc
-                      let! styleIx = Gen.elements [ 0; 1; 2 ]
-
-                      let style =
-                          match styleIx with
-                          | 0 -> RInline
-                          | 1 -> RStroustrup bid
-                          | _ -> RAligned
-
-                      let! fvs =
-                          sequenceGen (fields |> List.map (fun (f, ty) -> Gen.map (fun e -> f, e) (genExpr sc ty 1)))
-
-                      return
-                          SRecLet(r, tyName, fvs, style),
-                          { sc with
-                              RecVals = (r, tyName) :: sc.RecVals }
-                  }
-
-          // union value
-          if not sc.Unions.IsEmpty then
-              yield
-                  2,
-                  gen {
-                      let! (tyName, cases) = Gen.elements sc.Unions
-                      let u, sc = freshVal sc
-                      let! (case, payloadTy) = Gen.elements cases
-
-                      let! payload =
-                          match payloadTy with
-                          | Some t -> Gen.map Some (genExpr sc t 0)
-                          | None -> Gen.constant None
-
-                      return
-                          SUnionLet(u, case, payload),
-                          { sc with
-                              UnionVals = (u, tyName) :: sc.UnionVals }
-                  }
-
-          // full-coverage match over a union value
-          if not sc.UnionVals.IsEmpty then
-              yield
-                  2,
-                  gen {
-                      let! (uv, tyName) = Gen.elements sc.UnionVals
-
-                      let cases =
-                          sc.Unions
-                          |> List.tryFind (fst >> (=) tyName)
-                          |> Option.map snd
-                          |> Option.defaultValue []
-
-                      let v, sc = freshVal sc
-
-                      // arms threaded explicitly (payload binders extend scope
-                      // only inside their own arm)
-                      let rec buildArms cs sc =
-                          match cs with
-                          | [] -> Gen.constant ([], sc)
-                          | (case, payloadTy) :: rest ->
-                              gen {
-                                  let! arm, sc =
-                                      match payloadTy with
-                                      | Some VInt ->
-                                          gen {
-                                              let b, sc = freshVal sc
-                                              let! e = genExpr { sc with Ints = b :: sc.Ints } VStr 1
-                                              return (case, Some b, e), sc
-                                          }
-                                      | Some VStr ->
-                                          gen {
-                                              let b, sc = freshVal sc
-                                              let! e = genExpr { sc with Strs = b :: sc.Strs } VStr 1
-                                              return (case, Some b, e), sc
-                                          }
-                                      | None ->
-                                          gen {
-                                              let! e = genExpr sc VStr 1
-                                              return (case, None, e), sc
-                                          }
-
-                                  let! more, sc = buildArms rest sc
-                                  return arm :: more, sc
-                              }
-
-                      let! arms, sc = buildArms cases sc
-                      return SLetUnionMatch(v, uv, arms), { sc with Strs = v :: sc.Strs }
-                  }
-
-          // list literal
-          yield
-              3,
-              gen {
-                  let x, sc = freshVal sc
-                  let bid, sc = freshBid sc
-                  let! ty = Gen.elements [ VInt; VStr ]
-                  let! n = Gen.choose (1, 4)
-                  let! styleIx = Gen.elements [ 0; 1; 2 ]
-
-                  let style =
-                      match styleIx with
-                      | 0 -> LInline
-                      | 1 -> LStroustrup bid
-                      | _ -> LAligned
-
-                  let! elems = Gen.listOfLength n (genExpr sc ty 1)
-
-                  let sc =
-                      match ty with
-                      | VInt -> { sc with IntSeqs = x :: sc.IntSeqs }
-                      | VStr -> { sc with StrSeqs = x :: sc.StrSeqs }
-
-                  return SListLet(x, ty, elems, style), sc
-              }
-
-          // pipeline over an int list
-          if not sc.IntSeqs.IsEmpty then
-              yield
-                  2,
-                  gen {
-                      let! src = Gen.elements sc.IntSeqs
-                      let n, sc = freshVal sc
-                      let bid, sc = freshBid sc
-                      let! k = Gen.choose (1, 9)
-                      return SPipeLet(bid, n, src, k), { sc with Ints = n :: sc.Ints }
-                  }
-
-          // seq<string> |> print
-          if not sc.StrSeqs.IsEmpty then
-              yield
-                  1,
-                  gen {
-                      let! x = Gen.elements sc.StrSeqs
-                      return SSeqPrint x, sc
-                  }
-
-          // command-backed let (legal in blocks too — the spine flag)
-          yield
-              1,
-              gen {
-                  let g, sc = freshVal sc
-                  let m, sc = freshMarker sc
-                  let! w = genSafeWord
-                  return SCmdLet(g, [ m; w ]), { sc with StrSeqs = g :: sc.StrSeqs }
-              }
-
-          // literal-scrutinee match as a let RHS (binder stays out of the
-          // pools: its arm type is local to the match)
-          yield
-              2,
-              gen {
-                  let v, sc = freshVal sc
-                  let! resTy = Gen.elements [ VInt; VStr ]
-                  let! m, sc = genMatch sc resTy (min depth 1)
-                  return SLetMatch(v, m), sc
-              }
-
-          if depth > 0 then
-              // block-bodied let
-              yield
-                  3,
-                  gen {
-                      let v, sc = freshVal sc
-                      let bid, sc = freshBid sc
-                      let! nBody = Gen.choose (1, 3)
-                      let! body, scB = genN nBody (fun sc -> genStmt sc (depth - 1) true) sc
-                      let! resTy = Gen.elements [ VInt; VStr ]
-                      let! res = genExpr scB resTy 1
-
-                      // pop block-local bindings, keep the counters
-                      let scOut =
-                          { sc with
-                              Fresh = scB.Fresh
-                              Marker = scB.Marker
-                              Bid = scB.Bid }
-
-                      let scOut =
-                          match resTy with
-                          | VInt -> { scOut with Ints = v :: scOut.Ints }
-                          | VStr -> { scOut with Strs = v :: scOut.Strs }
-
-                      return SLetBlock(v, { Bid = bid; Body = body; Result = res }), scOut
-                  }
-
-              // if with a unit body
-              yield
-                  3,
-                  gen {
-                      let bid, sc = freshBid sc
-                      let! c = genCond sc 0
-                      let! nBody = Gen.choose (1, 3)
-                      let! body, scB = genN nBody (fun sc -> genUnitStmt sc (depth - 1) inBlock) sc
-
-                      return
-                          SIf(bid, c, body),
-                          { sc with
-                              Fresh = scB.Fresh
-                              Marker = scB.Marker
-                              Bid = scB.Bid }
-                  }
-
-          // multiline iter lambda (unit statement)
-          yield
-              2,
-              gen {
-                  let bid, sc = freshBid sc
-                  let param, sc = freshVal sc
-                  let tv, sc = freshVal sc
-                  let m, sc = freshMarker sc
-                  let! n = Gen.choose (1, 3)
-                  let! elems = Gen.listOfLength n genSafeWord
-                  let! k = Gen.choose (0, 9)
-                  let! closerAlone = Arb.generate<bool>
-                  return SIterLambda(bid, param, elems, tv, k, m, closerAlone), sc
-              }
-
-          // multiline map lambda on a let-RHS spine
-          yield
-              2,
-              gen {
-                  let bid, sc = freshBid sc
-                  let name, sc = freshVal sc
-                  let param, sc = freshVal sc
-                  let tv, sc = freshVal sc
-                  let! n = Gen.choose (1, 3)
-                  let! elems = Gen.listOfLength n (Gen.choose (0, 20))
-                  let! addend = Gen.choose (1, 9)
-                  let! closerAlone = Arb.generate<bool>
-
-                  return
-                      SMapLambda(bid, name, param, elems, tv, addend, closerAlone), { sc with Ints = name :: sc.Ints }
-              }
-
-          // headed district (legal in nested positions too)
-          yield
-              2,
-              gen {
-                  let bid, sc = freshBid sc
-                  let! c = genCond sc 0
-                  let! n = Gen.choose (1, 3)
-
-                  let! cmds, sc =
-                      genN
-                          n
-                          (fun sc ->
-                              gen {
-                                  let m, sc = freshMarker sc
-                                  let! w = genSafeWord
-                                  return [ m; w ], sc
-                              })
-                          sc
-
-                  return SDistrict(bid, Some c, cmds), sc
-              } ]
+    let candidates = [ // yaml district [D:yaml-district] — top-level only for now
+        if not inBlock && depth >= 1 then
+            yield
+                3,
+                gen {
+                    let d, sc = freshVal sc
+                    let bid = sc.Bid
+                    let sc = { sc with Bid = sc.Bid + 1 }
+                    let! nEntries = Gen.choose (1, 3)
+
+                    let genLeaf =
+                        gen {
+                            let! pick = Gen.choose (0, 2)
+
+                            match pick with
+                            | 0 ->
+                                let! n = Gen.choose (0, 99)
+                                return YLitInt n
+                            | 1 ->
+                                let! w = genSafeWord
+                                return YLitWord w
+                            | _ ->
+                                match sc.Ints @ sc.Strs with
+                                | [] ->
+                                    let! n = Gen.choose (0, 99)
+                                    return YLitInt n
+                                | vars ->
+                                    let! v = Gen.elements vars
+                                    return YSplice v
+                        }
+
+                    let! entries =
+                        gen {
+                            let mutable acc = []
+
+                            for i in 0 .. nEntries - 1 do
+                                let! v =
+                                    gen {
+                                        let! nest = Gen.choose (0, 4)
+
+                                        if nest = 0 then
+                                            let! nk = Gen.choose (1, 2)
+
+                                            let! inner =
+                                                Gen.listOfLength nk genLeaf
+                                                |> Gen.map (List.mapi (fun j l -> $"n{j}", l))
+
+                                            return YNest inner
+                                        else
+                                            return! genLeaf
+                                    }
+
+                                acc <- acc @ [ $"k{i}", v ]
+
+                            return acc
+                        }
+
+                    return SYaml(bid, d, entries), { sc with StrSeqs = sc.StrSeqs }
+                }
+        if not inBlock then
+            yield
+                2,
+                gen {
+                    let v, sc = freshVal sc
+                    let! isPoll = Gen.elements [ false; true ]
+                    let! value = Gen.choose (1, 99)
+                    return SRetryPoll(v, isPoll, value), sc
+                }
+
+        // a `readonly` block [D:pure-stage2]: a pure int body,
+        // trivially read-only, so it checks clean under the ambient
+        // ceiling — exercises the standalone head + the enforcement
+        if not inBlock then
+            yield
+                2,
+                gen {
+                    let v, sc = freshVal sc
+                    let! body = genExpr sc VInt 1
+                    return SReadonly(v, body), { sc with Ints = v :: sc.Ints }
+                }
+
+        // a `plan` block [D:plan-apply]: a captured File.write, bound and
+        // read via Plan.isEmpty — exercises the plan head + the eval
+        // interception (the write does not perform). The binder is
+        // Plan-typed, read only by its trailing self-print, so it joins
+        // no scope collection.
+        if not inBlock then
+            yield
+                2,
+                gen {
+                    let v, sc = freshVal sc
+                    return SPlan v, sc
+                }
+
+        if not inBlock then
+            yield
+                3,
+                gen {
+                    let v, sc = freshVal sc
+                    // quarters are exact in binary — renders stay
+                    // deterministic and short
+                    let! an = Gen.choose (0, 40)
+                    let! bn = Gen.choose (1, 40)
+                    let! op = Gen.elements [ "+"; "-"; "*" ]
+                    let! withCmp = Gen.frequency [ 2, Gen.constant true; 1, Gen.constant false ]
+                    let! cn = Gen.choose (0, 160)
+
+                    return
+                        SFloat(v, float an / 4.0, op, float bn / 4.0, (if withCmp then Some(float cn / 4.0) else None)),
+                        sc
+                }
+
+        // simple let
+        yield
+            5,
+            gen {
+                let v, sc = freshVal sc
+                let! ty = Gen.elements [ VInt; VStr ]
+                let! e = genExpr sc ty 2
+
+                let sc =
+                    match ty with
+                    | VInt -> { sc with Ints = v :: sc.Ints }
+                    | VStr -> { sc with Strs = v :: sc.Strs }
+
+                return SLet(v, e), sc
+            }
+
+        // print with a unique marker riding along
+        yield
+            4,
+            gen {
+                let m, sc = freshMarker sc
+                let! e = genExpr sc VInt 1
+                return SPrint(EInterp([ m, e ], "")), sc
+            }
+
+        if not inBlock then
+            // echo (external command statement — top level / if bodies)
+            yield
+                2,
+                gen {
+                    let m, sc = freshMarker sc
+                    let! w = genSafeWord
+                    return SEcho [ m; w ], sc
+                }
+
+            // record type declaration
+            yield
+                2,
+                gen {
+                    let n, sc = freshTy sc
+                    let bid, sc = freshBid sc
+                    let! nFields = Gen.choose (1, 3)
+                    let! styleIx = Gen.elements [ 0; 1; 2 ]
+
+                    let style =
+                        match styleIx with
+                        | 0 -> RInline
+                        | 1 -> RStroustrup bid
+                        | _ -> RAligned
+
+                    let! specs =
+                        Gen.listOfLength
+                            nFields
+                            (gen {
+                                let! ty = Gen.elements [ VInt; VStr ]
+                                let! attr = Gen.frequency [ 5, Gen.constant None; 1, Gen.map Some genSafeWord ]
+                                return attr, ty
+                            })
+
+                    // field names carry the type's tag: same-field-set
+                    // record types make literals ambiguous
+                    let fields =
+                        specs |> List.mapi (fun i (attr, ty) -> attr, $"F{n.Substring 1}_{i}", ty)
+
+                    return
+                        STypeRec(n, fields, style),
+                        {
+                            sc with
+                                Recs = (n, fields |> List.map (fun (_, f, t) -> f, t)) :: sc.Recs
+                        }
+                }
+
+            // union type declaration
+            yield
+                2,
+                gen {
+                    let n, sc = freshTy sc
+                    let bid, sc = freshBid sc
+                    let! nCases = Gen.choose (2, 3)
+
+                    let! payloads =
+                        Gen.listOfLength
+                            nCases
+                            (Gen.frequency [
+                                2, Gen.constant None
+                                1, Gen.constant (Some VInt)
+                                1, Gen.constant (Some VStr)
+                            ])
+
+                    let cases = payloads |> List.mapi (fun i p -> $"C{sc.Fresh}_{i}", p)
+                    let sc = { sc with Fresh = sc.Fresh + 1 }
+                    let! multiline = Arb.generate<bool>
+
+                    return
+                        STypeUnion(n, cases, multiline, bid),
+                        {
+                            sc with
+                                Unions = (n, cases) :: sc.Unions
+                        }
+                }
+
+            // standalone district
+            yield
+                1,
+                gen {
+                    let bid, sc = freshBid sc
+
+                    let! n = Gen.choose (1, 3)
+
+                    let! cmds, sc =
+                        genN
+                            n
+                            (fun sc ->
+                                gen {
+                                    let m, sc = freshMarker sc
+                                    let! w = genSafeWord
+                                    return [ m; w ], sc
+                                })
+                            sc
+
+                    return SDistrict(bid, None, cmds), sc
+                }
+
+        // record literal (needs a record type in scope)
+        if not sc.Recs.IsEmpty then
+            yield
+                3,
+                gen {
+                    let! (tyName, fields) = Gen.elements sc.Recs
+                    let r, sc = freshVal sc
+                    let bid, sc = freshBid sc
+                    let! styleIx = Gen.elements [ 0; 1; 2 ]
+
+                    let style =
+                        match styleIx with
+                        | 0 -> RInline
+                        | 1 -> RStroustrup bid
+                        | _ -> RAligned
+
+                    let! fvs =
+                        sequenceGen (fields |> List.map (fun (f, ty) -> Gen.map (fun e -> f, e) (genExpr sc ty 1)))
+
+                    return
+                        SRecLet(r, tyName, fvs, style),
+                        {
+                            sc with
+                                RecVals = (r, tyName) :: sc.RecVals
+                        }
+                }
+
+        // union value
+        if not sc.Unions.IsEmpty then
+            yield
+                2,
+                gen {
+                    let! (tyName, cases) = Gen.elements sc.Unions
+                    let u, sc = freshVal sc
+                    let! (case, payloadTy) = Gen.elements cases
+
+                    let! payload =
+                        match payloadTy with
+                        | Some t -> Gen.map Some (genExpr sc t 0)
+                        | None -> Gen.constant None
+
+                    return
+                        SUnionLet(u, case, payload),
+                        {
+                            sc with
+                                UnionVals = (u, tyName) :: sc.UnionVals
+                        }
+                }
+
+        // full-coverage match over a union value
+        if not sc.UnionVals.IsEmpty then
+            yield
+                2,
+                gen {
+                    let! (uv, tyName) = Gen.elements sc.UnionVals
+
+                    let cases =
+                        sc.Unions
+                        |> List.tryFind (fst >> (=) tyName)
+                        |> Option.map snd
+                        |> Option.defaultValue []
+
+                    let v, sc = freshVal sc
+
+                    // arms threaded explicitly (payload binders extend scope
+                    // only inside their own arm)
+                    let rec buildArms cs sc =
+                        match cs with
+                        | [] -> Gen.constant ([], sc)
+                        | (case, payloadTy) :: rest ->
+                            gen {
+                                let! arm, sc =
+                                    match payloadTy with
+                                    | Some VInt ->
+                                        gen {
+                                            let b, sc = freshVal sc
+                                            let! e = genExpr { sc with Ints = b :: sc.Ints } VStr 1
+                                            return (case, Some b, e), sc
+                                        }
+                                    | Some VStr ->
+                                        gen {
+                                            let b, sc = freshVal sc
+                                            let! e = genExpr { sc with Strs = b :: sc.Strs } VStr 1
+                                            return (case, Some b, e), sc
+                                        }
+                                    | None ->
+                                        gen {
+                                            let! e = genExpr sc VStr 1
+                                            return (case, None, e), sc
+                                        }
+
+                                let! more, sc = buildArms rest sc
+                                return arm :: more, sc
+                            }
+
+                    let! arms, sc = buildArms cases sc
+                    return SLetUnionMatch(v, uv, arms), { sc with Strs = v :: sc.Strs }
+                }
+
+        // list literal
+        yield
+            3,
+            gen {
+                let x, sc = freshVal sc
+                let bid, sc = freshBid sc
+                let! ty = Gen.elements [ VInt; VStr ]
+                let! n = Gen.choose (1, 4)
+                let! styleIx = Gen.elements [ 0; 1; 2 ]
+
+                let style =
+                    match styleIx with
+                    | 0 -> LInline
+                    | 1 -> LStroustrup bid
+                    | _ -> LAligned
+
+                let! elems = Gen.listOfLength n (genExpr sc ty 1)
+
+                let sc =
+                    match ty with
+                    | VInt -> { sc with IntSeqs = x :: sc.IntSeqs }
+                    | VStr -> { sc with StrSeqs = x :: sc.StrSeqs }
+
+                return SListLet(x, ty, elems, style), sc
+            }
+
+        // pipeline over an int list
+        if not sc.IntSeqs.IsEmpty then
+            yield
+                2,
+                gen {
+                    let! src = Gen.elements sc.IntSeqs
+                    let n, sc = freshVal sc
+                    let bid, sc = freshBid sc
+                    let! k = Gen.choose (1, 9)
+                    return SPipeLet(bid, n, src, k), { sc with Ints = n :: sc.Ints }
+                }
+
+        // seq<string> |> print
+        if not sc.StrSeqs.IsEmpty then
+            yield
+                1,
+                gen {
+                    let! x = Gen.elements sc.StrSeqs
+                    return SSeqPrint x, sc
+                }
+
+        // command-backed let (legal in blocks too — the spine flag)
+        yield
+            1,
+            gen {
+                let g, sc = freshVal sc
+                let m, sc = freshMarker sc
+                let! w = genSafeWord
+                return SCmdLet(g, [ m; w ]), { sc with StrSeqs = g :: sc.StrSeqs }
+            }
+
+        // literal-scrutinee match as a let RHS (binder stays out of the
+        // pools: its arm type is local to the match)
+        yield
+            2,
+            gen {
+                let v, sc = freshVal sc
+                let! resTy = Gen.elements [ VInt; VStr ]
+                let! m, sc = genMatch sc resTy (min depth 1)
+                return SLetMatch(v, m), sc
+            }
+
+        if depth > 0 then
+            // block-bodied let
+            yield
+                3,
+                gen {
+                    let v, sc = freshVal sc
+                    let bid, sc = freshBid sc
+                    let! nBody = Gen.choose (1, 3)
+                    let! body, scB = genN nBody (fun sc -> genStmt sc (depth - 1) true) sc
+                    let! resTy = Gen.elements [ VInt; VStr ]
+                    let! res = genExpr scB resTy 1
+
+                    // pop block-local bindings, keep the counters
+                    let scOut = {
+                        sc with
+                            Fresh = scB.Fresh
+                            Marker = scB.Marker
+                            Bid = scB.Bid
+                    }
+
+                    let scOut =
+                        match resTy with
+                        | VInt -> { scOut with Ints = v :: scOut.Ints }
+                        | VStr -> { scOut with Strs = v :: scOut.Strs }
+
+                    return SLetBlock(v, { Bid = bid; Body = body; Result = res }), scOut
+                }
+
+            // if with a unit body
+            yield
+                3,
+                gen {
+                    let bid, sc = freshBid sc
+                    let! c = genCond sc 0
+                    let! nBody = Gen.choose (1, 3)
+                    let! body, scB = genN nBody (fun sc -> genUnitStmt sc (depth - 1) inBlock) sc
+
+                    return
+                        SIf(bid, c, body),
+                        {
+                            sc with
+                                Fresh = scB.Fresh
+                                Marker = scB.Marker
+                                Bid = scB.Bid
+                        }
+                }
+
+        // multiline iter lambda (unit statement)
+        yield
+            2,
+            gen {
+                let bid, sc = freshBid sc
+                let param, sc = freshVal sc
+                let tv, sc = freshVal sc
+                let m, sc = freshMarker sc
+                let! n = Gen.choose (1, 3)
+                let! elems = Gen.listOfLength n genSafeWord
+                let! k = Gen.choose (0, 9)
+                let! closerAlone = Arb.generate<bool>
+                return SIterLambda(bid, param, elems, tv, k, m, closerAlone), sc
+            }
+
+        // multiline map lambda on a let-RHS spine
+        yield
+            2,
+            gen {
+                let bid, sc = freshBid sc
+                let name, sc = freshVal sc
+                let param, sc = freshVal sc
+                let tv, sc = freshVal sc
+                let! n = Gen.choose (1, 3)
+                let! elems = Gen.listOfLength n (Gen.choose (0, 20))
+                let! addend = Gen.choose (1, 9)
+                let! closerAlone = Arb.generate<bool>
+
+                return SMapLambda(bid, name, param, elems, tv, addend, closerAlone), { sc with Ints = name :: sc.Ints }
+            }
+
+        // headed district (legal in nested positions too)
+        yield
+            2,
+            gen {
+                let bid, sc = freshBid sc
+                let! c = genCond sc 0
+                let! n = Gen.choose (1, 3)
+
+                let! cmds, sc =
+                    genN
+                        n
+                        (fun sc ->
+                            gen {
+                                let m, sc = freshMarker sc
+                                let! w = genSafeWord
+                                return [ m; w ], sc
+                            })
+                        sc
+
+                return SDistrict(bid, Some c, cmds), sc
+            }
+    ]
 
     Gen.frequency candidates
 
@@ -1627,58 +1659,59 @@ let rec genStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
 // territory — a bare command line is an unbound variable there, at any
 // nesting; districts are the command spelling in bodies.
 and genUnitStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
-    let candidates =
-        [ yield
-              4,
-              gen {
-                  let m, sc = freshMarker sc
-                  let! e = genExpr sc VInt 1
-                  return SPrint(EInterp([ m, e ], "")), sc
-              }
+    let candidates = [
+        yield
+            4,
+            gen {
+                let m, sc = freshMarker sc
+                let! e = genExpr sc VInt 1
+                return SPrint(EInterp([ m, e ], "")), sc
+            }
 
-          // a command-RHS let in the statement body [D:statement-lets]:
-          // this position's fuzz coverage — bare and reified
-          // spellings, the binder read in place
-          yield
-              2,
-              gen {
-                  let g, sc = freshVal sc
-                  let m, sc = freshMarker sc
-                  let! w = genSafeWord
-                  let! reify = Gen.elements [ false; true ]
-                  return SBodyCmdLet(g, m, w, reify), sc
-              }
+        // a command-RHS let in the statement body [D:statement-lets]:
+        // this position's fuzz coverage — bare and reified
+        // spellings, the binder read in place
+        yield
+            2,
+            gen {
+                let g, sc = freshVal sc
+                let m, sc = freshMarker sc
+                let! w = genSafeWord
+                let! reify = Gen.elements [ false; true ]
+                return SBodyCmdLet(g, m, w, reify), sc
+            }
 
-          yield
-              1,
-              gen {
-                  let bid, sc = freshBid sc
-                  let! c = genCond sc 0
-                  let! n = Gen.choose (1, 2)
+        yield
+            1,
+            gen {
+                let bid, sc = freshBid sc
+                let! c = genCond sc 0
+                let! n = Gen.choose (1, 2)
 
-                  let! cmds, sc =
-                      genN
-                          n
-                          (fun sc ->
-                              gen {
-                                  let m, sc = freshMarker sc
-                                  let! w = genSafeWord
-                                  return [ m; w ], sc
-                              })
-                          sc
+                let! cmds, sc =
+                    genN
+                        n
+                        (fun sc ->
+                            gen {
+                                let m, sc = freshMarker sc
+                                let! w = genSafeWord
+                                return [ m; w ], sc
+                            })
+                        sc
 
-                  return SDistrict(bid, Some c, cmds), sc
-              }
+                return SDistrict(bid, Some c, cmds), sc
+            }
 
-          if depth > 0 then
-              yield
-                  1,
-                  gen {
-                      let bid, sc = freshBid sc
-                      let! c = genCond sc 0
-                      let! st, sc = genUnitStmt sc (depth - 1) inBlock
-                      return SIf(bid, c, [ st ]), sc
-                  } ]
+        if depth > 0 then
+            yield
+                1,
+                gen {
+                    let bid, sc = freshBid sc
+                    let! c = genCond sc 0
+                    let! st, sc = genUnitStmt sc (depth - 1) inBlock
+                    return SIf(bid, c, [ st ]), sc
+                }
+    ]
 
     Gen.frequency candidates
 
@@ -1828,8 +1861,10 @@ module Transform =
 
             Some(
                 render
-                    { defaultCfg with
-                        Extra = (fun b -> if b = bid then k else 0) }
+                    {
+                        defaultCfg with
+                            Extra = (fun b -> if b = bid then k else 0)
+                    }
                     p
             )
 
@@ -1884,13 +1919,14 @@ module Transform =
             | [] -> -1, 0
             | ids -> ids[rnd.Next ids.Length], 1 + rnd.Next 6
 
-        let cfg =
-            { Extra = (fun b -> if b = extraBid then k else 0)
-              SigilCmdLet = cmdlets.Contains
-              InlineBracket = brackets.Contains
-              JoinBlock = joins.Contains
-              SingleLambda = lambdas.Contains
-              SplatEcho = echos.Contains }
+        let cfg = {
+            Extra = (fun b -> if b = extraBid then k else 0)
+            SigilCmdLet = cmdlets.Contains
+            InlineBracket = brackets.Contains
+            JoinBlock = joins.Contains
+            SingleLambda = lambdas.Contains
+            SplatEcho = echos.Contains
+        }
 
         insertBlanks rnd (insertComments rnd (render cfg p))
 

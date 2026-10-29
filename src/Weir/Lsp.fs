@@ -29,7 +29,9 @@ let private isFreshVar (v: string) =
 
 let private displayTy (ty: Ty) : Ty =
     let declared =
-        tyVars ty |> Set.filter (fun v -> not (isFreshVar v)) |> Set.map (fun v -> v.TrimStart '\'')
+        tyVars ty
+        |> Set.filter (fun v -> not (isFreshVar v))
+        |> Set.map (fun v -> v.TrimStart '\'')
 
     let mapping = Collections.Generic.Dictionary<string, string>()
 
@@ -39,7 +41,11 @@ let private displayTy (ty: Ty) : Ty =
         | _ ->
             let r =
                 Seq.initInfinite id
-                |> Seq.map (fun i -> if i < 26 then string (char (int 'a' + i)) else $"{char (int 'a' + i % 26)}{i / 26}")
+                |> Seq.map (fun i ->
+                    if i < 26 then
+                        string (char (int 'a' + i))
+                    else
+                        $"{char (int 'a' + i % 26)}{i / 26}")
                 |> Seq.find (fun c -> not (declared.Contains c) && not (mapping.ContainsValue c))
 
             mapping[v] <- r
@@ -233,15 +239,16 @@ let tokenLegend = [| "weirCommandHead"; "weirArgv"; "weirSplice" |]
 // the entry carries the file's `///` attachments and `#sig` table as
 // lazies: hover, symbols and links read them per request, and each is
 // O(lines) (the sig table reads sig files from disk)
-type private Analysis =
-    { Result:
+type private Analysis = {
+    Result:
         Script.Diagnostic list *
         (Script.LogicalLine * Script.CheckedStatement) list *
         TypeEnv *
         Script.LogicalLine list *
         (Script.LogicalLine * Script.CheckedStatement) list
-      Docs: Lazy<Script.DocAttach list>
-      Sigs: Lazy<Script.SigInfo list> }
+    Docs: Lazy<Script.DocAttach list>
+    Sigs: Lazy<Script.SigInfo list>
+}
 
 let private analysisCache =
     Collections.Generic.Dictionary<struct (bool * string), string list * Analysis>()
@@ -258,10 +265,11 @@ let private analysisEntry (asInit: bool) (path: string) (lines: string list) : A
     match hit with
     | Some r -> r
     | None ->
-        let r =
-            { Result = Script.analyzeLinesAs asInit path lines
-              Docs = lazy (Script.docAttachments lines)
-              Sigs = lazy (Script.sigInfosForFile path lines) }
+        let r = {
+            Result = Script.analyzeLinesAs asInit path lines
+            Docs = lazy (Script.docAttachments lines)
+            Sigs = lazy (Script.sigInfosForFile path lines)
+        }
 
         lock analysisCache (fun () -> analysisCache[key] <- (lines, r))
         r
@@ -401,7 +409,13 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
     let rec emitArgv (ll: Script.LogicalLine) (te: Check.TypedExpr) =
         match te.Kind with
         | Check.TEList args -> args |> List.iter (emitArg ll)
-        | Check.TEApp({ Kind = Check.TEApp({ Kind = Check.TEVar("Seq.append" | "|seqAppend") }, a) }, b) ->
+        | Check.TEApp({
+                          Kind = Check.TEApp({
+                                                 Kind = Check.TEVar("Seq.append" | "|seqAppend")
+                                             },
+                                             a)
+                      },
+                      b) ->
             emitArgv ll a
             emitArgv ll b
         | _ ->
@@ -424,9 +438,13 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
               | Check.THeadDyn(_, he) -> emitArg ll he)
 
              args |> List.iter (emitArg ll)
-         | Check.TEApp({ Kind = Check.TEApp(inner,
-                                            { Kind = Check.TEStr prog
-                                              Span = pspan }) },
+         | Check.TEApp({
+                           Kind = Check.TEApp(inner,
+                                              {
+                                                  Kind = Check.TEStr prog
+                                                  Span = pspan
+                                              })
+                       },
                        argv) when spineIsReifier inner ->
              emitHead ll pspan.Start.Col prog
              emitArgv ll argv
@@ -520,8 +538,7 @@ let pathToUri (path: string) : string =
 // full path (<configHome>/weir/init.weir, XDG/%APPDATA% honoured).
 let private isReplInitPath (path: string) : bool =
     try
-        let initPath =
-            System.IO.Path.Combine(Builtins.configDir (), "weir", "init.weir")
+        let initPath = System.IO.Path.Combine(Builtins.configDir (), "weir", "init.weir")
 
         let a = System.IO.Path.GetFullPath path
         let b = System.IO.Path.GetFullPath initPath
@@ -559,7 +576,11 @@ let private effectiveLines (uri: string) (text: string) : string list =
 let private sessionFieldHover (path: string) (rawLines: string list) (line: int) (col: int) : string option =
     let raw = List.toArray rawLines
 
-    if not (isReplInitPath path || Script.isInitMarked rawLines) || line < 1 || line > raw.Length then
+    if
+        not (isReplInitPath path || Script.isInitMarked rawLines)
+        || line < 1
+        || line > raw.Length
+    then
         None
     else
         // in a #session block at this line? scan the lines above
@@ -589,7 +610,11 @@ let private sessionFieldHover (path: string) (rawLines: string list) (line: int)
                 let keyStart = m.Groups[1].Value.Length // 0-based
                 let colZ = col - 1
 
-                if colZ >= keyStart && colZ < keyStart + key.Length && Set.contains key Script.knownSessionKeys then
+                if
+                    colZ >= keyStart
+                    && colZ < keyStart + key.Length
+                    && Set.contains key Script.knownSessionKeys
+                then
                     let tys = Script.expectedFieldTypes key |> List.map formatTy |> String.concat " | "
                     Some $"{key} : {tys}"
                 else
@@ -872,9 +897,15 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
             | _ -> None)
 
     let orderedBy (members: (string * Ast.AttrSpec list) list) =
-        match members |> List.choose (fun (m, specs) -> ordPos specs |> Option.map (fun n -> m, n)) with
+        match
+            members
+            |> List.choose (fun (m, specs) -> ordPos specs |> Option.map (fun n -> m, n))
+        with
         | [] -> ""
-        | key -> "  (ordered by " + (key |> List.sortBy snd |> List.map fst |> String.concat ", ") + ")"
+        | key ->
+            "  (ordered by "
+            + (key |> List.sortBy snd |> List.map fst |> String.concat ", ")
+            + ")"
 
     let withPos (specs: Ast.AttrSpec list) (sig': string) =
         match ordPos specs with
@@ -919,7 +950,11 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
             )
         else
             cases
-            |> List.tryPick (fun (n, tyO, specs) -> if n = word then Some(withPos specs (caseSig (n, tyO))) else None)
+            |> List.tryPick (fun (n, tyO, specs) ->
+                if n = word then
+                    Some(withPos specs (caseSig (n, tyO)))
+                else
+                    None)
 
 /// a keyword, an operator, punctuation, whitespace, or the wildcard `_`
 /// hovers as nothing — never the enclosing node's type [D:hover-silence].
@@ -1306,9 +1341,12 @@ let definitionTarget
             | Ast.PCase(ctor, _, Some(m, mspan)) ->
                 let caseCol = mspan.End.Col + 1
 
-                if mspan.Start.Col <= jcol && jcol < mspan.End.Col then Some(Choice1Of2 m)
-                elif caseCol <= jcol && jcol < caseCol + ctor.Length then Some(Choice2Of2(Some m, ctor))
-                else None
+                if mspan.Start.Col <= jcol && jcol < mspan.End.Col then
+                    Some(Choice1Of2 m)
+                elif caseCol <= jcol && jcol < caseCol + ctor.Length then
+                    Some(Choice2Of2(Some m, ctor))
+                else
+                    None
             | _ -> None
 
     let rec matchCaseAt (jcol: int) (te: Check.TypedExpr) : Choice<string, string option * string> option =
@@ -1450,12 +1488,9 @@ let definitionTarget
 
                         wordAt useLl.Text jcol
                         |> Option.bind (fun w ->
-                            if w = recName then
-                                typeSite key None
-                            elif recordHasField env key w then
-                                typeSite key (Some w)
-                            else
-                                None)
+                            if w = recName then typeSite key None
+                            elif recordHasField env key w then typeSite key (Some w)
+                            else None)
                     // `from json T`: the adapter's type name jumps to its
                     // declaration [PLAN-diagnostics-arc A3]
                     | Check.TEFrom(_, top, _, _, _, _) ->
@@ -1550,17 +1585,18 @@ type private BinderKey =
     // key [D:lsp-rename-members]
     | MemberKey of string * string option
 
-type private FileOcc =
-    { OName: string
-      Key: BinderKey
-      OBinderSite: bool
-      // 1-based physical line and column, the name's own characters —
-      // the `$`/`$@` sigil and a `(x)`'s parens ride on the node's span
-      // but are not the name
-      OLine: int
-      OCol: int
-      // statement index, for the scope-extent walk
-      OStmt: int }
+type private FileOcc = {
+    OName: string
+    Key: BinderKey
+    OBinderSite: bool
+    // 1-based physical line and column, the name's own characters —
+    // the `$`/`$@` sigil and a `(x)`'s parens ride on the node's span
+    // but are not the name
+    OLine: int
+    OCol: int
+    // statement index, for the scope-extent walk
+    OStmt: int
+}
 
 let private valueOccurrences (stmts: (Script.LogicalLine * Script.CheckedStatement) list) : FileOcc list =
     let arr = List.toArray stmts
@@ -1589,13 +1625,14 @@ let private valueOccurrences (stmts: (Script.LogicalLine * Script.CheckedStateme
         let add (name: string) (key: BinderKey) (site: bool) (pos: (int * int) option) =
             pos
             |> Option.iter (fun (pl, pc) ->
-                found.Add
-                    { OName = name
-                      Key = key
-                      OBinderSite = site
-                      OLine = pl
-                      OCol = pc
-                      OStmt = i })
+                found.Add {
+                    OName = name
+                    Key = key
+                    OBinderSite = site
+                    OLine = pl
+                    OCol = pc
+                    OStmt = i
+                })
 
         let topKey (n: string) =
             match lastTop.TryGetValue n with
@@ -1794,13 +1831,14 @@ let private memberOccurrences
             |> Option.iter (fun jc ->
                 let pl, pc = Script.translate ll jc
 
-                found.Add
-                    { OName = name
-                      Key = key
-                      OBinderSite = site
-                      OLine = pl
-                      OCol = pc
-                      OStmt = i })
+                found.Add {
+                    OName = name
+                    Key = key
+                    OBinderSite = site
+                    OLine = pl
+                    OCol = pc
+                    OStmt = i
+                })
 
         let row (name: string) (jc: int) (display: string) =
             let pl, pc = Script.translate ll jc
@@ -1835,15 +1873,16 @@ let private memberOccurrences
             | _ -> None
 
         let fieldTyOf (d: RecordDef) (args: Ty list) (f: string) =
-            d.Fields |> List.tryFind (fst >> (=) f) |> Option.map (snd >> memberTy d.Params args)
+            d.Fields
+            |> List.tryFind (fst >> (=) f)
+            |> Option.map (snd >> memberTy d.Params args)
 
         // a field word resolved against the target's type: a named
         // record's field is an occurrence; a row variable's is a row
         // site; an anonymous record's is neither
         let fieldAt (ty: Ty) (f: string) (jc: int option) (display: string) : Ty option =
             match ty with
-            | TNamed(k, args) when isAnon k ->
-                recordOf k |> Option.bind (fun d -> fieldTyOf d args f)
+            | TNamed(k, args) when isAnon k -> recordOf k |> Option.bind (fun d -> fieldTyOf d args f)
             | TNamed(k, args) ->
                 recordOf k
                 |> Option.bind (fun d ->
@@ -1859,7 +1898,8 @@ let private memberOccurrences
                 jc |> Option.iter (fun jc -> row f jc display)
                 None
 
-        let caseUse (key: string) (ctor: string) (jc: int option) = add ctor (MemberKey(key, Some ctor)) false jc
+        let caseUse (key: string) (ctor: string) (jc: int option) =
+            add ctor (MemberKey(key, Some ctor)) false jc
 
         let payloadOf (d: UnionDef) (ctor: string) =
             d.Cases |> List.tryPick (fun (c, p) -> if c = ctor then p else None)
@@ -1955,7 +1995,10 @@ let private memberOccurrences
             match te.Kind with
             | TEField(target, f) ->
                 let lo = target.Span.End.Col - 1
-                let jc = wordFind f text lo (min text.Length (max (te.Span.End.Col - 1) (lo + 1 + f.Length)))
+
+                let jc =
+                    wordFind f text lo (min text.Length (max (te.Span.End.Col - 1) (lo + 1 + f.Length)))
+
                 fieldAt target.Ty f jc (spanText te.Span) |> ignore
                 walk target
             | TERecord(recName, fields) ->
@@ -2168,7 +2211,8 @@ let private memberOccurrences
                             f
                             (MemberKey(d.Name, Some f))
                             true
-                            (wordFinds f text mask eq bodyEnd |> List.tryFind (fun jc -> isFieldWord text jc f.Length))
+                            (wordFinds f text mask eq bodyEnd
+                             |> List.tryFind (fun jc -> isFieldWord text jc f.Length))
                 | DUnion cases ->
                     for c, _, _ in cases do
                         add
@@ -2210,12 +2254,7 @@ let private fileOccurrences (stmts: (Script.LogicalLine * Script.CheckedStatemen
 
 /// the occurrence under the cursor (physical 1-based line, col), with
 /// the whole file's table
-let private occurrenceAt
-    (path: string)
-    (lines: string list)
-    (line: int)
-    (col: int)
-    : (FileOcc list * FileOcc) option =
+let private occurrenceAt (path: string) (lines: string list) (line: int) (col: int) : (FileOcc list * FileOcc) option =
     let _, stmts0, _, _, partials = analyzeCached path lines
     let stmts = withPartials stmts0 partials
     let table = fileOccurrences stmts
@@ -2268,7 +2307,12 @@ let referencesFor
 
 /// textDocument/documentHighlight: (physLine, physCol, len, kind) with
 /// kind 3 (Write) at binder sites and 2 (Read) at uses
-let documentHighlightFor (path: string) (lines: string list) (line: int) (col: int) : (int * int * int * int) list option =
+let documentHighlightFor
+    (path: string)
+    (lines: string list)
+    (line: int)
+    (col: int)
+    : (int * int * int * int) list option =
     occurrencesFor path lines line col
     |> Option.map (List.map (fun (l, c, len, site) -> l, c, len, (if site then 3 else 2)))
 
@@ -2315,7 +2359,11 @@ let private renameTarget
 
     let errorFrom (firstLine: int) (lastLine: int) =
         diags
-        |> List.tryFind (fun d -> d.Severity = "error" && d.File = path && d.Line >= firstLine && d.Line <= lastLine)
+        |> List.tryFind (fun d ->
+            d.Severity = "error"
+            && d.File = path
+            && d.Line >= firstLine
+            && d.Line <= lastLine)
 
     if isSigFile path then
         Error "rename is not available in a signature file — its members are the contract a #sig reads by name"
@@ -2399,8 +2447,7 @@ let private renameTarget
             | Some first ->
                 // members are file-wide: the declaration through the end
                 match errorFrom (fst arr[first]).Head (List.length lines) with
-                | Some d ->
-                    Error $"a statement after '{key}'s declaration has an error at line {d.Line} — fix it first"
+                | Some d -> Error $"a statement after '{key}'s declaration has an error at line {d.Line} — fix it first"
                 | None ->
                     // a row-typed access of the field's name could serve
                     // this record or any other — refused, naming the site (R1)
@@ -2587,8 +2634,7 @@ let private renameEditsFor
         let arr = List.toArray stmts
         let n = o.OName
 
-        let envBefore =
-            if first = 0 then env0 else (snd arr[first - 1]).Env
+        let envBefore = if first = 0 then env0 else (snd arr[first - 1]).Env
 
         let edits () =
             table
@@ -2608,16 +2654,18 @@ let private renameEditsFor
         elif newName = "_" then
             Error "'_' is the wildcard, not a name"
         elif not (isIdentName newName) then
-            Error $"'{newName}' is not a name — a name starts with a letter or '_' and continues with letters, digits or '_'"
+            Error
+                $"'{newName}' is not a name — a name starts with a letter or '_' and continues with letters, digits or '_'"
         elif Parser.isKeyword newName then
             Error $"'{newName}' is a keyword, not a name"
         else
             match o.Key with
             | MemberKey(key, member_) -> memberNameCheck stmts table key member_ first newName |> Result.map edits
             | _ ->
-                let noSpan =
-                    { Start = { Line = 1; Col = 1 }
-                      End = { Line = 1; Col = 1 } }
+                let noSpan = {
+                    Start = { Line = 1; Col = 1 }
+                    End = { Line = 1; Col = 1 }
+                }
 
                 match Check.checkBinderName noSpan newName with
                 | Error e -> Error e.Message
@@ -2680,7 +2728,8 @@ let renameFor
             |> List.countBy (fun d -> d.Code)
             |> List.tryPick (fun (code, n) ->
                 if n > defaultArg (Map.tryFind code before) 0 then
-                    afterDiags |> List.tryFind (fun d -> d.Severity = "error" && d.File = path && d.Code = code)
+                    afterDiags
+                    |> List.tryFind (fun d -> d.Severity = "error" && d.File = path && d.Code = code)
                 else
                     None)
 
@@ -2689,8 +2738,7 @@ let renameFor
         | Some d when d.Code = "layout" ->
             Error
                 $"renaming '{oldName}' to '{newName}' would break the column alignment at line {d.Line} — a rename does not re-align other lines; pick a name of the same length, or rename by hand and re-align"
-        | Some d ->
-            Error $"renaming '{oldName}' to '{newName}' would leave an error at line {d.Line}: {d.Message}")
+        | Some d -> Error $"renaming '{oldName}' to '{newName}' would leave an error at line {d.Line}: {d.Message}")
 
 // the within form answers [D:within-kinds] — one table, three
 // consumers. The kind hovers its doc + binds/consumes nature; the
@@ -2911,7 +2959,11 @@ let private typeDefHover (env: TypeEnv) (tyName: string) : string option =
                 | None -> cn)
             |> String.concat " | "
             // a validated type says so [D:validated-types]
-            |> fun shape -> if d.Validated.IsSome then shape + "  (validated)" else shape)
+            |> fun shape ->
+                if d.Validated.IsSome then
+                    shape + "  (validated)"
+                else
+                    shape)
 
 /// the first line of a validated type's `validate` doc
 /// [D:validated-types], read in the file that declares it: `tyName` is
@@ -2930,7 +2982,11 @@ let private validateDocIn
                 let pl, pc = Script.translate ll v.Span.Start.Col
 
                 Script.docAttachments lines
-                |> List.tryPick (fun a -> if a.Line = pl && a.Col = pc then List.tryHead a.Doc else None))
+                |> List.tryPick (fun a ->
+                    if a.Line = pl && a.Col = pc then
+                        List.tryHead a.Doc
+                    else
+                        None))
         | _ -> None)
 
 // the schema= name's hover [D:schema-hover]: file facts, not type facts
@@ -3053,7 +3109,10 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         // as the field's type, not the record's (nodeAt sees only TERecord)
         let fieldInLiteral =
             match node with
-            | Some { Kind = Check.TERecord(recName, _); Ty = recTy } ->
+            | Some {
+                       Kind = Check.TERecord(recName, _)
+                       Ty = recTy
+                   } ->
                 let key =
                     match recTy with
                     | TNamed(k, _) -> k
@@ -3100,8 +3159,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             node
             |> Option.bind (fun n ->
                 match n.Kind, n.Ty with
-                | Check.TEVar vn, TFun(_, TNamed(key, [])) when vn.StartsWith Types.createVarPrefix ->
-                    Some(key, n.Ty)
+                | Check.TEVar vn, TFun(_, TNamed(key, [])) when vn.StartsWith Types.createVarPrefix -> Some(key, n.Ty)
                 | _ -> None)
 
         let createSig =
@@ -3224,7 +3282,8 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 words
                 |> List.tryFind (fun (w, sp) -> w.StartsWith "-" && sp.Start.Col <= jcol && jcol < sp.End.Col)
                 |> Option.bind (fun (w, _) -> sigFlagField si (List.map fst words) w)
-                |> Option.map (fun (rn, f, fty, sigLines, sigStmts) -> formatTy fty, sigFlagDoc si.SigPath rn f sigLines sigStmts))
+                |> Option.map (fun (rn, f, fty, sigLines, sigStmts) ->
+                    formatTy fty, sigFlagDoc si.SigPath rn f sigLines sigStmts))
 
         let ty =
             (sigHead |> Option.map fst)
@@ -3287,9 +3346,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                     let badge =
                         if
                             Purity.tyHasFun sch.Ty
-                            && (Can.pureTopBindings stmts
-                                |> Map.tryFind name
-                                |> Option.defaultValue false)
+                            && (Can.pureTopBindings stmts |> Map.tryFind name |> Option.defaultValue false)
                         then
                             "  (pure)"
                         else
@@ -3403,28 +3460,31 @@ let hoverType (lines: string list) (line: int) (col: int) : string option = hove
 // Each reads the one cached analysis and answers through the verbatim
 // rule; the handlers in `run` only decode params and write JSON.
 
-type InlayHintOptions =
-    { BindingTypes: bool
-      ParameterTypes: bool
-      PipelineTypes: bool
-      MaxLabel: int }
+type InlayHintOptions = {
+    BindingTypes: bool
+    ParameterTypes: bool
+    PipelineTypes: bool
+    MaxLabel: int
+}
 
 /// the defaults [D:inlay-hints]: binder, parameter and return types on,
 /// pipeline-stage types off, labels cut at 40 chars
-let defaultInlayOptions =
-    { BindingTypes = true
-      ParameterTypes = true
-      PipelineTypes = false
-      MaxLabel = 40 }
+let defaultInlayOptions = {
+    BindingTypes = true
+    ParameterTypes = true
+    PipelineTypes = false
+    MaxLabel = 40
+}
 
-type InlayHint =
-    { Line: int // 1-based physical insertion point
-      Col: int
-      Label: string // ": seq<int>"
-      Tooltip: string option // the full type when Label is truncated
-      Kind: int // 1 = Type, 2 = Parameter
-      PaddingLeft: bool
-      PaddingRight: bool }
+type InlayHint = {
+    Line: int // 1-based physical insertion point
+    Col: int
+    Label: string // ": seq<int>"
+    Tooltip: string option // the full type when Label is truncated
+    Kind: int // 1 = Type, 2 = Parameter
+    PaddingLeft: bool
+    PaddingRight: bool
+}
 
 /// the `weir.inlayHints` settings object → options; an absent or
 /// malformed key keeps its default [D:inlay-hints]
@@ -3435,13 +3495,15 @@ let inlayOptionsOf (json: JsonElement) : InlayHintOptions =
         | Some v when v.ValueKind = JsonValueKind.False -> false
         | _ -> d
 
-    { BindingTypes = flag "bindingTypes" defaultInlayOptions.BindingTypes
-      ParameterTypes = flag "parameterTypes" defaultInlayOptions.ParameterTypes
-      PipelineTypes = flag "pipelineTypes" defaultInlayOptions.PipelineTypes
-      MaxLabel =
-        jNum "maxLabelLength" json
-        |> Option.filter (fun n -> n > 0)
-        |> Option.defaultValue defaultInlayOptions.MaxLabel }
+    {
+        BindingTypes = flag "bindingTypes" defaultInlayOptions.BindingTypes
+        ParameterTypes = flag "parameterTypes" defaultInlayOptions.ParameterTypes
+        PipelineTypes = flag "pipelineTypes" defaultInlayOptions.PipelineTypes
+        MaxLabel =
+            jNum "maxLabelLength" json
+            |> Option.filter (fun n -> n > 0)
+            |> Option.defaultValue defaultInlayOptions.MaxLabel
+    }
 
 // a sentinel type variable (`__hole…`, `__…`) is the checker's, not the
 // user's [D:user-language-messages] — nothing renders it
@@ -3503,14 +3565,15 @@ let inlayHintsFor
                 else
                     ": " + full, None
 
-            out.Add
-                { Line = line
-                  Col = col
-                  Label = label
-                  Tooltip = tip
-                  Kind = kind
-                  PaddingLeft = padLeft
-                  PaddingRight = padRight }
+            out.Add {
+                Line = line
+                Col = col
+                Label = label
+                Tooltip = tip
+                Kind = kind
+                PaddingLeft = padLeft
+                PaddingRight = padRight
+            }
 
     // after the word at the logical column, when it is verbatim there
     let afterWord (ll: Script.LogicalLine) (jcol: int) (word: string) (ty: Ty) (kind: int) =
@@ -3541,7 +3604,9 @@ let inlayHintsFor
              // an inner function: its params and return ride the lambda
              // walk, as a top-level function's do
              | Check.TELambda _ -> returnHint ll value (lambdaBodyStart value)
-             | _ -> if opts.BindingTypes then afterWord ll nameSpan.Start.Col name value.Ty 1)
+             | _ ->
+                 if opts.BindingTypes then
+                     afterWord ll nameSpan.Start.Col name value.Ty 1)
 
             walk ll value
             walk ll body
@@ -3615,13 +3680,14 @@ let inlayHintsFor
 
 // ---- document symbols [D:document-symbols] ----------------------
 
-type DocSymbol =
-    { Name: string
-      Detail: string option
-      Kind: int // LSP SymbolKind
-      Range: int * int * int * int // 1-based physical (l1, c1, l2, c2), c2 past the last char
-      Selection: int * int * int * int
-      Children: DocSymbol list }
+type DocSymbol = {
+    Name: string
+    Detail: string option
+    Kind: int // LSP SymbolKind
+    Range: int * int * int * int // 1-based physical (l1, c1, l2, c2), c2 past the last char
+    Selection: int * int * int * int
+    Children: DocSymbol list
+}
 
 /// the outline [D:document-symbols]: one symbol per declaration-shaped
 /// statement (module header, import, `#sig`, type with its members,
@@ -3652,13 +3718,14 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
         | Some(l, c) -> l, c, l, c + len
         | None -> ll.Head, 1, ll.Head, 1
 
-    let sym name detail kind range sel children =
-        { Name = name
-          Detail = detail
-          Kind = kind
-          Range = range
-          Selection = sel
-          Children = children }
+    let sym name detail kind range sel children = {
+        Name = name
+        Detail = detail
+        Kind = kind
+        Range = range
+        Selection = sel
+        Children = children
+    }
 
     let isFun (ty: Ty) =
         match ty with
@@ -3681,13 +3748,7 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
                 | Some(l, c) -> l, c, l, c + n.Length
                 | None -> l1, c1, l1, c1
 
-            sym
-                n
-                (Some(sigOrFlat n (lambdaParamNames value) value.Ty))
-                12
-                (l1, c1, l2, c2 + 1)
-                sel
-                (nestedFns ll value)
+            sym n (Some(sigOrFlat n (lambdaParamNames value) value.Ty)) 12 (l1, c1, l2, c2 + 1) sel (nestedFns ll value)
             :: nestedFns ll body
         | _ -> Check.childExprs te |> List.collect (nestedFns ll)
 
@@ -3749,14 +3810,15 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
         stmts
         |> List.collect (fun (ll, chk) ->
             match chk.Kind with
-            | Script.KModule(name, kwSpan) ->
-                [ sym
-                      (name |> Option.defaultValue "module")
-                      (Some "module header")
-                      2
-                      (rangeOf ll)
-                      (selAt ll (Some kwSpan.Start.Col) "module".Length)
-                      [] ]
+            | Script.KModule(name, kwSpan) -> [
+                sym
+                    (name |> Option.defaultValue "module")
+                    (Some "module header")
+                    2
+                    (rangeOf ll)
+                    (selAt ll (Some kwSpan.Start.Col) "module".Length)
+                    []
+              ]
             | Script.KImport lm ->
                 let q1 = ll.Text.IndexOf '"'
                 let q2 = (if q1 >= 0 then ll.Text.IndexOf('"', q1 + 1) else -1)
@@ -3807,13 +3869,18 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
                         [ sym "validate" detail 6 (lineRange l) sel [] ]
                     | _ -> []
 
-                [ sym
-                      decl.Name
-                      detail
-                      kind
-                      (rangeOf ll)
-                      (selAt ll (wordFind decl.Name ll.Text 0 (if eq >= 0 then eq else ll.Text.Length)) decl.Name.Length)
-                      (members @ validate) ]
+                [
+                    sym
+                        decl.Name
+                        detail
+                        kind
+                        (rangeOf ll)
+                        (selAt
+                            ll
+                            (wordFind decl.Name ll.Text 0 (if eq >= 0 then eq else ll.Text.Length))
+                            decl.Name.Length)
+                        (members @ validate)
+                ]
             | Script.KLet(name, sch, te) ->
                 let ps = lambdaParamNames te
                 let kind = if isFun sch.Ty || not ps.IsEmpty then 12 else 13
@@ -3824,23 +3891,27 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
                     | Some(sll, ms) when sll.Head < ll.Head -> (sll.Head, 1, l2, c2), sigOrFlat name ps ms.Ty
                     | _ -> (l1, c1, l2, c2), sigOrFlat name ps sch.Ty
 
-                [ sym name (Some detail) kind range (selAt ll (binderCol name ll.Text) name.Length) (nestedFns ll te) ]
+                [
+                    sym name (Some detail) kind range (selAt ll (binderCol name ll.Text) name.Length) (nestedFns ll te)
+                ]
             | Script.KLetPat(pat, schemes, _) ->
                 Check.patNameSpans pat
                 |> List.sortBy (fun (_, sp) -> sp.Start.Col)
                 |> List.map (fun (n, sp) ->
                     let detail =
-                        schemes |> List.tryPick (fun (sn, sc) -> if sn = n then Some(formatTy sc.Ty) else None)
+                        schemes
+                        |> List.tryPick (fun (sn, sc) -> if sn = n then Some(formatTy sc.Ty) else None)
 
                     sym n detail 13 (rangeOf ll) (selAt ll (Some sp.Start.Col) n.Length) [])
-            | Script.KSig(name, ms) when not (Set.contains name implemented) ->
-                [ sym
-                      name
-                      (Some "signature — no implementation")
-                      (if isFun ms.Ty then 12 else 13)
-                      (rangeOf ll)
-                      (selAt ll (binderCol name ll.Text) name.Length)
-                      [] ]
+            | Script.KSig(name, ms) when not (Set.contains name implemented) -> [
+                sym
+                    name
+                    (Some "signature — no implementation")
+                    (if isFun ms.Ty then 12 else 13)
+                    (rangeOf ll)
+                    (selAt ll (binderCol name ll.Text) name.Length)
+                    []
+              ]
             | Script.KSig _
             | Script.KCmd _
             | Script.KExpr _ -> [])
@@ -3875,7 +3946,10 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
                         (Some rel)
                         11
                         (lineRange l)
-                        (if i >= 0 then (l, i + 1, l, i + 1 + si.Tool.Length) else (l, 1, l, 1))
+                        (if i >= 0 then
+                             (l, i + 1, l, i + 1 + si.Tool.Length)
+                         else
+                             (l, 1, l, 1))
                         []
                 )
             else
@@ -3902,8 +3976,12 @@ let foldingRangesFor (path: string) (lines: string list) : (int * int * string o
     let mask = Script.districtContentMask lines
     let out = ResizeArray<int * int * string option>()
     let blank (l: int) = raw[l - 1].Trim() = ""
-    let indentOf (l: int) = raw[l - 1].Length - raw[l - 1].TrimStart().Length
-    let codeOf (l: int) = (Script.stripComment raw[l - 1]).TrimStart()
+
+    let indentOf (l: int) =
+        raw[l - 1].Length - raw[l - 1].TrimStart().Length
+
+    let codeOf (l: int) =
+        (Script.stripComment raw[l - 1]).TrimStart()
 
     // trailing blank lines never fold
     let trimEnd (s: int) (e: int) =
@@ -4088,11 +4166,12 @@ let diagnosticTags (d: Script.Diagnostic) : int list =
 // a code action [D:structured-fixes]: the editor's rendering of a
 // Script.Fix — Diagnostics carries the ones it resolves, Edits the
 // repair in the document the diagnostics were published for
-type CodeAction =
-    { Title: string
-      Kind: string // "quickfix" | "source.fixAll"
-      Diagnostics: Script.Diagnostic list
-      Edits: Script.FixEdit list }
+type CodeAction = {
+    Title: string
+    Kind: string // "quickfix" | "source.fixAll"
+    Diagnostics: Script.Diagnostic list
+    Edits: Script.FixEdit list
+}
 
 // the source.fixAll titles per family [D:structured-fixes]; R8 keeps the
 // `_`-prefix rename out of every family
@@ -4117,21 +4196,23 @@ let codeActionsFor (diags: Script.Diagnostic list) (range: (int * int) option) :
     let quick =
         withFix
         |> List.filter (fun (d, _) -> inRange d)
-        |> List.map (fun (d, f) ->
-            { Title = f.Title
-              Kind = "quickfix"
-              Diagnostics = [ d ]
-              Edits = f.Edits })
+        |> List.map (fun (d, f) -> {
+            Title = f.Title
+            Kind = "quickfix"
+            Diagnostics = [ d ]
+            Edits = f.Edits
+        })
 
     let all =
         withFix
         |> List.choose (fun (d, f) -> f.Family |> Option.map (fun fam -> fam, d, f))
         |> List.groupBy (fun (fam, _, _) -> fam)
-        |> List.map (fun (fam, members) ->
-            { Title = fixAllTitle fam
-              Kind = "source.fixAll"
-              Diagnostics = members |> List.map (fun (_, d, _) -> d)
-              Edits = members |> List.collect (fun (_, _, f) -> f.Edits) })
+        |> List.map (fun (fam, members) -> {
+            Title = fixAllTitle fam
+            Kind = "source.fixAll"
+            Diagnostics = members |> List.map (fun (_, d, _) -> d)
+            Edits = members |> List.collect (fun (_, _, f) -> f.Edits)
+        })
 
     quick @ all
 // ---- signature help [D:signature-help] ----------------------------
@@ -4141,12 +4222,13 @@ let codeActionsFor (diags: Script.Diagnostic list) (range: (int * int) option) :
 // Flat calls only (the stated subset of [D:path-param-completion]);
 // null over a guess everywhere [D:hover-silence]
 
-type SigHelp =
-    { Label: string
-      Doc: string option
-      // [start, end) offsets in Label and the per-parameter doc
-      Params: (int * int * string option) list
-      Active: int option }
+type SigHelp = {
+    Label: string
+    Doc: string option
+    // [start, end) offsets in Label and the per-parameter doc
+    Params: (int * int * string option) list
+    Active: int option
+}
 
 // the atoms of a statement prefix at its innermost open bracket depth,
 // each with its offset — quotes and brackets are one atom (the argv
@@ -4162,8 +4244,10 @@ let private spineAtoms (text: string) : (string * int) list =
         let c = text[i]
 
         if quote <> ' ' then
-            if c = '\\' && quote = '"' then i <- i + 1
-            elif c = quote then quote <- ' '
+            if c = '\\' && quote = '"' then
+                i <- i + 1
+            elif c = quote then
+                quote <- ' '
         elif c = '"' || c = '\'' then
             quote <- c
         elif c = '(' || c = '[' || c = '{' then
@@ -4184,7 +4268,11 @@ let private spineAtoms (text: string) : (string * int) list =
             else
                 (if opens.Count > 0 then opens.Peek() + 1 else 0), None
 
-        let stop = match pseudo with Some o -> o | None -> text.Length
+        let stop =
+            match pseudo with
+            | Some o -> o
+            | None -> text.Length
+
         let out = ResizeArray<string * int>()
         let mutable start = -1
         let mutable depth = 0
@@ -4200,13 +4288,19 @@ let private spineAtoms (text: string) : (string * int) list =
             let c = text[j]
 
             if quote <> ' ' then
-                if c = '\\' && quote = '"' then j <- j + 1
-                elif c = quote then quote <- ' '
+                if c = '\\' && quote = '"' then
+                    j <- j + 1
+                elif c = quote then
+                    quote <- ' '
             elif c = '"' || c = '\'' then
-                (if start < 0 then start <- j)
+                (if start < 0 then
+                     start <- j)
+
                 quote <- c
             elif c = '(' || c = '[' || c = '{' then
-                (if start < 0 then start <- j)
+                (if start < 0 then
+                     start <- j)
+
                 depth <- depth + 1
             elif c = ')' || c = ']' || c = '}' then
                 depth <- max 0 (depth - 1)
@@ -4338,7 +4432,10 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
                             if cur <> "" && isFlag cur then
                                 paramOf (words.Length - 1)
                             elif cur = "" then
-                                (if lastBefore >= 0 && isFlag before[lastBefore] then paramOf lastBefore else None)
+                                (if lastBefore >= 0 && isFlag before[lastBefore] then
+                                     paramOf lastBefore
+                                 else
+                                     None)
                             else
                                 // a value word: its flag's, when the flag takes one
                                 flags
@@ -4346,11 +4443,12 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
                                     i = lastBefore && fty <> TBool && not (words[i].Contains '='))
                                 |> Option.bind (fun (i, _, _, _) -> paramOf i)
 
-                        Some
-                            { Label = sb.ToString()
-                              Doc = None
-                              Params = ps
-                              Active = active }))
+                        Some {
+                            Label = sb.ToString()
+                            Doc = None
+                            Params = ps
+                            Active = active
+                        }))
 
         // ---- expression application: the head's names, type and doc
         let resolveHead (head: string) : (string list * Ty * string option) option =
@@ -4367,7 +4465,8 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
 
             match Map.tryFind head Builtins.builtinDocs with
             | Some d when not d.Params.IsEmpty ->
-                schemeTy () |> Option.map (fun ty -> d.Params, ty, Some(Builtins.renderBuiltinDoc d))
+                schemeTy ()
+                |> Option.map (fun ty -> d.Params, ty, Some(Builtins.renderBuiltinDoc d))
             | Some _ -> None
             | None ->
                 match head.Split '.' with
@@ -4403,7 +4502,8 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
                             | _ -> None)
                         |> Option.map (fun (ps, ty) ->
                             let doc =
-                                letSiteIn stmts (Some line) head |> Option.bind (fun (dl, dc, _) -> docAt lines dl dc)
+                                letSiteIn stmts (Some line) head
+                                |> Option.bind (fun (dl, dc, _) -> docAt lines dl dc)
 
                             ps, ty, doc)
 
@@ -4486,11 +4586,12 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
 
                                         s, e, pdoc)
 
-                                Some
-                                    { Label = label
-                                      Doc = doc
-                                      Params = ps
-                                      Active = Some supplied })
+                                Some {
+                                    Label = label
+                                    Doc = doc
+                                    Params = ps
+                                    Active = Some supplied
+                                })
                 | _ -> None
 
         statementUpTo env lls (Array.ofList lines) line col
@@ -4501,7 +4602,11 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
                 let phys = List.item (line - 1) lines
                 let typed = phys.Substring(0, min (col - 1) phys.Length)
 
-                if typed <> "" && Char.IsWhiteSpace typed[typed.Length - 1] && not (pre.EndsWith " ") then
+                if
+                    typed <> ""
+                    && Char.IsWhiteSpace typed[typed.Length - 1]
+                    && not (pre.EndsWith " ")
+                then
                     pre + " "
                 else
                     pre
@@ -5452,8 +5557,10 @@ let run (debug: bool) : int =
                                         for i in 0 .. min (line - 2) (orig.Length - 1) do
                                             let tt = orig[i].Trim()
 
-                                            if tt.StartsWith "#session" then inBlock <- true
-                                            elif inBlock && tt = "}" then inBlock <- false
+                                            if tt.StartsWith "#session" then
+                                                inBlock <- true
+                                            elif inBlock && tt = "}" then
+                                                inBlock <- false
 
                                         let cur = if line - 1 < orig.Length then orig[line - 1] else ""
                                         let up = cur.Substring(0, min (col - 1) cur.Length)
@@ -5468,9 +5575,12 @@ let run (debug: bool) : int =
                                 // district's splice law, not the argv one
                                 // [D:argv-splice-complete]
                                 let sigil =
-                                    if wordStart >= 2 && upto.Substring(wordStart - 2, 2) = "$@" then 2
-                                    elif wordStart >= 1 && upto[wordStart - 1] = '$' then 1
-                                    else 0
+                                    if wordStart >= 2 && upto.Substring(wordStart - 2, 2) = "$@" then
+                                        2
+                                    elif wordStart >= 1 && upto[wordStart - 1] = '$' then
+                                        1
+                                    else
+                                        0
 
                                 let yamlSplice =
                                     if
@@ -5528,10 +5638,7 @@ let run (debug: bool) : int =
                                         if
                                             d.Line - 1 < lines.Length && d.Col - 1 + d.Len <= lines[d.Line - 1].Length
                                         then
-                                            Some(
-                                                lines[d.Line - 1].Substring(d.Col - 1, d.Len),
-                                                reflowDoc d.Doc
-                                            )
+                                            Some(lines[d.Line - 1].Substring(d.Col - 1, d.Len), reflowDoc d.Doc)
                                         else
                                             None)
                                     |> Map.ofList
@@ -5826,8 +5933,7 @@ let run (debug: bool) : int =
                     | _ ->
                         // unknown request: MethodNotFound; unknown notification: ignore
                         idStr
-                        |> Option.iter (fun id ->
-                            respondError (Some id) methodNotFound $"Method not found: '{method}'")
+                        |> Option.iter (fun id -> respondError (Some id) methodNotFound $"Method not found: '{method}'")
                 with ex ->
                     Console.Error.WriteLine $"weir lsp: request '{method}' failed: {ex.Message}"
 

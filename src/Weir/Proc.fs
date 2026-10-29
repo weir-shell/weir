@@ -8,17 +8,18 @@ open System.Diagnostics
 // which carries the meaning — the reifier law restated in code. The
 // public wrappers keep their signatures; they are thin constructors
 // over the spec.
-type Spec =
-    { Prog: string
-      Args: string list
-      Env: (string * string) list
-      Input: seq<string> option
-      // the scope snapshot [D:ambient-capture] [D:ambient-capture-within]:
-      // a lazy command spawn replays the enclosing `within` scope it was
-      // written in; None reads the live session at spawn (outside any
-      // scope, and the eager statement paths)
-      Cwd: string option
-      Ambient: (string * string) list option }
+type Spec = {
+    Prog: string
+    Args: string list
+    Env: (string * string) list
+    Input: seq<string> option
+    // the scope snapshot [D:ambient-capture] [D:ambient-capture-within]:
+    // a lazy command spawn replays the enclosing `within` scope it was
+    // written in; None reads the live session at spawn (outside any
+    // scope, and the eager statement paths)
+    Cwd: string option
+    Ambient: (string * string) list option
+}
 
 /// the env pairs a spawn applies, in order [D:overlay-path]: the scope
 /// snapshot (else the live `within env` layers, outer-first), then the
@@ -32,19 +33,21 @@ let spawnPairs (ambient: (string * string) list option) (env: (string * string) 
     List.append amb env
 
 /// the live-session ambient — the default for every eager spawn
-let liveAmbient () =
-    { Prog = ""
-      Args = []
-      Env = []
-      Input = None
-      Cwd = None
-      Ambient = None }
+let liveAmbient () = {
+    Prog = ""
+    Args = []
+    Env = []
+    Input = None
+    Cwd = None
+    Ambient = None
+}
 
 // a Secret spliced into argv reaches the child in the clear, but every
 // message weir renders from an argv shows it as *** [D:secret-argv-mask]:
 // the splice registers the word's text; the renderer masks any word equal
 // to a registered one (equal text IS the secret — the safe direction)
-let private secretWords = System.Collections.Concurrent.ConcurrentDictionary<string, byte>()
+let private secretWords =
+    System.Collections.Concurrent.ConcurrentDictionary<string, byte>()
 
 let markSecretWord (s: string) : unit =
     if s <> "" then
@@ -82,7 +85,8 @@ let startFailureMessage (prog: string) (args: string list) (env: (string * strin
             errno = 7
 
     if tooBig then
-        let bytes (t: string) = int64 (System.Text.Encoding.UTF8.GetByteCount t) + 1L
+        let bytes (t: string) =
+            int64 (System.Text.Encoding.UTF8.GetByteCount t) + 1L
 
         let size =
             (prog :: args |> List.sumBy bytes)
@@ -228,7 +232,8 @@ let private spawn
                 else
                     (match System.Environment.GetEnvironmentVariable "PATH" with
                      | null -> ""
-                     | v -> v).Split(':', System.StringSplitOptions.RemoveEmptyEntries)
+                     | v -> v)
+                        .Split(':', System.StringSplitOptions.RemoveEmptyEntries)
                     |> Array.map (fun d -> System.IO.Path.Combine(d, prog))
                     |> Array.tryFind runnable
 
@@ -263,7 +268,11 @@ let private spawn
     for k, v in env do
         psi.Environment[k] <- v
 
-    psi.WorkingDirectory <- (match cwdO with Some c -> c | None -> Session.Cwd())
+    psi.WorkingDirectory <-
+        (match cwdO with
+         | Some c -> c
+         | None -> Session.Cwd())
+
     psi.UseShellExecute <- false
     psi.RedirectStandardOutput <- redirectOut
     psi.RedirectStandardError <- redirectErr
@@ -359,7 +368,9 @@ let private offPool (what: string) (f: unit -> 'a) : System.Threading.Tasks.Task
 // so the child's EOF orders after it, and nothing waits on a producer
 // that is still blocked.
 let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process * (unit -> unit) =
-    let p = spawn redirectOut redirectErr s.Input.IsSome s.Cwd s.Ambient s.Prog s.Args s.Env
+    let p =
+        spawn redirectOut redirectErr s.Input.IsSome s.Cwd s.Ambient s.Prog s.Args s.Env
+
     let fault = ref (null: exn)
 
     match s.Input with
@@ -688,7 +699,10 @@ let exec (s: Spec) : unit =
     // replaces it — a refused start must not leak them into the rest of
     // the script (an env prefix applies to that one command)
     let savedEnv =
-        pairs |> List.map fst |> List.distinct |> List.map (fun k -> k, System.Environment.GetEnvironmentVariable k)
+        pairs
+        |> List.map fst
+        |> List.distinct
+        |> List.map (fun k -> k, System.Environment.GetEnvironmentVariable k)
 
     let savedCwd = System.IO.Directory.GetCurrentDirectory()
 
@@ -717,7 +731,10 @@ let exec (s: Spec) : unit =
 
         // the cwd the spawn path gives a child (Session.Cwd — `cd`, `within
         // cd`) lands on THIS process before execve, so the image inherits it [D:exec]
-        let wd = match s.Cwd with Some c -> c | None -> Session.Cwd()
+        let wd =
+            match s.Cwd with
+            | Some c -> c
+            | None -> Session.Cwd()
 
         if System.IO.Directory.Exists wd then
             System.IO.Directory.SetCurrentDirectory wd
@@ -783,9 +800,10 @@ let private segBits = 22 // 4MB
 let private segSize = 1 <<< segBits
 let private segMask = segSize - 1
 
-type private Segments =
-    { Segs: byte[][]
-      Total: int }
+type private Segments = {
+    Segs: byte[][]
+    Total: int
+} with
 
     member this.At(g: int) : byte = this.Segs[g >>> segBits][g &&& segMask]
 
@@ -801,7 +819,7 @@ exception private CaptureCapReached
 // holding (a reifier that discards the output owes no cap)
 type private SegmentsBuilder(cap: int64, keep: bool) =
     let segs = ResizeArray<byte[]>()
-    let mutable seg = Array.zeroCreate<byte> (if keep then segSize else 65536)
+    let mutable seg = Array.zeroCreate<byte>(if keep then segSize else 65536)
     let mutable fill = 0
 
     /// one read into the buffer; 0 at EOF
@@ -995,7 +1013,11 @@ let captureCapMessage (cap: int64) (shown: string) : string =
 let private capReached (e: exn) =
     match e with
     | CaptureCapReached -> true
-    | :? System.AggregateException as ae -> ae.InnerExceptions |> Seq.exists (function CaptureCapReached -> true | _ -> false)
+    | :? System.AggregateException as ae ->
+        ae.InnerExceptions
+        |> Seq.exists (function
+            | CaptureCapReached -> true
+            | _ -> false)
     | _ -> false
 
 let private capRefusal (cap: int64) (shown: string) (f: unit -> 'a) : 'a =
@@ -1013,11 +1035,10 @@ let private completedRaw (cap: int64) (keep: bool) (s: Spec) : int * seq<string>
     let outBytes, errBytes =
         try
             let read =
-                readAllPipes
-                    cap
-                    keep
-                    [| Session.cutStream p p.StandardOutput.BaseStream
-                       Session.cutStream p p.StandardError.BaseStream |]
+                readAllPipes cap keep [|
+                    Session.cutStream p p.StandardOutput.BaseStream
+                    Session.cutStream p p.StandardError.BaseStream
+                |]
 
             read[0], read[1]
         with _ ->
@@ -1107,14 +1128,11 @@ let private startChain (tailOut: bool) (allErr: bool) (specs: Spec list) =
             procs
             |> List.pairwise
             |> List.map (fun ((_, a), (_, b)) ->
-                pumpBytes
-                    a.StandardOutput.BaseStream
-                    b.StandardInput.BaseStream
-                    (fun () ->
-                        try
-                            b.StandardInput.Close()
-                        with _ ->
-                            ()))
+                pumpBytes a.StandardOutput.BaseStream b.StandardInput.BaseStream (fun () ->
+                    try
+                        b.StandardInput.Close()
+                    with _ ->
+                        ()))
         with _ ->
             for _, p in procs do
                 Session.killTree p
@@ -1192,12 +1210,10 @@ let private chainCompletedRaw (cap: int64) (keep: bool) (specs: Spec list) : int
                 readAllPipes
                     cap
                     keep
-                    (
-                    Array.ofList (
+                    (Array.ofList (
                         Session.cutStream last last.StandardOutput.BaseStream
                         :: (procs |> List.map (fun (_, p) -> Session.cutStream p p.StandardError.BaseStream))
-                    )
-                )
+                    ))
 
             let outBytes = read[0]
 
@@ -1207,18 +1223,26 @@ let private chainCompletedRaw (cap: int64) (keep: bool) (specs: Spec list) : int
             producerFault ()
 
             let errLines =
-                read[1..] |> List.ofArray |> List.map (fun b -> linesView b false |> List.ofSeq) |> List.concat
+                read[1..]
+                |> List.ofArray
+                |> List.map (fun b -> linesView b false |> List.ofSeq)
+                |> List.concat
 
-            Session.settleReplInterrupt(chainCode procs pumps), linesView outBytes true, (errLines :> seq<string>)
+            Session.settleReplInterrupt (chainCode procs pumps), linesView outBytes true, (errLines :> seq<string>)
         finally
             for _, p in procs do
                 reap p
 
 let chainCompletedCapped (cap: int64) (keep: bool) (specs: Spec list) : int * seq<string> * seq<string> =
-    let shown = specs |> List.map (fun sp -> showArgv (sp.Prog :: sp.Args)) |> String.concat " | "
+    let shown =
+        specs
+        |> List.map (fun sp -> showArgv (sp.Prog :: sp.Args))
+        |> String.concat " | "
+
     capRefusal cap shown (fun () -> chainCompletedRaw cap keep specs)
 
-let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> = chainCompletedCapped captureCap true specs
+let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
+    chainCompletedCapped captureCap true specs
 
 /// a chain's code, every output drained unheld (`| succeeds`)
 let chainCompletedCode (specs: Spec list) : int =
@@ -1248,7 +1272,7 @@ let chainStreamCodeOf (specs: Spec list) : int =
 
             producerFault ()
 
-            Session.settleReplInterrupt(chainCode procs pumps)
+            Session.settleReplInterrupt (chainCode procs pumps)
         finally
             for _, p in procs do
                 reap p
@@ -1287,24 +1311,26 @@ let linesWith
     (args: string list)
     (input: seq<string> option)
     : seq<string> =
-    linesOf
-        { Prog = prog
-          Args = args
-          Env = overlay
-          Input = input
-          Cwd = None
-          Ambient = None }
+    linesOf {
+        Prog = prog
+        Args = args
+        Env = overlay
+        Input = input
+        Cwd = None
+        Ambient = None
+    }
 
 let lines (prog: string) (args: string list) (input: seq<string> option) : seq<string> = linesWith [] prog args input
 
 let streamCode (overlay: (string * string) list) (prog: string) (args: string list) : int =
-    streamCodeOf
-        { Prog = prog
-          Args = args
-          Env = overlay
-          Input = None
-          Cwd = None
-          Ambient = None }
+    streamCodeOf {
+        Prog = prog
+        Args = args
+        Env = overlay
+        Input = None
+        Cwd = None
+        Ambient = None
+    }
 
 let completeWith
     (overlay: (string * string) list)
@@ -1312,13 +1338,14 @@ let completeWith
     (args: string list)
     (input: seq<string> option)
     : int * seq<string> * seq<string> =
-    completedOf
-        { Prog = prog
-          Args = args
-          Env = overlay
-          Input = input
-          Cwd = None
-          Ambient = None }
+    completedOf {
+        Prog = prog
+        Args = args
+        Env = overlay
+        Input = input
+        Cwd = None
+        Ambient = None
+    }
 
 let complete (prog: string) (args: string list) (input: seq<string> option) : int * seq<string> * seq<string> =
     completeWith [] prog args input
@@ -1332,15 +1359,14 @@ let completeCode
     (input: seq<string> option)
     : int =
     let code, _, _ =
-        completedCapped
-            captureCap
-            false
-            { Prog = prog
-              Args = args
-              Env = overlay
-              Input = input
-              Cwd = None
-              Ambient = None }
+        completedCapped captureCap false {
+            Prog = prog
+            Args = args
+            Env = overlay
+            Input = input
+            Cwd = None
+            Ambient = None
+        }
 
     code
 

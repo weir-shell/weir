@@ -51,18 +51,25 @@ let escapeEnd (s: string) (i: int) : int =
 /// Without it an odd tick count in a type (`type Box<'a> = {` then
 /// `v: 'a` on the next line) opened a phantom string that hid the brace.
 let isTyvarTick (s: string) (i: int) : bool =
-    let isIdent c = System.Char.IsLetterOrDigit c || c = '_'
+    let isIdent c =
+        System.Char.IsLetterOrDigit c || c = '_'
 
     let typeLine () =
         let ls = (if i = 0 then -1 else s.LastIndexOf('\n', i - 1)) + 1
         let pre = s.Substring(ls, i - ls)
         let head = pre.TrimStart()
-        let word (w: string) = head.StartsWith(w + " ") || head.StartsWith(w + "\t")
+
+        let word (w: string) =
+            head.StartsWith(w + " ") || head.StartsWith(w + "\t")
+
         let beforeEq () = not (pre.Contains '=')
 
         let afterFun () =
             let f = pre.LastIndexOf "fun "
-            f >= 0 && (f = 0 || not (isIdent pre[f - 1])) && not (pre.Substring(f).Contains "->")
+
+            f >= 0
+            && (f = 0 || not (isIdent pre[f - 1]))
+            && not (pre.Substring(f).Contains "->")
 
         let fieldHead () =
             let mutable h = head
@@ -160,8 +167,7 @@ let private stringScanFrom
                 modes <- Hole(d + 1) :: rest
             elif c = '}' then
                 modes <- (if d = 0 then rest else Hole(d - 1) :: rest)
-        | (Plain
-          | Interp as m) :: rest ->
+        | (Plain | Interp as m) :: rest ->
             if c = '\\' && i + 1 < s.Length then
                 i <- escapeEnd s i
             elif c = '"' then
@@ -180,8 +186,7 @@ let private stringScanFrom
                     i <- i + 1
                 else
                     modes <- rest
-        | (Triple
-          | InterpTriple as m) :: rest ->
+        | (Triple | InterpTriple as m) :: rest ->
             if tripleAt s i then
                 i <- i + 2
                 modes <- rest
@@ -211,20 +216,20 @@ let commentAt (line: string) : int =
         -1
     else
 
-    foldOutsideStrings
-        (fun cut i c ->
-            if
-                cut < 0
-                && c = '/'
-                && i + 1 < line.Length
-                && line[i + 1] = '/'
-                && (i = 0 || System.Char.IsWhiteSpace line[i - 1])
-            then
-                i
-            else
-                cut)
-        -1
-        line
+        foldOutsideStrings
+            (fun cut i c ->
+                if
+                    cut < 0
+                    && c = '/'
+                    && i + 1 < line.Length
+                    && line[i + 1] = '/'
+                    && (i = 0 || System.Char.IsWhiteSpace line[i - 1])
+                then
+                    i
+                else
+                    cut)
+            -1
+            line
 
 // All four weir string kinds are single-line, so a line ending inside
 // one can never be completed by more input — the multiline REPL submits

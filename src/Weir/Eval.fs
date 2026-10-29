@@ -69,7 +69,8 @@ type Blame() =
 
 // kept beside the exception, which travels unchanged, so type-matching
 // catchers (the REPL's CommandFailure) still see it; first blame wins
-let private blameTable = System.Runtime.CompilerServices.ConditionalWeakTable<exn, Blame>()
+let private blameTable =
+    System.Runtime.CompilerServices.ConditionalWeakTable<exn, Blame>()
 
 let blameOf (ex: exn) : Blame option =
     match blameTable.TryGetValue ex with
@@ -86,31 +87,34 @@ let private blameFor (ex: exn) : Blame =
 
 // a seq whose raise (other than exit) is reported to `onRaise` on the
 // thread that pulled it, then rethrown unchanged
-let private tapRaise (onRaise: exn -> unit) (inner: seq<'a>) : seq<'a> =
-    { new System.Collections.Generic.IEnumerable<'a> with
+let private tapRaise (onRaise: exn -> unit) (inner: seq<'a>) : seq<'a> = {
+    new System.Collections.Generic.IEnumerable<'a> with
         member _.GetEnumerator() : System.Collections.Generic.IEnumerator<'a> =
             let e = inner.GetEnumerator()
 
-            { new System.Collections.Generic.IEnumerator<'a> with
-                member _.Current = e.Current
-              interface System.Collections.IEnumerator with
-                  member _.Current = box e.Current
+            {
+                new System.Collections.Generic.IEnumerator<'a> with
+                    member _.Current = e.Current
+                interface System.Collections.IEnumerator with
+                    member _.Current = box e.Current
 
-                  member _.MoveNext() =
-                      try
-                          e.MoveNext()
-                      with
-                      | ExitRequest _ -> reraise ()
-                      | ex ->
-                          onRaise ex
-                          reraise ()
+                    member _.MoveNext() =
+                        try
+                            e.MoveNext()
+                        with
+                        | ExitRequest _ -> reraise ()
+                        | ex ->
+                            onRaise ex
+                            reraise ()
 
-                  member _.Reset() = e.Reset()
-              interface System.IDisposable with
-                  member _.Dispose() = e.Dispose() }
-      interface System.Collections.IEnumerable with
-          member this.GetEnumerator() =
-              ((this :?> System.Collections.Generic.IEnumerable<'a>).GetEnumerator()) :> System.Collections.IEnumerator }
+                    member _.Reset() = e.Reset()
+                interface System.IDisposable with
+                    member _.Dispose() = e.Dispose()
+            }
+    interface System.Collections.IEnumerable with
+        member this.GetEnumerator() =
+            ((this :?> System.Collections.Generic.IEnumerable<'a>).GetEnumerator()) :> System.Collections.IEnumerator
+}
 
 // a command's failure surfaces where its output is READ, maybe statements
 // later: the seq blames the command that produced it
@@ -148,14 +152,15 @@ let pinnedFeed (inner: seq<string>) : seq<string> = tapRaise pinOnThread inner
 // spill paths; identity is the process itself (reference equality,
 // pid hash), and the scope that bound it owns the lifetime
 [<ReferenceEquality>]
-type ProcHandle =
-    { Proc: System.Diagnostics.Process
-      OutPath: string
-      ErrPath: string
-      SpillDir: string
-      // joins the spill pumps (bounded); call before any read that
-      // must see the child's final output [D:scoped-procs]
-      Drain: unit -> unit }
+type ProcHandle = {
+    Proc: System.Diagnostics.Process
+    OutPath: string
+    ErrPath: string
+    SpillDir: string
+    // joins the spill pumps (bounded); call before any read that
+    // must see the child's final output [D:scoped-procs]
+    Drain: unit -> unit
+}
 
 // how many container levels Value.GetHashCode mixes [D:value-hash]
 [<Literal>]
@@ -269,7 +274,8 @@ type Value =
                             let na = ea.MoveNext()
                             let nb = eb.MoveNext()
 
-                            if na && nb then pending.Push(ea.Current, eb.Current)
+                            if na && nb then
+                                pending.Push(ea.Current, eb.Current)
                             elif na <> nb then
                                 eq <- false
                                 go <- false
@@ -309,7 +315,8 @@ type Value =
         let inline mix (h: int) (x: int) = (h * 31) + x
 
         let rec go (depth: int) (v: Value) : int =
-            let child (x: Value) = if depth > 0 then go (depth - 1) x else 0
+            let child (x: Value) =
+                if depth > 0 then go (depth - 1) x else 0
 
             match v with
             | VInt n -> hash n
@@ -397,14 +404,20 @@ type Value =
                     | VInstant x, VInstant y -> result <- compare x y
                     | VUuid x, VUuid y -> result <- compare x y
                     | VSize x, VSize y -> result <- compare x y
-                    | VBytes x, VBytes y -> result <- System.MemoryExtensions.SequenceCompareTo(System.ReadOnlySpan x, System.ReadOnlySpan y)
+                    | VBytes x, VBytes y ->
+                        result <-
+                            System.MemoryExtensions.SequenceCompareTo(System.ReadOnlySpan x, System.ReadOnlySpan y)
                     | VStr x, VStr y
                     | VSecret x, VSecret y -> result <- System.String.CompareOrdinal(x, y)
                     | VBool x, VBool y -> result <- compare x y
                     | VUnit, VUnit -> ()
                     | VRecord(n1, f1), VRecord(n2, f2) ->
-                        let s1 = List.sortWith (fun (k1, _) (k2, _) -> System.String.CompareOrdinal(k1, k2)) f1
-                        let s2 = List.sortWith (fun (k1, _) (k2, _) -> System.String.CompareOrdinal(k1, k2)) f2
+                        let s1 =
+                            List.sortWith (fun (k1, _) (k2, _) -> System.String.CompareOrdinal(k1, k2)) f1
+
+                        let s2 =
+                            List.sortWith (fun (k1, _) (k2, _) -> System.String.CompareOrdinal(k1, k2)) f2
+
                         result <- System.String.CompareOrdinal(n1, n2)
 
                         if result = 0 then
@@ -452,11 +465,12 @@ and Env = Map<string, Value>
 // constants byte-identical (20 items, "; ...", unclipped strings); the
 // REPL echo runs the same core tighter (10, "; …", 120-char clip,
 // depth bound). Forcing is bounded at MaxItems+1 per level either way.
-type private RenderLimits =
-    { MaxItems: int
-      MaxStr: int option
-      MaxDepth: int
-      Ellipsis: string }
+type private RenderLimits = {
+    MaxItems: int
+    MaxStr: int option
+    MaxDepth: int
+    Ellipsis: string
+}
 
 let private showLimits =
     // depth-bounded like the equality walk [D:eq-depth]: a legally-built
@@ -465,16 +479,19 @@ let private showLimits =
     // show / interpolation / a to-json error all reach formatValue. 100
     // clears every real value (the corpus max is ~11); past it the
     // guard renders an ellipsis rather than crashing.
-    { MaxItems = 20
-      MaxStr = None
-      MaxDepth = 100
-      Ellipsis = "; ..." }
+    {
+        MaxItems = 20
+        MaxStr = None
+        MaxDepth = 100
+        Ellipsis = "; ..."
+    }
 
-let private echoLimits =
-    { MaxItems = 10
-      MaxStr = Some 120
-      MaxDepth = 8
-      Ellipsis = "; …" }
+let private echoLimits = {
+    MaxItems = 10
+    MaxStr = Some 120
+    MaxDepth = 8
+    Ellipsis = "; …"
+}
 
 // ordered-field access [D:record-order]: a linear scan — record widths
 // are single digits and the scan beat the Map it replaced; recSet
@@ -554,7 +571,9 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
                 | _ -> sub v
 
             let body =
-                fields |> Seq.map (fun (k, v) -> $"{k} = {shownField k v}") |> String.concat "; "
+                fields
+                |> Seq.map (fun (k, v) -> $"{k} = {shownField k v}")
+                |> String.concat "; "
 
             "{ " + body + " }"
         | VUnion(case, None) -> case
@@ -683,8 +702,7 @@ type private SimNode(comparer: System.Collections.Generic.IEqualityComparer<stri
 
     member _.Clear() = kids <- null
 
-    member _.Names: string list =
-        if isNull kids then [] else List.ofSeq kids.Keys
+    member _.Names: string list = if isNull kids then [] else List.ofSeq kids.Keys
 
     member val State = 0 with get, set
     member val Cleared = false with get, set
@@ -700,39 +718,40 @@ type private SimNode(comparer: System.Collections.Generic.IEqualityComparer<stri
 
         n
 
-type private PlanFrame =
-    { Ops: ResizeArray<Value>
-      // the filesystem as the captured ops leave it, over the real one
-      // (or an enclosing plan's) [D:plan-preconditions]
-      Sim: SimNode
-      // the target paths captured mutations change [D:plan-apply]: a
-      // later read at, under, or — for a listing — above one is
-      // known-after-apply and refused [D:plan-stale-reads]. Indexed
-      // [D:plan-guard-index] as a component trie [D:plan-guard-linear]:
-      // each target's comparison keys (as written, and through symlinks
-      // [D:plan-guard-links]) mark their node with the path a refusal
-      // names and every ancestor node with a target below, so a read
-      // costs one walk of its components, never a scan of the captured
-      // ops. Session-resolved so a relative read matches an earlier
-      // relative write.
-      Index: GuardNode
-      // the link cache [D:plan-guard-linear]: every prefix is resolved
-      // once per plan
-      Links: GuardNode
-      // the simulation's link cache [D:plan-preconditions]: a real path
-      // to its symlink's target, null for no link — read once per plan
-      SimLinks: System.Collections.Generic.Dictionary<string, string>
-      // a directory copy or move, or a link move, was captured: some
-      // simulated path is backed by another real one (or is a link), so
-      // the real filesystem alone may not say a path holds no link
-      mutable Mirrored: bool
-      // the file identities in-place writes target [D:plan-guard-inode]:
-      // (device, inode) — the Windows file index — to the path a
-      // refusal names
-      Files: System.Collections.Generic.Dictionary<struct (uint64 * uint64), string>
-      // `within tmp` dirs opened inside this plan [D:plan-within-tmp]:
-      // deleted when their scope closes, before any apply
-      TmpRoots: ResizeArray<string> }
+type private PlanFrame = {
+    Ops: ResizeArray<Value>
+    // the filesystem as the captured ops leave it, over the real one
+    // (or an enclosing plan's) [D:plan-preconditions]
+    Sim: SimNode
+    // the target paths captured mutations change [D:plan-apply]: a
+    // later read at, under, or — for a listing — above one is
+    // known-after-apply and refused [D:plan-stale-reads]. Indexed
+    // [D:plan-guard-index] as a component trie [D:plan-guard-linear]:
+    // each target's comparison keys (as written, and through symlinks
+    // [D:plan-guard-links]) mark their node with the path a refusal
+    // names and every ancestor node with a target below, so a read
+    // costs one walk of its components, never a scan of the captured
+    // ops. Session-resolved so a relative read matches an earlier
+    // relative write.
+    Index: GuardNode
+    // the link cache [D:plan-guard-linear]: every prefix is resolved
+    // once per plan
+    Links: GuardNode
+    // the simulation's link cache [D:plan-preconditions]: a real path
+    // to its symlink's target, null for no link — read once per plan
+    SimLinks: System.Collections.Generic.Dictionary<string, string>
+    // a directory copy or move, or a link move, was captured: some
+    // simulated path is backed by another real one (or is a link), so
+    // the real filesystem alone may not say a path holds no link
+    mutable Mirrored: bool
+    // the file identities in-place writes target [D:plan-guard-inode]:
+    // (device, inode) — the Windows file index — to the path a
+    // refusal names
+    Files: System.Collections.Generic.Dictionary<struct (uint64 * uint64), string>
+    // `within tmp` dirs opened inside this plan [D:plan-within-tmp]:
+    // deleted when their scope closes, before any apply
+    TmpRoots: ResizeArray<string>
+}
 
 // a file's identity [D:plan-guard-inode]: (device, inode) through
 // statx on Linux (one layout on every architecture) and stat on macOS
@@ -759,7 +778,8 @@ module private FileId =
         nativeint security,
         uint disposition,
         uint flags,
-        nativeint template)
+        nativeint template
+    )
 
     [<DllImport("kernel32.dll", SetLastError = true)>]
     extern bool private GetFileInformationByHandle(nativeint handle, byte[] info)
@@ -770,7 +790,9 @@ module private FileId =
     let private AT_FDCWD = -100
     let private STATX_INO = 0x100u
 
-    let private u32 (b: byte[]) (at: int) = uint64 (System.BitConverter.ToUInt32(b, at))
+    let private u32 (b: byte[]) (at: int) =
+        uint64 (System.BitConverter.ToUInt32(b, at))
+
     let private u64 (b: byte[]) (at: int) = System.BitConverter.ToUInt64(b, at)
 
     let ofPath (path: string) : struct (uint64 * uint64) voption =
@@ -800,7 +822,10 @@ module private FileId =
                     else
                         statMac (path, buf)
 
-                if rc = 0 then ValueSome(struct (u32 buf 0, u64 buf 8)) else ValueNone
+                if rc = 0 then
+                    ValueSome(struct (u32 buf 0, u64 buf 8))
+                else
+                    ValueNone
             else
                 let buf = Array.zeroCreate<byte> 256
 
@@ -828,11 +853,17 @@ module PlanMode =
         let key (s: string) =
             let s = if windows then s.Replace('/', '\\') else s
             let sep = if windows then '\\' else '/'
-            if s.Length > 1 && s[s.Length - 1] = sep then s.TrimEnd sep else s
+
+            if s.Length > 1 && s[s.Length - 1] = sep then
+                s.TrimEnd sep
+            else
+                s
 
         let cmp =
-            if windows then System.StringComparison.OrdinalIgnoreCase
-            else System.StringComparison.Ordinal
+            if windows then
+                System.StringComparison.OrdinalIgnoreCase
+            else
+                System.StringComparison.Ordinal
 
         let r, p = key root, key p
         let sep = if windows then "\\" else "/"
@@ -858,7 +889,11 @@ module PlanMode =
     // the comparison key: one separator spelling, no trailing separator
     let private keyOf (p: string) =
         let s = if windows then p.Replace('/', '\\') else p
-        if s.Length > 1 && s[s.Length - 1] = sep then s.TrimEnd sep else s
+
+        if s.Length > 1 && s[s.Length - 1] = sep then
+            s.TrimEnd sep
+        else
+            s
 
     // a key's components, the trie's edges: the root separator is the
     // empty first component, so `/` is [""] and `/a` is [""; "a"]
@@ -953,11 +988,12 @@ module PlanMode =
 
         let resolved =
             try
-                [ keyOf (resolveLinks cache false p)
-                  if followLeaf then
-                      keyOf (resolveLinks cache true p) ]
-            with _ ->
-                []
+                [
+                    keyOf (resolveLinks cache false p)
+                    if followLeaf then
+                        keyOf (resolveLinks cache true p)
+                ]
+            with _ -> []
 
         List.distinct (lexical :: resolved)
 
@@ -991,15 +1027,16 @@ module PlanMode =
     /// run f while a fresh capture frame is on top; returns the captured
     /// Ops in capture order (the frame is popped on every exit)
     let capturing (f: unit -> unit) : Value list =
-        let frame =
-            { Ops = ResizeArray()
-              Sim = SimNode(comparer)
-              Index = GuardNode(comparer)
-              Links = GuardNode(System.StringComparer.Ordinal)
-              SimLinks = System.Collections.Generic.Dictionary(System.StringComparer.Ordinal)
-              Mirrored = false
-              Files = System.Collections.Generic.Dictionary()
-              TmpRoots = ResizeArray() }
+        let frame = {
+            Ops = ResizeArray()
+            Sim = SimNode(comparer)
+            Index = GuardNode(comparer)
+            Links = GuardNode(System.StringComparer.Ordinal)
+            SimLinks = System.Collections.Generic.Dictionary(System.StringComparer.Ordinal)
+            Mirrored = false
+            Files = System.Collections.Generic.Dictionary()
+            TmpRoots = ResizeArray()
+        }
 
         stack.Value <- frame :: stack.Value
         // mirror the frame push into Session's thread-local guard so the
@@ -1043,7 +1080,10 @@ module PlanMode =
     let private compsOf (p: string) = parts (keyOf (norm p))
 
     let private joinComps (comps: string[]) =
-        if comps = [| "" |] then string sep else System.String.Join(string sep, comps)
+        if comps = [| "" |] then
+            string sep
+        else
+            System.String.Join(string sep, comps)
 
     // one layer's view of a path: the state its ops gave it (0 = the
     // layer below decides), the overlay node there (or null), and the
@@ -1089,7 +1129,11 @@ module PlanMode =
                         cleared <- true
 
                     if last then
-                        let st = if child.State = 2 then 2 elif cleared then 3 else 0
+                        let st =
+                            if child.State = 2 then 2
+                            elif cleared then 3
+                            else 0
+
                         result <- ValueSome(struct (st, child, below ()))
 
             i <- i + 1
@@ -1129,23 +1173,26 @@ module PlanMode =
     // path to ask the layer below (null when nothing below counts);
     // Dead, no extension is decided below any more (absent or a file)
     [<Struct>]
-    type private LayerAt =
-        { Node: SimNode
-          Below: string
-          Cleared: bool
-          Dead: bool }
+    type private LayerAt = {
+        Node: SimNode
+        Below: string
+        Cleared: bool
+        Dead: bool
+    }
 
-    let private layerStart (root: SimNode) =
-        { Node = root
-          Below = null
-          Cleared = false
-          Dead = false }
+    let private layerStart (root: SimNode) = {
+        Node = root
+        Below = null
+        Cleared = false
+        Dead = false
+    }
 
-    let private layerDead =
-        { Node = null
-          Below = null
-          Cleared = true
-          Dead = true }
+    let private layerDead = {
+        Node = null
+        Below = null
+        Cleared = true
+        Dead = true
+    }
 
     let private appendComp (b: string) (c: string) =
         if isNull b then c
@@ -1167,16 +1214,39 @@ module PlanMode =
                 if s.Cleared then
                     struct (layerDead, false)
                 else
-                    struct ({ s with Node = null; Below = appendComp s.Below c }, false)
+                    struct ({
+                                s with
+                                    Node = null
+                                    Below = appendComp s.Below c
+                            },
+                            false)
             | child when child.State = 1 && not (isNull child.Link) ->
                 // a moved link: decided here, the node kept for its target
                 struct ({ layerDead with Node = child }, false)
             | child when child.State = 3 || child.State = 1 -> struct (layerDead, false)
             | child when not (isNull child.Mirror) ->
-                struct ({ Node = child; Below = child.Mirror; Cleared = false; Dead = false }, true)
+                struct ({
+                            Node = child
+                            Below = child.Mirror
+                            Cleared = false
+                            Dead = false
+                        },
+                        true)
             | child when child.Cleared || s.Cleared ->
-                struct ({ Node = child; Below = null; Cleared = true; Dead = false }, false)
-            | child -> struct ({ s with Node = child; Below = appendComp s.Below c }, false)
+                struct ({
+                            Node = child
+                            Below = null
+                            Cleared = true
+                            Dead = false
+                        },
+                        false)
+            | child ->
+                struct ({
+                            s with
+                                Node = child
+                                Below = appendComp s.Below c
+                        },
+                        false)
 
     // the path to ask below, or null when this layer decided
     let private layerBelow (s: LayerAt) : string =
@@ -1204,7 +1274,12 @@ module PlanMode =
                 into[i] <- layerDead
             else
                 into[i] <- layerWalk frames[i].Sim path
-                path <- if into[i].Dead || into[i].Cleared then null else into[i].Below
+
+                path <-
+                    if into[i].Dead || into[i].Cleared then
+                        null
+                    else
+                        into[i].Below
 
     let private layerInput (s: LayerAt) =
         if s.Dead || s.Cleared then null else s.Below
@@ -1256,8 +1331,7 @@ module PlanMode =
                 System.IO.Directory.EnumerateFileSystemEntries p
                 |> Seq.map System.IO.Path.GetFileName
                 |> List.ofSeq
-            with _ ->
-                []
+            with _ -> []
         | f :: outer ->
             let struct (_, node, below) = viewIn f.Sim p
             let mine = if isNull node then [] else node.Names
@@ -1272,13 +1346,11 @@ module PlanMode =
     // itself. `..` steps up from the resolved prefix (physical). A loop
     // stops after 40 links, the kernel's bound. Also says whether the
     // last component was a link, and whether a loop stopped it (ELOOP)
-    let private canonIn
-        (frames: PlanFrame list)
-        (followLast: bool)
-        (p: string)
-        : struct (string * bool * bool) =
+    let private canonIn (frames: PlanFrame list) (followLast: bool) (p: string) : struct (string * bool * bool) =
         let seps = [| '/'; sep |]
-        let split (s: string) = s.Split(seps, System.StringSplitOptions.RemoveEmptyEntries) |> List.ofArray
+
+        let split (s: string) =
+            s.Split(seps, System.StringSplitOptions.RemoveEmptyEntries) |> List.ofArray
 
         let cache =
             match List.tryLast frames with
@@ -1567,7 +1639,10 @@ module PlanMode =
             let s, d = entry s, entry d
             let link = linkIn frames s
 
-            if isNull link then setLeaf top d 1 else setLink frames d link
+            if isNull link then
+                setLeaf top d 1
+            else
+                setLink frames d link
 
             setLeaf top s 3
         | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> copyTree frames (through s) (entry d)
@@ -1575,7 +1650,10 @@ module PlanMode =
             let s, d = entry s, entry d
             let link = linkIn frames s
 
-            if isNull link then copyTree frames (through s) d else setLink frames d link
+            if isNull link then
+                copyTree frames (through s) d
+            else
+                setLink frames d link
 
             setLeaf top s 3
         | _ -> ()
@@ -1636,9 +1714,12 @@ module PlanMode =
         let where = if enclosing then "an enclosing 'plan'" else "this 'plan'"
 
         let what =
-            if linked then $"targets '{target}', the same file (a hard link)"
-            elif target = norm resolvedPath then "targets it"
-            else $"targets '{target}'"
+            if linked then
+                $"targets '{target}', the same file (a hard link)"
+            elif target = norm resolvedPath then
+                "targets it"
+            else
+                $"targets '{target}'"
 
         failwith
             $"{op}: known-after-apply — this reads '{resolvedPath}', but an earlier captured mutation in {where} {what}; the read would see stale state (the mutation is a pending Op, not yet applied). Restructure so the read does not depend on a captured write, or move it out of the plan"
@@ -1765,60 +1846,66 @@ let procTail (h: ProcHandle) : string list =
         | None -> []
         | Some fs ->
 
-        use fs = fs
-        let len = fs.Length
-        let chunk = 65536L
-        let mutable start = len
-        let mutable newlines = 0
+            use fs = fs
+            let len = fs.Length
+            let chunk = 65536L
+            let mutable start = len
+            let mutable newlines = 0
 
-        // n lines end in at most n+1 newlines back from the end (the
-        // trailing one terminates the last line)
-        while start > 0L && newlines <= n && len - start < tailWindow do
-            let size = min chunk start
-            start <- start - size
-            let buf = Array.zeroCreate<byte> (int size)
+            // n lines end in at most n+1 newlines back from the end (the
+            // trailing one terminates the last line)
+            while start > 0L && newlines <= n && len - start < tailWindow do
+                let size = min chunk start
+                start <- start - size
+                let buf = Array.zeroCreate<byte>(int size)
+                fs.Position <- start
+                let mutable got = 0
+
+                while got < buf.Length do
+                    let r = fs.Read(buf, got, buf.Length - got)
+                    got <- if r = 0 then buf.Length else got + r
+
+                for b in buf do
+                    if b = 10uy then
+                        newlines <- newlines + 1
+
+            let cut = start > 0L
+            let bytes = Array.zeroCreate<byte>(int (len - start))
             fs.Position <- start
             let mutable got = 0
 
-            while got < buf.Length do
-                let r = fs.Read(buf, got, buf.Length - got)
-                got <- if r = 0 then buf.Length else got + r
+            while got < bytes.Length do
+                let r = fs.Read(bytes, got, bytes.Length - got)
+                got <- if r = 0 then bytes.Length else got + r
 
-            for b in buf do
-                if b = 10uy then
-                    newlines <- newlines + 1
+            // the BOM switch is the start of the file's, as a reader would see it
+            use r =
+                new System.IO.StreamReader(new System.IO.MemoryStream(bytes), System.Text.Encoding.UTF8, not cut)
 
-        let cut = start > 0L
-        let bytes = Array.zeroCreate<byte> (int (len - start))
-        fs.Position <- start
-        let mutable got = 0
+            let lines = ResizeArray<string>()
+            let mutable line = r.ReadLine()
 
-        while got < bytes.Length do
-            let r = fs.Read(bytes, got, bytes.Length - got)
-            got <- if r = 0 then bytes.Length else got + r
+            while line <> null do
+                lines.Add line
+                line <- r.ReadLine()
 
-        // the BOM switch is the start of the file's, as a reader would see it
-        use r =
-            new System.IO.StreamReader(new System.IO.MemoryStream(bytes), System.Text.Encoding.UTF8, not cut)
+            // the window opened mid-line: that line's start is missing
+            if cut && lines.Count > 0 && start > 0L then
+                fs.Position <- start - 1L
 
-        let lines = ResizeArray<string>()
-        let mutable line = r.ReadLine()
+                if fs.ReadByte() <> 10 then
+                    lines[0] <- "…" + lines[0]
 
-        while line <> null do
-            lines.Add line
-            line <- r.ReadLine()
-
-        // the window opened mid-line: that line's start is missing
-        if cut && lines.Count > 0 && start > 0L then
-            fs.Position <- start - 1L
-
-            if fs.ReadByte() <> 10 then
-                lines[0] <- "…" + lines[0]
-
-        lines |> Seq.skip (max 0 (lines.Count - n)) |> List.ofSeq
+            lines |> Seq.skip (max 0 (lines.Count - n)) |> List.ofSeq
 
     let errT = readLast 100 h.ErrPath
-    let outT = if errT.Length < 100 then readLast (100 - errT.Length) h.OutPath else []
+
+    let outT =
+        if errT.Length < 100 then
+            readLast (100 - errT.Length) h.OutPath
+        else
+            []
+
     errT @ outT
 
 // a one-line rendering of the tail for error messages: lines join
@@ -1830,8 +1917,7 @@ let procTailLine (h: ProcHandle) : string =
     let t =
         try
             procTail h
-        with _ ->
-            []
+        with _ -> []
 
     match t |> List.skip (max 0 (t.Length - 5)) with
     | [] -> ""
@@ -2160,9 +2246,7 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
 
                 let widths =
                     [ 0 .. showKeys.Length - 1 ]
-                    |> List.map (fun i ->
-                        rows
-                        |> List.fold (fun w r -> max w (cells (fst r[i]))) (cells showKeys[i]))
+                    |> List.map (fun i -> rows |> List.fold (fun w r -> max w (cells (fst r[i]))) (cells showKeys[i]))
 
                 // terminal-width clamping [D:table-polish]: the widest
                 // column above its floor absorbs the clip (usually the
@@ -2293,7 +2377,10 @@ let private checkedUnit (what: string) (f: unit -> int64) : int64 =
         failwith $"{what} overflow"
 
 let private unitDiv (what: string) (a: int64) (b: int64) : int64 =
-    if b = 0L then failwith "division by zero" else checkedUnit what (fun () -> a / b)
+    if b = 0L then
+        failwith "division by zero"
+    else
+        checkedUnit what (fun () -> a / b)
 
 let private instantShift (a: int64) (d: int64) : Value =
     VInstant(checkInstant "Instant arithmetic" (checkedUnit "Instant" (fun () -> Checked.(+) a d)))
@@ -2317,7 +2404,8 @@ let private ordCases =
 /// carries its fields in declaration order and its name, never the
 /// key, so the key lives here under the same law as the cases; two
 /// records of one name with different keys trip, never misorder
-let private ordFields = System.Collections.Concurrent.ConcurrentDictionary<string, string list>()
+let private ordFields =
+    System.Collections.Concurrent.ConcurrentDictionary<string, string list>()
 
 let registerOrdCases (typeName: string) (cases: (string * int64) list) : unit =
     for (c, n) in cases do
@@ -2388,12 +2476,15 @@ let orderCompare (name: string) (a: Value) (b: Value) : int =
                     let key =
                         match ordFields.TryGetValue rn with
                         | true, key -> key
-                        | _ -> unreachable $"the checker admits '{name}' only on an ordered record, and '{rn}' has no key"
+                        | _ ->
+                            unreachable $"the checker admits '{name}' only on an ordered record, and '{rn}' has no key"
 
                     let field (fs: (string * Value) list) f =
                         match fs |> List.tryFind (fst >> (=) f) with
                         | Some(_, v) -> v
-                        | None -> unreachable $"'{name}' compares two values of the record '{rn}', and one carries no field '{f}'"
+                        | None ->
+                            unreachable
+                                $"'{name}' compares two values of the record '{rn}', and one carries no field '{f}'"
 
                     // children go on in reverse, so the first pops first
                     key |> List.rev |> List.iter (fun f -> pending.Push(field f1 f, field f2 f))
@@ -2546,7 +2637,11 @@ let private decodeCoded (where: string) (c: Codec) (text: string option) (num: i
         match num with
         | Some n -> n
         | None ->
-            let got = text |> Option.map (fun t -> $"'{excerpt t}'") |> Option.defaultValue "a non-integer"
+            let got =
+                text
+                |> Option.map (fun t -> $"'{excerpt t}'")
+                |> Option.defaultValue "a non-integer"
+
             failwith $"{where}: [<{codecName c}>] reads {what} (an integer), got {got}"
 
     let seconds (n: int64) =
@@ -2587,7 +2682,12 @@ let private yamlSourceText =
     System.Runtime.CompilerServices.ConditionalWeakTable<Value, string>()
 
 let private integerShaped (raw: string) =
-    let r = if raw.StartsWith "-" || raw.StartsWith "+" then raw.Substring 1 else raw
+    let r =
+        if raw.StartsWith "-" || raw.StartsWith "+" then
+            raw.Substring 1
+        else
+            raw
+
     r.Length > 0 && r |> Seq.forall System.Char.IsAsciiDigit
 
 let private withSourceText (raw: string) (node: Value) : Value =
@@ -2606,7 +2706,13 @@ let private yamlFloat (f: float) : string =
         let mant = s.Substring(0, e)
         let exp = s.Substring(e + 1)
         let mant = if mant.Contains '.' then mant else mant + ".0"
-        let exp = if exp.StartsWith "-" || exp.StartsWith "+" then exp else "+" + exp
+
+        let exp =
+            if exp.StartsWith "-" || exp.StartsWith "+" then
+                exp
+            else
+                "+" + exp
+
         mant + "e" + exp
 
 let yamlFloatNode (raw: string) (f: float) : Value =
@@ -2636,7 +2742,8 @@ let private yamlRadixBig (raw: string) : System.Numerics.BigInteger =
     raw.Substring 2
     |> Seq.fold
         (fun (acc: System.Numerics.BigInteger) c ->
-            acc * System.Numerics.BigInteger radix + System.Numerics.BigInteger(System.Uri.FromHex c))
+            acc * System.Numerics.BigInteger radix
+            + System.Numerics.BigInteger(System.Uri.FromHex c))
         System.Numerics.BigInteger.Zero
 
 /// the decimal digits of an integer past int64 a YFloat node was read
@@ -2661,7 +2768,12 @@ let yamlPlainText (node: Value) : string option =
 /// `0644`, `-007`: YAML 1.2 reads decimal, YAML 1.1 readers octal (or a
 /// string, with an 8 or 9) [D:yaml-number-text]
 let yamlLeadingZero (raw: string) =
-    let r = if raw.StartsWith "-" || raw.StartsWith "+" then raw.Substring 1 else raw
+    let r =
+        if raw.StartsWith "-" || raw.StartsWith "+" then
+            raw.Substring 1
+        else
+            raw
+
     r.Length > 1 && r[0] = '0' && r |> Seq.forall System.Char.IsAsciiDigit
 
 /// the YAML 1.2 core schema's other ints: 0x1F, 0o17 (unsigned) —
@@ -2687,9 +2799,12 @@ let yamlCoreRadixInt (raw: string) : int64 option option =
         else
             None
 
-    if raw.StartsWith "0x" then digits 16 System.Uri.IsHexDigit
-    elif raw.StartsWith "0o" then digits 8 (fun c -> c >= '0' && c <= '7')
-    else None
+    if raw.StartsWith "0x" then
+        digits 16 System.Uri.IsHexDigit
+    elif raw.StartsWith "0o" then
+        digits 8 (fun c -> c >= '0' && c <= '7')
+    else
+        None
 
 /// the YAML 1.2 core schema's number shapes (int and float) — the text
 /// every 1.2 reader types as a number, finite or not
@@ -2760,11 +2875,7 @@ let private refuseDupKeys (who: string) (keys: string seq) =
 
 let private jsonSegment = 1 <<< 24
 
-let private jsonLine
-    (renames: Map<string, Map<string, string>>)
-    (unions: Map<string, WireCase>)
-    (v: Value)
-    : string =
+let private jsonLine (renames: Map<string, Map<string, string>>) (unions: Map<string, WireCase>) (v: Value) : string =
     let buffer = new System.Buffers.ArrayBufferWriter<byte>()
     // the CLI's encoder, not the HTML-safe default [D:json-raw-user]
     use writer = new System.Text.Json.Utf8JsonWriter(buffer, rawJsonWriterOptions)
@@ -3215,11 +3326,14 @@ let private jsonDocRead
                         | System.Text.Json.JsonValueKind.Number ->
                             match e.TryGetInt64() with
                             | true, n -> decodeCoded where c None (Some n)
-                            | _ -> failwith $"{where}: [<{codecName c}>] reads an integer, got {quoteData (e.GetRawText())}"
+                            | _ ->
+                                failwith
+                                    $"{where}: [<{codecName c}>] reads an integer, got {quoteData (e.GetRawText())}"
                         | k -> failwith $"{where}: [<{codecName c}>] expects a string or a number, got {jsonKindName k}"
 
                     match ty, p.ValueKind with
-                    | TSeq _, System.Text.Json.JsonValueKind.Array -> VSeq(p.EnumerateArray() |> Seq.map one |> List.ofSeq)
+                    | TSeq _, System.Text.Json.JsonValueKind.Array ->
+                        VSeq(p.EnumerateArray() |> Seq.map one |> List.ofSeq)
                     | TSeq _, k -> failwith $"{where}: expected an array, got {jsonKindName k}"
                     | _ -> one p
 
@@ -3324,63 +3438,63 @@ let private jsonDocRead
                 $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is Map<string, {topName}>, in: {shown}"
     | _ ->
 
-    if wantMap then
-        // the ID-keyed object [D:map-string]: the top level is the map
-        // — each property value reads as one row; duplicate keys
-        // last-win
-        match root.ValueKind with
-        | System.Text.Json.JsonValueKind.Object ->
-            root.EnumerateObject()
-            |> Seq.fold
-                (fun m p ->
-                    if p.Value.ValueKind <> System.Text.Json.JsonValueKind.Object then
+        if wantMap then
+            // the ID-keyed object [D:map-string]: the top level is the map
+            // — each property value reads as one row; duplicate keys
+            // last-win
+            match root.ValueKind with
+            | System.Text.Json.JsonValueKind.Object ->
+                root.EnumerateObject()
+                |> Seq.fold
+                    (fun m p ->
+                        if p.Value.ValueKind <> System.Text.Json.JsonValueKind.Object then
+                            failwith
+                                $"{who}: key \"{p.Name}\" expected an object ({topName}), got {jsonKindName p.Value.ValueKind} in: {shown}"
+
+                        Map.add (VStr p.Name) (readTopEl $"[\"{p.Name}\"]." p.Value) m)
+                    Map.empty
+                |> VMap
+            | System.Text.Json.JsonValueKind.Array ->
+                failwith
+                    $"{who}: the top level is a JSON array, but the declared type is Map<string, {topName}> — declare seq<{topName}> to read an array, in: {shown}"
+            | k ->
+                failwith
+                    $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is Map<string, {topName}>, in: {shown}"
+        else
+
+            match wantSeq, root.ValueKind with
+            | false, System.Text.Json.JsonValueKind.Object -> readTopEl "" root
+            | true, System.Text.Json.JsonValueKind.Array ->
+                root.EnumerateArray()
+                |> Seq.mapi (fun i el ->
+                    if el.ValueKind <> System.Text.Json.JsonValueKind.Object then
                         failwith
-                            $"{who}: key \"{p.Name}\" expected an object ({topName}), got {jsonKindName p.Value.ValueKind} in: {shown}"
+                            $"{who}: array element [{i}] is a JSON {jsonKindName el.ValueKind}, not an object, in: {shown}"
+                    else
+                        readTopEl $"[{i}]." el)
+                // forced before the document disposes; then seq for the ctor
+                |> List.ofSeq
+                |> List.toSeq
+                |> VSeq
+            | true, System.Text.Json.JsonValueKind.Object ->
+                failwith
+                    $"{who}: expected an array (the declared type is seq<{topName}>); got an object — write from json {topName}, in: {shown}"
+            | true, k ->
+                failwith
+                    $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is seq<{topName}>, in: {shown}"
+            | false, System.Text.Json.JsonValueKind.Array when who = "from json" ->
+                // the suggested seq<T> spelling exists, so the message can
+                // point at it
+                failwith
+                    $"{who}: the top level is a JSON array, not an object — declare seq<{topName}> to read it, in: {shown}"
+            | false, k ->
+                let contract =
+                    if who = "from json" then
+                        "from json T reads one object document"
+                    else
+                        "from jsonl T reads one object per element"
 
-                    Map.add (VStr p.Name) (readTopEl $"[\"{p.Name}\"]." p.Value) m)
-                Map.empty
-            |> VMap
-        | System.Text.Json.JsonValueKind.Array ->
-            failwith
-                $"{who}: the top level is a JSON array, but the declared type is Map<string, {topName}> — declare seq<{topName}> to read an array, in: {shown}"
-        | k ->
-            failwith
-                $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is Map<string, {topName}>, in: {shown}"
-    else
-
-        match wantSeq, root.ValueKind with
-        | false, System.Text.Json.JsonValueKind.Object -> readTopEl "" root
-        | true, System.Text.Json.JsonValueKind.Array ->
-            root.EnumerateArray()
-            |> Seq.mapi (fun i el ->
-                if el.ValueKind <> System.Text.Json.JsonValueKind.Object then
-                    failwith
-                        $"{who}: array element [{i}] is a JSON {jsonKindName el.ValueKind}, not an object, in: {shown}"
-                else
-                    readTopEl $"[{i}]." el)
-            // forced before the document disposes; then seq for the ctor
-            |> List.ofSeq
-            |> List.toSeq
-            |> VSeq
-        | true, System.Text.Json.JsonValueKind.Object ->
-            failwith
-                $"{who}: expected an array (the declared type is seq<{topName}>); got an object — write from json {topName}, in: {shown}"
-        | true, k ->
-            failwith
-                $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is seq<{topName}>, in: {shown}"
-        | false, System.Text.Json.JsonValueKind.Array when who = "from json" ->
-            // the suggested seq<T> spelling exists, so the message can
-            // point at it
-            failwith
-                $"{who}: the top level is a JSON array, not an object — declare seq<{topName}> to read it, in: {shown}"
-        | false, k ->
-            let contract =
-                if who = "from json" then
-                    "from json T reads one object document"
-                else
-                    "from jsonl T reads one object per element"
-
-            failwith $"{who}: the top level is a JSON {jsonKindName k}, not an object — {contract}, in: {shown}"
+                failwith $"{who}: the top level is a JSON {jsonKindName k}, not an object — {contract}, in: {shown}"
 
 // a string's decode is the one InvalidOperationException a parsed
 // document can still raise: an escape naming a lone surrogate
@@ -3390,7 +3504,8 @@ let private jsonDoc who wantSeq wantMap top defs udefs (shown: string) text =
     try
         jsonDocRead who wantSeq wantMap top defs udefs shown text
     with :? System.InvalidOperationException ->
-        failwith $"{who}: a string escape is a lone surrogate (\\uD800-\\uDFFF without its pair), which is not text, in: {shown}"
+        failwith
+            $"{who}: a string escape is a lone surrogate (\\uD800-\\uDFFF without its pair), which is not text, in: {shown}"
 
 // a document snippet for error messages: whole if short, truncated if
 // not (a joined body can be megabytes; the message stays a message)
@@ -3427,7 +3542,9 @@ let private jsonTopHoldsSecret (top: JsonTop) (defs: Map<string, RecordDef>) (ud
                 | None -> false)
 
     and record (d: RecordDef) = d.Fields |> List.exists (snd >> ty)
-    and union (u: UnionDef) = u.Cases |> List.exists (snd >> Option.exists ty)
+
+    and union (u: UnionDef) =
+        u.Cases |> List.exists (snd >> Option.exists ty)
 
     match top with
     | TopRec d ->
@@ -3450,15 +3567,18 @@ let private jsonTopHoldsSecret (top: JsonTop) (defs: Map<string, RecordDef>) (ud
 // malformed name refuses rather than reading as no declaration
 // [D:xml-encoding] [D:xml-labels]
 let private xmlDeclEncoding =
-    System.Text.RegularExpressions.Regex
-        @"^\uFEFF?\s*<\?xml\s[^>]*?\bencoding\s*=\s*(?:""([^""]*)""|'([^']*)')"
+    System.Text.RegularExpressions.Regex @"^\uFEFF?\s*<\?xml\s[^>]*?\bencoding\s*=\s*(?:""([^""]*)""|'([^']*)')"
 
 // XML's EncName production
 let private xmlEncName =
     System.Text.RegularExpressions.Regex @"^[A-Za-z][A-Za-z0-9._-]*$"
 
 let private xmlDeclName (who: string) (m: System.Text.RegularExpressions.Match) : string =
-    let name = if m.Groups[1].Success then m.Groups[1].Value else m.Groups[2].Value
+    let name =
+        if m.Groups[1].Success then
+            m.Groups[1].Value
+        else
+            m.Groups[2].Value
 
     if xmlEncName.IsMatch name then
         name
@@ -3561,17 +3681,41 @@ let private xmlDoc
             let bomLen, bomEnc =
                 if bytes.Length >= 3 && bytes[0] = 0xEFuy && bytes[1] = 0xBBuy && bytes[2] = 0xBFuy then
                     3, Some(System.Text.UTF8Encoding(false) :> System.Text.Encoding)
-                elif bytes.Length >= 4 && bytes[0] = 0xFFuy && bytes[1] = 0xFEuy && bytes[2] = 0uy && bytes[3] = 0uy then
+                elif
+                    bytes.Length >= 4
+                    && bytes[0] = 0xFFuy
+                    && bytes[1] = 0xFEuy
+                    && bytes[2] = 0uy
+                    && bytes[3] = 0uy
+                then
                     4, Some(System.Text.UTF32Encoding(false, false) :> System.Text.Encoding)
-                elif bytes.Length >= 4 && bytes[0] = 0uy && bytes[1] = 0uy && bytes[2] = 0xFEuy && bytes[3] = 0xFFuy then
+                elif
+                    bytes.Length >= 4
+                    && bytes[0] = 0uy
+                    && bytes[1] = 0uy
+                    && bytes[2] = 0xFEuy
+                    && bytes[3] = 0xFFuy
+                then
                     4, Some(System.Text.UTF32Encoding(true, false) :> System.Text.Encoding)
                 elif bytes.Length >= 2 && bytes[0] = 0xFFuy && bytes[1] = 0xFEuy then
                     2, Some(System.Text.UnicodeEncoding(false, false) :> System.Text.Encoding)
                 elif bytes.Length >= 2 && bytes[0] = 0xFEuy && bytes[1] = 0xFFuy then
                     2, Some(System.Text.UnicodeEncoding(true, false) :> System.Text.Encoding)
-                elif bytes.Length >= 4 && bytes[0] = 0x3Cuy && bytes[1] = 0uy && bytes[2] = 0x3Fuy && bytes[3] = 0uy then
+                elif
+                    bytes.Length >= 4
+                    && bytes[0] = 0x3Cuy
+                    && bytes[1] = 0uy
+                    && bytes[2] = 0x3Fuy
+                    && bytes[3] = 0uy
+                then
                     0, Some(System.Text.UnicodeEncoding(false, false) :> System.Text.Encoding)
-                elif bytes.Length >= 4 && bytes[0] = 0uy && bytes[1] = 0x3Cuy && bytes[2] = 0uy && bytes[3] = 0x3Fuy then
+                elif
+                    bytes.Length >= 4
+                    && bytes[0] = 0uy
+                    && bytes[1] = 0x3Cuy
+                    && bytes[2] = 0uy
+                    && bytes[3] = 0x3Fuy
+                then
                     0, Some(System.Text.UnicodeEncoding(true, false) :> System.Text.Encoding)
                 else
                     0, None
@@ -3596,8 +3740,7 @@ let private xmlDoc
                         | Some e -> e
                         // pure ASCII reads the same under any
                         // ASCII-compatible label [D:xml-labels]
-                        | None when bytes |> Array.forall (fun b -> b < 0x80uy) ->
-                            System.Text.Encoding.ASCII
+                        | None when bytes |> Array.forall (fun b -> b < 0x80uy) -> System.Text.Encoding.ASCII
                         | None -> xmlUndecodable who name
                     else
                         System.Text.UTF8Encoding(false) :> System.Text.Encoding
@@ -3737,7 +3880,16 @@ let private xmlDoc
                         |> VSeq
                     // a nested element read as a record
                     | TNamed(n, []) when defs.ContainsKey n ->
-                        match childElem el name shownName (if n = name then $"seq<{n}>" else $"[<Elem \"{name}\">] seq<{n}>") with
+                        match
+                            childElem
+                                el
+                                name
+                                shownName
+                                (if n = name then
+                                     $"seq<{n}>"
+                                 else
+                                     $"[<Elem \"{name}\">] seq<{n}>")
+                        with
                         | Some c -> objRowXml (shownName + ".") defs[n] c
                         | None ->
                             failwith
@@ -3811,9 +3963,12 @@ let private tableRows (who: string) (def: RecordDef) (lines: string list) : Valu
                     | Ok f -> VFloat f
                     | Error _ -> failwith $"{at}: expected float, got '{quoteData s}'"
                 | TBool ->
-                    if s = "true" then VBool true
-                    elif s = "false" then VBool false
-                    else failwith $"{at}: expected bool (exactly true/false), got '{quoteData s}'"
+                    if s = "true" then
+                        VBool true
+                    elif s = "false" then
+                        VBool false
+                    else
+                        failwith $"{at}: expected bool (exactly true/false), got '{quoteData s}'"
                 | t -> unreachable $"the checker restricts table cells to scalars: {formatTy t}"
 
             match ty with
@@ -3853,6 +4008,7 @@ let private fromAdapter
     (udefs: Map<string, UnionDef>)
     : Value =
     let holdsSecret = jsonTopHoldsSecret top defs udefs
+
     let cite (excerpt: string) =
         if holdsSecret then secretExcerpt else quoteData excerpt
 
@@ -3971,20 +4127,21 @@ let yamlScalarValue (raw: string) (quoted: bool) : Value =
             else
                 withSourceText raw (VUnion("YStr", Some(VStr raw)))
         | None ->
-        match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
-        | true, n when yamlLeadingZero raw -> withSourceText raw (VUnion("YInt", Some(VInt n)))
-        | true, n -> VUnion("YInt", Some(VInt n))
-        | _ ->
-            // unquoted float-shaped literals self-type [D:floats-boundaries]
-            // — `cpu: 1.5` must not render as "1.5" (same as int;
-            // parseFloat refuses non-finite so nan/inf text stays string)
-            match (if quoted then Error "" else parseFloat raw) with
-            | Ok f -> yamlPlainFloatNode raw f
-            // a 1.2 number past float range (1e400): no float holds it,
-            // so the text rides a YStr and writes back plain, as .inf
-            // does [D:yaml-float-text]
-            | Error _ when not quoted && yamlCoreNumberRx.IsMatch raw -> withSourceText raw (VUnion("YStr", Some(VStr raw)))
-            | Error _ -> VUnion("YStr", Some(VStr raw))
+            match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
+            | true, n when yamlLeadingZero raw -> withSourceText raw (VUnion("YInt", Some(VInt n)))
+            | true, n -> VUnion("YInt", Some(VInt n))
+            | _ ->
+                // unquoted float-shaped literals self-type [D:floats-boundaries]
+                // — `cpu: 1.5` must not render as "1.5" (same as int;
+                // parseFloat refuses non-finite so nan/inf text stays string)
+                match (if quoted then Error "" else parseFloat raw) with
+                | Ok f -> yamlPlainFloatNode raw f
+                // a 1.2 number past float range (1e400): no float holds it,
+                // so the text rides a YStr and writes back plain, as .inf
+                // does [D:yaml-float-text]
+                | Error _ when not quoted && yamlCoreNumberRx.IsMatch raw ->
+                    withSourceText raw (VUnion("YStr", Some(VStr raw)))
+                | Error _ -> VUnion("YStr", Some(VStr raw))
 
 let rec yamlNodeValue (node: Yaml.Node) : Value =
     // the typeless read [D:yaml-nodes]: parsed structure into the
@@ -3998,7 +4155,13 @@ let rec yamlNodeValue (node: Yaml.Node) : Value =
     | Yaml.NMap(entries, _) ->
         VUnion(
             "YMap",
-            Some(VSeq(entries |> List.map (fun (k, v) -> VTuple [ VStr k; yamlNodeValue v ]) |> List.toSeq))
+            Some(
+                VSeq(
+                    entries
+                    |> List.map (fun (k, v) -> VTuple [ VStr k; yamlNodeValue v ])
+                    |> List.toSeq
+                )
+            )
         )
 
 // ruling R3 [D:yaml-number-text]: a typed read of a leading-zero
@@ -4007,7 +4170,9 @@ let rec yamlNodeValue (node: Yaml.Node) : Value =
 // float field cannot read
 let private yamlLeadingZeroRefusal (line: int) (raw: string) (asInt: bool) : Value =
     let r = raw.TrimStart('-', '+')
-    let n = System.Numerics.BigInteger.Parse(raw, System.Globalization.CultureInfo.InvariantCulture)
+
+    let n =
+        System.Numerics.BigInteger.Parse(raw, System.Globalization.CultureInfo.InvariantCulture)
 
     let sign = if raw.StartsWith "-" then "-" else ""
 
@@ -4016,7 +4181,10 @@ let private yamlLeadingZeroRefusal (line: int) (raw: string) (asInt: bool) : Val
             let oct = yamlRadixBig ("0o" + r)
             // the core schema's 0o form is unsigned
             $"octal ({sign}{oct})",
-            (if asInt && r = raw then $"0o{(r.TrimStart '0').PadLeft(1, '0')} for octal, " else "")
+            (if asInt && r = raw then
+                 $"0o{(r.TrimStart '0').PadLeft(1, '0')} for octal, "
+             else
+                 "")
         else
             "a string", ""
 
@@ -4167,7 +4335,8 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
                 | None, _ ->
                     failwith
                         $"from yaml: line {line}: missing field '{fname}'{wireNote} in '{name}' — if the field is sometimes absent, declare it Option<…>; a type drafted from a sample only sees what the sample had"
-                | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SSecret | Yaml.SBool | Yaml.SUuid | Yaml.SCodec _ | Yaml.SRec _ | Yaml.SValid _) ->
+                | Some(_, Yaml.NNull l),
+                  (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SSecret | Yaml.SBool | Yaml.SUuid | Yaml.SCodec _ | Yaml.SRec _ | Yaml.SValid _) ->
                     failwith $"from yaml: line {l}: field '{fname}' is null; declare it Option<…> to allow it"
                 | Some(_, v), _ -> fname, yamlUnder fname (fun () -> yamlConvert fshape v))
 
@@ -4315,7 +4484,8 @@ let private tomlFromImpl (shape: Yaml.Shape) : Value =
             match Toml.parseDocAt text with
             // a parse detail quotes the document [D:from-secret-excerpt]
             | Error(line, _) when shapeHoldsSecret shape ->
-                failwith $"from toml: line {line}: not a valid TOML document (detail withheld: the type holds a Secret)"
+                failwith
+                    $"from toml: line {line}: not a valid TOML document (detail withheld: the type holds a Secret)"
             | Error(line, msg) -> failwith $"from toml: line {line}: {msg}"
             | Ok doc ->
                 try
@@ -4324,7 +4494,9 @@ let private tomlFromImpl (shape: Yaml.Shape) : Value =
                 with Failure msg when msg.StartsWith "from yaml: " ->
                     failwith (
                         "from toml: "
-                        + msg.Substring("from yaml: ".Length).Replace("a quoted scalar is a string", "the value is a string")
+                        + msg
+                            .Substring("from yaml: ".Length)
+                            .Replace("a quoted scalar is a string", "the value is a string")
                     )
         | v -> unreachable $"the checker rejects 'from toml' on {formatValue v}")
 
@@ -4562,7 +4734,9 @@ let rec private yamlRender
                 | _ -> None)
 
         if not items.IsEmpty && asPairs |> List.forall Option.isSome then
-            let entries = asPairs |> List.map (fun p -> let k, v = Option.get p in k, v, valueGuide)
+            let entries =
+                asPairs |> List.map (fun p -> let k, v = Option.get p in k, v, valueGuide)
+
             refuseDupKeys "to yaml" (entries |> List.map (fun (k, _, _) -> k))
             mapping (renderMapWith false entries)
         elif items.IsEmpty then
@@ -4842,19 +5016,24 @@ let private argvUsageLinesWith (flagShorts: Map<string, string>) (def: RecordDef
             | _, _ -> "required"
 
         let right =
-            [ need
-              match Argv.docOf def f with
-              | Some d -> d
-              | None -> "" ]
+            [
+                need
+                match Argv.docOf def f with
+                | Some d -> d
+                | None -> ""
+            ]
             |> List.filter (fun s -> s <> "")
             |> String.concat " — "
 
         // the help column [D:args-help-column]: at least two spaces
         // separate a flag from its text; a flag too long for the column
         // wraps its text onto the next line at the column
-        if right = "" then [ left ]
-        elif left.Length + 2 > 30 then [ left; sprintf "%30s%s" "" right ]
-        else [ sprintf "%-30s%s" left right ])
+        if right = "" then
+            [ left ]
+        elif left.Length + 2 > 30 then
+            [ left; sprintf "%30s%s" "" right ]
+        else
+            [ sprintf "%-30s%s" left right ])
 
 let private argvUsageLines (def: RecordDef) : string list =
     argvUsageLinesWith (fst (Argv.shortTables def)) def
@@ -4865,12 +5044,13 @@ let private argvUsageLines (def: RecordDef) : string list =
 // in that scope
 let private scopeDef (sharedDef: RecordDef) (payloadDef: RecordDef option) : RecordDef =
     match payloadDef with
-    | Some pd ->
-        { sharedDef with
+    | Some pd -> {
+        sharedDef with
             Fields = sharedDef.Fields @ pd.Fields
             Attrs = pd.Attrs |> Map.fold (fun m k v -> Map.add k v m) sharedDef.Attrs
             // the two-tier help draws --help text from both tiers [D:doc-help]
-            Docs = pd.Docs |> Map.fold (fun m k v -> Map.add k v m) sharedDef.Docs }
+            Docs = pd.Docs |> Map.fold (fun m k v -> Map.add k v m) sharedDef.Docs
+      }
     | None -> sharedDef
 
 // a token with no leading dash is a value, never a flag or a command
@@ -4984,9 +5164,7 @@ let private argvCaseLines (udef: UnionDef) (payloads: Map<string, RecordDef>) : 
 // an empty section is never printed [D:help-case-docs]
 let private descBlock (desc: string option) (rest: string list) : string list =
     match desc with
-    | Some d ->
-        "" :: List.ofArray (d.Split '\n')
-        @ (if rest.IsEmpty then [] else "" :: rest)
+    | Some d -> "" :: List.ofArray (d.Split '\n') @ (if rest.IsEmpty then [] else "" :: rest)
     | None -> rest
 
 // a usage slot appears only when something fills it [D:help-case-docs]
@@ -5063,7 +5241,11 @@ let argvUsage (target: ArgsTarget) (argv: string list) : string =
 
         // case-scoped help when a case token rides along [D:shared-flags]
         let scoped =
-            argvFindCase sharedDef uf (udef.Cases |> List.map (fun (c, _) -> c.ToLowerInvariant())) (argv |> List.filter (fun t -> t <> "--help" && t <> "-h"))
+            argvFindCase
+                sharedDef
+                uf
+                (udef.Cases |> List.map (fun (c, _) -> c.ToLowerInvariant()))
+                (argv |> List.filter (fun t -> t <> "--help" && t <> "-h"))
             |> Option.bind (fun (_, tok) -> udef.Cases |> List.tryFind (fun (c, _) -> c.ToLowerInvariant() = tok))
 
         match scoped with
@@ -5126,7 +5308,9 @@ type private ArgvProblems() =
 
     member _.AddFor(field: string, m: string) =
         msgs.Add(m, false)
-        if not (flags.Contains field) then flags.Add field
+
+        if not (flags.Contains field) then
+            flags.Add field
 
     member _.Names(field: string) = flags.Contains field
     member _.Count = msgs.Count
@@ -5162,17 +5346,19 @@ let private argvUsageFail
         ArgsUsageError(
             String.concat
                 "\n"
-                (lines @ flagLines problems.Flags @ [ $"run '{prog} {helpScope}--help' for usage" ])
+                (lines
+                 @ flagLines problems.Flags
+                 @ [ $"run '{prog} {helpScope}--help' for usage" ])
         )
     )
 
 // the help lines of the named fields, in declaration order, with the
 // scope's shorts
 let private argvFlagLinesOf (shorts: Map<string, string>) (def: RecordDef) (fields: string list) : string list =
-    argvUsageLinesWith
-        shorts
-        { def with
-            Fields = def.Fields |> List.filter (fun (f, _) -> List.contains f fields) }
+    argvUsageLinesWith shorts {
+        def with
+            Fields = def.Fields |> List.filter (fun (f, _) -> List.contains f fields)
+    }
 
 // the three argv-boundary rules — one implementation each, shared by
 // the record and shared-flags twins [D:argv-rules]. The accumulators
@@ -5296,7 +5482,8 @@ let private argvParseValue
 let private unknownFlagMessage (t: string) (known: string list) (tyOf: string -> Ty option) : string =
     match t.IndexOf '=' with
     // the end-of-options marker is no misspelled flag [D:args-unknown-flag-no-echo]
-    | _ when t = "--" -> "unexpected '--' — weir's argv takes no end-of-options marker: every argument is a flag or its value"
+    | _ when t = "--" ->
+        "unexpected '--' — weir's argv takes no end-of-options marker: every argument is a flag or its value"
     | i when i > 2 && List.contains (t.Substring(0, i)) known ->
         let name, value = t.Substring(0, i), t.Substring(i + 1)
 
@@ -5315,11 +5502,7 @@ let private unknownFlagMessage (t: string) (known: string list) (tyOf: string ->
 // short flag's value is the next argument. Echoed only when every
 // reading of the letter is a known non-Secret flag [D:args-secret-echo];
 // a number (`-42`) is a stray argument, shown as is.
-let private attachedShortMessage
-    (t: string)
-    (shorts: Map<string, ShortOwner>)
-    (tyOf: string -> Ty option)
-    : string =
+let private attachedShortMessage (t: string) (shorts: Map<string, ShortOwner>) (tyOf: string -> Ty option) : string =
     let isSecret ty =
         match ty with
         | Some TSecret
@@ -5554,6 +5737,7 @@ let private argvLoadShared
                      | [] -> problems.AddFor(f, $"flag '{t}' needs a value"))
             | Choice2Of3 report ->
                 let cands = if i < caseIdx then beforeCandidates else afterCandidates
+
                 let tyOf n =
                     match Map.tryFind n sharedLong, Map.tryFind n payloadLong with
                     | Some(_, ty, _), _
@@ -5575,6 +5759,7 @@ let private argvLoadShared
 
                     problems.Add
                         $"unknown flag '{shown}' — the command is written bare, without a flag: '{usageName ()} {example}'"
+
                     go (i + 1) rest
                 else
                     if report then
@@ -5670,7 +5855,9 @@ let argvLoadWith (target: ArgsTarget) (argv: string list) : Value =
                         | [] -> ()
                         | t :: rest ->
                             let shown = if argvIsFlagShaped t then argvFlagShown t else t
-                            problems.Add $"unexpected argument '{quoteData shown}' — '{quoteData tok}' takes nothing after it"
+
+                            problems.Add
+                                $"unexpected argument '{quoteData shown}' — '{quoteData tok}' takes nothing after it"
 
                             match rest with
                             | v :: rest' when argvIsFlagShaped t && argvIsValue v ->
@@ -5781,7 +5968,8 @@ and private progOf (env: Env) (h: Check.TCmdHead) (pairs: (string * string) list
             if display.StartsWith "~/" then
                 failwith $"command not found: {quoteData s} (from {quoteData display})"
             else
-                failwith $"command not found: {quoteData s} — the dynamic head ^{quoteData display} resolves at run time"
+                failwith
+                    $"command not found: {quoteData s} — the dynamic head ^{quoteData display} resolves at run time"
         else
             s
 
@@ -5812,7 +6000,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         try
             let v = force (eval env body)
-            if asResult then VUnion("Ok", Some v) else VUnion("Some", Some v)
+
+            if asResult then
+                VUnion("Ok", Some v)
+            else
+                VUnion("Some", Some v)
         with
         | ExitRequest _ -> reraise ()
         | :? System.OperationCanceledException -> reraise ()
@@ -5845,7 +6037,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
         | VUnion("Error", Some(VStr e)), None -> raiseAtSite (quoteData e)
         | VUnion("None", None), Some l -> raiseAtSite l
         | VUnion("None", None), None -> raiseAtSite "orFail: no value (None)"
-        | other, _ -> unreachable $"the checker types orFail's left side as a Result or an Option, got {formatValue other}"
+        | other, _ ->
+            unreachable $"the checker types orFail's left side as a Result or an Option, got {formatValue other}"
     | TEInt n -> VInt(int64 n)
     | TEDur n -> VDur n
     | TESize b -> VSize b
@@ -6082,20 +6275,22 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         let overlay = overlayOf env cenvO
 
-        Proc.runInherited
-            { Prog = Proc.specProg (progOf env head (Proc.spawnPairs None overlay))
-              Args = argvOf env args
-              Env = overlay
-              Input = None
-              Cwd = None
-              Ambient = None }
+        Proc.runInherited {
+            Prog = Proc.specProg (progOf env head (Proc.spawnPairs None overlay))
+            Args = argvOf env args
+            Env = overlay
+            Input = None
+            Cwd = None
+            Ambient = None
+        }
 
         VUnit
     // the armed chain likewise: its tail writes the terminal
     // [D:armed-inherit] — `git log | less` pages, `xs | fzf` picks
-    | TEPipe({ Kind = TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) }) }, { Kind = TEVar "|print" }) when
-        not (System.Console.IsOutputRedirected)
-        ->
+    | TEPipe({
+                 Kind = TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) })
+             },
+             { Kind = TEVar "|print" }) when not (System.Console.IsOutputRedirected) ->
         System.Console.Out.Flush()
         Proc.runChainInherited (chainSpecs env arg chead cargs cenvO)
         VUnit
@@ -6104,7 +6299,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEPipe({ Kind = TECmd(head, args, cenvO) } as c, ({ Kind = TEVar "|print" } as fn)) ->
         let f = eval env fn
         callAtWith fn f (commandLines true env c head args cenvO)
-    | TEPipe({ Kind = TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) }) }, ({ Kind = TEVar "|print" } as fn)) ->
+    | TEPipe({
+                 Kind = TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) })
+             },
+             ({ Kind = TEVar "|print" } as fn)) ->
         let f = eval env fn
         let specs = chainSpecs env arg chead cargs cenvO
         callAtWith fn f (VSeq(Seq.delay (fun () -> Proc.chainStatementLinesOf specs) |> Seq.map VStr))
@@ -6162,14 +6360,22 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 let n = CodePoints.length s
                 let a = max 0L (absLo n)
                 let b = absHi n
-                if a > b then VStr "" else VStr(CodePoints.sub s (int a) (int (b - a + 1L)))
+
+                if a > b then
+                    VStr ""
+                else
+                    VStr(CodePoints.sub s (int a) (int (b - a + 1L)))
             | v -> unreachable $"the checker guarantees a string slice target; got {formatValue v}"
         | Check.SliceBytes ->
             match eval env target with
             | VBytes arr ->
                 let a = max 0L (absLo arr.Length)
                 let b = absHi arr.Length
-                if a > b then VBytes [||] else VBytes(Array.sub arr (int a) (int (b - a + 1L)))
+
+                if a > b then
+                    VBytes [||]
+                else
+                    VBytes(Array.sub arr (int a) (int (b - a + 1L)))
             | v -> unreachable $"the checker guarantees a Bytes slice target; got {formatValue v}"
         | Check.SliceSeq ->
             match eval env target with
@@ -6181,9 +6387,14 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         match items with
                         | :? (Value[]) as a -> a
                         | _ -> Seq.toArray items
+
                     let a = max 0L (absLo arr.Length)
                     let b = absHi arr.Length
-                    if a > b then VSeq Seq.empty else VSeq(Array.sub arr (int a) (int (b - a + 1L)))
+
+                    if a > b then
+                        VSeq Seq.empty
+                    else
+                        VSeq(Array.sub arr (int a) (int (b - a + 1L)))
                 else
                     // the lazy path (infinite-safe): open end skips lazily,
                     // a bounded hi stops pulling past it; int64 positions
@@ -6567,7 +6778,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let resolved = Session.resolveFs path
 
             if System.IO.Directory.Exists resolved then
-                failwith $"within lock: {quoteData resolved} is a directory — the lock is a file (e.g. {quoteData resolved}/.lock)"
+                failwith
+                    $"within lock: {quoteData resolved} is a directory — the lock is a file (e.g. {quoteData resolved}/.lock)"
 
             let timeoutMs =
                 topts
@@ -6596,7 +6808,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
                      // parent must fail immediately, not spin as "held
                      // elsewhere"
                      | :? System.IO.DirectoryNotFoundException ->
-                         failwith $"within lock: no such directory for {quoteData resolved} — the lock file's parent must exist"
+                         failwith
+                             $"within lock: no such directory for {quoteData resolved} — the lock file's parent must exist"
                      | :? System.UnauthorizedAccessException ->
                          failwith $"within lock: cannot open {quoteData resolved}: permission denied"
                      | :? System.IO.IOException -> None)
@@ -6709,12 +6922,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             Session.registerProc p
 
-            let handle =
-                { Proc = p
-                  OutPath = outPath
-                  ErrPath = errPath
-                  SpillDir = spill
-                  Drain = drain }
+            let handle = {
+                Proc = p
+                OutPath = outPath
+                ErrPath = errPath
+                SpillDir = spill
+                Drain = drain
+            }
 
             let release () =
                 Proc.stopTree p
@@ -6826,11 +7040,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
                 VRecord(
                     "HttpServerRequest",
-                    [ "method", methodValue
-                      "path", VStr r.Path
-                      "query", VStr r.Query
-                      "headers", VSeq(r.Headers |> List.map (fun (k, v) -> VTuple [ VStr k; VStr v ]))
-                      "body", VStr r.Body ]
+                    [
+                        "method", methodValue
+                        "path", VStr r.Path
+                        "query", VStr r.Query
+                        "headers", VSeq(r.Headers |> List.map (fun (k, v) -> VTuple [ VStr k; VStr v ]))
+                        "body", VStr r.Body
+                    ]
                 )
 
             // the handler's HttpServerResponse Value -> response
@@ -6847,11 +7063,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
                     let headers =
                         match recGet "headers" f with
-                        | VSeq items ->
-                            [ for it in items do
-                                  match it with
-                                  | VTuple [ VStr k; VStr hv ] -> k, hv
-                                  | _ -> () ]
+                        | VSeq items -> [
+                            for it in items do
+                                match it with
+                                | VTuple [ VStr k; VStr hv ] -> k, hv
+                                | _ -> ()
+                          ]
                         | _ -> []
 
                     // refuse a response header carrying CR/LF/NUL
@@ -6862,7 +7079,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     // script through the stream-error channel, and the
                     // response is refused without the injecting header
                     // (the accept loop 500s it).
-                    Http.refuseHeaderInjection "response header" (fun m -> raise (Serve.ResponseHeaderRefused m)) headers
+                    Http.refuseHeaderInjection
+                        "response header"
+                        (fun m -> raise (Serve.ResponseHeaderRefused m))
+                        headers
 
                     let asString v =
                         match v with
@@ -6891,16 +7111,18 @@ and eval (env: Env) (te: TypedExpr) : Value =
                             |> Serve.RForm
                         | bad -> unreachable $"serve body {formatValue bad}"
 
-                    { Status = status
-                      Headers = headers
-                      Body = body }
+                    {
+                        Status = status
+                        Headers = headers
+                        Body = body
+                    }
                 | bad -> unreachable $"the checker rejects a serve response of {formatValue bad}"
 
             let handle =
-                Serve.start
-                    (defaultArg port 0)
-                    { BodyTimeoutMs = bodyTimeoutMs
-                      MaxBody = maxBody }
+                Serve.start (defaultArg port 0) {
+                    BodyTimeoutMs = bodyTimeoutMs
+                    MaxBody = maxBody
+                }
 
             // the scope-close drain [D:serve-drain]: in-flight handlers get
             // this long, together, to finish their responses
@@ -6942,9 +7164,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 try
                     Serve.writeResponse
                         ctx
-                        { Status = 500
-                          Headers = []
-                          Body = Serve.RText "internal error" }
+                        {
+                            Status = 500
+                            Headers = []
+                            Body = Serve.RText "internal error"
+                        }
                         ignore
                 with _ ->
                     ()
@@ -6977,9 +7201,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         if not (Serve.methodTokenOk req.Method) then
                             Serve.writeResponse
                                 ctx
-                                { Status = 400
-                                  Headers = []
-                                  Body = Serve.RText "malformed request method" }
+                                {
+                                    Status = 400
+                                    Headers = []
+                                    Body = Serve.RText "malformed request method"
+                                }
                                 ignore
                         else
                             let resp = responseOf (apply handler (requestValue req))
@@ -6996,9 +7222,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         (try
                             Serve.writeResponse
                                 ctx
-                                { Status = 408
-                                  Headers = []
-                                  Body = Serve.RText "request body read timed out" }
+                                {
+                                    Status = 408
+                                    Headers = []
+                                    Body = Serve.RText "request body read timed out"
+                                }
                                 ignore
                          with _ ->
                              ())
@@ -7009,9 +7237,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         (try
                             Serve.writeResponse
                                 ctx
-                                { Status = 413
-                                  Headers = []
-                                  Body = Serve.RText $"request body exceeds maxBody ({formatSize maxBody})" }
+                                {
+                                    Status = 413
+                                    Headers = []
+                                    Body = Serve.RText $"request body exceeds maxBody ({formatSize maxBody})"
+                                }
                                 ignore
                          with _ ->
                              ())
@@ -7022,11 +7252,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         (try
                             Serve.writeResponse
                                 ctx
-                                { Status = 415
-                                  Headers = []
-                                  Body =
-                                    Serve.RText
-                                        $"request body charset '{cs}' is not one weir decodes — utf-8, utf-16, utf-32, us-ascii or iso-8859-1" }
+                                {
+                                    Status = 415
+                                    Headers = []
+                                    Body =
+                                        Serve.RText
+                                            $"request body charset '{cs}' is not one weir decodes — utf-8, utf-16, utf-32, us-ascii or iso-8859-1"
+                                }
                                 ignore
                          with _ ->
                              ())
@@ -7054,7 +7286,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     // scope closes, then the exit; this connection closes
                     // unanswered
                     | :? ExitRequest as e ->
-                        System.Threading.Interlocked.CompareExchange(&serveNode.Exit, (e :> exn), null) |> ignore
+                        System.Threading.Interlocked.CompareExchange(&serveNode.Exit, (e :> exn), null)
+                        |> ignore
+
                         Session.cutNode serveNode 1 Session.CutReason.HandlerExit true
                         Serve.abandon ctx
                     // a REPL ^C passes through as `exit` does [D:repl-interrupt]:
@@ -7102,8 +7336,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         | Some ctx ->
                             let node = Session.openNode serveNode Session.NodeKind.Handler
 
-                            let worker =
-                                System.Threading.Thread(fun () -> runHandler ctx node)
+                            let worker = System.Threading.Thread(fun () -> runHandler ctx node)
 
                             worker.IsBackground <- true
                             inflight[worker] <- node
@@ -7112,8 +7345,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
                 go ()
 
-            let loopThread =
-                System.Threading.Thread(System.Threading.ThreadStart acceptLoop)
+            let loopThread = System.Threading.Thread(System.Threading.ThreadStart acceptLoop)
 
             loopThread.IsBackground <- true
             loopThread.Start()
@@ -7292,7 +7524,9 @@ and private evalRepeat
                     let slice = min left (min budget maxSliceMs)
 
                     if
-                        Session.waitOrCancel (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond)) token
+                        Session.waitOrCancel
+                            (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond))
+                            token
                     then
                         ended <- Some true
 
@@ -7475,24 +7709,28 @@ and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
             let overlay = overlayOf env e2
 
             None,
-            { Proc.Prog = Proc.specProg (progOf env h2 (Proc.spawnPairs snapAmb overlay))
-              Proc.Args = argvOf env a2
-              Proc.Env = overlay
-              Proc.Input = None
-              Proc.Cwd = snapCwd
-              Proc.Ambient = snapAmb }
+            {
+                Proc.Prog = Proc.specProg (progOf env h2 (Proc.spawnPairs snapAmb overlay))
+                Proc.Args = argvOf env a2
+                Proc.Env = overlay
+                Proc.Input = None
+                Proc.Cwd = snapCwd
+                Proc.Ambient = snapAmb
+            }
             :: acc
         | TEPipe(l, { Kind = TECmd(h2, a2, e2) }) ->
             let overlay = overlayOf env e2
 
             collect
                 l
-                ({ Proc.Prog = Proc.specProg (progOf env h2 (Proc.spawnPairs snapAmb overlay))
-                   Proc.Args = argvOf env a2
-                   Proc.Env = overlay
-                   Proc.Input = None
-                   Proc.Cwd = snapCwd
-                   Proc.Ambient = snapAmb }
+                ({
+                    Proc.Prog = Proc.specProg (progOf env h2 (Proc.spawnPairs snapAmb overlay))
+                    Proc.Args = argvOf env a2
+                    Proc.Env = overlay
+                    Proc.Input = None
+                    Proc.Cwd = snapCwd
+                    Proc.Ambient = snapAmb
+                 }
                  :: acc)
         | _ -> Some e, acc
 
@@ -7519,12 +7757,16 @@ and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
         (match leftSpecs with
          | first :: rest -> { first with Proc.Input = stdin } :: rest
          | [] -> [])
-        @ [ { Proc.Prog = Proc.specProg (progOf env chead (Proc.spawnPairs snapAmb tailOverlay))
-              Proc.Args = argvOf env cargs
-              Proc.Env = tailOverlay
-              Proc.Input = (if leftSpecs.IsEmpty then stdin else None)
-              Proc.Cwd = snapCwd
-              Proc.Ambient = snapAmb } ]
+        @ [
+            {
+                Proc.Prog = Proc.specProg (progOf env chead (Proc.spawnPairs snapAmb tailOverlay))
+                Proc.Args = argvOf env cargs
+                Proc.Env = tailOverlay
+                Proc.Input = (if leftSpecs.IsEmpty then stdin else None)
+                Proc.Cwd = snapCwd
+                Proc.Ambient = snapAmb
+            }
+        ]
 
     specs
 
@@ -7573,19 +7815,16 @@ and private commandLines
     let overlay = overlayOf env cenvO
     let ambient = Weir.Session.scopedAmbient ()
 
-    let spec: Proc.Spec =
-        { Prog = Proc.specProg (progOf env head (Proc.spawnPairs ambient overlay))
-          Args = argv
-          Env = overlay
-          Input = None
-          Cwd = Weir.Session.scopedCwd ()
-          Ambient = ambient }
+    let spec: Proc.Spec = {
+        Prog = Proc.specProg (progOf env head (Proc.spawnPairs ambient overlay))
+        Args = argv
+        Env = overlay
+        Input = None
+        Cwd = Weir.Session.scopedCwd ()
+        Ambient = ambient
+    }
 
-    let lines =
-        if statement then
-            Proc.statementLinesOf
-        else
-            Proc.linesOf
+    let lines = if statement then Proc.statementLinesOf else Proc.linesOf
 
     // the command takes the blame wherever it is read [D:runtime-position]
     VSeq(Seq.delay (fun () -> lines spec) |> Seq.map VStr |> blameOn (box te))
@@ -7639,12 +7878,14 @@ let private commandStatementSpec (env: Env) (te: Check.TypedExpr) : Proc.Spec =
     | Check.TECmd(head, args, cenvO) ->
         let overlay = overlayOf env cenvO
 
-        { Prog = Proc.specProg (progOf env head (Proc.spawnPairs None overlay))
-          Args = argvOf env args
-          Env = overlay
-          Input = None
-          Cwd = None
-          Ambient = None }
+        {
+            Prog = Proc.specProg (progOf env head (Proc.spawnPairs None overlay))
+            Args = argvOf env args
+            Env = overlay
+            Input = None
+            Cwd = None
+            Ambient = None
+        }
     | _ -> unreachable "a command-statement helper takes the bare-command statement only"
 
 /// the REPL's streaming statement echo [D:stream-echo] — spawns the
@@ -7672,8 +7913,10 @@ let inheritsStdout (te: Check.TypedExpr) : bool =
 
 let inheritCommandStatement (env: Env) (te: Check.TypedExpr) : unit =
     match te.Kind with
-    | Check.TEPipe(arg, { Kind = Check.TECmd(chead, cargs, cenvO) }) ->
-        Proc.runChainInherited (chainSpecs env arg chead cargs cenvO)
+    | Check.TEPipe(arg,
+                   {
+                       Kind = Check.TECmd(chead, cargs, cenvO)
+                   }) -> Proc.runChainInherited (chainSpecs env arg chead cargs cenvO)
     | _ -> Proc.runInherited (commandStatementSpec env te)
 
 let constructorValues (cases: (string * Ty option * AttrSpec list) list) : (string * Value) list =
@@ -7712,7 +7955,8 @@ let declare (env: Env) (decl: Decl) (validator: (string * TypedExpr) option) : E
         // spelling of the fact
         registerOrdCases
             decl.Name
-            (cases |> List.choose (fun (c, _, specs) -> ordPosition specs |> Option.map (fun n -> c, n)))
+            (cases
+             |> List.choose (fun (c, _, specs) -> ordPosition specs |> Option.map (fun n -> c, n)))
 
         constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) env
     | DRecord fields ->

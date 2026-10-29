@@ -7,85 +7,86 @@ open Weir.Types
 // and `Completed` from command interaction; `e |> try result` turns a
 // failure into a Result value [D:try-form], so Result joins Option here
 // (superseding [D:no-result]) with F#'s names and shape.
-let source =
-    [ "type Option<'a> = Some of 'a | None"
-      "type Result<'a, 'e> = Ok of 'a | Error of 'e"
-      // the YAML node union [D:yaml-v1] — declared in weir's own source
-      // (as Option is), so constructors, Show, and the class laws
-      // all fall out of existing machinery. Value-domain behavior:
-      // Show renders the recursion; Eq rejects it by the existing no-seq
-      // rule with its own teaching text (no new rule). YMap preserves key
-      // order (the user-controlled escape from record-field alphabetical
-      // rendering).
-      "type Yaml = YStr of string | YInt of int | YFloat of float | YBool of bool | YNull | YSeq of seq<Yaml> | YMap of seq<string * Yaml>"
-      // the bounded-loop option records [D:retry-poll] — the types are
-      // the reference: keys, shapes, and (via Retry.defaults /
-      // Poll.defaults) the resting values
-      "type Retry = { attempts: int; delay: Duration; timeout: Option<Duration> }"
-      "type Poll = { timeout: Duration; interval: Duration }"
-      // the stop-ended loop's options [D:repeat]: interval is required
-      // (no public defaults), timeout mirrors retry's
-      "type Repeat = { interval: Duration; timeout: Option<Duration> }"
-      // the RFC 9562 namespace IDs [D:uuid] — Uuid.ns's type, so
-      // `Uuid.ns.dns` is plain field access on a module value
-      "type UuidNamespaces = { dns: Uuid; url: Uuid; oid: Uuid; x500: Uuid }"
-      // the typed request boundary [D:http] — field names are public API
-      // Other carries a well-formed but unlisted verb [D:serve-method]:
-      // a proxy may forward TRACE/QUERY-shaped tokens the union does not
-      // name, so the server reads it as `Other v` (route on it, answer 405
-      // by handler choice) rather than misreporting it as Get. The client
-      // never constructs Other — it is an inbound-only carrier.
-      "type HttpMethod = Get | Post | Put | Delete | Patch | Head | Options | Query | Other of string"
-      "type Auth = NoAuth | Bearer of Secret | Basic of string * Secret"
-      // the #session prompt provider's argument [D:prompt-status-arg]:
-      // ok is the red-prompt tint; exit carries a bare command's nonzero
-      // code (None after a non-command error, and when ok); duration is
-      // the last entry's wall time. Consumers read fields, so the record
-      // grows without breaking a prompt.
-      "type PromptStatus = { ok: bool; exit: Option<int>; duration: Duration }"
-      // File.readFrom's result [D:file-readfrom]: the complete lines and
-      // the offset to pass next time, so a poll is one call
-      "type FileChunk = { lines: seq<string>; next: Size }"
-      // the shared body union [D:http] [D:http-serve]: NoBody/Json/Text
-      // are the client-and-server cases; Stream is the server response's
-      // lazy line source — pulled and written chunked as produced
-      // (SSE-shaped), the pattern print set for streaming, server-side. On
-      // the client send path a Stream body materializes (request-body
-      // streaming is out of scope v1).
-      "type HttpBody = NoBody | Json of seq<string> | Text of string | Stream of seq<string> | Form of seq<string * string>"
-      "type HttpRequest = { method: HttpMethod; url: string; auth: Auth; headers: seq<string * string>; secretHeaders: seq<string * Secret>; body: HttpBody; timeout: Duration; insecure: bool }"
-      "type HttpResponse = { status: int; headers: seq<string * string>; body: seq<string> }"
-      // the server boundary [D:http-serve] — the ring protocol study's
-      // minimal surface. One family: HttpMethod + header pairs + the body
-      // union are shared with the client; the server records differ where
-      // the wire differs (a path+query, not a url; no auth/timeout — those
-      // are client concerns). maxConcurrent is the handler ceiling, the
-      // pmapWith concurrency-law on the scope.
-      // bodyTimeout bounds the request-body read [D:serve-body-timeout]:
-      // a slow client dribbling its body cannot park a handler slot
-      // unboundedly. Optional in the config literal — omit it and it rests
-      // at 30s (the serve config accepts `{ port; maxConcurrent }` and
-      // `{ port; maxConcurrent; bodyTimeout }` both); exhaustion refuses
-      // the request (408), bounded. maxBody bounds its size the same
-      // way [D:serve-max-body]: optional, 16 MiB, 413 past it.
-      // port is optional [D:serve-port-option]: None binds a free port,
-      // which Server.port reports
-      "type ServerConfig = { port: Option<int>; maxConcurrent: int; bodyTimeout: Duration; maxBody: Size }"
-      "type HttpServerRequest = { method: HttpMethod; path: string; query: string; headers: seq<string * string>; body: string }"
-      "type HttpServerResponse = { status: int; headers: seq<string * string>; body: HttpBody }"
-      // the plan/apply Op union [D:plan-apply] — the user-visible,
-      // equatable+showable reification of an external mutation captured
-      // inside a `plan` block. Each arm mirrors a mutation builtin's
-      // effect, one arm per builtin: File.write -> WriteFile,
-      // File.writeAtomic -> WriteFileAtomic [D:plan-writeatomic], File.delete
-      // -> DeleteFile, Dir.delete -> DeleteDir, Dir.deleteAll ->
-      // DeleteTree, File.copy/move -> Copy/Move, Dir.copy/move ->
-      // CopyDir/MoveDir, Dir.create -> MakeDir, Http.send{POST..} -> HttpSend. WriteFile
-      // and HttpSend carry data that includes seqs / a Secret (auth);
-      // Op/Plan are Eq-admitted by an explicit carve-out in Check (the
-      // testing story), and Show masks the Secret via the recursive
-      // renderer [D:secret].
-      "type Op = WriteFile of string * seq<string> | WriteFileAtomic of string * seq<string> | DeleteFile of string | Copy of string * string | Move of string * string | CopyDir of string * string | MoveDir of string * string | MakeDir of string | DeleteDir of string | DeleteTree of string | HttpSend of HttpRequest" ]
+let source = [
+    "type Option<'a> = Some of 'a | None"
+    "type Result<'a, 'e> = Ok of 'a | Error of 'e"
+    // the YAML node union [D:yaml-v1] — declared in weir's own source
+    // (as Option is), so constructors, Show, and the class laws
+    // all fall out of existing machinery. Value-domain behavior:
+    // Show renders the recursion; Eq rejects it by the existing no-seq
+    // rule with its own teaching text (no new rule). YMap preserves key
+    // order (the user-controlled escape from record-field alphabetical
+    // rendering).
+    "type Yaml = YStr of string | YInt of int | YFloat of float | YBool of bool | YNull | YSeq of seq<Yaml> | YMap of seq<string * Yaml>"
+    // the bounded-loop option records [D:retry-poll] — the types are
+    // the reference: keys, shapes, and (via Retry.defaults /
+    // Poll.defaults) the resting values
+    "type Retry = { attempts: int; delay: Duration; timeout: Option<Duration> }"
+    "type Poll = { timeout: Duration; interval: Duration }"
+    // the stop-ended loop's options [D:repeat]: interval is required
+    // (no public defaults), timeout mirrors retry's
+    "type Repeat = { interval: Duration; timeout: Option<Duration> }"
+    // the RFC 9562 namespace IDs [D:uuid] — Uuid.ns's type, so
+    // `Uuid.ns.dns` is plain field access on a module value
+    "type UuidNamespaces = { dns: Uuid; url: Uuid; oid: Uuid; x500: Uuid }"
+    // the typed request boundary [D:http] — field names are public API
+    // Other carries a well-formed but unlisted verb [D:serve-method]:
+    // a proxy may forward TRACE/QUERY-shaped tokens the union does not
+    // name, so the server reads it as `Other v` (route on it, answer 405
+    // by handler choice) rather than misreporting it as Get. The client
+    // never constructs Other — it is an inbound-only carrier.
+    "type HttpMethod = Get | Post | Put | Delete | Patch | Head | Options | Query | Other of string"
+    "type Auth = NoAuth | Bearer of Secret | Basic of string * Secret"
+    // the #session prompt provider's argument [D:prompt-status-arg]:
+    // ok is the red-prompt tint; exit carries a bare command's nonzero
+    // code (None after a non-command error, and when ok); duration is
+    // the last entry's wall time. Consumers read fields, so the record
+    // grows without breaking a prompt.
+    "type PromptStatus = { ok: bool; exit: Option<int>; duration: Duration }"
+    // File.readFrom's result [D:file-readfrom]: the complete lines and
+    // the offset to pass next time, so a poll is one call
+    "type FileChunk = { lines: seq<string>; next: Size }"
+    // the shared body union [D:http] [D:http-serve]: NoBody/Json/Text
+    // are the client-and-server cases; Stream is the server response's
+    // lazy line source — pulled and written chunked as produced
+    // (SSE-shaped), the pattern print set for streaming, server-side. On
+    // the client send path a Stream body materializes (request-body
+    // streaming is out of scope v1).
+    "type HttpBody = NoBody | Json of seq<string> | Text of string | Stream of seq<string> | Form of seq<string * string>"
+    "type HttpRequest = { method: HttpMethod; url: string; auth: Auth; headers: seq<string * string>; secretHeaders: seq<string * Secret>; body: HttpBody; timeout: Duration; insecure: bool }"
+    "type HttpResponse = { status: int; headers: seq<string * string>; body: seq<string> }"
+    // the server boundary [D:http-serve] — the ring protocol study's
+    // minimal surface. One family: HttpMethod + header pairs + the body
+    // union are shared with the client; the server records differ where
+    // the wire differs (a path+query, not a url; no auth/timeout — those
+    // are client concerns). maxConcurrent is the handler ceiling, the
+    // pmapWith concurrency-law on the scope.
+    // bodyTimeout bounds the request-body read [D:serve-body-timeout]:
+    // a slow client dribbling its body cannot park a handler slot
+    // unboundedly. Optional in the config literal — omit it and it rests
+    // at 30s (the serve config accepts `{ port; maxConcurrent }` and
+    // `{ port; maxConcurrent; bodyTimeout }` both); exhaustion refuses
+    // the request (408), bounded. maxBody bounds its size the same
+    // way [D:serve-max-body]: optional, 16 MiB, 413 past it.
+    // port is optional [D:serve-port-option]: None binds a free port,
+    // which Server.port reports
+    "type ServerConfig = { port: Option<int>; maxConcurrent: int; bodyTimeout: Duration; maxBody: Size }"
+    "type HttpServerRequest = { method: HttpMethod; path: string; query: string; headers: seq<string * string>; body: string }"
+    "type HttpServerResponse = { status: int; headers: seq<string * string>; body: HttpBody }"
+    // the plan/apply Op union [D:plan-apply] — the user-visible,
+    // equatable+showable reification of an external mutation captured
+    // inside a `plan` block. Each arm mirrors a mutation builtin's
+    // effect, one arm per builtin: File.write -> WriteFile,
+    // File.writeAtomic -> WriteFileAtomic [D:plan-writeatomic], File.delete
+    // -> DeleteFile, Dir.delete -> DeleteDir, Dir.deleteAll ->
+    // DeleteTree, File.copy/move -> Copy/Move, Dir.copy/move ->
+    // CopyDir/MoveDir, Dir.create -> MakeDir, Http.send{POST..} -> HttpSend. WriteFile
+    // and HttpSend carry data that includes seqs / a Secret (auth);
+    // Op/Plan are Eq-admitted by an explicit carve-out in Check (the
+    // testing story), and Show masks the Secret via the recursive
+    // renderer [D:secret].
+    "type Op = WriteFile of string * seq<string> | WriteFileAtomic of string * seq<string> | DeleteFile of string | Copy of string * string | Move of string * string | CopyDir of string * string | MoveDir of string * string | MakeDir of string | DeleteDir of string | DeleteTree of string | HttpSend of HttpRequest"
+]
 
 let private extendClean (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
     Check.preludeLoading.Value <- true
@@ -146,4 +147,8 @@ let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
             extended.AddOrUpdate(typeEnv, (valueEnv, result))
             result
 
-    { te with AnonLitDefs = System.Collections.Generic.Dictionary(te.AnonLitDefs) }, ve
+    {
+        te with
+            AnonLitDefs = System.Collections.Generic.Dictionary(te.AnonLitDefs)
+    },
+    ve

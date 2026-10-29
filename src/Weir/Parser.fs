@@ -17,21 +17,23 @@ type Resolver = Desugar.Resolver
 // expression grammar, which is otherwise resolver-free. parseLine sets
 // this per call; ThreadLocal keeps parallel test runs isolated.
 let private ambientResolver =
-    new System.Threading.ThreadLocal<Resolver>(fun () ->
-        { Desugar.IsKnown = (fun _ -> true)
-          Desugar.IsCommandCallable = (fun _ -> false)
-          Desugar.IsExternal = (fun _ -> false)
-          Desugar.ExternalNames = (fun () -> Seq.empty)
-          Desugar.BareHome = (fun _ -> None)
-          Desugar.AliasHead = fun _ -> None })
+    new System.Threading.ThreadLocal<Resolver>(fun () -> {
+        Desugar.IsKnown = (fun _ -> true)
+        Desugar.IsCommandCallable = (fun _ -> false)
+        Desugar.IsExternal = (fun _ -> false)
+        Desugar.ExternalNames = (fun () -> Seq.empty)
+        Desugar.BareHome = (fun _ -> None)
+        Desugar.AliasHead = fun _ -> None
+    })
 
-let private ambientProxy: Resolver =
-    { IsKnown = fun n -> ambientResolver.Value.IsKnown n
-      IsCommandCallable = fun n -> ambientResolver.Value.IsCommandCallable n
-      IsExternal = fun n -> ambientResolver.Value.IsExternal n
-      ExternalNames = fun () -> ambientResolver.Value.ExternalNames()
-      BareHome = fun n -> ambientResolver.Value.BareHome n
-      AliasHead = fun n -> ambientResolver.Value.AliasHead n }
+let private ambientProxy: Resolver = {
+    IsKnown = fun n -> ambientResolver.Value.IsKnown n
+    IsCommandCallable = fun n -> ambientResolver.Value.IsCommandCallable n
+    IsExternal = fun n -> ambientResolver.Value.IsExternal n
+    ExternalNames = fun () -> ambientResolver.Value.ExternalNames()
+    BareHome = fun n -> ambientResolver.Value.BareHome n
+    AliasHead = fun n -> ambientResolver.Value.AliasHead n
+}
 
 // Block-let command RHS [D:block-let-cmd][D:statement-lets]:
 // context-derived — true along the spine a top-level let's RHS
@@ -79,20 +81,20 @@ let private ifBodyOk = new System.Threading.ThreadLocal<bool>(fun () -> false)
 
 // forwarded: the let-in value position sits above the command grammar
 let private letRhsCmd, private letRhsCmdRef =
-    createParserForwardedToRef<Expr, unit> ()
+    createParserForwardedToRef<Expr, unit>()
 
 // forwarded: a block statement's env-prefix teaching [D:env-prefix] sits
 // above the command grammar it reuses
 let private envPrefixStmtGuard, private envPrefixStmtGuardRef =
-    createParserForwardedToRef<Choice<Expr, Expr>, unit> ()
+    createParserForwardedToRef<Choice<Expr, Expr>, unit>()
 
 // forwarded: `within env A=1 B=$x` reads the env-prefix words [D:within-env-pairs]
 let private envAssignsFwd, private envAssignsFwdRef =
-    createParserForwardedToRef<Expr, unit> ()
+    createParserForwardedToRef<Expr, unit>()
 
 // forwarded: the if/elif condition position sits above it too [D:if-succeeds]
 let private ifCondCmd, private ifCondCmdRef =
-    createParserForwardedToRef<Expr, unit> ()
+    createParserForwardedToRef<Expr, unit>()
 
 let private withLetCmd (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
     fun stream ->
@@ -224,7 +226,8 @@ let private withMatchArm (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
 // names bound in scope beat the alias table [D:alias-binding-shadow] —
 // one set, not a closure per binding: a long run of block lets would
 // otherwise chain a frame per name into every alias lookup
-let private aliasMasked = new System.Threading.ThreadLocal<Set<string>>(fun () -> Set.empty)
+let private aliasMasked =
+    new System.Threading.ThreadLocal<Set<string>>(fun () -> Set.empty)
 
 let private aliasHeadOf (r: Resolver) (w: string) =
     if aliasMasked.Value.Contains w then None else r.AliasHead w
@@ -236,9 +239,10 @@ let private withAmbientName (name: string) (p: Parser<'a, unit>) : Parser<'a, un
         let saved = ambientResolver.Value
         let savedMask = aliasMasked.Value
 
-        ambientResolver.Value <-
-            { saved with
-                IsKnown = fun n -> n = name || saved.IsKnown n }
+        ambientResolver.Value <- {
+            saved with
+                IsKnown = fun n -> n = name || saved.IsKnown n
+        }
 
         aliasMasked.Value <- Set.add name savedMask
 
@@ -272,7 +276,8 @@ let fieldSepStr = Desugar.fieldSepStr
 /// a record/list/decl field separator: an explicit `;` or the assembler's
 /// field sentinel [D:field-sep-sentinel] — a field value's `;` cannot
 /// reach here (seqExpr stops at the sentinel), so fields split cleanly
-let private fieldSepP: Parser<unit, unit> = (str_ws ";" <|> str_ws fieldSepStr) |>> ignore
+let private fieldSepP: Parser<unit, unit> =
+    (str_ws ";" <|> str_ws fieldSepStr) |>> ignore
 
 /// Line-end `yaml` arms a district; `to yaml` / `from yaml` are the
 /// boundary adapters [D:yaml-district]. One predicate, shared with the
@@ -313,8 +318,7 @@ let isYamlMarkerPiece (piece: string) =
     // any run of blanks separates tokens (`=  yaml`, `=<TAB>yaml`), and
     // a let's glued `name=` is its `=` [D:yaml-marker-blanks]
     core.Contains "yaml"
-    && (let toks =
-            core.Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries)
+    && (let toks = core.Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries)
 
         let n = toks.Length
 
@@ -322,7 +326,8 @@ let isYamlMarkerPiece (piece: string) =
             toks[0] = "let"
             && t.Length > 1
             && t.EndsWith "="
-            && t.Substring(0, t.Length - 1) |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
+            && t.Substring(0, t.Length - 1)
+               |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
 
         (n = 1 && toks[0] = "yaml")
         || (n >= 2 && toks[n - 1] = "yaml" && (toks[n - 2] = "=" || gluedLetEq toks[n - 2])))
@@ -373,15 +378,17 @@ let isHeredocMarkerPiece (piece: string) =
 let blockHeads = [ "<<<"; "yaml" ]
 
 
-let private pos (p: Position) : Pos =
-    { Line = int p.Line
-      Col = int p.Column }
+let private pos (p: Position) : Pos = {
+    Line = int p.Line
+    Col = int p.Column
+}
 
 let private here: Parser<Pos, unit> =
     fun stream ->
-        Reply
-            { Line = int stream.Line
-              Col = int stream.Column }
+        Reply {
+            Line = int stream.Line
+            Col = int stream.Column
+        }
 
 let private spanned (p: Parser<'a, unit>) : Parser<'a * Span, unit> =
     pipe3 here p here (fun s x e -> x, { Start = s; End = e })
@@ -392,14 +399,14 @@ let private rawWord = many1Satisfy2L isIdentStart isIdentCont "identifier"
 // is one word, the field's value — only an identifier tail extends it,
 // so `$x.` and `$x/y` still meet the concatenation guard
 let private splicePath (sigil: Parser<unit, unit>) : Parser<Expr, unit> =
-    spanned (sigil >>. rawWord)
-    .>>. many (attempt (pchar '.' >>. spanned rawWord))
+    spanned (sigil >>. rawWord) .>>. many (attempt (pchar '.' >>. spanned rawWord))
     |>> fun ((n, sp), fields) ->
         fields
         |> List.fold
-            (fun target (f, fsp) ->
-                { Kind = EField(target, f, fsp)
-                  Span = { Start = sp.Start; End = fsp.End } })
+            (fun target (f, fsp) -> {
+                Kind = EField(target, f, fsp)
+                Span = { Start = sp.Start; End = fsp.End }
+            })
             { Kind = EVar n; Span = sp }
 
 // the two-pipe cliff [D:pipe-hint]: a bare `|` after a completed
@@ -425,8 +432,7 @@ let private failFatallyAtCol (col: int) (msg: string) : Parser<'a, unit> =
         stream.Seek(int64 (col - 1))
         Reply(ReplyStatus.FatalError, messageError msg)
 
-let private spanAt (p: Position) : Span =
-    { Start = pos p; End = pos p }
+let private spanAt (p: Position) : Span = { Start = pos p; End = pos p }
 
 let private failChain (m: string) (sp: Span) : Parser<'a, unit> =
     if chainTeach.Value.IsNone then
@@ -483,7 +489,10 @@ let private barePipeHint: Parser<unit, unit> =
           >>= fun (at, name) -> failFatallyAt at (reifierHereMsg name))
          // `<value> | and`/`| or` [D:value-chain-word]: and/or branch on an
          // exit code, which a weir value does not have
-         <|> (attempt (ws >>. getPosition .>>. (choice [ pstring "and"; pstring "or" ] .>> reifierWordEnd))
+         <|> (attempt (
+                  ws >>. getPosition
+                  .>>. (choice [ pstring "and"; pstring "or" ] .>> reifierWordEnd)
+              )
               >>= fun (at, kw) ->
                   failFatallyAt
                       at
@@ -535,7 +544,7 @@ let private identSpanned =
 
 let private ident = identSpanned |>> fst
 
-let private expr, private exprRef = createParserForwardedToRef<Expr, unit> ()
+let private expr, private exprRef = createParserForwardedToRef<Expr, unit>()
 
 let private mkExpr = Desugar.mkExpr
 
@@ -546,20 +555,20 @@ let private mkExpr = Desugar.mkExpr
 // verbose grouping (named divergence row) — the alternative made
 // assembled if-blocks silently unconditional (see the Session-2
 // stop-and-report in NOTES).
-let private seqExpr, private seqExprRef = createParserForwardedToRef<Expr, unit> ()
+let private seqExpr, private seqExprRef = createParserForwardedToRef<Expr, unit>()
 
 // comma is the tuple constructor at F#'s precedence [D:bare-comma]:
 // below `;` (`a, b ; c` is `(a, b) ; c`), above `|>`
 // (`xs |> f, ys |> g` groups F#-identically).
 // Command mode is untouched by construction: barewords keep their commas.
 let private commaExpr, private commaExprRef =
-    createParserForwardedToRef<Expr, unit> ()
+    createParserForwardedToRef<Expr, unit>()
 
 // update-source expressions [D:record-update]: compound-free (a bare
 // match/if source is rejected — parens required [D:record-update]);
 // assigned once the operator table exists
 let private updateSource, private updateSourceRef =
-    createParserForwardedToRef<Expr, unit> ()
+    createParserForwardedToRef<Expr, unit>()
 
 // exponent tail of a float literal [D:floats]: e5 / E-3; a letter
 // follow backtracks (2e stays int-applied-to-ident, never a trap)
@@ -581,9 +590,12 @@ let private quietOpt (p: Parser<'a, unit>) : Parser<'a option, unit> =
         let tag = stream.StateTag
         let r = p stream
 
-        if r.Status = Ok then Reply(Some r.Result)
-        elif r.Status = Error && stream.StateTag = tag then Reply(None)
-        else Reply(r.Status, r.Error)
+        if r.Status = Ok then
+            Reply(Some r.Result)
+        elif r.Status = Error && stream.StateTag = tag then
+            Reply(None)
+        else
+            Reply(r.Status, r.Error)
 
 // the upcoming run of chars matching pred, unconsumed
 let private peekRun (pred: char -> bool) : Parser<string, unit> =
@@ -605,7 +617,13 @@ let private literalTailTeaching (at: Position) (text: string) (isFloat: bool) : 
 
         let whole = text + tail
 
-        if not isFloat && text = "0" && tail.Length > 1 && "xXoObB".Contains tail[0] && System.Char.IsLetterOrDigit tail[1] then
+        if
+            not isFloat
+            && text = "0"
+            && tail.Length > 1
+            && "xXoObB".Contains tail[0]
+            && System.Char.IsLetterOrDigit tail[1]
+        then
             let radix =
                 match System.Char.ToLowerInvariant tail[0] with
                 | 'x' -> 16
@@ -618,12 +636,16 @@ let private literalTailTeaching (at: Position) (text: string) (isFloat: bool) : 
                 with _ ->
                     "write the decimal value"
 
-            failFatallyAt at $"int literals are decimal only — '{whole}' has no literal form (no 0x/0o/0b prefixes); {value}"
+            failFatallyAt
+                at
+                $"int literals are decimal only — '{whole}' has no literal form (no 0x/0o/0b prefixes); {value}"
         elif tail.StartsWith "_" && digitAt 1 then
             let plain = whole.Replace("_", "")
             failFatallyAt at $"number literals have no digit separators — write {plain}"
         elif isFloat && tail.StartsWith "." && digitAt 1 then
-            failFatallyAt at $"a number has one decimal point at most — '{whole}' reads as version text; quote it (\"{whole}\")"
+            failFatallyAt
+                at
+                $"a number has one decimal point at most — '{whole}' reads as version text; quote it (\"{whole}\")"
         else
             preturn ()
 
@@ -639,21 +661,22 @@ let private intLit =
                   attempt (
                       // a digit after the unit is captured, not rejected:
                       // 1m30s deserves its own teaching, below
-                      (choice
-                          [ pstring "KiB"
-                            pstring "MiB"
-                            pstring "GiB"
-                            pstring "TiB"
-                            pstring "KB"
-                            pstring "MB"
-                            pstring "GB"
-                            pstring "TB"
-                            pstring "ms"
-                            pstring "B"
-                            pstring "s"
-                            pstring "m"
-                            pstring "h"
-                            pstring "d" ])
+                      (choice [
+                          pstring "KiB"
+                          pstring "MiB"
+                          pstring "GiB"
+                          pstring "TiB"
+                          pstring "KB"
+                          pstring "MB"
+                          pstring "GB"
+                          pstring "TB"
+                          pstring "ms"
+                          pstring "B"
+                          pstring "s"
+                          pstring "m"
+                          pstring "h"
+                          pstring "d"
+                      ])
                       .>>. lookAhead (opt (satisfy System.Char.IsDigit))
                       .>> notFollowedBy (satisfy (fun c -> System.Char.IsLetter c || c = '_'))
                   )
@@ -664,16 +687,17 @@ let private intLit =
                   attempt (
                       pchar '.' >>. notFollowedBy (pchar '.') >>. opt (many1Satisfy isDigit)
                       .>>. opt (
-                          choice
-                              [ pstring "KiB"
-                                pstring "MiB"
-                                pstring "GiB"
-                                pstring "TiB"
-                                pstring "ms"
-                                pstring "B"
-                                pstring "s"
-                                pstring "m"
-                                pstring "h" ]
+                          choice [
+                              pstring "KiB"
+                              pstring "MiB"
+                              pstring "GiB"
+                              pstring "TiB"
+                              pstring "ms"
+                              pstring "B"
+                              pstring "s"
+                              pstring "m"
+                              pstring "h"
+                          ]
                       )
                   )
               )
@@ -727,7 +751,12 @@ let private intLit =
                     // literal past int64 there is an error, never a wrap
                     match System.Int64.TryParse digits with
                     | true, n when n <= System.Int64.MaxValue / factor ->
-                        preturn (if isSizeUnit unit then ESize(n * factor) else EDur(n * factor))
+                        preturn (
+                            if isSizeUnit unit then
+                                ESize(n * factor)
+                            else
+                                EDur(n * factor)
+                        )
                     | _ ->
                         let what =
                             if isSizeUnit unit then
@@ -807,7 +836,8 @@ let private unicodeEscape (at: Position) : Parser<string, unit> =
             (pchar '}' <|> failFatallyAt at digitsMsg) >>. scalar digits
 
     pchar 'u'
-    >>. (pchar '{' <|> failFatallyAt at "'\\u' takes its code point in braces, e.g. \\u{1F600} or \\u{e9}")
+    >>. (pchar '{'
+         <|> failFatallyAt at "'\\u' takes its code point in braces, e.g. \\u{1F600} or \\u{e9}")
     >>. manyMinMaxSatisfy 0 7 isHex
     >>= body
 
@@ -835,7 +865,9 @@ let private escapedChar: Parser<string, unit> =
         | Some c when System.Char.IsHighSurrogate c ->
             lookAhead (anyString 2)
             >>= fun pair ->
-                failFatallyAt after $"'\\{pair}' is not an escape (the escapes are {escapeList}; a literal backslash is \\\\)"
+                failFatallyAt
+                    after
+                    $"'\\{pair}' is not an escape (the escapes are {escapeList}; a literal backslash is \\\\)"
         // a mid-line control char (a TAB) is named, not taken for the line end
         | Some c when
             System.Char.IsControl c
@@ -845,8 +877,15 @@ let private escapedChar: Parser<string, unit> =
             && c <> fieldSep
             && c <> districtClose
             ->
-            let name = if c = '\t' then "a TAB" else $"the control character U+{int c:X4}"
-            failFatallyAt after $"a backslash followed by {name} is not an escape (the escapes are {escapeList}; a literal backslash is \\\\)"
+            let name =
+                if c = '\t' then
+                    "a TAB"
+                else
+                    $"the control character U+{int c:X4}"
+
+            failFatallyAt
+                after
+                $"a backslash followed by {name} is not an escape (the escapes are {escapeList}; a literal backslash is \\\\)"
         // a non-letter is no path shape: the list alone, no hint to misfire
         | Some c when not (System.Char.IsControl c) ->
             failFatallyAt after $"'\\{c}' is not an escape (the escapes are {escapeList}; a literal backslash is \\\\)"
@@ -883,7 +922,8 @@ let private strLit =
     followedBy (pchar '"') >>. getPosition
     >>= fun opener ->
         spanned (
-            pchar '"' >>. manyStrings stringChar .>> (pchar '"' <|> unclosed opener "\"" "\"")
+            pchar '"' >>. manyStrings stringChar
+            .>> (pchar '"' <|> unclosed opener "\"" "\"")
             |>> EStr
         )
         |>> mkExpr
@@ -899,9 +939,10 @@ let private verbatimBody =
 
 let private tripleBody =
     manyStrings (
-        choice
-            [ many1Satisfy (fun c -> c <> '"')
-              attempt (pchar '"' .>> notFollowedBy (pstring "\"\"")) >>% "\"" ]
+        choice [
+            many1Satisfy (fun c -> c <> '"')
+            attempt (pchar '"' .>> notFollowedBy (pstring "\"\"")) >>% "\""
+        ]
     )
 
 let private verbatimLit =
@@ -952,27 +993,28 @@ let private opValue =
     spanned (
         attempt (
             pchar '(' >>. ws >>. getPosition
-            .>>. choice
-                [ pstring ">="
-                  pstring "<="
-                  pstring "=="
-                  pstring "<>"
-                  pstring "!="
-                  pstring "<|"
-                  pstring "|>"
-                  pstring "||"
-                  pstring "&&"
-                  pstring ">>"
-                  pstring "<<"
-                  pstring "+"
-                  attempt (pstring "-" .>> notFollowedBy (pchar '>'))
-                  pstring "*"
-                  pstring "/"
-                  pstring "%"
-                  pstring "="
-                  pstring ">"
-                  pstring "<"
-                  pstring "|" ]
+            .>>. choice [
+                pstring ">="
+                pstring "<="
+                pstring "=="
+                pstring "<>"
+                pstring "!="
+                pstring "<|"
+                pstring "|>"
+                pstring "||"
+                pstring "&&"
+                pstring ">>"
+                pstring "<<"
+                pstring "+"
+                attempt (pstring "-" .>> notFollowedBy (pchar '>'))
+                pstring "*"
+                pstring "/"
+                pstring "%"
+                pstring "="
+                pstring ">"
+                pstring "<"
+                pstring "|"
+            ]
             .>> ws
             .>> pchar ')'
         )
@@ -1005,7 +1047,8 @@ let private parens =
     // bare-comma amendment moved the comma into the expression grammar)
     // — and a statement body's let-cmd grant stops here [D:statement-lets]
     spanned (
-        pchar '(' >>. ws
+        pchar '('
+        >>. ws
         >>. withExprParen true (withExprCtxName "inside parentheses" (clearStmtLetCmd seqExpr))
         .>> pchar ')'
     )
@@ -1094,28 +1137,28 @@ let private recordLit =
         pchar '{'
         >>. ws
         >>. (keywordFieldGuard
-             <|> choice
-                     [ // the consumed-separator law's record instance
-                       // [D:arm-commit]: the literal commits on its head
-                       // (`ident =`, not `==`) — a deep field failure reports
-                       // at its own site instead of rewinding the whole literal
-                       // into the update alternative's shallower dump
-                       attempt (lookAhead (identSpanned .>> str_ws "=" .>> notFollowedBy (pchar '=')))
-                       >>. (sepBy1 fieldAssign fieldSepP .>> pchar '}')
-                       |>> ERecord
-                       // `{ expr }` with no `with` is an unambiguous shape
-                       // with a nameable repair — first-reached teaching
-                       // beats the expecting-list [D:label-leaks]
-                       (updateSource
-                        .>> (keyword "with"
-                             <|> (getPosition .>> followedBy (pchar '}')
-                                  >>= fun p ->
-                                      failFatallyAt
-                                          p
-                                          "a record update needs 'with' — { r with field = v }; to group an expression, use parentheses")))
-                       .>>. sepBy1 updateAssign fieldSepP
-                       .>> pchar '}'
-                       |>> EUpdate ])
+             <|> choice [ // the consumed-separator law's record instance
+                 // [D:arm-commit]: the literal commits on its head
+                 // (`ident =`, not `==`) — a deep field failure reports
+                 // at its own site instead of rewinding the whole literal
+                 // into the update alternative's shallower dump
+                 attempt (lookAhead (identSpanned .>> str_ws "=" .>> notFollowedBy (pchar '=')))
+                 >>. (sepBy1 fieldAssign fieldSepP .>> pchar '}')
+                 |>> ERecord
+                 // `{ expr }` with no `with` is an unambiguous shape
+                 // with a nameable repair — first-reached teaching
+                 // beats the expecting-list [D:label-leaks]
+                 (updateSource
+                  .>> (keyword "with"
+                       <|> (getPosition .>> followedBy (pchar '}')
+                            >>= fun p ->
+                                failFatallyAt
+                                    p
+                                    "a record update needs 'with' — { r with field = v }; to group an expression, use parentheses")))
+                 .>>. sepBy1 updateAssign fieldSepP
+                 .>> pchar '}'
+                 |>> EUpdate
+             ])
     )
     |>> mkExpr
     .>> ws
@@ -1150,7 +1193,7 @@ let private negIntLit =
     .>> ws
 
 let private rangeTerm, private rangeTermRef =
-    createParserForwardedToRef<Expr, unit> ()
+    createParserForwardedToRef<Expr, unit>()
 
 // Fail the range probe fast on a list/record opener [D:range-probe]:
 // a range endpoint is never `[`/`{`, so committing to the list path
@@ -1179,17 +1222,27 @@ let private rangeProbeAhead: Parser<unit, unit> =
                     let struct (_, e) =
                         Scan.foldOutsideStrings
                             (fun (struct (d, e)) i ch ->
-                                if e >= 0 then struct (d, e)
-                                elif ch = '(' then struct (d + 1, e)
-                                elif ch = ')' then (if d = 1 then struct (0, i + 1) else struct (d - 1, e))
-                                else struct (d, e))
+                                if e >= 0 then
+                                    struct (d, e)
+                                elif ch = '(' then
+                                    struct (d + 1, e)
+                                elif ch = ')' then
+                                    (if d = 1 then struct (0, i + 1) else struct (d - 1, e))
+                                else
+                                    struct (d, e))
                             (struct (0, -1))
                             rest
 
                     e
                 elif rest.Length > 1 && rest[1] = '"' then
                     // the first code character after the opener is past the string
-                    Scan.foldOutsideStrings (fun e i _ -> if e >= 0 then e elif i > 0 then i else e) -1 rest
+                    Scan.foldOutsideStrings
+                        (fun e i _ ->
+                            if e >= 0 then e
+                            elif i > 0 then i
+                            else e)
+                        -1
+                        rest
                 else
                     -1
 
@@ -1218,7 +1271,9 @@ let private rangeProbeAhead: Parser<unit, unit> =
                     Reply(ReplyStatus.Error, NoErrorMessages)
 
 let private rangeBody =
-    notFollowedBy (anyOf "[{") >>. rangeProbeAhead >>. attempt (rangeTerm .>> dotdot)
+    notFollowedBy (anyOf "[{")
+    >>. rangeProbeAhead
+    >>. attempt (rangeTerm .>> dotdot)
     .>>. rangeTerm
     .>>. opt (dotdot >>. rangeTerm)
     >>= fun ((a, b), c) ->
@@ -1242,23 +1297,25 @@ let private listLit =
     spanned (
         pchar '['
         >>. ws
-        >>. choice
-                [ rangeBody
-                  .>> (pchar ']' <?> "']' (complex range endpoints need parentheses: [a..(f x)])")
-                  |>> Choice1Of2
-                  sepBy commaExpr fieldSepP
-                  .>> (pchar ']'
-                       <|> (getPosition .>> followedBy (pstring "..")
-                            >>= fun at -> failFatallyAt at rangeEndpointMsg))
-                  |>> Choice2Of2 ]
+        >>. choice [
+            rangeBody
+            .>> (pchar ']' <?> "']' (complex range endpoints need parentheses: [a..(f x)])")
+            |>> Choice1Of2
+            sepBy commaExpr fieldSepP
+            .>> (pchar ']'
+                 <|> (getPosition .>> followedBy (pstring "..")
+                      >>= fun at -> failFatallyAt at rangeEndpointMsg))
+            |>> Choice2Of2
+        ]
     )
     |>> buildBracket
     .>> ws
 
 let private interpChar =
-    choice
-        [ many1Satisfy (fun c -> c <> '"' && c <> '\\' && c <> '{' && c <> '}')
-          escapedChar ]
+    choice [
+        many1Satisfy (fun c -> c <> '"' && c <> '\\' && c <> '{' && c <> '}')
+        escapedChar
+    ]
 
 // inside an interpolation hole [D:anchor-before-read]: a stray '\' at
 // expression level produced a dump a reader turned into a false rule
@@ -1277,11 +1334,12 @@ let private holeExpr: Parser<Expr, unit> =
             inHole.Value <- saved
 
 let private interpPart =
-    choice
-        [ pstring "{{" >>% IStr "{"
-          pstring "}}" >>% IStr "}"
-          pchar '{' >>. ws >>. holeExpr .>> pchar '}' |>> IExpr
-          many1Strings interpChar |>> IStr ]
+    choice [
+        pstring "{{" >>% IStr "{"
+        pstring "}}" >>% IStr "}"
+        pchar '{' >>. ws >>. holeExpr .>> pchar '}' |>> IExpr
+        many1Strings interpChar |>> IStr
+    ]
 
 let private interpLit =
     followedBy (pstring "$\"") >>. getPosition
@@ -1300,16 +1358,17 @@ let private interpLit =
 // Reopened from the no-interpolated-raw park on its own stated trigger
 // (raw-with-splice receipts). Single-line, like every string kind.
 let private interpRawPart =
-    choice
-        [ lookAhead (pstring "{{") >>. getPosition
-          >>= fun p ->
-              failFatallyAt
-                  p
-                  "a literal brace has no spelling in a raw interpolated string — use the ordinary $\"…\" form ({{ escapes there)"
-          pchar '{' >>. ws >>. expr .>> pchar '}' |>> IExpr
-          attempt (pstring "\"\"" .>> notFollowedBy (pchar '"')) >>% IStr "\"\""
-          attempt (pchar '"' .>> notFollowedBy (pstring "\"\"")) >>% IStr "\""
-          many1Satisfy (fun c -> c <> '"' && c <> '{' && c <> '\n' && c <> '\r') |>> IStr ]
+    choice [
+        lookAhead (pstring "{{") >>. getPosition
+        >>= fun p ->
+            failFatallyAt
+                p
+                "a literal brace has no spelling in a raw interpolated string — use the ordinary $\"…\" form ({{ escapes there)"
+        pchar '{' >>. ws >>. expr .>> pchar '}' |>> IExpr
+        attempt (pstring "\"\"" .>> notFollowedBy (pchar '"')) >>% IStr "\"\""
+        attempt (pchar '"' .>> notFollowedBy (pstring "\"\"")) >>% IStr "\""
+        many1Satisfy (fun c -> c <> '"' && c <> '{' && c <> '\n' && c <> '\r') |>> IStr
+    ]
 
 let private interpRawLit =
     followedBy (pstring "$\"\"\"") >>. getPosition
@@ -1403,7 +1462,10 @@ let rec private chainReifier (e: Expr) : string option =
 // builtin `ls`): the command grammar refuses it, and the refusal names
 // the two spellings that run a program [D:directive-diagnostic]
 let private sigilKnownHead: Parser<Expr, unit> =
-    lookAhead (getPosition .>>. many1Satisfy2 isIdentStart isIdentCont .>> notFollowedBy (pchar '.'))
+    lookAhead (
+        getPosition .>>. many1Satisfy2 isIdentStart isIdentCont
+        .>> notFollowedBy (pchar '.')
+    )
     >>= fun (at, w) ->
         let r = ambientResolver.Value
 
@@ -1433,8 +1495,10 @@ let private captureSigil =
     |>> (fun (chain, span) ->
         // the capture assertion survives to the statement gate
         // [D:district-retirement]: $() never arms, in any position
-        { Kind = ECapture { chain with Span = span }
-          Span = span })
+        {
+            Kind = ECapture { chain with Span = span }
+            Span = span
+        })
     .>> ws
 
 // prefix minus [D:prefix-minus] — F#'s adjacency rule: `-` is prefix
@@ -1444,7 +1508,7 @@ let private captureSigil =
 // infix. Desugars to `0 - e` for an int literal, else to a once-bound
 // `n - n - n` [D:prefix-minus-typed], so typing and eval are untouched.
 let private postfixAtomFwd, private postfixAtomFwdRef =
-    createParserForwardedToRef<Expr, unit> ()
+    createParserForwardedToRef<Expr, unit>()
 
 let private negAtom =
     attempt (
@@ -1496,31 +1560,44 @@ let private negAtom =
          )
          >>. getPosition
          .>> ws
-         |>> fun e -> { Kind = EInt Int64.MinValue; Span = { Start = pos p; End = pos e } })
+         |>> fun e -> {
+             Kind = EInt Int64.MinValue
+             Span = { Start = pos p; End = pos e }
+         })
         <|> (postfixAtomFwd
-        |>> fun e ->
-            let span = { Start = pos p; End = e.Span.End }
+             |>> fun e ->
+                 let span = { Start = pos p; End = e.Span.End }
 
-            // fold into the literal for the non-int scalars [D:floats]:
-            // the 0 - e desugar would mix types (0 is an int); -0.0
-            // normalizes at construction, the literal included
-            match e.Kind with
-            | EFloat f -> { Kind = EFloat(if f = 0.0 then 0.0 else -f); Span = span }
-            | EDur n -> { Kind = EDur(-n); Span = span }
-            | ESize b -> { Kind = ESize(-b); Span = span }
-            | EInt _ ->
-                { Kind = EBinOp("-", { Kind = EInt 0L; Span = e.Span }, e)
-                  Span = span }
-            // any other operand negates in its own type [D:prefix-minus-typed]:
-            // `n - n - n` is `-n` exactly for int, Duration, Size and the
-            // finite floats, without an int 0 pinning the type; bound once
-            // so the operand evaluates once
-            | _ ->
-                let v = { Kind = EVar "|neg"; Span = e.Span }
-                let sub a b = { Kind = EBinOp("-", a, b); Span = span }
+                 // fold into the literal for the non-int scalars [D:floats]:
+                 // the 0 - e desugar would mix types (0 is an int); -0.0
+                 // normalizes at construction, the literal included
+                 match e.Kind with
+                 | EFloat f -> {
+                     Kind = EFloat(if f = 0.0 then 0.0 else -f)
+                     Span = span
+                   }
+                 | EDur n -> { Kind = EDur(-n); Span = span }
+                 | ESize b -> { Kind = ESize(-b); Span = span }
+                 | EInt _ -> {
+                     Kind = EBinOp("-", { Kind = EInt 0L; Span = e.Span }, e)
+                     Span = span
+                   }
+                 // any other operand negates in its own type [D:prefix-minus-typed]:
+                 // `n - n - n` is `-n` exactly for int, Duration, Size and the
+                 // finite floats, without an int 0 pinning the type; bound once
+                 // so the operand evaluates once
+                 | _ ->
+                     let v = { Kind = EVar "|neg"; Span = e.Span }
 
-                { Kind = ELet("|neg", e.Span, e, sub (sub v v) v)
-                  Span = span })
+                     let sub a b = {
+                         Kind = EBinOp("-", a, b)
+                         Span = span
+                     }
+
+                     {
+                         Kind = ELet("|neg", e.Span, e, sub (sub v v) v)
+                         Span = span
+                     })
 
 // Depth guard [D:depth-guard]: unbounded expression depth blows the
 // native stack — the recursive-descent parser on deep nesting (parens/
@@ -1588,7 +1665,7 @@ let private undeepen (p: Parser<'a, unit>) : Parser<'a, unit> =
 // [for p in xs -> e] — forward-declared: the comprehension needs the
 // pattern grammar, which is defined after atom [D:for-do]
 let private comprehensionLit, private comprehensionLitRef =
-    createParserForwardedToRef<Expr, unit> ()
+    createParserForwardedToRef<Expr, unit>()
 
 // a leading '.' before a digit is the .5 spelling [D:floats]: teach
 // the full form (attempted after intLit — digits-first literals never
@@ -1621,7 +1698,11 @@ let private tildeTeaching: Parser<Expr, unit> =
 // C negation `!x` in an expression teaches weir's word [D:left-to-right-ops]
 let private bangNegationTeaching: Parser<Expr, unit> =
     onHead '!' (pchar '!')
-    <| (attempt (getPosition .>> pchar '!' .>> followedBy (many1Satisfy2 isIdentStart isIdentCont))
+    <| (attempt (
+            getPosition
+            .>> pchar '!'
+            .>> followedBy (many1Satisfy2 isIdentStart isIdentCont)
+        )
         >>= fun at -> failFatallyAt at "weir has no `!` negation — write `not x`")
 
 let private dotFloatTeaching =
@@ -1653,31 +1734,32 @@ let private orFailAtomTeaching: Parser<Expr, unit> =
 // choice, in this order, produces every atom failure (its merged
 // Expecting list reaches users verbatim), so it is never reordered
 let private atomChoice =
-    choice
-        [ attrsRejectHere >>% Unchecked.defaultof<Expr>
-          negAtom
-          intLit
-          dotFloatTeaching
-          holeBackslashTeaching
-          tildeTeaching
-          bangNegationTeaching
-          tripleLit
-          verbatimLit
-          strLit
-          dollarAtTeach
-          interpRawLit
-          interpLit
-          captureSigil
-          unitLit
-          opValue
-          parens
-          anonRecordLit
-          recordLit
-          attempt comprehensionLit
-          listLit
-          tryAtomTeaching
-          orFailAtomTeaching
-          wordAtom ]
+    choice [
+        attrsRejectHere >>% Unchecked.defaultof<Expr>
+        negAtom
+        intLit
+        dotFloatTeaching
+        holeBackslashTeaching
+        tildeTeaching
+        bangNegationTeaching
+        tripleLit
+        verbatimLit
+        strLit
+        dollarAtTeach
+        interpRawLit
+        interpLit
+        captureSigil
+        unitLit
+        opValue
+        parens
+        anonRecordLit
+        recordLit
+        attempt comprehensionLit
+        listLit
+        tryAtomTeaching
+        orFailAtomTeaching
+        wordAtom
+    ]
 
 // the atom dispatch [D:parse-fast-path]: the next character names the
 // one alternative that can succeed — the oracle's first tokens are
@@ -1757,10 +1839,7 @@ let private postfixAtom =
 
     let sliceNext =
         attempt (
-            pchar '[' >>. ws >>. bound .>> str_ws ".."
-            .>>. bound
-            .>> pchar ']'
-            .>>. here
+            pchar '[' >>. ws >>. bound .>> str_ws ".." .>>. bound .>> pchar ']' .>>. here
             .>> ws
             |>> fun ((loB, hiB), endP) ->
                 let lo, loEnd =
@@ -1790,8 +1869,7 @@ let private postfixAtom =
 
     let indexNext =
         attempt (
-            pchar '[' >>. ws >>. opt (pchar '^') .>>. indexExpr .>> pchar ']'
-            .>>. here
+            pchar '[' >>. ws >>. opt (pchar '^') .>>. indexExpr .>> pchar ']' .>>. here
             .>> ws
             |>> fun ((caret, idx), endP) -> SIndex(caret.IsSome, idx, endP)
         )
@@ -1804,14 +1882,17 @@ let private postfixAtom =
 
     let applySuffix (target: Expr) (suffix: Suffix) : Expr =
         match suffix with
-        | SSlice(lo, hi, loEnd, hiEnd, endP) ->
-            { Kind = ESlice(target, lo, hi, loEnd, hiEnd)
-              Span =
-                { Start = target.Span.Start
-                  End = endP } }
-        | SField(name, fspan) ->
-            { Kind = EField(target, name, fspan)
-              Span = Span.union target.Span fspan }
+        | SSlice(lo, hi, loEnd, hiEnd, endP) -> {
+            Kind = ESlice(target, lo, hi, loEnd, hiEnd)
+            Span = {
+                Start = target.Span.Start
+                End = endP
+            }
+          }
+        | SField(name, fspan) -> {
+            Kind = EField(target, name, fspan)
+            Span = Span.union target.Span fspan
+          }
         | SIndex(true, idx, endP) -> fromEndIndexDesugar target idx endP
         | SIndex(false, idx, endP) -> indexDesugar target idx endP
 
@@ -1848,22 +1929,25 @@ let private postfixAtom =
         suffixes target
         |>> fun applied ->
             match target.Kind with
-            | EVar "_" when applied <> target ->
-                { Kind = ELambda("_", target.Span, applied)
-                  Span = applied.Span }
+            | EVar "_" when applied <> target -> {
+                Kind = ELambda("_", target.Span, applied)
+                Span = applied.Span
+              }
             | _ -> applied
 
 rangeTermRef.Value <-
-    choice
-        [ negIntLit
-          atom .>>. many (attempt fieldSuffix)
-          |>> fun (target, fields) ->
-              fields
-              |> List.fold
-                  (fun t (name, fspan) ->
-                      { Kind = EField(t, name, fspan)
-                        Span = Span.union t.Span fspan })
-                  target ]
+    choice [
+        negIntLit
+        atom .>>. many (attempt fieldSuffix)
+        |>> fun (target, fields) ->
+            fields
+            |> List.fold
+                (fun t (name, fspan) -> {
+                    Kind = EField(t, name, fspan)
+                    Span = Span.union t.Span fspan
+                })
+                target
+    ]
 
 postfixAtomFwdRef.Value <- postfixAtom
 
@@ -1871,7 +1955,7 @@ postfixAtomFwdRef.Value <- postfixAtom
 // fieldNameDecl exist (forward ref, as sigilChain does)
 // [D:anon-records]
 let private anonShape, private anonShapeRef =
-    createParserForwardedToRef<(string * Ty) list, unit> ()
+    createParserForwardedToRef<(string * Ty) list, unit>()
 
 // `Env.load {| … |}` / `Args.load {| … |}` [D:env-inline-type]: the one
 // expression position an anonymous TYPE takes. The shape passes as its
@@ -1886,7 +1970,13 @@ let private isLoadHead (e: Expr) =
     | _ -> false
 
 let private loadShapeArg: Parser<Expr, unit> =
-    attempt (lookAhead (pstring "{|" >>. ws >>. ((pstring "[<" >>% ()) <|> (identSpanned >>. ws >>. skipChar ':'))))
+    attempt (
+        lookAhead (
+            pstring "{|"
+            >>. ws
+            >>. ((pstring "[<" >>% ()) <|> (identSpanned >>. ws >>. skipChar ':'))
+        )
+    )
     >>. spanned anonShape
     |>> fun (fields, span) ->
         let n = anonRecordName fields
@@ -1897,7 +1987,10 @@ let private loadShapeArg: Parser<Expr, unit> =
 // [D:arm-blocks]: its content would end mid-call, so teach the pipe
 let private blockArgGuard: Parser<unit, unit> =
     (getPosition
-     .>> attempt ((pstring "$$<<<" <|> pstring "$<<<" <|> pstring "<<<") .>> followedBy (pstring sibSepStr))
+     .>> attempt (
+         (pstring "$$<<<" <|> pstring "$<<<" <|> pstring "<<<")
+         .>> followedBy (pstring sibSepStr)
+     )
      >>= fun at ->
          failFatallyAt
              at
@@ -1918,9 +2011,10 @@ let private finishAppChain (stream: CharStream<unit>) (reply: Reply<Expr list>) 
         Reply(
             ReplyStatus.Ok,
             reply.Result
-            |> List.reduce (fun f a ->
-                { Kind = EApp(f, a)
-                  Span = Span.union f.Span a.Span }),
+            |> List.reduce (fun f a -> {
+                Kind = EApp(f, a)
+                Span = Span.union f.Span a.Span
+            }),
             reply.Error
         )
 
@@ -1951,7 +2045,8 @@ let private appChain: Parser<Expr, unit> =
                          at
                          $"{who} needs a monomorphic record; '{name}' is generic — declare a concrete record with the field types filled in and load that")
                 <|> preturn ()
-                >>. opt loadShapeArg .>>. many postfixAtom
+                >>. opt loadShapeArg
+                .>>. many postfixAtom
                 |>> fun (shape, rest) -> head :: (Option.toList shape @ rest)
             else
                 many postfixAtom |>> fun rest -> head :: rest
@@ -1968,12 +2063,12 @@ let private appChain: Parser<Expr, unit> =
 // idents, `()`, or parenthesized irrefutable patterns (F# also requires
 // the parens in param position). Refutability is a check-time error.
 let private binderParam, private binderParamRef =
-    createParserForwardedToRef<Pattern, unit> ()
+    createParserForwardedToRef<Pattern, unit>()
 
 // let-binder: a full pattern, bare commas allowed at the top
 // (`let x, y = ...` — the closed binder grammar makes the comma free)
 let private binderPat, private binderPatRef =
-    createParserForwardedToRef<Pattern, unit> ()
+    createParserForwardedToRef<Pattern, unit>()
 
 // duplicate params reject in both sugar positions [D:fun-sugar];
 // explicit nested lambdas may still shadow.
@@ -2029,9 +2124,10 @@ let private lambdaBody =
 
                     let names = ps |> List.collect leafNames |> Set.ofList
 
-                    ambientResolver.Value <-
-                        { saved with
-                            IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
+                    ambientResolver.Value <- {
+                        saved with
+                            IsKnown = fun n -> Set.contains n names || saved.IsKnown n
+                    }
 
                     let savedMask = aliasMasked.Value
                     aliasMasked.Value <- Set.union names savedMask
@@ -2048,8 +2144,10 @@ let private lambdaBody =
             |>> fun body ->
                 let inner = curryParams ps body
 
-                { inner with
-                    Span = { Start = pos p; End = body.Span.End } }
+                {
+                    inner with
+                        Span = { Start = pos p; End = body.Span.End }
+                }
 
 // let f x y = e desugars to nested lambdas [D:let-param-sugar].
 // Params are plain idents or () — the unit param pins its type in the
@@ -2096,9 +2194,10 @@ let private withPatNames (p: Pattern) (inner: Parser<'a, unit>) : Parser<'a, uni
         let names = patLeafNames p |> Set.ofList
         let saved = ambientResolver.Value
 
-        ambientResolver.Value <-
-            { saved with
-                IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
+        ambientResolver.Value <- {
+            saved with
+                IsKnown = fun n -> Set.contains n names || saved.IsKnown n
+        }
 
         let savedMask = aliasMasked.Value
         aliasMasked.Value <- Set.union names savedMask
@@ -2125,110 +2224,114 @@ let private letInBody =
                 | _ -> preturn b
         )
 
-    choice
-        [ getPosition .>>. (patForm .>>. (seqExpr >>= pipeOrHint) .>> keyword "in")
-          >>= fun (p, (binder, value)) ->
-              // the pattern's names are bindings in the body, as a plain
-              // let's name is — a bound name heads no command
-              // [D:paramful-rhs]
-              withPatNames binder (undeepen seqExpr)
-              |>> fun body ->
-                  { Kind = ELetPat(binder, value, body)
-                    Span = { Start = pos p; End = body.Span.End } }
-          getPosition
-          >>= fun p ->
-              (keyword "let" >>. spanned ident .>>. many binderParam
-               >>= fun (n, ps) -> rejectDupParams ps >>% (n, ps))
-              .>> str_ws "="
-              >>= fun ((name, nameSpan), ps) ->
-                  // the block-let command RHS [D:block-let-cmd]: the same
-                  // grammar the top-level bare RHS takes (in-stop argv, one
-                  // gate), live on the spine and in every statement
-                  // context [D:statement-lets]
-                  let cmdRhs: Parser<Expr, unit> =
-                      fun stream ->
-                          if letCmdOk.Value then
-                              // a granted success memoizes its span so a
-                              // later refused re-parse of the same text never
-                              // teaches over the true error [D:statement-lets]
-                              let off = stream.Index
-                              let reply = letRhsCmd stream
+    choice [
+        getPosition .>>. (patForm .>>. (seqExpr >>= pipeOrHint) .>> keyword "in")
+        >>= fun (p, (binder, value)) ->
+            // the pattern's names are bindings in the body, as a plain
+            // let's name is — a bound name heads no command
+            // [D:paramful-rhs]
+            withPatNames binder (undeepen seqExpr)
+            |>> fun body -> {
+                Kind = ELetPat(binder, value, body)
+                Span = { Start = pos p; End = body.Span.End }
+            }
+        getPosition
+        >>= fun p ->
+            (keyword "let" >>. spanned ident .>>. many binderParam
+             >>= fun (n, ps) -> rejectDupParams ps >>% (n, ps))
+            .>> str_ws "="
+            >>= fun ((name, nameSpan), ps) ->
+                // the block-let command RHS [D:block-let-cmd]: the same
+                // grammar the top-level bare RHS takes (in-stop argv, one
+                // gate), live on the spine and in every statement
+                // context [D:statement-lets]
+                let cmdRhs: Parser<Expr, unit> =
+                    fun stream ->
+                        if letCmdOk.Value then
+                            // a granted success memoizes its span so a
+                            // later refused re-parse of the same text never
+                            // teaches over the true error [D:statement-lets]
+                            let off = stream.Index
+                            let reply = letRhsCmd stream
 
-                              if reply.Status = ReplyStatus.Ok then
-                                  grantedRhsRanges.Value.Add(struct (off, stream.Index))
+                            if reply.Status = ReplyStatus.Ok then
+                                grantedRhsRanges.Value.Add(struct (off, stream.Index))
 
-                              reply
-                          elif inGrantedRange stream.Index then
-                              ifail "a granted route owns this RHS — backtrack artifact, no teach" stream
-                          else
-                              // the hardened teaching [D:statement-lets]: probe
-                              // the RHS under a granted flag — a chain that
-                              // parses with a reifier is a command this
-                              // expression context refuses, so teach $() at
-                              // the head, naming the actual context; the probe
-                              // consumes nothing and fires before the
-                              // expression parse, so a `--flag` argv teaches
-                              // exactly like one that survives to the pipe. A
-                              // reifier-free chain falls through — the
-                              // interior-command element takes it.
-                              let teach =
-                                  attempt (lookAhead (getPosition .>>. withLetCmd true letRhsCmd))
-                                  >>= fun (at, probed) ->
-                                      match chainReifier probed with
-                                      | Some reif ->
-                                          failFatallyAt
-                                              at
-                                              ($"{exprCtxName.Value}, a command needs $(…) on a 'let' RHS — write: let {name} = $(<command> | {reif}); "
-                                               + "bare command lets belong to statement bodies (top level, if/for/match arms, within blocks)")
-                                      | None -> ifail "reifier-free chain — the interior element takes it"
+                            reply
+                        elif inGrantedRange stream.Index then
+                            ifail "a granted route owns this RHS — backtrack artifact, no teach" stream
+                        else
+                            // the hardened teaching [D:statement-lets]: probe
+                            // the RHS under a granted flag — a chain that
+                            // parses with a reifier is a command this
+                            // expression context refuses, so teach $() at
+                            // the head, naming the actual context; the probe
+                            // consumes nothing and fires before the
+                            // expression parse, so a `--flag` argv teaches
+                            // exactly like one that survives to the pipe. A
+                            // reifier-free chain falls through — the
+                            // interior-command element takes it.
+                            let teach =
+                                attempt (lookAhead (getPosition .>>. withLetCmd true letRhsCmd))
+                                >>= fun (at, probed) ->
+                                    match chainReifier probed with
+                                    | Some reif ->
+                                        failFatallyAt
+                                            at
+                                            ($"{exprCtxName.Value}, a command needs $(…) on a 'let' RHS — write: let {name} = $(<command> | {reif}); "
+                                             + "bare command lets belong to statement bodies (top level, if/for/match arms, within blocks)")
+                                    | None -> ifail "reifier-free chain — the interior element takes it"
 
-                              (teach <|> ifail "block-let command RHS is statement-context-only") stream
+                            (teach <|> ifail "block-let command RHS is statement-context-only") stream
 
-                  // params shadow PATH inside their own RHS
-                  // [D:paramful-rhs] — the top-level rule at block-let
-                  // depth: without this a param heading an if-condition
-                  // resolved as a PATH command under check's
-                  // assume-resolver (bindings-beat-PATH, params included)
-                  let withParams (inner: Parser<'b, unit>) : Parser<'b, unit> =
-                      fun stream ->
-                          let saved = ambientResolver.Value
+                // params shadow PATH inside their own RHS
+                // [D:paramful-rhs] — the top-level rule at block-let
+                // depth: without this a param heading an if-condition
+                // resolved as a PATH command under check's
+                // assume-resolver (bindings-beat-PATH, params included)
+                let withParams (inner: Parser<'b, unit>) : Parser<'b, unit> =
+                    fun stream ->
+                        let saved = ambientResolver.Value
 
-                          let rec leafNames (pt: Pattern) =
-                              match pt.PKind with
-                              | PVar n -> [ n ]
-                              | PTuple pts -> pts |> List.collect leafNames
-                              | PRecord fields -> fields |> List.map snd |> List.collect leafNames
-                              | PCase(_, Some inner, _) -> leafNames inner
-                              | _ -> []
+                        let rec leafNames (pt: Pattern) =
+                            match pt.PKind with
+                            | PVar n -> [ n ]
+                            | PTuple pts -> pts |> List.collect leafNames
+                            | PRecord fields -> fields |> List.map snd |> List.collect leafNames
+                            | PCase(_, Some inner, _) -> leafNames inner
+                            | _ -> []
 
-                          let names = ps |> List.collect leafNames |> Set.ofList
+                        let names = ps |> List.collect leafNames |> Set.ofList
 
-                          ambientResolver.Value <-
-                              { saved with
-                                  IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
+                        ambientResolver.Value <- {
+                            saved with
+                                IsKnown = fun n -> Set.contains n names || saved.IsKnown n
+                        }
 
-                          let savedMask = aliasMasked.Value
-                          aliasMasked.Value <- Set.union names savedMask
+                        let savedMask = aliasMasked.Value
+                        aliasMasked.Value <- Set.union names savedMask
 
-                          try
-                              inner stream
-                          finally
-                              ambientResolver.Value <- saved
-                              aliasMasked.Value <- savedMask
+                        try
+                            inner stream
+                        finally
+                            ambientResolver.Value <- saved
+                            aliasMasked.Value <- savedMask
 
-                  // a bare `let name =` with nothing after it gets its own
-                  // first-reached diagnosis [D:windows-findings] — without
-                  // this the report was a 12-item expecting list with the
-                  // spine-only gate's internal label leaking underneath as
-                  // a false "specific" diagnosis
-                  (followedBy eof
-                   >>. fun stream -> failFatally $"this binding has no value — give '{name}' a right-hand side" stream)
-                  <|> (withParams (cmdRhs <|> ((seqExpr >>= pipeOrHint))) .>> keyword "in")
-                  >>= fun value ->
-                      withAmbientName name (withExprParen false (undeepen seqExpr))
-                      |>> fun body ->
-                          { Kind = ELet(name, nameSpan, curryParams ps value, body)
-                            Span = { Start = pos p; End = body.Span.End } } ]
+                // a bare `let name =` with nothing after it gets its own
+                // first-reached diagnosis [D:windows-findings] — without
+                // this the report was a 12-item expecting list with the
+                // spine-only gate's internal label leaking underneath as
+                // a false "specific" diagnosis
+                (followedBy eof
+                 >>. fun stream -> failFatally $"this binding has no value — give '{name}' a right-hand side" stream)
+                <|> (withParams (cmdRhs <|> ((seqExpr >>= pipeOrHint))) .>> keyword "in")
+                >>= fun value ->
+                    withAmbientName name (withExprParen false (undeepen seqExpr))
+                    |>> fun body -> {
+                        Kind = ELet(name, nameSpan, curryParams ps value, body)
+                        Span = { Start = pos p; End = body.Span.End }
+                    }
+    ]
 
 let private letIn = deepenAfter [ "let" ] letInBody // [D:depth-guard]
 
@@ -2276,7 +2379,7 @@ let private mkOpp (withPipe: bool) =
 let private opp = mkOpp true
 let private segOpp = mkOpp false
 
-let private pat, private patRef = createParserForwardedToRef<Pattern, unit> ()
+let private pat, private patRef = createParserForwardedToRef<Pattern, unit>()
 
 let private patWord =
     // the keyword check dominates [D:anchor-before-read], outside the
@@ -2297,21 +2400,22 @@ let private patWord =
 // literal patterns [D:literal-patterns]: int and string pin
 // the scrutinee; () is the irrefutable unit pattern
 let private patLit =
-    choice
-        [ attempt (spanned (pstring "()") .>> ws)
-          |>> fun (_, span) -> { PKind = PUnit; PSpan = span }
-          attempt (getPosition .>>. spanned (opt (pchar '-') .>>. many1Satisfy isDigit) .>> ws)
-          >>= fun (at, ((neg, digits), span)) ->
-              match System.Int64.TryParse((if neg.IsSome then "-" else "") + digits) with
-              | true, n -> preturn { PKind = PInt n; PSpan = span }
-              // anchor at the literal start [D:anchor-before-read]
-              | false, _ -> failFatallyAt at $"int literal out of range (64-bit): {digits}"
-          spanned (pstring "\"\"\"" >>. tripleBody .>> pstring "\"\"\"") .>> ws
-          |>> fun (s, span) -> { PKind = PStr s; PSpan = span }
-          spanned (pstring "@\"" >>. verbatimBody .>> pchar '"') .>> ws
-          |>> fun (s, span) -> { PKind = PStr s; PSpan = span }
-          spanned (between (pchar '"') (pchar '"') (manyStrings stringChar)) .>> ws
-          |>> fun (s, span) -> { PKind = PStr s; PSpan = span } ]
+    choice [
+        attempt (spanned (pstring "()") .>> ws)
+        |>> fun (_, span) -> { PKind = PUnit; PSpan = span }
+        attempt (getPosition .>>. spanned (opt (pchar '-') .>>. many1Satisfy isDigit) .>> ws)
+        >>= fun (at, ((neg, digits), span)) ->
+            match System.Int64.TryParse((if neg.IsSome then "-" else "") + digits) with
+            | true, n -> preturn { PKind = PInt n; PSpan = span }
+            // anchor at the literal start [D:anchor-before-read]
+            | false, _ -> failFatallyAt at $"int literal out of range (64-bit): {digits}"
+        spanned (pstring "\"\"\"" >>. tripleBody .>> pstring "\"\"\"") .>> ws
+        |>> fun (s, span) -> { PKind = PStr s; PSpan = span }
+        spanned (pstring "@\"" >>. verbatimBody .>> pchar '"') .>> ws
+        |>> fun (s, span) -> { PKind = PStr s; PSpan = span }
+        spanned (between (pchar '"') (pchar '"') (manyStrings stringChar)) .>> ws
+        |>> fun (s, span) -> { PKind = PStr s; PSpan = span }
+    ]
 
 // one-or-tuple over comma-separated patterns — shared by paren
 // interiors and binder positions (was written twice)
@@ -2319,11 +2423,13 @@ let private commaPats =
     sepBy1 pat (str_ws ",")
     |>> function
         | [ one ] -> one
-        | many ->
-            { PKind = PTuple many
-              PSpan =
-                { Start = (List.head many).PSpan.Start
-                  End = (List.last many).PSpan.End } }
+        | many -> {
+            PKind = PTuple many
+            PSpan = {
+                Start = (List.head many).PSpan.Start
+                End = (List.last many).PSpan.End
+            }
+          }
 
 // an annotated parameter `(x: int)` teaches inference [D:left-to-right-ops]
 // — F#'s spelling, refused in weir scripts (no-type-ascription)
@@ -2364,87 +2470,102 @@ let private patRecordArm =
 // a qualified case's `.Case` tail [D:qualified-case-patterns]: the case
 // word is uppercase, so `Seq.head` after an arm stays what it was
 let private qualifiedCaseWord =
-    attempt (pchar '.' >>. identSpanned >>= fun (c, sp) -> if Char.IsUpper c[0] then preturn (c, sp) else pzero)
+    attempt (
+        pchar '.' >>. identSpanned
+        >>= fun (c, sp) -> if Char.IsUpper c[0] then preturn (c, sp) else pzero
+    )
 
 let private patAtom =
-    choice
-        [ patLit
-          patParens
-          patSeq
-          patRecordArm
-          patWord
-          >>= fun (w, span) ->
-              if w = "_" then
-                  preturn { PKind = PWildcard; PSpan = span }
-              elif w = "true" then
-                  preturn { PKind = PBool true; PSpan = span }
-              elif w = "false" then
-                  preturn { PKind = PBool false; PSpan = span }
-              elif Char.IsUpper w[0] then
-                  // a qualified case [D:qualified-case-patterns]
-                  opt qualifiedCaseWord
-                  |>> function
-                      | Some(c, cspan) ->
-                          { PKind = PCase(c, None, Some(w, span))
-                            PSpan = { Start = span.Start; End = cspan.End } }
-                      | None -> { PKind = PCase(w, None, None); PSpan = span }
-              else
-                  preturn { PKind = PVar w; PSpan = span } ]
+    choice [
+        patLit
+        patParens
+        patSeq
+        patRecordArm
+        patWord
+        >>= fun (w, span) ->
+            if w = "_" then
+                preturn { PKind = PWildcard; PSpan = span }
+            elif w = "true" then
+                preturn { PKind = PBool true; PSpan = span }
+            elif w = "false" then
+                preturn { PKind = PBool false; PSpan = span }
+            elif Char.IsUpper w[0] then
+                // a qualified case [D:qualified-case-patterns]
+                opt qualifiedCaseWord
+                |>> function
+                    | Some(c, cspan) -> {
+                        PKind = PCase(c, None, Some(w, span))
+                        PSpan = { Start = span.Start; End = cspan.End }
+                      }
+                    | None -> {
+                        PKind = PCase(w, None, None)
+                        PSpan = span
+                      }
+            else
+                preturn { PKind = PVar w; PSpan = span }
+    ]
 
 // The Regex position parses any string kind and tags it; the
 // checker enforces raw-only there [D:raw-strings].
 let private regexPatternLit =
-    choice
-        [ spanned (pstring "\"\"\"" >>. tripleBody .>> pstring "\"\"\"")
-          |>> fun (p, sp) -> p, sp, true
-          spanned (pstring "@\"" >>. verbatimBody .>> pchar '"')
-          |>> fun (p, sp) -> p, sp, true
-          spanned (between (pchar '"') (pchar '"') (manyStrings stringChar))
-          |>> fun (p, sp) -> p, sp, false ]
+    choice [
+        spanned (pstring "\"\"\"" >>. tripleBody .>> pstring "\"\"\"")
+        |>> fun (p, sp) -> p, sp, true
+        spanned (pstring "@\"" >>. verbatimBody .>> pchar '"')
+        |>> fun (p, sp) -> p, sp, true
+        spanned (between (pchar '"') (pchar '"') (manyStrings stringChar))
+        |>> fun (p, sp) -> p, sp, false
+    ]
     .>> ws
 
 let private patCore =
-    choice
-        [ patLit
-          patParens
-          patSeq
-          patRecordArm
-          patWord
-          >>= fun (w, span) ->
-              if w = "_" then
-                  preturn { PKind = PWildcard; PSpan = span }
-              elif w = "true" then
-                  preturn { PKind = PBool true; PSpan = span }
-              elif w = "false" then
-                  preturn { PKind = PBool false; PSpan = span }
-              elif w = "Regex" then
-                  // bespoke pattern form, literal-only [D:regex-pattern]
-                  choice
-                      [ regexPatternLit .>>. patAtom
-                        |>> fun ((pat, litSpan, raw), binder) ->
-                            { PKind = PRegex(pat, litSpan, raw, binder)
-                              PSpan =
-                                { Start = span.Start
-                                  End = binder.PSpan.End } }
-                        failFatally
-                            "Regex patterns take a LITERAL string; computed patterns live on the expression side (Str.isMatch / Str.rmatch)" ]
-              elif Char.IsUpper w[0] then
-                  // a qualified case `A.Case` names the import whose union
-                  // declares it [D:qualified-case-patterns]; the checker
-                  // resolves the qualifier
-                  opt qualifiedCaseWord .>>. opt patAtom
-                  |>> fun (q, arg) ->
-                      let ctor, qual, headEnd =
-                          match q with
-                          | Some(c, cspan) -> c, Some(w, span), cspan.End
-                          | None -> w, None, span.End
+    choice [
+        patLit
+        patParens
+        patSeq
+        patRecordArm
+        patWord
+        >>= fun (w, span) ->
+            if w = "_" then
+                preturn { PKind = PWildcard; PSpan = span }
+            elif w = "true" then
+                preturn { PKind = PBool true; PSpan = span }
+            elif w = "false" then
+                preturn { PKind = PBool false; PSpan = span }
+            elif w = "Regex" then
+                // bespoke pattern form, literal-only [D:regex-pattern]
+                choice [
+                    regexPatternLit .>>. patAtom
+                    |>> fun ((pat, litSpan, raw), binder) -> {
+                        PKind = PRegex(pat, litSpan, raw, binder)
+                        PSpan = {
+                            Start = span.Start
+                            End = binder.PSpan.End
+                        }
+                    }
+                    failFatally
+                        "Regex patterns take a LITERAL string; computed patterns live on the expression side (Str.isMatch / Str.rmatch)"
+                ]
+            elif Char.IsUpper w[0] then
+                // a qualified case `A.Case` names the import whose union
+                // declares it [D:qualified-case-patterns]; the checker
+                // resolves the qualifier
+                opt qualifiedCaseWord .>>. opt patAtom
+                |>> fun (q, arg) ->
+                    let ctor, qual, headEnd =
+                        match q with
+                        | Some(c, cspan) -> c, Some(w, span), cspan.End
+                        | None -> w, None, span.End
 
-                      let e = arg |> Option.map (fun a -> a.PSpan.End) |> Option.defaultValue headEnd
+                    let e = arg |> Option.map (fun a -> a.PSpan.End) |> Option.defaultValue headEnd
 
-                      { PKind = PCase(ctor, arg, qual)
-                        PSpan = { Start = span.Start; End = e } }
-              else
-                  preturn { PKind = PVar w; PSpan = span } ]
+                    {
+                        PKind = PCase(ctor, arg, qual)
+                        PSpan = { Start = span.Start; End = e }
+                    }
+            else
+                preturn { PKind = PVar w; PSpan = span }
+    ]
 
 // cons is the pattern grammar's one infix: right-associative, tighter
 // than comma, looser than constructor application [D:seq-patterns]
@@ -2459,26 +2580,29 @@ patRef.Value <-
             | last :: rest ->
                 rest
                 |> List.fold
-                    (fun t h ->
-                        { PKind = PCons(h, t)
-                          PSpan =
-                            { Start = h.PSpan.Start
-                              End = t.PSpan.End } })
+                    (fun t h -> {
+                        PKind = PCons(h, t)
+                        PSpan = {
+                            Start = h.PSpan.Start
+                            End = t.PSpan.End
+                        }
+                    })
                     last
             | [] -> failwith "sepBy1 never yields empty"
     )
 
 
 binderParamRef.Value <-
-    choice
-        [ attrsRejectHere >>% Unchecked.defaultof<Pattern>
-          spanned (pstring "()") .>> ws
-          |>> fun (_, span) -> { PKind = PUnit; PSpan = span }
-          identSpanned |>> fun (n, span) -> { PKind = PVar n; PSpan = span }
-          // a bare record pattern as a param [D:record-patterns] — the
-          // plan's motivating position; parens stay legal around it
-          patRecordArm
-          patParens ]
+    choice [
+        attrsRejectHere >>% Unchecked.defaultof<Pattern>
+        spanned (pstring "()") .>> ws
+        |>> fun (_, span) -> { PKind = PUnit; PSpan = span }
+        identSpanned |>> fun (n, span) -> { PKind = PVar n; PSpan = span }
+        // a bare record pattern as a param [D:record-patterns] — the
+        // plan's motivating position; parens stay legal around it
+        patRecordArm
+        patParens
+    ]
 
 binderPatRef.Value <- commaPats
 
@@ -2486,7 +2610,8 @@ binderPatRef.Value <- commaPats
 // `A.Config` names module A's type, the same spelling every type
 // position takes; the checker resolves it through the import
 let private adapterName (w: string) : Parser<string, unit> =
-    opt (attempt (pchar '.' >>. identSpanned)) |>> function
+    opt (attempt (pchar '.' >>. identSpanned))
+    |>> function
         | Some(m, _) -> w + "." + m
         | None -> w
 
@@ -2494,11 +2619,11 @@ let private adapterName (w: string) : Parser<string, unit> =
 // [D:wire-generics] — the args are the one type grammar (tySyn),
 // set after it exists
 let private slotTyArgs, private slotTyArgsRef =
-    createParserForwardedToRef<Ty list, unit> ()
+    createParserForwardedToRef<Ty list, unit>()
 
 // one type in the slot's Map< > wrap [D:map-values] — the one type
 // grammar (tySyn), set after it exists
-let private slotTy, private slotTyRef = createParserForwardedToRef<Ty, unit> ()
+let private slotTy, private slotTyRef = createParserForwardedToRef<Ty, unit>()
 
 let private slotName (w: string) : Parser<FromShape, unit> =
     opt slotTyArgs
@@ -2574,8 +2699,7 @@ let private fromExpr =
                         between
                             (str_ws "<")
                             (str_ws ">")
-                            (slotTy .>> str_ws ","
-                             .>>. ((anonShape |>> FromAnon) <|> (slotTy |>> FromTy)))
+                            (slotTy .>> str_ws "," .>>. ((anonShape |>> FromAnon) <|> (slotTy |>> FromTy)))
                         |>> fun (k, sh) -> FromMap(k, sh), false
                     elif w = "seq" then
                         between
@@ -2602,8 +2726,10 @@ let private fromExpr =
             | Some(sh, s) -> Some sh, s
             | None -> None, false
 
-        { Kind = EFrom(fmt, shape, seqOf, streamW.IsSome)
-          Span = span }
+        {
+            Kind = EFrom(fmt, shape, seqOf, streamW.IsSome)
+            Span = span
+        }
 
 // the `try` form [D:try-form]: `try` or `try result`, only meaningful after
 // `|>` (pipeOp folds it); `result` is a modifier word here, no keyword
@@ -2612,7 +2738,10 @@ let private tryForm =
         keyword "try"
         >>. opt (attempt (pstring "result" .>> notFollowedBy (satisfy isIdentCont) .>> ws))
     )
-    |>> fun (r, span) -> { Kind = ETryForm r.IsSome; Span = span }
+    |>> fun (r, span) -> {
+        Kind = ETryForm r.IsSome
+        Span = span
+    }
 
 // the `orFail` form [D:orfail-form]: `orFail` with an optional message
 // atom (the `| orFail "msg"` reifier's message shape), only meaningful
@@ -2630,9 +2759,10 @@ let private toExpr =
         // the checker fences `to json stream` toward it.
         .>>. opt (attempt (pstring "stream" .>> notFollowedBy (satisfy isIdentCont)) .>> ws)
     )
-    |>> fun ((fmt, streamW), span) ->
-        { Kind = ETo(fmt, streamW.IsSome)
-          Span = span }
+    |>> fun ((fmt, streamW), span) -> {
+        Kind = ETo(fmt, streamW.IsSome)
+        Span = span
+    }
 
 // an or-pattern's alternative [D:or-patterns]: before the arm's `->`, a
 // `|` (not `||`/`|>`) can only separate alternatives — arms are separated
@@ -2656,29 +2786,29 @@ let private matchArm =
                 extra.PSpan.Start.Col
                 $"an or-pattern takes at most {maxOrAlternatives} alternatives — test membership in a guard instead: `| x when Seq.contains x values ->`"
         | None -> preturn (p, alts)
-    >>= fun (p, alts) ->
-        // or-patterns desugar to one arm per alternative sharing the
-        // guard and body [D:or-patterns]; v1 alternatives bind no names
-        // (F#'s same-names-same-types rule waits for a receipt)
-        match alts |> List.tryFind (fun a -> not (List.isEmpty (patLeafNames a))) with
-        | Some a ->
-            failFatallyAtCol
-                a.PSpan.Start.Col
-                "an or-pattern's alternatives cannot bind names yet — split it into one arm per alternative"
-        | None when not alts.IsEmpty && not (List.isEmpty (patLeafNames p)) ->
-            failFatallyAtCol
-                p.PSpan.Start.Col
-                "an or-pattern's alternatives cannot bind names yet — split it into one arm per alternative"
-        | None ->
-            // the body is arm-body territory [D:match-arm-commands]: a command
-            // chain ends at the next `| <pattern> ->`, so `| _ -> git pull`
-            // streams without a sigil (the interior-arming positions, extended)
-            withPatNames
-                p
-                (opt (keyword "when" >>. expr) .>> str_ws "->"
-                 // an arm body takes command lets [D:statement-lets]
-                 .>>. withMatchArm true (withStmtLetCmd (withExprParen false seqExpr)))
-            |>> fun (guard, body) -> (p :: alts) |> List.map (fun pat -> pat, guard, body)
+        >>= fun (p, alts) ->
+            // or-patterns desugar to one arm per alternative sharing the
+            // guard and body [D:or-patterns]; v1 alternatives bind no names
+            // (F#'s same-names-same-types rule waits for a receipt)
+            match alts |> List.tryFind (fun a -> not (List.isEmpty (patLeafNames a))) with
+            | Some a ->
+                failFatallyAtCol
+                    a.PSpan.Start.Col
+                    "an or-pattern's alternatives cannot bind names yet — split it into one arm per alternative"
+            | None when not alts.IsEmpty && not (List.isEmpty (patLeafNames p)) ->
+                failFatallyAtCol
+                    p.PSpan.Start.Col
+                    "an or-pattern's alternatives cannot bind names yet — split it into one arm per alternative"
+            | None ->
+                // the body is arm-body territory [D:match-arm-commands]: a command
+                // chain ends at the next `| <pattern> ->`, so `| _ -> git pull`
+                // streams without a sigil (the interior-arming positions, extended)
+                withPatNames
+                    p
+                    (opt (keyword "when" >>. expr) .>> str_ws "->"
+                     // an arm body takes command lets [D:statement-lets]
+                     .>>. withMatchArm true (withStmtLetCmd (withExprParen false seqExpr)))
+                |>> fun (guard, body) -> (p :: alts) |> List.map (fun pat -> pat, guard, body)
 
 // within <kind> <binder> + block [D:within-scopes]: a scoped resource
 // as an ordinary expression — the body is a plain expression block
@@ -2713,12 +2843,7 @@ let private withinExprBody =
                             | Some("stopped", _) ->
                                 getPosition
                                 >>= fun ep ->
-                                    (followedBy (
-                                        eof
-                                        <|> skipChar ';'
-                                        <|> skipString sibSepStr
-                                        <|> skipAnyOf ")]}"
-                                     )
+                                    (followedBy (eof <|> skipChar ';' <|> skipString sibSepStr <|> skipAnyOf ")]}")
                                      >>% true)
                                     <|> failFatallyAt
                                             ep
@@ -2745,8 +2870,7 @@ let private withinExprBody =
 
         let hold (held: bool) (body: Expr) =
             if held then
-                { Kind = EHold body
-                  Span = body.Span }
+                { Kind = EHold body; Span = body.Span }
             else
                 body
 
@@ -2760,8 +2884,7 @@ let private withinExprBody =
         // held by `until stopped`, the bare scope needs no always
         // [D:held-scope]
         let bareForm =
-            block
-            .>>. untilStopped
+            block .>>. untilStopped
             >>= fun (body, held) ->
                 let always =
                     attempt (sep >>. keyword "always")
@@ -2773,22 +2896,27 @@ let private withinExprBody =
                 if held then
                     opt always
                     |>> function
-                        | Some cleanup ->
-                            { Kind = EAlways(hold true body, cleanup)
-                              Span =
-                                { Start = pos p
-                                  End = cleanup.Span.End } }
-                        | None ->
-                            { Kind = EHold body
-                              Span = { Start = pos p; End = body.Span.End } }
+                        | Some cleanup -> {
+                            Kind = EAlways(hold true body, cleanup)
+                            Span = {
+                                Start = pos p
+                                End = cleanup.Span.End
+                            }
+                          }
+                        | None -> {
+                            Kind = EHold body
+                            Span = { Start = pos p; End = body.Span.End }
+                          }
                 else
                     (always
                      <?> $"the always segment (bare within = body + always cleanup; a resource scope names its kind: {Ast.withinKindList}; a held scope ends with `until stopped`)")
-                    |>> fun cleanup ->
-                        { Kind = EAlways(body, cleanup)
-                          Span =
-                            { Start = pos p
-                              End = cleanup.Span.End } }
+                    |>> fun cleanup -> {
+                        Kind = EAlways(body, cleanup)
+                        Span = {
+                            Start = pos p
+                            End = cleanup.Span.End
+                        }
+                    }
 
         let kinded =
             attempt (
@@ -2842,12 +2970,13 @@ let private withinExprBody =
                                     // proc bodies too [D:statement-lets] — the head owns
                                     // its own line, so no collision with body lets
                                     >>. (withPatNames
-                                            { PKind = PVar binder; PSpan = bspan }
-                                            (withStmtLetCmd (withExprParen false seqExpr))
+                                             { PKind = PVar binder; PSpan = bspan }
+                                             (withStmtLetCmd (withExprParen false seqExpr))
                                          <?> "the scope's block")
-                                    |>> fun body ->
-                                        { Kind = EWithin(wk.Id, Some(binder, bspan), Some cmdE, None, body)
-                                          Span = { Start = pos p; End = body.Span.End } }
+                                    |>> fun body -> {
+                                        Kind = EWithin(wk.Id, Some(binder, bspan), Some cmdE, None, body)
+                                        Span = { Start = pos p; End = body.Span.End }
+                                    }
                     | Ast.WithinServe ->
                         // the scoped listener [D:http-serve]: binder `=`
                         // then two atoms — a config record and a handler
@@ -2865,13 +2994,13 @@ let private withinExprBody =
                                 >>= fun handlerE ->
                                     (opt (str_ws ";" <|> str_ws sibSepStr))
                                     >>. (withPatNames
-                                            { PKind = PVar binder; PSpan = bspan }
-                                            (withStmtLetCmd (withExprParen false seqExpr))
+                                             { PKind = PVar binder; PSpan = bspan }
+                                             (withStmtLetCmd (withExprParen false seqExpr))
                                          <?> "the scope's block")
-                                    |>> fun body ->
-                                        { Kind =
-                                            EWithin(wk.Id, Some(binder, bspan), Some cfgE, Some handlerE, body)
-                                          Span = { Start = pos p; End = body.Span.End } }
+                                    |>> fun body -> {
+                                        Kind = EWithin(wk.Id, Some(binder, bspan), Some cfgE, Some handlerE, body)
+                                        Span = { Start = pos p; End = body.Span.End }
+                                    }
                     | Ast.WithinTmp ->
                         // a binding kind produces its resource: a binder, joining
                         // bindings-beat-PATH (the patLeafNames class, 5th site)
@@ -2880,12 +3009,13 @@ let private withinExprBody =
                             (opt (str_ws ";" <|> str_ws sibSepStr))
                             // tmp bodies too [D:statement-lets]
                             >>. (withPatNames
-                                    { PKind = PVar binder; PSpan = bspan }
-                                    (withStmtLetCmd (withExprParen false seqExpr))
+                                     { PKind = PVar binder; PSpan = bspan }
+                                     (withStmtLetCmd (withExprParen false seqExpr))
                                  <?> "the scope's block")
-                            |>> fun body ->
-                                { Kind = EWithin(wk.Id, Some(binder, bspan), None, None, body)
-                                  Span = { Start = pos p; End = body.Span.End } }
+                            |>> fun body -> {
+                                Kind = EWithin(wk.Id, Some(binder, bspan), None, None, body)
+                                Span = { Start = pos p; End = body.Span.End }
+                            }
                     | Ast.WithinCd
                     | Ast.WithinEnv
                     | Ast.WithinLock ->
@@ -2895,7 +3025,10 @@ let private withinExprBody =
                         // lock alone takes an optional timeout= key (Duration),
                         // the retry key=value spelling [D:within-lock]
                         // env takes `NAME=value` words too [D:within-env-pairs]
-                        ((if wk.Id = Ast.WithinEnv then envAssignsFwd <|> postfixAtom else postfixAtom)
+                        ((if wk.Id = Ast.WithinEnv then
+                              envAssignsFwd <|> postfixAtom
+                          else
+                              postfixAtom)
                          <?> $"the {kind} scope's argument (parenthesize a compound)")
                         >>= fun argE ->
                             (if wk.Id = Ast.WithinLock then
@@ -2904,9 +3037,10 @@ let private withinExprBody =
                                  preturn None)
                             >>= fun optsE ->
                                 block
-                                |>> fun body ->
-                                    { Kind = EWithin(wk.Id, None, Some argE, optsE, body)
-                                      Span = { Start = pos p; End = body.Span.End } }
+                                |>> fun body -> {
+                                    Kind = EWithin(wk.Id, None, Some argE, optsE, body)
+                                    Span = { Start = pos p; End = body.Span.End }
+                                }
 
         // a trailing `always` after ANY kind [D:within-always-any]: the
         // cleanup runs INSIDE the scope, while the resource is held —
@@ -2915,8 +3049,7 @@ let private withinExprBody =
         // `until stopped` before it [D:held-scope] holds the body inside
         // the same desugar: within K b (held BODY always C)
         let kindedAlways =
-            kinded
-            .>>. untilStopped
+            kinded .>>. untilStopped
             >>= fun (w, held) ->
                 match w.Kind with
                 | EWithin(k, binder, arg, opts, body) ->
@@ -2932,15 +3065,27 @@ let private withinExprBody =
                         .>> noUntilAfterAlways
                     )
                     |>> function
-                        | None when held -> { w with Kind = EWithin(k, binder, arg, opts, hold true body) }
+                        | None when held -> {
+                            w with
+                                Kind = EWithin(k, binder, arg, opts, hold true body)
+                          }
                         | None -> w
                         | Some cleanup ->
-                            let inner =
-                                { Kind = EAlways(hold held body, cleanup)
-                                  Span = { Start = body.Span.Start; End = cleanup.Span.End } }
+                            let inner = {
+                                Kind = EAlways(hold held body, cleanup)
+                                Span = {
+                                    Start = body.Span.Start
+                                    End = cleanup.Span.End
+                                }
+                            }
 
-                            { Kind = EWithin(k, binder, arg, opts, inner)
-                              Span = { Start = w.Span.Start; End = cleanup.Span.End } }
+                            {
+                                Kind = EWithin(k, binder, arg, opts, inner)
+                                Span = {
+                                    Start = w.Span.Start
+                                    End = cleanup.Span.End
+                                }
+                            }
                 | _ -> preturn w
 
         kindedAlways <|> bareForm
@@ -2967,9 +3112,10 @@ let private pureExprBody =
           >>. (withStmtLetCmd (withExprParen false seqExpr) <?> "the pure block's body"))
          <|> failFatally
                  "pure takes a block — indent its body (the body must reach no effect); a pure BINDING is `let pure f x = …`")
-        |>> fun body ->
-            { Kind = EWithin(Ast.WithinPure, None, None, None, body)
-              Span = { Start = pos p; End = body.Span.End } }
+        |>> fun body -> {
+            Kind = EWithin(Ast.WithinPure, None, None, None, body)
+            Span = { Start = pos p; End = body.Span.End }
+        }
 
 let private pureExpr = deepenAfter [ "pure" ] pureExprBody // [D:depth-guard]
 
@@ -2985,16 +3131,15 @@ let private readonlyExprBody =
           // the parser admits command lets here [D:statement-lets]; the
           // read-only checker refuses a mutating command with its own
           // located teaching (a reading command is allowed)
-          >>. (withStmtLetCmd (withExprParen false seqExpr)
-               <?> "the readonly block's body"))
+          >>. (withStmtLetCmd (withExprParen false seqExpr) <?> "the readonly block's body"))
          <|> failFatally
                  "readonly takes a block — indent its body (the body must reach no external mutation; ambient reads are allowed)")
-        |>> fun body ->
-            { Kind = EWithin(Ast.WithinReadonly, None, None, None, body)
-              Span = { Start = pos p; End = body.Span.End } }
+        |>> fun body -> {
+            Kind = EWithin(Ast.WithinReadonly, None, None, None, body)
+            Span = { Start = pos p; End = body.Span.End }
+        }
 
-let private readonlyExpr =
-    deepenAfter [ "readonly" ] readonlyExprBody // [D:depth-guard]
+let private readonlyExpr = deepenAfter [ "readonly" ] readonlyExprBody // [D:depth-guard]
 
 // the plan/apply capture [D:plan-apply]: a bare `plan` head + block — the
 // third standalone withinKinds head (no binder, no arg, never `within
@@ -3009,9 +3154,10 @@ let private planExprBody =
           >>. (withStmtLetCmd (withExprParen false seqExpr) <?> "the plan block's body"))
          <|> failFatally
                  "plan takes a block — indent its body (its external mutations are captured as Ops; the block yields a Plan to inspect and apply)")
-        |>> fun body ->
-            { Kind = EWithin(Ast.WithinPlan, None, None, None, body)
-              Span = { Start = pos p; End = body.Span.End } }
+        |>> fun body -> {
+            Kind = EWithin(Ast.WithinPlan, None, None, None, body)
+            Span = { Start = pos p; End = body.Span.End }
+        }
 
 let private planExpr = deepenAfter [ "plan" ] planExprBody // [D:depth-guard]
 
@@ -3066,38 +3212,50 @@ let private retryExprBody =
                 (match pairs with
                  | [] when watchE.IsSome ->
                      // watch alone: the defaults record, the bare-head form
-                     preturn
-                         { Kind = EVar defaultsKey
-                           Span = { Start = pos p; End = pos p } }
+                     preturn {
+                         Kind = EVar defaultsKey
+                         Span = { Start = pos p; End = pos p }
+                     }
                  // a bare `repeat` [D:repeat-missing-interval]: no options at
                  // all reads as the empty update, so the checker's
                  // missing-interval error names the gap (not a parse dump
                  // that blames the body)
                  | [] when kind = LoopRepeat && not (watchE.IsSome) ->
                      (followedBy (skipString sibSepStr <|> skipChar ';' <|> eof)
-                      >>% { Kind = EUpdate({ Kind = EVar defaultsKey; Span = { Start = pos p; End = pos p } }, [])
-                            Span = { Start = pos p; End = pos p } })
+                      >>% {
+                              Kind =
+                                  EUpdate(
+                                      {
+                                          Kind = EVar defaultsKey
+                                          Span = { Start = pos p; End = pos p }
+                                      },
+                                      []
+                                  )
+                              Span = { Start = pos p; End = pos p }
+                          })
                      <|> (postfixAtom <?> $"{headWord}'s options (key=value pairs or a {famName} record)")
                  | [] ->
                      // the record form: one atom, exactly as within cd
                      postfixAtom <?> $"{headWord}'s options (key=value pairs or a {famName} record)"
                  | _ ->
-                     let defaults =
-                         { Kind = EVar defaultsKey
-                           Span = { Start = pos p; End = pos p } }
+                     let defaults = {
+                         Kind = EVar defaultsKey
+                         Span = { Start = pos p; End = pos p }
+                     }
 
-                     preturn
-                         { Kind = EUpdate(defaults, pairs |> List.map (fun ((k, ks), v) -> [ (k, ks) ], v))
-                           Span =
-                             { Start = pos p
-                               End = (List.last pairs |> snd).Span.End } })
+                     preturn {
+                         Kind = EUpdate(defaults, pairs |> List.map (fun ((k, ks), v) -> [ (k, ks) ], v))
+                         Span = {
+                             Start = pos p
+                             End = (List.last pairs |> snd).Span.End
+                         }
+                     })
                 >>= fun optsE ->
                     opt (str_ws ";" <|> str_ws sibSepStr)
                     >>. (withExprParen false seqExpr
                          // nothing that starts a body [D:loop-body-teach]
                          <|> (getPosition
-                              >>= fun at ->
-                                  failFatallyAt at $"'{headWord}' needs a body — the indented lines below it"))
+                              >>= fun at -> failFatallyAt at $"'{headWord}' needs a body — the indented lines below it"))
                     >>= fun body ->
                         opt (
                             attempt (opt (str_ws ";" <|> str_ws sibSepStr) >>. keyword "until")
@@ -3131,8 +3289,10 @@ let private retryExprBody =
                                 | Some(_, pr) -> pr.Span.End
                                 | None -> body.Span.End
 
-                            { Kind = ERetry(kind, optsE, watchE, body, until)
-                              Span = { Start = pos p; End = endSpan } }
+                            {
+                                Kind = ERetry(kind, optsE, watchE, body, until)
+                                Span = { Start = pos p; End = endSpan }
+                            }
 
 let private retryExpr = deepenAfter [ "retry"; "poll"; "repeat" ] retryExprBody // [D:depth-guard]
 
@@ -3153,10 +3313,13 @@ let private matchExprBody =
             let arms = arm0 @ List.concat rest
             let lastBody = List.last arms |> fun (_, _, b) -> b
 
-            { Kind = EMatch(scrut, arms)
-              Span =
-                { Start = pos p
-                  End = lastBody.Span.End } })
+            {
+                Kind = EMatch(scrut, arms)
+                Span = {
+                    Start = pos p
+                    End = lastBody.Span.End
+                }
+            })
 
 // function — the implicit-match lambda [D:function-keyword]: F#'s
 // `function | arms` is `fun x -> match x with | arms` exactly. The
@@ -3174,28 +3337,36 @@ let private functionExprBody =
             let arms = arm0 @ List.concat rest
             let lastBody = List.last arms |> fun (_, _, b) -> b
 
-            let kwSpan =
-                { Start = pos p
-                  End =
-                    { Line = (pos p).Line
-                      Col = (pos p).Col + 8 } }
+            let kwSpan = {
+                Start = pos p
+                End = {
+                    Line = (pos p).Line
+                    Col = (pos p).Col + 8
+                }
+            }
 
-            let span =
-                { Start = pos p
-                  End = lastBody.Span.End }
+            let span = {
+                Start = pos p
+                End = lastBody.Span.End
+            }
 
-            let scrut =
-                { Kind = EVar "|function"
-                  Span = kwSpan }
+            let scrut = {
+                Kind = EVar "|function"
+                Span = kwSpan
+            }
 
-            { Kind =
-                ELambda(
-                    "|function",
-                    kwSpan,
-                    { Kind = EMatch(scrut, arms)
-                      Span = span }
-                )
-              Span = span }
+            {
+                Kind =
+                    ELambda(
+                        "|function",
+                        kwSpan,
+                        {
+                            Kind = EMatch(scrut, arms)
+                            Span = span
+                        }
+                    )
+                Span = span
+            }
 
 // the condition takes a command chain too [D:if-succeeds]: the let-RHS
 // acceptance gate one position over — the command grammar is attempted
@@ -3233,14 +3404,17 @@ let private ifExprBody =
                 ||> List.fold (fun inner (c: Expr, t: Expr) ->
                     let e = (inner |> Option.defaultValue t).Span.End
 
-                    Some
-                        { Kind = EIf(c, t, inner)
-                          Span = { Start = c.Span.Start; End = e } })
+                    Some {
+                        Kind = EIf(c, t, inner)
+                        Span = { Start = c.Span.Start; End = e }
+                    })
 
             let endPos = (chained |> Option.defaultValue thn).Span.End
 
-            { Kind = EIf(cond, thn, chained)
-              Span = { Start = pos p; End = endPos } })
+            {
+                Kind = EIf(cond, thn, chained)
+                Span = { Start = pos p; End = endPos }
+            })
 
 // for/do [D:for-do]: the general effect loop -- F#'s own statement form,
 // desugared at parse to `xs |> Seq.iter (fun p -> body)` (as the
@@ -3281,21 +3455,24 @@ let private loopExprBody (kw: string) (iterKey: string) =
                 if exitCodeSpine chain then
                     failFatally exitCodeDiscardMsg
                 else
-                    preturn
-                        { Kind = EPipe(chain, { Kind = EVar "|print"; Span = span })
-                          Span = span }
+                    preturn {
+                        Kind = EPipe(chain, { Kind = EVar "|print"; Span = span })
+                        Span = span
+                    }
         )
 
     let collectRefusal =
         if isPfor then
-            (attempt (getPosition .>> pstring "->") >>= fun at -> failFatallyAt at pforCollectMsg)
+            (attempt (getPosition .>> pstring "->")
+             >>= fun at -> failFatallyAt at pforCollectMsg)
             <|> preturn ()
         else
             preturn ()
 
     let yieldRefusal =
         if isPfor then
-            (attempt (getPosition .>> keyword "yield") >>= fun at -> failFatallyAt at pforCollectMsg)
+            (attempt (getPosition .>> keyword "yield")
+             >>= fun at -> failFatallyAt at pforCollectMsg)
             <|> preturn ()
         else
             preturn ()
@@ -3407,7 +3584,11 @@ let private runFragment (col: int) (frag: string) (p: Parser<'a, unit>) : Result
 // preserves relative indentation byte-for-byte like plain `<<<` — the
 // twins differ only in hole interpolation [D:text-block].
 let private runFragmentAt (col: int) (frag: string) (p: Parser<'a, unit>) : Result<'a, string * int> =
-    match run (skipManyMinMaxSatisfy (col - 1) (col - 1) (fun c -> c = ' ') >>. p .>> eof) (System.String(' ', col - 1) + frag) with
+    match
+        run
+            (skipManyMinMaxSatisfy (col - 1) (col - 1) (fun c -> c = ' ') >>. p .>> eof)
+            (System.String(' ', col - 1) + frag)
+    with
     | Success(v, _, _) -> Result.Ok v
     | Failure(_, err, _) -> Result.Error(fragmentErrorLine err, int err.Position.Column)
 
@@ -3423,9 +3604,10 @@ let private tplValueSlot (col: int) (text: string) : Result<YamlTpl, string * in
     let t = text.Trim()
     let tCol = col + lead
 
-    let mkSpan len =
-        { Start = { Line = 1; Col = tCol }
-          End = { Line = 1; Col = tCol + len } }
+    let mkSpan len = {
+        Start = { Line = 1; Col = tCol }
+        End = { Line = 1; Col = tCol + len }
+    }
 
     if t = "$-" then
         // the tombstone [D:yaml-nodes] — remove the key this value sits
@@ -3440,9 +3622,10 @@ let private tplValueSlot (col: int) (text: string) : Result<YamlTpl, string * in
             | Result.Error m -> Result.Error($"in this splice: {m}", tCol)
         elif isIdentWord inner then
             Result.Ok(
-                YtSplice
-                    { Kind = EVar inner
-                      Span = mkSpan t.Length }
+                YtSplice {
+                    Kind = EVar inner
+                    Span = mkSpan t.Length
+                }
             )
         else
             Result.Error("a $ splice is $name or $(expr)", tCol)
@@ -3514,8 +3697,10 @@ let private tplBlockScalar
             Result.Ok(
                 YtBlock(
                     (if keep then body + "\n" else body),
-                    { Start = { Line = 1; Col = headerCol }
-                      End = { Line = 1; Col = headerCol + 1 } }
+                    {
+                        Start = { Line = 1; Col = headerCol }
+                        End = { Line = 1; Col = headerCol + 1 }
+                    }
                 )
             )
 
@@ -3575,17 +3760,20 @@ and private parseTplBlockBody
             YtScalar(
                 "",
                 false,
-                { Start = { Line = 1; Col = 1 }
-                  End = { Line = 1; Col = 1 } }
+                {
+                    Start = { Line = 1; Col = 1 }
+                    End = { Line = 1; Col = 1 }
+                }
             )
         )
     else
         let firstCol, _, _ = lines[start]
 
-        let spanAt col =
-            { Start = { Line = 1; Col = col }
+        let spanAt col = {
+            Start = { Line = 1; Col = col }
 
-              End = { Line = 1; Col = col + 1 } }
+            End = { Line = 1; Col = col + 1 }
+        }
 
         // the first non-blank line's rel in a range (nested-block indent)
         let firstContentRel a b fallback =
@@ -3674,7 +3862,11 @@ and private parseTplBlockBody
 
                         let inlinePart, inlineCol =
                             if isDropItem then
-                                (if rawInline.TrimEnd() = "$-" then "" else rawInline.Substring 3), col + 5
+                                (if rawInline.TrimEnd() = "$-" then
+                                     ""
+                                 else
+                                     rawInline.Substring 3),
+                                col + 5
                             else
                                 rawInline, col + 2
 
@@ -3711,13 +3903,13 @@ and private parseTplBlockBody
                                     if inlineBody.StartsWith "- " || inlineBody.TrimEnd() = "-" then
                                         compact ()
                                     else
-                                    match Yaml.splitKey inlinePart with
-                                    | Some _ -> compact ()
-                                    | None ->
-                                        if hasNested then
-                                            Result.Error("a scalar sequence item cannot have a nested block", col)
-                                        else
-                                            tplValueSlot inlineCol inlinePart |> Result.map YtItem
+                                        match Yaml.splitKey inlinePart with
+                                        | Some _ -> compact ()
+                                        | None ->
+                                            if hasNested then
+                                                Result.Error("a scalar sequence item cannot have a nested block", col)
+                                            else
+                                                tplValueSlot inlineCol inlinePart |> Result.map YtItem
 
                         let itemR =
                             if not isDropItem then
@@ -3772,11 +3964,13 @@ and private parseTplBlockBody
 
                                     if isIdentWord kIdent then
                                         Result.Ok(
-                                            YtKeySplice
-                                                { Kind = EVar kIdent
-                                                  Span =
-                                                    { Start = { Line = 1; Col = col }
-                                                      End = { Line = 1; Col = col + rawKey.Length } } }
+                                            YtKeySplice {
+                                                Kind = EVar kIdent
+                                                Span = {
+                                                    Start = { Line = 1; Col = col }
+                                                    End = { Line = 1; Col = col + rawKey.Length }
+                                                }
+                                            }
                                         )
                                     else
                                         Result.Error("a key splice is $name (string-typed)", col)
@@ -3786,8 +3980,10 @@ and private parseTplBlockBody
                                     Result.Ok(
                                         YtKeyLit(
                                             rawKey,
-                                            { Start = { Line = 1; Col = col }
-                                              End = { Line = 1; Col = col + rawKey.Length } }
+                                            {
+                                                Start = { Line = 1; Col = col }
+                                                End = { Line = 1; Col = col + rawKey.Length }
+                                            }
                                         )
                                     )
 
@@ -3889,8 +4085,7 @@ and private parseTplBlockBody
 // decode a district's sentinel tail into (col, rel, content) lines and
 // the end column — shared by the yaml and text districts [D:text-block]
 let private districtTail: Parser<(int * int * string)[] * int, unit> =
-    getPosition
-    .>>. manySatisfy (fun c -> c <> districtClose)
+    getPosition .>>. manySatisfy (fun c -> c <> districtClose)
     .>> opt (pchar districtClose >>. ws)
     |>> fun (tailP, tail) ->
         let parts = tail.Split sibSep
@@ -3925,10 +4120,7 @@ let private yamlDistrictBody: Parser<Expr, unit> =
         getPosition .>> pstring "yaml"
         .>>. opt (
             pstring " patch"
-            >>. opt (
-                pstring " by="
-                >>. many1Satisfy (fun c -> c <> ' ' && c <> sibSep)
-            )
+            >>. opt (pstring " by=" >>. many1Satisfy (fun c -> c <> ' ' && c <> sibSep))
         )
         .>>. opt (
             pstring " schema="
@@ -3949,11 +4141,13 @@ let private yamlDistrictBody: Parser<Expr, unit> =
                 | Result.Ok tpl ->
                     let endCol = colCursor
 
-                    preturn
-                        { Kind = EYaml(tpl, schemaName, patchBy)
-                          Span =
-                            { Start = pos startP
-                              End = { Line = int startP.Line; Col = endCol } } }
+                    preturn {
+                        Kind = EYaml(tpl, schemaName, patchBy)
+                        Span = {
+                            Start = pos startP
+                            End = { Line = int startP.Line; Col = endCol }
+                        }
+                    }
 
 let private yamlDistrict = deepenAfter [ "yaml" ] yamlDistrictBody // [D:depth-guard]
 
@@ -3966,11 +4160,12 @@ let private yamlDistrict = deepenAfter [ "yaml" ] yamlDistrictBody // [D:depth-g
 // File.write, command stdin and Seq composition take them unchanged.
 
 let private heredocLinePart: Parser<InterpPart<Expr>, unit> =
-    choice
-        [ pstring "{{" >>% IStr "{"
-          pstring "}}" >>% IStr "}"
-          pchar '{' >>. ws >>. holeExpr .>> pchar '}' |>> IExpr
-          many1Satisfy (fun c -> c <> '{' && c <> '}') |>> IStr ]
+    choice [
+        pstring "{{" >>% IStr "{"
+        pstring "}}" >>% IStr "}"
+        pchar '{' >>. ws >>. holeExpr .>> pchar '}' |>> IExpr
+        many1Satisfy (fun c -> c <> '{' && c <> '}') |>> IStr
+    ]
 
 let private heredocInterpLine: Parser<InterpPart<Expr> list, unit> =
     many heredocLinePart
@@ -3984,19 +4179,20 @@ let private heredocInterpLine: Parser<InterpPart<Expr> list, unit> =
 // unchanged; only the surface (splices, not `{}` holes) differs. A `$` not
 // starting a name or `${` is a literal `$` (so `$1`/`$-` survive).
 let private heredocSplicePart: Parser<InterpPart<Expr>, unit> =
-    choice
-        [ pstring "$$" >>% IStr "$"
-          // committed after `${`: a malformed splice is an error, never
-          // literal text
-          pstring "${" >>. ws >>. holeExpr
-          .>> (pchar '}' <?> "'}' closing the ${ splice")
-          |>> IExpr
-          attempt (spanned (pchar '$' >>. many1Satisfy2 isIdentStart isIdentCont))
-          |>> (fun (n, sp) -> IExpr { Kind = EVar n; Span = sp })
-          pchar '$' >>% IStr "$"
-          many1Satisfy (fun c -> c <> '$') |>> IStr ]
+    choice [
+        pstring "$$" >>% IStr "$"
+        // committed after `${`: a malformed splice is an error, never
+        // literal text
+        pstring "${" >>. ws >>. holeExpr .>> (pchar '}' <?> "'}' closing the ${ splice")
+        |>> IExpr
+        attempt (spanned (pchar '$' >>. many1Satisfy2 isIdentStart isIdentCont))
+        |>> (fun (n, sp) -> IExpr { Kind = EVar n; Span = sp })
+        pchar '$' >>% IStr "$"
+        many1Satisfy (fun c -> c <> '$') |>> IStr
+    ]
 
-let private heredocSpliceLine: Parser<InterpPart<Expr> list, unit> = many heredocSplicePart .>> eof
+let private heredocSpliceLine: Parser<InterpPart<Expr> list, unit> =
+    many heredocSplicePart .>> eof
 
 let private heredocDistrictBody: Parser<Expr, unit> =
     attempt (
@@ -4020,9 +4216,10 @@ let private heredocDistrictBody: Parser<Expr, unit> =
 
                 for (col, rel, content) in lines do
                     if err.IsNone then
-                        let lineSpan len =
-                            { Start = { Line = 1; Col = col }
-                              End = { Line = 1; Col = col + len } }
+                        let lineSpan len = {
+                            Start = { Line = 1; Col = col }
+                            End = { Line = 1; Col = col + len }
+                        }
 
                         if content = "" then
                             items.Add { Kind = EStr ""; Span = lineSpan 0 }
@@ -4034,18 +4231,20 @@ let private heredocDistrictBody: Parser<Expr, unit> =
                             let interpWith lineParser =
                                 match runFragmentAt (col - (rel - baseRel)) lineText lineParser with
                                 | Result.Ok parts ->
-                                    items.Add
-                                        { Kind = EInterp parts
-                                          Span = lineSpan lineText.Length }
+                                    items.Add {
+                                        Kind = EInterp parts
+                                        Span = lineSpan lineText.Length
+                                    }
                                 | Result.Error(m, ecol) -> err <- Some(ecol, m)
 
                             match mode with
                             | 1 -> interpWith heredocInterpLine // {expr} holes
                             | 2 -> interpWith heredocSpliceLine // $var splices
                             | _ ->
-                                items.Add
-                                    { Kind = EStr lineText
-                                      Span = lineSpan lineText.Length }
+                                items.Add {
+                                    Kind = EStr lineText
+                                    Span = lineSpan lineText.Length
+                                }
 
                 match err with
                 | Some(col, msg) -> failFatallyAtCol col msg
@@ -4060,15 +4259,19 @@ let private heredocDistrictBody: Parser<Expr, unit> =
                               | _ -> false) do
                         items.RemoveAt(items.Count - 1)
 
-                    preturn
-                        { Kind = EList(List.ofSeq items)
-                          Span =
-                            { Start = pos startP
-                              End =
-                                { Line = int startP.Line
-                                  Col = colCursor } } }
+                    preturn {
+                        Kind = EList(List.ofSeq items)
+                        Span = {
+                            Start = pos startP
+                            End = {
+                                Line = int startP.Line
+                                Col = colCursor
+                            }
+                        }
+                    }
 
-let private heredocDistrict = deepenAfter [ "<<<"; "$<<<"; "$$<<<" ] heredocDistrictBody // [D:depth-guard]
+let private heredocDistrict =
+    deepenAfter [ "<<<"; "$<<<"; "$$<<<" ] heredocDistrictBody // [D:depth-guard]
 
 // a `<<<` that is not the line's last token never opened a block
 // [D:text-block]: name it, instead of the expected-set dump (whose
@@ -4122,28 +4325,29 @@ let private yamlMarkerTeach: Parser<Expr, unit> =
             "a yaml block marker must end its line — nothing may follow it, not even trailing spaces or tabs; the block is the indented lines below"
 
 opp.TermParser <-
-    choice
-        [ lambda
-          functionExpr
-          letIn
-          ifExpr
-          matchExpr
-          forExpr
-          pforExpr
-          withinExpr
-          pureExpr
-          readonlyExpr
-          planExpr
-          retryExpr
-          yamlDistrict
-          yamlMarkerTeach
-          heredocDistrict
-          heredocMarkerTeach
-          fromExpr
-          toExpr
-          tryForm
-          orFailForm
-          appChain ]
+    choice [
+        lambda
+        functionExpr
+        letIn
+        ifExpr
+        matchExpr
+        forExpr
+        pforExpr
+        withinExpr
+        pureExpr
+        readonlyExpr
+        planExpr
+        retryExpr
+        yamlDistrict
+        yamlMarkerTeach
+        heredocDistrict
+        heredocMarkerTeach
+        fromExpr
+        toExpr
+        tryForm
+        orFailForm
+        appChain
+    ]
 
 updateSourceRef.Value <-
     (let u = mkOpp true
@@ -4151,20 +4355,21 @@ updateSourceRef.Value <-
      u.ExpressionParser)
 
 segOpp.TermParser <-
-    choice
-        [ lambda
-          functionExpr
-          letIn
-          ifExpr
-          matchExpr
-          withinExpr
-          pureExpr
-          readonlyExpr
-          planExpr
-          retryExpr
-          fromExpr
-          toExpr
-          appChain ]
+    choice [
+        lambda
+        functionExpr
+        letIn
+        ifExpr
+        matchExpr
+        withinExpr
+        pureExpr
+        readonlyExpr
+        planExpr
+        retryExpr
+        fromExpr
+        toExpr
+        appChain
+    ]
 
 exprRef.Value <- opp.ExpressionParser
 
@@ -4176,8 +4381,10 @@ commaExprRef.Value <-
         | _ ->
             let all = first :: rest
 
-            { Kind = ETuple all
-              Span = Span.union first.Span (List.last all).Span }
+            {
+                Kind = ETuple all
+                Span = Span.union first.Span (List.last all).Span
+            }
 
 let private foldSeqExpr = Desugar.foldSeqExpr
 
@@ -4209,12 +4416,13 @@ let private seqSep = (str_ws ";" <|> str_ws sibSepStr) <?> "';'"
 /// this list, never a second copy.
 let foreignKeywordWords = [ "while"; "return"; "try"; "def" ]
 
-let private foreignKeywordTeachings =
-    [ "while", "'while' is not a weir word — a bounded loop is 'retry'/'poll'; iterate a seq with 'for x in xs do'"
-      "return", "'return' is not a weir word — a function's last expression is its value"
-      "try",
-      "'try' goes after a pipeline, not before a block — `<expr> |> try` gives an Option (None if it failed), `<expr> |> try result` a Result; for a failing command, `<command> | complete`; for cleanup that always runs, `within … always`"
-      "def", "'def' is not a weir word — define with 'let f x = ...'" ]
+let private foreignKeywordTeachings = [
+    "while", "'while' is not a weir word — a bounded loop is 'retry'/'poll'; iterate a seq with 'for x in xs do'"
+    "return", "'return' is not a weir word — a function's last expression is its value"
+    "try",
+    "'try' goes after a pipeline, not before a block — `<expr> |> try` gives an Option (None if it failed), `<expr> |> try result` a Result; for a failing command, `<command> | complete`; for cleanup that always runs, `within … always`"
+    "def", "'def' is not a weir word — define with 'let f x = ...'"
+]
 
 // `def` is not reserved [D:def-shape]: `let def = 1` and `x.def` are
 // ordinary names, so its teaching fires only on the definition
@@ -4227,7 +4435,9 @@ let private defStatementShape: Parser<unit, unit> =
 // read `def g x = x` as a command line
 let private defStatementGuard () : Parser<'a, unit> =
     let teach = foreignKeywordTeachings |> List.find (fst >> (=) "def") |> snd
-    attempt (getPosition .>> defStatementShape .>> pstring "def") >>= fun at -> failFatallyAt at teach
+
+    attempt (getPosition .>> defStatementShape .>> pstring "def")
+    >>= fun at -> failFatallyAt at teach
 
 let private foreignKeywordGuard () : Parser<'a, unit> =
     choice (
@@ -4271,11 +4481,12 @@ let private stmtElem: Parser<Choice<Expr, Expr>, unit> =
                      <|> preturn (Choice2Of2 e))
                         stream
 
-    choice
-        [ foreignKeywordGuard ()
-          attempt (cmdTry |>> Choice1Of2)
-          envPrefixStmtGuard
-          exprElem ]
+    choice [
+        foreignKeywordGuard ()
+        attempt (cmdTry |>> Choice1Of2)
+        envPrefixStmtGuard
+        exprElem
+    ]
 
 let private armSeq (all: Choice<Expr, Expr> list) : Parser<Expr, unit> =
     let n = List.length all
@@ -4288,14 +4499,17 @@ let private armSeq (all: Choice<Expr, Expr> list) : Parser<Expr, unit> =
             | Choice1Of2 chain when i = n - 1 -> Result.Ok chain
             | Choice1Of2 chain when exitCodeSpine chain -> Result.Error chain.Span
             | Choice1Of2 chain ->
-                Result.Ok
-                    { Kind =
+                Result.Ok {
+                    Kind =
                         EPipe(
                             chain,
-                            { Kind = EVar "|print"
-                              Span = chain.Span }
+                            {
+                                Kind = EVar "|print"
+                                Span = chain.Span
+                            }
                         )
-                      Span = chain.Span })
+                    Span = chain.Span
+                })
 
     match
         armed
@@ -4445,11 +4659,12 @@ let private spliceSplat: Parser<Expr, unit> =
     >>. spanned (
         attempt (splicePath (skipString "$@"))
         <|> (pstring "$@"
-             >>. ((pchar '(' >>. ws >>. withExprParen true (clearStmtLetCmd seqExpr) .>> ws .>> pchar ')')
+             >>. ((pchar '(' >>. ws >>. withExprParen true (clearStmtLetCmd seqExpr)
+                   .>> ws
+                   .>> pchar ')')
                   <?> "a name or (expr) after '$@' — the argv splat"))
     )
-    |>> (fun (inner, span) ->
-        { Kind = ESplat inner; Span = span })
+    |>> (fun (inner, span) -> { Kind = ESplat inner; Span = span })
     .>> ws
 
 let private isTildeWord = Desugar.isTildeWord
@@ -4529,20 +4744,21 @@ let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) (stopAtElse: bool) =
 
     // rawness is a kind, never positional [D:raw-strings]: a triple
     // quote is one word here as anywhere [D:argv-at-raw]
-    choice
-        [ cmdBlockArgGuard
-          lookAhead (pstring "\"\"\"") >>. notGluedPiece >>. tripleLit
-          lookAhead (pchar '"') >>. notGluedPiece >>. strLit
-          lookAhead (pchar '\'') >>. notGluedPiece >>. singleQuoted
-          lookAhead (pstring "@\"") >>. notGluedPiece >>. verbatimArgTeach
-          dollarAtTeach
-          lookAhead (pstring "$\"\"\"") >>. notGluedPiece >>. interpRawLit
-          lookAhead (pstring "$\"") >>. notGluedPiece >>. interpLit
-          lookAhead (pstring "$(") >>. notGluedPiece >>. captureSigil
-          spliceSplat
-          spliceVar
-          lookAhead (pchar '(') >>. notGluedPiece >>. parens
-          lookAhead (satisfy cmdWordChar) >>. notGluedPiece >>. bareword ]
+    choice [
+        cmdBlockArgGuard
+        lookAhead (pstring "\"\"\"") >>. notGluedPiece >>. tripleLit
+        lookAhead (pchar '"') >>. notGluedPiece >>. strLit
+        lookAhead (pchar '\'') >>. notGluedPiece >>. singleQuoted
+        lookAhead (pstring "@\"") >>. notGluedPiece >>. verbatimArgTeach
+        dollarAtTeach
+        lookAhead (pstring "$\"\"\"") >>. notGluedPiece >>. interpRawLit
+        lookAhead (pstring "$\"") >>. notGluedPiece >>. interpLit
+        lookAhead (pstring "$(") >>. notGluedPiece >>. captureSigil
+        spliceSplat
+        spliceVar
+        lookAhead (pchar '(') >>. notGluedPiece >>. parens
+        lookAhead (satisfy cmdWordChar) >>. notGluedPiece >>. bareword
+    ]
 
 let private cmdArgWith (stopAtIn: bool) = cmdArgStops stopAtIn false false
 
@@ -4570,28 +4786,35 @@ type private HeadKind =
 // The value is glued to `=` by design, so it is read here, not by the argv
 // piece parser (whose guard refuses glued pieces).
 let private envValue: Parser<Expr, unit> =
-    choice
-        [ lookAhead (pstring "$\"\"\"") >>. interpRawLit
-          lookAhead (pstring "$\"") >>. interpLit
-          lookAhead (pstring "$(") >>. captureSigil
-          spanned (pchar '$' >>. rawWord) |>> fun (n, sp) -> { Kind = EVar n; Span = sp }
-          lookAhead (pstring "\"\"\"") >>. tripleLit
-          lookAhead (pchar '"') >>. strLit
-          lookAhead (pchar '\'') >>. singleQuoted
-          spanned cmdWord
-          |>> fun (w, sp) -> if isTildeWord w then tildeExpr w sp else { Kind = EStr w; Span = sp } ]
+    choice [
+        lookAhead (pstring "$\"\"\"") >>. interpRawLit
+        lookAhead (pstring "$\"") >>. interpLit
+        lookAhead (pstring "$(") >>. captureSigil
+        spanned (pchar '$' >>. rawWord) |>> fun (n, sp) -> { Kind = EVar n; Span = sp }
+        lookAhead (pstring "\"\"\"") >>. tripleLit
+        lookAhead (pchar '"') >>. strLit
+        lookAhead (pchar '\'') >>. singleQuoted
+        spanned cmdWord
+        |>> fun (w, sp) ->
+            if isTildeWord w then
+                tildeExpr w sp
+            else
+                { Kind = EStr w; Span = sp }
+    ]
 
 let private envAssign: Parser<(string * Expr) * Span, unit> =
     attempt (
         spanned (
-            (many1Satisfy2 isIdentStart isIdentCont .>> pchar '=' .>> notFollowedBy (pchar '='))
-            .>>. ((followedBy (satisfy (fun c -> c = ' ' || c = '\t')) >>% None) <|> (envValue |>> Some))
+            (many1Satisfy2 isIdentStart isIdentCont
+             .>> pchar '='
+             .>> notFollowedBy (pchar '='))
+            .>>. ((followedBy (satisfy (fun c -> c = ' ' || c = '\t')) >>% None)
+                  <|> (envValue |>> Some))
             .>> ws
         )
     )
     |>> fun ((name, valueO), sp) ->
-        let value =
-            valueO |> Option.defaultValue { Kind = EStr ""; Span = sp }
+        let value = valueO |> Option.defaultValue { Kind = EStr ""; Span = sp }
 
         (name, value), sp
 
@@ -4608,7 +4831,10 @@ let private envPrefixGuard () : Parser<'a, unit> =
         match next with
         // a head that resolves was refused for another reason — that
         // route's error is the true one
-        | Some(w, _) when isIdentLike w && (r.IsExternal w || (aliasHeadOf r w).IsSome || r.IsCommandCallable w) ->
+        | Some(w, _) when
+            isIdentLike w
+            && (r.IsExternal w || (aliasHeadOf r w).IsSome || r.IsCommandCallable w)
+            ->
             ifail "the head resolves; not an env-prefix failure"
         | Some(w, sp) when not (keywords.Contains w) ->
             failFatallyAtCol
@@ -4624,7 +4850,9 @@ let private envPrefixGuard () : Parser<'a, unit> =
 let private backslashHeadGuard () : Parser<'a, unit> =
     attempt (getPosition .>> pchar '\\' .>> followedBy (satisfy isIdentStart))
     >>= fun at ->
-        failFatallyAt at "weir has no `\\`-escape for commands — `^name` runs the PATH program, skipping aliases and builtins"
+        failFatallyAt
+            at
+            "weir has no `\\`-escape for commands — `^name` runs the PATH program, skipping aliases and builtins"
 
 envPrefixStmtGuardRef.Value <- envPrefixGuard () <|> backslashHeadGuard ()
 
@@ -4641,8 +4869,10 @@ envAssignsFwdRef.Value <-
                 let at k = { Kind = k; Span = sp }
                 at (EApp(at (EApp(at (EVar "|envPair"), at (EStr name))), value)))
 
-        { Kind = EList items
-          Span = { Start = first.Start; End = last.End } }
+        {
+            Kind = EList items
+            Span = { Start = first.Start; End = last.End }
+        }
 
 // ^$name / ^$(…) — the dynamic head [D:dynamic-head]: `^` gains a
 // `$`-splice alternative beside the literal — a runtime string can
@@ -4673,43 +4903,44 @@ let private cmdHeadWord = manyMinMaxSatisfy 1 1024 cmdWordChar
 // continuation inside commandSegment
 let private litHeadWord: Parser<(char option * string) * Span, unit> =
     spanned (opt (pchar '^') .>>. cmdHeadWord)
-        // the machine boundary [D:yaml-district]: a head glued to the
-        // sentinel can only be the assembler's yaml-district wrap
-        // (statement joins always space the sentinel) — never a command
-        .>> notFollowedBy (pchar sibSep)
-        // …and its marker+modifier face [D:yaml-schemas][D:yaml-nodes]:
-        // a modifier suffix (` patch [by=<key>]` and/or ` schema=<name>`)
-        // glued to the sentinel is the same wrap (`yaml patch`,
-        // `yaml schema=x`); no user argv is ever glued, so the whole
-        // segment refuses here and the parse falls through to the
-        // district arm. The check-side resolver assumes unknown heads
-        // are commands [D:assume-resolver], so without the patch face
-        // `weir check` claimed a patch marker as a command while the
-        // runner's hard resolver fell through correctly.
-        .>> notFollowedBy (
-            attempt (
-                choice
-                    [ pstring " patch"
-                      >>. opt (pstring " by=" >>. many1Satisfy (fun c -> c <> ' ' && c <> sibSep))
-                      >>. opt (
-                          pstring " schema="
-                          >>. many1Satisfy (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
-                      )
-                      >>% ()
-                      pstring " schema="
-                      >>. many1Satisfy (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
-                      >>% () ]
-                >>. pchar sibSep
-            )
+    // the machine boundary [D:yaml-district]: a head glued to the
+    // sentinel can only be the assembler's yaml-district wrap
+    // (statement joins always space the sentinel) — never a command
+    .>> notFollowedBy (pchar sibSep)
+    // …and its marker+modifier face [D:yaml-schemas][D:yaml-nodes]:
+    // a modifier suffix (` patch [by=<key>]` and/or ` schema=<name>`)
+    // glued to the sentinel is the same wrap (`yaml patch`,
+    // `yaml schema=x`); no user argv is ever glued, so the whole
+    // segment refuses here and the parse falls through to the
+    // district arm. The check-side resolver assumes unknown heads
+    // are commands [D:assume-resolver], so without the patch face
+    // `weir check` claimed a patch marker as a command while the
+    // runner's hard resolver fell through correctly.
+    .>> notFollowedBy (
+        attempt (
+            choice [
+                pstring " patch"
+                >>. opt (pstring " by=" >>. many1Satisfy (fun c -> c <> ' ' && c <> sibSep))
+                >>. opt (
+                    pstring " schema="
+                    >>. many1Satisfy (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
+                )
+                >>% ()
+                pstring " schema="
+                >>. many1Satisfy (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
+                >>% ()
+            ]
+            >>. pchar sibSep
         )
-        // …and a marker with a trailing blank [D:yaml-marker-blanks]: the
-        // district arm teaches it, check's assume-resolver must not run it
-        >>= (fun (((forced, w), _) as head) ->
-            if forced.IsNone && w = "yaml" then
-                notFollowedBy yamlBlankTail >>% head
-            else
-                preturn head)
-        .>> ws
+    )
+    // …and a marker with a trailing blank [D:yaml-marker-blanks]: the
+    // district arm teaches it, check's assume-resolver must not run it
+    >>= (fun (((forced, w), _) as head) ->
+        if forced.IsNone && w = "yaml" then
+            notFollowedBy yamlBlankTail >>% head
+        else
+            preturn head)
+    .>> ws
 
 let private commandSegment
     (builtinHeads: bool)
@@ -4768,39 +4999,40 @@ let private commandSegment
     // survive the backtrack: a splat head, an interpolated head, and a
     // bare `^$` each name their repair
     let dynHeadGuards =
-        choice
-            [ getPosition .>> attempt (pstring "^$@")
-              >>= fun at ->
-                  failFatallyAt
-                      at
-                      "a splat cannot head a command (N words would be N heads) — a dynamic head takes one program: ^$name"
-              getPosition .>> attempt (pstring "^$" .>> followedBy (pchar '"'))
-              >>= fun at ->
-                  failFatallyAt
-                      at
-                      "an interpolated string cannot head a command — bind it first (let tool = $\"…\"), then run ^$tool"
-              getPosition
-              .>> attempt (pstring "^$" .>> notFollowedBy (satisfy (fun c -> isIdentStart c || c = '(')))
-              >>= fun at -> failFatallyAt at "'^$' needs a name or a capture — a dynamic head is ^$name or ^$(…)" ]
+        choice [
+            getPosition .>> attempt (pstring "^$@")
+            >>= fun at ->
+                failFatallyAt
+                    at
+                    "a splat cannot head a command (N words would be N heads) — a dynamic head takes one program: ^$name"
+            getPosition .>> attempt (pstring "^$" .>> followedBy (pchar '"'))
+            >>= fun at ->
+                failFatallyAt
+                    at
+                    "an interpolated string cannot head a command — bind it first (let tool = $\"…\"), then run ^$tool"
+            getPosition
+            .>> attempt (pstring "^$" .>> notFollowedBy (satisfy (fun c -> isIdentStart c || c = '(')))
+            >>= fun at -> failFatallyAt at "'^$' needs a name or a capture — a dynamic head is ^$name or ^$(…)"
+        ]
 
     // consume the trigger, then anchor back [D:anchor-before-read]: a
     // non-consuming fatal here merges the head alternative's expected-set
     dynHeadGuards
     <|> (getPosition .>> pstring "$@"
-     >>= fun at ->
-         fun stream ->
-             // $@" is the F# reflex for interpolated-verbatim — teach the
-             // one spelling instead of the splat guard's message [D:interp-raw]
-             if stream.Peek() = '"' then
-                 (failFatallyAt
-                     at
-                     "no $@\"…\" — the raw interpolated spelling is $\"\"\"…\"\"\" (escapes off, {holes} on)")
-                     stream
-             else
-                 (failFatallyAt
-                     at
-                     "a splat cannot head a command (N words would be N heads); a command head is one program — a dynamic one is ^$name")
-                     stream)
+         >>= fun at ->
+             fun stream ->
+                 // $@" is the F# reflex for interpolated-verbatim — teach the
+                 // one spelling instead of the splat guard's message [D:interp-raw]
+                 if stream.Peek() = '"' then
+                     (failFatallyAt
+                         at
+                         "no $@\"…\" — the raw interpolated spelling is $\"\"\"…\"\"\" (escapes off, {holes} on)")
+                         stream
+                 else
+                     (failFatallyAt
+                         at
+                         "a splat cannot head a command (N words would be N heads); a command head is one program — a dynamic one is ^$name")
+                         stream)
     <|> (attempt (many envAssign .>>. head) .>>. many argP)
     |>> fun ((assigns, (kind, prog, span)), args) ->
         // the prefix joins the segment's overlay, after a sigil's so the
@@ -4822,12 +5054,13 @@ let private commandSegment
                 | None -> Some pairs
                 | Some e -> Some(at (EApp(at (EApp(at (EVar "|seqAppend"), e)), pairs)))
 
-        let fullSpan =
-            { Start = span.Start
-              End =
+        let fullSpan = {
+            Start = span.Start
+            End =
                 (match args with
                  | [] -> span.End
-                 | _ -> (List.last args).Span.End) }
+                 | _ -> (List.last args).Span.End)
+        }
 
         // cd (the one command-callable builtin) is APPLIED, not spawned —
         // `EApp(EVar "cd", arg)`, defaulting to the home path with no arg
@@ -4845,18 +5078,21 @@ let private commandSegment
 
             effectiveArgs
             |> List.fold
-                (fun acc arg ->
-                    { Kind = EApp(acc, arg)
-                      Span = Span.union acc.Span arg.Span })
+                (fun acc arg -> {
+                    Kind = EApp(acc, arg)
+                    Span = Span.union acc.Span arg.Span
+                })
                 headVar
 
         match kind with
-        | ExternalHead ->
-            { Kind = ECmd(HeadLit prog, args, sigilEnv)
-              Span = fullSpan }
-        | DynamicHead(disp, he) ->
-            { Kind = ECmd(HeadDyn(disp, he), args, sigilEnv)
-              Span = fullSpan }
+        | ExternalHead -> {
+            Kind = ECmd(HeadLit prog, args, sigilEnv)
+            Span = fullSpan
+          }
+        | DynamicHead(disp, he) -> {
+            Kind = ECmd(HeadDyn(disp, he), args, sigilEnv)
+            Span = fullSpan
+          }
         | AliasedHead(exe, prefix) ->
             // swap the head to the real exe, prepend the fixed prefix as
             // literal argv words; the user's argv stays typed and unchanged
@@ -4871,8 +5107,10 @@ let private commandSegment
                 // HeadLit (that would spawn the external /usr/sbin/cd)
                 buildBuiltinApp exe span allArgs
             else
-                { Kind = ECmd(HeadLit exe, allArgs, sigilEnv)
-                  Span = fullSpan }
+                {
+                    Kind = ECmd(HeadLit exe, allArgs, sigilEnv)
+                    Span = fullSpan
+                }
         | BuiltinHead -> buildBuiltinApp prog span args
 
 let private pipeSep = (attempt (pstring "|>") <|> pstring "|") .>> ws
@@ -4934,7 +5172,8 @@ let private reifierEnd =
     let elseStop: Parser<unit, unit> =
         fun stream ->
             if ifBodyOk.Value then
-                (attempt ((pstring "else" <|> pstring "elif") .>> notFollowedBy (satisfy cmdWordChar)) |>> ignore)
+                (attempt ((pstring "else" <|> pstring "elif") .>> notFollowedBy (satisfy cmdWordChar))
+                 |>> ignore)
                     stream
             else
                 ifail "no else-stop here" stream
@@ -4943,15 +5182,16 @@ let private reifierEnd =
     // without this, `| orFail "m"` as an interior statement demoted the
     // reifier to a bareword stage (the addendum's cmd-not-found case)
     lookAhead (
-        choice
-            [ pipeSep |>> ignore
-              pchar ')' |>> ignore
-              eof
-              inStop
-              thenStop
-              elseStop
-              attempt (pchar ';') |>> ignore
-              attempt (pstring sibSepStr) |>> ignore ]
+        choice [
+            pipeSep |>> ignore
+            pchar ')' |>> ignore
+            eof
+            inStop
+            thenStop
+            elseStop
+            attempt (pchar ';') |>> ignore
+            attempt (pstring sibSepStr) |>> ignore
+        ]
     )
 
 let private completeMarker =
@@ -5038,7 +5278,10 @@ let private chainRhsTeach (kw: string) (r: Resolver) : Parser<Expr, unit> =
                     $"{weirFix}; to run a program named {w}, write ^{w}"
 
             let what = if keywords.Contains w then "keyword" else "name"
-            failChain $"'{w}' is a weir {what}, not a program — '| {kw}' must be followed by a command; {fix}" (spanAt at)
+
+            failChain
+                $"'{w}' is a weir {what}, not a program — '| {kw}' must be followed by a command; {fix}"
+                (spanAt at)
         | _ -> failChain $"'| {kw}' must be followed by a command, as in `<command> | {kw} <other command>`" (spanAt at)
 
 // the RHS always admits a command-callable builtin head (`mkdir d | and
@@ -5086,12 +5329,14 @@ let private pipeOpError (got: string) : string =
 let private streamOf (e: Expr) =
     match e.Kind with
     | ECmd _
-    | EPipe(_, { Kind = ECmd _ }) ->
-        { Kind = EPipe(e, { Kind = EVar "|print"; Span = e.Span })
-          Span = e.Span }
-    | _ ->
-        { Kind = ELet("_chain", e.Span, e, { Kind = EUnit; Span = e.Span })
-          Span = e.Span }
+    | EPipe(_, { Kind = ECmd _ }) -> {
+        Kind = EPipe(e, { Kind = EVar "|print"; Span = e.Span })
+        Span = e.Span
+      }
+    | _ -> {
+        Kind = ELet("_chain", e.Span, e, { Kind = EUnit; Span = e.Span })
+        Span = e.Span
+      }
 
 // a chain head is command-ish (an external segment or a command→command
 // pipe); a value head is anything else
@@ -5106,7 +5351,10 @@ let private isCommandish (e: Expr) =
 let private progArgOf (h: CmdHead) (span: Span) =
     match h with
     | HeadLit prog -> { Kind = EStr prog; Span = span }
-    | HeadDyn(disp, he) -> { Kind = EDynProg(disp, he); Span = he.Span }
+    | HeadDyn(disp, he) -> {
+        Kind = EDynProg(disp, he)
+        Span = he.Span
+      }
 
 let private orLeftMsg =
     "'| or' must follow an external command or a pipeline of them — a builtin like cd raises an error instead of returning an exit code"
@@ -5119,18 +5367,24 @@ let private chainEndReifier (seg: Seg) : (Expr * string * string) option =
     | OrMarker(rhs, _) -> Some(rhs, "or")
     | _ -> None
     |> Option.bind (fun (rhs, kw) ->
-        chainReifier rhs |> Option.filter ((<>) "exec") |> Option.map (fun n -> rhs, kw, n))
+        chainReifier rhs
+        |> Option.filter ((<>) "exec")
+        |> Option.map (fun n -> rhs, kw, n))
 
 // which chain word a folded and/or right-hand side starts with: `| and`
 // folds to a sequence of streamed commands, `| or` to an if on the left's
 // exit code [D:and-or-no-mix]
 let private chainWord (e: Expr) : string option =
     match e.Kind with
-    | EIf({ Kind = EBinOp("==", code, { Kind = EInt 0L }) }, { Kind = EUnit }, Some _) when
-        chainReifier code = Some "exitCode"
-        ->
-        Some "or"
-    | ESeq({ Kind = EPipe(_, { Kind = EVar "|print" }) }, _)
+    | EIf({
+              Kind = EBinOp("==", code, { Kind = EInt 0L })
+          },
+          { Kind = EUnit },
+          Some _) when chainReifier code = Some "exitCode" -> Some "or"
+    | ESeq({
+               Kind = EPipe(_, { Kind = EVar "|print" })
+           },
+           _)
     | ESeq({ Kind = ELet("_chain", _, _, _) }, _) -> Some "and"
     | _ -> None
 
@@ -5146,7 +5400,10 @@ let private captureReifierMsg (inner: Expr) (stageName: string) =
     let sigil =
         match inner.Kind with
         | ECmd(_, _, Some { Kind = EVar n })
-        | EPipe(_, { Kind = ECmd(_, _, Some { Kind = EVar n }) }) -> "$" + n
+        | EPipe(_,
+                {
+                    Kind = ECmd(_, _, Some { Kind = EVar n })
+                }) -> "$" + n
         | _ -> "$"
 
     $"'{stageName}' must directly follow a single external command segment — the capture sigil closes its chain at the ')'; the reifier composes inside the parens: {sigil}(cmd | {stageName})"
@@ -5169,7 +5426,11 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
                 match seg with
                 | Stage({ Kind = ECmd(HeadLit n, _, _) } as e) ->
                     let home = (ambientResolver.Value.BareHome n).Value
-                    Result.Error($"'{n}' is a bare module member — spell it '{home}.{n}' (bare names live in the REPL session)", e.Span)
+
+                    Result.Error(
+                        $"'{n}' is a bare module member — spell it '{home}.{n}' (bare names live in the REPL session)",
+                        e.Span
+                    )
                 | _ -> Result.Error(pipeOpError op, opSpan)
             | Result.Ok _ when op <> requiredPipeOp seg -> Result.Error(pipeOpError op, opSpan)
             | Result.Ok acc when
@@ -5217,17 +5478,19 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
             | Result.Ok acc ->
                 match seg with
                 | Stage seg ->
-                    Result.Ok
-                        { Kind = EPipe(acc, seg)
-                          Span = Span.union acc.Span seg.Span }
+                    Result.Ok {
+                        Kind = EPipe(acc, seg)
+                        Span = Span.union acc.Span seg.Span
+                    }
                 | AndMarker(rhs, _) ->
                     // `cmd | and <rest>` = bash &&: stream the left (raising on
                     // failure — the right is then skipped), then the right
                     // [D:cmd-chaining]. The armed |print streams+raises; a nested
                     // and/or is already a unit effect, so it passes through.
-                    Result.Ok
-                        { Kind = ESeq(streamOf acc, streamOf rhs)
-                          Span = Span.union acc.Span rhs.Span }
+                    Result.Ok {
+                        Kind = ESeq(streamOf acc, streamOf rhs)
+                        Span = Span.union acc.Span rhs.Span
+                    }
                 | OrMarker(rhs, sp) ->
                     // `cmd | or <rest>` = bash ||: stream the left capturing its
                     // exit code (no raise); on nonzero, stream the right
@@ -5248,13 +5511,15 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
                     match codeResult with
                     | Result.Error e -> Result.Error e
                     | Result.Ok codeExpr ->
-                        let cond =
-                            { Kind = EBinOp("==", codeExpr, { Kind = EInt 0L; Span = sp })
-                              Span = sp }
+                        let cond = {
+                            Kind = EBinOp("==", codeExpr, { Kind = EInt 0L; Span = sp })
+                            Span = sp
+                        }
 
-                        Result.Ok
-                            { Kind = EIf(cond, { Kind = EUnit; Span = sp }, Some(streamOf rhs))
-                              Span = Span.union acc.Span rhs.Span }
+                        Result.Ok {
+                            Kind = EIf(cond, { Kind = EUnit; Span = sp }, Some(streamOf rhs))
+                            Span = Span.union acc.Span rhs.Span
+                        }
                 | (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ | ExecMarker _ | LineMarker _ | TextMarker _ as marker) ->
                     let stageName, mspan, extraArgs =
                         match marker with
@@ -5294,9 +5559,10 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
                         // for argv words: elements obey the command-argument
                         // law (Secret, Uuid, int, bool), not seq<string>'s
                         // element unification [D:secret]; erased at check
-                        let argvList (items: Expr list) (span: Span) =
-                            { Kind = EApp({ Kind = EVar "|argv"; Span = span }, { Kind = EList items; Span = span })
-                              Span = span }
+                        let argvList (items: Expr list) (span: Span) = {
+                            Kind = EApp({ Kind = EVar "|argv"; Span = span }, { Kind = EList items; Span = span })
+                            Span = span
+                        }
 
                         if not hasSplat then
                             argvList args acc.Span
@@ -5304,12 +5570,15 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
                             let seqAppend (a: Expr) (b: Expr) =
                                 let span = Span.union a.Span b.Span
 
-                                let f =
-                                    { Kind = EVar "|seqAppend"
-                                      Span = span }
+                                let f = {
+                                    Kind = EVar "|seqAppend"
+                                    Span = span
+                                }
 
-                                { Kind = EApp({ Kind = EApp(f, a); Span = span }, b)
-                                  Span = span }
+                                {
+                                    Kind = EApp({ Kind = EApp(f, a); Span = span }, b)
+                                    Span = span
+                                }
 
                             let listOf (chunk: Expr list) =
                                 argvList chunk (Span.union (List.head chunk).Span (List.last chunk).Span)
@@ -5342,9 +5611,10 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
                         // desugar family, env threaded up front
                         let headVar =
                             match cenv with
-                            | Some e ->
-                                { Kind = EApp({ Kind = EVar envVar; Span = mspan }, e)
-                                  Span = mspan }
+                            | Some e -> {
+                                Kind = EApp({ Kind = EVar envVar; Span = mspan }, e)
+                                Span = mspan
+                              }
                             | None -> { Kind = EVar plainVar; Span = mspan }
 
                         let progArg = progArgOf h acc.Span
@@ -5446,7 +5716,8 @@ let private pipeSepSpanned: Parser<string * Span, unit> =
 let private reifierStageGuard: Parser<Seg, unit> =
     attempt (
         getPosition
-        .>>. (choice (reifierNames |> List.map pstring) .>> notFollowedBy (satisfy cmdWordChar))
+        .>>. (choice (reifierNames |> List.map pstring)
+              .>> notFollowedBy (satisfy cmdWordChar))
         // inside a granted command-let span the guard stands down
         // [D:statement-lets] — the refused re-parse is backtrack
         // artifact; its fatal must not steal the true error's site
@@ -5480,15 +5751,16 @@ let private armBoundaryAhead: Parser<unit, unit> =
         if matchArmDepth.Value > 0 then
             (attempt (
                 lookAhead (
-                    pstring "|"
-                    >>. ws
-                    >>. commaPats
+                    pstring "|" >>. ws >>. commaPats
                     // the next arm may be an or-pattern [D:or-patterns] —
                     // binder-free only, the arm's own law: `| line | _ ->`
                     // is a reifier stage and then an arm, never `line | _`
                     .>>. many orAlternative
                     >>= (fun (p, alts) ->
-                        if not alts.IsEmpty && (p :: alts |> List.exists (fun a -> not (List.isEmpty (patLeafNames a)))) then
+                        if
+                            not alts.IsEmpty
+                            && (p :: alts |> List.exists (fun a -> not (List.isEmpty (patLeafNames a))))
+                        then
                             fail "a binding or-pattern is no arm boundary"
                         else
                             preturn ())
@@ -5531,7 +5803,8 @@ let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEn
     )
 
 // the def guard at the command line's type, built once
-let private defStatementGuardCmd: Parser<Expr * ((string * Span) * Seg) list, unit> = defStatementGuard ()
+let private defStatementGuardCmd: Parser<Expr * ((string * Span) * Seg) list, unit> =
+    defStatementGuard ()
 
 let private cmdLineWith
     (builtinHeads: bool)
@@ -5610,8 +5883,7 @@ valueHeadedTailImpl <-
 // command-callable builtins (cd) stay ordinary functions there —
 // `let workdir = cd target` must apply the binding target, never read
 // it as a bareword.
-let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> =
-    cmdLineWith false cmdArgLetRhs None r
+let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> = cmdLineWith false cmdArgLetRhs None r
 
 // deepen: a block let's command RHS re-enters the statement grammar
 // through its args (cmd (let y = cmd (…))) [D:depth-guard]
@@ -5633,65 +5905,65 @@ letRhsCmdRef.Value <-
 // application) with `then` stopping argv instead of `in`
 ifCondCmdRef.Value <- cmdLineWith false cmdArgIfCond None ambientProxy
 
-let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
+let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit>()
 
 // deepen: the type grammar nests through seq<…>/Option<…>/Map<…>/
 // {| … |} exactly like the expression grammar's brackets [D:depth-guard]
 tySynRef.Value <-
     deepen (
-        choice
-            [
-              // a parenthesised type [D:function-types]: needed for a
-              // function domain (`(unit -> string) -> string`) and so the
-              // rendered form round-trips — formatTy parenthesises a
-              // function domain, so the reader must accept those parens.
-              // Committing on '(' is right: nothing else opens with it.
-              between (str_ws "(") (str_ws ")") tySyn
-              // the one-level rule reversed [D:anon-nesting]: the shape
-              // parses anywhere a type is written — the canonical name is
-              // the type (synthetic-nominal recursion for free); the fields
-              // ride the pending table for the registration seams to drain
-              anonShape
-              |>> fun fields ->
-                  let n = anonRecordName fields
-                  pushAnonDef n fields
-                  TNamed(n, [])
-              pchar '\'' >>. rawWord .>> ws |>> TVar
-              rawWord
-              >>= fun w ->
-                  match w with
-                  | "int" ->
-                      // anchor at the measure's '<' [D:anchor-before-read]
-                      getPosition .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>')) .>> ws
-                      >>= (fun (at, m) ->
-                          match m with
-                          | Some _ -> failFatallyAt at "units of measure are not supported; use bare int"
-                          | None -> preturn TInt)
-                  | "string" -> ws >>% TStr
-                  | "bool" -> ws >>% TBool
-                  | "unit" -> ws >>% TUnit
-                  | "Duration" -> ws >>% TDur
-                  | "Instant" -> ws >>% TInstant
-                  | "Uuid" -> ws >>% TUuid
-                  | "float" -> ws >>% TFloat
-                  | "Size" -> ws >>% TSize
-                  | "Bytes" -> ws >>% TBytes
-                  | "Secret" -> ws >>% TSecret
-                  | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
-                  | w when keywords.Contains w -> fail $"'{w}' is a keyword"
-                  | w ->
-                      // a qualified type name (`M.Spec`) names module M's
-                      // type [D:qualified-type-names]; the checker resolves
-                      // it through the import
-                      opt (attempt (pchar '.' >>. rawWord))
-                      >>= fun quald ->
-                          let name =
-                              match quald with
-                              | Some sub -> w + "." + sub
-                              | None -> w
+        choice [
+            // a parenthesised type [D:function-types]: needed for a
+            // function domain (`(unit -> string) -> string`) and so the
+            // rendered form round-trips — formatTy parenthesises a
+            // function domain, so the reader must accept those parens.
+            // Committing on '(' is right: nothing else opens with it.
+            between (str_ws "(") (str_ws ")") tySyn
+            // the one-level rule reversed [D:anon-nesting]: the shape
+            // parses anywhere a type is written — the canonical name is
+            // the type (synthetic-nominal recursion for free); the fields
+            // ride the pending table for the registration seams to drain
+            anonShape
+            |>> fun fields ->
+                let n = anonRecordName fields
+                pushAnonDef n fields
+                TNamed(n, [])
+            pchar '\'' >>. rawWord .>> ws |>> TVar
+            rawWord
+            >>= fun w ->
+                match w with
+                | "int" ->
+                    // anchor at the measure's '<' [D:anchor-before-read]
+                    getPosition .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>')) .>> ws
+                    >>= (fun (at, m) ->
+                        match m with
+                        | Some _ -> failFatallyAt at "units of measure are not supported; use bare int"
+                        | None -> preturn TInt)
+                | "string" -> ws >>% TStr
+                | "bool" -> ws >>% TBool
+                | "unit" -> ws >>% TUnit
+                | "Duration" -> ws >>% TDur
+                | "Instant" -> ws >>% TInstant
+                | "Uuid" -> ws >>% TUuid
+                | "float" -> ws >>% TFloat
+                | "Size" -> ws >>% TSize
+                | "Bytes" -> ws >>% TBytes
+                | "Secret" -> ws >>% TSecret
+                | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
+                | w when keywords.Contains w -> fail $"'{w}' is a keyword"
+                | w ->
+                    // a qualified type name (`M.Spec`) names module M's
+                    // type [D:qualified-type-names]; the checker resolves
+                    // it through the import
+                    opt (attempt (pchar '.' >>. rawWord))
+                    >>= fun quald ->
+                        let name =
+                            match quald with
+                            | Some sub -> w + "." + sub
+                            | None -> w
 
-                          ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
-                          |>> fun args -> TNamed(name, Option.defaultValue [] args) ]
+                        ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
+                        |>> fun args -> TNamed(name, Option.defaultValue [] args)
+        ]
         // t1 * t2 [* ...] is a tuple type [D:tuples-reversal]; `a -> b` is
         // a function type [D:function-types] — right-associative and looser
         // than `*` and generics (`int * string -> bool` is
@@ -5708,86 +5980,93 @@ tySynRef.Value <-
 
 // literal-only attribute arguments [D:attributes]
 let private attrArgLit =
-    choice
-        [ between (pchar '"') (pchar '"') (manyStrings stringChar) |>> AStr
-          // a leading `-` is part of the literal [D:attr-negative-literal]:
-          // `[<Default -1>]` is an int literal exactly as `-1` is anywhere
-          getPosition
-          .>>. (opt (getPosition .>> pchar '-')
-                >>= function
-                    | None -> many1Satisfy isDigit
-                    // the consumed `-` would report an empty message
-                    | Some at ->
-                        (many1Satisfy isDigit
-                         <|> failFatallyAt
-                             at
-                             "a '-' in an attribute argument must be followed by a number, as in [<Default -1>] — attribute arguments are literals")
-                        |>> fun d -> "-" + d)
-          .>>. opt (
-              attempt (
-                  (choice
-                      [ pstring "KiB"
-                        pstring "MiB"
-                        pstring "GiB"
-                        pstring "TiB"
-                        pstring "ms"
-                        pstring "B"
-                        pstring "s"
-                        pstring "m"
-                        pstring "h" ])
-                  .>> notFollowedBy (satisfy (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
-              )
-          )
-          // [<Default 0.5>] — attrArgLit is its own tiny lexer
-          // [D:floats]
-          .>>. opt (attempt (pchar '.' >>. many1Satisfy isDigit))
-          // the integer arms parse the digits into int64 [D:attr-int-overflow]:
-          // a raw `int64 digits` cast throws OverflowException past the 64-bit
-          // range (SIGABRT for the whole tool); TryParse turns it into the
-          // integer-literal parser's located teaching. The fraction arm goes to
-          // Double (finite-only, never throws). The unit arms also bound their
-          // multiply so a large-but-in-range base cannot silently wrap past
-          // Int64.MaxValue — the same range refusal, one shape.
-          >>= fun (((at, digits), sfx), frac) ->
-              let outOfRange () =
-                  failFatallyAt at $"attribute argument out of range (64-bit): {digits}"
+    choice [
+        between (pchar '"') (pchar '"') (manyStrings stringChar) |>> AStr
+        // a leading `-` is part of the literal [D:attr-negative-literal]:
+        // `[<Default -1>]` is an int literal exactly as `-1` is anywhere
+        getPosition
+        .>>. (opt (getPosition .>> pchar '-')
+              >>= function
+                  | None -> many1Satisfy isDigit
+                  // the consumed `-` would report an empty message
+                  | Some at ->
+                      (many1Satisfy isDigit
+                       <|> failFatallyAt
+                               at
+                               "a '-' in an attribute argument must be followed by a number, as in [<Default -1>] — attribute arguments are literals")
+                      |>> fun d -> "-" + d)
+        .>>. opt (
+            attempt (
+                (choice [
+                    pstring "KiB"
+                    pstring "MiB"
+                    pstring "GiB"
+                    pstring "TiB"
+                    pstring "ms"
+                    pstring "B"
+                    pstring "s"
+                    pstring "m"
+                    pstring "h"
+                ])
+                .>> notFollowedBy (satisfy (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
+            )
+        )
+        // [<Default 0.5>] — attrArgLit is its own tiny lexer
+        // [D:floats]
+        .>>. opt (attempt (pchar '.' >>. many1Satisfy isDigit))
+        // the integer arms parse the digits into int64 [D:attr-int-overflow]:
+        // a raw `int64 digits` cast throws OverflowException past the 64-bit
+        // range (SIGABRT for the whole tool); TryParse turns it into the
+        // integer-literal parser's located teaching. The fraction arm goes to
+        // Double (finite-only, never throws). The unit arms also bound their
+        // multiply so a large-but-in-range base cannot silently wrap past
+        // Int64.MaxValue — the same range refusal, one shape.
+        >>= fun (((at, digits), sfx), frac) ->
+            let outOfRange () =
+                failFatallyAt at $"attribute argument out of range (64-bit): {digits}"
 
-              let scaled (n: int64) (factor: int64) : Parser<int64, unit> =
-                  // Int64 saturating check: |n| * factor overflows iff
-                  // |n| > MaxValue / factor (a negative n is bounded the same)
-                  if factor <> 0L && (n > System.Int64.MaxValue / factor || n < -(System.Int64.MaxValue / factor)) then
-                      outOfRange ()
-                  else
-                      preturn (n * factor)
+            let scaled (n: int64) (factor: int64) : Parser<int64, unit> =
+                // Int64 saturating check: |n| * factor overflows iff
+                // |n| > MaxValue / factor (a negative n is bounded the same)
+                if
+                    factor <> 0L
+                    && (n > System.Int64.MaxValue / factor || n < -(System.Int64.MaxValue / factor))
+                then
+                    outOfRange ()
+                else
+                    preturn (n * factor)
 
-              match sfx, frac with
-              | _, Some f ->
-                  preturn (
-                      AFloat(
-                          let v = System.Double.Parse($"{digits}.{f}", System.Globalization.CultureInfo.InvariantCulture)
-                          if v = 0.0 then 0.0 else v
-                      )
-                  )
-              | Some unit, _ ->
-                  match System.Int64.TryParse digits with
-                  | false, _ -> outOfRange ()
-                  | true, n ->
-                      match unit with
-                      | "ms" -> preturn (ADur n)
-                      | "s" -> scaled n 1000L |>> ADur
-                      | "m" -> scaled n 60000L |>> ADur
-                      | "h" -> scaled n 3600000L |>> ADur
-                      | "B" -> preturn (ASize n)
-                      | "KiB" -> scaled n 1024L |>> ASize
-                      | "MiB" -> scaled n (1024L * 1024L) |>> ASize
-                      | "GiB" -> scaled n (1024L * 1024L * 1024L) |>> ASize
-                      | _ -> scaled n (1024L * 1024L * 1024L * 1024L) |>> ASize
-              | None, _ ->
-                  match System.Int64.TryParse digits with
-                  | true, n -> preturn (AInt n)
-                  | false, _ -> outOfRange ()
-          keyword "true" >>% ABool true
-          keyword "false" >>% ABool false ]
+            match sfx, frac with
+            | _, Some f ->
+                preturn (
+                    AFloat(
+                        let v =
+                            System.Double.Parse($"{digits}.{f}", System.Globalization.CultureInfo.InvariantCulture)
+
+                        if v = 0.0 then 0.0 else v
+                    )
+                )
+            | Some unit, _ ->
+                match System.Int64.TryParse digits with
+                | false, _ -> outOfRange ()
+                | true, n ->
+                    match unit with
+                    | "ms" -> preturn (ADur n)
+                    | "s" -> scaled n 1000L |>> ADur
+                    | "m" -> scaled n 60000L |>> ADur
+                    | "h" -> scaled n 3600000L |>> ADur
+                    | "B" -> preturn (ASize n)
+                    | "KiB" -> scaled n 1024L |>> ASize
+                    | "MiB" -> scaled n (1024L * 1024L) |>> ASize
+                    | "GiB" -> scaled n (1024L * 1024L * 1024L) |>> ASize
+                    | _ -> scaled n (1024L * 1024L * 1024L * 1024L) |>> ASize
+            | None, _ ->
+                match System.Int64.TryParse digits with
+                | true, n -> preturn (AInt n)
+                | false, _ -> outOfRange ()
+        keyword "true" >>% ABool true
+        keyword "false" >>% ABool false
+    ]
     .>> ws
 
 let private attrSpec =
@@ -5871,7 +6150,11 @@ let private typeParams =
 
         // a repeated parameter is named at its second spelling
         // [D:anchor-before-read]
-        match ps |> List.indexed |> List.tryFind (fun (i, (_, n)) -> ps |> List.take i |> List.exists (fun (_, m) -> m = n)) with
+        match
+            ps
+            |> List.indexed
+            |> List.tryFind (fun (i, (_, n)) -> ps |> List.take i |> List.exists (fun (_, m) -> m = n))
+        with
         | Some(_, (at, n)) -> failFatallyAt at $"duplicate type parameter '{n} — each type parameter is declared once"
         | None -> preturn (ps |> List.map snd)
 
@@ -5898,10 +6181,11 @@ let private validateClause: Parser<Validator, unit> =
             |> List.fold (fun (p: Parser<Expr, unit>) n -> withAmbientName n p) seqExpr
 
         body
-        |>> fun b ->
-            { Binder = binder
-              Body = b
-              Span = kwSpan }
+        |>> fun b -> {
+            Binder = binder
+            Body = b
+            Span = kwSpan
+        }
 
 let private typeDecl =
     // a declaration-level attribute list precedes `type`
@@ -5917,13 +6201,14 @@ let private typeDecl =
                 (opt validateClause)
                 getPosition
                 (fun (name, tps) body validate e ->
-                    SType
-                        { Name = name
-                          Params = tps
-                          Body = body
-                          Attrs = defaultArg attrs []
-                          Validate = validate
-                          Span = { Start = pos p; End = pos e } })
+                    SType {
+                        Name = name
+                        Params = tps
+                        Body = body
+                        Attrs = defaultArg attrs []
+                        Validate = validate
+                        Span = { Start = pos p; End = pos e }
+                    })
 
         match attrs with
         | Some _ ->
@@ -5940,7 +6225,9 @@ let private topLet (r: Resolver) =
         // `let pure f …` [D:pure-stage1]: weir's first post-let modifier
         // (no let rec/inline/mutable exists) — a new let-head production,
         // one token, no list; desugars below to a body-spanning pure block
-        keyword "let" >>. opt (attempt (keyword "pure")) .>>. (ident .>>. many binderParam) .>> str_ws "="
+        keyword "let" >>. opt (attempt (keyword "pure"))
+        .>>. (ident .>>. many binderParam)
+        .>> str_ws "="
         >>= fun (pureMod, (name, ps)) ->
             rejectDupParams ps
             >>= fun () ->
@@ -5960,9 +6247,10 @@ let private topLet (r: Resolver) =
                 let paramNames = ps |> List.collect leafNames |> Set.ofList
                 let r = ambientResolver.Value
 
-                let r' =
-                    { r with
-                        IsKnown = fun n -> Set.contains n paramNames || r.IsKnown n }
+                let r' = {
+                    r with
+                        IsKnown = fun n -> Set.contains n paramNames || r.IsKnown n
+                }
 
                 // command-first body [D:sibling-sentinel]: the command
                 // is one statement; the sentinel-separated tail (inner
@@ -6017,8 +6305,10 @@ let private topLet (r: Resolver) =
                             // the modifier is a pure region spanning the
                             // whole RHS (params included — the region
                             // wraps the curried lambda) [D:pure-stage1]
-                            { Kind = EWithin(Ast.WithinPure, None, None, None, curried)
-                              Span = curried.Span }
+                            {
+                                Kind = EWithin(Ast.WithinPure, None, None, None, curried)
+                                Span = curried.Span
+                            }
                         | None -> curried
 
                     SLet(name, value)
@@ -6039,9 +6329,10 @@ let private letKeywordGuard: Parser<Stmt, unit> =
     // before topLet/SLetPat, whose attempts would swallow the fatal); the
     // scan stops at `=`, so a keyword in the RHS never counts as a binder.
     let binderTok =
-        choice
-            [ getPosition .>>. spanned rawWord .>> ws |>> Some
-              anyOf "()[]{},;_" .>> ws >>% None ]
+        choice [
+            getPosition .>>. spanned rawWord .>> ws |>> Some
+            anyOf "()[]{},;_" .>> ws >>% None
+        ]
 
     attempt (
         keyword "let" >>. many binderTok
@@ -6077,12 +6368,13 @@ let private letSig: Parser<Stmt, unit> =
     >>= fun (name, nameSpan) ->
         tySyn .>> ws
         >>= fun ty ->
-            choice
-                [ eof >>% SSig(name, ty, nameSpan)
-                  str_ws "="
-                  >>. failFatally
-                          $"weir infers a binding's type — write `let {name} = …` with no `: <type>`; in a module, `let {name} : <type>` alone is the signature, and the implementation follows as its own let"
-                  failFatally "unexpected content after the signature's type" ]
+            choice [
+                eof >>% SSig(name, ty, nameSpan)
+                str_ws "="
+                >>. failFatally
+                        $"weir infers a binding's type — write `let {name} = …` with no `: <type>`; in a module, `let {name} : <type>` alone is the signature, and the implementation follows as its own let"
+                failFatally "unexpected content after the signature's type"
+            ]
 
 // module + import statements [D:modules-v1] — top-level, no `=`, no body.
 // A module/alias name is uppercase (the casing law: uppercase declares).
@@ -6116,40 +6408,42 @@ let private backslashHeadGuardS: Parser<Stmt, unit> = backslashHeadGuard ()
 
 let private stmtWith (r: Resolver) =
     ws
-    >>. choice
-            [ moduleDecl
-              importDecl
-              typeDecl .>> eof
-              // destructuring let statement (pattern binder, expression RHS);
-              // fully attempt-wrapped so `let (x, y) = v in body` backtracks
-              // to the expression grammar's letIn form
-              attempt (
-                  (keyword "let" >>. binderPat .>> str_ws "="
-                   >>= fun b ->
-                       match b.PKind with
-                       | PVar _
-                       | PCase(_, None, None) -> ifail "plain binder takes the ident path"
-                       | _ -> preturn b)
-                  .>>. ((seqExpr >>= pipeOrHint))
-                  .>> eof
-              )
-              |>> SLetPat
-              foreignKeywordGuardS
-              letKeywordGuard
-              letSig
-              topLet r
-              cmdLine r .>> eof |>> SCmd
-              envPrefixGuardS
-              backslashHeadGuardS
-              (seqExpr >>= pipeOrHint) .>> eof |>> SExpr ]
+    >>. choice [
+        moduleDecl
+        importDecl
+        typeDecl .>> eof
+        // destructuring let statement (pattern binder, expression RHS);
+        // fully attempt-wrapped so `let (x, y) = v in body` backtracks
+        // to the expression grammar's letIn form
+        attempt (
+            (keyword "let" >>. binderPat .>> str_ws "="
+             >>= fun b ->
+                 match b.PKind with
+                 | PVar _
+                 | PCase(_, None, None) -> ifail "plain binder takes the ident path"
+                 | _ -> preturn b)
+            .>>. ((seqExpr >>= pipeOrHint))
+            .>> eof
+        )
+        |>> SLetPat
+        foreignKeywordGuardS
+        letKeywordGuard
+        letSig
+        topLet r
+        cmdLine r .>> eof |>> SCmd
+        envPrefixGuardS
+        backslashHeadGuardS
+        (seqExpr >>= pipeOrHint) .>> eof |>> SExpr
+    ]
 
-let private noExternals =
-    { Desugar.IsKnown = fun _ -> true
-      Desugar.IsCommandCallable = fun _ -> false
-      Desugar.IsExternal = fun _ -> false
-      Desugar.ExternalNames = (fun () -> Seq.empty)
-      Desugar.BareHome = (fun _ -> None)
-      Desugar.AliasHead = fun _ -> None }
+let private noExternals = {
+    Desugar.IsKnown = fun _ -> true
+    Desugar.IsCommandCallable = fun _ -> false
+    Desugar.IsExternal = fun _ -> false
+    Desugar.ExternalNames = (fun () -> Seq.empty)
+    Desugar.BareHome = (fun _ -> None)
+    Desugar.AliasHead = fun _ -> None
+}
 
 // Structured failure: the position travels as data
 // [D:structured-parse-failure]. Message text is unchanged; Col is
@@ -6187,8 +6481,7 @@ let private nodeTooDeep (root: DeepNode) : Span option =
     let mutable hit = None
 
     // a spine continues into the left operand of the same operator kind
-    let spineOf (parent: Expr) (chain: Span option) =
-        Some(defaultArg chain parent.Span)
+    let spineOf (parent: Expr) (chain: Span option) = Some(defaultArg chain parent.Span)
 
     while hit.IsNone && stack.Count > 0 do
         let struct (node, d, chain) = stack.Pop()
@@ -6312,7 +6605,11 @@ let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) op
                     | Some hit -> Some hit
                     | None -> walk armBound body)
         | EWithin(_, binder, arg, opts, body) ->
-            let inner = binder |> Option.map fst |> Option.map (fun n -> Set.add n bound) |> Option.defaultValue bound
+            let inner =
+                binder
+                |> Option.map fst
+                |> Option.map (fun n -> Set.add n bound)
+                |> Option.defaultValue bound
 
             [ arg; opts ]
             |> List.tryPick (Option.bind (walk bound))
@@ -6320,9 +6617,7 @@ let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) op
         | ERetry(_, opts, watch, body, until) ->
             [ Some opts; watch; Some body ]
             |> List.tryPick (Option.bind (walk bound))
-            |> Option.orElseWith (fun () ->
-                until
-                |> Option.bind (fun ((n, _), pred) -> walk (Set.add n bound) pred))
+            |> Option.orElseWith (fun () -> until |> Option.bind (fun ((n, _), pred) -> walk (Set.add n bound) pred))
         | EPipe(_, rhs) ->
             match cmdHead bound rhs with
             | Some sp -> Some sp
@@ -6347,8 +6642,7 @@ let private dumpTeach (r: Resolver) (input: string) (idx: int) (msg: string) : s
             lines[i + 1 ..]
             |> Array.takeWhile (fun l -> l.StartsWith "  ")
             |> Array.map (fun l -> l.Trim())
-            |> Array.filter (fun l ->
-                l <> "" && not (l.Contains internalLabelMarker) && not (l.Contains "\\u0006"))
+            |> Array.filter (fun l -> l <> "" && not (l.Contains internalLabelMarker) && not (l.Contains "\\u0006"))
         | None -> [||]
 
     let idx = max 0 (min idx input.Length)
@@ -6357,10 +6651,14 @@ let private dumpTeach (r: Resolver) (input: string) (idx: int) (msg: string) : s
     let beforeT = before.TrimEnd()
 
     let wordAt (t: string) =
-        t |> Seq.takeWhile (fun c -> not (System.Char.IsWhiteSpace c) && c <> sibSep && c <> fieldSep) |> System.String.Concat
+        t
+        |> Seq.takeWhile (fun c -> not (System.Char.IsWhiteSpace c) && c <> sibSep && c <> fieldSep)
+        |> System.String.Concat
 
     let lastIdent =
-        let m = System.Text.RegularExpressions.Regex.Match(beforeT, @"(?:^|[\s(])([A-Za-z_][A-Za-z0-9_]*)$")
+        let m =
+            System.Text.RegularExpressions.Regex.Match(beforeT, @"(?:^|[\s(])([A-Za-z_][A-Za-z0-9_]*)$")
+
         if m.Success then Some m.Groups[1].Value else None
 
     // `ls /`: the `/` read as division, the error lands past it
@@ -6371,14 +6669,21 @@ let private dumpTeach (r: Resolver) (input: string) (idx: int) (msg: string) : s
                 @"(?:^|[\s(])([A-Za-z_][A-Za-z0-9_]*)\s+((?:\.{0,2}|~)/[^\s]*)$"
             )
 
-        if m.Success then Some(m.Groups[1].Value, m.Groups[2].Value) else None
+        if m.Success then
+            Some(m.Groups[1].Value, m.Groups[2].Value)
+        else
+            None
 
     let rx (p: string) (t: string) =
         let m = System.Text.RegularExpressions.Regex.Match(t, p)
         if m.Success then Some m.Groups[1].Value else None
 
     let parenDepth =
-        before |> Seq.sumBy (fun c -> if c = '(' then 1 elif c = ')' then -1 else 0)
+        before
+        |> Seq.sumBy (fun c ->
+            if c = '(' then 1
+            elif c = ')' then -1
+            else 0)
 
     if not (msg.Contains "Expecting:") then
         None
@@ -6391,11 +6696,15 @@ let private dumpTeach (r: Resolver) (input: string) (idx: int) (msg: string) : s
             Some "'--' is not an operator (weir has no decrement) — to negate a negative, parenthesize: -(-x)"
         else
             Some "a prefix '-' is glued to its operand (-x) — to negate a negative, parenthesize: -(-x)"
-    elif (rx @"^\|\s*([A-Za-z]+)(?![A-Za-z0-9_-])" rest |> Option.exists (fun w -> List.contains w reifierNames)) then
+    elif
+        (rx @"^\|\s*([A-Za-z]+)(?![A-Za-z0-9_-])" rest
+         |> Option.exists (fun w -> List.contains w reifierNames))
+    then
         let name = (rx @"^\|\s*([A-Za-z]+)" rest).Value
 
         if name = "exec" then
-            Some "'| exec' hands the process over and never returns, so it can't sit inside an expression — write it as a statement of its own: `<command> | exec`"
+            Some
+                "'| exec' hands the process over and never returns, so it can't sit inside an expression — write it as a statement of its own: `<command> | exec`"
         else
             Some
                 $"'| {name}' ends a command statement, so it can't sit inside an expression — bind it first: `let r = <command> | {name}`, then use r"
@@ -6403,10 +6712,10 @@ let private dumpTeach (r: Resolver) (input: string) (idx: int) (msg: string) : s
         Some "an import is a top-level statement — put it at column 0, outside any block, before the code that uses it"
     elif
         System.Text.RegularExpressions.Regex.IsMatch(before, @"\$[A-Za-z_]*\($")
-        && (rx @"^([A-Za-z_][A-Za-z0-9_]*)" rest
-            |> Option.exists r.IsKnown)
+        && (rx @"^([A-Za-z_][A-Za-z0-9_]*)" rest |> Option.exists r.IsKnown)
     then
         let w = (rx @"^([A-Za-z_][A-Za-z0-9_]*)" rest).Value
+
         Some
             $"'{w}' is a weir name, not a program — $(…) runs a program and captures its output; call {w} as weir code, or write $(^{w} …) for a program of that name"
     elif rest.StartsWith ")" && beforeT.EndsWith "(" then
@@ -6414,7 +6723,8 @@ let private dumpTeach (r: Resolver) (input: string) (idx: int) (msg: string) : s
     elif rest.StartsWith ":" && not (rest.StartsWith "::") && parenDepth > 0 then
         Some "weir has no type annotation inside an expression — annotate the binding instead: `let y: T = e`"
     elif
-        (rest.StartsWith "/" || rest.StartsWith "./" || rest.StartsWith "~/") && lastIdent.IsSome
+        (rest.StartsWith "/" || rest.StartsWith "./" || rest.StartsWith "~/")
+        && lastIdent.IsSome
         || pathAfterWord.IsSome
     then
         let w, path =
@@ -6424,7 +6734,10 @@ let private dumpTeach (r: Resolver) (input: string) (idx: int) (msg: string) : s
 
         Some
             $"'{w}' is a weir name here, so {path} is read as weir code — a path argument is a string (\"{path}\"); to run the {w} program, write ^{w} {path}"
-    elif lines |> Array.exists (fun l -> l.Trim() = "Expecting: end of input") && rest.Trim() <> "" then
+    elif
+        lines |> Array.exists (fun l -> l.Trim() = "Expecting: end of input")
+        && rest.Trim() <> ""
+    then
         Some $"'{wordAt rest}' is left over — the statement is already complete before it"
     else
         None
@@ -6440,9 +6753,10 @@ let private viaGrammar (r: Resolver) (input: string) : Result<Stmt, ParseFailure
     | Failure(_, _, _) when chainTeach.Value.IsSome ->
         let m, sp = chainTeach.Value.Value
 
-        Result.Error
-            { Message = m
-              Col = if sp.Start.Line = 1 then Some sp.Start.Col else None }
+        Result.Error {
+            Message = m
+            Col = if sp.Start.Line = 1 then Some sp.Start.Col else None
+        }
     | Failure(msg, err, _) ->
         let col =
             if err.Position.Line = 1L then
@@ -6458,7 +6772,8 @@ let private viaGrammar (r: Resolver) (input: string) : Result<Stmt, ParseFailure
                 let ls = msg.Replace("\r\n", "\n").Split '\n'
 
                 let caret =
-                    ls |> Array.tryFindIndex (fun l -> l.Trim() <> "" && l.Trim() |> Seq.forall ((=) '^'))
+                    ls
+                    |> Array.tryFindIndex (fun l -> l.Trim() <> "" && l.Trim() |> Seq.forall ((=) '^'))
 
                 match dumpTeach r input (c - 1) msg, caret with
                 | Some m, Some k -> String.concat "\n" (Array.append ls[..k] [| m |])
@@ -6484,7 +6799,11 @@ let parseOracle (r: Resolver) (input: string) : string option =
             try
                 viaGrammar r input
             with
-            | UnclosedString _ -> Result.Error { Message = "unclosed string"; Col = None }
+            | UnclosedString _ ->
+                Result.Error {
+                    Message = "unclosed string"
+                    Col = None
+                }
             | DepthExceeded _ -> Result.Error { Message = "depth"; Col = None }
 
         let slowPushes = Types.drainAnonDefs ()
@@ -6495,7 +6814,8 @@ let parseOracle (r: Resolver) (input: string) : string option =
         // structural equality recurses per node: a tree past the depth
         // ceiling is refused by both paths' post-parse probe, so only the
         // probe's verdict is compared there
-        let tooDeep (s: Stmt) = s |> stmtNodes |> List.exists (fun n -> (nodeTooDeep n).IsSome)
+        let tooDeep (s: Stmt) =
+            s |> stmtNodes |> List.exists (fun n -> (nodeTooDeep n).IsSome)
 
         match fast, slow with
         | None, _ -> None
@@ -6529,7 +6849,9 @@ let parseOracle (r: Resolver) (input: string) : string option =
                    else
                        "")
             )
-        | Some f, Result.Error e -> Some $"the fast parser accepted what the grammar refuses\ninput: {input}\nfast:\n%A{f}\ngrammar: {e.Message}"
+        | Some f, Result.Error e ->
+            Some
+                $"the fast parser accepted what the grammar refuses\ninput: {input}\nfast:\n%A{f}\ngrammar: {e.Message}"
     finally
         ambientResolver.Value <- noExternals
 
@@ -6563,34 +6885,38 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
 
                     // the recursive parse already passed, so the depth is a flat
                     // chain's left spine [D:depth-guard]: name that repair
-                    Result.Error
-                        { Message =
+                    Result.Error {
+                        Message =
                             $"expression nested too deeply (limit {maxDepth}) — a long chain (a + b + …, x |> f |> …) nests one level per operator; bind intermediates with let, or fold a list (Seq.sum, Seq.fold)"
-                          Col = col }
+                        Col = col
+                    }
                 | None ->
                     match s |> stmtExprs |> List.tryPick (pipeToCommand r) with
                     | Some(span, teach) ->
                         let col = if span.Start.Line = 1 then Some span.Start.Col else None
 
-                        Result.Error
-                            { Message = teach |> Option.defaultValue "'|>' applies functions; feed a program with '|'"
-                              Col = col }
+                        Result.Error {
+                            Message = teach |> Option.defaultValue "'|>' applies functions; feed a program with '|'"
+                            Col = col
+                        }
                     | None -> Result.Ok s
             | Result.Error e -> Result.Error e
         with
         | UnclosedString(p, kind, closer) ->
             let col = if p.Line = 1 then Some p.Col else None
 
-            Result.Error
-                { Message =
+            Result.Error {
+                Message =
                     $"string literal not closed — the {kind} opened here needs its closing {closer}; strings are single-line (use \\n for a line break)"
-                  Col = col }
+                Col = col
+            }
         | DepthExceeded p ->
             let col = if p.Line = 1 then Some p.Col else None
 
-            Result.Error
-                { Message = $"expression nested too deeply (limit {maxDepth}, less on small stacks)"
-                  Col = col }
+            Result.Error {
+                Message = $"expression nested too deeply (limit {maxDepth}, less on small stacks)"
+                Col = col
+            }
     finally
         ambientResolver.Value <- noExternals
 

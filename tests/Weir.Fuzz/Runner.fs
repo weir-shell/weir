@@ -31,20 +31,24 @@ let private capture (prog: string) (args: string list) (timeoutMs: int) =
     let stderr = p.StandardError.ReadToEndAsync()
 
     if p.WaitForExit timeoutMs then
-        {| Rc = p.ExitCode
-           Out = stdout.Result
-           Err = stderr.Result
-           TimedOut = false |}
+        {|
+            Rc = p.ExitCode
+            Out = stdout.Result
+            Err = stderr.Result
+            TimedOut = false
+        |}
     else
         try
             p.Kill true
         with _ ->
             ()
 
-        {| Rc = -1
-           Out = ""
-           Err = ""
-           TimedOut = true |}
+        {|
+            Rc = -1
+            Out = ""
+            Err = ""
+            TimedOut = true
+        |}
 
 let private git (args: string list) =
     try
@@ -70,10 +74,7 @@ let stampGate =
         (if not (File.Exists binPath) then
              failwith $"no weir binary at {binPath} — build with ./publish.sh (or set WEIR_BIN)"
 
-         match
-             repoRoot
-             |> Option.bind (fun root -> git [ "-C"; root; "rev-parse"; "HEAD" ])
-         with
+         match repoRoot |> Option.bind (fun root -> git [ "-C"; root; "rev-parse"; "HEAD" ]) with
          | None -> () // no git — the e2e gate skips too
          | Some head ->
              let stamp = (capture binPath [ "--version" ] 10000).Out.Trim()
@@ -108,11 +109,12 @@ let stampGate =
              | None -> ()
          | None -> ())
 
-type RunResult =
-    { Rc: int
-      Out: string
-      Err: string
-      TimedOut: bool }
+type RunResult = {
+    Rc: int
+    Out: string
+    Err: string
+    TimedOut: bool
+}
 
 /// the program written to a fresh temp script for the span of `f`
 let withScript (lines: string list) (f: string -> 'a) : 'a =
@@ -132,9 +134,11 @@ let withScript (lines: string list) (f: string -> 'a) : 'a =
 let runOn (args: string list) (file: string) : RunResult =
     let r = capture binPath (args @ [ file ]) 15000
 
-    { Rc = r.Rc
-      Out = r.Out
-      Err = r.Err
-      TimedOut = r.TimedOut }
+    {
+        Rc = r.Rc
+        Out = r.Out
+        Err = r.Err
+        TimedOut = r.TimedOut
+    }
 
 let runProgram (lines: string list) : RunResult = withScript lines (runOn [])

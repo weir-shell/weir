@@ -6,10 +6,11 @@ open Weir.Types
 // Origin [D:row-provenance]: a physical (line, col, len) override for
 // where the error points — set when the true cause lives in another
 // statement, whose logical spans this statement cannot translate.
-type TypeError =
-    { Span: Span
-      Message: string
-      Origin: (int * int * int) option }
+type TypeError = {
+    Span: Span
+    Message: string
+    Origin: (int * int * int) option
+}
 
 let formatError (e: TypeError) : string =
     $"[{e.Span.Start.Line}:{e.Span.Start.Col}-{e.Span.End.Col}] type error: {e.Message}"
@@ -70,7 +71,8 @@ let private retiredField (record: string) (field: string) : string option =
 let private retiredBare (name: string) : string option =
     match name with
     | "toList" -> Some "weir has no list type; 'freeze' is the materializer"
-    | "force" -> Some "renamed 'freeze' (bare; qualified: Seq.freeze) — the result is a frozen snapshot (pulls never re-run)"
+    | "force" ->
+        Some "renamed 'freeze' (bare; qualified: Seq.freeze) — the result is a frozen snapshot (pulls never re-run)"
     | "defaultTo" -> Some "renamed: use 'Option.defaultValue' (or 'Option.defaultWith' for a thunk)"
     | "first" -> Some "weir's first is 'Seq.take' (bare: 'take') — one name per operation"
     | _ -> None
@@ -265,10 +267,11 @@ type private ResultBuilder() =
 let private result = ResultBuilder()
 
 let private err (span: Span) (msg: string) : Result<'a, TypeError> =
-    Error
-        { Span = span
-          Message = normalizeDiagVars msg
-          Origin = None }
+    Error {
+        Span = span
+        Message = normalizeDiagVars msg
+        Origin = None
+    }
 
 // the tombstone scope law [D:yaml-nodes]: only a `yaml patch` district
 // admits $- — a plain district refuses at the tombstone's own span
@@ -311,7 +314,8 @@ let private mismatch (span: Span) (expected: Ty) (actual: Ty) =
     // [D:fetch-naming] [D:fetch-retired]
     let hint =
         match expected, actual with
-        | TStr, TNamed("HttpRequest", _) -> " — a request runs through Http.expect (raising) or Http.send (status as data)"
+        | TStr, TNamed("HttpRequest", _) ->
+            " — a request runs through Http.expect (raising) or Http.send (status as data)"
         | _ -> unwrapHint expected actual
 
     // a raw generated var never reaches a message [D:user-language-messages]:
@@ -405,7 +409,9 @@ let rec canonTyKeeping (self: string) (env: TypeEnv) (span: Span) (ty: Ty) : Res
     let all (ts: Ty list) =
         ts
         |> List.fold
-            (fun acc t -> acc |> Result.bind (fun xs -> canonTy env span t |> Result.map (fun t' -> t' :: xs)))
+            (fun acc t ->
+                acc
+                |> Result.bind (fun xs -> canonTy env span t |> Result.map (fun t' -> t' :: xs)))
             (Ok [])
         |> Result.map List.rev
 
@@ -428,10 +434,11 @@ let rec canonTyKeeping (self: string) (env: TypeEnv) (span: Span) (ty: Ty) : Res
                     let n' = anonRecordName fs'
 
                     env.AnonLitDefs[n'] <-
-                        Record
-                            { rd with
+                        Record {
+                            rd with
                                 Name = n'
-                                Fields = List.sortBy fst fs' }
+                                Fields = List.sortBy fst fs'
+                        }
 
                     Types.pushAnonDef n' fs'
                     TNamed(n', []))
@@ -519,10 +526,11 @@ type private SpliceSite =
 // A pending class constraint on an unresolved type/row var: the
 // demanding site's span and message formatter travel with it, so a
 // later discharge failure reads at the place that demanded it.
-type private Pending =
-    { Cls: Cls
-      Span: Span
-      Describe: TypeEnv -> Ty -> string }
+type private Pending = {
+    Cls: Cls
+    Span: Span
+    Describe: TypeEnv -> Ty -> string
+}
 
 // == on floats compares representations, which weir does not vouch
 // for [D:floats]; the Eq exclusion's message names the idiom
@@ -558,51 +566,52 @@ let private floatInsideNamed (env: TypeEnv) (ty: Ty) : bool =
 
     go Set.empty ty
 
-type private Ctx =
-    { mutable Fresh: int
-      mutable Subst: Map<string, Ty>
-      mutable Rows: Map<string, Map<string, Ty * Span>>
-      // physical field-access origins for instantiated row vars
-      // [D:row-provenance], rehydrated from the scheme's RowOrigins
-      mutable RowOrigins: Map<string, (string * int * int * int) list>
-      mutable Cons: Map<string, Pending list>
-      // splice/hole vars whose scalar defaulting is deferred to the
-      // statement boundary [D:splice-default-last]: early defaulting
-      // rejected `1 |> (fun k -> $"{k}")` — the issue is order, not
-      // the rule; the shape check defers with it
-      mutable PendingSplices: (string * Span * SpliceSite) list
-      // the inference budget, [D:depth-guard]'s post-parse sibling:
-      // HM inference is DEXPTIME (a 7-line file can double its type
-      // per line), and never answering is as wrong as a crash — so
-      // resolution work is counted and exhaustion becomes a located
-      // diagnostic. The ceiling is a cost bound, orders of magnitude
-      // above any real program, revisable given evidence
-      mutable Work: int
-      // the span the exhaustion diagnostic anchors on — the innermost
-      // unification site's, kept current by bind (resolve has no span)
-      mutable WorkSpan: Span
-      // the innermost bind's operands, for the evidence probe: at
-      // exhaustion these are the types whose size is or is not the cause
-      mutable WorkTys: Ty * Ty
-      // point-free print uses (Seq.iter print) defer their sentinel to
-      // the statement boundary like splices do [D:splice-default-last]:
-      // a use-site-determined type passes printArgTy there, an
-      // undetermined one keeps the string default (PLAN-dx-review D7)
-      mutable PendingPrints: (string * Span) list
-      // physical positions of bare holes whose var took the string
-      // default this statement (PLAN-dx-review D6) — ride the let's
-      // scheme so a later call-site mismatch can name the anchor
-      mutable HoleDefaulted: (int * int) list
-      // `+` over two unknowns, deferred [D:plus-defer]: retries keyed
-      // by the vars that can decide them; the open set (by creation
-      // order: span + operand/result types) is stranded at the boundary
-      mutable Adds: Map<string, (int * (unit -> Result<unit, TypeError>)) list>
-      mutable AddsOpen: Map<int, Span * Ty list>
-      // block-level recovery [D:block-recovery]: Some = a failed block
-      // element becomes a hole (recorded here with its span) and the
-      // block continues; None = the failure propagates, as every
-      // reporting consumer needs
-      mutable Recovered: (TypeError * Span) list option }
+type private Ctx = {
+    mutable Fresh: int
+    mutable Subst: Map<string, Ty>
+    mutable Rows: Map<string, Map<string, Ty * Span>>
+    // physical field-access origins for instantiated row vars
+    // [D:row-provenance], rehydrated from the scheme's RowOrigins
+    mutable RowOrigins: Map<string, (string * int * int * int) list>
+    mutable Cons: Map<string, Pending list>
+    // splice/hole vars whose scalar defaulting is deferred to the
+    // statement boundary [D:splice-default-last]: early defaulting
+    // rejected `1 |> (fun k -> $"{k}")` — the issue is order, not
+    // the rule; the shape check defers with it
+    mutable PendingSplices: (string * Span * SpliceSite) list
+    // the inference budget, [D:depth-guard]'s post-parse sibling:
+    // HM inference is DEXPTIME (a 7-line file can double its type
+    // per line), and never answering is as wrong as a crash — so
+    // resolution work is counted and exhaustion becomes a located
+    // diagnostic. The ceiling is a cost bound, orders of magnitude
+    // above any real program, revisable given evidence
+    mutable Work: int
+    // the span the exhaustion diagnostic anchors on — the innermost
+    // unification site's, kept current by bind (resolve has no span)
+    mutable WorkSpan: Span
+    // the innermost bind's operands, for the evidence probe: at
+    // exhaustion these are the types whose size is or is not the cause
+    mutable WorkTys: Ty * Ty
+    // point-free print uses (Seq.iter print) defer their sentinel to
+    // the statement boundary like splices do [D:splice-default-last]:
+    // a use-site-determined type passes printArgTy there, an
+    // undetermined one keeps the string default (PLAN-dx-review D7)
+    mutable PendingPrints: (string * Span) list
+    // physical positions of bare holes whose var took the string
+    // default this statement (PLAN-dx-review D6) — ride the let's
+    // scheme so a later call-site mismatch can name the anchor
+    mutable HoleDefaulted: (int * int) list
+    // `+` over two unknowns, deferred [D:plus-defer]: retries keyed
+    // by the vars that can decide them; the open set (by creation
+    // order: span + operand/result types) is stranded at the boundary
+    mutable Adds: Map<string, (int * (unit -> Result<unit, TypeError>)) list>
+    mutable AddsOpen: Map<int, Span * Ty list>
+    // block-level recovery [D:block-recovery]: Some = a failed block
+    // element becomes a hole (recorded here with its span) and the
+    // block continues; None = the failure propagates, as every
+    // reporting consumer needs
+    mutable Recovered: (TypeError * Span) list option
+}
 
 // exhaustion carries whether type size is actually in evidence — the
 // message must not claim "your type grew too large" merely because the
@@ -613,23 +622,25 @@ exception private BudgetExceeded of Span * sizeEvidenced: bool
 let private workBudget = 5_000_000
 let private sizeEvidenceFloor = 50_000
 
-let private newCtx () =
-    { Fresh = 0
-      Subst = Map.empty
-      Rows = Map.empty
-      RowOrigins = Map.empty
-      Cons = Map.empty
-      PendingSplices = []
-      Work = 0
-      WorkSpan =
-        { Start = { Line = 1; Col = 1 }
-          End = { Line = 1; Col = 1 } }
-      WorkTys = TUnit, TUnit
-      PendingPrints = []
-      HoleDefaulted = []
-      Adds = Map.empty
-      AddsOpen = Map.empty
-      Recovered = None }
+let private newCtx () = {
+    Fresh = 0
+    Subst = Map.empty
+    Rows = Map.empty
+    RowOrigins = Map.empty
+    Cons = Map.empty
+    PendingSplices = []
+    Work = 0
+    WorkSpan = {
+        Start = { Line = 1; Col = 1 }
+        End = { Line = 1; Col = 1 }
+    }
+    WorkTys = TUnit, TUnit
+    PendingPrints = []
+    HoleDefaulted = []
+    Adds = Map.empty
+    AddsOpen = Map.empty
+    Recovered = None
+}
 
 let private freshName (ctx: Ctx) (prefix: string) : string =
     ctx.Fresh <- ctx.Fresh + 1
@@ -1018,10 +1029,10 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                 let ps =
                     clss
                     |> Set.toList
-                    |> List.map (fun cls ->
-                        { Cls = cls
-                          Span = span
-                          Describe =
+                    |> List.map (fun cls -> {
+                        Cls = cls
+                        Span = span
+                        Describe =
                             match cls with
                             | Cls.Eq ->
                                 fun env t ->
@@ -1047,7 +1058,8 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                                     let off = ordOffender env Set.empty t |> Option.defaultValue t
                                     $"cannot sort by this key: {formatTy t} cannot be ordered — {ordTail env true off}"
                             | Cls.Cmp -> cmpDescribe None
-                            | Cls.Render -> fun _ t -> holeDescribe t })
+                            | Cls.Render -> fun _ t -> holeDescribe t
+                    })
 
                 ctx.Cons <- Map.add v' (ps @ (Map.tryFind v' ctx.Cons |> Option.defaultValue [])) ctx.Cons
             | None -> ()
@@ -1137,7 +1149,8 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p0: Pending) (ty0: Ty) : Result<un
             | Cls.Eq, TNamed(("Op" | "Plan"), _) -> true
             | Cls.Eq, TNamed(n, targs) -> decompose n targs
             // Show: no function anywhere; seqs render fine
-            | Cls.Show, (TInt | TFloat | TStr | TBool | TUnit | TDur | TSize | TInstant | TUuid | TBytes | TSecret) -> true
+            | Cls.Show, (TInt | TFloat | TStr | TBool | TUnit | TDur | TSize | TInstant | TUuid | TBytes | TSecret) ->
+                true
             | Cls.Show, TFun _ -> false
             | Cls.Show, TSeq elem -> ok seen elem
             | Cls.Show, TTuple ts -> ts |> List.forall (ok seen)
@@ -1240,9 +1253,11 @@ let private spliceAdmit (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (span: Span
             demand
                 ctx
                 env
-                { Cls = Cls.Render
-                  Span = span
-                  Describe = fun _ t -> holeDescribe t }
+                {
+                    Cls = Cls.Render
+                    Span = span
+                    Describe = fun _ t -> holeDescribe t
+                }
                 ty
         | CmdArg ->
             match ty with
@@ -1295,8 +1310,7 @@ let rec private bind (ctx: Ctx) (env: TypeEnv) (span: Span) (expected: Ty) (actu
         else
             ctx.Subst <- Map.add v t ctx.Subst
 
-            dischargeCons ctx env v t
-            |> Result.bind (fun () -> dischargeAdds ctx v)
+            dischargeCons ctx env v t |> Result.bind (fun () -> dischargeAdds ctx v)
     | TNamed(n1, a1), TNamed(n2, a2) when n1 = n2 && List.length a1 = List.length a2 ->
         allOk (List.zip a1 a2) (fun (x, y) -> bind ctx env span x y)
     | TRowVar(r, _), TNamed(n, targs)
@@ -1340,15 +1354,17 @@ and private dischargeRow
                 | Some(_, ol, oc, len), Some tr ->
                     let ml, mc = tr fspan.Start.Col
 
-                    Error
-                        { Span = fspan
-                          Message = $"{baseMsg} (the value becomes a {name} at {ml}:{mc})"
-                          Origin = Some(ol, oc, len) }
+                    Error {
+                        Span = fspan
+                        Message = $"{baseMsg} (the value becomes a {name} at {ml}:{mc})"
+                        Origin = Some(ol, oc, len)
+                    }
                 | _ ->
-                    Error
-                        { Span = fspan
-                          Message = baseMsg
-                          Origin = None }
+                    Error {
+                        Span = fspan
+                        Message = baseMsg
+                        Origin = None
+                    }
 
             allOk constraints (fun (field, (ft, fspan)) ->
                 match def.Fields |> List.tryFind (fun (f, _) -> f = field) with
@@ -1412,12 +1428,13 @@ and private mergeRows (ctx: Ctx) (env: TypeEnv) (r1: string) (r2: string) : Resu
 // checker complexity (the sentinel + printArgTy + the three
 // special-cased arms) — justified for the most-used builtin; do not
 // extend it to a second builtin without an explicit ruling.
-let printScheme: Scheme =
-    { Forall = Set.singleton "__print"
-      Cs = Map.empty
-      Ty = TFun(TVar "__print", TUnit)
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let printScheme: Scheme = {
+    Forall = Set.singleton "__print"
+    Cs = Map.empty
+    Ty = TFun(TVar "__print", TUnit)
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
 let private isPrintFamily (env: TypeEnv) (name: string) =
     // "|print" is the arming desugar's un-typeable alias
@@ -1430,30 +1447,33 @@ let private isPrintFamily (env: TypeEnv) (name: string) =
 // lossy) [D:inferred-type-classes]: an ordinary constrained scheme
 // on the normal instantiate/apply path; showable = no function
 // anywhere, recursively (seqs render fine — Show is wider than Eq).
-let showScheme: Scheme =
-    { Forall = Set.singleton "a"
-      Cs = Map [ "a", Set [ Cls.Show ] ]
-      Ty = TFun(TVar "a", TStr)
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let showScheme: Scheme = {
+    Forall = Set.singleton "a"
+    Cs = Map [ "a", Set [ Cls.Show ] ]
+    Ty = TFun(TVar "a", TStr)
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
 // Seq.contains — an ordinary constrained scheme
 // `Eq a => a -> seq<a> -> bool` [D:inferred-type-classes], served by
 // the normal instantiate/apply path.
-let containsScheme: Scheme =
-    { Forall = Set.singleton "a"
-      Cs = Map [ "a", Set [ Cls.Eq ] ]
-      Ty = TFun(TVar "a", TFun(TSeq(TVar "a"), TBool))
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let containsScheme: Scheme = {
+    Forall = Set.singleton "a"
+    Cs = Map [ "a", Set [ Cls.Eq ] ]
+    Ty = TFun(TVar "a", TFun(TSeq(TVar "a"), TBool))
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
 // Seq.distinct : Eq a => seq<a> -> seq<a> [D:seq-distinct]
-let distinctScheme: Scheme =
-    { Forall = Set.singleton "a"
-      Cs = Map [ "a", Set [ Cls.Eq ] ]
-      Ty = TFun(TSeq(TVar "a"), TSeq(TVar "a"))
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let distinctScheme: Scheme = {
+    Forall = Set.singleton "a"
+    Cs = Map [ "a", Set [ Cls.Eq ] ]
+    Ty = TFun(TSeq(TVar "a"), TSeq(TVar "a"))
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
 
 // the sequenced-unit message, one home for its two arms — the infer
@@ -1471,7 +1491,9 @@ let captureDropHint (e: Expr) : string =
 
     match e.Kind with
     | ECapture { Kind = ECmd(_, _, Some env) }
-    | ECapture { Kind = EPipe(_, { Kind = ECmd(_, _, Some env) }) } ->
+    | ECapture {
+                   Kind = EPipe(_, { Kind = ECmd(_, _, Some env) })
+               } ->
         $", or run it as a command under the overlay: `within env {envName (Some env)}` with the bare command indented below"
     | ECapture { Kind = ECmd _ }
     | ECapture { Kind = EPipe(_, { Kind = ECmd _ }) } -> ", or drop the $( ) to run it as a command"
@@ -1535,24 +1557,27 @@ let execInAlwaysMessage (inCleanup: bool) (helper: string option) : string =
 let private execInScope (kind: WithinKindId) (body: Expr) : Result<unit, TypeError> =
     match execScopeLoss kind, execSite body with
     | Some what, Some sp ->
-        Error
-            { Message = execInScopeMessage kind what None
-              Span = sp
-              Origin = None }
+        Error {
+            Message = execInScopeMessage kind what None
+            Span = sp
+            Origin = None
+        }
     | _ -> Ok()
 
 let private execInAlways (body: Expr) (cleanup: Expr) : Result<unit, TypeError> =
     match execSite body, execSite cleanup with
     | Some sp, _ ->
-        Error
-            { Message = execInAlwaysMessage false None
-              Span = sp
-              Origin = None }
+        Error {
+            Message = execInAlwaysMessage false None
+            Span = sp
+            Origin = None
+        }
     | None, Some sp ->
-        Error
-            { Message = execInAlwaysMessage true None
-              Span = sp
-              Origin = None }
+        Error {
+            Message = execInAlwaysMessage true None
+            Span = sp
+            Origin = None
+        }
     | None, None -> Ok()
 
 // a diverging tail [D:fail-bottom]: every path out of the expression
@@ -1676,20 +1701,26 @@ let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<
 let private opValueLambda (op: string) (sp: Span) : Expr =
     let v n = { Kind = EVar n; Span = sp }
 
-    { Kind =
-        ELambda(
-            "|opL",
-            sp,
-            { Kind =
-                ELambda(
-                    "|opR",
-                    sp,
-                    { Kind = EBinOp(op, v "|opL", v "|opR")
-                      Span = sp }
-                )
-              Span = sp }
-        )
-      Span = sp }
+    {
+        Kind =
+            ELambda(
+                "|opL",
+                sp,
+                {
+                    Kind =
+                        ELambda(
+                            "|opR",
+                            sp,
+                            {
+                                Kind = EBinOp(op, v "|opL", v "|opR")
+                                Span = sp
+                            }
+                        )
+                    Span = sp
+                }
+            )
+        Span = sp
+    }
 
 let rec private typeBinOp
     (ctx: Ctx)
@@ -1752,10 +1783,10 @@ let rec private typeBinOp
         // constraint rides the var) instead of rejecting at the operator
         bind ctx env opSpan a b
         |> Result.bind (fun () ->
-            let p =
-                { Cls = Cls.Eq
-                  Span = opSpan
-                  Describe =
+            let p = {
+                Cls = Cls.Eq
+                Span = opSpan
+                Describe =
                     fun _ t ->
                         if tyHasFloat t then
                             floatEqTeaching
@@ -1764,7 +1795,8 @@ let rec private typeBinOp
                         elif (opaqueNominal t).IsSome then
                             $"'{op}' is not defined for {formatTy t}; an opaque value cannot be compared"
                         else
-                            $"'{op}' is not defined for {formatTy t}; sequences and functions cannot be compared" }
+                            $"'{op}' is not defined for {formatTy t}; sequences and functions cannot be compared"
+            }
 
             demand ctx env p a |> Result.map (fun () -> TBool))
     // `+` on two unknowns DEFERS [D:plus-defer]: int, float, string,
@@ -1889,10 +1921,11 @@ let rec private typeBinOp
     | (">" | "<" | ">=" | "<="), TVar _, (TNamed("Option", [ _ ]) as a) ->
         bind ctx env r.Span (resolve ctx l.Ty) (resolve ctx r.Ty)
         |> Result.bind (fun () ->
-            let p =
-                { Cls = Cls.Cmp
-                  Span = opSpan
-                  Describe = cmpDescribe (Some op) }
+            let p = {
+                Cls = Cls.Cmp
+                Span = opSpan
+                Describe = cmpDescribe (Some op)
+            }
 
             demand ctx env p a)
         |> Result.map (fun () -> TBool)
@@ -1980,14 +2013,18 @@ let private codecsOf (ty: Ty) : Codec list =
 let private codecAttrs (cs: Codec list) : string =
     match cs |> List.map (fun c -> $"[<{codecName c}>]") with
     | [ one ] -> one
-    | many -> (many |> List.take (many.Length - 1) |> String.concat ", ") + " or " + List.last many
+    | many ->
+        (many |> List.take (many.Length - 1) |> String.concat ", ")
+        + " or "
+        + List.last many
 
 // an uncoded field whose type needs one: the refusal names the
 // attributes first [D:wire-codecs] — at a field, where one can attach
 let private uncodedFieldTeach (fmt: string) (fty: Ty) : string option =
     match wireStance (codecTarget fty) with
     | Encoded(cs, subject, repair) ->
-        Some $"{subject} is not representable in {fmt} on its own — declare the field's encoding ({codecAttrs cs}), or {repair}"
+        Some
+            $"{subject} is not representable in {fmt} on its own — declare the field's encoding ({codecAttrs cs}), or {repair}"
     | _ -> None
 
 // a generic value at a write boundary: serialization is resolved at
@@ -2033,7 +2070,15 @@ let private wireMono (ctx: Ctx) (env: TypeEnv) (ty: Ty) : Ty * TypeEnv =
                         def.Fields
                         |> List.map (fun (f, fty) -> f, go (depth + 1) (substParams def.Params args fty))
 
-                    types <- Map.add key (Record { def with Params = []; Fields = fields }) types
+                    types <-
+                        Map.add
+                            key
+                            (Record {
+                                def with
+                                    Params = []
+                                    Fields = fields
+                            })
+                            types
 
                 TNamed(key, [])
             | _ -> t'
@@ -2073,21 +2118,23 @@ let private mapKeyEq (env: TypeEnv) (span: Span) (k: Ty) : Result<unit, TypeErro
     demand
         (newCtx ())
         env
-        { Cls = Cls.Eq
-          Span = span
-          Describe =
-            fun env t ->
-                let why =
-                    if t = TFloat then
-                        "floats cannot be compared with '==' (0.1 + 0.2 is not 0.3)"
-                    elif tyHasFloat t || floatInsideNamed env t then
-                        "it holds a float, and floats cannot be compared with '==' (0.1 + 0.2 is not 0.3)"
-                    elif (opaqueNominal t).IsSome then
-                        "an opaque value cannot be compared"
-                    else
-                        "sequences, functions and Maps cannot be compared"
+        {
+            Cls = Cls.Eq
+            Span = span
+            Describe =
+                fun env t ->
+                    let why =
+                        if t = TFloat then
+                            "floats cannot be compared with '==' (0.1 + 0.2 is not 0.3)"
+                        elif tyHasFloat t || floatInsideNamed env t then
+                            "it holds a float, and floats cannot be compared with '==' (0.1 + 0.2 is not 0.3)"
+                        elif (opaqueNominal t).IsSome then
+                            "an opaque value cannot be compared"
+                        else
+                            "sequences, functions and Maps cannot be compared"
 
-                $"a Map key needs equality, and {formatTy t} has none — {why}; key by an equatable form instead (a string, an int, a tuple of those)" }
+                    $"a Map key needs equality, and {formatTy t} has none — {why}; key by an equatable form instead (a string, an int, a tuple of those)"
+        }
         k
 
 let private jsonAdmittedSet =
@@ -2169,8 +2216,7 @@ let rec private jsonAdmitted
     | ty when tyVars ty |> Set.exists (fun v -> v.StartsWith "__hole") -> Ok()
     | TVar v when not reading && not (v.StartsWith "__hole") -> err span (at + genericWireTeach "json" ty)
     // a generic record left uninstantiated [D:wire-generics]
-    | TNamed(_, _ :: _) when not reading && not (Set.isEmpty (tyVars ty)) ->
-        err span (at + genericWireTeach "json" ty)
+    | TNamed(_, _ :: _) when not reading && not (Set.isEmpty (tyVars ty)) -> err span (at + genericWireTeach "json" ty)
     | ty -> err span $"{at}type {formatTy ty} is not admitted; {jsonAdmittedSet}"
 
 // one field's admission, for the record walk and the top-level record
@@ -2203,7 +2249,13 @@ let private xmlAdmittedSet =
 
 // [<Attr>] reads an attribute's text and [<Elem>] names a repeated child;
 // each only fits certain field types, checked where the def is in hand
-let private xmlFieldOk (span: Span) (def: RecordDef) (name: string) (fty: Ty) (fpath: string) : Result<unit, TypeError> =
+let private xmlFieldOk
+    (span: Span)
+    (def: RecordDef)
+    (name: string)
+    (fty: Ty)
+    (fpath: string)
+    : Result<unit, TypeError> =
     let isAttr = (xmlAttr def name).IsSome
 
     let hasElem =
@@ -2222,7 +2274,10 @@ let private xmlFieldOk (span: Span) (def: RecordDef) (name: string) (fty: Ty) (f
     elif hasElem then
         match fty with
         | TSeq _ -> Ok()
-        | _ -> err span $"field '{fpath}': [<Elem>] names a repeated child element — the field must be a seq, not {formatTy fty}"
+        | _ ->
+            err
+                span
+                $"field '{fpath}': [<Elem>] names a repeated child element — the field must be a seq, not {formatTy fty}"
     else
         Ok()
 
@@ -2251,7 +2306,11 @@ let rec private xmlAdmitted
     | TSeq elem ->
         match elem with
         | TStr -> Ok()
-        | TNamed(n, []) when (match typeDefFor env n with Some(Record _) -> true | _ -> false) ->
+        | TNamed(n, []) when
+            (match typeDefFor env n with
+             | Some(Record _) -> true
+             | _ -> false)
+            ->
             xmlAdmitted span env seen path elem
         | _ -> err span $"{at}an XML seq holds strings or records; got seq<{formatTy elem}>"
     | TNamed(n, []) when seen |> List.contains n ->
@@ -2268,8 +2327,7 @@ let rec private xmlAdmitted
                 xmlFieldOk span def fn fty fpath
                 |> Result.bind (fun () -> xmlAdmitted span env (n :: seen) fpath fty))
         | Some(Record _) -> err span $"{at}'{n}' is generic; the XML boundary needs monomorphic records"
-        | Some(Union _) ->
-            err span $"{at}'{n}' is a union — XML has no tagged-union reading; {xmlAdmittedSet}"
+        | Some(Union _) -> err span $"{at}'{n}' is a union — XML has no tagged-union reading; {xmlAdmittedSet}"
         | None when List.contains n deflessBuiltinNominals ->
             err span $"{at}{n} is an opaque value with no XML form — encode the fields you need into a record"
         | None -> err span $"{at}{unknownTypeMsg env n}"
@@ -2317,6 +2375,7 @@ let rec wireRenamesOf (env: TypeEnv) (ty: Ty) : Map<string, Map<string, string>>
     |> Map.toList
     |> List.choose (fun (_, def) ->
         let n = def.Name
+
         let renamed =
             def.Fields
             |> List.choose (fun (f, _) ->
@@ -2335,9 +2394,13 @@ and wireCodecsOf (env: TypeEnv) (ty: Ty) : Map<string, Map<string, Codec>> =
     |> Map.toList
     |> List.choose (fun (_, def) ->
         let coded =
-            def.Fields |> List.choose (fun (f, _) -> fieldCodec def f |> Option.map (fun c -> f, c))
+            def.Fields
+            |> List.choose (fun (f, _) -> fieldCodec def f |> Option.map (fun c -> f, c))
 
-        if coded.IsEmpty then None else Some(def.Name, Map.ofList coded))
+        if coded.IsEmpty then
+            None
+        else
+            Some(def.Name, Map.ofList coded))
     |> Map.ofList
 
 and private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty) : Map<string, RecordDef> =
@@ -2396,11 +2459,7 @@ let rec private jsonUnionsClosure (env: TypeEnv) (acc: Map<string, UnionDef>) (t
 // reaches — a VUnion value carries no type name, so cases key the
 // table, and two reachable unions sharing a case name refuse here
 // (declarable under [D:ambiguous-ctor], unwritable in one closure)
-let private unionWriteTable
-    (span: Span)
-    (env: TypeEnv)
-    (ty: Ty)
-    : Result<Map<string, WireCase>, TypeError> =
+let private unionWriteTable (span: Span) (env: TypeEnv) (ty: Ty) : Result<Map<string, WireCase>, TypeError> =
     let udefs = jsonUnionsClosure env Map.empty ty
 
     // keyed by the env key: two imports' same-named unions are two
@@ -2469,7 +2528,9 @@ let rec private yamlShape
     // the field path, as yamlableOut threads it — both directions name
     // the offending field [D:wire-table]
     let at = if path = "" then "" else $"field '{path}': "
-    let sub (name: string) = if path = "" then name else $"{path}.{name}"
+
+    let sub (name: string) =
+        if path = "" then name else $"{path}.{name}"
 
     match ty with
     | WireCanonical shape -> Ok shape
@@ -2480,7 +2541,8 @@ let rec private yamlShape
     // the opaque `Yaml` node reads structure whole [D:yaml-empty-flow] —
     // the read sibling of yamlableOut's `Yaml`-renders-directly case
     | TNamed("Yaml", []) -> Ok Yaml.SNode
-    | TNamed("Option", [ TNamed("Option", _) ]) -> err span $"{at}Option<Option<…>> has no yaml reading; flatten the type"
+    | TNamed("Option", [ TNamed("Option", _) ]) ->
+        err span $"{at}Option<Option<…>> has no yaml reading; flatten the type"
     | TNamed("Option", [ inner ]) -> yamlShape span env seen path inner |> Result.map Yaml.SOpt
     | TSeq(TTuple [ TStr; v ]) -> yamlShape span env seen path v |> Result.map Yaml.SPairs
     | TSeq elem -> yamlShape span env seen path elem |> Result.map Yaml.SSeq
@@ -2555,10 +2617,18 @@ let rec private yamlShape
         // an earlier error was already reported — never print its name
         Ok Yaml.SStr
     | ty ->
-        err span $"{at}type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option)"
+        err
+            span
+            $"{at}type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option)"
 
 // the to-side: the same law, plus `Yaml` nodes render directly
-let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (path: string) (ty: Ty) : Result<unit, TypeError> =
+let rec private yamlableOut
+    (span: Span)
+    (env: TypeEnv)
+    (seen: Set<string>)
+    (path: string)
+    (ty: Ty)
+    : Result<unit, TypeError> =
     // path threads the field name so a function (or any un-yamlable type)
     // nested in a record/union is named, matching the JSON law
     // [D:function-types] — the two boundaries admit different sets, but
@@ -2569,7 +2639,8 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
     | WireCanonical _ -> Ok()
     | WireRefused teach -> err span (at + teach "yaml")
     | TNamed("Yaml", []) -> Ok()
-    | TNamed("Option", [ TNamed("Option", _) ]) -> err span $"{at}Option<Option<…>> has no yaml rendering; flatten the type"
+    | TNamed("Option", [ TNamed("Option", _) ]) ->
+        err span $"{at}Option<Option<…>> has no yaml rendering; flatten the type"
     | TNamed("Option", [ inner ]) -> yamlableOut span env seen path inner
     | TSeq(TTuple [ TStr; v ]) -> yamlableOut span env seen path v
     | TSeq elem -> yamlableOut span env seen path elem
@@ -2660,7 +2731,8 @@ let regexGuarded (pat: string) (input: string) (f: unit -> 'a) : 'a =
     try
         f ()
     with :? System.Text.RegularExpressions.RegexMatchTimeoutException ->
-        let ran = $"regex timeout: matching @\"{Types.excerpt pat}\" ran past {int regexTimeout.TotalSeconds}s"
+        let ran =
+            $"regex timeout: matching @\"{Types.excerpt pat}\" ran past {int regexTimeout.TotalSeconds}s"
 
         if input.Length >= regexLargeInput then
             failwith
@@ -2674,12 +2746,10 @@ let private namedGroupMsg (opener: string) =
 
 // the first unescaped `(?P<name>` opener, if any
 let private pythonNamedGroup (pat: string) : string option =
-    let m = System.Text.RegularExpressions.Regex.Match(pat, @"(?<!\\)(?:\\\\)*\(\?P<([A-Za-z_][A-Za-z0-9_]*)>")
+    let m =
+        System.Text.RegularExpressions.Regex.Match(pat, @"(?<!\\)(?:\\\\)*\(\?P<([A-Za-z_][A-Za-z0-9_]*)>")
 
-    if m.Success then
-        Some $"(?P<{m.Groups[1].Value}>"
-    else
-        None
+    if m.Success then Some $"(?P<{m.Groups[1].Value}>" else None
 
 let compileRegex (pat: string) : Result<System.Text.RegularExpressions.Regex, string> =
     match regexCache.TryGetValue pat with
@@ -2687,7 +2757,11 @@ let compileRegex (pat: string) : Result<System.Text.RegularExpressions.Regex, st
     | _ ->
         try
             let rx =
-                System.Text.RegularExpressions.Regex(pat, System.Text.RegularExpressions.RegexOptions.None, regexTimeout)
+                System.Text.RegularExpressions.Regex(
+                    pat,
+                    System.Text.RegularExpressions.RegexOptions.None,
+                    regexTimeout
+                )
 
             // the user's pattern validated above; the engine runs its
             // code-point form [D:regex-code-points]
@@ -2800,7 +2874,8 @@ let checkBinderName (span: Span) (name: string) : Result<unit, TypeError> =
 // [D:transitive-types] [D:qualified-type-names]
 let private isImportedType (env: TypeEnv) (key: string) : bool =
     Map.containsKey key env.TypeOrigins
-    || env.ModuleTypes |> Map.exists (fun _ owned -> owned |> Map.exists (fun _ k -> k = key))
+    || env.ModuleTypes
+       |> Map.exists (fun _ owned -> owned |> Map.exists (fun _ k -> k = key))
 
 let private fieldSetKey (names: Set<string>) : string =
     let sb = System.Text.StringBuilder()
@@ -2926,8 +3001,7 @@ let fieldHint (env: TypeEnv) (name: string) : (string * bool) option =
 
 /// constructor is already overwritten; ownership must be asked of the
 /// type table, not the value table.
-let rec ctorOwners (env: TypeEnv) (name: string) : string list =
-    preferLocal (ctorOwnersAll env name)
+let rec ctorOwners (env: TypeEnv) (name: string) : string list = preferLocal (ctorOwnersAll env name)
 
 // a script's own case shadows a prelude case of the same name
 // [D:try-form] — the import rule: a local declaration takes
@@ -2987,7 +3061,8 @@ let private typeSpelling (env: TypeEnv) (ty: Ty) : string =
         env.ModuleTypes
         |> Map.toList
         |> List.tryPick (fun (alias, owned) ->
-            owned |> Map.tryPick (fun name k -> if k = key then Some(alias + "." + name) else None))
+            owned
+            |> Map.tryPick (fun name k -> if k = key then Some(alias + "." + name) else None))
         |> Option.defaultValue (formatTy ty)
     | ty -> formatTy ty
 
@@ -3006,19 +3081,27 @@ let private qualifiedCaseOwners (env: TypeEnv) (m: string) (ctor: string) : Resu
                 | _ -> None)
             |> List.ofSeq
 
-        match unions |> List.filter (fun (_, u) -> u.Cases |> List.exists (fun (c, _) -> c = ctor)) with
+        match
+            unions
+            |> List.filter (fun (_, u) -> u.Cases |> List.exists (fun (c, _) -> c = ctor))
+        with
         | [] ->
             let cases = unions |> List.collect (fun (_, u) -> List.map fst u.Cases)
             Error $"module '{m}' declares no case '{ctor}'{didYouMean ctor cases}"
         | hits -> Ok(hits |> List.map fst |> List.sort)
     | None when Map.containsKey m env.Modules -> Error $"module '{m}' declares no case '{ctor}'"
     | None when Map.containsKey m env.Types ->
-        Error $"'{m}' is a type, not a module — a case is qualified by its import's name; a case of a union declared here is written bare: '{ctor}'"
+        Error
+            $"'{m}' is a type, not a module — a case is qualified by its import's name; a case of a union declared here is written bare: '{ctor}'"
     | None -> Error(noModuleMsg env m)
 
 // a qualified case whose union is not the value's type
 let private wrongQualifierMsg (env: TypeEnv) (m: string) (ctor: string) (owners: string list) (ty: Ty) : string =
-    let named = owners |> List.map (fun o -> typeSpelling env (TNamed(o, []))) |> String.concat "/"
+    let named =
+        owners
+        |> List.map (fun o -> typeSpelling env (TNamed(o, [])))
+        |> String.concat "/"
+
     $"'{m}.{ctor}' is a case of {named}, but this value has type {typeSpelling env ty}"
 
 // a bare case two imports declare, with nothing typing the value: the
@@ -3461,7 +3544,10 @@ let rec private binderShapeAt
                         do! bind ctx env ap.PSpan payloadTy t
                         return ty, binds
                     }
-                | Some payload, None -> err p.PSpan $"'{ctor}' carries {formatTy (substParams u.Params targs payload)}; add a pattern for it"
+                | Some payload, None ->
+                    err
+                        p.PSpan
+                        $"'{ctor}' carries {formatTy (substParams u.Params targs payload)}; add a pattern for it"
             | _ -> err p.PSpan "this pattern can fail; use match"
         | Ok(_ :: _ :: _ as owners) when qual.IsNone && (ctorOwners env ctor).IsEmpty ->
             err p.PSpan (ambiguousCaseMsg env ctor owners)
@@ -3507,12 +3593,14 @@ let private rowOriginsFor (ctx: Ctx) (vars: Set<string>) : Map<string, (string *
                 let prior = Map.tryFind v ctx.RowOrigins |> Option.defaultValue []
 
                 v,
-                [ for KeyValue(field, (_, fspan)) in fields ->
-                      match prior |> List.tryFind (fun (f, _, _, _) -> f = field) with
-                      | Some o -> o
-                      | None ->
-                          let pl, pc = tr fspan.Start.Col
-                          field, pl, pc, fspan.End.Col - fspan.Start.Col ]))
+                [
+                    for KeyValue(field, (_, fspan)) in fields ->
+                        match prior |> List.tryFind (fun (f, _, _, _) -> f = field) with
+                        | Some o -> o
+                        | None ->
+                            let pl, pc = tr fspan.Start.Col
+                            field, pl, pc, fspan.End.Col - fspan.Start.Col
+                ]))
         |> Map.ofList
 
 // The scheme-scooping rule, one implementation: free vars beyond the
@@ -3535,11 +3623,13 @@ let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
     // scooped constraints move into the scheme
     ctx.Cons <- cs |> Map.fold (fun m v _ -> Map.remove v m) ctx.Cons
 
-    { Forall = fa
-      Cs = cs
-      Ty = valueTy
-      RowOrigins = origins
-      HoleDefaults = [] }
+    {
+        Forall = fa
+        Cs = cs
+        Ty = valueTy
+        RowOrigins = origins
+        HoleDefaults = []
+    }
 
 // per-name generalization for destructuring binders: each bound name's
 // type generalizes independently against the env (constraints scooped
@@ -3698,11 +3788,12 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
             // so anything reaching here still owes the catch-all
             | Some(Record _) -> [ "_" ]
             | _ -> []
-        | TBool ->
-            [ if not (pats |> List.exists (fun p -> p.PKind = PBool true)) then
-                  "true"
-              if not (pats |> List.exists (fun p -> p.PKind = PBool false)) then
-                  "false" ]
+        | TBool -> [
+            if not (pats |> List.exists (fun p -> p.PKind = PBool true)) then
+                "true"
+            if not (pats |> List.exists (fun p -> p.PKind = PBool false)) then
+                "false"
+          ]
         | TInt
         | TStr ->
             // literal patterns never complete a match alone (F#'s
@@ -3757,18 +3848,20 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
                 |> List.tryHead
 
             match shortest with
-            | Some k when not consCovered && k > 1 ->
-                [ for n in 0 .. k - 1 do
-                      if not (fixedLens.Contains n) then
-                          if n = 0 then
-                              "[]"
-                          else
-                              "[" + String.concat "; " (List.replicate n "_") + "]" ]
-            | _ ->
-                [ if not nilCovered then
-                      "[]"
-                  if not consCovered then
-                      "_ :: _" ]
+            | Some k when not consCovered && k > 1 -> [
+                for n in 0 .. k - 1 do
+                    if not (fixedLens.Contains n) then
+                        if n = 0 then
+                            "[]"
+                        else
+                            "[" + String.concat "; " (List.replicate n "_") + "]"
+              ]
+            | _ -> [
+                if not nilCovered then
+                    "[]"
+                if not consCovered then
+                    "_ :: _"
+              ]
         // every arm here is refutable (the guard above returned
         // otherwise); a payload the checker could not resolve (a type
         // variable) or any other unanalysed type owes the catch-all
@@ -3880,10 +3973,11 @@ let private lambdaCore
     result {
         let! tbody = typeBody (bindParams env binds)
 
-        return
-            { Kind = mkKind tbody
-              Ty = TFun(dom, tbody.Ty)
-              Span = span }
+        return {
+            Kind = mkKind tbody
+            Ty = TFun(dom, tbody.Ty)
+            Span = span
+        }
     }
 
 /// the union types declaring a case of this name [D:ambiguous-ctor] —
@@ -3933,7 +4027,8 @@ let private validatedModuleCase (env: TypeEnv) (m: string) (case: string) : stri
         |> Map.toList
         |> List.tryPick (fun (declared, key) ->
             match typeDefFor env key with
-            | Some(Union u) when u.Validated.IsSome && u.Cases |> List.exists (fun (c, _) -> c = case) -> Some declared
+            | Some(Union u) when u.Validated.IsSome && u.Cases |> List.exists (fun (c, _) -> c = case) ->
+                Some declared
             | _ -> None))
 
 /// a flat boundary's view of a record [D:validated-types]: Args.load and
@@ -3981,13 +4076,16 @@ let validatedFieldsFlat (env: TypeEnv) (def: RecordDef) : RecordDef =
             // refuses it (validatedOptionalPayload)
             | _, (TNamed("Option", [ _ ]), _, _) -> d
             | TNamed(n, []), (payloadBase, (_ :: _ as ids), _) ->
-                let marks =
-                    [ validatedAttr, Some(AStr(String.concat " " ids))
-                      validatedNameAttr, Some(AStr n) ]
+                let marks = [
+                    validatedAttr, Some(AStr(String.concat " " ids))
+                    validatedNameAttr, Some(AStr n)
+                ]
 
-                { d with
-                    Fields = d.Fields |> List.map (fun (g, t) -> if g = f then g, wrap payloadBase else g, t)
-                    Attrs = Map.add f ((Map.tryFind f d.Attrs |> Option.defaultValue []) @ marks) d.Attrs }
+                {
+                    d with
+                        Fields = d.Fields |> List.map (fun (g, t) -> if g = f then g, wrap payloadBase else g, t)
+                        Attrs = Map.add f ((Map.tryFind f d.Attrs |> Option.defaultValue []) @ marks) d.Attrs
+                }
             | _ -> d)
         def
 
@@ -4000,10 +4098,11 @@ let validatedCtorMsg (shown: string) (typeSpelling: string) : string =
 let private createRef (env: TypeEnv) (span: Span) (written: string) : Result<TypedExpr, TypeError> =
     match validatedType env written with
     | Some(key, ({ Cases = [ (_, Some payload) ] } as u)) ->
-        Ok
-            { Kind = TEVar(createVarPrefix + u.Validated.Value)
-              Ty = TFun(payload, TNamed(key, []))
-              Span = span }
+        Ok {
+            Kind = TEVar(createVarPrefix + u.Validated.Value)
+            Ty = TFun(payload, TNamed(key, []))
+            Span = span
+        }
     | _ -> err span $"unreachable: '{written}' is no validated type"
 
 // block-level recovery [D:block-recovery]: in recovery mode a failed
@@ -4011,8 +4110,11 @@ let private createRef (env: TypeEnv) (span: Span) (written: string) : Result<Typ
 // position demands (unit in statement position, a fresh hole var as a
 // let value), so the enclosing block types on; outside recovery mode
 // the failure propagates unchanged
-let private holeNode (span: Span) (ty: Ty) : TypedExpr =
-    { Kind = TEHole span; Ty = ty; Span = span }
+let private holeNode (span: Span) (ty: Ty) : TypedExpr = {
+    Kind = TEHole span
+    Ty = ty
+    Span = span
+}
 
 let private holeVar (ctx: Ctx) : Ty = TVar(freshName ctx "__hole")
 
@@ -4034,12 +4136,13 @@ let private recoverAt
 // silent under the existing hole convention [PLAN-diagnostics-arc B6]
 let private holeScheme (ctx: Ctx) : Scheme =
     match holeVar ctx with
-    | TVar v as ty ->
-        { Forall = Set.singleton v
-          Cs = Map.empty
-          Ty = ty
-          RowOrigins = Map.empty
-          HoleDefaults = [] }
+    | TVar v as ty -> {
+        Forall = Set.singleton v
+        Cs = Map.empty
+        Ty = ty
+        RowOrigins = Map.empty
+        HoleDefaults = []
+      }
     | _ -> failwith "unreachable: holeVar is a var"
 
 let rec private patBinderNames (p: Pattern) : string list =
@@ -4073,10 +4176,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 else
                     TNamed("Option", [ tb.Ty ])
 
-            return
-                { Kind = TETry(tb, asResult)
-                  Ty = ty
-                  Span = expr.Span }
+            return {
+                Kind = TETry(tb, asResult)
+                Ty = ty
+                Span = expr.Span
+            }
         }
     // a command chain's `|> try` stage [D:try-form]: the form catches an
     // expression's raise, a command's failure is data through a reifier
@@ -4121,15 +4225,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         $"{shapes}, and the type of its left side is not known yet — use it where the value's type is fixed (a call's result, a matched value)"
                 | t -> err site $"{shapes}; this is {formatTy (finalTy ctx t)}"
 
-            let tsite =
-                { Kind = TEUnit
-                  Ty = TUnit
-                  Span = site }
+            let tsite = {
+                Kind = TEUnit
+                Ty = TUnit
+                Span = site
+            }
 
-            return
-                { Kind = TEOrFail(tb, tm, tsite)
-                  Ty = ty
-                  Span = expr.Span }
+            return {
+                Kind = TEOrFail(tb, tm, tsite)
+                Ty = ty
+                Span = expr.Span
+            }
         }
     // a command chain's `|> orFail` stage [D:orfail-form]: a failing
     // command already raises; the reifier adds the message
@@ -4142,25 +4248,29 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             expr.Span
             "'orFail' goes after a pipeline: `<expr> |> orFail` unwraps a Result or an Option and raises on Error/None (`|> orFail \"msg\"` adds your message); after a command, `<command> | orFail \"msg\"`"
     | EInt n ->
-        Ok
-            { Kind = TEInt n
-              Ty = TInt
-              Span = expr.Span }
+        Ok {
+            Kind = TEInt n
+            Ty = TInt
+            Span = expr.Span
+        }
     | EDur n ->
-        Ok
-            { Kind = TEDur n
-              Ty = TDur
-              Span = expr.Span }
+        Ok {
+            Kind = TEDur n
+            Ty = TDur
+            Span = expr.Span
+        }
     | EFloat f ->
-        Ok
-            { Kind = TEFloat f
-              Ty = TFloat
-              Span = expr.Span }
+        Ok {
+            Kind = TEFloat f
+            Ty = TFloat
+            Span = expr.Span
+        }
     | ESize b ->
-        Ok
-            { Kind = TESize b
-              Ty = TSize
-              Span = expr.Span }
+        Ok {
+            Kind = TESize b
+            Ty = TSize
+            Span = expr.Span
+        }
     | ERetry(kind, opts, watch, body, until) ->
         result {
             let famTy =
@@ -4183,7 +4293,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | Some w when kind = LoopRetry ->
                     err w.Span "watch= is poll's key (wait-for-ready); retry retries failures — run the wait under poll"
                 | Some w when kind = LoopRepeat ->
-                    err w.Span "watch= is poll's key (wait-for-ready); a repeat runs until it is stopped — check the process in the block (Proc.running)"
+                    err
+                        w.Span
+                        "watch= is poll's key (wait-for-ready); a repeat runs until it is stopped — check the process in the block (Proc.running)"
                 | _ -> Ok()
 
             // interval= is required [D:repeat]: the key=value head's base
@@ -4213,11 +4325,16 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         ups
                         |> List.tryPick (fun (path, v) ->
                             match path with
-                            | [ ("interval", _) ] -> literalMs v |> Option.filter (fun ms -> ms <= 0L) |> Option.map (fun ms -> v, ms)
+                            | [ ("interval", _) ] ->
+                                literalMs v
+                                |> Option.filter (fun ms -> ms <= 0L)
+                                |> Option.map (fun ms -> v, ms)
                             | _ -> None)
                     with
                     | Some(v, ms) ->
-                        err v.Span $"a repeat's interval must be positive, got {formatDuration ms} — it is the wait between iterations, and no wait is a busy loop"
+                        err
+                            v.Span
+                            $"a repeat's interval must be positive, got {formatDuration ms} — it is the wait between iterations, and no wait is a busy loop"
                     | None -> Ok()
                 | _ -> Ok()
 
@@ -4254,26 +4371,29 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                     let! tpred = check ctx env' pred TBool
 
-                    return
-                        { Kind = TERetry(kind, topts, twatch, tbody, Some((b, bs), tpred))
-                          Ty = bodyTy
-                          Span = expr.Span }
+                    return {
+                        Kind = TERetry(kind, topts, twatch, tbody, Some((b, bs), tpred))
+                        Ty = bodyTy
+                        Span = expr.Span
+                    }
             | None ->
                 match kind, resolve ctx tbody.Ty with
                 // a repeat's block is work: unit, or a bool that ends it
                 // like poll's predicate [D:repeat]
                 | LoopRepeat, TBool ->
-                    return
-                        { Kind = TERetry(kind, topts, twatch, tbody, None)
-                          Ty = TUnit
-                          Span = expr.Span }
+                    return {
+                        Kind = TERetry(kind, topts, twatch, tbody, None)
+                        Ty = TUnit
+                        Span = expr.Span
+                    }
                 | LoopRepeat, (TUnit | TVar _) ->
                     do! bind ctx env body.Span TUnit tbody.Ty
 
-                    return
-                        { Kind = TERetry(kind, topts, twatch, tbody, None)
-                          Ty = TUnit
-                          Span = expr.Span }
+                    return {
+                        Kind = TERetry(kind, topts, twatch, tbody, None)
+                        Ty = TUnit
+                        Span = expr.Span
+                    }
                 | LoopRepeat, bodyTy ->
                     return!
                         err
@@ -4283,10 +4403,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | _, TVar _ ->
                     do! bind ctx env body.Span TBool tbody.Ty
 
-                    return
-                        { Kind = TERetry(kind, topts, twatch, tbody, None)
-                          Ty = TUnit
-                          Span = expr.Span }
+                    return {
+                        Kind = TERetry(kind, topts, twatch, tbody, None)
+                        Ty = TUnit
+                        Span = expr.Span
+                    }
                 | _, bodyTy ->
                     return!
                         err
@@ -4294,20 +4415,23 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             $"{head} without an until segment needs a bool body (the body IS the predicate); this one yields {formatTy bodyTy} — add `until r` to bind the value, or end the body with a condition (cmd | succeeds)"
         }
     | EStr s ->
-        Ok
-            { Kind = TEStr s
-              Ty = TStr
-              Span = expr.Span }
+        Ok {
+            Kind = TEStr s
+            Ty = TStr
+            Span = expr.Span
+        }
     | EBool b ->
-        Ok
-            { Kind = TEBool b
-              Ty = TBool
-              Span = expr.Span }
+        Ok {
+            Kind = TEBool b
+            Ty = TBool
+            Span = expr.Span
+        }
     | EUnit ->
-        Ok
-            { Kind = TEUnit
-              Ty = TUnit
-              Span = expr.Span }
+        Ok {
+            Kind = TEUnit
+            Ty = TUnit
+            Span = expr.Span
+        }
     | ECapture inner ->
         // erased [D:district-retirement]: the marker exists for the
         // statement gate; typing sees straight through
@@ -4329,31 +4453,34 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             do!
                 match exitSite cleanup with
                 | Some sp ->
-                    Error
-                        { Message =
+                    Error {
+                        Message =
                             "exit inside always is refused — teardown of an unwinding scope must finish (the original error would become a code); fail \"msg\" carries a message instead"
-                          Span = sp
-                          Origin = None }
+                        Span = sp
+                        Origin = None
+                    }
                 | None -> Ok()
 
             do! execInAlways body cleanup
             let! tbody = infer ctx env body
             let! tcleanup = check ctx env cleanup TUnit
 
-            return
-                { Kind = TEAlways(tbody, tcleanup)
-                  Ty = tbody.Ty
-                  Span = expr.Span }
+            return {
+                Kind = TEAlways(tbody, tcleanup)
+                Ty = tbody.Ty
+                Span = expr.Span
+            }
         }
     | EHold body ->
         // the held scope's type is the body's [D:held-scope]
         result {
             let! tbody = infer ctx env body
 
-            return
-                { Kind = TEHold tbody
-                  Ty = tbody.Ty
-                  Span = expr.Span }
+            return {
+                Kind = TEHold tbody
+                Ty = tbody.Ty
+                Span = expr.Span
+            }
         }
     | EWithin(kind, binder, arg, opts, body) ->
         // the arg types are the kinds' contracts [D:within-scopes] and live
@@ -4377,10 +4504,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | WithinPlan -> TNamed("Plan", [])
                 | _ -> tbody.Ty
 
-            return
-                { Kind = TEWithin(kind, binder, targ, topts, tbody)
-                  Ty = scopeTy
-                  Span = expr.Span }
+            return {
+                Kind = TEWithin(kind, binder, targ, topts, tbody)
+                Ty = scopeTy
+                Span = expr.Span
+            }
         }
     | ESeq(first, rest) ->
         // a sequenced element is a statement — its block's command tail
@@ -4406,10 +4534,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
             let! trest = infer ctx env rest
 
-            return
-                { Kind = TESeq(tfirst, trest)
-                  Ty = trest.Ty
-                  Span = expr.Span }
+            return {
+                Kind = TESeq(tfirst, trest)
+                Ty = trest.Ty
+                Span = expr.Span
+            }
         }
     | EVar(("print" | "printerr" | "|print") as pname) when isPrintFamily env pname ->
         // Bare-value position (e.g. Seq.iter print): defer like a splice
@@ -4421,10 +4550,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
          | TFun(TVar v, _) -> ctx.PendingPrints <- (v, expr.Span) :: ctx.PendingPrints
          | _ -> ())
 
-        Ok
-            { Kind = TEVar pname
-              Ty = ty
-              Span = expr.Span }
+        Ok {
+            Kind = TEVar pname
+            Ty = ty
+            Span = expr.Span
+        }
     // a backslash argv word [D:argv-backslash]: weir has no line
     // continuation by `\` (indentation continues a command line) and no
     // escapes in argv
@@ -4461,10 +4591,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 ->
                 err expr.Span (validatedCtorMsg name owner)
             | _ ->
-                Ok
-                    { Kind = TEVar name
-                      Ty = instantiate ctx expr.Span sch
-                      Span = expr.Span }
+                Ok {
+                    Kind = TEVar name
+                    Ty = instantiate ctx expr.Span sch
+                    Span = expr.Span
+                }
         | None ->
             if Map.containsKey name env.Modules then
                 let members = env.Modules[name] |> Map.keys |> Seq.truncate 5 |> String.concat ", "
@@ -4489,7 +4620,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         match homes with
                         | _ when confident -> ""
                         | [] -> ""
-                        | hs -> "; or did you mean " + (hs |> List.map (fun h -> $"'{h}'") |> String.concat " or ") + "?"
+                        | hs ->
+                            "; or did you mean "
+                            + (hs |> List.map (fun h -> $"'{h}'") |> String.concat " or ")
+                            + "?"
 
                     err expr.Span $"unbound '{name}' — {hint}{alt}"
                 | None ->
@@ -4542,7 +4676,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                 || System.String.Equals(c, name, System.StringComparison.OrdinalIgnoreCase)
 
                             let hint =
-                                didYouMean name (Map.keys env.Values |> Seq.filter Types.isUserName |> Seq.filter sameCase)
+                                didYouMean
+                                    name
+                                    (Map.keys env.Values |> Seq.filter Types.isUserName |> Seq.filter sameCase)
 
                             err expr.Span $"unbound variable '{name}'{hint}"
     | ELet(name, nameSpan, value, body) ->
@@ -4558,16 +4694,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
             let scheme = generalizeLet ctx env valueTy
 
-            let! tbody =
-                infer
-                    ctx
-                    (bindValue name scheme env)
-                    body
+            let! tbody = infer ctx (bindValue name scheme env) body
 
-            return
-                { Kind = TELet(name, nameSpan, tvalue, tbody)
-                  Ty = tbody.Ty
-                  Span = expr.Span }
+            return {
+                Kind = TELet(name, nameSpan, tvalue, tbody)
+                Ty = tbody.Ty
+                Span = expr.Span
+            }
         }
     | ELambdaPat(pat, body) ->
         result {
@@ -4602,15 +4735,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 |> recoverLetPat ctx pat value.Span
 
             let! tbody =
-                infer
-                    ctx
-                    (schemes |> List.fold (fun e (n, s) -> bindValue n s e) env)
-                    body
+                infer ctx (schemes |> List.fold (fun e (n, s) -> bindValue n s e) env) body
 
-            return
-                { Kind = TELetPat(pat, tvalue, tbody)
-                  Ty = tbody.Ty
-                  Span = expr.Span }
+            return {
+                Kind = TELetPat(pat, tvalue, tbody)
+                Ty = tbody.Ty
+                Span = expr.Span
+            }
         }
     | ELambda("()", pspan, body) ->
         // the unit param pins its type — desugaring to an unconstrained
@@ -4635,7 +4766,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
          | None -> false)
         ->
         let code = (exitLiteral arg).Value
-        err arg.Span $"exit {code}: an exit code is 0..255 — the OS keeps only the low byte, so it would exit {code &&& 255L}"
+
+        err
+            arg.Span
+            $"exit {code}: an exit code is 0..255 — the OS keeps only the low byte, so it would exit {code &&& 255L}"
     | EApp({ Kind = EVar "Json"; Span = headSpan }, arg) when ctorOwners env "Json" = [ "HttpBody" ] ->
         // Http's Json body takes the value [D:http-dx]: a jsonable
         // argument routes through `to json`'s own law and wire maps at
@@ -4648,15 +4782,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             let! targ = infer ctx env arg
             let httpBody = TNamed("HttpBody", [])
 
-            let ctorHead =
-                { Kind = TEVar "Json"
-                  Ty = TFun(TSeq TStr, httpBody)
-                  Span = headSpan }
+            let ctorHead = {
+                Kind = TEVar "Json"
+                Ty = TFun(TSeq TStr, httpBody)
+                Span = headSpan
+            }
 
-            let app (payload: TypedExpr) =
-                { Kind = TEApp(ctorHead, payload)
-                  Ty = httpBody
-                  Span = expr.Span }
+            let app (payload: TypedExpr) = {
+                Kind = TEApp(ctorHead, payload)
+                Ty = httpBody
+                Span = expr.Span
+            }
 
             match resolve ctx targ.Ty with
             | TSeq inner when resolve ctx inner = TStr -> return app targ
@@ -4678,15 +4814,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 let! unions = unionWriteTable arg.Span wenv wty
 
-                let tto =
-                    { Kind = TETo("json", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false, None)
-                      Ty = TFun(targ.Ty, TSeq TStr)
-                      Span = arg.Span }
+                let tto = {
+                    Kind = TETo("json", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false, None)
+                    Ty = TFun(targ.Ty, TSeq TStr)
+                    Span = arg.Span
+                }
 
-                let rendered =
-                    { Kind = TEPipe(targ, tto)
-                      Ty = TSeq TStr
-                      Span = arg.Span }
+                let rendered = {
+                    Kind = TEPipe(targ, tto)
+                    Ty = TSeq TStr
+                    Span = arg.Span
+                }
 
                 return app rendered
         }
@@ -4792,7 +4930,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     result {
                         do! commaBetweenFields fields
                         // a receipt is minted, never written [D:receipts-read-only]
-                        do! (if isReceipt typeName then err expr.Span (receiptLiteralMsg typeName) else Ok())
+                        do!
+                            (if isReceipt typeName then
+                                 err expr.Span (receiptLiteralMsg typeName)
+                             else
+                                 Ok())
 
                         let def =
                             match typeDefFor env typeName with
@@ -4811,10 +4953,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                 let show s = String.concat ", " (Set.toList s)
 
                                 let detail =
-                                    [ if not (Set.isEmpty (Set.difference defNames litNames)) then
-                                          $"missing {show (Set.difference defNames litNames)}"
-                                      if not (Set.isEmpty (Set.difference litNames defNames)) then
-                                          $"unknown {show (Set.difference litNames defNames)}" ]
+                                    [
+                                        if not (Set.isEmpty (Set.difference defNames litNames)) then
+                                            $"missing {show (Set.difference defNames litNames)}"
+                                        if not (Set.isEmpty (Set.difference litNames defNames)) then
+                                            $"unknown {show (Set.difference litNames defNames)}"
+                                    ]
                                     |> String.concat "; "
 
                                 return! err expr.Span $"record '{typeName}' has fields {show defNames} ({detail})"
@@ -4840,10 +4984,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                                 // the value carries the declared name, the
                                 // type its env key [D:qualified-type-names]
-                                return
-                                    { Kind = TERecord(def.Name, List.rev tfields)
-                                      Ty = TNamed(typeName, targs)
-                                      Span = expr.Span }
+                                return {
+                                    Kind = TERecord(def.Name, List.rev tfields)
+                                    Ty = TNamed(typeName, targs)
+                                    Span = expr.Span
+                                }
                     }
 
                 // `Env.load A.Cfg` / `Args.load A.Cli`: a type argument
@@ -4978,59 +5123,62 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                              | Some msg -> err arg.Span msg
                              | None ->
 
-                             match payloadCase with
-                             | Some(f, n, c) ->
-                                 err
-                                     arg.Span
-                                     $"'{f}': env values are single tokens, so enum fields need 0-arity cases; case '{c}' of {n} carries a payload"
-                             | None ->
-
-                                 match def.Fields |> List.tryFind (fun (_, ft) -> not (loadable ft)) with
-                                 | Some(bad, badTy) ->
+                                 match payloadCase with
+                                 | Some(f, n, c) ->
                                      err
                                          arg.Span
-                                         $"Env.load fields must be string, int, float, bool, Duration, Size, Instant, Secret, an enum union (0-arity cases), or Option of these; '{bad}' is {formatTy badTy}"
+                                         $"'{f}': env values are single tokens, so enum fields need 0-arity cases; case '{c}' of {n} carries a payload"
                                  | None ->
 
-                                     match caseCollision with
-                                     | Some(a, b, word) ->
-                                         err arg.Span $"cases '{a}' and '{b}' collide as env value '{word}'"
+                                     match def.Fields |> List.tryFind (fun (_, ft) -> not (loadable ft)) with
+                                     | Some(bad, badTy) ->
+                                         err
+                                             arg.Span
+                                             $"Env.load fields must be string, int, float, bool, Duration, Size, Instant, Secret, an enum union (0-arity cases), or Option of these; '{bad}' is {formatTy badTy}"
                                      | None ->
 
-                                         match enumDefault with
-                                         | Some(f, n) ->
-                                             err
-                                                 arg.Span
-                                                 $"'{f}': an enum field takes no Default (attribute literals are string/int/bool) — spell the resting point Option<{n}> with Option.defaultValue"
+                                         match caseCollision with
+                                         | Some(a, b, word) ->
+                                             err arg.Span $"cases '{a}' and '{b}' collide as env value '{word}'"
                                          | None ->
-                                             // the resting-point cells under env's field law
-                                             // [D:default-attr]: text bools carry no presence
-                                             // semantics, so both Default literals are legal
-                                             // here — the Args-side false-is-redundant cell
-                                             // flips (validation is the consumer's arm).
-                                             // Bool-false is legal here [D:default-attr];
-                                             // both Default rules sit adjacent in Argv
-                                             match Argv.badEnvDefault def with
-                                             | Some msg -> err arg.Span msg
-                                             | None ->
-                                                 let enums =
-                                                     def.Fields
-                                                     |> List.choose (fun (_, ft) ->
-                                                         unionOf ft
-                                                         |> Option.map (fun (n, u) -> n, u.Cases |> List.map fst))
-                                                     |> Map.ofList
 
-                                                 Ok
-                                                     { Kind = TEEnvLoad(def, enums)
-                                                       Ty = TNamed(tyName, [])
-                                                       Span = expr.Span }
+                                             match enumDefault with
+                                             | Some(f, n) ->
+                                                 err
+                                                     arg.Span
+                                                     $"'{f}': an enum field takes no Default (attribute literals are string/int/bool) — spell the resting point Option<{n}> with Option.defaultValue"
+                                             | None ->
+                                                 // the resting-point cells under env's field law
+                                                 // [D:default-attr]: text bools carry no presence
+                                                 // semantics, so both Default literals are legal
+                                                 // here — the Args-side false-is-redundant cell
+                                                 // flips (validation is the consumer's arm).
+                                                 // Bool-false is legal here [D:default-attr];
+                                                 // both Default rules sit adjacent in Argv
+                                                 match Argv.badEnvDefault def with
+                                                 | Some msg -> err arg.Span msg
+                                                 | None ->
+                                                     let enums =
+                                                         def.Fields
+                                                         |> List.choose (fun (_, ft) ->
+                                                             unionOf ft
+                                                             |> Option.map (fun (n, u) -> n, u.Cases |> List.map fst))
+                                                         |> Map.ofList
+
+                                                     Ok {
+                                                         Kind = TEEnvLoad(def, enums)
+                                                         Ty = TNamed(tyName, [])
+                                                         Span = expr.Span
+                                                     }
                          | Some(Record def) ->
                              err arg.Span $"Env.load needs a monomorphic record; '{tyName}' is generic"
                          | Some(Union _) -> err arg.Span $"'{tyName}' is a union; Env.load needs a record"
                          | None -> err arg.Span (unknownTypeMsg env tyName)
                      // a value literal where the inline TYPE goes [D:env-inline-type]
                      | EAnonRecord _ ->
-                         err arg.Span "Env.load takes a type, not a value — the inline type spells fields with ':': Env.load {| PORT: int |}"
+                         err
+                             arg.Span
+                             "Env.load takes a type, not a value — the inline type spells fields with ':': Env.load {| PORT: int |}"
                      | _ -> err arg.Span "Env.load takes a record type name, e.g. Env.load Config")
                 | EField({ Kind = EVar "Args" }, "load", _), [ arg ] when
                     not (Map.containsKey "Args" env.Values) && Map.containsKey "Args" env.Modules
@@ -5044,10 +5192,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     // reads Session.ScriptArgs at eval, so this is purely
                     // the availability gate.
                     (if
-                         not
-                             (match Map.tryFind "Self" env.Modules with
-                              | Some ms -> Map.containsKey "args" ms
-                              | None -> false)
+                         not (
+                             match Map.tryFind "Self" env.Modules with
+                             | Some ms -> Map.containsKey "args" ms
+                             | None -> false
+                         )
                      then
                          err expr.Span "Args.load is script-only (Self.args is not available here)"
                      else
@@ -5055,7 +5204,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                              // Default cells / field shapes / flag collisions —
                              // the policy lives in Argv [D:typed-argv]; the arm
                              // keeps the span plumbing
-                             match validatedOptionalPayload env def |> Option.map ((+) label), Argv.fieldProblems label def with
+                             match
+                                 validatedOptionalPayload env def |> Option.map ((+) label),
+                                 Argv.fieldProblems label def
+                             with
                              | Some msg, _
                              | None, Some msg -> err span msg
                              | None, None -> Ok()
@@ -5116,102 +5268,108 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                  | Some msg -> err arg.Span msg
                                  | None ->
 
-                                 match unionFields with
-                                 | [] ->
-                                     result {
-                                         do! validateFields arg.Span "" def
+                                     match unionFields with
+                                     | [] ->
+                                         result {
+                                             do! validateFields arg.Span "" def
 
-                                         return
-                                             { Kind = TEArgsLoad(ArgsRecord def)
-                                               Ty = TNamed(tyName, [])
-                                               Span = expr.Span }
-                                     }
-                                 | [ (uf, udef) ] ->
-                                     result {
-                                         let sharedDef = Argv.sharedOf def uf
+                                             return {
+                                                 Kind = TEArgsLoad(ArgsRecord def)
+                                                 Ty = TNamed(tyName, [])
+                                                 Span = expr.Span
+                                             }
+                                         }
+                                     | [ (uf, udef) ] ->
+                                         result {
+                                             let sharedDef = Argv.sharedOf def uf
 
-                                         // the subcommand slot derives no flag, so
-                                         // Default has nothing to rest on [D:default-attr]
-                                         do!
-                                             (match
-                                                 def.Attrs
-                                                 |> Map.tryFind uf
-                                                 |> Option.bind (List.tryFind (fun (n, _) -> n = "Default"))
-                                              with
-                                              | Some _ ->
-                                                  err
-                                                      arg.Span
-                                                      $"'{uf}' is the subcommand slot: no flag derives there, so Default has no meaning"
-                                              | None -> Ok())
+                                             // the subcommand slot derives no flag, so
+                                             // Default has nothing to rest on [D:default-attr]
+                                             do!
+                                                 (match
+                                                     def.Attrs
+                                                     |> Map.tryFind uf
+                                                     |> Option.bind (List.tryFind (fun (n, _) -> n = "Default"))
+                                                  with
+                                                  | Some _ ->
+                                                      err
+                                                          arg.Span
+                                                          $"'{uf}' is the subcommand slot: no flag derives there, so Default has no meaning"
+                                                  | None -> Ok())
 
-                                         do! validateFields arg.Span "" sharedDef
-                                         let! payloads = unionPayloads arg.Span udef
+                                             do! validateFields arg.Span "" sharedDef
+                                             let! payloads = unionPayloads arg.Span udef
 
-                                         // a name declared in both tiers is a schema
-                                         // error — reject-don't-guess; the runtime
-                                         // scanner never faces the question.
-                                         // Minted --no-X twins ride in both tiers'
-                                         // namespaces [D:default-attr]
-                                         let sharedFlags =
-                                             (sharedDef.Fields |> List.map (fun (f, _) -> Argv.kebabFlag f))
-                                             @ (Argv.mintedFlags sharedDef |> List.map snd)
-                                             |> Set.ofList
+                                             // a name declared in both tiers is a schema
+                                             // error — reject-don't-guess; the runtime
+                                             // scanner never faces the question.
+                                             // Minted --no-X twins ride in both tiers'
+                                             // namespaces [D:default-attr]
+                                             let sharedFlags =
+                                                 (sharedDef.Fields |> List.map (fun (f, _) -> Argv.kebabFlag f))
+                                                 @ (Argv.mintedFlags sharedDef |> List.map snd)
+                                                 |> Set.ofList
 
-                                         let sharedShorts = Argv.explicitShorts sharedDef |> List.map snd |> Set.ofList
+                                             let sharedShorts =
+                                                 Argv.explicitShorts sharedDef |> List.map snd |> Set.ofList
 
-                                         let collision =
-                                             payloads
-                                             |> Map.toList
-                                             |> List.tryPick (fun (_, rdef) ->
-                                                 (rdef.Fields |> List.map (fun (f, _) -> Argv.kebabFlag f))
-                                                 @ (Argv.mintedFlags rdef |> List.map snd)
-                                                 |> List.tryPick (fun k ->
-                                                     if Set.contains k sharedFlags then
-                                                         Some(
-                                                             $"flag '--{k}' is declared in {def.Name} and {rdef.Name}; "
-                                                             + "shared flags are declared once"
-                                                         )
-                                                     else
-                                                         None)
-                                                 |> Option.orElse (
-                                                     Argv.explicitShorts rdef
-                                                     |> List.tryPick (fun (_, sh) ->
-                                                         if Set.contains sh sharedShorts then
+                                             let collision =
+                                                 payloads
+                                                 |> Map.toList
+                                                 |> List.tryPick (fun (_, rdef) ->
+                                                     (rdef.Fields |> List.map (fun (f, _) -> Argv.kebabFlag f))
+                                                     @ (Argv.mintedFlags rdef |> List.map snd)
+                                                     |> List.tryPick (fun k ->
+                                                         if Set.contains k sharedFlags then
                                                              Some(
-                                                                 $"'-{sh}' is claimed by [<Short>] in both {def.Name} and {rdef.Name}; "
-                                                                 + "a short is declared once"
+                                                                 $"flag '--{k}' is declared in {def.Name} and {rdef.Name}; "
+                                                                 + "shared flags are declared once"
                                                              )
                                                          else
                                                              None)
-                                                 ))
+                                                     |> Option.orElse (
+                                                         Argv.explicitShorts rdef
+                                                         |> List.tryPick (fun (_, sh) ->
+                                                             if Set.contains sh sharedShorts then
+                                                                 Some(
+                                                                     $"'-{sh}' is claimed by [<Short>] in both {def.Name} and {rdef.Name}; "
+                                                                     + "a short is declared once"
+                                                                 )
+                                                             else
+                                                                 None)
+                                                     ))
 
-                                         match collision with
-                                         | Some msg -> return! err arg.Span msg
-                                         | None ->
-                                             return
-                                                 { Kind = TEArgsLoad(ArgsShared(def, uf, udef, payloads))
-                                                   Ty = TNamed(tyName, [])
-                                                   Span = expr.Span }
-                                     }
-                                 | (a, _) :: (b, _) :: _ ->
-                                     err
-                                         arg.Span
-                                         $"'{a}' and '{b}' are both union-typed: one subcommand slot per record"
+                                             match collision with
+                                             | Some msg -> return! err arg.Span msg
+                                             | None ->
+                                                 return {
+                                                     Kind = TEArgsLoad(ArgsShared(def, uf, udef, payloads))
+                                                     Ty = TNamed(tyName, [])
+                                                     Span = expr.Span
+                                                 }
+                                         }
+                                     | (a, _) :: (b, _) :: _ ->
+                                         err
+                                             arg.Span
+                                             $"'{a}' and '{b}' are both union-typed: one subcommand slot per record"
                              | Some(Union udef) when udef.Params.IsEmpty ->
                                  result {
                                      let! payloads = unionPayloads arg.Span udef
 
-                                     return
-                                         { Kind = TEArgsLoad(ArgsUnion(udef, payloads))
-                                           Ty = TNamed(tyName, [])
-                                           Span = expr.Span }
+                                     return {
+                                         Kind = TEArgsLoad(ArgsUnion(udef, payloads))
+                                         Ty = TNamed(tyName, [])
+                                         Span = expr.Span
+                                     }
                                  }
                              | Some(Record _)
                              | Some(Union _) ->
                                  err arg.Span $"Args.load needs a monomorphic type; '{tyName}' is generic"
                              | None -> err arg.Span (unknownTypeMsg env tyName)
                          | EAnonRecord _ ->
-                             err arg.Span "Args.load takes a type, not a value — the inline type spells fields with ':': Args.load {| verbose: bool |}"
+                             err
+                                 arg.Span
+                                 "Args.load takes a type, not a value — the inline type spells fields with ':': Args.load {| verbose: bool |}"
                          | _ -> err arg.Span "Args.load takes a type name, e.g. Args.load Cli")
                 // a reified command's argv words [D:secret]: each element
                 // obeys the command-argument law a bare command's does, so
@@ -5229,10 +5387,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                         checkScalarSplice ctx env CmdArg a |> Result.map (fun t -> t :: ts)))
                                 (Ok [])
 
-                        return
-                            { Kind = TEList(List.rev titems)
-                              Ty = TSeq TStr
-                              Span = lst.Span }
+                        return {
+                            Kind = TEList(List.rev titems)
+                            Ty = TSeq TStr
+                            Span = lst.Span
+                        }
                     }
                 // `NAME=$s cmd` / `within env NAME=$s` [D:secret]: the
                 // overlay value is a string or a Secret (the CI token's
@@ -5249,36 +5408,42 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                         let envVarTy = TNamed("EnvVar", [])
 
-                        let tf =
-                            { Kind = TEVar "|envPair"
-                              Ty = TFun(TStr, TFun(vTy, envVarTy))
-                              Span = head.Span }
+                        let tf = {
+                            Kind = TEVar "|envPair"
+                            Ty = TFun(TStr, TFun(vTy, envVarTy))
+                            Span = head.Span
+                        }
 
-                        return
-                            { Kind =
+                        return {
+                            Kind =
                                 TEApp(
-                                    { Kind = TEApp(tf, tk)
-                                      Ty = TFun(vTy, envVarTy)
-                                      Span = expr.Span },
+                                    {
+                                        Kind = TEApp(tf, tk)
+                                        Ty = TFun(vTy, envVarTy)
+                                        Span = expr.Span
+                                    },
                                     tv
                                 )
-                              Ty = envVarTy
-                              Span = expr.Span }
+                            Ty = envVarTy
+                            Span = expr.Span
+                        }
                     }
                 | EVar(("print" | "printerr" | "|print") as pname), [ arg ] when isPrintFamily env pname ->
                     result {
                         let! targ = infer ctx env arg
                         let! argTy = printArgTy ctx env arg.Span targ.Ty
 
-                        let tprint =
-                            { Kind = TEVar pname
-                              Ty = TFun(argTy, TUnit)
-                              Span = head.Span }
+                        let tprint = {
+                            Kind = TEVar pname
+                            Ty = TFun(argTy, TUnit)
+                            Span = head.Span
+                        }
 
-                        return
-                            { Kind = TEApp(tprint, targ)
-                              Ty = TUnit
-                              Span = expr.Span }
+                        return {
+                            Kind = TEApp(tprint, targ)
+                            Ty = TUnit
+                            Span = expr.Span
+                        }
                     }
                 | _ -> checkSpine ctx env head args None
     | EPipe(arg, ({ Kind = ETo(fmt, streamOf) } as toExpr)) ->
@@ -5315,30 +5480,34 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 let! unions = unionWriteTable toExpr.Span wenv wty
 
-                let tto =
-                    { Kind = TETo(fmt, wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false, None)
-                      Ty = TFun(targ.Ty, TSeq TStr)
-                      Span = toExpr.Span }
+                let tto = {
+                    Kind = TETo(fmt, wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false, None)
+                    Ty = TFun(targ.Ty, TSeq TStr)
+                    Span = toExpr.Span
+                }
 
-                return
-                    { Kind = TEPipe(targ, tto)
-                      Ty = TSeq TStr
-                      Span = expr.Span }
+                return {
+                    Kind = TEPipe(targ, tto)
+                    Ty = TSeq TStr
+                    Span = expr.Span
+                }
             | "jsonl", TSeq elem ->
                 let wty, wenv = wireMono ctx env targ.Ty
                 let welem, _ = wireMono ctx env elem
                 do! jsonableElem false toExpr.Span wenv welem
                 let! unions = unionWriteTable toExpr.Span wenv wty
 
-                let tto =
-                    { Kind = TETo(fmt, wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false, None)
-                      Ty = TFun(targ.Ty, TSeq TStr)
-                      Span = toExpr.Span }
+                let tto = {
+                    Kind = TETo(fmt, wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false, None)
+                    Ty = TFun(targ.Ty, TSeq TStr)
+                    Span = toExpr.Span
+                }
 
-                return
-                    { Kind = TEPipe(targ, tto)
-                      Ty = TSeq TStr
-                      Span = expr.Span }
+                return {
+                    Kind = TEPipe(targ, tto)
+                    Ty = TSeq TStr
+                    Span = expr.Span
+                }
             | "jsonl", ty ->
                 return!
                     err
@@ -5365,15 +5534,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     | TSeq elem -> yamlShape toExpr.Span wenv Set.empty "" elem |> Result.toOption
                     | _ -> None
 
-                let tto =
-                    { Kind = TETo("yaml", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, true, guide)
-                      Ty = TFun(targ.Ty, TSeq TStr)
-                      Span = toExpr.Span }
+                let tto = {
+                    Kind = TETo("yaml", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, true, guide)
+                    Ty = TFun(targ.Ty, TSeq TStr)
+                    Span = toExpr.Span
+                }
 
-                return
-                    { Kind = TEPipe(targ, tto)
-                      Ty = TSeq TStr
-                      Span = expr.Span }
+                return {
+                    Kind = TEPipe(targ, tto)
+                    Ty = TSeq TStr
+                    Span = expr.Span
+                }
             | "yaml", TNamed("YamlPatch", _) ->
                 // patches do not render [D:yaml-nodes] — the type carries
                 // the law, so no tombstone can ever leak into a file
@@ -5400,20 +5571,25 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 let guide = yamlShape toExpr.Span wenv Set.empty "" wty |> Result.toOption
 
-                let tto =
-                    { Kind = TETo("yaml", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false, guide)
-                      Ty = TFun(targ.Ty, TSeq TStr)
-                      Span = toExpr.Span }
+                let tto = {
+                    Kind = TETo("yaml", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false, guide)
+                    Ty = TFun(targ.Ty, TSeq TStr)
+                    Span = toExpr.Span
+                }
 
-                return
-                    { Kind = TEPipe(targ, tto)
-                      Ty = TSeq TStr
-                      Span = expr.Span }
+                return {
+                    Kind = TEPipe(targ, tto)
+                    Ty = TSeq TStr
+                    Span = expr.Span
+                }
             | "xml", _ ->
                 // XML is a read boundary only [D:from-xml] — there is no
                 // 'to xml' (writing wants element order, namespaces, and a
                 // schema weir does not carry)
-                return! err toExpr.Span "'to xml' does not exist — XML is read-only ('from xml T'); write JSON or YAML instead"
+                return!
+                    err
+                        toExpr.Span
+                        "'to xml' does not exist — XML is read-only ('from xml T'); write JSON or YAML instead"
             | "table", _ ->
                 // the table boundary reads only [D:from-table] — the REPL
                 // already renders records as a table for display; a
@@ -5448,31 +5624,37 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
             let! tcmd = infer ctx env cmdExpr
 
-            return
-                { Kind = TEPipe(targ, tcmd)
-                  Ty = TSeq TStr
-                  Span = expr.Span }
+            return {
+                Kind = TEPipe(targ, tcmd)
+                Ty = TSeq TStr
+                Span = expr.Span
+            }
         }
-    | EPipe(arg, ({ Kind = EVar(("print" | "printerr" | "|print") as pname) } as printExpr)) when
-        isPrintFamily env pname
-        ->
+    | EPipe(arg,
+            ({
+                 Kind = EVar(("print" | "printerr" | "|print") as pname)
+             } as printExpr)) when isPrintFamily env pname ->
         result {
             let! targ = infer ctx env arg
             let! argTy = printArgTy ctx env arg.Span targ.Ty
 
-            let tprint =
-                { Kind = TEVar pname
-                  Ty = TFun(argTy, TUnit)
-                  Span = printExpr.Span }
+            let tprint = {
+                Kind = TEVar pname
+                Ty = TFun(argTy, TUnit)
+                Span = printExpr.Span
+            }
 
-            return
-                { Kind = TEPipe(targ, tprint)
-                  Ty = TUnit
-                  Span = expr.Span }
+            return {
+                Kind = TEPipe(targ, tprint)
+                Ty = TUnit
+                Span = expr.Span
+            }
         }
     | EPipe(_,
-            { Kind = EBinOp(op, _, _)
-              Span = opSpan }) when op <> ">>" && op <> "<<" && op <> "<|" && op <> "!=" ->
+            {
+                Kind = EBinOp(op, _, _)
+                Span = opSpan
+            }) when op <> ">>" && op <> "<<" && op <> "<|" && op <> "!=" ->
         // Scalar operators yield values, never functions, so piping into
         // one is always wrong — and usually a precedence surprise.
         // Composition is the exception [D:composition-operators]:
@@ -5493,10 +5675,18 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 match tfrom.Ty with
                 | TFun(_, resultTy) ->
-                    return
-                        { Kind = TEPipe(targ, { tfrom with Ty = TFun(TBytes, resultTy) })
-                          Ty = resultTy
-                          Span = expr.Span }
+                    return {
+                        Kind =
+                            TEPipe(
+                                targ,
+                                {
+                                    tfrom with
+                                        Ty = TFun(TBytes, resultTy)
+                                }
+                            )
+                        Ty = resultTy
+                        Span = expr.Span
+                    }
                 | _ -> return! err fromExpr.Span "the right side of a pipe must be a function"
             | _ ->
                 let head, args = spine fromExpr
@@ -5504,10 +5694,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 match resolve ctx tfn.Ty with
                 | TFun(_, resultTy) ->
-                    return
-                        { Kind = TEPipe(targ, tfn)
-                          Ty = resultTy
-                          Span = expr.Span }
+                    return {
+                        Kind = TEPipe(targ, tfn)
+                        Ty = resultTy
+                        Span = expr.Span
+                    }
                 | _ -> return! err fromExpr.Span "the right side of a pipe must be a function"
         }
     // a lambda right of `|>` is checked against the piped type, so its
@@ -5523,10 +5714,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             let res = TVar(freshName ctx "a")
             let! tfn = check ctx env fnExpr (TFun(targ.Ty, res))
 
-            return
-                { Kind = TEPipe(targ, tfn)
-                  Ty = res
-                  Span = expr.Span }
+            return {
+                Kind = TEPipe(targ, tfn)
+                Ty = res
+                Span = expr.Span
+            }
         }
     | EPipe(arg, fnExpr) ->
         result {
@@ -5536,10 +5728,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
             match resolve ctx tfn.Ty with
             | TFun(_, resultTy) ->
-                return
-                    { Kind = TEPipe(targ, tfn)
-                      Ty = resultTy
-                      Span = expr.Span }
+                return {
+                    Kind = TEPipe(targ, tfn)
+                    Ty = resultTy
+                    Span = expr.Span
+                }
             | _ -> return! err fnExpr.Span "the right side of a pipe must be a function"
         }
     // `T.create` [D:validated-types]: the type's own namespace — a module
@@ -5549,9 +5742,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         && (validatedType env n).IsSome
         ->
         createRef env expr.Span n
-    | EField({ Kind = EField({ Kind = EVar m }, n, _) }, "create", _) when
-        Map.containsKey m env.ModuleTypes && (validatedType env $"{m}.{n}").IsSome
-        ->
+    | EField({
+                 Kind = EField({ Kind = EVar m }, n, _)
+             },
+             "create",
+             _) when Map.containsKey m env.ModuleTypes && (validatedType env $"{m}.{n}").IsSome ->
         createRef env expr.Span $"{m}.{n}"
     | EField({ Kind = EVar n }, "create", _) when
         not (Map.containsKey n env.Modules)
@@ -5588,10 +5783,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
             match Map.tryFind field members with
             | Some sch ->
-                return
-                    { Kind = TEVar $"{m}.{field}"
-                      Ty = instantiate ctx expr.Span sch
-                      Span = expr.Span }
+                return {
+                    Kind = TEVar $"{m}.{field}"
+                    Ty = instantiate ctx expr.Span sch
+                    Span = expr.Span
+                }
             | None ->
                 match retiredMember m field with
                 | Some teach -> return! err fieldSpan $"'{m}.{field}' is retired: {teach}"
@@ -5674,10 +5870,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | Some(Record def) ->
                     match def.Fields |> List.tryFind (fun (f, _) -> f = field) with
                     | Some(_, fieldTy) ->
-                        return
-                            { Kind = TEField(ttarget, field)
-                              Ty = substParams def.Params targs fieldTy
-                              Span = expr.Span }
+                        return {
+                            Kind = TEField(ttarget, field)
+                            Ty = substParams def.Params targs fieldTy
+                            Span = expr.Span
+                        }
                     | None ->
                         match retiredField typeName field with
                         | Some teach -> return! err fieldSpan $"'{field}' is retired: {teach}"
@@ -5695,27 +5892,30 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let fieldTy = TVar(freshName ctx "a")
                 ctx.Rows <- Map.add r (Map [ field, (fieldTy, fieldSpan) ]) ctx.Rows
 
-                return
-                    { Kind = TEField(ttarget, field)
-                      Ty = fieldTy
-                      Span = expr.Span }
+                return {
+                    Kind = TEField(ttarget, field)
+                    Ty = fieldTy
+                    Span = expr.Span
+                }
             | TRowVar(r, _) ->
                 let existing = Map.tryFind r ctx.Rows |> Option.defaultValue Map.empty
 
                 match Map.tryFind field existing with
                 | Some(fieldTy, _) ->
-                    return
-                        { Kind = TEField(ttarget, field)
-                          Ty = fieldTy
-                          Span = expr.Span }
+                    return {
+                        Kind = TEField(ttarget, field)
+                        Ty = fieldTy
+                        Span = expr.Span
+                    }
                 | None ->
                     let fieldTy = TVar(freshName ctx "a")
                     ctx.Rows <- Map.add r (Map.add field (fieldTy, fieldSpan) existing) ctx.Rows
 
-                    return
-                        { Kind = TEField(ttarget, field)
-                          Ty = fieldTy
-                          Span = expr.Span }
+                    return {
+                        Kind = TEField(ttarget, field)
+                        Ty = fieldTy
+                        Span = expr.Span
+                    }
             | ty -> return! err target.Span $"only records have fields; this expression has type {formatTy ty}"
         }
     | ESlice(target, lo, hi, loEnd, hiEnd) ->
@@ -5739,28 +5939,32 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
             match resolve ctx ttarget.Ty with
             | TStr ->
-                return
-                    { Kind = TESlice(ttarget, tlo, thi, SliceStr, loEnd, hiEnd)
-                      Ty = TStr
-                      Span = expr.Span }
+                return {
+                    Kind = TESlice(ttarget, tlo, thi, SliceStr, loEnd, hiEnd)
+                    Ty = TStr
+                    Span = expr.Span
+                }
             | TBytes ->
-                return
-                    { Kind = TESlice(ttarget, tlo, thi, SliceBytes, loEnd, hiEnd)
-                      Ty = TBytes
-                      Span = expr.Span }
+                return {
+                    Kind = TESlice(ttarget, tlo, thi, SliceBytes, loEnd, hiEnd)
+                    Ty = TBytes
+                    Span = expr.Span
+                }
             | TSeq elem ->
-                return
-                    { Kind = TESlice(ttarget, tlo, thi, SliceSeq, loEnd, hiEnd)
-                      Ty = TSeq elem
-                      Span = expr.Span }
+                return {
+                    Kind = TESlice(ttarget, tlo, thi, SliceSeq, loEnd, hiEnd)
+                    Ty = TSeq elem
+                    Span = expr.Span
+                }
             | TVar _ ->
                 let elem = TVar(freshName ctx "a")
                 do! bind ctx env target.Span ttarget.Ty (TSeq elem)
 
-                return
-                    { Kind = TESlice(ttarget, tlo, thi, SliceSeq, loEnd, hiEnd)
-                      Ty = TSeq elem
-                      Span = expr.Span }
+                return {
+                    Kind = TESlice(ttarget, tlo, thi, SliceSeq, loEnd, hiEnd)
+                    Ty = TSeq elem
+                    Span = expr.Span
+                }
             | other ->
                 return!
                     err
@@ -5820,19 +6024,22 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         op = "/"
                         && right.Span.Start.Col - left.Span.End.Col >= 2
                         && e.Message.StartsWith "unbound variable"
-                        ->
-                        { e with
-                            Message =
-                                e.Message
-                                + $" — if '/{nm}' is a filesystem path, quote it (cd \"/{nm}\"); an unquoted path is an argv word only in a command, not an expression" }
+                          ->
+                          {
+                              e with
+                                  Message =
+                                      e.Message
+                                      + $" — if '/{nm}' is a filesystem path, quote it (cd \"/{nm}\"); an unquoted path is an argv word only in a command, not an expression"
+                          }
                     | _ -> e)
 
             let! ty = typeBinOp ctx env expr.Span op tleft tright
 
-            return
-                { Kind = TEBinOp(op, tleft, tright)
-                  Ty = ty
-                  Span = expr.Span }
+            return {
+                Kind = TEBinOp(op, tleft, tright)
+                Ty = ty
+                Span = expr.Span
+            }
         }
     | EUpdate(source, updates) ->
         // copy-and-update [D:record-update]. Result type is the
@@ -5928,10 +6135,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                 |> Result.map (fun tv -> (path |> List.map fst, tv) :: ts)))
                         (Ok [])
 
-                return
-                    { Kind = TEUpdate(tsource, List.rev tupdates)
-                      Ty = tsource.Ty
-                      Span = expr.Span }
+                return {
+                    Kind = TEUpdate(tsource, List.rev tupdates)
+                    Ty = tsource.Ty
+                    Span = expr.Span
+                }
         }
     | ERecord fields ->
         result {
@@ -5962,7 +6170,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         match Map.tryFind tn env.Types with
                         | Some(Record def) ->
                             let all = def.Fields |> List.map fst |> Set.ofList
-                            Set.isSubset names all && Set.isSubset (Set.difference all (Set.ofList r.Derived)) names
+
+                            Set.isSubset names all
+                            && Set.isSubset (Set.difference all (Set.ofList r.Derived)) names
                         | _ -> false)
 
                 match candidates with
@@ -5985,10 +6195,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             (fun acc f -> acc |> Result.bind (fun ts -> checkField f |> Result.map (fun t -> t :: ts)))
                             (Ok [])
 
-                    return
-                        { Kind = TERecord(def.Name, List.rev tfields)
-                          Ty = TNamed(key, targs)
-                          Span = expr.Span }
+                    return {
+                        Kind = TERecord(def.Name, List.rev tfields)
+                        Ty = TNamed(key, targs)
+                        Span = expr.Span
+                    }
                 | [] ->
                     let fieldList = String.concat ", " (Set.toList names)
                     return! err expr.Span $"no declared record has exactly the fields: {fieldList}"
@@ -6036,20 +6247,22 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     let name = anonRecordName flds
 
                     env.AnonLitDefs[name] <-
-                        Record
-                            { Name = name
-                              Params = []
-                              Fields = List.sortBy fst flds
-                              Attrs = Map.empty
-                              OrdKey = []
-                              Docs = Map.empty }
+                        Record {
+                            Name = name
+                            Params = []
+                            Fields = List.sortBy fst flds
+                            Attrs = Map.empty
+                            OrdKey = []
+                            Docs = Map.empty
+                        }
 
                     Types.pushAnonDef name flds
 
-                    return
-                        { Kind = TERecord(name, tfields |> List.map (fun (n, _, tv) -> n, tv))
-                          Ty = TNamed(name, [])
-                          Span = expr.Span }
+                    return {
+                        Kind = TERecord(name, tfields |> List.map (fun (n, _, tv) -> n, tv))
+                        Ty = TNamed(name, [])
+                        Span = expr.Span
+                    }
         }
     | EFrom(fmt, shape, seqOf, streamOf) ->
         result {
@@ -6177,7 +6390,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     // XML has a single root element [D:from-xml] — no seq /
                     // stream / Map wrap; a repeated child is a seq< > field
                     let n = defaultArg tyName "T"
-                    err expr.Span $"'from xml' reads one document's root element — write from xml {n} (XML has a single root)"
+
+                    err
+                        expr.Span
+                        $"'from xml' reads one document's root element — write from xml {n} (XML has a single root)"
                 else
                     Ok()
 
@@ -6186,14 +6402,16 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             // [D:map-values]: V is admitted iff a Map<string, V> field
             // would be — the field law, run on the value type; the
             // wrap refusals above already turned every other format
-            | "json", _ when (match inner with
-                              | Some(FromTy _) -> true
-                              | _ -> false) ->
+            | "json", _ when
+                (match inner with
+                 | Some(FromTy _) -> true
+                 | _ -> false)
+                ->
                 let wireTy, wenv = wireMono ctx env slotTy
                 do! jsonAdmitted true expr.Span wenv [] "" wireTy
 
-                return
-                    { Kind =
+                return {
+                    Kind =
                         TEFrom(
                             fmt,
                             TopValue wireTy,
@@ -6202,8 +6420,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             false,
                             true
                         )
-                      Ty = TFun(TSeq TStr, TNamed("Map", [ TStr; slotTy ]))
-                      Span = expr.Span }
+                    Ty = TFun(TSeq TStr, TNamed("Map", [ TStr; slotTy ]))
+                    Span = expr.Span
+                }
             // from json T reads one document -> T (pretty-printed bodies
             // pipe straight in); from json seq<T> reads one array
             // document -> seq<T> — the declared type decides what the top
@@ -6229,10 +6448,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         def.Fields
                         |> List.fold (fun a (_, fty) -> jsonUnionsClosure env a fty) Map.empty
 
-                    return
-                        { Kind = TEFrom(fmt, TopRec def, defs, udefs, seqOf, mapOf)
-                          Ty = TFun(TSeq TStr, resultTy)
-                          Span = expr.Span }
+                    return {
+                        Kind = TEFrom(fmt, TopRec def, defs, udefs, seqOf, mapOf)
+                        Ty = TFun(TSeq TStr, resultTy)
+                        Span = expr.Span
+                    }
                 // a tagged union in the slot [D:wire-unions]: each document
                 // dispatches on the tag — `from jsonl KDoc` reads mixed
                 // NDJSON, `from json seq<KDoc>` a mixed array
@@ -6242,18 +6462,19 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     let defs = jsonDefsClosure env Map.empty (TNamed(name, []))
                     let udefs = jsonUnionsClosure env Map.empty (TNamed(name, []))
 
-                    return
-                        { Kind = TEFrom(fmt, TopUnion udef, defs, udefs, seqOf, mapOf)
-                          Ty = TFun(TSeq TStr, resultTy)
-                          Span = expr.Span }
+                    return {
+                        Kind = TEFrom(fmt, TopUnion udef, defs, udefs, seqOf, mapOf)
+                        Ty = TFun(TSeq TStr, resultTy)
+                        Span = expr.Span
+                    }
                 // a validated type in the slot reads its payload's
                 // document, then runs `create` [D:validated-types]
                 | Some(Union udef) when udef.Validated.IsSome ->
                     let ty = TNamed(name, [])
                     do! jsonAdmitted true expr.Span env [] "" ty
 
-                    return
-                        { Kind =
+                    return {
+                        Kind =
                             TEFrom(
                                 fmt,
                                 TopValue ty,
@@ -6262,8 +6483,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                 seqOf,
                                 mapOf
                             )
-                          Ty = TFun(TSeq TStr, resultTy)
-                          Span = expr.Span }
+                        Ty = TFun(TSeq TStr, resultTy)
+                        Span = expr.Span
+                    }
                 | Some(Record def) ->
                     let args = def.Params |> List.map (fun _ -> "int") |> String.concat ", "
 
@@ -6301,10 +6523,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                     let! shape = yamlShape expr.Span env Set.empty "" wirePerDoc
 
-                    return
-                        { Kind = TEFromYaml(name, shape, streamOf)
-                          Ty = TFun(TSeq TStr, declared)
-                          Span = expr.Span }
+                    return {
+                        Kind = TEFromYaml(name, shape, streamOf)
+                        Ty = TFun(TSeq TStr, declared)
+                        Span = expr.Span
+                    }
                 // a tagged union in the slot [D:wire-unions] — yamlShape
                 // builds the dispatch node; untagged keeps the teaching. A
                 // validated type reads its payload [D:validated-types]
@@ -6314,10 +6537,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                     let! shape = yamlShape expr.Span env Set.empty "" perDoc
 
-                    return
-                        { Kind = TEFromYaml(name, shape, streamOf)
-                          Ty = TFun(TSeq TStr, declared)
-                          Span = expr.Span }
+                    return {
+                        Kind = TEFromYaml(name, shape, streamOf)
+                        Ty = TFun(TSeq TStr, declared)
+                        Span = expr.Span
+                    }
                 | Some(Record def) ->
                     let args = def.Params |> List.map (fun _ -> "int") |> String.concat ", "
 
@@ -6342,23 +6566,28 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // the yaml shape law, its messages naming the toml boundary
                 let tomlShape ty =
                     yamlShape expr.Span env Set.empty "" ty
-                    |> Result.mapError (fun e -> { e with Message = e.Message.Replace("yaml", "toml") })
+                    |> Result.mapError (fun e -> {
+                        e with
+                            Message = e.Message.Replace("yaml", "toml")
+                    })
 
                 match typeDefFor env name with
                 | Some(Record def) when def.Params.IsEmpty ->
                     let! shape = tomlShape (TNamed(name, []))
 
-                    return
-                        { Kind = TEFromToml(name, shape)
-                          Ty = TFun(TSeq TStr, TNamed(name, []))
-                          Span = expr.Span }
+                    return {
+                        Kind = TEFromToml(name, shape)
+                        Ty = TFun(TSeq TStr, TNamed(name, []))
+                        Span = expr.Span
+                    }
                 | Some(Union udef) when udef.Tag.IsSome || udef.Validated.IsSome ->
                     let! shape = tomlShape (TNamed(name, []))
 
-                    return
-                        { Kind = TEFromToml(name, shape)
-                          Ty = TFun(TSeq TStr, TNamed(name, []))
-                          Span = expr.Span }
+                    return {
+                        Kind = TEFromToml(name, shape)
+                        Ty = TFun(TSeq TStr, TNamed(name, []))
+                        Span = expr.Span
+                    }
                 | Some(Record _) -> return! err expr.Span $"'from toml' needs a monomorphic record; '{name}' is generic"
                 | Some(Union _) ->
                     return!
@@ -6367,7 +6596,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             $"'{name}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
                 | None -> return! err expr.Span (unknownTypeMsg env name)
             | "toml", None ->
-                return! err expr.Span "'from toml' needs a record name, e.g. from toml Cargo — or an inline shape {| package: {| version: string |} |}"
+                return!
+                    err
+                        expr.Span
+                        "'from toml' needs a record name, e.g. from toml Cargo — or an inline shape {| package: {| version: string |} |}"
             // from xml T reads one document's root element -> T
             // [D:from-xml]: field names match child elements, [<Attr>]
             // reads an attribute, [<Elem "X">] names a repeated child, a
@@ -6382,13 +6614,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         def.Fields
                         |> List.fold (fun a (_, fty) -> jsonDefsClosure env a fty) (Map.ofList [ def.Name, def ])
 
-                    return
-                        { Kind = TEFrom("xml", TopRec def, defs, Map.empty, false, false)
-                          Ty = TFun(TSeq TStr, TNamed(name, []))
-                          Span = expr.Span }
+                    return {
+                        Kind = TEFrom("xml", TopRec def, defs, Map.empty, false, false)
+                        Ty = TFun(TSeq TStr, TNamed(name, []))
+                        Span = expr.Span
+                    }
                 | Some(Record _) -> return! err expr.Span $"'from xml' needs a monomorphic record; '{name}' is generic"
                 | Some(Union _) ->
-                    return! err expr.Span $"'from xml' needs a record; '{name}' is a union — XML has no tagged-union reading"
+                    return!
+                        err
+                            expr.Span
+                            $"'from xml' needs a record; '{name}' is a union — XML has no tagged-union reading"
                 | None -> return! err expr.Span (unknownTypeMsg env name)
             | "xml", None -> return! err expr.Span "'from xml' needs a record name, e.g. from xml Project"
             // from table T reads aligned column output (kubectl/docker
@@ -6402,11 +6638,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | Some(Record def) when def.Params.IsEmpty ->
                     do! tableableRecord expr.Span def
 
-                    return
-                        { Kind = TEFrom("table", TopRec def, Map.ofList [ def.Name, def ], Map.empty, false, false)
-                          Ty = TFun(TSeq TStr, TSeq(TNamed(name, [])))
-                          Span = expr.Span }
-                | Some(Record _) -> return! err expr.Span $"'from table' needs a monomorphic record; '{name}' is generic"
+                    return {
+                        Kind = TEFrom("table", TopRec def, Map.ofList [ def.Name, def ], Map.empty, false, false)
+                        Ty = TFun(TSeq TStr, TSeq(TNamed(name, [])))
+                        Span = expr.Span
+                    }
+                | Some(Record _) ->
+                    return! err expr.Span $"'from table' needs a monomorphic record; '{name}' is generic"
                 | Some(Union _) ->
                     return!
                         err
@@ -6437,10 +6675,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
             let! ttpl = checkYamlTpl ctx env tpl
 
-            return
-                { Kind = TEYaml(ttpl, schema, patchBy)
-                  Ty = TNamed((if patchBy.IsSome then "YamlPatch" else "Yaml"), [])
-                  Span = expr.Span }
+            return {
+                Kind = TEYaml(ttpl, schema, patchBy)
+                Ty = TNamed((if patchBy.IsSome then "YamlPatch" else "Yaml"), [])
+                Span = expr.Span
+            }
         }
     | EDynProg(display, he) ->
         // the reified spelling of a dynamic head [D:dynamic-head]: type
@@ -6461,24 +6700,27 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         | TVar _ ->
                             do! bind ctx env a.Span (TSeq TStr) tinner.Ty
 
-                            return
-                                { Kind = TESplat tinner
-                                  Ty = TSeq TStr
-                                  Span = a.Span }
+                            return {
+                                Kind = TESplat tinner
+                                Ty = TSeq TStr
+                                Span = a.Span
+                            }
                         | TSeq TStr ->
-                            return
-                                { Kind = TESplat tinner
-                                  Ty = TSeq TStr
-                                  Span = a.Span }
+                            return {
+                                Kind = TESplat tinner
+                                Ty = TSeq TStr
+                                Span = a.Span
+                            }
                         | TSeq(TVar _ as tv) ->
                             // an unanchored element ([] and friends)
                             // resolves to string at the splice
                             do! bind ctx env a.Span TStr tv
 
-                            return
-                                { Kind = TESplat tinner
-                                  Ty = TSeq TStr
-                                  Span = a.Span }
+                            return {
+                                Kind = TESplat tinner
+                                Ty = TSeq TStr
+                                Span = a.Span
+                            }
                         | TSeq t ->
                             return!
                                 err
@@ -6532,10 +6774,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     checkDynHead ctx env display he
                     |> Result.map (fun the -> THeadDyn(display, the))
 
-            return
-                { Kind = TECmd(thead, List.rev targs, tenvO)
-                  Ty = TSeq TStr
-                  Span = expr.Span }
+            return {
+                Kind = TECmd(thead, List.rev targs, tenvO)
+                Ty = TSeq TStr
+                Span = expr.Span
+            }
         }
     | EInterp parts ->
         result {
@@ -6552,10 +6795,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             | IExpr e -> checkHole e |> Result.map (fun t -> IExpr t :: ts)))
                     (Ok [])
 
-            return
-                { Kind = TEInterp(List.rev tparts)
-                  Ty = TStr
-                  Span = expr.Span }
+            return {
+                Kind = TEInterp(List.rev tparts)
+                Ty = TStr
+                Span = expr.Span
+            }
         }
     | ETuple items ->
         result {
@@ -6567,19 +6811,21 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
             let titems = List.rev titems
 
-            return
-                { Kind = TETuple titems
-                  Ty = TTuple(titems |> List.map _.Ty)
-                  Span = expr.Span }
+            return {
+                Kind = TETuple titems
+                Ty = TTuple(titems |> List.map _.Ty)
+                Span = expr.Span
+            }
         }
     | EList items ->
         result {
             match items with
             | [] ->
-                return
-                    { Kind = TEList []
-                      Ty = TSeq(TVar(freshName ctx "a"))
-                      Span = expr.Span }
+                return {
+                    Kind = TEList []
+                    Ty = TSeq(TVar(freshName ctx "a"))
+                    Span = expr.Span
+                }
             | head :: rest ->
                 let! thead = infer ctx env head
 
@@ -6591,10 +6837,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             |> Result.bind (fun ts -> check ctx env item thead.Ty |> Result.map (fun t -> t :: ts)))
                         (Ok [])
 
-                return
-                    { Kind = TEList(thead :: List.rev trest)
-                      Ty = TSeq thead.Ty
-                      Span = expr.Span }
+                return {
+                    Kind = TEList(thead :: List.rev trest)
+                    Ty = TSeq thead.Ty
+                    Span = expr.Span
+                }
         }
     | EMatch(scrutinee, arms) ->
         result {
@@ -6702,12 +6949,18 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let tarms = (pat0, tguard0, tbody0) :: List.rev trest
                 // re-resolve: a constructor pattern may have typed the
                 // scrutinee var during arm checking [D:match-scrutinee-infer]
-                do! exhaustive env expr.Span (finalTy ctx tscrutinee.Ty) (tarms |> List.map (fun (p, g, (b: TypedExpr)) -> p, g, b.Span))
+                do!
+                    exhaustive
+                        env
+                        expr.Span
+                        (finalTy ctx tscrutinee.Ty)
+                        (tarms |> List.map (fun (p, g, (b: TypedExpr)) -> p, g, b.Span))
 
-                return
-                    { Kind = TEMatch(tscrutinee, tarms)
-                      Ty = tbody0.Ty
-                      Span = expr.Span }
+                return {
+                    Kind = TEMatch(tscrutinee, tarms)
+                    Ty = tbody0.Ty
+                    Span = expr.Span
+                }
         }
     | EIf(cond, thn, els) ->
         result {
@@ -6718,10 +6971,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let! tthn = infer ctx env thn
                 let! tels = check ctx env e tthn.Ty
 
-                return
-                    { Kind = TEIf(tcond, tthn, Some tels)
-                      Ty = tthn.Ty
-                      Span = expr.Span }
+                return {
+                    Kind = TEIf(tcond, tthn, Some tels)
+                    Ty = tthn.Ty
+                    Span = expr.Span
+                }
             | None ->
                 let rec tailOf (e: Expr) =
                     match e.Kind with
@@ -6750,10 +7004,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 match resolve ctx tthn.Ty with
                 | TUnit ->
-                    return
-                        { Kind = TEIf(tcond, tthn, None)
-                          Ty = TUnit
-                          Span = expr.Span }
+                    return {
+                        Kind = TEIf(tcond, tthn, None)
+                        Ty = TUnit
+                        Span = expr.Span
+                    }
                 | ty ->
                     return!
                         err
@@ -6860,7 +7115,12 @@ and private checkSpineOn
 
                     let partial =
                         taken
-                        |> List.fold (fun (acc: Expr) a -> { Kind = EApp(acc, a); Span = Span.union acc.Span a.Span }) head
+                        |> List.fold
+                            (fun (acc: Expr) a -> {
+                                Kind = EApp(acc, a)
+                                Span = Span.union acc.Span a.Span
+                            })
+                            head
 
                     Some(partial, taken, rest)
                 | _ -> None
@@ -6881,147 +7141,153 @@ and private checkSpineOn
         | Some(partial, tpartial, rest) -> return! checkSpineOn ctx env partial tpartial rest piped
         | None ->
 
-        match funParams ctx arity thead.Ty with
-        | None ->
-            match piped with
-            | Some _ ->
-                return!
-                    err
-                        head.Span
-                        $"the right side of a pipe must be a function taking the piped value; it has type {formatTy (finalTy ctx thead.Ty)}"
+            match funParams ctx arity thead.Ty with
             | None ->
-                let rec countParams ty =
-                    match resolve ctx ty with
-                    | TFun(_, cod) -> 1 + countParams cod
-                    | _ -> 0
-
-                let available = countParams thead.Ty
-
-                match thead.Kind with
-                | TEVar name when available > 0 ->
-                    // point at the first extra argument, not the head — and
-                    // when it sits on a different physical line, the extra
-                    // args are an indented continuation the writer likely
-                    // meant as a separate statement [D:over-apply-continuation]
-                    let extra = List.tryItem available args
-
-                    let onContinuation =
-                        match toPhys.Value, extra with
-                        | Some tr, Some ex -> fst (tr head.Span.Start.Col) <> fst (tr ex.Span.Start.Col)
-                        | _ -> false
-
-                    let hint =
-                        if onContinuation then
-                            "; these are read as an indented continuation of the line above. A separate statement must line up with it, not sit deeper — and a block body written inline (after '->' or 'then') takes no second statement below it: start the body on its own line so its statements share a column"
-                        else
-                            ""
-
-                    let span = extra |> Option.map (fun e -> e.Span) |> Option.defaultValue head.Span
-
-                    return! err span $"'{name}' takes at most {available} argument(s), but got {args.Length}{hint}"
-                | TEVar name when (name = "ls" || name = "pwd") && not (List.isEmpty args) ->
-                    // a command-name builtin VALUE applied to args is almost
-                    // always a shell-command reflex (`ls -la`) [D:ls-command-teach]
-                    // — it is weir's typed listing, not the external command,
-                    // so point at the force-external escape
-                    // a user's own `let ls = …` is no builtin: it is named
-                    // as the binding it is, with no alias to suggest
-                    let builtinShape =
-                        match name, finalTy ctx thead.Ty with
-                        | "ls", TSeq(TNamed("FileRow", [])) -> true
-                        | "pwd", TStr -> true
-                        | _ -> false
-
-                    if builtinShape then
-                        return!
-                            err
-                                head.Span
-                                $"'{name}' is weir's typed {formatTy (finalTy ctx thead.Ty)} value, not the shell command — to run the external '{name}' with arguments, force it external: ^{name} … (or alias it: #alias x = {name} …)"
-                    else
-                        return!
-                            err
-                                head.Span
-                                $"'{name}' is bound here to a {formatTy (finalTy ctx thead.Ty)} value, not the shell command — to run the external '{name}' with arguments, force it external: ^{name} …"
-                | _ ->
+                match piped with
+                | Some _ ->
                     return!
                         err
                             head.Span
-                            $"this expression is not a function taking {args.Length} argument(s); it has type {formatTy (finalTy ctx thead.Ty)}"
-        | Some(paramTys, resultTy) ->
-            // when a defaulted-to-string parameter causes the mismatch,
-            // say so and name the anchor (PLAN-dx-review D6): the string
-            // came from a defaulting decision in the callee's body, not
-            // from anything visible at the call. A hole on a generalized
-            // var no longer defaults [D:hole-generic]; this serves the
-            // defaults a scheme still records
-            let nameHoleDefault (paramTy: Ty) (e: TypeError) : TypeError =
-                let defaults =
+                            $"the right side of a pipe must be a function taking the piped value; it has type {formatTy (finalTy ctx thead.Ty)}"
+                | None ->
+                    let rec countParams ty =
+                        match resolve ctx ty with
+                        | TFun(_, cod) -> 1 + countParams cod
+                        | _ -> 0
+
+                    let available = countParams thead.Ty
+
                     match thead.Kind with
-                    | TEVar name ->
-                        match Map.tryFind name env.Values with
-                        | Some sch -> sch.HoleDefaults
-                        | None -> []
-                    | _ -> []
+                    | TEVar name when available > 0 ->
+                        // point at the first extra argument, not the head — and
+                        // when it sits on a different physical line, the extra
+                        // args are an indented continuation the writer likely
+                        // meant as a separate statement [D:over-apply-continuation]
+                        let extra = List.tryItem available args
 
-                match defaults, resolve ctx paramTy with
-                | (l, c) :: _, TStr when e.Message.StartsWith "expected string" ->
-                    let name =
+                        let onContinuation =
+                            match toPhys.Value, extra with
+                            | Some tr, Some ex -> fst (tr head.Span.Start.Col) <> fst (tr ex.Span.Start.Col)
+                            | _ -> false
+
+                        let hint =
+                            if onContinuation then
+                                "; these are read as an indented continuation of the line above. A separate statement must line up with it, not sit deeper — and a block body written inline (after '->' or 'then') takes no second statement below it: start the body on its own line so its statements share a column"
+                            else
+                                ""
+
+                        let span = extra |> Option.map (fun e -> e.Span) |> Option.defaultValue head.Span
+
+                        return! err span $"'{name}' takes at most {available} argument(s), but got {args.Length}{hint}"
+                    | TEVar name when (name = "ls" || name = "pwd") && not (List.isEmpty args) ->
+                        // a command-name builtin VALUE applied to args is almost
+                        // always a shell-command reflex (`ls -la`) [D:ls-command-teach]
+                        // — it is weir's typed listing, not the external command,
+                        // so point at the force-external escape
+                        // a user's own `let ls = …` is no builtin: it is named
+                        // as the binding it is, with no alias to suggest
+                        let builtinShape =
+                            match name, finalTy ctx thead.Ty with
+                            | "ls", TSeq(TNamed("FileRow", [])) -> true
+                            | "pwd", TStr -> true
+                            | _ -> false
+
+                        if builtinShape then
+                            return!
+                                err
+                                    head.Span
+                                    $"'{name}' is weir's typed {formatTy (finalTy ctx thead.Ty)} value, not the shell command — to run the external '{name}' with arguments, force it external: ^{name} … (or alias it: #alias x = {name} …)"
+                        else
+                            return!
+                                err
+                                    head.Span
+                                    $"'{name}' is bound here to a {formatTy (finalTy ctx thead.Ty)} value, not the shell command — to run the external '{name}' with arguments, force it external: ^{name} …"
+                    | _ ->
+                        return!
+                            err
+                                head.Span
+                                $"this expression is not a function taking {args.Length} argument(s); it has type {formatTy (finalTy ctx thead.Ty)}"
+            | Some(paramTys, resultTy) ->
+                // when a defaulted-to-string parameter causes the mismatch,
+                // say so and name the anchor (PLAN-dx-review D6): the string
+                // came from a defaulting decision in the callee's body, not
+                // from anything visible at the call. A hole on a generalized
+                // var no longer defaults [D:hole-generic]; this serves the
+                // defaults a scheme still records
+                let nameHoleDefault (paramTy: Ty) (e: TypeError) : TypeError =
+                    let defaults =
                         match thead.Kind with
-                        | TEVar n -> $"'{n}'"
-                        | _ -> "the function"
+                        | TEVar name ->
+                            match Map.tryFind name env.Values with
+                            | Some sch -> sch.HoleDefaults
+                            | None -> []
+                        | _ -> []
 
-                    { e with
-                        Message =
-                            e.Message
-                            + $" — {name} takes string because a bare interpolation hole defaulted its parameter (the hole at {l}:{c}); a typed use in the hole fixes it (e.g. {{n + 0}}), or pass a string" }
-                | _ -> e
+                    match defaults, resolve ctx paramTy with
+                    | (l, c) :: _, TStr when e.Message.StartsWith "expected string" ->
+                        let name =
+                            match thead.Kind with
+                            | TEVar n -> $"'{n}'"
+                            | _ -> "the function"
 
-            do!
-                match piped with
-                | Some(pipedTy, _) ->
-                    // the stage that cannot take the piped value is the
-                    // fault, not the pipeline's source — in a chain the
-                    // source may sit lines above the failing stage
-                    let stageSpan =
-                        { head.Span with
-                            End = (match List.tryLast args with
-                                   | Some a -> a.Span.End
-                                   | None -> head.Span.End) }
+                        {
+                            e with
+                                Message =
+                                    e.Message
+                                    + $" — {name} takes string because a bare interpolation hole defaulted its parameter (the hole at {l}:{c}); a typed use in the hole fixes it (e.g. {{n + 0}}), or pass a string"
+                        }
+                    | _ -> e
 
-                    bind ctx env stageSpan (List.last paramTys) pipedTy
-                    |> Result.mapError (nameHoleDefault (List.last paramTys))
-                | None -> Ok()
+                do!
+                    match piped with
+                    | Some(pipedTy, _) ->
+                        // the stage that cannot take the piped value is the
+                        // fault, not the pipeline's source — in a chain the
+                        // source may sit lines above the failing stage
+                        let stageSpan = {
+                            head.Span with
+                                End =
+                                    (match List.tryLast args with
+                                     | Some a -> a.Span.End
+                                     | None -> head.Span.End)
+                        }
 
-            let! typedArgs =
-                List.zip args (List.truncate args.Length paramTys)
-                |> List.fold
-                    (fun acc (arg, paramTy) ->
-                        acc
-                        |> Result.bind (fun ts ->
-                            check ctx env arg paramTy
-                            |> Result.mapError (nameHoleDefault paramTy)
-                            |> Result.map (fun t -> t :: ts)))
-                    (Ok [])
-                |> Result.map List.rev
+                        bind ctx env stageSpan (List.last paramTys) pipedTy
+                        |> Result.mapError (nameHoleDefault (List.last paramTys))
+                    | None -> Ok()
 
-            let fullTy =
-                List.foldBack (fun p acc -> TFun(finalTy ctx p, acc)) paramTys (finalTy ctx resultTy)
+                let! typedArgs =
+                    List.zip args (List.truncate args.Length paramTys)
+                    |> List.fold
+                        (fun acc (arg, paramTy) ->
+                            acc
+                            |> Result.bind (fun ts ->
+                                check ctx env arg paramTy
+                                |> Result.mapError (nameHoleDefault paramTy)
+                                |> Result.map (fun t -> t :: ts)))
+                        (Ok [])
+                    |> Result.map List.rev
 
-            let applied =
-                typedArgs
-                |> List.fold
-                    (fun (acc: TypedExpr) targ ->
-                        let cod =
-                            match acc.Ty with
-                            | TFun(_, c) -> c
-                            | _ -> failwith "unreachable: funParams guaranteed a function"
+                let fullTy =
+                    List.foldBack (fun p acc -> TFun(finalTy ctx p, acc)) paramTys (finalTy ctx resultTy)
 
-                        { Kind = TEApp(acc, targ)
-                          Ty = cod
-                          Span = Span.union acc.Span targ.Span })
-                    { thead with Ty = fullTy }
+                let applied =
+                    typedArgs
+                    |> List.fold
+                        (fun (acc: TypedExpr) targ ->
+                            let cod =
+                                match acc.Ty with
+                                | TFun(_, c) -> c
+                                | _ -> failwith "unreachable: funParams guaranteed a function"
 
-            return applied
+                            {
+                                Kind = TEApp(acc, targ)
+                                Ty = cod
+                                Span = Span.union acc.Span targ.Span
+                            })
+                        { thead with Ty = fullTy }
+
+                return applied
     }
 
 // a command chain by AST shape — the parser's isCommandish, check-side
@@ -7038,42 +7304,51 @@ and private isCmdChain (e: Expr) =
 // sequences. Pure AST pre-pass so teaching errors keep their text.
 and armTail (e: Expr) : Expr =
     if isCmdChain e then
-        { Kind = EPipe(e, { Kind = EVar "|print"; Span = e.Span })
-          Span = e.Span }
+        {
+            Kind = EPipe(e, { Kind = EVar "|print"; Span = e.Span })
+            Span = e.Span
+        }
     else
         match e.Kind with
-        | ESeq(a, b) ->
-            { Kind = ESeq(a, armTail b)
-              Span = e.Span }
+        | ESeq(a, b) -> {
+            Kind = ESeq(a, armTail b)
+            Span = e.Span
+          }
         // the tail rides through a scope and a let-in to their bodies
         // [D:within-scopes] — statement position arms a scope's final
         // command exactly as an if body's
-        | EWithin(k, n, a, o, b) ->
-            { Kind = EWithin(k, n, a, o, armTail b)
-              Span = e.Span }
-        | EAlways(b, c) ->
-            { Kind = EAlways(armTail b, c)
-              Span = e.Span }
-        | EHold b ->
-            { Kind = EHold(armTail b)
-              Span = e.Span }
-        | ELet(n, ns, v, b) ->
-            { Kind = ELet(n, ns, v, armTail b)
-              Span = e.Span }
+        | EWithin(k, n, a, o, b) -> {
+            Kind = EWithin(k, n, a, o, armTail b)
+            Span = e.Span
+          }
+        | EAlways(b, c) -> {
+            Kind = EAlways(armTail b, c)
+            Span = e.Span
+          }
+        | EHold b -> {
+            Kind = EHold(armTail b)
+            Span = e.Span
+          }
+        | ELet(n, ns, v, b) -> {
+            Kind = ELet(n, ns, v, armTail b)
+            Span = e.Span
+          }
         // a statement-position match arms each arm's tail
         // [D:match-arm-commands] — a command arm streams, exactly as an
         // if body's; arms then unify at unit instead of at seq<string>
         // (the discard the raw match would report). Value position never
         // reaches armTail (gateExprs), so capture-typed matches stay.
-        | EMatch(scrut, arms) ->
-            { Kind = EMatch(scrut, arms |> List.map (fun (p, g, b) -> p, g, armTail b))
-              Span = e.Span }
+        | EMatch(scrut, arms) -> {
+            Kind = EMatch(scrut, arms |> List.map (fun (p, g, b) -> p, g, armTail b))
+            Span = e.Span
+          }
         // a statement-position if/else arms both branches [D:if-body-stop]
         // (an elif chain is the else branch's nested if); the else-less
         // if arms its then-tail at its own check arm
-        | EIf(c, t, Some els) ->
-            { Kind = EIf(c, armTail t, Some(armTail els))
-              Span = e.Span }
+        | EIf(c, t, Some els) -> {
+            Kind = EIf(c, armTail t, Some(armTail els))
+            Span = e.Span
+          }
         | _ -> e
 
 // armTail would rewrite something — its own recursion, as a test
@@ -7179,10 +7454,11 @@ and private withinContracts
                                     | r, _ -> r |> Result.map (fun tv -> (n, tv) :: ts)))
                             (Ok [])
                         |> Result.map (fun tfields ->
-                            Some
-                                { Kind = TERecord("ServerConfig", List.rev tfields)
-                                  Ty = TNamed("ServerConfig", [])
-                                  Span = a.Span })
+                            Some {
+                                Kind = TERecord("ServerConfig", List.rev tfields)
+                                Ty = TNamed("ServerConfig", [])
+                                Span = a.Span
+                            })
                     else
                         // an unexpected field set — the ordinary check
                         // produces the located "no declared record" or
@@ -7249,13 +7525,17 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
         check
             ctx
             env
-            { Kind =
-                EPipe(
-                    expr,
-                    { Kind = EVar "|print"
-                      Span = expr.Span }
-                )
-              Span = expr.Span }
+            {
+                Kind =
+                    EPipe(
+                        expr,
+                        {
+                            Kind = EVar "|print"
+                            Span = expr.Span
+                        }
+                    )
+                Span = expr.Span
+            }
             TUnit
     // an if/else or match under a unit demand (a loop body's or a
     // checked lambda's tail, an always cleanup) arms its branches'
@@ -7276,30 +7556,33 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             do!
                 match exitSite cleanup with
                 | Some sp ->
-                    Error
-                        { Message =
+                    Error {
+                        Message =
                             "exit inside always is refused — teardown of an unwinding scope must finish (the original error would become a code); fail \"msg\" carries a message instead"
-                          Span = sp
-                          Origin = None }
+                        Span = sp
+                        Origin = None
+                    }
                 | None -> Ok()
 
             do! execInAlways body cleanup
             let! tbody = check ctx env body expected
             let! tcleanup = check ctx env cleanup TUnit
 
-            return
-                { Kind = TEAlways(tbody, tcleanup)
-                  Ty = tbody.Ty
-                  Span = expr.Span }
+            return {
+                Kind = TEAlways(tbody, tcleanup)
+                Ty = tbody.Ty
+                Span = expr.Span
+            }
         }
     | EHold body, _ ->
         result {
             let! tbody = check ctx env body expected
 
-            return
-                { Kind = TEHold tbody
-                  Ty = tbody.Ty
-                  Span = expr.Span }
+            return {
+                Kind = TEHold tbody
+                Ty = tbody.Ty
+                Span = expr.Span
+            }
         }
     // a plan block yields a Plan regardless of the body's type
     // [D:plan-apply]: the body runs for its capture, its own value is
@@ -7312,10 +7595,11 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             let planTy = TNamed("Plan", [])
             do! bind ctx env expr.Span expected planTy
 
-            return
-                { Kind = TEWithin(WithinPlan, binder, targ, topts, tbody)
-                  Ty = planTy
-                  Span = expr.Span }
+            return {
+                Kind = TEWithin(WithinPlan, binder, targ, topts, tbody)
+                Ty = planTy
+                Span = expr.Span
+            }
         }
     | EWithin(kind, binder, arg, opts, body), _ ->
         result {
@@ -7323,10 +7607,11 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             let! targ, topts, benv = withinContracts ctx env kind binder arg opts
             let! tbody = check ctx benv body expected
 
-            return
-                { Kind = TEWithin(kind, binder, targ, topts, tbody)
-                  Ty = tbody.Ty
-                  Span = expr.Span }
+            return {
+                Kind = TEWithin(kind, binder, targ, topts, tbody)
+                Ty = tbody.Ty
+                Span = expr.Span
+            }
         }
     // the check direction rides through a sequence to its final
     // expression [D:interior-arming] — F#'s rule, and what lets a
@@ -7353,10 +7638,11 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
 
             let! trest = check ctx env rest expected
 
-            return
-                { Kind = TESeq(tfirst, trest)
-                  Ty = trest.Ty
-                  Span = expr.Span }
+            return {
+                Kind = TESeq(tfirst, trest)
+                Ty = trest.Ty
+                Span = expr.Span
+            }
         }
     | EOpValue op, expected ->
         // the check-mode twin [D:operator-values]: the pushed domain
@@ -7411,17 +7697,13 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
 
             let scheme = generalizeLet ctx env valueTy
 
-            let! tbody =
-                check
-                    ctx
-                    (bindValue name scheme env)
-                    body
-                    expected
+            let! tbody = check ctx (bindValue name scheme env) body expected
 
-            return
-                { Kind = TELet(name, nameSpan, tvalue, tbody)
-                  Ty = tbody.Ty
-                  Span = expr.Span }
+            return {
+                Kind = TELet(name, nameSpan, tvalue, tbody)
+                Ty = tbody.Ty
+                Span = expr.Span
+            }
         }
     | _ ->
         result {
@@ -7462,7 +7744,12 @@ and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (arg:
             // default-or-reject happens at the boundary. A hole demands
             // Render now, so a let that generalizes v carries the class
             // [D:hole-generic]
-            do! (if site = Hole then spliceAdmit ctx env site arg.Span targ.Ty else Ok())
+            do!
+                (if site = Hole then
+                     spliceAdmit ctx env site arg.Span targ.Ty
+                 else
+                     Ok())
+
             ctx.PendingSplices <- (v, arg.Span, site) :: ctx.PendingSplices
             return targ
         | ty ->
@@ -7705,7 +7992,10 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
                     let v' = fin v
                     if same v' v then u else (p, v'))
 
-            if same src' src && same ups' ups then k0 else TEUpdate(src', ups')
+            if same src' src && same ups' ups then
+                k0
+            else
+                TEUpdate(src', ups')
         | TERecord(n, fields) ->
             let fields' =
                 fields
@@ -7767,12 +8057,19 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
                     let b' = fin b
                     if same g' g && same b' b then arm else (p, g', b'))
 
-            if same s' s && same arms' arms then k0 else TEMatch(s', arms')
+            if same s' s && same arms' arms then
+                k0
+            else
+                TEMatch(s', arms')
         | TEIf(c, t, e) ->
             let c' = fin c
             let t' = fin t
             let e' = shareOpt fin e
-            if same c' c && same t' t && same e' e then k0 else TEIf(c', t', e')
+
+            if same c' c && same t' t && same e' e then
+                k0
+            else
+                TEIf(c', t', e')
         | TEDur _ -> k0
         | TEFloat _ -> k0
         | TESize _ -> k0
@@ -7869,13 +8166,14 @@ let anonDefs (expr: Expr) : (string * TypeDef) list =
 
              if not (acc.ContainsKey name) then
                  acc[name] <-
-                     Record
-                         { Name = name
-                           Params = []
-                           Fields = List.sortBy fst fields
-                           Attrs = Map.empty
-                           OrdKey = []
-                           Docs = Map.empty }
+                     Record {
+                         Name = name
+                         Params = []
+                         Fields = List.sortBy fst fields
+                         Attrs = Map.empty
+                         OrdKey = []
+                         Docs = Map.empty
+                     }
          | _ -> ())
 
         exprChildren e |> List.iter walk
@@ -7889,13 +8187,14 @@ let private pendingAnonRecords () : (string * TypeDef) list =
     Types.drainAnonDefs ()
     |> List.map (fun (name, fields) ->
         name,
-        Record
-            { Name = name
-              Params = []
-              Fields = List.sortBy fst fields
-              Attrs = Map.empty
-              OrdKey = []
-              Docs = Map.empty })
+        Record {
+            Name = name
+            Params = []
+            Fields = List.sortBy fst fields
+            Attrs = Map.empty
+            OrdKey = []
+            Docs = Map.empty
+        })
 
 let private withDefList (env: TypeEnv) (defs: (string * TypeDef) list) : TypeEnv =
     let held (n: string, d: TypeDef) =
@@ -7906,9 +8205,10 @@ let private withDefList (env: TypeEnv) (defs: (string * TypeDef) list) : TypeEnv
     match defs with
     | [] -> env
     | defs when List.forall held defs -> env
-    | defs ->
-        { env with
-            Types = defs |> List.fold (fun ts (n, d) -> Map.add n d ts) env.Types }
+    | defs -> {
+        env with
+            Types = defs |> List.fold (fun ts (n, d) -> Map.add n d ts) env.Types
+      }
 
 let private lastAnonDefs =
     new System.Threading.ThreadLocal<System.WeakReference<Expr> * (string * TypeDef) list>(fun () ->
@@ -7948,10 +8248,11 @@ let budgetMsgUnsized =
 let isBudgetMessage (msg: string) : bool =
     msg = budgetMsgSized || msg = budgetMsgUnsized
 
-let private budgetError (span: Span) (sized: bool) : TypeError =
-    { Span = span
-      Message = (if sized then budgetMsgSized else budgetMsgUnsized)
-      Origin = None }
+let private budgetError (span: Span) (sized: bool) : TypeError = {
+    Span = span
+    Message = (if sized then budgetMsgSized else budgetMsgUnsized)
+    Origin = None
+}
 
 let private catchBudget (f: unit -> Result<'a, TypeError>) : Result<'a, TypeError> =
     try
@@ -7964,9 +8265,10 @@ let typecheckBinderCore
     (pat: Pattern)
     (expr: Expr)
     : Result<TypedExpr * (string * Scheme) list, TypeError> =
-    let env =
-        { withAnonDefs env expr with
-            AnonLitDefs = System.Collections.Generic.Dictionary() }
+    let env = {
+        withAnonDefs env expr with
+            AnonLitDefs = System.Collections.Generic.Dictionary()
+    }
 
     let ctx = newCtx ()
 
@@ -7982,9 +8284,11 @@ let typecheckBinderCore
     match shaped with
     | Error e -> Error e
     | Ok((shape, binds), inferred) ->
-        match (match inferred with
-               | Some te -> Ok te
-               | None -> infer ctx env expr) with
+        match
+            (match inferred with
+             | Some te -> Ok te
+             | None -> infer ctx env expr)
+        with
         | Error e -> Error e
         | Ok te ->
             match bind ctx env pat.PSpan shape te.Ty with
@@ -8013,10 +8317,7 @@ let typecheckBinderCore
                             | _ -> None)
 
                     match stranded with
-                    | Some p ->
-                        err
-                            p.Span
-                            (strandedMessage p.Cls)
+                    | Some p -> err p.Span (strandedMessage p.Cls)
                     | None -> Ok(te, schemes)
 
 let typecheckBinder (env: TypeEnv) (pat: Pattern) (expr: Expr) : Result<TypedExpr * (string * Scheme) list, TypeError> =
@@ -8026,13 +8327,14 @@ let typecheckWithCore
     (env: TypeEnv)
     (expr: Expr)
     : Result<
-          TypedExpr * Map<string, Set<Cls>> * Map<string, (string * int * int * int) list> * (int * int) list,
-          TypeError
+        TypedExpr * Map<string, Set<Cls>> * Map<string, (string * int * int * int) list> * (int * int) list,
+        TypeError
        >
     =
-    let env =
-        { withAnonDefs env expr with
-            AnonLitDefs = System.Collections.Generic.Dictionary() }
+    let env = {
+        withAnonDefs env expr with
+            AnonLitDefs = System.Collections.Generic.Dictionary()
+    }
 
     let ctx = newCtx ()
 
@@ -8060,10 +8362,7 @@ let typecheckWithCore
                     | _ -> [])
 
             match openCons |> List.tryFind (fun (u, _) -> not (resultVars.Contains u)) with
-            | Some(_, p) ->
-                err
-                    p.Span
-                    (strandedMessage p.Cls)
+            | Some(_, p) -> err p.Span (strandedMessage p.Cls)
             | None ->
                 let residue =
                     openCons
@@ -8182,11 +8481,12 @@ let patNameSpans (p: Pattern) : (string * Span) list =
 /// deliberately-unused and never errors
 let unusedExempt (n: string) = n.StartsWith "_"
 
-type UnusedLocal =
-    { UName: string
-      USpan: Span
-      // a bare `_` as the whole let binder — the anonymous discard
-      UBareWildcard: bool }
+type UnusedLocal = {
+    UName: string
+    USpan: Span
+    // a bare `_` as the whole let binder — the anonymous discard
+    UBareWildcard: bool
+}
 
 /// free names used in a typed statement tree, plus its unused
 /// block-local let binders (and bare-`_` block binders)
@@ -8196,8 +8496,7 @@ let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
     let patNames p =
         patNameSpans p |> List.map fst |> Set.ofList
 
-    let unionAll (sets: Set<string> list) =
-        sets |> List.fold Set.union Set.empty
+    let unionAll (sets: Set<string> list) = sets |> List.fold Set.union Set.empty
 
     let rec walk (te: TypedExpr) : Set<string> =
         match te.Kind with
@@ -8207,10 +8506,11 @@ let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
             let fb = walk b
 
             if not (Set.contains n fb) && not (unusedExempt n) then
-                found.Add
-                    { UName = n
-                      USpan = ns
-                      UBareWildcard = false }
+                found.Add {
+                    UName = n
+                    USpan = ns
+                    UBareWildcard = false
+                }
 
             Set.union fv (Set.remove n fb)
         | TELetPat(pat, v, b) ->
@@ -8219,17 +8519,19 @@ let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
 
             (match pat.PKind with
              | PWildcard ->
-                 found.Add
-                     { UName = "_"
-                       USpan = pat.PSpan
-                       UBareWildcard = true }
+                 found.Add {
+                     UName = "_"
+                     USpan = pat.PSpan
+                     UBareWildcard = true
+                 }
              | _ ->
                  for n, sp in patNameSpans pat do
                      if not (Set.contains n fb) && not (unusedExempt n) then
-                         found.Add
-                             { UName = n
-                               USpan = sp
-                               UBareWildcard = false })
+                         found.Add {
+                             UName = n
+                             USpan = sp
+                             UBareWildcard = false
+                         })
 
             Set.union fv (Set.difference fb (patNames pat))
         | TELambda(p, _, b) -> Set.remove p (walk b)
@@ -8252,9 +8554,10 @@ let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
             | None -> head
         | TEWithin(_, binder, a, o, b) ->
             let args =
-                unionAll
-                    [ a |> Option.map walk |> Option.defaultValue Set.empty
-                      o |> Option.map walk |> Option.defaultValue Set.empty ]
+                unionAll [
+                    a |> Option.map walk |> Option.defaultValue Set.empty
+                    o |> Option.map walk |> Option.defaultValue Set.empty
+                ]
 
             let fb =
                 match binder with
@@ -8315,11 +8618,12 @@ type Binder =
     | Local of Span
     | TopLevel of string
 
-type Occurrence =
-    { Name: string
-      Span: Span
-      Binder: Binder
-      IsBinderSite: bool }
+type Occurrence = {
+    Name: string
+    Span: Span
+    Binder: Binder
+    IsBinderSite: bool
+}
 
 /// a name the editor may show: a user spelling no desugar introduced
 /// (`_chain`, `|print`, the `_.field` wildcard, `()`); a bare uppercase
@@ -8335,11 +8639,12 @@ let occurrences (te: TypedExpr) : Occurrence list =
 
     let site (n: string, sp: Span) =
         if occurrenceName n then
-            found.Add
-                { Name = n
-                  Span = sp
-                  Binder = Local sp
-                  IsBinderSite = true }
+            found.Add {
+                Name = n
+                Span = sp
+                Binder = Local sp
+                IsBinderSite = true
+            }
 
     let bindPat (pat: Pattern) (scope: Map<string, Span>) =
         patNameSpans pat
@@ -8352,14 +8657,15 @@ let occurrences (te: TypedExpr) : Occurrence list =
     let rec walk (scope: Map<string, Span>) (te: TypedExpr) : unit =
         match te.Kind with
         | TEVar n when occurrenceName n ->
-            found.Add
-                { Name = n
-                  Span = te.Span
-                  Binder =
+            found.Add {
+                Name = n
+                Span = te.Span
+                Binder =
                     (match Map.tryFind n scope with
                      | Some sp -> Local sp
                      | None -> TopLevel n)
-                  IsBinderSite = false }
+                IsBinderSite = false
+            }
         | TELet(n, ns, v, b) ->
             walk scope v
             site (n, ns)
@@ -8439,8 +8745,8 @@ let typecheckWith
     (env: TypeEnv)
     (expr: Expr)
     : Result<
-          TypedExpr * Map<string, Set<Cls>> * Map<string, (string * int * int * int) list> * (int * int) list,
-          TypeError
+        TypedExpr * Map<string, Set<Cls>> * Map<string, (string * int * int * int) list> * (int * int) list,
+        TypeError
        >
     =
     catchBudget (fun () -> typecheckWithCore env expr)
@@ -8465,9 +8771,10 @@ type RecoveryResult =
 /// run only for the tree's sake: their failures are not this pass's to
 /// report.
 let typecheckRecovering (env: TypeEnv) (expr: Expr) : RecoveryResult =
-    let env =
-        { withAnonDefs env expr with
-            AnonLitDefs = System.Collections.Generic.Dictionary() }
+    let env = {
+        withAnonDefs env expr with
+            AnonLitDefs = System.Collections.Generic.Dictionary()
+    }
 
     let ctx = { newCtx () with Recovered = Some [] }
 
@@ -8503,11 +8810,16 @@ let typecheckValidator (env: TypeEnv) (typeName: string) (v: Validator) : Result
             | _ -> failwith "unreachable: checkDecl admits validate on a single-case union with a payload"
 
         let want = TUnit
-        let lam = { Kind = ELambdaPat(v.Binder, v.Body); Span = v.Span }
 
-        let env =
-            { withAnonDefs env lam with
-                AnonLitDefs = System.Collections.Generic.Dictionary() }
+        let lam = {
+            Kind = ELambdaPat(v.Binder, v.Body)
+            Span = v.Span
+        }
+
+        let env = {
+            withAnonDefs env lam with
+                AnonLitDefs = System.Collections.Generic.Dictionary()
+        }
 
         let ctx = newCtx ()
 
@@ -8516,10 +8828,11 @@ let typecheckValidator (env: TypeEnv) (typeName: string) (v: Validator) : Result
 
             do!
                 bind ctx env v.Binder.PSpan shape payload
-                |> Result.mapError (fun e ->
-                    { e with
+                |> Result.mapError (fun e -> {
+                    e with
                         Message =
-                            $"'validate' binds {typeName}'s payload, which is {formatTy payload}, but this binder is {binderWord v.Binder}" })
+                            $"'validate' binds {typeName}'s payload, which is {formatTy payload}, but this binder is {binderWord v.Binder}"
+                })
 
             let! tbody = infer ctx (bindParams env binds) v.Body
 
@@ -8545,15 +8858,15 @@ let typecheckValidator (env: TypeEnv) (typeName: string) (v: Validator) : Result
                         $"'validate' cannot call {typeName}.create — that is recursion, which weir does not have; validate the payload directly"
             | None ->
 
-            match resolvePendingSplices ctx env Set.empty with
-            | Error e -> return! Error e
-            | Ok() ->
-                return
-                    finalizeExpr
-                        ctx
-                        { Kind = TELambdaPat(v.Binder, tbody)
-                          Ty = TFun(payload, want)
-                          Span = v.Span }
+                match resolvePendingSplices ctx env Set.empty with
+                | Error e -> return! Error e
+                | Ok() ->
+                    return
+                        finalizeExpr ctx {
+                            Kind = TELambdaPat(v.Binder, tbody)
+                            Ty = TFun(payload, want)
+                            Span = v.Span
+                        }
         })
 
 // ---- check-against-sig [D:module-signatures] ------------------------------
@@ -8576,9 +8889,10 @@ type SigFailure =
     | SigMerged of sigVar1: string * sigVar2: string * span: Span
 
 let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Result<TypedExpr * Scheme, SigFailure> =
-    let env =
-        { withAnonDefs env expr with
-            AnonLitDefs = System.Collections.Generic.Dictionary() }
+    let env = {
+        withAnonDefs env expr with
+            AnonLitDefs = System.Collections.Generic.Dictionary()
+    }
 
     let ctx = newCtx ()
 
@@ -8622,19 +8936,21 @@ let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Re
              | Error _ -> Error(SigShape(finalTy ctx (wrap (TFun(TUnit, cod))), pspan)))
             |> Result.bind (fun () ->
                 go env cod body (wrap << fun t -> TFun(TUnit, t))
-                |> Result.map (fun tb ->
-                    { Kind = TELambda("()", pspan, tb)
-                      Ty = TFun(dom, tb.Ty)
-                      Span = e.Span }))
+                |> Result.map (fun tb -> {
+                    Kind = TELambda("()", pspan, tb)
+                    Ty = TFun(dom, tb.Ty)
+                    Span = e.Span
+                }))
         | ELambda(param, pspan, body), TFun(dom, cod) ->
             match checkBinderName e.Span param with
             | Error terr -> Error(SigBody terr)
             | Ok() ->
                 go (bindParams env [ param, dom ]) cod body (wrap << fun t -> TFun(dom, t))
-                |> Result.map (fun tb ->
-                    { Kind = TELambda(param, pspan, tb)
-                      Ty = TFun(dom, tb.Ty)
-                      Span = e.Span })
+                |> Result.map (fun tb -> {
+                    Kind = TELambda(param, pspan, tb)
+                    Ty = TFun(dom, tb.Ty)
+                    Span = e.Span
+                })
         | ELambdaPat(pat, body), TFun(dom, cod) ->
             match binderShapeAt ctx env (Some dom) pat with
             | Error terr -> Error(SigBody terr)
@@ -8643,10 +8959,11 @@ let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Re
                 | Error _ -> Error(SigShape(finalTy ctx (wrap (TFun(shape, cod))), pat.PSpan))
                 | Ok() ->
                     go (bindParams env binds) cod body (wrap << fun t -> TFun(dom, t))
-                    |> Result.map (fun tb ->
-                        { Kind = TELambdaPat(pat, tb)
-                          Ty = TFun(dom, tb.Ty)
-                          Span = e.Span })
+                    |> Result.map (fun tb -> {
+                        Kind = TELambdaPat(pat, tb)
+                        Ty = TFun(dom, tb.Ty)
+                        Span = e.Span
+                    })
         | _ -> fallback ()
 
     match go env expected0 expr id with
@@ -8708,11 +9025,11 @@ let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Re
                     match openCons |> List.tryFind (fun (u, _) -> not (Map.containsKey u backMap)) with
                     | Some(_, p) ->
                         Error(
-                            SigBody
-                                { Span = p.Span
-                                  Message =
-                                    (strandedMessage p.Cls)
-                                  Origin = None }
+                            SigBody {
+                                Span = p.Span
+                                Message = (strandedMessage p.Cls)
+                                Origin = None
+                            }
                         )
                     | None ->
                         let cs =
@@ -8721,12 +9038,13 @@ let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Re
                             |> List.map (fun (v, ps) -> v, ps |> List.map (fun (_, p) -> p.Cls) |> Set.ofList)
                             |> Map.ofList
 
-                        let scheme =
-                            { Forall = Set.ofList sigVars
-                              Cs = cs
-                              Ty = sigTy
-                              RowOrigins = Map.empty
-                              HoleDefaults = [] }
+                        let scheme = {
+                            Forall = Set.ofList sigVars
+                            Cs = cs
+                            Ty = sigTy
+                            RowOrigins = Map.empty
+                            HoleDefaults = []
+                        }
 
                         Ok(te, scheme)
 
@@ -8831,88 +9149,92 @@ let private attrPosName =
 
 let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPos list> =
     Map.ofList (
-        [ "Short",
-          ((function
-           | Some(AStr "h") -> Some "argument 'h' is reserved for --help"
-           // a short flag is `-` plus a letter or digit: `-`, a space or
-           // other punctuation is no flag the argv scanner can match. A
-           // digit stays legal — a signature describes foreign CLIs
-           // (`ls -1`), and the sig generator writes them
-           // [D:short-alnum]
-           | Some(AStr s) when s.Length = 1 && System.Char.IsLetterOrDigit s[0] -> None
-           | Some(AStr s) when s.Length = 1 ->
-               Some $"expects a letter or digit, e.g. [<Short \"c\">] — '-{s}' can never be matched as a flag"
-           | _ -> Some "expects a one-character string, e.g. [<Short \"c\">]"),
-           [ FieldPos ])
-          "NoShort",
-          ((function
-           | None -> None
-           | Some _ -> Some "takes no argument"),
-           [ FieldPos ])
-          // [<Positional>] exists for signatures [D:command-signatures]:
-          // foreign CLIs have operands and a signature describes theirs
-          // (the earlier removal concerned weir's own CLIs); inert
-          // everywhere else, per the attribute law
-          "Positional",
-          ((function
-           | None -> None
-           | Some _ -> Some "takes no argument"),
-           [ FieldPos ])
-          // [<Doc>] is retired [D:doc-help] — a `///` above the field is the one
-          // source; a stale `[<Doc "x">]` is now the ordinary unknown-attribute
-          // error (the did-you-mean over the remaining names).
-          "Default",
-          ((function
-           | Some(AStr _ | AInt _ | ABool _ | ADur _ | AFloat _ | ASize _) -> None
-           | None -> Some "expects a literal (string, int, float, bool, duration, or size), e.g. [<Default 10>]"),
-           [ FieldPos ])
-          // the wire key [D:wire-keys]: reserved words and illegal
-          // identifiers are ordinary JSON/YAML keys — the field keeps a
-          // weir name, the attribute names the wire; a union case's tag
-          // value rides the same name [D:wire-unions]
-          "Wire",
-          ((function
-           | Some(AStr s) when s <> "" -> None
-           | Some(AStr _) -> Some "refuses an empty wire key — name the key the field reads and writes, e.g. [<Wire \"type\">] kind: string"
-           | _ -> Some "expects the wire key as a string, e.g. [<Wire \"type\">] kind: string"),
-           [ FieldPos; CasePos ])
-          // the XML boundary markers [D:from-xml]: [<Attr>] reads a field
-          // from an attribute (name defaults to the field), [<Elem "X">]
-          // names the repeated element a seq< > field reads. Inert on the
-          // json/yaml adapters — an XML-only field annotation.
-          "Attr",
-          ((function
-           | None -> None
-           | Some(AStr s) when s <> "" -> None
-           | _ -> Some "expects nothing or the attribute name, e.g. [<Attr>] or [<Attr \"Include\">]"),
-           [ FieldPos ])
-          "Elem",
-          ((function
-           | Some(AStr s) when s <> "" -> None
-           | _ -> Some "expects the element name as a string, e.g. [<Elem \"ProjectReference\">] refs: seq<Ref>"),
-           [ FieldPos ])
-          // [D:wire-unions] pre-registration [D:attr-positions]: Tag and
-          // Other validate here and bind at the boundary — the
-          // attribute law's shape (validation at attachment, binding at
-          // consumption)
-          "Tag",
-          ((function
-           | Some(AStr s) when s <> "" -> None
-           | _ -> Some "expects the discriminator field as a string, e.g. [<Tag \"kind\">]"),
-           [ UnionDeclPos ])
-          "Other",
-          ((function
-           | None -> None
-           | Some _ -> Some "takes no argument"),
-           [ CasePos ])
-          // the derived ordering [D:derived-ord]: a position per field
-          // or case — the key is written on its members, so reordering
-          // a declaration cannot change it
-          "Ord",
-          ((function
-           | Some(AInt n) when n >= 1L -> None
-           | _ -> Some "expects a positive int, e.g. [<Ord 1>]"),
-           [ FieldPos; CasePos ]) ]
+        [
+            "Short",
+            ((function
+             | Some(AStr "h") -> Some "argument 'h' is reserved for --help"
+             // a short flag is `-` plus a letter or digit: `-`, a space or
+             // other punctuation is no flag the argv scanner can match. A
+             // digit stays legal — a signature describes foreign CLIs
+             // (`ls -1`), and the sig generator writes them
+             // [D:short-alnum]
+             | Some(AStr s) when s.Length = 1 && System.Char.IsLetterOrDigit s[0] -> None
+             | Some(AStr s) when s.Length = 1 ->
+                 Some $"expects a letter or digit, e.g. [<Short \"c\">] — '-{s}' can never be matched as a flag"
+             | _ -> Some "expects a one-character string, e.g. [<Short \"c\">]"),
+             [ FieldPos ])
+            "NoShort",
+            ((function
+             | None -> None
+             | Some _ -> Some "takes no argument"),
+             [ FieldPos ])
+            // [<Positional>] exists for signatures [D:command-signatures]:
+            // foreign CLIs have operands and a signature describes theirs
+            // (the earlier removal concerned weir's own CLIs); inert
+            // everywhere else, per the attribute law
+            "Positional",
+            ((function
+             | None -> None
+             | Some _ -> Some "takes no argument"),
+             [ FieldPos ])
+            // [<Doc>] is retired [D:doc-help] — a `///` above the field is the one
+            // source; a stale `[<Doc "x">]` is now the ordinary unknown-attribute
+            // error (the did-you-mean over the remaining names).
+            "Default",
+            ((function
+             | Some(AStr _ | AInt _ | ABool _ | ADur _ | AFloat _ | ASize _) -> None
+             | None -> Some "expects a literal (string, int, float, bool, duration, or size), e.g. [<Default 10>]"),
+             [ FieldPos ])
+            // the wire key [D:wire-keys]: reserved words and illegal
+            // identifiers are ordinary JSON/YAML keys — the field keeps a
+            // weir name, the attribute names the wire; a union case's tag
+            // value rides the same name [D:wire-unions]
+            "Wire",
+            ((function
+             | Some(AStr s) when s <> "" -> None
+             | Some(AStr _) ->
+                 Some
+                     "refuses an empty wire key — name the key the field reads and writes, e.g. [<Wire \"type\">] kind: string"
+             | _ -> Some "expects the wire key as a string, e.g. [<Wire \"type\">] kind: string"),
+             [ FieldPos; CasePos ])
+            // the XML boundary markers [D:from-xml]: [<Attr>] reads a field
+            // from an attribute (name defaults to the field), [<Elem "X">]
+            // names the repeated element a seq< > field reads. Inert on the
+            // json/yaml adapters — an XML-only field annotation.
+            "Attr",
+            ((function
+             | None -> None
+             | Some(AStr s) when s <> "" -> None
+             | _ -> Some "expects nothing or the attribute name, e.g. [<Attr>] or [<Attr \"Include\">]"),
+             [ FieldPos ])
+            "Elem",
+            ((function
+             | Some(AStr s) when s <> "" -> None
+             | _ -> Some "expects the element name as a string, e.g. [<Elem \"ProjectReference\">] refs: seq<Ref>"),
+             [ FieldPos ])
+            // [D:wire-unions] pre-registration [D:attr-positions]: Tag and
+            // Other validate here and bind at the boundary — the
+            // attribute law's shape (validation at attachment, binding at
+            // consumption)
+            "Tag",
+            ((function
+             | Some(AStr s) when s <> "" -> None
+             | _ -> Some "expects the discriminator field as a string, e.g. [<Tag \"kind\">]"),
+             [ UnionDeclPos ])
+            "Other",
+            ((function
+             | None -> None
+             | Some _ -> Some "takes no argument"),
+             [ CasePos ])
+            // the derived ordering [D:derived-ord]: a position per field
+            // or case — the key is written on its members, so reordering
+            // a declaration cannot change it
+            "Ord",
+            ((function
+             | Some(AInt n) when n >= 1L -> None
+             | _ -> Some "expects a positive int, e.g. [<Ord 1>]"),
+             [ FieldPos; CasePos ])
+        ]
         // the codec attributes [D:wire-codecs], one per Codec case — the
         // registry is derived, so it cannot drift from the union
         @ (allCodecs
@@ -9058,7 +9380,9 @@ let private ordKey
         | (m, n, span) :: rest ->
             match Map.tryFind n seen with
             | Some first ->
-                err span $"[<Ord {n}>] on '{owner}': {kind}s '{first}' and '{m}' share position {n} — number each {kind} once"
+                err
+                    span
+                    $"[<Ord {n}>] on '{owner}': {kind}s '{first}' and '{m}' share position {n} — number each {kind} once"
             | None -> go (Map.add n m seen) rest
 
     go Map.empty numbered
@@ -9096,7 +9420,8 @@ let preludeLoading: System.Threading.ThreadLocal<bool> =
 // a declaration's field and payload types with their names resolved
 // [D:qualified-type-names]; the type's own name (self-reference) stays
 let private canonDecl (env: TypeEnv) (decl: Decl) : Result<Decl, TypeError> =
-    let one (ty: Ty) = canonTyKeeping decl.Name env decl.Span ty
+    let one (ty: Ty) =
+        canonTyKeeping decl.Name env decl.Span ty
 
     match decl.Body with
     | DRecord fields ->
@@ -9104,7 +9429,10 @@ let private canonDecl (env: TypeEnv) (decl: Decl) : Result<Decl, TypeError> =
         |> List.fold
             (fun acc (n, t, a) -> acc |> Result.bind (fun xs -> one t |> Result.map (fun t' -> (n, t', a) :: xs)))
             (Ok [])
-        |> Result.map (fun fs -> { decl with Body = DRecord(List.rev fs) })
+        |> Result.map (fun fs -> {
+            decl with
+                Body = DRecord(List.rev fs)
+        })
     | DUnion cases ->
         cases
         |> List.fold
@@ -9131,8 +9459,7 @@ let private validateRefusal (decl: Decl) (cases: (string * Ty option * AttrSpec 
     | [ _ ] when not decl.Params.IsEmpty ->
         Some $"a validated type is monomorphic — '{decl.Name}' is generic; validate a concrete payload"
     | [ _ ] when decl.Attrs |> List.exists (fun a -> a.AName = "Tag") ->
-        Some
-            "[<Tag>] and 'validate' do not combine — a validated type crosses the wire as its payload, with no tag"
+        Some "[<Tag>] and 'validate' do not combine — a validated type crosses the wire as its payload, with no tag"
     | [ _ ] -> None
     | _ ->
         Some
@@ -9151,365 +9478,384 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
         | Error e -> Error e
         | Ok decl ->
 
-        let env = withDefList env (pendingAnonRecords ())
-        let allowed = Set.ofList decl.Params
-        let selfArity = decl.Params.Length
-        let selfTy = TNamed(decl.Name, decl.Params |> List.map TVar)
+            let env = withDefList env (pendingAnonRecords ())
+            let allowed = Set.ofList decl.Params
+            let selfArity = decl.Params.Length
+            let selfTy = TNamed(decl.Name, decl.Params |> List.map TVar)
 
-        match firstDup decl.Params with
-        | Some dup -> err decl.Span $"duplicate type parameter '{dup}"
-        | None ->
-            match decl.Body with
-            | DRecord _ when decl.Validate.IsSome ->
-                err
-                    decl.Validate.Value.Span
-                    $"'validate' guards a single-case union (type Email = Email of string), not a record — '{decl.Name}' composes validated values instead: give a field a validated type and the record holds only valid ones"
-            | DUnion cases when decl.Validate.IsSome && validateRefusal decl cases |> Option.isSome ->
-                err decl.Validate.Value.Span (validateRefusal decl cases).Value
-            | DRecord fields ->
-                result {
-                    match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
-                    | Some dup -> return! err decl.Span $"duplicate field '{dup}'"
-                    | None ->
-                        // no registered attribute attaches to a record
-                        // declaration [D:attr-positions] — each teaches its home
-                        do! validateAttrsAt RecordDeclPos $"record '{decl.Name}'" decl.Attrs
+            match firstDup decl.Params with
+            | Some dup -> err decl.Span $"duplicate type parameter '{dup}"
+            | None ->
+                match decl.Body with
+                | DRecord _ when decl.Validate.IsSome ->
+                    err
+                        decl.Validate.Value.Span
+                        $"'validate' guards a single-case union (type Email = Email of string), not a record — '{decl.Name}' composes validated values instead: give a field a validated type and the record holds only valid ones"
+                | DUnion cases when decl.Validate.IsSome && validateRefusal decl cases |> Option.isSome ->
+                    err decl.Validate.Value.Span (validateRefusal decl cases).Value
+                | DRecord fields ->
+                    result {
+                        match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
+                        | Some dup -> return! err decl.Span $"duplicate field '{dup}'"
+                        | None ->
+                            // no registered attribute attaches to a record
+                            // declaration [D:attr-positions] — each teaches its home
+                            do! validateAttrsAt RecordDeclPos $"record '{decl.Name}'" decl.Attrs
 
-                        let plain = fields |> List.map (fun (n, t, _) -> n, t)
+                            let plain = fields |> List.map (fun (n, t, _) -> n, t)
 
-                        do! allOk plain (snd >> validateTy env decl.Name selfArity allowed decl.Span)
-                        do! allOk fields (validateFieldAttrs decl.Name)
-                        do! validateShortCollisions fields
-                        do! validateWireCollisions decl.Name fields
+                            do! allOk plain (snd >> validateTy env decl.Name selfArity allowed decl.Span)
+                            do! allOk fields (validateFieldAttrs decl.Name)
+                            do! validateShortCollisions fields
+                            do! validateWireCollisions decl.Name fields
 
-                        let attrs =
-                            fields
-                            |> List.choose (fun (n, _, specs) ->
-                                if List.isEmpty specs then
-                                    None
-                                else
-                                    Some(n, specs |> List.map (fun a -> a.AName, a.AArg)))
-                            |> Map.ofList
+                            let attrs =
+                                fields
+                                |> List.choose (fun (n, _, specs) ->
+                                    if List.isEmpty specs then
+                                        None
+                                    else
+                                        Some(n, specs |> List.map (fun a -> a.AName, a.AArg)))
+                                |> Map.ofList
 
-                        let! ordered = ordKey decl.Name "field" (fields |> List.map (fun (f, _, specs) -> f, specs))
+                            let! ordered =
+                                ordKey decl.Name "field" (fields |> List.map (fun (f, _, specs) -> f, specs))
 
-                        let def =
-                            Record
-                                { Name = decl.Name
-                                  Params = decl.Params
-                                  Fields = plain
-                                  Attrs = attrs
-                                  OrdKey = ordered |> List.map (fun (f, _, _) -> f)
-                                  // the runner enriches this from the `///` docs
-                                  // after checkDecl [D:doc-help]
-                                  Docs = Map.empty }
-
-                        let env' =
-                            { env with
-                                Types = Map.add decl.Name def env.Types }
-
-                        // a numbered field must itself order, or the
-                        // DECLARATION refuses naming it — never a sort site
-                        // [D:derived-ord]; an unnumbered field takes no part
-                        // (the partial-key law) and is unconstrained; the def
-                        // is registered first so a self-typed field admits
-                        do!
-                            allOk ordered (fun (f, n, span) ->
-                                let ft = plain |> List.find (fst >> (=) f) |> snd
-
-                                match ordOffender env' Set.empty ft with
-                                | None -> Ok()
-                                | Some off ->
-                                    err
-                                        span
-                                        $"[<Ord {n}>] on '{decl.Name}': field '{f}' is {formatTy ft}, which cannot be ordered — {ordTail env' false off}")
-
-                        // a runtime record value carries only its record
-                        // name, and the key comes from a per-process
-                        // registry keyed by that name [D:derived-ord] — so
-                        // an ordered record one checker can see under the
-                        // same name (an import moved to its qualified key,
-                        // [D:qualified-type-names]) must agree on the key
-                        do!
-                            if ordered.IsEmpty then
-                                Ok()
-                            else
-                                let key = ordered |> List.map (fun (f, _, _) -> f)
-
-                                env.Types
-                                |> Map.tryPick (fun k d ->
-                                    match d with
-                                    | Record d when
-                                        k <> decl.Name && d.Name = decl.Name && not d.OrdKey.IsEmpty && d.OrdKey <> key
-                                        ->
-                                        Some(k, d.OrdKey)
-                                    | _ -> None)
-                                |> function
-                                    | Some(other, otherKey) ->
-                                        err
-                                            decl.Span
-                                            $"""[<Ord n>] on '{decl.Name}': the imported record '{other}' is ordered by {String.concat ", " otherKey} — a value carries only its record name, so two ordered records named '{decl.Name}' must agree on the key; rename it"""
-                                    | None -> Ok()
-
-                        return env'
-                }
-            | DUnion cases ->
-                result {
-                    match firstDup (cases |> List.map (fun (n, _, _) -> n)) with
-                    | Some dup -> return! err decl.Span $"duplicate case '{dup}'"
-                    | None ->
-                        do! validateAttrsAt UnionDeclPos $"union '{decl.Name}'" decl.Attrs
-
-                        do! allOk cases (fun (c, _, specs) -> validateAttrsAt CasePos $"case '{c}'" specs)
-
-                        // at most one fallback case [D:wire-unions] — two
-                        // wildcards cannot both catch
-                        do!
-                            match
-                                cases
-                                |> List.collect (fun (_, _, specs) -> specs |> List.filter (fun a -> a.AName = "Other"))
-                            with
-                            | _ :: second :: _ ->
-                                err
-                                    second.ASpan
-                                    $"union '{decl.Name}' declares [<Other>] twice — one fallback case catches everything unmatched"
-                            | _ -> Ok()
-
-                        do!
-                            allOk cases (fun (_, payload, _) ->
-                                match payload with
-                                | Some ty -> validateTy env decl.Name selfArity allowed decl.Span ty
-                                | None -> Ok())
-
-                        // the tag binds here [D:wire-unions] — the union
-                        // becomes a wire type, and the declaration laws
-                        // fire only when [<Tag>] is present
-                        let tag =
-                            decl.Attrs
-                            |> List.tryPick (fun a ->
-                                match a.AName, a.AArg with
-                                | "Tag", Some(AStr s) -> Some s
-                                | _ -> None)
-
-                        let! ordered = ordKey decl.Name "case" (cases |> List.map (fun (c, _, specs) -> c, specs))
-
-                        // every case numbered or none [D:derived-ord] — an
-                        // unplaced case would have no position
-                        do!
-                            if ordered.IsEmpty || ordered.Length = cases.Length then
-                                Ok()
-                            else
-                                let unplaced =
-                                    cases
-                                    |> List.find (fun (c, _, _) ->
-                                        not (ordered |> List.exists (fun (c', _, _) -> c' = c)))
-                                    |> fun (c, _, _) -> c
-
-                                err
-                                    decl.Span
-                                    $"[<Ord n>] on '{decl.Name}': case '{unplaced}' has no position — number every case or none"
-
-                        let caseAttr name (specs: AttrSpec list) =
-                            specs |> List.tryFind (fun a -> a.AName = name)
-
-                        do!
-                            match tag with
-                            | None ->
-                                // a case attr with no [<Tag>] binds nothing —
-                                // refused, naming the missing half
-                                cases
-                                |> List.tryPick (fun (_, _, specs) ->
-                                    caseAttr "Wire" specs |> Option.orElse (caseAttr "Other" specs))
-                                |> function
-                                    | Some a ->
-                                        err
-                                            a.ASpan
-                                            $"'{a.AName}' on a case needs [<Tag \"…\">] on the union declaration — the tag is what gives a case a wire identity"
-                                    | None -> Ok()
-                            | Some tagField ->
-                                result {
-                                    do!
-                                        if decl.Params.IsEmpty then
-                                            Ok()
-                                        else
-                                            err
-                                                decl.Span
-                                                $"a tagged union is monomorphic — '{decl.Name}' is generic, and the wire boundary needs concrete cases"
-
-                                    // the writers key VUnion values by case name
-                                    // [D:wire-unions] — Option's and Yaml's own
-                                    // encodings must stay unmistakable
-                                    do!
-                                        match
-                                            cases
-                                            |> List.tryFind (fun (c, _, _) ->
-                                                [ "Some"
-                                                  "None"
-                                                  "YStr"
-                                                  "YInt"
-                                                  "YFloat"
-                                                  "YBool"
-                                                  "YNull"
-                                                  "YSeq"
-                                                  "YMap" ]
-                                                |> List.contains c)
-                                        with
-                                        | Some(c, _, _) ->
-                                            err
-                                                decl.Span
-                                                $"'{c}' is the wire spelling of a builtin (Option / Yaml nodes) — a tagged union's case needs another name"
-                                        | None -> Ok()
-                                    // every case: a record payload (or nullary);
-                                    // the [<Other>] case: string or nullary
-                                    do!
-                                        allOk cases (fun (c, payload, specs) ->
-                                            if (caseAttr "Other" specs).IsSome then
-                                                match payload with
-                                                | None
-                                                | Some TStr -> Ok()
-                                                | Some ty ->
-                                                    err
-                                                        decl.Span
-                                                        $"the [<Other>] case carries the unmatched tag as a string (or nothing) — '{c}' carries {formatTy ty}"
-                                            else
-                                                match payload with
-                                                | None -> Ok()
-                                                | Some(TNamed(pn, [])) ->
-                                                    match typeDefFor env pn with
-                                                    | Some(Record rdef) when rdef.Params.IsEmpty ->
-                                                        // the tag rides the union — a payload
-                                                        // spelling it (by name or wire key)
-                                                        // would write it twice
-                                                        match
-                                                            rdef.Fields
-                                                            |> List.tryFind (fun (f, _) ->
-                                                                Types.wireName rdef f = tagField)
-                                                        with
-                                                        | Some(f, _) ->
-                                                            err
-                                                                decl.Span
-                                                                $"the tag rides the union, not the payload — record '{pn}' declares '{f}' (wire key '{tagField}'), which is '{decl.Name}''s tag field"
-                                                        | None -> Ok()
-                                                    | Some(Record _) ->
-                                                        err
-                                                            decl.Span
-                                                            $"a tagged union's payload is monomorphic — '{pn}' is generic"
-                                                    | _ ->
-                                                        err
-                                                            decl.Span
-                                                            $"a tagged union's case carries a declared record (or nothing) — '{c}' carries {formatTy (TNamed(pn, []))}"
-                                                | Some ty ->
-                                                    err
-                                                        decl.Span
-                                                        $"a tagged union's case carries a declared record (or nothing) — '{c}' carries {formatTy ty}")
-
-                                    // two cases resolving to one tag value —
-                                    // the wire-key collision rule again
-                                    let values =
-                                        cases
-                                        |> List.map (fun (c, _, specs) ->
-                                            match caseAttr "Wire" specs with
-                                            | Some { AArg = Some(AStr w) } -> c, w
-                                            | _ -> c, c)
-
-                                    match values |> List.groupBy snd |> List.tryFind (fun (_, xs) -> xs.Length > 1) with
-                                    | Some(w, ((c1, _) :: (c2, _) :: _)) ->
-                                        return!
-                                            err
-                                                decl.Span
-                                                $"two cases of {decl.Name} share the tag value '{w}' ('{c1}' and '{c2}') — wire identity must be unambiguous"
-                                    | _ -> return ()
+                            let def =
+                                Record {
+                                    Name = decl.Name
+                                    Params = decl.Params
+                                    Fields = plain
+                                    Attrs = attrs
+                                    OrdKey = ordered |> List.map (fun (f, _, _) -> f)
+                                    // the runner enriches this from the `///` docs
+                                    // after checkDecl [D:doc-help]
+                                    Docs = Map.empty
                                 }
 
-                        let def =
-                            Union
-                                { Name = decl.Name
-                                  Params = decl.Params
-                                  Cases = cases |> List.map (fun (n, t, _) -> n, t)
-                                  Tag = tag
-                                  CaseWires =
-                                    cases
-                                    |> List.choose (fun (c, _, specs) ->
-                                        match caseAttr "Wire" specs with
-                                        | Some { AArg = Some(AStr w) } -> Some(c, w)
-                                        | _ -> None)
-                                    |> Map.ofList
-                                  OtherCase =
-                                    cases
-                                    |> List.tryPick (fun (c, _, specs) ->
-                                        if (caseAttr "Other" specs).IsSome then Some c else None)
-                                  Validated =
-                                    decl.Validate
-                                    |> Option.map (fun _ ->
-                                        $"{decl.Name}#{System.Threading.Interlocked.Increment &validatorSeq}")
-                                  OrdKey = ordered |> List.map (fun (c, _, _) -> c)
-                                  Docs = Map.empty }
+                            let env' = {
+                                env with
+                                    Types = Map.add decl.Name def env.Types
+                            }
 
-                        let env' =
-                            { env with
-                                Types = Map.add decl.Name def env.Types }
+                            // a numbered field must itself order, or the
+                            // DECLARATION refuses naming it — never a sort site
+                            // [D:derived-ord]; an unnumbered field takes no part
+                            // (the partial-key law) and is unconstrained; the def
+                            // is registered first so a self-typed field admits
+                            do!
+                                allOk ordered (fun (f, n, span) ->
+                                    let ft = plain |> List.find (fst >> (=) f) |> snd
 
-                        // every payload must itself order, or the DECLARATION
-                        // refuses naming the case [D:derived-ord]; a tuple
-                        // payload is a tuple, refused like any
-                        do!
-                            allOk ordered (fun (c, n, span) ->
-                                let payload = cases |> List.pick (fun (c', p, _) -> if c' = c then Some p else None)
-
-                                match payload |> Option.bind (ordOffender env' Set.empty) with
-                                | None -> Ok()
-                                | Some off ->
-                                    err
-                                        span
-                                        $"[<Ord {n}>] on '{decl.Name}': case '{c}' carries {formatTy payload.Value}, which cannot be ordered — {ordTail env' false off}")
-
-                        // the collision law [D:derived-ord]: a runtime union
-                        // value carries only its case name, and the case
-                        // index comes from a per-process registry keyed by
-                        // that name — so two ordered unions one checker can
-                        // see may not share a case (the prelude's Option is
-                        // ordered by the solver's arm, so Some/None count);
-                        // the same name is a REPL redeclaration, which
-                        // replaces [D:dup-type-decl]
-                        do!
-                            if ordered.IsEmpty then
-                                Ok()
-                            else
-                                let orderedUnion (d: UnionDef) = not d.OrdKey.IsEmpty || d.Name = "Option"
-
-                                cases
-                                |> List.tryPick (fun (c, _, _) ->
-                                    env.Types
-                                    |> Map.tryPick (fun key d ->
-                                        match d with
-                                        | Union d when
-                                            key <> decl.Name && orderedUnion d && d.Cases |> List.exists (fun (c', _) -> c' = c)
-                                            ->
-                                            Some(c, d.Name)
-                                        | _ -> None))
-                                |> function
-                                    | Some(c, other) ->
-                                        err
-                                            decl.Span
-                                            $"[<Ord n>] on '{decl.Name}': case '{c}' is also a case of the ordered union '{other}' — a value carries only its case name, so two ordered unions cannot share one; rename it"
+                                    match ordOffender env' Set.empty ft with
                                     | None -> Ok()
+                                    | Some off ->
+                                        err
+                                            span
+                                            $"[<Ord {n}>] on '{decl.Name}': field '{f}' is {formatTy ft}, which cannot be ordered — {ordTail env' false off}")
 
-                        let ctorTy payload =
-                            match payload with
-                            | None -> selfTy
-                            | Some ty -> TFun(ty, selfTy)
+                            // a runtime record value carries only its record
+                            // name, and the key comes from a per-process
+                            // registry keyed by that name [D:derived-ord] — so
+                            // an ordered record one checker can see under the
+                            // same name (an import moved to its qualified key,
+                            // [D:qualified-type-names]) must agree on the key
+                            do!
+                                if ordered.IsEmpty then
+                                    Ok()
+                                else
+                                    let key = ordered |> List.map (fun (f, _, _) -> f)
 
-                        let ctorScheme payload =
-                            { Forall = allowed + tyVars (ctorTy payload)
-                              Cs = Map.empty
-                              Ty = ctorTy payload
-                              RowOrigins = Map.empty
-                              HoleDefaults = [] }
+                                    env.Types
+                                    |> Map.tryPick (fun k d ->
+                                        match d with
+                                        | Record d when
+                                            k <> decl.Name
+                                            && d.Name = decl.Name
+                                            && not d.OrdKey.IsEmpty
+                                            && d.OrdKey <> key
+                                            ->
+                                            Some(k, d.OrdKey)
+                                        | _ -> None)
+                                    |> function
+                                        | Some(other, otherKey) ->
+                                            err
+                                                decl.Span
+                                                $"""[<Ord n>] on '{decl.Name}': the imported record '{other}' is ordered by {String.concat ", " otherKey} — a value carries only its record name, so two ordered records named '{decl.Name}' must agree on the key; rename it"""
+                                        | None -> Ok()
 
-                        return
-                            cases
-                            |> List.fold (fun e (c, payload, _) -> bindValue c (ctorScheme payload) e) env'
-                }
+                            return env'
+                    }
+                | DUnion cases ->
+                    result {
+                        match firstDup (cases |> List.map (fun (n, _, _) -> n)) with
+                        | Some dup -> return! err decl.Span $"duplicate case '{dup}'"
+                        | None ->
+                            do! validateAttrsAt UnionDeclPos $"union '{decl.Name}'" decl.Attrs
+
+                            do! allOk cases (fun (c, _, specs) -> validateAttrsAt CasePos $"case '{c}'" specs)
+
+                            // at most one fallback case [D:wire-unions] — two
+                            // wildcards cannot both catch
+                            do!
+                                match
+                                    cases
+                                    |> List.collect (fun (_, _, specs) ->
+                                        specs |> List.filter (fun a -> a.AName = "Other"))
+                                with
+                                | _ :: second :: _ ->
+                                    err
+                                        second.ASpan
+                                        $"union '{decl.Name}' declares [<Other>] twice — one fallback case catches everything unmatched"
+                                | _ -> Ok()
+
+                            do!
+                                allOk cases (fun (_, payload, _) ->
+                                    match payload with
+                                    | Some ty -> validateTy env decl.Name selfArity allowed decl.Span ty
+                                    | None -> Ok())
+
+                            // the tag binds here [D:wire-unions] — the union
+                            // becomes a wire type, and the declaration laws
+                            // fire only when [<Tag>] is present
+                            let tag =
+                                decl.Attrs
+                                |> List.tryPick (fun a ->
+                                    match a.AName, a.AArg with
+                                    | "Tag", Some(AStr s) -> Some s
+                                    | _ -> None)
+
+                            let! ordered =
+                                ordKey decl.Name "case" (cases |> List.map (fun (c, _, specs) -> c, specs))
+
+                            // every case numbered or none [D:derived-ord] — an
+                            // unplaced case would have no position
+                            do!
+                                if ordered.IsEmpty || ordered.Length = cases.Length then
+                                    Ok()
+                                else
+                                    let unplaced =
+                                        cases
+                                        |> List.find (fun (c, _, _) ->
+                                            not (ordered |> List.exists (fun (c', _, _) -> c' = c)))
+                                        |> fun (c, _, _) -> c
+
+                                    err
+                                        decl.Span
+                                        $"[<Ord n>] on '{decl.Name}': case '{unplaced}' has no position — number every case or none"
+
+                            let caseAttr name (specs: AttrSpec list) =
+                                specs |> List.tryFind (fun a -> a.AName = name)
+
+                            do!
+                                match tag with
+                                | None ->
+                                    // a case attr with no [<Tag>] binds nothing —
+                                    // refused, naming the missing half
+                                    cases
+                                    |> List.tryPick (fun (_, _, specs) ->
+                                        caseAttr "Wire" specs |> Option.orElse (caseAttr "Other" specs))
+                                    |> function
+                                        | Some a ->
+                                            err
+                                                a.ASpan
+                                                $"'{a.AName}' on a case needs [<Tag \"…\">] on the union declaration — the tag is what gives a case a wire identity"
+                                        | None -> Ok()
+                                | Some tagField ->
+                                    result {
+                                        do!
+                                            if decl.Params.IsEmpty then
+                                                Ok()
+                                            else
+                                                err
+                                                    decl.Span
+                                                    $"a tagged union is monomorphic — '{decl.Name}' is generic, and the wire boundary needs concrete cases"
+
+                                        // the writers key VUnion values by case name
+                                        // [D:wire-unions] — Option's and Yaml's own
+                                        // encodings must stay unmistakable
+                                        do!
+                                            match
+                                                cases
+                                                |> List.tryFind (fun (c, _, _) ->
+                                                    [
+                                                        "Some"
+                                                        "None"
+                                                        "YStr"
+                                                        "YInt"
+                                                        "YFloat"
+                                                        "YBool"
+                                                        "YNull"
+                                                        "YSeq"
+                                                        "YMap"
+                                                    ]
+                                                    |> List.contains c)
+                                            with
+                                            | Some(c, _, _) ->
+                                                err
+                                                    decl.Span
+                                                    $"'{c}' is the wire spelling of a builtin (Option / Yaml nodes) — a tagged union's case needs another name"
+                                            | None -> Ok()
+                                        // every case: a record payload (or nullary);
+                                        // the [<Other>] case: string or nullary
+                                        do!
+                                            allOk cases (fun (c, payload, specs) ->
+                                                if (caseAttr "Other" specs).IsSome then
+                                                    match payload with
+                                                    | None
+                                                    | Some TStr -> Ok()
+                                                    | Some ty ->
+                                                        err
+                                                            decl.Span
+                                                            $"the [<Other>] case carries the unmatched tag as a string (or nothing) — '{c}' carries {formatTy ty}"
+                                                else
+                                                    match payload with
+                                                    | None -> Ok()
+                                                    | Some(TNamed(pn, [])) ->
+                                                        match typeDefFor env pn with
+                                                        | Some(Record rdef) when rdef.Params.IsEmpty ->
+                                                            // the tag rides the union — a payload
+                                                            // spelling it (by name or wire key)
+                                                            // would write it twice
+                                                            match
+                                                                rdef.Fields
+                                                                |> List.tryFind (fun (f, _) ->
+                                                                    Types.wireName rdef f = tagField)
+                                                            with
+                                                            | Some(f, _) ->
+                                                                err
+                                                                    decl.Span
+                                                                    $"the tag rides the union, not the payload — record '{pn}' declares '{f}' (wire key '{tagField}'), which is '{decl.Name}''s tag field"
+                                                            | None -> Ok()
+                                                        | Some(Record _) ->
+                                                            err
+                                                                decl.Span
+                                                                $"a tagged union's payload is monomorphic — '{pn}' is generic"
+                                                        | _ ->
+                                                            err
+                                                                decl.Span
+                                                                $"a tagged union's case carries a declared record (or nothing) — '{c}' carries {formatTy (TNamed(pn, []))}"
+                                                    | Some ty ->
+                                                        err
+                                                            decl.Span
+                                                            $"a tagged union's case carries a declared record (or nothing) — '{c}' carries {formatTy ty}")
+
+                                        // two cases resolving to one tag value —
+                                        // the wire-key collision rule again
+                                        let values =
+                                            cases
+                                            |> List.map (fun (c, _, specs) ->
+                                                match caseAttr "Wire" specs with
+                                                | Some { AArg = Some(AStr w) } -> c, w
+                                                | _ -> c, c)
+
+                                        match
+                                            values |> List.groupBy snd |> List.tryFind (fun (_, xs) -> xs.Length > 1)
+                                        with
+                                        | Some(w, ((c1, _) :: (c2, _) :: _)) ->
+                                            return!
+                                                err
+                                                    decl.Span
+                                                    $"two cases of {decl.Name} share the tag value '{w}' ('{c1}' and '{c2}') — wire identity must be unambiguous"
+                                        | _ -> return ()
+                                    }
+
+                            let def =
+                                Union {
+                                    Name = decl.Name
+                                    Params = decl.Params
+                                    Cases = cases |> List.map (fun (n, t, _) -> n, t)
+                                    Tag = tag
+                                    CaseWires =
+                                        cases
+                                        |> List.choose (fun (c, _, specs) ->
+                                            match caseAttr "Wire" specs with
+                                            | Some { AArg = Some(AStr w) } -> Some(c, w)
+                                            | _ -> None)
+                                        |> Map.ofList
+                                    OtherCase =
+                                        cases
+                                        |> List.tryPick (fun (c, _, specs) ->
+                                            if (caseAttr "Other" specs).IsSome then Some c else None)
+                                    Validated =
+                                        decl.Validate
+                                        |> Option.map (fun _ ->
+                                            $"{decl.Name}#{System.Threading.Interlocked.Increment &validatorSeq}")
+                                    OrdKey = ordered |> List.map (fun (c, _, _) -> c)
+                                    Docs = Map.empty
+                                }
+
+                            let env' = {
+                                env with
+                                    Types = Map.add decl.Name def env.Types
+                            }
+
+                            // every payload must itself order, or the DECLARATION
+                            // refuses naming the case [D:derived-ord]; a tuple
+                            // payload is a tuple, refused like any
+                            do!
+                                allOk ordered (fun (c, n, span) ->
+                                    let payload =
+                                        cases |> List.pick (fun (c', p, _) -> if c' = c then Some p else None)
+
+                                    match payload |> Option.bind (ordOffender env' Set.empty) with
+                                    | None -> Ok()
+                                    | Some off ->
+                                        err
+                                            span
+                                            $"[<Ord {n}>] on '{decl.Name}': case '{c}' carries {formatTy payload.Value}, which cannot be ordered — {ordTail env' false off}")
+
+                            // the collision law [D:derived-ord]: a runtime union
+                            // value carries only its case name, and the case
+                            // index comes from a per-process registry keyed by
+                            // that name — so two ordered unions one checker can
+                            // see may not share a case (the prelude's Option is
+                            // ordered by the solver's arm, so Some/None count);
+                            // the same name is a REPL redeclaration, which
+                            // replaces [D:dup-type-decl]
+                            do!
+                                if ordered.IsEmpty then
+                                    Ok()
+                                else
+                                    let orderedUnion (d: UnionDef) =
+                                        not d.OrdKey.IsEmpty || d.Name = "Option"
+
+                                    cases
+                                    |> List.tryPick (fun (c, _, _) ->
+                                        env.Types
+                                        |> Map.tryPick (fun key d ->
+                                            match d with
+                                            | Union d when
+                                                key <> decl.Name
+                                                && orderedUnion d
+                                                && d.Cases |> List.exists (fun (c', _) -> c' = c)
+                                                ->
+                                                Some(c, d.Name)
+                                            | _ -> None))
+                                    |> function
+                                        | Some(c, other) ->
+                                            err
+                                                decl.Span
+                                                $"[<Ord n>] on '{decl.Name}': case '{c}' is also a case of the ordered union '{other}' — a value carries only its case name, so two ordered unions cannot share one; rename it"
+                                        | None -> Ok()
+
+                            let ctorTy payload =
+                                match payload with
+                                | None -> selfTy
+                                | Some ty -> TFun(ty, selfTy)
+
+                            let ctorScheme payload = {
+                                Forall = allowed + tyVars (ctorTy payload)
+                                Cs = Map.empty
+                                Ty = ctorTy payload
+                                RowOrigins = Map.empty
+                                HoleDefaults = []
+                            }
+
+                            return
+                                cases
+                                |> List.fold (fun e (c, payload, _) -> bindValue c (ctorScheme payload) e) env'
+                    }
 
 // Advisory findings only — coverage and reachability are checker
 // errors [D:exhaustiveness-hard-error].
@@ -9527,43 +9873,48 @@ let warnings (te: TypedExpr) : Warning list =
              for a in args do
                  match a.Kind with
                  | TEStr ";" ->
-                     acc.Add
-                         { Span = a.Span
-                           Message =
+                     acc.Add {
+                         Span = a.Span
+                         Message =
                              "';' does not chain commands in weir — put commands on separate lines "
                              + "(sequence unit expressions with ';' in expression position; "
-                             + "if you meant a literal ';' argument, ignore this)" }
+                             + "if you meant a literal ';' argument, ignore this)"
+                     }
                  | TEStr ">" ->
-                     acc.Add
-                         { Span = a.Span
-                           Message =
+                     acc.Add {
+                         Span = a.Span
+                         Message =
                              "'>' does not redirect in weir — pipe to File.write: "
                              + "cmd |> File.write \"out.txt\" "
-                             + "(if you meant a literal '>' argument, ignore this)" }
+                             + "(if you meant a literal '>' argument, ignore this)"
+                     }
                  | TEStr ">>" ->
-                     acc.Add
-                         { Span = a.Span
-                           Message =
+                     acc.Add {
+                         Span = a.Span
+                         Message =
                              "'>>' does not redirect in weir — pipe to File.append: "
                              + "cmd |> File.append \"out.txt\" "
-                             + "(if you meant a literal '>>' argument, ignore this)" }
+                             + "(if you meant a literal '>>' argument, ignore this)"
+                     }
                  // the two commonest bash chaining glyphs
                  // (PLAN-dx-review D2): the pass-through is deliberate;
                  // staying silent about it would be the defect
                  | TEStr "&&" ->
-                     acc.Add
-                         { Span = a.Span
-                           Message =
+                     acc.Add {
+                         Span = a.Span
+                         Message =
                              "'&&' does not chain commands in weir — write `cmd | and next`, or put the commands on "
                              + "separate lines (a failure stops the script; "
-                             + "if you meant a literal '&&' argument, ignore this)" }
+                             + "if you meant a literal '&&' argument, ignore this)"
+                     }
                  | TEStr "||" ->
-                     acc.Add
-                         { Span = a.Span
-                           Message =
+                     acc.Add {
+                         Span = a.Span
+                         Message =
                              "'||' does not chain commands in weir — write `cmd | or fallback`, or branch on the exit: "
                              + "if cmd | succeeds then ... else ... "
-                             + "(if you meant a literal '||' argument, ignore this)" }
+                             + "(if you meant a literal '||' argument, ignore this)"
+                     }
                  | _ -> ()
          // `[1, 2]` is a one-item list holding a tuple — the comma habit
          // from Python/JS. Only a lone, unparenthesized tuple: a list of
@@ -9577,11 +9928,12 @@ let warnings (te: TypedExpr) : Warning list =
                  | Some tr -> fst (tr te.Span.Start.Col) = fst (tr t.Span.Start.Col)
                  | None -> true)
              ->
-             acc.Add
-                 { Span = t.Span
-                   Message =
+             acc.Add {
+                 Span = t.Span
+                 Message =
                      "this list has one item, a tuple — list items are separated by ';' ([1; 2]); "
-                     + "if you meant a list holding one tuple, write it in parentheses: [(1, 2)]" }
+                     + "if you meant a list holding one tuple, write it in parentheses: [(1, 2)]"
+             }
          | _ -> ())
 
         childExprs te |> List.iter walk
@@ -9641,9 +9993,12 @@ let rec eagerCommandHelper (helpers: Map<string, int>) (te: TypedExpr) : string 
 
     let saturated (f: TypedExpr) (extra: int) =
         match spine f extra with
-        | { Kind = TEVar h }, n when (match Map.tryFind h helpers with
-                                      | Some a -> n >= a
-                                      | None -> false) -> Some h
+        | { Kind = TEVar h }, n when
+            (match Map.tryFind h helpers with
+             | Some a -> n >= a
+             | None -> false)
+            ->
+            Some h
         | _ -> None
 
     match te.Kind with
@@ -9701,6 +10056,7 @@ let recordCommandBinding (helpers: Map<string, int>) (name: string) (te: TypedEx
 /// it runs none or only builds a lazy command seq [D:lazy-command-lets]
 let commandRunsNow (helpers: Map<string, int>) (te: TypedExpr) : string option =
     let names = lazyNames helpers
+
     let lazyFix =
         "only a command, a pipeline of commands or a value piped into one stays lazy; or wrap it in a function (let f () = …)"
 
@@ -9732,13 +10088,17 @@ let commandRunsNow (helpers: Map<string, int>) (te: TypedExpr) : string option =
 
         match
             (if runs then eagerVar (fun v -> v = "|print") te else None),
-            (if runs then eagerVar (fun v -> (reifierOfVar v).IsSome) te else None),
+            (if runs then
+                 eagerVar (fun v -> (reifierOfVar v).IsSome) te
+             else
+                 None),
             eagerNameRef names te
         with
         // `| and` / `| or` stream their commands (the |print desugar)
         | Some _, _, _ -> Some $"`| and`/`| or` runs the commands now — {lazyFix}"
         | None, Some r, _ ->
-            Some $"`| {(reifierOfVar r).Value}` runs the command now — drop the reifier to keep it lazy, or wrap it in a function (let f () = …)"
+            Some
+                $"`| {(reifierOfVar r).Value}` runs the command now — drop the reifier to keep it lazy, or wrap it in a function (let f () = …)"
         | None, None, Some n ->
             let what = forcing () |> Option.defaultValue "read here, which runs it"
             Some $"'{n}' is a lazy command {what} — {lazyFix}"
@@ -9816,9 +10176,10 @@ type ReenumEvent =
 /// its body/RHS reads, each time it is used. `Forced` marks a function
 /// whose body ends materialized: a call's result carries nothing
 /// [D:reenum-forced-call]
-type ReenumCarry =
-    { Pulls: (int * string) list
-      Forced: bool }
+type ReenumCarry = {
+    Pulls: (int * string) list
+    Forced: bool
+}
 
 type ReenumTracked = Map<string, ReenumCarry>
 
@@ -9972,7 +10333,10 @@ and private reenumBind
         let pulls = ResizeArray<int * string>()
 
         let collect id name note span =
-            if outer.Contains id then pulls.Add(id, name) else sink id name note span
+            if outer.Contains id then
+                pulls.Add(id, name)
+            else
+                sink id name note span
 
         reenumWalk nextId emit collect tracked v
 
@@ -9984,20 +10348,26 @@ and private reenumBind
                 [ id, n ]
             | None -> []
 
-        { Pulls = own @ List.ofSeq pulls
-          Forced = isFunctionValue v && forcedBody v }
+        {
+            Pulls = own @ List.ofSeq pulls
+            Forced = isFunctionValue v && forcedBody v
+        }
     else
         reenumWalk nextId emit sink tracked v
         { Pulls = []; Forced = false }
 
 let private reenumCollect (run: (ReenumEvent -> unit) -> (int -> string -> string -> Span -> unit) -> 'r) =
     let acc = ResizeArray<ReenumEvent>()
-    let r = run acc.Add (fun id name note span -> acc.Add(ReenumUse(id, name, note, span)))
+
+    let r =
+        run acc.Add (fun id name note span -> acc.Add(ReenumUse(id, name, note, span)))
+
     r, List.ofSeq acc
 
 /// the events of one statement tree
 let reenumEvents (nextId: unit -> int) (tracked0: ReenumTracked) (root: TypedExpr) : ReenumEvent list =
-    reenumCollect (fun emit sink -> reenumWalk nextId emit sink tracked0 root) |> snd
+    reenumCollect (fun emit sink -> reenumWalk nextId emit sink tracked0 root)
+    |> snd
 
 /// a top-level `let n = v`: the RHS's events and n's carry
 /// [D:reenum-indirect]

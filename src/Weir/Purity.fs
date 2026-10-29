@@ -104,9 +104,12 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
     // a held scope waits for a stop signal [D:held-scope] — ambient input
     | TEHold _ -> false
     | TEVar n ->
-        if effectfulName n then false
-        elif builtinNames.Force().Contains n then true
-        elif isCtorName n then true
+        if effectfulName n then
+            false
+        elif builtinNames.Force().Contains n then
+            true
+        elif isCtorName n then
+            true
         else
             match Map.tryFind n env with
             | Some p -> p
@@ -237,9 +240,7 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
     | TELet(n, _, v, b) ->
         firstEffect env v
         |> Option.orElseWith (fun () -> firstEffect (Map.add n true env) b)
-    | TELetPat(p, v, b) ->
-        firstEffect env v
-        |> Option.orElseWith (fun () -> firstEffect (dropPat p env) b)
+    | TELetPat(p, v, b) -> firstEffect env v |> Option.orElseWith (fun () -> firstEffect (dropPat p env) b)
     | TELambda(p, _, b) -> firstEffect (Map.remove p env) b
     | TELambdaPat(p, b) -> firstEffect (dropPat p env) b
     | TEApp(_, _) ->
@@ -248,7 +249,10 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
          | TELambda _
          | TELambdaPat _ -> Check.childExprs te |> List.tryPick (firstEffect env)
          | _ ->
-             Some((headOf te).Span, "a computed function is an unknown callable, and an unknown callable forfeits purity"))
+             Some(
+                 (headOf te).Span,
+                 "a computed function is an unknown callable, and an unknown callable forfeits purity"
+             ))
     | _ -> Check.childExprs te |> List.tryPick (firstEffect env)
 
 /// a validated type's `validate` must be pure [D:validated-types]: it
@@ -298,7 +302,10 @@ let rec private httpSendMethod (arg: TypedExpr) : string option =
     // { Http.post u with method = Get; … } — an explicit method update
     // wins (last write); otherwise the source's constructor decides
     | TEUpdate(src, ups) ->
-        match ups |> List.tryPick (fun (path, v) -> if path = [ "method" ] then Some v else None) with
+        match
+            ups
+            |> List.tryPick (fun (path, v) -> if path = [ "method" ] then Some v else None)
+        with
         | Some v -> methodOf v // None: a computed method — not statically known
         | None -> httpSendMethod src
     | TERecord(_, fields) ->
@@ -361,7 +368,9 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
          // is trivially read-only; `pure ⊂ readonly`)
          | WithinPure
          | WithinReadonly ->
-             [ arg; opts ] |> List.choose id |> List.tryPick (firstMutation env)
+             [ arg; opts ]
+             |> List.choose id
+             |> List.tryPick (firstMutation env)
              |> Option.orElseWith (fun () -> firstMutation env body)
          // a plan region [D:plan-apply] performs no external
          // mutation: its captured builtins do not run (they append
@@ -396,25 +405,26 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
                 Some(te.Span, $"'{n}' talks to the network (external mutation unless a query method)")
         elif builtinNames.Force().Contains n || isCtorName n then
             None
-        else
+        else if
             // a user binding: reading data is never a mutation — even
             // a value computed from an impure command holds data once
             // bound (the command ran outside the block). Only a
             // callable can mutate when applied: a function-typed
             // binding proven mutation-free passes; one that is impure
             // or unknown forfeits (an application would run it)
-            if not (tyHasFun te.Ty) then
-                None
-            else
-                // conservatism [D:pure-stage1]: PureBindings tracks
-                // purity, not mutation-freeness, so a read-only
-                // function reads as impure here — over-refusing is
-                // acceptable (a refusal never admits a mutation) and
-                // avoids tracking a second env
-                match Map.tryFind n env with
-                | Some true -> None // proven pure ⊂ mutation-free
-                | Some false -> Some(te.Span, $"'{n}' may reach an effect — a function not proven pure forfeits read-only")
-                | None -> Some(te.Span, $"'{n}' is an unknown callable, and an unknown callable forfeits read-only")
+            not (tyHasFun te.Ty)
+        then
+            None
+        else
+            // conservatism [D:pure-stage1]: PureBindings tracks
+            // purity, not mutation-freeness, so a read-only
+            // function reads as impure here — over-refusing is
+            // acceptable (a refusal never admits a mutation) and
+            // avoids tracking a second env
+            match Map.tryFind n env with
+            | Some true -> None // proven pure ⊂ mutation-free
+            | Some false -> Some(te.Span, $"'{n}' may reach an effect — a function not proven pure forfeits read-only")
+            | None -> Some(te.Span, $"'{n}' is an unknown callable, and an unknown callable forfeits read-only")
     | TELet(n, _, v, b) ->
         firstMutation env v
         |> Option.orElseWith (fun () -> firstMutation (Map.add n true env) b)
@@ -425,7 +435,10 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
     | TELambdaPat(p, b) -> firstMutation (dropPat p env) b
     // `req |> Http.send` — the piped send (and Http.expect, the same
     // per-method request record): the request is the pipe's argument
-    | TEPipe(reqArg, { Kind = TEVar(("Http.send" | "Http.expect") as sendName) }) ->
+    | TEPipe(reqArg,
+             {
+                 Kind = TEVar(("Http.send" | "Http.expect") as sendName)
+             }) ->
         if httpSendIsMutation (Some reqArg) then
             Some(te.Span, httpSendPhrase sendName (Some reqArg))
         else
@@ -472,7 +485,8 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
 let rec private planRefusalRoot (refused: Map<string, string>) (te: TypedExpr) : (Span * string * string) option =
     let found (span: Span) (msg: string) = Some(span, msg, msg)
 
-    let without names = names |> List.fold (fun m n -> Map.remove n m) refused
+    let without names =
+        names |> List.fold (fun m n -> Map.remove n m) refused
 
     match te.Kind with
     // a command is a proc spawn — uncapturable
@@ -587,9 +601,7 @@ let rec private execReach (helpers: Set<string>) (te: TypedExpr) : (Span * strin
     match te.Kind with
     | TEVar n when isExecVar n -> Some(te.Span, None)
     | TEVar n when helpers.Contains n -> Some(te.Span, Some n)
-    | TELet(n, _, v, b) ->
-        execReach helpers v
-        |> Option.orElseWith (fun () -> execReach (without [ n ]) b)
+    | TELet(n, _, v, b) -> execReach helpers v |> Option.orElseWith (fun () -> execReach (without [ n ]) b)
     | TELetPat(p, v, b) ->
         execReach helpers v
         |> Option.orElseWith (fun () -> execReach (without (patBound p)) b)
@@ -670,9 +682,7 @@ let rec execScopeViolation (helpers: Set<string>) (te: TypedExpr) : (Span * stri
             |> Option.map (fun (span, h) -> span, execInFanoutMessage (fanoutName n).Value h)
             |> Option.orElseWith (fun () -> Check.childExprs te |> List.tryPick recur)
         | _ -> Check.childExprs te |> List.tryPick recur
-    | TELet(n, _, v, b) ->
-        recur v
-        |> Option.orElseWith (fun () -> execScopeViolation (without [ n ]) b)
+    | TELet(n, _, v, b) -> recur v |> Option.orElseWith (fun () -> execScopeViolation (without [ n ]) b)
     | TELetPat(p, v, b) ->
         recur v
         |> Option.orElseWith (fun () -> execScopeViolation (without (patBound p)) b)

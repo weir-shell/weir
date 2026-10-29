@@ -82,11 +82,13 @@ let private realPathOf (p: string) : string option =
     try
         if Directory.Exists p then
             let info = DirectoryInfo p
+
             match info.ResolveLinkTarget true with
             | null -> Some(Path.TrimEndingDirectorySeparator info.FullName)
             | tgt -> Some(Path.TrimEndingDirectorySeparator tgt.FullName)
         elif File.Exists p then
             let info = FileInfo p
+
             match info.ResolveLinkTarget true with
             | null -> Some info.FullName
             | tgt -> Some tgt.FullName
@@ -133,7 +135,8 @@ let confineRealUnder (root: string) (dest: string) : Result<string, string> =
         if underResolved realRoot realDest then
             Ok dest
         else
-            Error $"'{dest}' resolves through a symlink to outside .weir/ — the real object escapes the vendor directory"
+            Error
+                $"'{dest}' resolves through a symlink to outside .weir/ — the real object escapes the vendor directory"
 
 // ---- whole-file swap and the .weir/ writer lock [D:weir-dir-lock] ----------
 
@@ -161,7 +164,10 @@ module AtomicFile =
     // a read-only fd on a directory (O_RDONLY = 0), None when it cannot open
     let private openDir (dir: string) : Microsoft.Win32.SafeHandles.SafeFileHandle option =
         let flags =
-            if OperatingSystem.IsMacOS() then O_CLOEXEC_MACOS else O_CLOEXEC_LINUX
+            if OperatingSystem.IsMacOS() then
+                O_CLOEXEC_MACOS
+            else
+                O_CLOEXEC_LINUX
 
         match ``open`` (dir, flags, 0) with
         | fd when fd >= 0 -> Some(new Microsoft.Win32.SafeHandles.SafeFileHandle(nativeint fd, true))
@@ -204,10 +210,7 @@ module AtomicFile =
                 ()
 
         let tmp =
-            Path.Combine(
-                dir,
-                $".{Path.GetFileName target}.weir-tmp-{Environment.ProcessId}-{Path.GetRandomFileName()}"
-            )
+            Path.Combine(dir, $".{Path.GetFileName target}.weir-tmp-{Environment.ProcessId}-{Path.GetRandomFileName()}")
 
         try
             let opts =
@@ -426,7 +429,9 @@ module private Posix =
             fchmod (fd, 0o644) |> ignore
 
             try
-                use fs = new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(nativeint fd, true), FileAccess.Write)
+                use fs =
+                    new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(nativeint fd, true), FileAccess.Write)
+
                 fs.Write(bytes, 0, bytes.Length)
                 Ok()
             with ex ->
@@ -477,7 +482,8 @@ let vendorNameSafe (name: string) : bool =
     && not (absoluteShapedPath name)
     && not (name.Contains "..")
     && not (name.StartsWith ".")
-    && name |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-' || c = '.')
+    && name
+       |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-' || c = '.')
 
 /// a plain name that can also be an import alias: a letter, then
 /// letters/digits/_ — the rule `add module` enforces (its name becomes a
@@ -517,34 +523,36 @@ let findWeirDir (fromDir: string) : Result<string, string> =
 // deliberate choice — no ranges means nothing for a separate manifest
 // to hold): `weir add` writes it, `weir restore` re-materializes from
 // it, `weir verify` checks it. Absent until the first add.
-type LockEntry =
-    { Kind: string
-      Name: string
-      // for a generated artifact (a signature) there is no URL: the
-      // slot records the generation source instead ("generated:help",
-      // "generated:completion-fish", …) [D:command-signatures] — the
-      // lock is still the record of intent, and a generated entry's
-      // intent is "this signature describes the tool I had"
-      Url: string
-      Sha256: string
-      Path: string
-      // sig entries only: the tool's verbatim --version output at
-      // generation time — denormalized from the file (hash-protected,
-      // so they cannot drift apart) so verify needs no weir parser
-      Version: string option
-      // a module with relative imports [D:add-module-closure]: Path is
-      // the directory modules/<name>, Url the fetch base its files hang
-      // off, Sha256 the tree hash over Files. None = a single file
-      Closure: ModuleClosure option }
+type LockEntry = {
+    Kind: string
+    Name: string
+    // for a generated artifact (a signature) there is no URL: the
+    // slot records the generation source instead ("generated:help",
+    // "generated:completion-fish", …) [D:command-signatures] — the
+    // lock is still the record of intent, and a generated entry's
+    // intent is "this signature describes the tool I had"
+    Url: string
+    Sha256: string
+    Path: string
+    // sig entries only: the tool's verbatim --version output at
+    // generation time — denormalized from the file (hash-protected,
+    // so they cannot drift apart) so verify needs no weir parser
+    Version: string option
+    // a module with relative imports [D:add-module-closure]: Path is
+    // the directory modules/<name>, Url the fetch base its files hang
+    // off, Sha256 the tree hash over Files. None = a single file
+    Closure: ModuleClosure option
+}
 
 /// a vendored module's closure [D:add-module-closure]: the entry and
 /// every file it reaches by relative import, fetched at one commit.
 /// Paths are '/'-separated, relative to the entry's modules/<name>/
-and ModuleClosure =
-    { Commit: string option
-      Entry: string
-      // (path, sha256), sorted by path (ordinal)
-      Files: (string * string) list }
+and ModuleClosure = {
+    Commit: string option
+    Entry: string
+    // (path, sha256), sorted by path (ordinal)
+    Files: (string * string) list
+}
 
 /// the confined dest for a lock entry [D:lockfile-confinement] — every
 /// consumer (restore/verify/gen types) resolves an entry's Path through
@@ -605,11 +613,11 @@ let closureFileDest (weirDir: string) (e: LockEntry) (rel: string) : Result<stri
         Error
             $"{e.Kind} {e.Name}: the lock records file '{rel}', which escapes .weir/{e.Path}/ — a lock entry must stay under the vendor directory; this lock was tampered with or hand-edited"
     | Ok _ ->
-        entryDest
-            weirDir
-            { e with
+        entryDest weirDir {
+            e with
                 Path = e.Path + "/" + rel
-                Closure = None }
+                Closure = None
+        }
 
 /// one hash for a whole closure [D:add-module-closure]: sha256 over
 /// `<sha256>  <path>` lines in path order (the sha256sum shape), so a
@@ -692,7 +700,8 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
                 let sha = need "sha256"
                 let path = need "path"
 
-                let hex64 (v: string) = v.Length = 64 && v |> Seq.forall Uri.IsHexDigit
+                let hex64 (v: string) =
+                    v.Length = 64 && v |> Seq.forall Uri.IsHexDigit
 
                 if not (hex64 sha) then
                     bad $"{at}: \"sha256\" must be 64 hex digits, got '{sha}'"
@@ -732,20 +741,23 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
                             | Some v -> bad $"{at}: \"entry\" '{v}' is not one of its files"
                             | None -> ""
 
-                        Some
-                            { Commit = str "commit" false
-                              Entry = entry
-                              Files = files }
+                        Some {
+                            Commit = str "commit" false
+                            Entry = entry
+                            Files = files
+                        }
                     | true, _ when kind <> "module" -> bad $"{at}: only a module entry carries \"files\""
                     | true, _ -> bad $"{at}: \"files\" must be an array"
 
-                { Kind = kind
-                  Name = name
-                  Url = url
-                  Sha256 = sha.ToLowerInvariant()
-                  Path = path
-                  Version = str "version" false
-                  Closure = closure })
+                {
+                    Kind = kind
+                    Name = name
+                    Url = url
+                    Sha256 = sha.ToLowerInvariant()
+                    Path = path
+                    Version = str "version" false
+                    Closure = closure
+                })
             |> List.ofSeq
             |> Ok
         with
@@ -773,7 +785,14 @@ let writeLock (weirDir: string) (entries: LockEntry list) : unit =
      // a lock with no closure entry stays version 1, byte-identical; a
      // closure entry is a shape version-1 weir would misread as a missing
      // file, so it writes 2 and older weir refuses [D:add-module-closure]
-     w.WriteNumber("schemaVersion", (if entries |> List.exists (fun e -> e.Closure.IsSome) then 2 else 1))
+     w.WriteNumber(
+         "schemaVersion",
+         (if entries |> List.exists (fun e -> e.Closure.IsSome) then
+              2
+          else
+              1)
+     )
+
      w.WriteStartArray "artifacts"
 
      for e in entries do
@@ -844,7 +863,10 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
         // a userinfo URL from argv rides as Basic auth, as Http.send sends
         // it, unless a token header already set Authorization [D:url-redact]
         let mutable curHeaders =
-            if headers |> List.exists (fun (k, _) -> String.Equals(k, "Authorization", StringComparison.OrdinalIgnoreCase)) then
+            if
+                headers
+                |> List.exists (fun (k, _) -> String.Equals(k, "Authorization", StringComparison.OrdinalIgnoreCase))
+            then
                 headers
             else
                 (Http.userinfoAuth url |> Option.toList) @ headers
@@ -949,20 +971,25 @@ let private hostToken (host: string) : string option =
 /// the ref listing (both hosts), 403 elsewhere — the hint fires on all
 /// three, or every private repo reads as a typo
 let hintPrivate (host: string) (e: string) : string =
-    if e.Contains "answered 404" || e.Contains "answered 403" || e.Contains "answered 401" then
+    if
+        e.Contains "answered 404"
+        || e.Contains "answered 403"
+        || e.Contains "answered 401"
+    then
         e + $" — or the repo is private: set {hostTokenVar host}"
     else
         e
 
-type ResolvedModuleSource =
-    { Url: string
-      Sha: string option
-      FetchHeaders: (string * string) list
-      Host: string option
-      // the repo root the file sits in [D:add-module-closure]: (fetch
-      // base ending '/', the file's repo path), so a relative import is
-      // fetched at the same commit. None = a raw URL without --path, no root
-      Root: (string * string) option }
+type ResolvedModuleSource = {
+    Url: string
+    Sha: string option
+    FetchHeaders: (string * string) list
+    Host: string option
+    // the repo root the file sits in [D:add-module-closure]: (fetch
+    // base ending '/', the file's repo path), so a relative import is
+    // fetched at the same commit. None = a raw URL without --path, no root
+    Root: (string * string) option
+}
 
 let private uaHeader = [ "User-Agent", "weir/" + Version.current ]
 
@@ -992,16 +1019,16 @@ let private rootEntryPath (path: string) : Result<string, string> =
 // names `semver/v0.1.0`, no tag means the latest stable one
 let libRepo = "github.com/weir-shell/lib"
 
-type LibSpec =
-    { Name: string
-      // None: a bare name, the resolver picks the latest tag; Some: the
-      // version as typed (`v0.1.0`) or a full sha
-      Tag: string option }
+type LibSpec = {
+    Name: string
+    // None: a bare name, the resolver picks the latest tag; Some: the
+    // version as typed (`v0.1.0`) or a full sha
+    Tag: string option
+}
 
 /// the shorthand a library spec expands to at a resolved ref: the
 /// per-module tag (`semver/v0.1.0`) or a sha
-let libSource (name: string) (ref: string) : string =
-    $"{libRepo}//modules/{name}.weir@{ref}"
+let libSource (name: string) (ref: string) : string = $"{libRepo}//modules/{name}.weir@{ref}"
 
 /// semver 2.0.0 precedence key [D:lib-module-tags]: `MAJOR.MINOR.PATCH
 /// [-pre][+build]` → (major, minor, patch, prerelease); build metadata is
@@ -1029,7 +1056,9 @@ let semverKey (v: string) : (int * int * int * string option) option =
         // a numeric prerelease identifier carries no leading zero
         let preOk =
             match pre with
-            | Some p -> p.Split '.' |> Array.forall (fun id -> not (numeric id && id.Length > 1 && id[0] = '0'))
+            | Some p ->
+                p.Split '.'
+                |> Array.forall (fun id -> not (numeric id && id.Length > 1 && id[0] = '0'))
             | None -> true
 
         match part 1, part 2, part 3 with
@@ -1161,7 +1190,8 @@ let parseRefListing (bytes: byte[]) : Result<(string * string) list, string> =
             match pktLen pos with
             | None -> Error $"not a pkt-line at byte {pos}"
             | Some 0 -> go (pos + 4) acc
-            | Some len when len < 4 || pos + len > bytes.Length -> Error $"a pkt-line length past the body at byte {pos}"
+            | Some len when len < 4 || pos + len > bytes.Length ->
+                Error $"a pkt-line length past the body at byte {pos}"
             | Some len ->
                 let line = Text.Encoding.UTF8.GetString(bytes, pos + 4, len - 4).TrimEnd('\n')
 
@@ -1197,8 +1227,11 @@ let pickRef (refs: (string * string) list) (name: string) : string option =
 let private listRefs (host: string) (repo: string) (listUser: string) : Result<(string * string) list, string> =
     let auth =
         match hostToken host with
-        | Some t ->
-            [ "Authorization", "Basic " + Convert.ToBase64String(Text.Encoding.UTF8.GetBytes(listUser + ":" + t)) ]
+        | Some t -> [
+            "Authorization",
+            "Basic "
+            + Convert.ToBase64String(Text.Encoding.UTF8.GetBytes(listUser + ":" + t))
+          ]
         | None -> []
 
     let url = $"https://{host}/{repo}.git/info/refs?service=git-upload-pack"
@@ -1227,12 +1260,13 @@ let resolveModuleSpec (spec: string) (entryPath: string option) : Result<Resolve
             | Some t -> [ "Authorization", "token " + t ]
             | None -> []
 
-        let src root url =
-            { Url = url
-              Sha = None
-              FetchHeaders = uaHeader @ hdrs
-              Host = (if host = "" then None else Some host)
-              Root = root }
+        let src root url = {
+            Url = url
+            Sha = None
+            FetchHeaders = uaHeader @ hdrs
+            Host = (if host = "" then None else Some host)
+            Root = root
+        }
 
         // without --path the URL is one file, fetched verbatim (a `//` in
         // it is data); with --path the URL is the root and --path the
@@ -1270,7 +1304,8 @@ let resolveModuleSpec (spec: string) (entryPath: string option) : Result<Resolve
                         "an explicit @ref is required — @main, @v1.2.0, or @<sha>; weir does not guess a default branch"
                 else
                     match left.IndexOf "/" with
-                    | -1 -> Error $"the shorthand is <host>/<org>/<repo>//<path>@<ref>; '{quoteData left}' has no repo part"
+                    | -1 ->
+                        Error $"the shorthand is <host>/<org>/<repo>//<path>@<ref>; '{quoteData left}' has no repo part"
                     | k ->
                         let host = left.Substring(0, k)
                         let repo = left.Substring(k + 1)
@@ -1299,11 +1334,13 @@ let resolveModuleSpec (spec: string) (entryPath: string option) : Result<Resolve
                             |> Result.map (fun sha ->
                                 let b = rawBase sha
 
-                                { Url = b + path
-                                  Sha = Some sha
-                                  FetchHeaders = uaHeader @ rawAuth
-                                  Host = Some host
-                                  Root = Some(b, path) })
+                                {
+                                    Url = b + path
+                                    Sha = Some sha
+                                    FetchHeaders = uaHeader @ rawAuth
+                                    Host = Some host
+                                    Root = Some(b, path)
+                                })
 
                         match host with
                         | "github.com" ->
@@ -1332,11 +1369,14 @@ let resolveModuleSpec (spec: string) (entryPath: string option) : Result<Resolve
 /// beside the source (`semver/v0.1.0`, or the sha) — the lock holds the
 /// raw URL only, so the add's printed line is where the tag shows
 let resolveLibSpec (l: LibSpec) (entryPath: string option) : Result<ResolvedModuleSource * string, string> =
-    let host, repo = libRepo.Substring(0, libRepo.IndexOf '/'), libRepo.Substring(libRepo.IndexOf '/' + 1)
+    let host, repo =
+        libRepo.Substring(0, libRepo.IndexOf '/'), libRepo.Substring(libRepo.IndexOf '/' + 1)
+
     let tagsUrl = $"https://{libRepo}/tags?q={l.Name}/"
 
     let at (ref: string) =
-        resolveModuleSpec (libSource l.Name ref) None |> Result.map (fun src -> src, ref)
+        resolveModuleSpec (libSource l.Name ref) None
+        |> Result.map (fun src -> src, ref)
 
     if entryPath.IsSome then
         Error pathNeedsRawRoot
@@ -1444,14 +1484,15 @@ let vendorFile
             let dest = Path.Combine(weirDir, rel)
             let hash = sha256Hex bytes
 
-            let entry =
-                { Kind = kind
-                  Name = name
-                  Url = Http.stripUserinfo url
-                  Sha256 = hash
-                  Path = rel
-                  Version = None
-                  Closure = None }
+            let entry = {
+                Kind = kind
+                Name = name
+                Url = Http.stripUserinfo url
+                Sha256 = hash
+                Path = rel
+                Version = None
+                Closure = None
+            }
 
             let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
 
@@ -1505,18 +1546,20 @@ let vendorClosure
                 |> List.map (fun (p, b) -> p, sha256Hex b)
                 |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
 
-            let entry =
-                { Kind = "module"
-                  Name = name
-                  Url = Http.stripUserinfo url
-                  Sha256 = treeHash hashed
-                  Path = "modules/" + name
-                  Version = None
-                  Closure =
-                    Some
-                        { Commit = commit
-                          Entry = entryRel
-                          Files = hashed } }
+            let entry = {
+                Kind = "module"
+                Name = name
+                Url = Http.stripUserinfo url
+                Sha256 = treeHash hashed
+                Path = "modules/" + name
+                Version = None
+                Closure =
+                    Some {
+                        Commit = commit
+                        Entry = entryRel
+                        Files = hashed
+                    }
+            }
 
             let priorFiles =
                 match priorEntry with
@@ -1626,50 +1669,53 @@ and AdditionalProps =
 
 /// a parsed schema document: the root shape plus the root-level shared
 /// definitions in-document $ref resolves against [D:schema-types]
-type SchemaDoc =
-    { Root: Schema
-      Defs: Map<string, Schema>
-      // validation keywords read but not enforced [D:schema-validation-keys]:
-      // (definition key — None for the root tree, keyword, node path
-      // within that tree); the generator notes the ones it drafts
-      Unenforced: (string option * string * string) list }
+type SchemaDoc = {
+    Root: Schema
+    Defs: Map<string, Schema>
+    // validation keywords read but not enforced [D:schema-validation-keys]:
+    // (definition key — None for the root tree, keyword, node path
+    // within that tree); the generator notes the ones it drafts
+    Unenforced: (string option * string * string) list
+}
 
 let private annotationKeys =
-    set
-        [ "description"
-          "format"
-          "title"
-          "$schema"
-          "$comment"
-          "example"
-          "examples"
-          "default" ]
+    set [
+        "description"
+        "format"
+        "title"
+        "$schema"
+        "$comment"
+        "example"
+        "examples"
+        "default"
+    ]
 
 // keywords that only VALIDATE a value — admitted, never enforced, each
 // noted by the generator [D:schema-validation-keys]; a keyword that
 // changes the shape stays refused
 let private validationKeys =
-    set
-        [ "minLength"
-          "maxLength"
-          "pattern"
-          "minimum"
-          "maximum"
-          "exclusiveMinimum"
-          "exclusiveMaximum"
-          "multipleOf"
-          "minItems"
-          "maxItems"
-          "uniqueItems"
-          "minProperties"
-          "maxProperties"
-          "readOnly"
-          "writeOnly"
-          "deprecated"
-          // the base type drafts; the value is not checked [D:schema-const-format]
-          "const"
-          "contentEncoding"
-          "contentMediaType" ]
+    set [
+        "minLength"
+        "maxLength"
+        "pattern"
+        "minimum"
+        "maximum"
+        "exclusiveMinimum"
+        "exclusiveMaximum"
+        "multipleOf"
+        "minItems"
+        "maxItems"
+        "uniqueItems"
+        "minProperties"
+        "maxProperties"
+        "readOnly"
+        "writeOnly"
+        "deprecated"
+        // the base type drafts; the value is not checked [D:schema-const-format]
+        "const"
+        "contentEncoding"
+        "contentMediaType"
+    ]
 
 let private rejectedTeaching (path: string) (kw: string) : string =
     let where = if path = "" then "the schema root" else quoteData path
@@ -1682,7 +1728,8 @@ let private rejectedTeaching (path: string) (kw: string) : string =
     | "not"
     | "if"
     | "then"
-    | "else" -> $"at {where}: '{quoteData kw}' (schema composition) is outside the subset — zero uses in the measured corpus"
+    | "else" ->
+        $"at {where}: '{quoteData kw}' (schema composition) is outside the subset — zero uses in the measured corpus"
     | _ -> $"at {where}: '{quoteData kw}' is outside the schema subset (it joins when a corpus needs it)"
 
 /// the in-document $ref forms the subset resolves [D:schema-types]:
@@ -1731,14 +1778,24 @@ let pointerTarget (root: Text.Json.JsonElement) (ptr: string) : Text.Json.JsonEl
 
 /// the parse's context: the unenforced-keyword sink and the document
 /// root, for a oneOf/anyOf alternative's $ref [D:schema-bool-or-string]
-type private ParseCtx =
-    { Unenforced: Collections.Generic.List<string * string>
-      Root: Text.Json.JsonElement }
+type private ParseCtx = {
+    Unenforced: Collections.Generic.List<string * string>
+    Root: Text.Json.JsonElement
+}
 
 // a schema node's shape keywords — beside a $ref they apply too
 // (2020-12) [D:schema-ref-siblings]; everything else there annotates
 let private shapeKeys =
-    set [ "properties"; "required"; "additionalProperties"; "items"; "enum"; "oneOf"; "anyOf"; "allOf" ]
+    set [
+        "properties"
+        "required"
+        "additionalProperties"
+        "items"
+        "enum"
+        "oneOf"
+        "anyOf"
+        "allOf"
+    ]
 
 // a null-only alternative ({type: null} / {type: ["null"]})
 let private nullOnly (alt: Text.Json.JsonElement) =
@@ -1746,7 +1803,9 @@ let private nullOnly (alt: Text.Json.JsonElement) =
     && (match alt.TryGetProperty "type" with
         | true, t when t.ValueKind = Text.Json.JsonValueKind.String -> t.GetString() = "null"
         | true, t when t.ValueKind = Text.Json.JsonValueKind.Array ->
-            t.GetArrayLength() = 1 && t[0].ValueKind = Text.Json.JsonValueKind.String && t[0].GetString() = "null"
+            t.GetArrayLength() = 1
+            && t[0].ValueKind = Text.Json.JsonValueKind.String
+            && t[0].GetString() = "null"
         | _ -> false)
     && alt.EnumerateObject()
        |> Seq.forall (fun p -> p.Name = "type" || annotationKeys.Contains p.Name || p.Name.StartsWith "x-")
@@ -1886,8 +1945,7 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                     | _ -> [ "?" ]
 
             let scalarAlts (alts: Text.Json.JsonElement) =
-                let kinds =
-                    alts.EnumerateArray() |> Seq.collect (altKinds 0) |> Set.ofSeq
+                let kinds = alts.EnumerateArray() |> Seq.collect (altKinds 0) |> Set.ofSeq
 
                 if kinds.Contains "?" || kinds.Contains "object" || kinds.Contains "array" then
                     None
@@ -1926,7 +1984,9 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                 let raw = r.GetString()
 
                 let siblings =
-                    el.EnumerateObject() |> Seq.filter (fun p -> shapeKeys.Contains p.Name) |> List.ofSeq
+                    el.EnumerateObject()
+                    |> Seq.filter (fun p -> shapeKeys.Contains p.Name)
+                    |> List.ofSeq
 
                 let withSiblings (target: Schema) =
                     if siblings.IsEmpty then
@@ -1980,9 +2040,11 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                         // absence: the enum drafts Option<T> over the rest
                         // [D:schema-enum-null]
                         let enumNull =
-                            e.EnumerateArray() |> Seq.exists (fun v -> v.ValueKind = Text.Json.JsonValueKind.Null)
+                            e.EnumerateArray()
+                            |> Seq.exists (fun v -> v.ValueKind = Text.Json.JsonValueKind.Null)
 
-                        let hasNull = enumNull || (typeKinds |> Option.exists (fun ks -> ks.Contains "null"))
+                        let hasNull =
+                            enumNull || (typeKinds |> Option.exists (fun ks -> ks.Contains "null"))
 
                         let nullListed =
                             enumNull && (typeKinds |> Option.forall (fun ks -> ks.Contains "null"))
@@ -2068,12 +2130,20 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
 
                                      let scalars = known |> List.filter (fun k -> k <> "object" && k <> "array")
 
-                                     [ (match scalars with
-                                        | [] -> None
-                                        | [ one ] -> Some(alt one)
-                                        | many -> Some(Ok(SScalar(Set.ofList many))))
-                                       (if List.contains "object" known then Some(alt "object") else None)
-                                       (if List.contains "array" known then Some(alt "array") else None) ]
+                                     [
+                                         (match scalars with
+                                          | [] -> None
+                                          | [ one ] -> Some(alt one)
+                                          | many -> Some(Ok(SScalar(Set.ofList many))))
+                                         (if List.contains "object" known then
+                                              Some(alt "object")
+                                          else
+                                              None)
+                                         (if List.contains "array" known then
+                                              Some(alt "array")
+                                          else
+                                              None)
+                                     ]
                                      |> List.choose id
                                      |> List.fold
                                          (fun acc r ->
@@ -2128,7 +2198,9 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                                 let mixed (kinds: Set<string>) =
                                     let containers = Set.intersect kinds (set [ "object"; "array" ])
                                     let scalars = kinds - containers
-                                    not containers.IsEmpty && (containers.Count > 1 || not (Set.remove "null" scalars).IsEmpty)
+
+                                    not containers.IsEmpty
+                                    && (containers.Count > 1 || not (Set.remove "null" scalars).IsEmpty)
 
                                 let arrayNode () =
                                     match getProp "items" with
@@ -2142,9 +2214,14 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                                  | Some kinds when mixed kinds ->
                                      let scalars = kinds - set [ "object"; "array" ]
 
-                                     [ (if scalars.IsEmpty then None else Some(Ok(SScalar scalars)))
-                                       (if kinds.Contains "object" then Some(objectNode path el getProp) else None)
-                                       (if kinds.Contains "array" then Some(arrayNode ()) else None) ]
+                                     [
+                                         (if scalars.IsEmpty then None else Some(Ok(SScalar scalars)))
+                                         (if kinds.Contains "object" then
+                                              Some(objectNode path el getProp)
+                                          else
+                                              None)
+                                         (if kinds.Contains "array" then Some(arrayNode ()) else None)
+                                     ]
                                      |> List.choose id
                                      |> List.fold
                                          (fun acc r ->
@@ -2166,14 +2243,17 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                                      kinds.Contains "string"
                                      && Set.isSubset kinds (set [ "string"; "integer"; "null" ])
                                      && (match getProp "format" with
-                                         | Some f -> f.ValueKind = Text.Json.JsonValueKind.String && f.GetString() = "int-or-string"
+                                         | Some f ->
+                                             f.ValueKind = Text.Json.JsonValueKind.String
+                                             && f.GetString() = "int-or-string"
                                          | None -> false)
                                      ->
                                      Ok(SIntOrStringFormat(SScalar(Set.add "integer" kinds)))
                                  | Some kinds when
                                      Set.remove "null" kinds = Set.singleton "integer"
                                      && (match getProp "format" with
-                                         | Some f -> f.ValueKind = Text.Json.JsonValueKind.String && f.GetString() = "uint64"
+                                         | Some f ->
+                                             f.ValueKind = Text.Json.JsonValueKind.String && f.GetString() = "uint64"
                                          | None -> false)
                                      ->
                                      Ok(SUint64Format(SScalar kinds))
@@ -2271,104 +2351,111 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
 
         Error $"schema {quoteData name}: not valid JSON — {Weir.Types.quoteData why}"
     | Ok parsed ->
-    try
-        use doc = parsed
-        let root = doc.RootElement
+        try
+            use doc = parsed
+            let root = doc.RootElement
 
-        let holders =
-            if root.ValueKind <> Text.Json.JsonValueKind.Object then
-                []
-            else
-                [ (match root.TryGetProperty "definitions" with
-                   | true, h -> Some h
-                   | _ -> None)
-                  (match root.TryGetProperty "$defs" with
-                   | true, h -> Some h
-                   | _ -> None)
-                  (match root.TryGetProperty "components" with
-                   | true, c ->
-                       match c.TryGetProperty "schemas" with
-                       | true, h -> Some h
-                       | _ -> None
-                   | _ -> None) ]
-                |> List.choose id
-                |> List.filter (fun h -> h.ValueKind = Text.Json.JsonValueKind.Object)
+            let holders =
+                if root.ValueKind <> Text.Json.JsonValueKind.Object then
+                    []
+                else
+                    [
+                        (match root.TryGetProperty "definitions" with
+                         | true, h -> Some h
+                         | _ -> None)
+                        (match root.TryGetProperty "$defs" with
+                         | true, h -> Some h
+                         | _ -> None)
+                        (match root.TryGetProperty "components" with
+                         | true, c ->
+                             match c.TryGetProperty "schemas" with
+                             | true, h -> Some h
+                             | _ -> None
+                         | _ -> None)
+                    ]
+                    |> List.choose id
+                    |> List.filter (fun h -> h.ValueKind = Text.Json.JsonValueKind.Object)
 
-        let unenforced = ResizeArray<string option * string * string>()
+            let unenforced = ResizeArray<string option * string * string>()
 
-        // one tree's unenforced keywords, paths relative to that tree
-        let parseTree (key: string option) (prefix: string) (el: Text.Json.JsonElement) =
-            let acc = Collections.Generic.List<string * string>()
-            let r = parseNode { Unenforced = acc; Root = root } prefix el
+            // one tree's unenforced keywords, paths relative to that tree
+            let parseTree (key: string option) (prefix: string) (el: Text.Json.JsonElement) =
+                let acc = Collections.Generic.List<string * string>()
+                let r = parseNode { Unenforced = acc; Root = root } prefix el
 
-            for kw, p in acc do
-                unenforced.Add((key, kw, p.Substring prefix.Length))
+                for kw, p in acc do
+                    unenforced.Add((key, kw, p.Substring prefix.Length))
 
-            r
+                r
 
-        let defs =
-            holders
-            |> List.collect (fun h -> h.EnumerateObject() |> List.ofSeq)
-            |> List.fold
-                (fun acc p ->
-                    match acc with
-                    | Error e -> Error e
-                    | Ok m ->
-                        parseTree (Some p.Name) $"definitions.{p.Name}." p.Value
-                        |> Result.map (fun s -> Map.add p.Name s m))
-                (Ok Map.empty)
+            let defs =
+                holders
+                |> List.collect (fun h -> h.EnumerateObject() |> List.ofSeq)
+                |> List.fold
+                    (fun acc p ->
+                        match acc with
+                        | Error e -> Error e
+                        | Ok m ->
+                            parseTree (Some p.Name) $"definitions.{p.Name}." p.Value
+                            |> Result.map (fun s -> Map.add p.Name s m))
+                    (Ok Map.empty)
 
-        (match defs with
-         | Error e -> Error e
-         | Ok defs ->
-             match parseTree None "" root with
+            (match defs with
              | Error e -> Error e
-             | Ok rootSchema ->
-                 // a pointer ref (`#`, `#/definitions/a/properties/b`) joins
-                 // the defs under its own key: the subtree it names, parsed
-                 // once; `#` is the root itself [D:schema-deep-refs]
-                 let rec closePointers (defs: Map<string, Schema>) (pending: string list) =
-                     match pending with
-                     | [] -> Ok defs
-                     | key :: rest when Map.containsKey key defs || not (key.StartsWith "#") -> closePointers defs rest
-                     | "#" :: rest -> closePointers (Map.add "#" rootSchema defs) rest
-                     | key :: rest ->
-                         match pointerTarget root key with
-                         | None ->
-                             Error $"'$ref' \"{quoteData key}\" does not resolve — no such location in this document"
-                         | Some el ->
-                             let prefix =
-                                 (key.Substring(2).Split '/'
-                                  |> Array.map (fun seg -> Uri.UnescapeDataString(seg).Replace("~1", "/").Replace("~0", "~"))
-                                  |> String.concat ".")
-                                 + "."
-
-                             match parseTree (Some key) prefix el with
-                             | Error e -> Error e
-                             | Ok sub -> closePointers (Map.add key sub defs) (refsOf sub @ rest)
-
-                 let allRefs =
-                     refsOf rootSchema @ (defs |> Map.toList |> List.collect (snd >> refsOf))
-
-                 match closePointers defs allRefs with
+             | Ok defs ->
+                 match parseTree None "" root with
                  | Error e -> Error e
-                 | Ok defs ->
+                 | Ok rootSchema ->
+                     // a pointer ref (`#`, `#/definitions/a/properties/b`) joins
+                     // the defs under its own key: the subtree it names, parsed
+                     // once; `#` is the root itself [D:schema-deep-refs]
+                     let rec closePointers (defs: Map<string, Schema>) (pending: string list) =
+                         match pending with
+                         | [] -> Ok defs
+                         | key :: rest when Map.containsKey key defs || not (key.StartsWith "#") ->
+                             closePointers defs rest
+                         | "#" :: rest -> closePointers (Map.add "#" rootSchema defs) rest
+                         | key :: rest ->
+                             match pointerTarget root key with
+                             | None ->
+                                 Error
+                                     $"'$ref' \"{quoteData key}\" does not resolve — no such location in this document"
+                             | Some el ->
+                                 let prefix =
+                                     (key.Substring(2).Split '/'
+                                      |> Array.map (fun seg ->
+                                          Uri.UnescapeDataString(seg).Replace("~1", "/").Replace("~0", "~"))
+                                      |> String.concat ".")
+                                     + "."
 
-                 let dangling =
-                     (refsOf rootSchema @ (defs |> Map.toList |> List.collect (snd >> refsOf)))
-                     |> List.tryFind (fun n -> not (Map.containsKey n defs))
+                                 match parseTree (Some key) prefix el with
+                                 | Error e -> Error e
+                                 | Ok sub -> closePointers (Map.add key sub defs) (refsOf sub @ rest)
 
-                 match dangling with
-                 | Some n ->
-                     Error $"'$ref' to '{quoteData n}' does not resolve — no such definition in the document's root holders"
-                 | None ->
-                     Ok
-                         { Root = rootSchema
-                           Defs = defs
-                           Unenforced = List.ofSeq unenforced })
-        |> Result.mapError (fun e -> $"schema {quoteData name}: {e}")
-    with ex ->
-        Error $"schema {quoteData name}: not valid JSON — {Weir.Types.quoteData ex.Message}"
+                     let allRefs =
+                         refsOf rootSchema @ (defs |> Map.toList |> List.collect (snd >> refsOf))
+
+                     match closePointers defs allRefs with
+                     | Error e -> Error e
+                     | Ok defs ->
+
+                         let dangling =
+                             (refsOf rootSchema @ (defs |> Map.toList |> List.collect (snd >> refsOf)))
+                             |> List.tryFind (fun n -> not (Map.containsKey n defs))
+
+                         match dangling with
+                         | Some n ->
+                             Error
+                                 $"'$ref' to '{quoteData n}' does not resolve — no such definition in the document's root holders"
+                         | None ->
+                             Ok {
+                                 Root = rootSchema
+                                 Defs = defs
+                                 Unenforced = List.ofSeq unenforced
+                             })
+            |> Result.mapError (fun e -> $"schema {quoteData name}: {e}")
+        with ex ->
+            Error $"schema {quoteData name}: not valid JSON — {Weir.Types.quoteData ex.Message}"
 
 /// follow a chain of pure refs to a shape (a ref-to-a-ref); a ref cycle
 /// with no shape in between lands on SAny — validation relaxes, the
@@ -2426,7 +2513,8 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
             match parseJsonBytesBounded bytes with
             | Ok d -> Ok d
             | Error(Some why) -> Error $"the response is valid JSON, but {why}; nothing was written"
-            | Error None -> Error $"the response is not JSON (Content-Type: {quoteData ct}){rawUrlHint url}; nothing was written"
+            | Error None ->
+                Error $"the response is not JSON (Content-Type: {quoteData ct}){rawUrlHint url}; nothing was written"
 
         match parsed with
         | Error e -> Error e
@@ -2480,14 +2568,15 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                             let dest = Path.Combine(weirDir, rel)
                             let hash = sha256Hex bytes
 
-                            let entry =
-                                { Kind = kind
-                                  Name = name
-                                  Url = Http.stripUserinfo url
-                                  Sha256 = hash
-                                  Path = rel
-                                  Version = None
-                                  Closure = None }
+                            let entry = {
+                                Kind = kind
+                                Name = name
+                                Url = Http.stripUserinfo url
+                                Sha256 = hash
+                                Path = rel
+                                Version = None
+                                Closure = None
+                            }
 
                             let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
 
@@ -2499,7 +2588,9 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                             | Ok() ->
                                 try
                                     writeLock weirDir (others @ [ entry ])
-                                    Ok $"added {kind} {quoteData name} ({hash.Substring(0, 12)}…) from {quoteData (Http.redactUrl url)}"
+
+                                    Ok
+                                        $"added {kind} {quoteData name} ({hash.Substring(0, 12)}…) from {quoteData (Http.redactUrl url)}"
                                 with ex ->
                                     (try
                                         File.Delete dest
@@ -2578,82 +2669,88 @@ let restore (weirDir: string) : Result<string list, string> =
                 match e.Closure with
                 | Some c -> restoreClosure weirDir e c
                 | None ->
-                // confine per entry [D:lockfile-confinement]: a hostile
-                // path refuses here (located, naming the entry) and writes
-                // nothing; a benign sibling still restores. restore
-                // overwrites only its own artifacts inside .weir/, never a
-                // path outside it — the confinement makes "outside"
-                // unreachable [D:lockfile-confinement]
-                match entryDest weirDir e with
-                | Error refusal -> Error refusal
-                | Ok dest ->
+                    // confine per entry [D:lockfile-confinement]: a hostile
+                    // path refuses here (located, naming the entry) and writes
+                    // nothing; a benign sibling still restores. restore
+                    // overwrites only its own artifacts inside .weir/, never a
+                    // path outside it — the confinement makes "outside"
+                    // unreachable [D:lockfile-confinement]
+                    match entryDest weirDir e with
+                    | Error refusal -> Error refusal
+                    | Ok dest ->
 
-                // a present-but-modified url artifact is drift from the
-                // lock's intent — restore repairs it by refetching, the
-                // same hash-checked path an absent file takes (a
-                // deliberate local edit is a re-add, not an edit-in-place)
-                let actual = if File.Exists dest then Some(sha256Hex (File.ReadAllBytes dest)) else None
+                        // a present-but-modified url artifact is drift from the
+                        // lock's intent — restore repairs it by refetching, the
+                        // same hash-checked path an absent file takes (a
+                        // deliberate local edit is a re-add, not an edit-in-place)
+                        let actual =
+                            if File.Exists dest then
+                                Some(sha256Hex (File.ReadAllBytes dest))
+                            else
+                                None
 
-                if actual = Some e.Sha256 then
-                    Ok [ $"{e.Kind} {e.Name}: present" ]
-                elif e.Url.StartsWith "generated:" && actual.IsSome then
-                    // a modified generated file is reported as verify reports
-                    // it — never `present`; restore cannot refetch it and never
-                    // regenerates [D:command-signatures]
-                    Error
-                        $"{e.Kind} {e.Name}: MODIFIED — sha256 {actual.Value.Substring(0, 12)}…, lock records {e.Sha256.Substring(0, 12)}… — a generated file is not refetched; restore the checked-in copy, or regenerate deliberately with `weir add sig {e.Name}`"
-                elif e.Url.StartsWith "generated:" then
-                    // the ruled restore behaviour for a generated entry
-                    // [D:command-signatures]: never regenerate (that would
-                    // make a checked-in signature depend on the machine
-                    // running restore). Present = confirmed by the verify
-                    // pass; absent = it was never checked in, and only
-                    // regeneration can recreate it — say so.
-                    Error
-                        $"{e.Kind} {e.Name}: ABSENT and generated (nothing to fetch) — the file should be checked in; recreate deliberately with `weir add sig {e.Name}`"
-                else
-                    // a module re-fetch carries the host token `add module`
-                    // sent, or a private module 404s
-                    let fetched =
-                        if e.Kind = "module" then
-                            let headers, tokenHost = moduleFetchHeaders e.Url
-
-                            fetchBytesWith headers e.Url
-                            |> Result.mapError (fun err ->
-                                match tokenHost with
-                                | Some h -> hintPrivate h err
-                                | None -> err)
-                        else
-                            fetchBytes e.Url
-
-                    match fetched with
-                    | Error err -> Error $"{e.Kind} {e.Name}: {err}"
-                    | Ok(bytes, _) ->
-                        let hash = sha256Hex bytes
-
-                        // the re-add names the entry's own kind — a module's
-                        // locked url is the raw URL `add module` accepts
-                        let readd = $"`weir add {e.Kind} {quoteData (Http.redactUrl e.Url)} --as {quoteData e.Name}`"
-
-                        if hash <> e.Sha256 then
+                        if actual = Some e.Sha256 then
+                            Ok [ $"{e.Kind} {e.Name}: present" ]
+                        elif e.Url.StartsWith "generated:" && actual.IsSome then
+                            // a modified generated file is reported as verify reports
+                            // it — never `present`; restore cannot refetch it and never
+                            // regenerates [D:command-signatures]
                             Error
-                                $"{e.Kind} {e.Name}: fetched bytes hash {hash.Substring(0, 12)}… but the lock records {e.Sha256.Substring(0, 12)}… — the source changed; if intended, re-add it: {readd}"
+                                $"{e.Kind} {e.Name}: MODIFIED — sha256 {actual.Value.Substring(0, 12)}…, lock records {e.Sha256.Substring(0, 12)}… — a generated file is not refetched; restore the checked-in copy, or regenerate deliberately with `weir add sig {e.Name}`"
+                        elif e.Url.StartsWith "generated:" then
+                            // the ruled restore behaviour for a generated entry
+                            // [D:command-signatures]: never regenerate (that would
+                            // make a checked-in signature depend on the machine
+                            // running restore). Present = confirmed by the verify
+                            // pass; absent = it was never checked in, and only
+                            // regeneration can recreate it — say so.
+                            Error
+                                $"{e.Kind} {e.Name}: ABSENT and generated (nothing to fetch) — the file should be checked in; recreate deliberately with `weir add sig {e.Name}`"
                         else
-                            let repaired = File.Exists dest
+                            // a module re-fetch carries the host token `add module`
+                            // sent, or a private module 404s
+                            let fetched =
+                                if e.Kind = "module" then
+                                    let headers, tokenHost = moduleFetchHeaders e.Url
 
-                            // the TOCTOU-tight write [D:lockfile-symlink-confinement]:
-                            // writeConfined realpath-verifies the parent and opens the
-                            // leaf O_NOFOLLOW, so a symlinked component (DA-04) is
-                            // refused at open, not merely at the earlier preflight
-                            match writeConfined weirDir dest bytes with
-                            | Error w -> Error $"{e.Kind} {e.Name}: {w}"
-                            | Ok() ->
+                                    fetchBytesWith headers e.Url
+                                    |> Result.mapError (fun err ->
+                                        match tokenHost with
+                                        | Some h -> hintPrivate h err
+                                        | None -> err)
+                                else
+                                    fetchBytes e.Url
 
-                            Ok
-                                [ (if repaired then
-                                       $"{e.Kind} {e.Name}: repaired — refetched over a modified copy"
-                                   else
-                                       $"{e.Kind} {e.Name}: restored from {quoteData (Http.redactUrl e.Url)}") ])
+                            match fetched with
+                            | Error err -> Error $"{e.Kind} {e.Name}: {err}"
+                            | Ok(bytes, _) ->
+                                let hash = sha256Hex bytes
+
+                                // the re-add names the entry's own kind — a module's
+                                // locked url is the raw URL `add module` accepts
+                                let readd =
+                                    $"`weir add {e.Kind} {quoteData (Http.redactUrl e.Url)} --as {quoteData e.Name}`"
+
+                                if hash <> e.Sha256 then
+                                    Error
+                                        $"{e.Kind} {e.Name}: fetched bytes hash {hash.Substring(0, 12)}… but the lock records {e.Sha256.Substring(0, 12)}… — the source changed; if intended, re-add it: {readd}"
+                                else
+                                    let repaired = File.Exists dest
+
+                                    // the TOCTOU-tight write [D:lockfile-symlink-confinement]:
+                                    // writeConfined realpath-verifies the parent and opens the
+                                    // leaf O_NOFOLLOW, so a symlinked component (DA-04) is
+                                    // refused at open, not merely at the earlier preflight
+                                    match writeConfined weirDir dest bytes with
+                                    | Error w -> Error $"{e.Kind} {e.Name}: {w}"
+                                    | Ok() ->
+
+                                        Ok [
+                                            (if repaired then
+                                                 $"{e.Kind} {e.Name}: repaired — refetched over a modified copy"
+                                             else
+                                                 $"{e.Kind} {e.Name}: restored from {quoteData (Http.redactUrl e.Url)}")
+                                        ])
 
         match
             results
@@ -2692,8 +2789,11 @@ let stripAnsi (text: string) : string =
 /// row) — a library bump is the environment, not the tool. Idempotent,
 /// so verify compares a recorded identity of either vintage through it.
 let versionIdentity (line: string) : string =
-    let words = Text.RegularExpressions.Regex.Replace(line.Trim(), "\\s+", " ").Split ' '
-    let lib (w: string) = Text.RegularExpressions.Regex.IsMatch(w, "^[A-Za-z][\\w.+-]*/v?[0-9]")
+    let words =
+        Text.RegularExpressions.Regex.Replace(line.Trim(), "\\s+", " ").Split ' '
+
+    let lib (w: string) =
+        Text.RegularExpressions.Regex.IsMatch(w, "^[A-Za-z][\\w.+-]*/v?[0-9]")
 
     let cut =
         [ 1 .. words.Length - 3 ]
@@ -2706,11 +2806,12 @@ let versionIdentity (line: string) : string =
 /// one bounded probe's outcome [D:sig-probe-bounds]: the exit code (None
 /// when the time bound killed it), the two streams as read, and whether a
 /// stream passed the byte bound (the rest was never read)
-type ProbeOutput =
-    { Exit: int option
-      Out: string
-      Err: string
-      Cut: bool }
+type ProbeOutput = {
+    Exit: int option
+    Out: string
+    Err: string
+    Cut: bool
+}
 
 /// a probe that needs this long is a hang, not a slow tool
 let probeTimeoutMs = 15000
@@ -2733,7 +2834,10 @@ module ProbeGuard =
     extern int private sysKill(int pid, int signal)
 
     let private groups = Collections.Concurrent.ConcurrentDictionary<int, unit>()
-    let private procs = Collections.Concurrent.ConcurrentDictionary<Diagnostics.Process, unit>()
+
+    let private procs =
+        Collections.Concurrent.ConcurrentDictionary<Diagnostics.Process, unit>()
+
     let private paths = Collections.Concurrent.ConcurrentDictionary<string, unit>()
     let mutable private stopping = 0
     let mutable private installed = 0
@@ -2762,16 +2866,27 @@ module ProbeGuard =
 
         for kv in paths do
             try
-                if Directory.Exists kv.Key then Directory.Delete(kv.Key, true)
-                elif File.Exists kv.Key then File.Delete kv.Key
+                if Directory.Exists kv.Key then
+                    Directory.Delete(kv.Key, true)
+                elif File.Exists kv.Key then
+                    File.Delete kv.Key
             with _ ->
                 ()
 
     /// the signal hook, once per process (POSIX only: Windows delivers
     /// Ctrl+C to the console's whole group, the probe included)
     let install () =
-        if not (OperatingSystem.IsWindows()) && Threading.Interlocked.Exchange(&installed, 1) = 0 then
-            for s in [ PosixSignal.SIGINT; PosixSignal.SIGTERM; PosixSignal.SIGHUP; PosixSignal.SIGQUIT ] do
+        if
+            not (OperatingSystem.IsWindows())
+            && Threading.Interlocked.Exchange(&installed, 1) = 0
+        then
+            for s in
+                [
+                    PosixSignal.SIGINT
+                    PosixSignal.SIGTERM
+                    PosixSignal.SIGHUP
+                    PosixSignal.SIGQUIT
+                ] do
                 try
                     roots <- (PosixSignalRegistration.Create(s, (fun _ -> sweep ())) :> obj) :: roots
                 with _ ->
@@ -2781,13 +2896,17 @@ module ProbeGuard =
 
     let trackGroup (pgid: int) =
         groups[pgid] <- ()
-        if stoppingNow () then killGroup pgid
+
+        if stoppingNow () then
+            killGroup pgid
 
     let untrackGroup (pgid: int) = groups.TryRemove pgid |> ignore
 
     let trackProc (p: Diagnostics.Process) =
         procs[p] <- ()
-        if stoppingNow () then killProc p
+
+        if stoppingNow () then
+            killProc p
 
     let untrackProc (p: Diagnostics.Process) = procs.TryRemove p |> ignore
 
@@ -2874,7 +2993,10 @@ module private ProbeSpawn =
     let private POLLIN = 0x001s
 
     let private decode (status: int) =
-        if status &&& 0x7f = 0 then (status >>> 8) &&& 0xff else 128 + (status &&& 0x7f)
+        if status &&& 0x7f = 0 then
+            (status >>> 8) &&& 0xff
+        else
+            128 + (status &&& 0x7f)
 
     // a bare name searches PATH as the environment states it (the C
     // environ can lag .NET's)
@@ -2884,12 +3006,15 @@ module private ProbeSpawn =
         else
             (match Environment.GetEnvironmentVariable "PATH" with
              | null -> ""
-             | v -> v).Split(':', StringSplitOptions.RemoveEmptyEntries)
+             | v -> v)
+                .Split(':', StringSplitOptions.RemoveEmptyEntries)
             |> Array.map (fun d -> Path.Combine(d, prog))
             |> Array.tryFind (fun p ->
                 File.Exists p
                 && (File.GetUnixFileMode p
-                    &&& (UnixFileMode.UserExecute ||| UnixFileMode.GroupExecute ||| UnixFileMode.OtherExecute))
+                    &&& (UnixFileMode.UserExecute
+                         ||| UnixFileMode.GroupExecute
+                         ||| UnixFileMode.OtherExecute))
                    <> enum 0)
 
     /// None: the spawn failed (absent tool); raises EntryPointNotFound on
@@ -2944,15 +3069,20 @@ module private ProbeSpawn =
                                 posix_spawnattr_setsigmask (attr, none) |> ignore
                                 posix_spawnattr_setpgroup (attr, 0) |> ignore
 
-                                posix_spawnattr_setflags (attr, POSIX_SPAWN_SETPGROUP ||| POSIX_SPAWN_SETSIGDEF ||| POSIX_SPAWN_SETSIGMASK)
+                                posix_spawnattr_setflags (
+                                    attr,
+                                    POSIX_SPAWN_SETPGROUP ||| POSIX_SPAWN_SETSIGDEF ||| POSIX_SPAWN_SETSIGMASK
+                                )
                                 |> ignore
 
                                 let argv = Array.append (Array.ofList (path :: args)) [| null |]
 
-                                let envp =
-                                    [| for e in Environment.GetEnvironmentVariables() |> Seq.cast<Collections.DictionaryEntry> do
-                                           yield $"{e.Key}={e.Value}"
-                                       yield null |]
+                                let envp = [|
+                                    for e in
+                                        Environment.GetEnvironmentVariables() |> Seq.cast<Collections.DictionaryEntry> do
+                                        yield $"{e.Key}={e.Value}"
+                                    yield null
+                                |]
 
                                 posix_spawn (&pid, path, fa, attr, argv, envp) = 0
                             finally
@@ -3002,19 +3132,35 @@ module private ProbeSpawn =
                         let mutable go = true
 
                         while go do
-                            let live = [ for i in 0..1 do if isOpen[i] then yield i ]
+                            let live = [
+                                for i in 0..1 do
+                                    if isOpen[i] then
+                                        yield i
+                            ]
 
                             if not live.IsEmpty then
-                                let pfds = Array.zeroCreate<byte> (8 * live.Length)
+                                let pfds = Array.zeroCreate<byte>(8 * live.Length)
 
                                 live
                                 |> List.iteri (fun k i ->
-                                    Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(Span(pfds, 8 * k, 4), fds[i])
-                                    Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(Span(pfds, 8 * k + 4, 2), POLLIN))
+                                    Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(
+                                        Span(pfds, 8 * k, 4),
+                                        fds[i]
+                                    )
+
+                                    Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(
+                                        Span(pfds, 8 * k + 4, 2),
+                                        POLLIN
+                                    ))
 
                                 if poll (pfds, unativeint live.Length, 10) > 0 then
                                     for k in 0 .. live.Length - 1 do
-                                        if Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(ReadOnlySpan(pfds, 8 * k + 6, 2)) <> 0s then
+                                        if
+                                            Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(
+                                                ReadOnlySpan(pfds, 8 * k + 6, 2)
+                                            )
+                                            <> 0s
+                                        then
                                             let i = live[k]
                                             let n = int (read (fds[i], chunk, unativeint chunk.Length))
 
@@ -3059,11 +3205,16 @@ module private ProbeSpawn =
                         let text (b: MemoryStream) =
                             Text.Encoding.UTF8.GetString(b.GetBuffer(), 0, int b.Length)
 
-                        Some
-                            { Exit = (if timedOut then None else exitCode |> Option.orElse (Some 137))
-                              Out = text bufs[0]
-                              Err = text bufs[1]
-                              Cut = cut }
+                        Some {
+                            Exit =
+                                (if timedOut then
+                                     None
+                                 else
+                                     exitCode |> Option.orElse (Some 137))
+                            Out = text bufs[0]
+                            Err = text bufs[1]
+                            Cut = cut
+                        }
                     finally
                         ProbeGuard.untrackGroup pid
                         close fds[0] |> ignore
@@ -3134,11 +3285,12 @@ let private runProbeManaged (prog: string) (args: string list) (cwd: string) : P
 
         ProbeGuard.untrackProc p
 
-        Some
-            { Exit = (if exited then Some p.ExitCode else None)
-              Out = get outB
-              Err = get errB
-              Cut = cut }
+        Some {
+            Exit = (if exited then Some p.ExitCode else None)
+            Out = get outB
+            Err = get errB
+            Cut = cut
+        }
     with _ ->
         None
 
@@ -3193,7 +3345,12 @@ let runProbe (prog: string) (args: string list) (cwd: string option) : ProbeOutp
 /// serve a local VERSION file as the identity (`cat version`)
 /// [D:sig-version-probe]
 let private probeRung (resolve: string -> string) (tool: string) (arg: string) : VersionProbe =
-    match (try runProbe (resolve tool) [ arg ] None with _ -> None) with
+    match
+        (try
+            runProbe (resolve tool) [ arg ] None
+         with _ ->
+             None)
+    with
     | None -> ToolAbsent
     // a version probe that needs a minute is a hang, not a slow tool —
     // killed, no identity
@@ -3288,56 +3445,58 @@ let verify (resolve: string -> string) (weirDir: string) : Result<string list * 
                 if findings.Count = before then
                     lines.Add $"{e.Kind} {e.Name}: ok ({List.length c.Files} files)"
             | None ->
-            // confine per entry [D:lockfile-confinement]: verify must not
-            // read outside .weir/ either — a hostile path is a Modified-class
-            // finding naming the escape, never a read of the escaped file
-            match entryDest weirDir e with
-            | Error refusal ->
-                findings.Add(Modified(e, "escapes .weir/"))
-                lines.Add $"{refusal}"
-            | Ok dest ->
+                // confine per entry [D:lockfile-confinement]: verify must not
+                // read outside .weir/ either — a hostile path is a Modified-class
+                // finding naming the escape, never a read of the escaped file
+                match entryDest weirDir e with
+                | Error refusal ->
+                    findings.Add(Modified(e, "escapes .weir/"))
+                    lines.Add $"{refusal}"
+                | Ok dest ->
 
-            match e.Kind with
-            // the hash arm: vendored artifacts verify by content
-            | _ when not (File.Exists dest) ->
-                findings.Add(Absent e)
-                // a sig is generated, never fetched: restore cannot bring it back
-                if e.Kind = "sig" then
-                    lines.Add $"{e.Kind} {e.Name}: ABSENT — regenerate it: weir add sig '{e.Name}'"
-                else
-                    lines.Add $"{e.Kind} {e.Name}: ABSENT — run `weir restore`"
-            | _ ->
-                let actual = sha256Hex (File.ReadAllBytes dest)
+                    match e.Kind with
+                    // the hash arm: vendored artifacts verify by content
+                    | _ when not (File.Exists dest) ->
+                        findings.Add(Absent e)
+                        // a sig is generated, never fetched: restore cannot bring it back
+                        if e.Kind = "sig" then
+                            lines.Add $"{e.Kind} {e.Name}: ABSENT — regenerate it: weir add sig '{e.Name}'"
+                        else
+                            lines.Add $"{e.Kind} {e.Name}: ABSENT — run `weir restore`"
+                    | _ ->
+                        let actual = sha256Hex (File.ReadAllBytes dest)
 
-                if actual <> e.Sha256 then
-                    findings.Add(Modified(e, actual))
-
-                    lines.Add
-                        $"{e.Kind} {e.Name}: MODIFIED — sha256 {actual.Substring(0, 12)}…, lock records {e.Sha256.Substring(0, 12)}…"
-                else
-                    // the version arm — sig entries compare the tool's
-                    // verbatim --version against the recorded identity;
-                    // exact match, no tolerance [D:command-signatures]
-                    match e.Version with
-                    | Some recorded ->
-                        match probeToolVersion resolve e.Name with
-                        | ToolAbsent ->
-                            findings.Add(ToolMissing e)
+                        if actual <> e.Sha256 then
+                            findings.Add(Modified(e, actual))
 
                             lines.Add
-                                $"{e.Kind} {e.Name}: TOOL MISSING — '{e.Name}' is not on PATH (the signature records: {recorded})"
-                        | RefusesVersionFlag ->
-                            findings.Add(VersionMismatch(e, "(the tool no longer answers --version or version)"))
+                                $"{e.Kind} {e.Name}: MODIFIED — sha256 {actual.Substring(0, 12)}…, lock records {e.Sha256.Substring(0, 12)}…"
+                        else
+                            // the version arm — sig entries compare the tool's
+                            // verbatim --version against the recorded identity;
+                            // exact match, no tolerance [D:command-signatures]
+                            match e.Version with
+                            | Some recorded ->
+                                match probeToolVersion resolve e.Name with
+                                | ToolAbsent ->
+                                    findings.Add(ToolMissing e)
 
-                            lines.Add
-                                $"{e.Kind} {e.Name}: VERSION MISMATCH — the installed tool answers neither --version nor version, the signature records '{recorded.Trim()}' — regenerate: weir add sig {e.Name}"
-                        | ToolVersion actual when versionIdentity actual <> versionIdentity recorded ->
-                            findings.Add(VersionMismatch(e, actual))
+                                    lines.Add
+                                        $"{e.Kind} {e.Name}: TOOL MISSING — '{e.Name}' is not on PATH (the signature records: {recorded})"
+                                | RefusesVersionFlag ->
+                                    findings.Add(
+                                        VersionMismatch(e, "(the tool no longer answers --version or version)")
+                                    )
 
-                            lines.Add
-                                $"{e.Kind} {e.Name}: VERSION MISMATCH — installed says '{actual.Trim()}', the signature records '{recorded.Trim()}' — regenerate: weir add sig {e.Name}"
-                        | ToolVersion _ -> lines.Add $"{e.Kind} {e.Name}: ok (hash + version)"
-                    | None -> lines.Add $"{e.Kind} {e.Name}: ok"
+                                    lines.Add
+                                        $"{e.Kind} {e.Name}: VERSION MISMATCH — the installed tool answers neither --version nor version, the signature records '{recorded.Trim()}' — regenerate: weir add sig {e.Name}"
+                                | ToolVersion actual when versionIdentity actual <> versionIdentity recorded ->
+                                    findings.Add(VersionMismatch(e, actual))
+
+                                    lines.Add
+                                        $"{e.Kind} {e.Name}: VERSION MISMATCH — installed says '{actual.Trim()}', the signature records '{recorded.Trim()}' — regenerate: weir add sig {e.Name}"
+                                | ToolVersion _ -> lines.Add $"{e.Kind} {e.Name}: ok (hash + version)"
+                            | None -> lines.Add $"{e.Kind} {e.Name}: ok"
 
         Ok(List.ofSeq lines, List.ofSeq findings)
 
@@ -3410,7 +3569,8 @@ let private literalKind (raw: string) (quoted: bool) =
 // paths are always in the message (ruling: a few characters buys a
 // self-contained CI log — the span still carries editor identity).
 // The root renders without a suffix so shallow messages stay terse.
-let private atPath (p: string) = if p = "" then "" else $" at {quoteData p}"
+let private atPath (p: string) =
+    if p = "" then "" else $" at {quoteData p}"
 
 let private fieldName (p: string) =
     if p = "" then "this value" else $"field {quoteData p}"
@@ -3449,7 +3609,10 @@ let rec validateTpl
     // relaxation, never a false positive) [D:schema-types]
     | SChoice _, _ -> []
     // a $ref with shape siblings: every member applies [D:schema-ref-siblings]
-    | SAllOf members, tpl -> members |> List.collect (fun m -> validateTpl name defs path m tpl) |> List.distinct
+    | SAllOf members, tpl ->
+        members
+        |> List.collect (fun m -> validateTpl name defs path m tpl)
+        |> List.distinct
     // nullable: a null scalar passes; anything else validates the inner
     | SNullable _, Check.TYtScalar(raw, quoted, _) when literalKind raw quoted = "null" -> []
     | SNullable inner, tpl -> validateTpl name defs path inner tpl
@@ -3472,9 +3635,15 @@ let rec validateTpl
         match pick, tpl with
         | Some alt, tpl -> validateTpl name defs path alt tpl
         | None, Check.TYtScalar(_, _, span)
-        | None, Check.TYtBlock(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a scalar" ]
-        | None, Check.TYtMap(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a mapping" ]
-        | None, Check.TYtSeq(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a sequence" ]
+        | None, Check.TYtBlock(_, span) -> [
+            span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a scalar"
+          ]
+        | None, Check.TYtMap(_, span) -> [
+            span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a mapping"
+          ]
+        | None, Check.TYtSeq(_, span) -> [
+            span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a sequence"
+          ]
         | None, _ -> []
     | SObject(props, required, additional), Check.TYtMap(entries, mspan) ->
         let hasDynamic =
@@ -3500,7 +3669,10 @@ let rec validateTpl
                         match additional with
                         | Vals s -> validateTpl name defs (child k) s v
                         | OpenProps -> []
-                        | Closed -> [ kspan, $"schema {quoteData name}: unknown field '{quoteData k}'{atPath path}{didYouMean k props}" ]
+                        | Closed -> [
+                            kspan,
+                            $"schema {quoteData name}: unknown field '{quoteData k}'{atPath path}{didYouMean k props}"
+                          ]
                 | Check.TYtPair(Check.TYtKeySplice _, v) ->
                     // a dynamic key: unknowable at check; its value still
                     // checks when the schema constrains all values
@@ -3515,12 +3687,17 @@ let rec validateTpl
             else
                 required
                 |> List.filter (fun r -> not (List.contains r literalKeys))
-                |> List.map (fun r -> mspan, $"schema {quoteData name}: missing required field '{quoteData r}'{atPath path}")
+                |> List.map (fun r ->
+                    mspan, $"schema {quoteData name}: missing required field '{quoteData r}'{atPath path}")
 
         entryErrors entries @ missing
     | SObject _, Check.TYtScalar(_, _, span)
-    | SObject _, Check.TYtBlock(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects a mapping, got a scalar" ]
-    | SObject _, Check.TYtSeq(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects a mapping, got a sequence" ]
+    | SObject _, Check.TYtBlock(_, span) -> [
+        span, $"schema {quoteData name}: {fieldName path} expects a mapping, got a scalar"
+      ]
+    | SObject _, Check.TYtSeq(_, span) -> [
+        span, $"schema {quoteData name}: {fieldName path} expects a mapping, got a sequence"
+      ]
     | SArray items, Check.TYtSeq(elems, _) ->
         let rec itemErrors (es: Check.TypedYamlTplItem list) =
             es
@@ -3532,35 +3709,54 @@ let rec validateTpl
 
         itemErrors elems
     | SArray _, Check.TYtScalar(_, _, span)
-    | SArray _, Check.TYtBlock(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects a sequence, got a scalar" ]
-    | SArray _, Check.TYtMap(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects a sequence, got a mapping" ]
+    | SArray _, Check.TYtBlock(_, span) -> [
+        span, $"schema {quoteData name}: {fieldName path} expects a sequence, got a scalar"
+      ]
+    | SArray _, Check.TYtMap(_, span) -> [
+        span, $"schema {quoteData name}: {fieldName path} expects a sequence, got a mapping"
+      ]
     | SScalar kinds, Check.TYtScalar(raw, quoted, span) ->
         let got = literalKind raw quoted
 
         if kindOk kinds got then
             []
         else
-            [ span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got {got} ('{quoteData raw}')" ]
+            [
+                span,
+                $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got {got} ('{quoteData raw}')"
+            ]
     | SScalar kinds, Check.TYtBlock(_, span) ->
         if kindOk kinds "string" then
             []
         else
-            [ span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a block scalar (string)" ]
-    | SScalar _, Check.TYtMap(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects a scalar, got a mapping" ]
-    | SScalar _, Check.TYtSeq(_, span) -> [ span, $"schema {quoteData name}: {fieldName path} expects a scalar, got a sequence" ]
+            [
+                span,
+                $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a block scalar (string)"
+            ]
+    | SScalar _, Check.TYtMap(_, span) -> [
+        span, $"schema {quoteData name}: {fieldName path} expects a scalar, got a mapping"
+      ]
+    | SScalar _, Check.TYtSeq(_, span) -> [
+        span, $"schema {quoteData name}: {fieldName path} expects a scalar, got a sequence"
+      ]
     | SEnum(values, _, _), Check.TYtScalar(raw, _, span) ->
         if List.contains raw values then
             []
         else
-            [ span, $"schema {quoteData name}: {fieldName path} expects {enumText values}, got '{quoteData raw}'" ]
+            [
+                span, $"schema {quoteData name}: {fieldName path} expects {enumText values}, got '{quoteData raw}'"
+            ]
     | SEnum(values, _, _), Check.TYtBlock(text, span) ->
         if List.contains text values then
             []
         else
-            [ span, $"schema {quoteData name}: {fieldName path} expects {enumText values}, got a block scalar" ]
+            [
+                span, $"schema {quoteData name}: {fieldName path} expects {enumText values}, got a block scalar"
+            ]
     | SEnum _, Check.TYtMap(_, span)
-    | SEnum _, Check.TYtSeq(_, span) ->
-        [ span, $"schema {quoteData name}: {fieldName path} expects a scalar (enum), got a collection" ]
+    | SEnum _, Check.TYtSeq(_, span) -> [
+        span, $"schema {quoteData name}: {fieldName path} expects a scalar (enum), got a collection"
+      ]
 
 and private spliceCheck
     (name: string)
@@ -3580,7 +3776,10 @@ and private spliceCheck
     // [D:schema-types]
     | SRef _ -> spliceCheck name defs path (deref defs Set.empty schema) te
     | SChoice _ -> []
-    | SAllOf members -> members |> List.collect (fun m -> spliceCheck name defs path m te) |> List.distinct
+    | SAllOf members ->
+        members
+        |> List.collect (fun m -> spliceCheck name defs path m te)
+        |> List.distinct
     | SNullable inner
     | SIntOrStringFormat inner
     | SUint64Format inner -> spliceCheck name defs path inner te
@@ -3606,8 +3805,10 @@ and private spliceCheck
         | None -> []
     | SScalar kinds ->
         match te.Ty with
-        | TSeq _ ->
-            [ te.Span, $"schema {quoteData name}: {fieldName path}: a seq splices as sequence items; it expects {kindsText kinds}" ]
+        | TSeq _ -> [
+            te.Span,
+            $"schema {quoteData name}: {fieldName path}: a seq splices as sequence items; it expects {kindsText kinds}"
+          ]
         | t ->
             match tyKind t with
             | None -> []
@@ -3615,20 +3816,28 @@ and private spliceCheck
                 if kindOk kinds got then
                     []
                 else
-                    [ te.Span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, but the splice is {got}" ]
+                    [
+                        te.Span,
+                        $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, but the splice is {got}"
+                    ]
     | SObject _ ->
         match tyKind te.Ty with
-        | Some got -> [ te.Span, $"schema {quoteData name}: {fieldName path} expects a mapping, but the splice is {got}" ]
+        | Some got -> [
+            te.Span, $"schema {quoteData name}: {fieldName path} expects a mapping, but the splice is {got}"
+          ]
         | None -> []
     | SArray items ->
         match te.Ty with
         | TSeq elem ->
             (match items, tyKind elem with
-             | SScalar kinds, Some got when not (kindOk kinds got) ->
-                 [ te.Span,
-                   $"schema {quoteData name}: {fieldName path}: sequence items expect {kindsText kinds}, but the spliced seq's elements are {got}" ]
+             | SScalar kinds, Some got when not (kindOk kinds got) -> [
+                 te.Span,
+                 $"schema {quoteData name}: {fieldName path}: sequence items expect {kindsText kinds}, but the spliced seq's elements are {got}"
+               ]
              | _ -> [])
         | t ->
             match tyKind t with
-            | Some got -> [ te.Span, $"schema {quoteData name}: {fieldName path} expects a sequence, but the splice is {got}" ]
+            | Some got -> [
+                te.Span, $"schema {quoteData name}: {fieldName path} expects a sequence, but the splice is {got}"
+              ]
             | None -> []

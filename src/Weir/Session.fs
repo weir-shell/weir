@@ -49,9 +49,11 @@ let setCwd (path: string) : unit =
 // scope inherits it and an arm's own scope stays its own.
 let private withinCdDepth = System.Threading.AsyncLocal<int>()
 
-let enterWithinCd () : unit = withinCdDepth.Value <- withinCdDepth.Value + 1
+let enterWithinCd () : unit =
+    withinCdDepth.Value <- withinCdDepth.Value + 1
 
-let exitWithinCd () : unit = withinCdDepth.Value <- max 0 (withinCdDepth.Value - 1)
+let exitWithinCd () : unit =
+    withinCdDepth.Value <- max 0 (withinCdDepth.Value - 1)
 
 // the ambient env overlay [D:within-scopes]: `within env` pushes a
 // layer; every spawn applies ambient layers outer-first under any
@@ -131,7 +133,9 @@ let getEnv (name: string) : string option = getEnvIn (envOverlay ()) name
 let envVarsIn (layers: (string * string) list list) : (string * string) list =
     let d = System.Collections.Generic.Dictionary<string, string>(envNameCmp)
 
-    for e in System.Environment.GetEnvironmentVariables() |> Seq.cast<System.Collections.DictionaryEntry> do
+    for e in
+        System.Environment.GetEnvironmentVariables()
+        |> Seq.cast<System.Collections.DictionaryEntry> do
         d[string e.Key] <- string e.Value
 
     for k, v in layers |> List.rev |> List.collect id do
@@ -165,9 +169,11 @@ let private planGuardDepth = new System.Threading.ThreadLocal<int>(fun () -> 0)
 /// is a plan capturing on this thread? (Proc's spawn-time refusal)
 let planGuardActive () : bool = planGuardDepth.Value > 0
 
-let enterPlanGuard () : unit = planGuardDepth.Value <- planGuardDepth.Value + 1
+let enterPlanGuard () : unit =
+    planGuardDepth.Value <- planGuardDepth.Value + 1
 
-let exitPlanGuard () : unit = planGuardDepth.Value <- max 0 (planGuardDepth.Value - 1)
+let exitPlanGuard () : unit =
+    planGuardDepth.Value <- max 0 (planGuardDepth.Value - 1)
 
 // the import guard [D:module-import-no-commands]: while a module body is
 // evaluated, no command runs — on any thread (a `Seq.pmap` arm at import
@@ -184,7 +190,12 @@ let enterImportGuard (name: string) : unit =
     System.Threading.Volatile.Write(&importGuard, name :: importGuard)
 
 let exitImportGuard () : unit =
-    System.Threading.Volatile.Write(&importGuard, (match importGuard with _ :: t -> t | [] -> []))
+    System.Threading.Volatile.Write(
+        &importGuard,
+        (match importGuard with
+         | _ :: t -> t
+         | [] -> [])
+    )
 
 let enterWorker (parentCwd: string) : unit = localCwd.Value <- Some parentCwd
 
@@ -368,19 +379,20 @@ module private ProcTree =
 
     let childrenOf (pid: int) : int list =
         try
-            [ for task in System.IO.Directory.EnumerateDirectories $"/proc/{pid}/task" do
-                  let listed =
-                      try
-                          System.IO.File.ReadAllText(System.IO.Path.Combine(task, "children"))
-                      with _ ->
-                          ""
+            [
+                for task in System.IO.Directory.EnumerateDirectories $"/proc/{pid}/task" do
+                    let listed =
+                        try
+                            System.IO.File.ReadAllText(System.IO.Path.Combine(task, "children"))
+                        with _ ->
+                            ""
 
-                  for tok in listed.Split(' ', System.StringSplitOptions.RemoveEmptyEntries) do
-                      match System.Int32.TryParse tok with
-                      | true, n -> yield n
-                      | _ -> () ]
-        with _ ->
-            []
+                    for tok in listed.Split(' ', System.StringSplitOptions.RemoveEmptyEntries) do
+                        match System.Int32.TryParse tok with
+                        | true, n -> yield n
+                        | _ -> ()
+            ]
+        with _ -> []
 
     // stop each process before listing its children (a stopped parent
     // forks no more and reaps none, so no pid in the walk is reused),
@@ -513,9 +525,7 @@ and [<AllowNullLiteral>] internal ProcEntry(p: System.Diagnostics.Process, owner
 // hard exit's kill them all (a spilling child holds its spill dir open, so
 // the kill before the dirs go is load-bearing on Windows)
 let private liveProcs =
-    System.Collections.Concurrent.ConcurrentDictionary<System.Diagnostics.Process, ProcEntry>(
-        HashIdentity.Reference
-    )
+    System.Collections.Concurrent.ConcurrentDictionary<System.Diagnostics.Process, ProcEntry>(HashIdentity.Reference)
 
 // cut nodes still in the tree: the per-builtin check's fast path reads this
 // alone
@@ -604,8 +614,14 @@ let rec private cutFrom (n: Node) (level: int) (reason: int) (kill: bool) (origi
             && not n.Killing
             && (n.Reasons &&& ~~~(CutReason.Teardown ||| CutReason.Soft)) = 0
 
-        for c in [ System.Threading.Volatile.Read &n.Cts
-                   (if soft then null else System.Threading.Volatile.Read &n.HardCts) ] do
+        for c in
+            [
+                System.Threading.Volatile.Read &n.Cts
+                (if soft then
+                     null
+                 else
+                     System.Threading.Volatile.Read &n.HardCts)
+            ] do
             if not (isNull c) then
                 try
                     c.Cancel()
@@ -889,10 +905,12 @@ type StopMachine() =
     let mutable cts = new System.Threading.CancellationTokenSource()
 
     /// a stop-aware construct starts
-    member _.Enter() = lock gate (fun () -> depth <- depth + 1)
+    member _.Enter() =
+        lock gate (fun () -> depth <- depth + 1)
 
     /// a stop-aware construct ends
-    member _.Exit() = lock gate (fun () -> depth <- max 0 (depth - 1))
+    member _.Exit() =
+        lock gate (fun () -> depth <- max 0 (depth - 1))
 
     member _.Depth = lock gate (fun () -> depth)
 
@@ -1104,7 +1122,11 @@ let checkCancels () : unit =
 // (the terminal's ^C, which reached the child too) leaves it uncancelled
 let private tokenOf (n: Node) (hard: bool) : System.Threading.CancellationToken =
     lock n (fun () ->
-        let soft = n.Cut > 0 && (n.Reasons &&& CutReason.Soft) <> 0 && not n.Killing && (n.Reasons &&& ~~~(CutReason.Teardown ||| CutReason.Soft)) = 0
+        let soft =
+            n.Cut > 0
+            && (n.Reasons &&& CutReason.Soft) <> 0
+            && not n.Killing
+            && (n.Reasons &&& ~~~(CutReason.Teardown ||| CutReason.Soft)) = 0
 
         if hard then
             if isNull n.HardCts then
@@ -1489,7 +1511,7 @@ module CleanupShim =
 
                 try
                     let n = int (Libc.read (fd, buf, unativeint 256))
-                    let bytes = Array.zeroCreate<byte> (max n 0)
+                    let bytes = Array.zeroCreate<byte>(max n 0)
                     System.Runtime.InteropServices.Marshal.Copy(buf, bytes, 0, bytes.Length)
                     Some(bytes, Libc.lseek (fd, 0L, 2))
                 finally
@@ -1573,11 +1595,13 @@ module CleanupShim =
                 elif starts [ 0x7Fuy; 0x45uy; 0x4Cuy; 0x46uy ] then
                     not (System.OperatingSystem.IsLinux()) || elfLoads head length
                 else
-                    [ [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCEuy ] // Mach-O
-                      [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCFuy ]
-                      [ 0xCEuy; 0xFAuy; 0xEDuy; 0xFEuy ]
-                      [ 0xCFuy; 0xFAuy; 0xEDuy; 0xFEuy ]
-                      [ 0xCAuy; 0xFEuy; 0xBAuy; 0xBEuy ] ]
+                    [
+                        [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCEuy ] // Mach-O
+                        [ 0xFEuy; 0xEDuy; 0xFAuy; 0xCFuy ]
+                        [ 0xCEuy; 0xFAuy; 0xEDuy; 0xFEuy ]
+                        [ 0xCFuy; 0xFAuy; 0xEDuy; 0xFEuy ]
+                        [ 0xCAuy; 0xFEuy; 0xBAuy; 0xBEuy ]
+                    ]
                     |> List.exists starts
 
         accepts path 0
@@ -1645,9 +1669,9 @@ let sigpipeForChildren: Lazy<unit> =
 let resetDetachedSigint: Lazy<unit> =
     lazy
         (if
-            not (System.OperatingSystem.IsWindows())
-            && not (replSurvivesSigint.Value)
-            && not (Libc.hasControllingTty ())
+             not (System.OperatingSystem.IsWindows())
+             && not (replSurvivesSigint.Value)
+             && not (Libc.hasControllingTty ())
          then
              Libc.resetSigintIfIgnored () |> ignore)
 
@@ -1669,7 +1693,8 @@ let private runtimeTookStdio () : int option =
     else
         try
             let urandom =
-                System.IO.Directory.GetFileSystemEntries "/proc/self/fd" |> Array.filter isUrandom
+                System.IO.Directory.GetFileSystemEntries "/proc/self/fd"
+                |> Array.filter isUrandom
 
             match urandom with
             | [| l |] ->
@@ -1708,21 +1733,23 @@ let nullClosedStdio () : unit =
             let cmdline =
                 try
                     System.IO.File.ReadAllBytes "/proc/self/cmdline"
-                with _ ->
-                    [||]
+                with _ -> [||]
 
             if cmdline.Length > 0 then
                 let block = System.Runtime.InteropServices.Marshal.AllocHGlobal(cmdline.Length + 1)
                 System.Runtime.InteropServices.Marshal.Copy(cmdline, 0, block, cmdline.Length)
                 System.Runtime.InteropServices.Marshal.WriteByte(block, cmdline.Length, 0uy)
 
-                let starts =
-                    [ yield 0
-                      for i in 0 .. cmdline.Length - 2 do
-                          if cmdline[i] = 0uy then
-                              yield i + 1 ]
+                let starts = [
+                    yield 0
+                    for i in 0 .. cmdline.Length - 2 do
+                        if cmdline[i] = 0uy then
+                            yield i + 1
+                ]
 
-                let argv = Array.append (starts |> List.map (fun o -> block + nativeint o) |> Array.ofList) [| 0n |]
+                let argv =
+                    Array.append (starts |> List.map (fun o -> block + nativeint o) |> Array.ofList) [| 0n |]
+
                 Libc.execv ("/proc/self/exe", argv) |> ignore
 
             // no start-over: the runtime reads its random bytes from that fd,
@@ -1850,8 +1877,7 @@ let private settleWhile (pool: bool) (waiting: unit -> bool) : unit =
     let clock = System.Diagnostics.Stopwatch.StartNew()
 
     let inFlight () =
-        System.Threading.Volatile.Read &signalsInFlight > 0
-        || (pool && poolBusy ())
+        System.Threading.Volatile.Read &signalsInFlight > 0 || (pool && poolBusy ())
 
     let mutable lastSeen = 0L
     let mutable go = true
@@ -1905,7 +1931,8 @@ let stopTakingArms () : bool =
     System.Threading.Volatile.Read &teardownCode <> 0 && not (inCleanup ())
 
 /// the requested teardown's exit code, or 0 when none is requested
-let teardownRequested () : int = System.Threading.Volatile.Read &teardownCode
+let teardownRequested () : int =
+    System.Threading.Volatile.Read &teardownCode
 
 /// a cleanup's statement command that was running when the signal came
 /// and died by the teardown's own signal (a group-directed TERM/HUP
@@ -2220,9 +2247,8 @@ type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Proces
         else
             // Windows: a pipe read is synchronous underneath and ignores
             // its token, so the fill waits beside the token instead
-            cutRead
-                (fun () -> inner.Read(buffer, offset, count))
-                (fun t -> inner.ReadAsync(System.Memory<byte>(buffer, offset, count), t))
+            cutRead (fun () -> inner.Read(buffer, offset, count)) (fun t ->
+                inner.ReadAsync(System.Memory<byte>(buffer, offset, count), t))
 
     // the child's pipe is the Process's to close
     override _.Dispose(_: bool) = ()
@@ -2341,7 +2367,10 @@ let cutReader (child: System.Diagnostics.Process) (r: System.IO.StreamReader) : 
 let waitTask (t: System.Threading.Tasks.Task) : unit =
     if interruptible () then
         System.Threading.WaitHandle.WaitAny(
-            [| (t :> System.IAsyncResult).AsyncWaitHandle; (tokenOf rootNode false).WaitHandle |]
+            [|
+                (t :> System.IAsyncResult).AsyncWaitHandle
+                (tokenOf rootNode false).WaitHandle
+            |]
         )
         |> ignore
 
@@ -2590,7 +2619,12 @@ module Stdin =
                     else
                         decode (j - lo)
 
-                lo <- if buf[j] = 13uy && j + 1 < hi && buf[j + 1] = 10uy then j + 2 else j + 1
+                lo <-
+                    if buf[j] = 13uy && j + 1 < hi && buf[j + 1] = 10uy then
+                        j + 2
+                    else
+                        j + 1
+
                 scanned <- lo
                 Some line
         elif atEnd && lo < hi then
@@ -2611,7 +2645,9 @@ module Stdin =
                 let t =
                     match winPendingLine with
                     | null ->
-                        let t = System.Threading.Tasks.Task.Run<string>(fun () -> System.Console.In.ReadLine())
+                        let t =
+                            System.Threading.Tasks.Task.Run<string>(fun () -> System.Console.In.ReadLine())
+
                         winPendingLine <- t
                         t
                     | t -> t
@@ -2737,7 +2773,11 @@ module Stdin =
                     while j < line.Length && line[j] >= '\u0020' && line[j] <= '\u003f' do
                         j <- j + 1
 
-                    i <- if j < line.Length && line[j] >= '\u0040' && line[j] <= '\u007e' then j + 1 else j
+                    i <-
+                        if j < line.Length && line[j] >= '\u0040' && line[j] <= '\u007e' then
+                            j + 1
+                        else
+                            j
                 elif c = '\u001b' && i + 1 < line.Length && line[i + 1] = 'O' then
                     i <- min line.Length (i + 3)
                 else
@@ -2876,7 +2916,10 @@ let specialFile (path: string) : (int * uint64) option =
         let buf = Array.zeroCreate<byte> 256
 
         let rc =
-            if System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture = System.Runtime.InteropServices.Architecture.X64 then
+            if
+                System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture =
+                    System.Runtime.InteropServices.Architecture.X64
+            then
                 Libc.lstatMacX64 (path, buf)
             else
                 Libc.lstatMacArm (path, buf)
@@ -3079,8 +3122,7 @@ let armStdout () : unit =
         if not (armsStdoutFor fd1) then
             fd1.Dispose()
         else
-            let inner =
-                new System.IO.StreamWriter(fd1, System.Text.UTF8Encoding(false), 4096)
+            let inner = new System.IO.StreamWriter(fd1, System.Text.UTF8Encoding(false), 4096)
 
             inner.NewLine <- System.Console.Out.NewLine
             System.Console.SetOut(System.IO.TextWriter.Synchronized(new EpipeWriter(inner)))
@@ -3275,10 +3317,12 @@ let private installExitHook () =
         // SIG_IGN (nohup) stays — .NET does not install over it. SIGQUIT
         // (^\) is TERM's teardown and dies by SIGQUIT [D:sigquit-teardown]
         for posixSig in
-            [ System.Runtime.InteropServices.PosixSignal.SIGINT
-              System.Runtime.InteropServices.PosixSignal.SIGTERM
-              System.Runtime.InteropServices.PosixSignal.SIGHUP
-              System.Runtime.InteropServices.PosixSignal.SIGQUIT ] do
+            [
+                System.Runtime.InteropServices.PosixSignal.SIGINT
+                System.Runtime.InteropServices.PosixSignal.SIGTERM
+                System.Runtime.InteropServices.PosixSignal.SIGHUP
+                System.Runtime.InteropServices.PosixSignal.SIGQUIT
+            ] do
             let reg =
                 System.Runtime.InteropServices.PosixSignalRegistration.Create(posixSig, onSignal)
 

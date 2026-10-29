@@ -43,8 +43,7 @@ type Note = string
 
 let rec private ofJsonElement (el: System.Text.Json.JsonElement) : INode =
     match el.ValueKind with
-    | System.Text.Json.JsonValueKind.Object ->
-        IObj [ for p in el.EnumerateObject() -> p.Name, ofJsonElement p.Value ]
+    | System.Text.Json.JsonValueKind.Object -> IObj [ for p in el.EnumerateObject() -> p.Name, ofJsonElement p.Value ]
     | System.Text.Json.JsonValueKind.Array -> IArr [ for e in el.EnumerateArray() -> ofJsonElement e ]
     | System.Text.Json.JsonValueKind.String -> IStr
     | System.Text.Json.JsonValueKind.True
@@ -120,12 +119,15 @@ let private jsonlNode (lines: string seq) : Result<INode, string> =
 // [D:yaml-float-text]: a draft must read its own sample
 let private classifyYamlScalar (text: string) : INode =
     let t = text.Trim()
-    let isMatch (rx: string) = System.Text.RegularExpressions.Regex.IsMatch(t, rx)
+
+    let isMatch (rx: string) =
+        System.Text.RegularExpressions.Regex.IsMatch(t, rx)
 
     if t = "true" || t = "false" then
         IBool
     elif isMatch "^[-+]?0[0-9]+$" then
-        IYaml $"{t} has a leading zero (YAML 1.2 reads decimal, 1.1 readers such as PyYAML and kubectl octal) — an int field refuses it"
+        IYaml
+            $"{t} has a leading zero (YAML 1.2 reads decimal, 1.1 readers such as PyYAML and kubectl octal) — an int field refuses it"
     elif isMatch "^[-+]?[0-9]+$" then
         // past int64 the yaml reader types it float; the draft agrees
         match Int64.TryParse t with
@@ -137,7 +139,8 @@ let private classifyYamlScalar (text: string) : INode =
         let fits =
             t.Substring 2
             |> Seq.fold
-                (fun (acc: Numerics.BigInteger) c -> acc * Numerics.BigInteger radix + Numerics.BigInteger(Uri.FromHex c))
+                (fun (acc: Numerics.BigInteger) c ->
+                    acc * Numerics.BigInteger radix + Numerics.BigInteger(Uri.FromHex c))
                 Numerics.BigInteger.Zero
             |> fun n -> n <= Numerics.BigInteger Int64.MaxValue
 
@@ -148,9 +151,7 @@ let private classifyYamlScalar (text: string) : INode =
     elif isMatch "^[-+]?(\.inf|\.Inf|\.INF)$|^(\.nan|\.NaN|\.NAN)$" then
         IYaml $"{t} is not finite — a float field refuses it"
     elif isMatch "^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$" then
-        match
-            Double.TryParse(t, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture)
-        with
+        match Double.TryParse(t, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
         | true, f when Double.IsFinite f -> IFloat
         | _ -> IYaml $"{t} is past float range — a float field refuses it"
     else
@@ -176,8 +177,10 @@ let private yamlNode (lines: string seq) : Result<INode, string> =
 // ---- auto-naming helpers ----------------------------------------------
 
 let capitalize (s: string) : string =
-    if s = "" then s
-    else string (Char.ToUpperInvariant s[0]) + s.Substring 1
+    if s = "" then
+        s
+    else
+        string (Char.ToUpperInvariant s[0]) + s.Substring 1
 
 // sanitize a wire key into an identifier stem: keep letters/digits/_,
 // split on the rest, camel-join. `metadata.name` / `kube-system`
@@ -189,7 +192,9 @@ let identStem (key: string) : string =
         |> Array.filter (fun p -> p <> "")
 
     let joined = parts |> Array.map capitalize |> String.concat ""
-    let cleaned = String(joined |> Seq.filter (fun c -> Char.IsLetterOrDigit c || c = '_') |> Seq.toArray)
+
+    let cleaned =
+        String(joined |> Seq.filter (fun c -> Char.IsLetterOrDigit c || c = '_') |> Seq.toArray)
 
     match cleaned with
     | "" -> "Field"
@@ -204,7 +209,8 @@ let singularize (s: string) : string =
     let lower = s.ToLowerInvariant()
 
     // words that are already singular or do not pluralise the -s way
-    let invariant = set [ "data"; "status"; "metadata"; "series"; "info"; "spec"; "news" ]
+    let invariant =
+        set [ "data"; "status"; "metadata"; "series"; "info"; "spec"; "news" ]
 
     if Set.contains lower invariant then
         s
@@ -233,7 +239,14 @@ let singularize (s: string) : string =
 /// (session Types keys and/or the registered builtin nominals)
 /// completed with the parser's primitive spellings
 let takenTypeNames (liveNames: string seq) : Set<string> =
-    [ Types.TDur; Types.TInstant; Types.TUuid; Types.TSize; Types.TBytes; Types.TSecret ]
+    [
+        Types.TDur
+        Types.TInstant
+        Types.TUuid
+        Types.TSize
+        Types.TBytes
+        Types.TSecret
+    ]
     |> List.map Types.formatTy
     |> Set.ofList
     |> Set.union (Set.ofSeq liveNames)
@@ -249,7 +262,8 @@ let takenTypeNames (liveNames: string seq) : Set<string> =
 
 type Registry(taken: Set<string>) =
     // desiredName -> list of (structural signature, finalName, fields)
-    let claimed = System.Collections.Generic.Dictionary<string, ResizeArray<string * string * (string * string) list>>()
+    let claimed =
+        System.Collections.Generic.Dictionary<string, ResizeArray<string * string * (string * string) list>>()
     // emission order preserved: finalName -> fields (rendered), in insert order
     let order = ResizeArray<string * (string * string) list>()
     let notes = ResizeArray<Note>()
@@ -259,14 +273,22 @@ type Registry(taken: Set<string>) =
     // [D:error-data-escape] — a generated comment line stays one line
     member _.AddNote(n: Note) =
         let n = Weir.Types.quoteData n
-        if not (notes.Contains n) then notes.Add n
+
+        if not (notes.Contains n) then
+            notes.Add n
+
     member _.Decls = List.ofSeq order
 
     /// claim a record type for an object with `fields` (rendered field
     /// types), desiring `desired` (derived from the wire key `srcKey`),
     /// whose parent stem is `parentStem`. Returns the final type name
     /// to reference.
-    member this.Claim (desired: string) (srcKey: string) (parentStem: string) (fields: (string * string) list) : string =
+    member this.Claim
+        (desired: string)
+        (srcKey: string)
+        (parentStem: string)
+        (fields: (string * string) list)
+        : string =
         let sign =
             fields
             |> List.sortBy fst
@@ -317,7 +339,9 @@ type Registry(taken: Set<string>) =
             candidate
 
 let private isIdentStart c = System.Char.IsLetter c || c = '_'
-let private isIdentCont c = System.Char.IsLetterOrDigit c || c = '_'
+
+let private isIdentCont c =
+    System.Char.IsLetterOrDigit c || c = '_'
 
 // a key with identifier shape — grammar only, so a reserved word still
 // counts (`type:` is a schema key on real wires; keywords never vote
@@ -352,7 +376,8 @@ let private uniformValue (vals: INode list) : INode option =
 // not a mapping.
 let private detectOpenMap (fields: (string * INode) list) : INode option =
     match uniformValue (fields |> List.map snd) with
-    | Some v when 2 * (fields |> List.filter (fst >> isIdentShaped >> not) |> List.length) > List.length fields -> Some v
+    | Some v when 2 * (fields |> List.filter (fst >> isIdentShaped >> not) |> List.length) > List.length fields ->
+        Some v
     | _ -> None
 
 // ---- the array-element merge [D:repl-infer] ---------------------------
@@ -379,7 +404,12 @@ let rec private mergeTwo (note: Note -> unit) (path: string) (a: INode) (b: INod
         note $"a heterogeneous array at '{path}' — kept the first element's type; verify the rest"
         a
 
-and private mergeObjs (note: Note -> unit) (path: string) (xs: (string * INode) list) (ys: (string * INode) list) : INode =
+and private mergeObjs
+    (note: Note -> unit)
+    (path: string)
+    (xs: (string * INode) list)
+    (ys: (string * INode) list)
+    : INode =
     // Always the record union here; the open-map verdict (detection
     // half b) is deferred to openMaps over the fully-merged shape
     // [D:repl-infer]. Value uniformity must hold across all siblings,
@@ -420,14 +450,31 @@ let rec private openMaps (note: Note -> unit) (path: string) (node: INode) : INo
     match node with
     | IObj fields ->
         let fields' = fields |> List.map (fun (k, v) -> k, openMaps note $"{path}.{k}" v)
-        let allOptional = fields' |> List.forall (fun (_, v) -> (match v with IOpt _ -> true | _ -> false))
+
+        let allOptional =
+            fields'
+            |> List.forall (fun (_, v) ->
+                (match v with
+                 | IOpt _ -> true
+                 | _ -> false))
 
         let bare =
-            fields' |> List.map (fun (_, v) -> (match v with IOpt x -> x | x -> x))
+            fields'
+            |> List.map (fun (_, v) ->
+                (match v with
+                 | IOpt x -> x
+                 | x -> x))
 
-        match (if allOptional && List.length fields' > 1 then uniformValue bare else None) with
+        match
+            (if allOptional && List.length fields' > 1 then
+                 uniformValue bare
+             else
+                 None)
+        with
         | Some v ->
-            note $"'{path}' carries different keys across the array's elements — its keys are data, drafted as an open mapping seq<string * _>"
+            note
+                $"'{path}' carries different keys across the array's elements — its keys are data, drafted as an open mapping seq<string * _>"
+
             IMap v
         | None -> IObj fields'
     | IArr items -> IArr(items |> List.map (openMaps note path))
@@ -499,7 +546,9 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
         // No evidence for V, so string, with a note (as for empty
         // arrays); the mapping shape reads on both wire boundaries,
         // which an opaque Yaml field does not
-        reg.AddNote $"an empty mapping under '{srcKey}' — no entries to infer, drafted as seq<string * string> (edit if the real shape is known)"
+        reg.AddNote
+            $"an empty mapping under '{srcKey}' — no entries to infer, drafted as seq<string * string> (edit if the real shape is known)"
+
         "seq<string * string>"
     | IObj fields ->
         match detectOpenMap fields with
@@ -509,7 +558,9 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
             // are data (k8s labels/annotations), so the draft is the
             // mapping, not a record full of [<Wire>]; mapping keys
             // need no sanitizing, an empty-string key included
-            reg.AddNote $"'{srcKey}' has mostly non-identifier keys — its keys are data, drafted as an open mapping seq<string * _>"
+            reg.AddNote
+                $"'{srcKey}' has mostly non-identifier keys — its keys are data, drafted as an open mapping seq<string * _>"
+
             $"seq<string * {shapeOf reg (capitalize (singularize (identStem desired))) srcKey parentStem v}>"
         | None ->
             // an empty-string key is unspellable either way
@@ -584,8 +635,13 @@ let private isCleanFieldName (reserved: Set<string>) (f: string) : bool =
 /// all-symbol key) gets an `f` prefix so it starts with a letter.
 let private toIdent (reserved: Set<string>) (key: string) : string =
     let segs =
-        key.Split([| for c in key do
-                         if not (System.Char.IsLetterOrDigit c) then c |])
+        key.Split(
+            [|
+                for c in key do
+                    if not (System.Char.IsLetterOrDigit c) then
+                        c
+            |]
+        )
         |> Array.filter (fun s -> s <> "")
 
     let camel =
@@ -607,12 +663,18 @@ let private toIdent (reserved: Set<string>) (key: string) : string =
         | _ -> camel
 
     let camel =
-        if camel = "" || not (isIdentStart camel[0]) then "f" + camel else camel
+        if camel = "" || not (isIdentStart camel[0]) then
+            "f" + camel
+        else
+            camel
 
     // any other reserved word (`in`, `let`, `match`, …) — or a camel
     // result that lands on one (`in-` camelizes to `in`) — takes the
     // parser's repair spelling: `in` → `inField`
-    if Set.contains camel reserved then camel + "Field" else camel
+    if Set.contains camel reserved then
+        camel + "Field"
+    else
+        camel
 
 /// a record's fields as (fieldName, wireKeyOrNone, ty): clean keys keep
 /// their name and carry no wire attribute; others sanitize to a deduped
@@ -620,7 +682,10 @@ let private toIdent (reserved: Set<string>) (key: string) : string =
 /// clean keys (the user's own spellings) reserve their names first,
 /// then sanitized names take the next free `base`/`base2`/`base3`… —
 /// so a sanitized key never steals a clean field's name.
-let resolveFieldNames (reserved: Set<string>) (fields: (string * string) list) : (string * string option * string) list =
+let resolveFieldNames
+    (reserved: Set<string>)
+    (fields: (string * string) list)
+    : (string * string option * string) list =
     let used = System.Collections.Generic.HashSet<string>()
 
     // pass 1: clean keys reserve their exact names
@@ -642,8 +707,10 @@ let resolveFieldNames (reserved: Set<string>) (fields: (string * string) list) :
                     baseName
                 else
                     let mutable n = 2
+
                     while not (used.Add(baseName + string n)) do
                         n <- n + 1
+
                     baseName + string n
 
             name, Some key, ty)
@@ -700,7 +767,8 @@ let inferDecls (reserved: Set<string>) (taken: Set<string>) (topName: string) (n
              // a top-level array of open mappings claims no record — the
              // read spelling is the note's job [D:repl-infer]
              if ty.StartsWith "seq<string * " then
-                 reg.AddNote $"the sample's top level is an array of open mappings — nothing to name; read it as 'seq<{ty}>'"
+                 reg.AddNote
+                     $"the sample's top level is an array of open mappings — nothing to name; read it as 'seq<{ty}>'"
              else
                  reg.AddNote
                      $"the sample's top level is an array — '{topName}' names the element; read it as 'seq<{topName}>'"
@@ -756,9 +824,15 @@ let private tableFieldName (reserved: Set<string>) (header: string) : string =
         | c -> c
 
     let camel =
-        if camel = "" || not (isIdentStart camel[0]) then "f" + camel else camel
+        if camel = "" || not (isIdentStart camel[0]) then
+            "f" + camel
+        else
+            camel
 
-    if Set.contains camel reserved then camel + "Field" else camel
+    if Set.contains camel reserved then
+        camel + "Field"
+    else
+        camel
 
 let private tableIntRx = System.Text.RegularExpressions.Regex "^-?[0-9]+$"
 
@@ -772,7 +846,11 @@ let private tableFloatRx =
 /// top-level array). The `as` name is the caller's own — the
 /// taken-name guard is the caller's refusal, exactly as for
 /// inferDecls' top name.
-let private tableDecls (reserved: Set<string>) (topName: string) (lines: string seq) : Result<string list * Note list, string> =
+let private tableDecls
+    (reserved: Set<string>)
+    (topName: string)
+    (lines: string seq)
+    : Result<string list * Note list, string> =
     let numbered = lines |> Seq.mapi (fun i l -> i + 1, l) |> List.ofSeq
 
     match Table.parse numbered with
@@ -798,7 +876,9 @@ let private tableDecls (reserved: Set<string>) (topName: string) (lines: string 
                     if rows.IsEmpty then
                         "string"
                     elif vals.IsEmpty then
-                        notes.Add $"column '{c.Header}' has no values — drafted Option<string> (edit if the real type is known)"
+                        notes.Add
+                            $"column '{c.Header}' has no values — drafted Option<string> (edit if the real type is known)"
+
                         "Option<string>"
                     else
                         let scanned =
@@ -834,7 +914,11 @@ let private tableDecls (reserved: Set<string>) (topName: string) (lines: string 
                 // field whose normalized name still matches the header
                 // needs no attribute; anything lossier carries the raw
                 // header verbatim [D:from-table]
-                let wire = if Table.matchKey name = Table.matchKey c.Header then None else Some c.Header
+                let wire =
+                    if Table.matchKey name = Table.matchKey c.Header then
+                        None
+                    else
+                        Some c.Header
 
                 name, wire, tyText)
 
@@ -888,13 +972,21 @@ let infer
         // has nothing left to guard here
         ignore taken
         tableDecls reserved topName lines
-    | fmt -> nodeOf fmt lines |> Result.map (fun node -> inferDecls reserved taken topName node)
+    | fmt ->
+        nodeOf fmt lines
+        |> Result.map (fun node -> inferDecls reserved taken topName node)
 
 /// the composable builtin body: sample lines -> declaration text (the
 /// notes ride as trailing `//` comment lines so the one-string return
 /// stays honest outside the REPL). Raises on a parse failure, per the
 /// builtin-raise convention.
-let inferShapeText (reserved: Set<string>) (taken: Set<string>) (fmt: Format) (topName: string) (lines: string seq) : string =
+let inferShapeText
+    (reserved: Set<string>)
+    (taken: Set<string>)
+    (fmt: Format)
+    (topName: string)
+    (lines: string seq)
+    : string =
     match infer reserved taken fmt topName lines with
     | Error msg ->
         // the script's caller names the failure, not the REPL directive
@@ -905,7 +997,12 @@ let inferShapeText (reserved: Set<string>) (taken: Set<string>) (fmt: Format) (t
             | Yaml -> "Yaml.inferShape"
             | Table -> "Table.inferShape"
 
-        failwith (if msg.StartsWith "#infer: " then $"{caller}: {msg.Substring 8}" else msg)
+        failwith (
+            if msg.StartsWith "#infer: " then
+                $"{caller}: {msg.Substring 8}"
+            else
+                msg
+        )
     | Ok(decls, notes) ->
         let noteLines = notes |> List.map (fun n -> $"// note: {Weir.Types.quoteData n}")
         String.Join("\n", decls @ noteLines)

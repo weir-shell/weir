@@ -49,9 +49,10 @@ let columns (header: string) : Column list =
             prevCp <- prevCp + CodePoints.length (header.Substring(prevUtf16, start - prevUtf16))
             prevUtf16 <- start
 
-            cols.Add
-                { Header = header.Substring(start, i - start)
-                  Start = prevCp }
+            cols.Add {
+                Header = header.Substring(start, i - start)
+                Start = prevCp
+            }
 
     List.ofSeq cols
 

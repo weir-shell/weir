@@ -7,10 +7,11 @@ module Weir.DynComplete
 // slot asks, and whether a sig's mechanism is honored, is Script's.
 
 /// one question to a tool: the mechanism parses the answer
-type Request =
-    { Mechanism: string
-      Exe: string
-      Args: string list }
+type Request = {
+    Mechanism: string
+    Exe: string
+    Args: string list
+}
 
 type Outcome =
     /// the candidates as printed (unfiltered); `noFiles`: when none fits,
@@ -78,11 +79,33 @@ type GitWant =
     | Remotes
 
 let private refSubs =
-    set [ "checkout"; "switch"; "merge"; "rebase"; "diff"; "log"; "reset"; "cherry-pick"; "revert"; "show" ]
+    set [
+        "checkout"
+        "switch"
+        "merge"
+        "rebase"
+        "diff"
+        "log"
+        "reset"
+        "cherry-pick"
+        "revert"
+        "show"
+    ]
 
 // `git remote <sub> <name>`: the subcommands whose first operand is a remote
 let private remoteSubs =
-    set [ "remove"; "rm"; "rename"; "set-url"; "get-url"; "show"; "prune"; "set-head"; "set-branches"; "update" ]
+    set [
+        "remove"
+        "rm"
+        "rename"
+        "set-url"
+        "get-url"
+        "show"
+        "prune"
+        "set-head"
+        "set-branches"
+        "update"
+    ]
 
 /// what the operand after `before` (the words typed after `git`) names
 let gitWant (before: string list) : GitWant option =
@@ -106,7 +129,9 @@ let gitWant (before: string list) : GitWant option =
             let flags = rest |> List.filter isFlag
             let ops = rest |> List.filter (isFlag >> not)
             let n = ops.Length
-            let has (fs: string list) = flags |> List.exists (fun f -> List.contains f fs)
+
+            let has (fs: string list) =
+                flags |> List.exists (fun f -> List.contains f fs)
 
             match sub with
             | s when Set.contains s refSubs -> Some Refs
@@ -270,8 +295,7 @@ let clearCache () = lock cache (fun () -> cache.Clear())
 
 /// ask, through the cache, with `run` as the child runner
 let askWith (runner: string -> string list -> RunResult) (req: Request) : Outcome =
-    let key =
-        String.concat "\u0000" (req.Mechanism :: req.Exe :: req.Args)
+    let key = String.concat "\u0000" (req.Mechanism :: req.Exe :: req.Args)
 
     match lock cache (fun () -> cache.TryGetValue key) with
     | true, o -> o
@@ -298,9 +322,10 @@ let ask (abort: unit -> bool) (req: Request) : Outcome =
 
 /// how the REPL's Tab reaches a tool: `Run` asks, `Note` shows a one-line
 /// note under the buffer
-type Hooks =
-    { Run: Request -> Outcome
-      Note: string -> unit }
+type Hooks = {
+    Run: Request -> Outcome
+    Note: string -> unit
+}
 
 // the hint for a refused mechanism, once per session per tool
 let private hinted = System.Collections.Generic.HashSet<string>()

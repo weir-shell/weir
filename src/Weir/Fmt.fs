@@ -38,7 +38,10 @@ let collectBareUses (e: Expr) : (Span * string) list =
 // an already-anchored doc is left where it is.
 let private canonicalizeDocs (out: string list) : string list =
     let isDoc (s: string) = s.TrimStart(parserWs).StartsWith "///"
-    let isCode (s: string) = (Script.stripComment s).Trim(parserWs) <> ""
+
+    let isCode (s: string) =
+        (Script.stripComment s).Trim(parserWs) <> ""
+
     let arr = List.toArray out
     // district content is bytes [D:content-bytes] — a ///-shaped line
     // inside one is data, never re-anchored
@@ -73,7 +76,10 @@ let private canonicalizeDocs (out: string list) : string list =
 // uniform shift.
 let private canonicalizeDistrictMarkers (body: string list) : string list =
     let arr = List.toArray body
-    let indentOf (s: string) = s |> Seq.takeWhile ((=) ' ') |> Seq.length
+
+    let indentOf (s: string) =
+        s |> Seq.takeWhile ((=) ' ') |> Seq.length
+
     let isBlank (s: string) = s.Trim(parserWs) = ""
 
     // the whole piece must be the marker — `<<<`, `$<<<`, `yaml` plus
@@ -95,7 +101,8 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
 
     let shifted (raw: string) (ind: int) =
         match tailShift with
-        | Some(delta, floor) when ind > floor -> String.replicate (max floor (ind - delta)) " " + raw.TrimStart(parserWs)
+        | Some(delta, floor) when ind > floor ->
+            String.replicate (max floor (ind - delta)) " " + raw.TrimStart(parserWs)
         | _ -> raw
 
     for i in 0 .. arr.Length - 1 do
@@ -170,20 +177,21 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
 // an open bracket as fmt tracks it: inside one, a line that is not a
 // new entry or a closer moves by the delta (formatted − original indent)
 // of the line it continues [D:fmt-bracket-shift]
-type private OpenBracket =
-    { Kind: char
-      // formatted column
-      Col: int
-      Stroustrup: bool
-      // the opener line's formatted indent
-      LineIndent: int
-      // the opener line's original indent
-      OrigLineIndent: int
-      // first entry's formatted column (inline `{`/`[`) [D:field-alignment]
-      Anchor: int option
-      // entries' original indent; a deeper line continues an entry
-      EntryIndent: int option
-      Delta: int }
+type private OpenBracket = {
+    Kind: char
+    // formatted column
+    Col: int
+    Stroustrup: bool
+    // the opener line's formatted indent
+    LineIndent: int
+    // the opener line's original indent
+    OrigLineIndent: int
+    // first entry's formatted column (inline `{`/`[`) [D:field-alignment]
+    Anchor: int option
+    // entries' original indent; a deeper line continues an entry
+    EntryIndent: int option
+    Delta: int
+}
 
 // the column of a `match` keyword heading the arms below a line that
 // ends `with`, past the line's start: outside string literals, a whole
@@ -194,7 +202,9 @@ let private midLineMatchHead (code: string) : int option =
     if not (code.EndsWith " with") then
         None
     else
-        let isIdent c = System.Char.IsLetterOrDigit c || c = '_' || c = '.' || c = '\''
+        let isIdent c =
+            System.Char.IsLetterOrDigit c || c = '_' || c = '.' || c = '\''
+
         let mutable inStr = false
         let mutable found = None
         let mutable i = 0
@@ -203,8 +213,10 @@ let private midLineMatchHead (code: string) : int option =
             let c = code[i]
 
             if inStr then
-                if c = '\\' then i <- i + 1
-                elif c = '"' then inStr <- false
+                if c = '\\' then
+                    i <- i + 1
+                elif c = '"' then
+                    inStr <- false
             elif c = '"' then
                 inStr <- true
             elif
@@ -336,8 +348,10 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                 if Script.classifyLine arr[j] = Script.LineKind.Code then
                     let i = arr[j] |> Seq.takeWhile ((=) ' ') |> Seq.length
 
-                    if i <= parent then stop <- true
-                    elif i < indent && Script.continuesOpenIf (arr[j].TrimStart ' ') then found.Add i |> ignore
+                    if i <= parent then
+                        stop <- true
+                    elif i < indent && Script.continuesOpenIf (arr[j].TrimStart ' ') then
+                        found.Add i |> ignore
 
                 j <- j + 1
 
@@ -448,7 +462,10 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                                         while j < piece.Length && piece[j] = ' ' do
                                             j <- j + 1
 
-                                        if j < piece.Length then Some(indent, indent + j, col + j) else None)
+                                        if j < piece.Length then
+                                            Some(indent, indent + j, col + j)
+                                        else
+                                            None)
 
                                 Some col
                             | None ->
@@ -493,9 +510,11 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                                         let col = b.LineIndent + 4
 
                                         braces <-
-                                            { b with
-                                                EntryIndent = Some(defaultArg b.EntryIndent indent)
-                                                Delta = col - indent }
+                                            {
+                                                b with
+                                                    EntryIndent = Some(defaultArg b.EntryIndent indent)
+                                                    Delta = col - indent
+                                            }
                                             :: rest
 
                                         joinLevel col
@@ -562,8 +581,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                         // line (`(match …`), aligns its arms under the `m`
                         // [D:fmt-match-arms] — the stored column is the
                         // keyword's own, not the line indent
-                        let mOff =
-                            piece |> Seq.takeWhile (fun c -> c = '(' || c = ' ') |> Seq.length
+                        let mOff = piece |> Seq.takeWhile (fun c -> c = '(' || c = ' ') |> Seq.length
 
                         let mRest = piece.Substring mOff
 
@@ -620,14 +638,16 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
 
                                 let delta = col - indent
 
-                                { Kind = k
-                                  Col = c
-                                  Stroustrup = stroustrup
-                                  LineIndent = col
-                                  OrigLineIndent = indent
-                                  Anchor = anchor
-                                  EntryIndent = anchor |> Option.map (fun a -> a - delta)
-                                  Delta = delta })
+                                {
+                                    Kind = k
+                                    Col = c
+                                    Stroustrup = stroustrup
+                                    LineIndent = col
+                                    OrigLineIndent = indent
+                                    Anchor = anchor
+                                    EntryIndent = anchor |> Option.map (fun a -> a - delta)
+                                    Delta = delta
+                                })
 
                         braces <- pushed @ (braces |> List.skip (List.length braces - survived))
                         formatted)
@@ -654,11 +674,12 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                 // veto every operator respace on such a line. A real
                 // command line refuses to parse here (argv is not an
                 // expression), so the assume side still guards argv.
-                let exprResolver =
-                    { shapeResolver with
+                let exprResolver = {
+                    shapeResolver with
                         IsExternal = (fun _ -> false)
                         IsCommandCallable = (fun _ -> false)
-                        AliasHead = (fun _ -> None) }
+                        AliasHead = (fun _ -> None)
+                }
 
                 let shapeWith (r: Parser.Resolver) (text: string) =
                     match Parser.parseLine r text with
@@ -787,32 +808,41 @@ let formatLines (body: string list) : Result<string list, string> = formatSettle
 
 let private alignSessionFields (body: string list) : string list =
     let fieldStart = System.Text.RegularExpressions.Regex @"^[A-Za-z_][A-Za-z0-9_]*\s*="
-    let indentOf (l: string) = l |> Seq.takeWhile ((=) ' ') |> Seq.length
+
+    let indentOf (l: string) =
+        l |> Seq.takeWhile ((=) ' ') |> Seq.length
+
     let mutable inBlock = false
     let mutable delta = 0
 
-    [ for l in body do
-          let t = l.Trim(parserWs)
+    [
+        for l in body do
+            let t = l.Trim(parserWs)
 
-          if not inBlock then
-              if t = "#session {" then
-                  inBlock <- true
-                  delta <- 0
+            if not inBlock then
+                if t = "#session {" then
+                    inBlock <- true
+                    delta <- 0
 
-              l
-          elif t = "}" then
-              inBlock <- false
-              l
-          elif t = "" || Script.classifyLine l <> Script.LineKind.Code then
-              l
-          elif fieldStart.IsMatch t then
-              delta <- 4 - indentOf l
-              "    " + l.TrimStart ' '
-          else
-              // a continuation keeps its offset from its field, never
-              // leaving the block's body
-              let i = indentOf l
-              if i + delta > 4 then String.replicate (i + delta) " " + l.TrimStart ' ' else l ]
+                l
+            elif t = "}" then
+                inBlock <- false
+                l
+            elif t = "" || Script.classifyLine l <> Script.LineKind.Code then
+                l
+            elif fieldStart.IsMatch t then
+                delta <- 4 - indentOf l
+                "    " + l.TrimStart ' '
+            else
+                // a continuation keeps its offset from its field, never
+                // leaving the block's body
+                let i = indentOf l
+
+                if i + delta > 4 then
+                    String.replicate (i + delta) " " + l.TrimStart ' '
+                else
+                    l
+    ]
 
 /// The one formatter entry point for `weir fmt` and the LSP's
 /// formatting request [D:fmt-v1]: a source text in, its canonical lines
@@ -850,13 +880,20 @@ let formatSource (path: string) (text: string) : Result<string list * bool, stri
         let diags, _, _, _, _ = Script.analyzeLines path lines
 
         diags
-        |> List.tryFind (fun d -> d.File = path && (d.Code = "parse" || d.Code = "directive") && d.Severity = "error")
+        |> List.tryFind (fun d ->
+            d.File = path
+            && (d.Code = "parse" || d.Code = "directive")
+            && d.Severity = "error")
 
     // an init file's #session fields are separate settings, each read on
     // its own (Script.splitInit) — so any field indent loads; fmt seats
     // every field start at 4, its continuation lines riding along
     // [D:init-session-fields]
-    let body = if Script.isInitMarked lines then alignSessionFields body else body
+    let body =
+        if Script.isInitMarked lines then
+            alignSessionFields body
+        else
+            body
 
     formatSettled header.Length body
     |> Result.bind (fun formattedBody ->
@@ -874,7 +911,10 @@ let formatSource (path: string) (text: string) : Result<string list * bool, stri
                     |> List.rev
 
                 let assembled (ls: string list) =
-                    ls |> List.mapi (fun i l -> i + 1, l) |> Script.assemble |> Result.map (List.map _.Text)
+                    ls
+                    |> List.mapi (fun i l -> i + 1, l)
+                    |> Script.assemble
+                    |> Result.map (List.map _.Text)
 
                 match assembled formattedBody, assembled kept with
                 | Ok a, Ok b when a = b -> kept
@@ -923,7 +963,8 @@ let qualifyBareAliasesExcept (bound: Set<string>) (r: Parser.Resolver) (line: st
                     acc)
             line
 
-let qualifyBareAliases (r: Parser.Resolver) (line: string) : string = qualifyBareAliasesExcept Set.empty r line
+let qualifyBareAliases (r: Parser.Resolver) (line: string) : string =
+    qualifyBareAliasesExcept Set.empty r line
 
 // collect command-head spans and their head names [D:command-head-alias]:
 // an ECmd's head is the literal program name, and its token sits at the
@@ -938,11 +979,13 @@ let collectCmdHeads (e: Expr) : (Span * string) list =
          // literal heads only — a dynamic head [D:dynamic-head] is
          // never an alias, so #save leaves it untouched
          | ECmd(HeadLit prog, _, _) ->
-             let headSpan =
-                 { Start = e.Span.Start
-                   End =
-                     { e.Span.Start with
-                         Col = e.Span.Start.Col + prog.Length } }
+             let headSpan = {
+                 Start = e.Span.Start
+                 End = {
+                     e.Span.Start with
+                         Col = e.Span.Start.Col + prog.Length
+                 }
+             }
 
              acc.Add(headSpan, prog)
          | _ -> ())
@@ -1043,15 +1086,22 @@ let formatFile (checkOnly: bool) (path: string) : int =
                     let nl = if text.Contains "\r\n" then "\r\n" else "\n"
 
                     let out =
-                        if List.isEmpty result then "" else String.concat nl result + nl
+                        if List.isEmpty result then
+                            ""
+                        else
+                            String.concat nl result + nl
 
                     System.IO.File.WriteAllText(path, out, System.Text.UTF8Encoding(bom))
                     System.Console.Error.WriteLine $"weir fmt: formatted {Weir.Types.quoteData path}"
                     0
                 with
                 | :? System.UnauthorizedAccessException ->
-                    System.Console.Error.WriteLine $"weir fmt: cannot write {Weir.Types.quoteData path}: permission denied"
+                    System.Console.Error.WriteLine
+                        $"weir fmt: cannot write {Weir.Types.quoteData path}: permission denied"
+
                     2
                 | :? System.IO.IOException as ex ->
-                    System.Console.Error.WriteLine $"weir fmt: cannot write {Weir.Types.quoteData path}: {Weir.Types.quoteData ex.Message}"
+                    System.Console.Error.WriteLine
+                        $"weir fmt: cannot write {Weir.Types.quoteData path}: {Weir.Types.quoteData ex.Message}"
+
                     2

@@ -34,17 +34,19 @@ let private baseOptions =
              |> Array.filter (fun p -> p.EndsWith ".dll")
              |> Array.map (fun p -> "-r:" + p)
 
-         { ProjectFileName = "/oracle/oracle.fsproj"
-           ProjectId = None
-           SourceFiles = [| scriptFile |]
-           OtherOptions = Array.append [| "--noframework"; "--targetprofile:netcore"; "--langversion:latest" |] refs
-           ReferencedProjects = [||]
-           IsIncompleteTypeCheckEnvironment = false
-           UseScriptResolutionRules = false
-           LoadTime = System.DateTime.MinValue
-           UnresolvedReferences = None
-           OriginalLoadReferences = []
-           Stamp = None })
+         {
+             ProjectFileName = "/oracle/oracle.fsproj"
+             ProjectId = None
+             SourceFiles = [| scriptFile |]
+             OtherOptions = Array.append [| "--noframework"; "--targetprofile:netcore"; "--langversion:latest" |] refs
+             ReferencedProjects = [||]
+             IsIncompleteTypeCheckEnvironment = false
+             UseScriptResolutionRules = false
+             LoadTime = System.DateTime.MinValue
+             UnresolvedReferences = None
+             OriginalLoadReferences = []
+             Stamp = None
+         })
 
 let private cache = ConcurrentDictionary<string, Verdict>()
 
@@ -107,20 +109,22 @@ let weirVerdict (src: string) : Verdict =
         let typeEnv0, _ =
             Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
 
-        let typeEnv0 =
-            { typeEnv0 with
+        let typeEnv0 = {
+            typeEnv0 with
                 Values =
                     typeEnv0.Values
                     |> Map.add "args" (generalize (TSeq TStr))
-                    |> Map.add "stdin" (generalize (TSeq TStr)) }
+                    |> Map.add "stdin" (generalize (TSeq TStr))
+        }
 
-        let resolver: Weir.Parser.Resolver =
-            { IsKnown = fun n -> Map.containsKey n typeEnv0.Values || Map.containsKey n typeEnv0.Modules
-              IsCommandCallable = Weir.Builtins.commandCallable.Contains
-              IsExternal = fun _ -> false
-              ExternalNames = (fun () -> Seq.empty)
-              BareHome = (fun _ -> None)
-              AliasHead = fun _ -> None }
+        let resolver: Weir.Parser.Resolver = {
+            IsKnown = fun n -> Map.containsKey n typeEnv0.Values || Map.containsKey n typeEnv0.Modules
+            IsCommandCallable = Weir.Builtins.commandCallable.Contains
+            IsExternal = fun _ -> false
+            ExternalNames = (fun () -> Seq.empty)
+            BareHome = (fun _ -> None)
+            AliasHead = fun _ -> None
+        }
 
         // the unused-binding law rides the mirror [D:unused-bindings] — the
         // mirror replicates the runner's check phase, whole-file laws included
@@ -137,9 +141,10 @@ let weirVerdict (src: string) : Verdict =
                     Weir.Script.checkStatement
                         true
                         None
-                        (fun te ->
-                            { resolver with
-                                IsKnown = fun n -> Map.containsKey n te.Values || Map.containsKey n te.Modules })
+                        (fun te -> {
+                            resolver with
+                                IsKnown = fun n -> Map.containsKey n te.Values || Map.containsKey n te.Modules
+                        })
                         Weir.Script.scriptOnlyImport
                         tenv
                         ll

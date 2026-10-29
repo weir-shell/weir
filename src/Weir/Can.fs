@@ -52,65 +52,75 @@ type Cap = { Fact: Fact; Site: Site }
 // this report cannot read. Everything else external is still listed
 // under runs — this set only adds the loud opaque marker.
 let private interpreters =
-    Set
-        [ "sh"
-          "bash"
-          "zsh"
-          "dash"
-          "ksh"
-          "python"
-          "python3"
-          "perl"
-          "ruby"
-          "node"
-          "deno"
-          "env"
-          "xargs"
-          "sudo"
-          "doas"
-          "nohup"
-          "timeout"
-          "watch"
-          "eval"
-          // weir itself [D:can-report]: `weir file.weir` takes a
-          // program as its argument in exactly sh -c's sense — the
-          // report cannot see through it (the showcase had 22
-          // unmarked self-invocations without this entry)
-          "weir" ]
+    Set [
+        "sh"
+        "bash"
+        "zsh"
+        "dash"
+        "ksh"
+        "python"
+        "python3"
+        "perl"
+        "ruby"
+        "node"
+        "deno"
+        "env"
+        "xargs"
+        "sudo"
+        "doas"
+        "nohup"
+        "timeout"
+        "watch"
+        "eval"
+        // weir itself [D:can-report]: `weir file.weir` takes a
+        // program as its argument in exactly sh -c's sense — the
+        // report cannot see through it (the showcase had 22
+        // unmarked self-invocations without this entry)
+        "weir"
+    ]
 
 // module-member classification: what a reference to each member means
 // for the report. Pure members (Path.fileName, Http.get the
 // constructor…) are deliberately absent — building a request is not
 // sending it.
 let private fsReads =
-    Set [ "File.read"; "File.readFrom"; "File.size"; "Dir.list"; "Dir.exists"; "Path.glob" ]
+    Set [
+        "File.read"
+        "File.readFrom"
+        "File.size"
+        "Dir.list"
+        "Dir.exists"
+        "Path.glob"
+    ]
 
 let private fsWrites =
-    Set
-        [ "File.write"
-          "File.writeAtomic"
-          "File.append"
-          "File.copy"
-          "Dir.create"
-          "Dir.delete"
-          "Dir.deleteAll"
-          "Dir.copy"
-          "Dir.move" ]
+    Set [
+        "File.write"
+        "File.writeAtomic"
+        "File.append"
+        "File.copy"
+        "Dir.create"
+        "Dir.delete"
+        "Dir.deleteAll"
+        "Dir.copy"
+        "Dir.move"
+    ]
 
 let private networkMembers = Set [ "Http.send"; "Http.expect"; "Net.portOpen" ]
 
 // the request constructors — the one-ctor-deep shapes whose literal url
 // a send/expect report can name [D:fetch-retired]
 let private httpCtorMembers =
-    Set
-        [ "Http.get"
-          "Http.post"
-          "Http.put"
-          "Http.delete"
-          "Http.patch"
-          "Http.head"
-          "Http.options"
-          "Http.query" ]
+    Set [
+        "Http.get"
+        "Http.post"
+        "Http.put"
+        "Http.delete"
+        "Http.patch"
+        "Http.head"
+        "Http.options"
+        "Http.query"
+    ]
 
 // the one-var reads name a literal variable [D:env-need-getor]
 let private envOneVar = Set [ "Env.get"; "Env.need"; "Env.getOr" ]
@@ -133,10 +143,16 @@ let rec private envNamesOf
 
     let pairKey (item: TypedExpr) =
         match item.Kind with
-        | TEApp({ Kind = TEApp({ Kind = TEVar "Env.pair" }, { Kind = TEStr k }) }, _) -> Some k
+        | TEApp({
+                    Kind = TEApp({ Kind = TEVar "Env.pair" }, { Kind = TEStr k })
+                },
+                _) -> Some k
         // the NAME=value words — `within env A=1` and a command's prefix
         // [D:within-env-pairs] [D:env-prefix]
-        | TEApp({ Kind = TEApp({ Kind = TEVar "|envPair" }, { Kind = TEStr k }) }, _) -> Some k
+        | TEApp({
+                    Kind = TEApp({ Kind = TEVar "|envPair" }, { Kind = TEStr k })
+                },
+                _) -> Some k
         | TETuple [ { Kind = TEStr k }; _ ] -> Some k
         | _ -> None
 
@@ -477,17 +493,18 @@ let private factLine (c: Cap) : string * string =
     | ProcCtl m -> "processes", m
     | Terminates via -> "terminates", via
 
-let private sectionOrder =
-    [ "runs"
-      "opaque"
-      "reads"
-      "writes"
-      "filesystem"
-      "network"
-      "environment"
-      "secrets"
-      "processes"
-      "terminates" ]
+let private sectionOrder = [
+    "runs"
+    "opaque"
+    "reads"
+    "writes"
+    "filesystem"
+    "network"
+    "environment"
+    "secrets"
+    "processes"
+    "terminates"
+]
 
 // the ambient/mutation class of a capability [D:pure-stage2]: the same
 // partition the `readonly` ceiling and plan/apply use, applied to the
@@ -678,6 +695,7 @@ let renderJson (script: string) (caps: Cap list) : string =
             | Weir.Effects.Ambient -> "ambient"
             | Weir.Effects.Mutation -> "mutation"
         )
+
         writeSite c.Site
         w.WriteEndObject()
 
