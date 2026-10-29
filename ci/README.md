@@ -3,11 +3,11 @@
 `.github/workflows/ci.yml` runs the battery `ci/local.sh` mirrors, on
 a three-platform matrix [D:github-ci]:
 
-- **linux** — the full battery at GitLab parity: the fantomas check
+- **linux** — the full battery: the fantomas check
   [D:fantomas-pinned], unit twice in Debug (flake detection), AOT
   publish + the freshness gate, e2e (the conflict-marker gate at its
-  top), fuzz smoke, doc-tests, the dead-private check, the sweep and
-  hunt2 repro harnesses, the F# oracle, timing.
+  top), fuzz smoke, doc-tests, the dead-private check, the repro
+  harnesses, the F# oracle, timing.
 - **macos** — unit, publish+gate, e2e, doc-tests; timing advisory.
   The e2e arm is the GNU-ism sweep's real signal: first-run reds are
   findings to triage, not flakes.
@@ -52,11 +52,7 @@ Locally (Linux, never /tmp):
     python3 -I ci/storm/repl.py --bin BIN --out DIR --runs 12 --mode kill
     python3 -I ci/storm/fuzz.py --bin BIN --out DIR --trees 60
 
-The old `.gitlab-ci.yml` (kaniko image + single test job) retired
-with the GitHub migration; the toolchain image's job is done by
-setup-dotnet + apt on the runner.
-
-Notes (carried from the previous home where still true):
+Notes:
 - `ci/local.sh` copies the repo into the image (build context) instead
   of bind-mounting: bind mounts silently yield an EMPTY /work with
   remote docker daemons (paths resolve daemon-side), FUSE/network

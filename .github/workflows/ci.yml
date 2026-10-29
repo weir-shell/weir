@@ -141,7 +141,7 @@ jobs:
       # Debug, stated [D:repro-gates]: Debug frames are larger, so a deep
       # recursion that Release survives overflows here — ci/local.sh runs
       # the same configuration
-      - name: unit suite (twice — flake detection, the GitLab-parity ritual)
+      - name: unit suite (twice — flake detection)
         run: |
           dotnet test tests/Weir.Tests/Weir.Tests.fsproj -c Debug
           dotnet test tests/Weir.Tests/Weir.Tests.fsproj -c Debug
@@ -248,15 +248,13 @@ jobs:
         run: WEIR_PARSE_ORACLE=1 dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj
       - name: doc-tests
         run: ./ci/skill-doc.sh
-      # the message census [D:census-first-diagnostic]: a REGRESSION baseline,
-      # so it has to run — it drifted 5 points unnoticed while nothing
-      # invoked it, and the drift turned out to be the instrument
-      # dead private bindings [D:drop-command-impls]: expected count zero —
-      # assertable only since the retired command tier's impls went. Private
-      # only; a dead PUBLIC binding is out of its reach.
+      # dead private bindings [D:drop-command-impls]: expected count zero.
+      # Private only; a dead PUBLIC binding is out of its reach.
       - name: dead-private check
         run: ~/.local/bin/weir tools/dead-privates.weir
 
+      # the message census [D:census-first-diagnostic]: a regression
+      # baseline, so it has to run
       - name: message census
         run: ~/.local/bin/weir tools/dx-message-census.weir --bin ~/.local/bin/weir
 
@@ -281,26 +279,11 @@ jobs:
           path: ${{ runner.temp }}/weir-bin
       - name: install the build job's binary
         run: mkdir -p ~/.local/bin && install -m 755 "$RUNNER_TEMP/weir-bin/weir" ~/.local/bin/weir
-      - name: sweep repro harness
-        run: ~/.local/bin/weir tools/sweep-repro.weir --bin ~/.local/bin/weir
-      - name: hunt2 repro harness
-        run: ~/.local/bin/weir tools/hunt2-repro.weir --bin ~/.local/bin/weir
-      - name: hunt3 repro harness
-        run: ~/.local/bin/weir tools/hunt3-repro.weir --bin ~/.local/bin/weir
-      - name: hunt3 round-2 repro harness
-        run: ~/.local/bin/weir tools/hunt3r2-repro.weir --bin ~/.local/bin/weir
-      - name: hunt3 round-3 repro harness
-        run: ~/.local/bin/weir tools/hunt3r3-repro.weir --bin ~/.local/bin/weir
-      - name: hunt3 round-4 repro harness
-        run: ~/.local/bin/weir tools/hunt3r4-repro.weir --bin ~/.local/bin/weir
-      - name: hunt3 round-4 fixes repro harness
-        run: ~/.local/bin/weir tools/hunt3r4f-repro.weir --bin ~/.local/bin/weir
-      - name: hunt3 round-5 fixes repro harness
-        run: ~/.local/bin/weir tools/hunt3r5f-repro.weir --bin ~/.local/bin/weir
-      - name: hunt3 round-6 fixes repro harness
-        run: ~/.local/bin/weir tools/hunt3r6f-repro.weir --bin ~/.local/bin/weir
-      - name: hunt3 round-7 fixes repro harness
-        run: ~/.local/bin/weir tools/hunt3r7f-repro.weir --bin ~/.local/bin/weir
+      - name: repro harnesses
+        run: |
+          for h in sweep hunt2 hunt3 hunt3r2 hunt3r3 hunt3r4 hunt3r4f hunt3r5f hunt3r6f hunt3r7f; do
+            ~/.local/bin/weir "tools/$h-repro.weir" --bin ~/.local/bin/weir
+          done
       - name: command-signature gate (sample tools)
         run: ~/.local/bin/weir tools/sig-score.weir --bin ~/.local/bin/weir
 
@@ -375,10 +358,10 @@ jobs:
           path: ${{ runner.temp }}/weir-bin
       - name: install the build job's binary
         run: mkdir -p ~/.local/bin && install -m 755 "$RUNNER_TEMP/weir-bin/weir" ~/.local/bin/weir
-      - name: PyYAML — the interop referee runs here too (weir refereeing itself missed four emitter defects; doubling the referee's platforms is one line)
+      - name: PyYAML (the interop referee)
         if: matrix.shard == 'body'
         run: python3 -m pip install --break-system-packages pyyaml || python3 -m pip install pyyaml
-      - name: e2e battery (${{ matrix.shard }}) — the GNU-ism sweep's real signal (reds are findings)
+      - name: e2e battery (${{ matrix.shard }})
         env:
           E2E_SHARD: ${{ matrix.shard }}
         run: |
@@ -410,7 +393,7 @@ jobs:
           path: ${{ runner.temp }}/weir-bin
       - name: install the build job's binary
         run: mkdir -p "$LOCALAPPDATA/Programs/weir" && cp "$RUNNER_TEMP/weir-bin/weir.exe" "$LOCALAPPDATA/Programs/weir/weir.exe"
-      - name: e2e battery (HTTP is the one never-run-here surface — watch it)
+      - name: e2e battery
         run: |
           # per-check cost report (ci/e2e-timing.py); pipefail keeps e2e's exit
           set -o pipefail
