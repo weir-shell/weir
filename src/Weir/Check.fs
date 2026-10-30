@@ -568,8 +568,10 @@ let private floatInsideNamed (env: TypeEnv) (ty: Ty) : bool =
 
 type private Ctx = {
     mutable Fresh: int
-    mutable Subst: Map<string, Ty>
-    mutable Rows: Map<string, Map<string, Ty * Span>>
+    // grow-only, read by key, never snapshotted: dictionaries, so a
+    // bind allocates nothing and a resolve hashes once
+    Subst: System.Collections.Generic.Dictionary<string, Ty>
+    Rows: System.Collections.Generic.Dictionary<string, Map<string, Ty * Span>>
     // physical field-access origins for instantiated row vars
     // [D:row-provenance], rehydrated from the scheme's RowOrigins
     mutable RowOrigins: Map<string, (string * int * int * int) list>
@@ -624,8 +626,8 @@ let private sizeEvidenceFloor = 50_000
 
 let private newCtx () = {
     Fresh = 0
-    Subst = Map.empty
-    Rows = Map.empty
+    Subst = System.Collections.Generic.Dictionary()
+    Rows = System.Collections.Generic.Dictionary()
     RowOrigins = Map.empty
     Cons = Map.empty
     PendingSplices = []
@@ -653,14 +655,25 @@ let private freshName (ctx: Ctx) (prefix: string) : string =
 let rec private resolveNoTick (ctx: Ctx) (ty: Ty) : Ty =
     match ty with
     | TVar v ->
-        match Map.tryFind v ctx.Subst with
-        | Some t -> resolveNoTick ctx t
-        | None -> ty
+        match ctx.Subst.TryGetValue v with
+        | true, t -> resolveNoTick ctx t
+        | _ -> ty
     | TRowVar(r, _) ->
-        match Map.tryFind r ctx.Subst with
-        | Some t -> resolveNoTick ctx t
-        | None -> ty
+        match ctx.Subst.TryGetValue r with
+        | true, t -> resolveNoTick ctx t
+        | _ -> ty
     | t -> t
+
+// a row var's fields so far (none yet: the empty map)
+let private rowsOf (ctx: Ctx) (r: string) : Map<string, Ty * Span> =
+    match ctx.Rows.TryGetValue r with
+    | true, m -> m
+    | _ -> Map.empty
+
+let private tryRows (ctx: Ctx) (r: string) : Map<string, Ty * Span> option =
+    match ctx.Rows.TryGetValue r with
+    | true, m -> Some m
+    | _ -> None
 
 // a bounded size probe for the budget's evidence check: walks at most
 // `floor` nodes and answers "is this type at least that big" — never
@@ -751,10 +764,7 @@ let private finalTy (ctx: Ctx) (ty: Ty) : Ty =
             let seen' = Set.add r seen
 
             let fields =
-                Map.tryFind r ctx.Rows
-                |> Option.defaultValue Map.empty
-                |> Map.toList
-                |> List.map (fun (f, (t, _)) -> f, go seen' t)
+                rowsOf ctx r |> Map.toList |> List.map (fun (f, (t, _)) -> f, go seen' t)
 
             let rec unchanged (xs: (string * Ty) list) (ys: (string * Ty) list) =
                 match xs, ys with
@@ -778,12 +788,7 @@ let private occurs (ctx: Ctx) (v: string) (ty: Ty) : bool =
     let rec go ty =
         match resolve ctx ty with
         | TVar u -> u = v
-        | TRowVar(r, _) ->
-            r = v
-            || (seenRows.Add r
-                && Map.tryFind r ctx.Rows
-                   |> Option.defaultValue Map.empty
-                   |> Map.exists (fun _ (t, _) -> go t))
+        | TRowVar(r, _) -> r = v || (seenRows.Add r && rowsOf ctx r |> Map.exists (fun _ (t, _) -> go t))
         | TFun(a, b) -> go a || go b
         | TSeq t -> go t
         | TTuple ts -> ts |> List.exists go
@@ -1006,7 +1011,7 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
 
                 match Map.tryFind r mapping with
                 | Some r' ->
-                    ctx.Rows <- Map.add r' (fields' |> List.map (fun (f, t) -> f, (t, span)) |> Map.ofList) ctx.Rows
+                    ctx.Rows[r'] <- fields' |> List.map (fun (f, t) -> f, (t, span)) |> Map.ofList
 
                     // provenance rides the instantiation [D:row-provenance]
                     match Map.tryFind r sch.RowOrigins with
@@ -1308,7 +1313,7 @@ let rec private bind (ctx: Ctx) (env: TypeEnv) (span: Span) (expected: Ty) (actu
         if occurs ctx v t then
             err span $"cannot construct the infinite type '{v} = {formatTy (finalTy ctx t)}"
         else
-            ctx.Subst <- Map.add v t ctx.Subst
+            ctx.Subst[v] <- t
 
             dischargeCons ctx env v t |> Result.bind (fun () -> dischargeAdds ctx v)
     | TNamed(n1, a1), TNamed(n2, a2) when n1 = n2 && List.length a1 = List.length a2 ->
@@ -1334,10 +1339,9 @@ and private dischargeRow
     : Result<unit, TypeError> =
     match typeDefFor env name with
     | Some(Record def) ->
-        let constraints =
-            Map.tryFind r ctx.Rows |> Option.defaultValue Map.empty |> Map.toList
+        let constraints = rowsOf ctx r |> Map.toList
 
-        ctx.Subst <- Map.add r (TNamed(name, targs)) ctx.Subst
+        ctx.Subst[r] <- (TNamed(name, targs))
 
         dischargeCons ctx env r (TNamed(name, targs))
         |> Result.bind (fun () ->
@@ -1388,8 +1392,8 @@ and private mergeRows (ctx: Ctx) (env: TypeEnv) (r1: string) (r2: string) : Resu
     if r1 = r2 then
         Ok()
     else
-        let fields1 = Map.tryFind r1 ctx.Rows |> Option.defaultValue Map.empty
-        ctx.Subst <- Map.add r1 (TRowVar(r2, [])) ctx.Subst
+        let fields1 = rowsOf ctx r1
+        ctx.Subst[r1] <- (TRowVar(r2, []))
 
         match Map.tryFind r1 ctx.Cons with
         | Some ps ->
@@ -1413,12 +1417,12 @@ and private mergeRows (ctx: Ctx) (env: TypeEnv) (r1: string) (r2: string) : Resu
         | None -> ()
 
         allOk (Map.toList fields1) (fun (field, (ft, fspan)) ->
-            let fields2 = Map.tryFind r2 ctx.Rows |> Option.defaultValue Map.empty
+            let fields2 = rowsOf ctx r2
 
             match Map.tryFind field fields2 with
             | Some(ft2, _) -> bind ctx env fspan ft2 ft
             | None ->
-                ctx.Rows <- Map.add r2 (Map.add field (ft, fspan) fields2) ctx.Rows
+                ctx.Rows[r2] <- (Map.add field (ft, fspan) fields2)
                 Ok())
 
 // The sentinel scheme registered for the print builtin. The quantified
@@ -3293,14 +3297,14 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                         | TRowVar(r, _) -> r
                         | TVar v ->
                             let r = freshName ctx "r"
-                            ctx.Subst <- Map.add v (TRowVar(r, [])) ctx.Subst
+                            ctx.Subst[v] <- (TRowVar(r, []))
                             r
                         | _ -> ""
 
                     if r = "" then
                         return! err p.PSpan $"record patterns need a record value; this one has type {formatTy ty}"
                     else
-                        let existing = Map.tryFind r ctx.Rows |> Option.defaultValue Map.empty
+                        let existing = rowsOf ctx r
 
                         // each mentioned field joins the row (an arm mentioning
                         // a new field accumulates, exactly as a body reading
@@ -3312,7 +3316,7 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                                 | Some(t, _) -> f, (t, fspan)
                                 | None -> f, (TVar(freshName ctx "a"), fspan))
 
-                        ctx.Rows <- Map.add r (fieldTys |> List.fold (fun m (f, e) -> Map.add f e m) existing) ctx.Rows
+                        ctx.Rows[r] <- (fieldTys |> List.fold (fun m (f, e) -> Map.add f e m) existing)
 
                         return!
                             List.zip fields fieldTys
@@ -3487,7 +3491,7 @@ let rec private binderShapeAt
 
             let r = freshName ctx "r"
 
-            ctx.Rows <- Map.add r (shaped |> List.map (fun ((f, fspan, t), _) -> f, (t, fspan)) |> Map.ofList) ctx.Rows
+            ctx.Rows[r] <- (shaped |> List.map (fun ((f, fspan, t), _) -> f, (t, fspan)) |> Map.ofList)
 
             return TRowVar(r, []), shaped |> List.collect snd
         }
@@ -3588,7 +3592,7 @@ let private rowOriginsFor (ctx: Ctx) (vars: Set<string>) : Map<string, (string *
         vars
         |> Set.toList
         |> List.choose (fun v ->
-            Map.tryFind v ctx.Rows
+            tryRows ctx v
             |> Option.map (fun fields ->
                 let prior = Map.tryFind v ctx.RowOrigins |> Option.defaultValue []
 
@@ -5888,9 +5892,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | None -> return! err target.Span $"unknown type '{typeName}'"
             | TVar v ->
                 let r = freshName ctx "r"
-                ctx.Subst <- Map.add v (TRowVar(r, [])) ctx.Subst
+                ctx.Subst[v] <- (TRowVar(r, []))
                 let fieldTy = TVar(freshName ctx "a")
-                ctx.Rows <- Map.add r (Map [ field, (fieldTy, fieldSpan) ]) ctx.Rows
+                ctx.Rows[r] <- (Map [ field, (fieldTy, fieldSpan) ])
 
                 return {
                     Kind = TEField(ttarget, field)
@@ -5898,7 +5902,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     Span = expr.Span
                 }
             | TRowVar(r, _) ->
-                let existing = Map.tryFind r ctx.Rows |> Option.defaultValue Map.empty
+                let existing = rowsOf ctx r
 
                 match Map.tryFind field existing with
                 | Some(fieldTy, _) ->
@@ -5909,7 +5913,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     }
                 | None ->
                     let fieldTy = TVar(freshName ctx "a")
-                    ctx.Rows <- Map.add r (Map.add field (fieldTy, fieldSpan) existing) ctx.Rows
+                    ctx.Rows[r] <- (Map.add field (fieldTy, fieldSpan) existing)
 
                     return {
                         Kind = TEField(ttarget, field)
@@ -6097,17 +6101,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             | None -> err subjectSpan $"unknown type '{typeName}'"
                         | TVar v ->
                             let r = freshName ctx "r"
-                            ctx.Subst <- Map.add v (TRowVar(r, [])) ctx.Subst
+                            ctx.Subst[v] <- (TRowVar(r, []))
                             updOne subjectSpan (TRowVar(r, [])) path value
                         | TRowVar(r, _) ->
-                            let existing = Map.tryFind r ctx.Rows |> Option.defaultValue Map.empty
+                            let existing = rowsOf ctx r
 
                             let fieldTy =
                                 match Map.tryFind field existing with
                                 | Some(t, _) -> t
                                 | None ->
                                     let t = TVar(freshName ctx "a")
-                                    ctx.Rows <- Map.add r (Map.add field (t, fieldSpan) existing) ctx.Rows
+                                    ctx.Rows[r] <- (Map.add field (t, fieldSpan) existing)
                                     t
 
                             if List.isEmpty rest then
