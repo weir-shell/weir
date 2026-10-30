@@ -518,7 +518,24 @@ let private hasInlineIn (piece: string) : bool =
                 i <- i + 1
 
             let w = piece.Substring(s, i - s)
-            let bounded = s = 0 || not (piece[s - 1] = '.' || piece[s - 1] = '\'')
+
+            // a keyword stands alone: glued to a member dot, a type-var
+            // tick or any other token character it is part of a word
+            // (`-in`/`--in` is a flag, `a.in` a member, `'in` a type var)
+            let bounded =
+                s = 0
+                || (let p = piece[s - 1]
+
+                    System.Char.IsWhiteSpace p
+                    || p = '('
+                    || p = ')'
+                    || p = '['
+                    || p = ']'
+                    || p = '{'
+                    || p = '}'
+                    || p = ';'
+                    || p = ',')
+
             lastWasIn <- false
 
             if depth = 0 && bounded then

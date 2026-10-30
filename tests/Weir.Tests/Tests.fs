@@ -19933,6 +19933,19 @@ let scriptTests =
 
 let multilineTests =
     testList "Multi-line assembly" [
+        test "a flag spelled -in or --in in a block let's command is not the let's `in` [D:inline-let-in-blocks]" {
+            // the keyword stands alone; glued to a dash it is a command word,
+            // so the block-let still takes its body from the next line
+            for rhs in [ "cat -in $k"; "openssl rsa --in $k -noout"; "cat $k -in" ] do
+                match Weir.Script.assemble [ 1, "let f k ="; 2, $"    let m = {rhs}"; 3, "    m" ] with
+                | Ok [ a ] ->
+                    Expect.equal a.Text $"let f k = let m = {rhs} in m" $"the let closes on the next line: {rhs}"
+                | other -> failtest $"unexpected for {rhs}: {other}"
+
+            match Weir.Script.assemble [ 1, "let f k ="; 2, "    let m = 3 in m" ] with
+            | Ok [ a ] -> Expect.equal a.Text "let f k = let m = 3 in m" "a real inline in still closes the let"
+            | other -> failtest $"unexpected: {other}"
+        }
         test
             "an inline let…in inside an indented block is a whole expression, not a block-let head [D:inline-let-in-blocks]" {
             // function, if, lambda, match-arm bodies: the same line works at column 0
