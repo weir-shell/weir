@@ -1,25 +1,34 @@
 # The weir REPL
 
-`weir` with no arguments starts the REPL. Here you can use short
+`weir` with no arguments starts the REPL. There you can use short
 unqualified names like `map` and `where` (scripts need the qualified
-names), every value is echoed back, and tab completion and history
-work as you'd expect. `Ctrl+C` abandons the current line, and while
-an entry runs it stops what the entry is waiting on — a command, a
-sleep, a `poll` or `retry` wait, a lock, an Http request, a
-`Self.prompt` (it takes no input), the rest of a `pmap` or
-`piter` — and returns to the prompt. A `repeat` or a scope held by
-`until stopped` is the exception: the first `Ctrl+C` asks it to stop,
-so the loop finishes its iteration (the scope closes normally) and the
-prompt returns, and a second `Ctrl+C` stops it at once; the next `repeat` you type runs as
-usual. `Ctrl+D` or `#quit` exits. For a tour, see the [guide](GUIDE.md#the-repl); this
-page covers the details, and the [FAQ](FAQ.md) answers the common
-questions about init.weir, the prompt and completion.
+names), every value is echoed back, and Tab completion and history
+work as you'd expect. `Ctrl+D` or `#quit` exits.
 
-A line starting with `#` is an instruction to the tooling, not part
-of the language. The file directive (`#sig`) is read at
-check time; session directives (`#help`, `#quit`) run immediately.
-The [reference table](reference/lexical.md#directives) lists where
-each directive is used.
+For a tour, see the [guide](GUIDE.md#the-repl). This page covers the
+details, and the [FAQ](FAQ.md) answers the common questions about
+init.weir, the prompt and completion.
+
+### Ctrl+C
+
+At an idle prompt `Ctrl+C` abandons the current line. While an entry
+runs, it stops what the entry is waiting on and returns to the prompt:
+a command, a sleep, a `poll` or `retry` wait, a lock, an Http request,
+a `Self.prompt` (which takes no input), or the rest of a `pmap` or
+`piter`.
+
+A `repeat`, or a scope held by `until stopped`, is the exception. The
+first `Ctrl+C` asks it to stop: the loop finishes its iteration (the
+scope closes normally) and the prompt returns. A second `Ctrl+C` stops
+it at once. The next `repeat` you type runs as usual.
+
+### Directives
+
+A line starting with `#` is an instruction to the tooling, not part of
+the language. The file directive (`#sig`) is read at check time;
+session directives (`#help`, `#quit`) run immediately. The
+[reference table](reference/lexical.md#directives) lists where each
+directive is used.
 
 ## Tab completion
 
@@ -27,128 +36,144 @@ Tab completes the word under the cursor: module members, record
 fields, keywords, bindings, and, where a command can go, the programs
 you can run. A command can go at the start of a statement *or right
 after `=` in a top-level `let`*, so `let svc = kubect<TAB>` completes
-just like a bare `kubect<TAB>`. The words after a command complete as
-arguments: subcommands, flags and flag values when the command has a
-signature, otherwise directory entries, or session bindings after a
-`$` (see below).
+like a bare `kubect<TAB>`.
 
-Coloring follows the same rule. The command word is colored as you
-type, so in `let svc = kubectl …` the color of `kubectl` shows
-whether it resolves. Session
-[aliases](#alias-command-head-aliases) are recognized in both places,
-for coloring and for Tab. A command starting with `^` completes from
-PATH only, skipping bindings and aliases.
+The words after a command complete as arguments: subcommands, flags
+and flag values when the command has a signature, otherwise directory
+entries, or session bindings after a `$`.
 
-Some behaviours worth knowing:
+Coloring follows the same rule: the command word is colored as you
+type, so in `let svc = kubectl …` the color of `kubectl` shows whether
+it resolves. Session [aliases](#alias-command-head-aliases) are
+recognized in both places, for coloring and for Tab. A command starting
+with `^` completes from PATH only, skipping bindings and aliases.
 
-- **Tab at an empty prompt lists the session directives** (`#help`
-  first) rather than everything; `#help` itself lists the modules and
-  members. Once you start typing, you get the usual filtered list. Tab
-  in an argument position still lists the directory.
-- **Record fields complete through a pipe.** A record piped into `_.`
-  or a lambda parameter completes its fields, just like a bound `r.`:
-  `r |> _.`, `raw |> from yaml Pod |> _.`, `… |> (fun row -> row.`.
-  This is where `#infer` helps most: once a record has a type, its
-  fields complete wherever the value goes.
-- **`#help <name>` completes what it documents.** `#help Pat<TAB>`
-  offers every name `#help` can document with that prefix: modules,
-  types (including types from `#infer`), and top-level forms.
-  `#help Module.<TAB>` completes that module's members. Anything you
-  can `#help`, you can complete with Tab.
-- **A bound map completes its keys.** A map's keys are data (such as
-  `data: seq<string * string>` from `#infer`), so completion reads
-  them from the value you already have. Type the opening quote of the
-  key after a piped `Map.get`, `Map.tryGet` or `Map.has`, as in
-  `d |> Map.tryGet "Cor<TAB>`, and the keys of `d` that match complete
-  inside the quotes (you type the closing quote). This works when the
-  value on the left is a plain session binding (`it` counts) whose
-  value is already computed: a map, or a frozen seq of pairs.
-  Completion never evaluates anything, so a pipeline on the left
-  (`cm |> from json … |> _.data |> Map.tryGet "`) completes nothing:
-  finding its keys would mean running the pipeline. Bind it first
-  (`let d = …`) and the keys complete. A lazy seq is never read, for
-  the same reason.
-- **A command's signature completes its arguments.** With a
-  signature for `git` (`weir add sig git`), `git com<TAB>` gives
-  `git commit`, `git commit --am<TAB>` gives `--amend`, and after a
-  flag that takes a value (`--file <TAB>`, `--color=<TAB>`) you get
-  paths for a file, the choices the signature lists, or nothing. The
-  REPL looks the signature up by the command name: the project's
-  `.weir/sigs/` first, then `$XDG_CONFIG_HOME/weir/sigs/`, where
-  `weir add sig --global git` puts one for every directory. This works
-  after `^`, after `NAME=value` prefixes, in a pipeline stage and after
-  `let x =`. A session [alias](#alias-command-head-aliases) completes
-  as what it expands to: with `#alias co = git checkout`, `co -<TAB>`
-  offers checkout's flags. See
-  [signatures drive Tab completion](tooling.md#signatures-drive-tab-completion).
-- **A `$` splice in a command argument completes session bindings.**
-  `az … --location $l<TAB>` offers every binding whose name starts
-  with `l`, such as `$location`. An argument without `$` completes
-  paths only.
-- **A path completes quoted in an expression, and unquoted as a
-  command argument.** `File.read ./x<TAB>` gives `File.read "./x"`,
-  because a bare path is not a valid weir expression. As a command
-  argument (`cat ./x`, `ls ./dir`) the path stays unquoted, unless a
-  character would split or end the word: `cat my<TAB>` gives
-  `cat "my file.txt"`. If you already typed the opening quote
-  (`File.read "./x<TAB>`), the completion goes inside it without adding
-  a second quote, escaped for that kind of string (`\"` in `"…"`, `""`
-  in `@"…"`, `{{` in `$"…"`); a directory keeps its trailing `/` inside
-  the quotes.
-- **A leading `~` completes to your home directory's literal path.**
-  `cat ~/.con<TAB>` becomes `cat /home/you/.config/`, and `cd ~<TAB>`
-  becomes `cd "/home/you/"`, so the line shows exactly what will run.
+Completion never runs anything. At most it reads a directory, a
+signature file, or a cached PATH entry.
 
-Completion never runs anything; at most it reads a directory, a
-signature file, or looks up a cached PATH entry.
+**At an empty prompt.** Tab lists the session directives (`#help`
+first), not everything; `#help` itself lists the modules and members.
+Once you start typing you get the usual filtered list. Tab in an
+argument position still lists the directory.
+
+**Record fields through a pipe.** A record piped into `_.` or a lambda
+parameter completes its fields, like a bound `r.`: `r |> _.`, `raw |>
+from yaml Pod |> _.`, `… |> (fun row -> row.`. This is where `#infer`
+helps most: once a record has a type, its fields complete wherever the
+value goes.
+
+**`#help` names.** `#help Pat<TAB>` offers every name `#help` can
+document with that prefix: modules, types (including those from
+`#infer`) and top-level forms. `#help Module.<TAB>` completes that
+module's members. Anything you can `#help`, you can complete.
+
+**Map keys.** A map's keys are data (such as `data: seq<string *
+string>` from `#infer`), so completion reads them from the value you
+already have. Type the opening quote of the key after a piped
+`Map.get`, `Map.tryGet` or `Map.has` (`d |> Map.tryGet "Cor<TAB>`) and
+the matching keys of `d` complete inside the quotes. You type the
+closing quote.
+
+The value on the left must be a plain session binding (`it` counts)
+that is already computed: a map, or a frozen seq of pairs. Completion
+never evaluates anything, so a pipeline on the left
+(`cm |> from json … |> _.data |> Map.tryGet "`) completes nothing:
+finding its keys would mean running it. Bind it first (`let d = …`).
+A lazy seq is never read, for the same reason.
+
+**Command arguments from a signature.** With a signature for `git`
+(`weir add sig git`):
+
+- `git com<TAB>` gives `git commit`
+- `git commit --am<TAB>` gives `--amend`
+- after a flag that takes a value (`--file <TAB>`, `--color=<TAB>`) you
+  get paths for a file, the choices the signature lists, or nothing
+
+The signature is looked up by command name: the project's
+`.weir/sigs/` first, then `$XDG_CONFIG_HOME/weir/sigs/`, where
+`weir add sig --global git` puts one for every directory. It works
+after `^`, after `NAME=value` prefixes, in a pipeline stage and after
+`let x =`. A session [alias](#alias-command-head-aliases) completes as
+what it expands to: with `#alias co = git checkout`, `co -<TAB>` offers
+checkout's flags. See
+[signatures drive Tab completion](tooling.md#signatures-drive-tab-completion).
+
+**`$` splices.** In a command argument, `$` completes session
+bindings: `az … --location $l<TAB>` offers every binding starting with
+`l`, such as `$location`. An argument without `$` completes paths
+only.
+
+**Paths.** In an expression a path completes quoted, because a bare
+path isn't a valid weir expression: `File.read ./x<TAB>` gives
+`File.read "./x"`.
+
+As a command argument (`cat ./x`, `ls ./dir`) it stays unquoted,
+unless a character would split or end the word: `cat my<TAB>` gives
+`cat "my file.txt"`.
+
+If you already typed the opening quote (`File.read "./x<TAB>`), the
+completion goes inside it without a second quote, escaped for that
+kind of string: `\"` in `"…"`, `""` in `@"…"`, `{{` in `$"…"`. A
+directory keeps its trailing `/` inside the quotes.
+
+A leading `~` completes to your home directory's literal path:
+`cat ~/.con<TAB>` becomes `cat /home/you/.config/`, and `cd ~<TAB>`
+becomes `cd "/home/you/"`, so the line shows exactly what will run.
 
 ## What the echo shows
 
 At a terminal, how a value is echoed depends on its type:
 
-- a seq of records — as a table with a bold header and a dim rule,
-  fitted to the terminal width (the widest column is cut to fit)
-- a seq of strings — as its lines
-- a named function — as a short help entry (below)
-- anything else — as a literal
+- a seq of records: a table with a bold header and a dim rule, fitted
+  to the terminal width (the widest column is cut to fit)
+- a seq of strings: its lines
+- a named function: a short help entry (below)
+- anything else: a literal
 
-A note follows when a seq has not been fully evaluated. The echo
-doesn't show types by default: `2` echoes `2`, `let x = 5` echoes
-`x = 5`, and a statement that returns nothing (`print "a"`) echoes
-nothing after its output. `#types on` adds them back for the session
-(`2 : int`, `x : int = 5`, a `: seq<string>` line under a seq's
-lines; a unit value still echoes nothing), `#types off` drops them
-again, and `#types` on its
-own shows the setting. `"types": "on"` in the
-[config](tooling.md#the-repl-config) turns them on at startup; the
-directive overrides it. Piped output always shows types.
+A note follows when a seq hasn't been fully evaluated.
 
-`NO_COLOR` turns off the styling. Type variables in the type line are
-renamed to `'a`, `'b`, …; error messages use the checker's internal
-names for them instead.
+### Types in the echo
 
-An expression that evaluates to a **named function** echoes the same
-thing `#help` would show:
+The echo doesn't show types by default: `2` echoes `2`, `let x = 5`
+echoes `x = 5`, and a statement that returns nothing (`print "a"`)
+echoes nothing after its output.
 
-- a builtin — its qualified signature plus the first line of its doc
+- `#types on` adds them for the session: `2 : int`, `x : int = 5`, and
+  a `: seq<string>` line under a seq's lines. A unit value still echoes
+  nothing.
+- `#types off` drops them; `#types` alone shows the setting.
+- `"types": "on"` in the [config](tooling.md#the-repl-config) turns
+  them on at startup; the directive overrides it.
+- Piped output always shows types.
+
+Type variables in the type line are renamed to `'a`, `'b`, …; error
+messages use the checker's internal names instead. `NO_COLOR` turns
+off the styling.
+
+### Functions and `let`s
+
+A **named function** echoes what `#help` would show:
+
+- a builtin: its qualified signature plus the first line of its doc
   (`find` shows where it lives, `Seq.find`)
-- a function you defined in the session — `name : type` (with or
-  without `#types`) plus a dim
-  line showing the first line of its definition (for a redefined
-  function, the latest one)
-- an anonymous or composed function — `<fun> : ty`, since it has no
+- a function defined in the session: `name : type` (with or without
+  `#types`) plus a dim line with the first line of its definition (the
+  latest one, if redefined)
+- an anonymous or composed function: `<fun> : ty`, since it has no
   name
 
-A `let` binding is echoed the same way: the value's lines (or table)
-first, then a line with the name (and the type, with `#types on`) and
-the same note about unevaluated seqs. That line always comes after the value, so a cut-off value
-never looks as if data silently went missing: you see where it was
-cut, then the note saying so and how to see the rest (`Seq.freeze`).
+A `let` echoes the value's lines (or table) first, then a line with
+the name (and the type, with `#types on`) and the note about
+unevaluated seqs. The name line always comes after the value, so a
+cut-off value never looks like data silently went missing: you see
+where it was cut, then the note saying so and how to see the rest
+(`Seq.freeze`).
 
-A `let` bound to a command is not run by the echo: the binding is
-lazy, as in a script, so the echo shows only its name and how to run
-it. Typing the name runs the command and prints its output, every
-time:
+### Command-backed `let`s
+
+A `let` bound to a command isn't run by the echo. The binding is lazy,
+as in a script, so the echo shows only its name and how to run it.
+Typing the name runs the command and prints its output, every time:
 
 ```
 weir> let pods = kubectl get po -A
@@ -162,14 +187,15 @@ snap (frozen)
 
 So `let cleanup = rm -rf build` deletes nothing until you type
 `cleanup`. The same holds for a `let` that reads such a binding
-(`let running = pods |> Seq.where …`). An eager right-hand side has
-already run when the `let` is evaluated (`|> Seq.freeze`, `| line`,
-`| text` and the other reifiers), so its value is echoed as usual; a
-frozen binding shows `(frozen)`. In a script, the checker warns when
-a command-backed binding is used twice. A lazy seq that doesn't run
-commands gets no note. At a terminal, the `(frozen)` note and the
-truncation note share one pair of parentheses; piped output never
-includes them.
+(`let running = pods |> Seq.where …`).
+
+An eager right-hand side (`|> Seq.freeze`, `| line`, `| text` and the
+other reifiers) has already run when the `let` is evaluated, so its
+value is echoed as usual; a frozen binding shows `(frozen)`. A lazy seq
+that doesn't run commands gets no note. At a terminal, the `(frozen)`
+note and the truncation note share one pair of parentheses; piped
+output never includes them. In a script, the checker warns when a
+command-backed binding is used twice.
 
 ## Seeing all of the output
 
@@ -195,13 +221,16 @@ only applies to lazy ones. It applies to a piped session too.
 
 `#help` lists the directives and the modules, one module per line
 with a short description. `#keys` lists the editor's
-[key bindings](#multi-line-editing). `#help Seq` lists one module's members the
-same way: one per line, each with the first line of its doc, cut to
-fit the terminal. `#help Seq.collect` shows one member's full doc,
-and a short name such as `#help map` shows the same doc, saying which
-member it stands for (`map is Seq.map`).
-It is the same doc that editor hover shows, and the one-line
-summaries are its first line.
+[key bindings](#multi-line-editing).
+
+- `#help Seq` lists one module's members, one per line, each with the
+  first line of its doc, cut to fit the terminal.
+- `#help Seq.collect` shows one member's full doc.
+- A short name such as `#help map` shows the same doc and says which
+  member it stands for (`map is Seq.map`).
+
+It's the same doc editor hover shows, and the one-line summaries are
+its first line.
 
 At a terminal, `` `code` `` in the docs is shown colored, without the
 backticks. The signature line and the example are colored too: in the
@@ -211,35 +240,37 @@ prompt. When output is piped, or with `NO_COLOR`/`TERM=dumb`, there is
 no coloring: the backticks stay, so you can still see where code
 starts and ends.
 
-`#find [query]` does a fuzzy search over all of it. When fzf is
-installed and you are at a terminal, every module (`Seq — summary`)
-and every member (`Seq.map — summary`) is listed in fzf with a
-**live preview** of the selected name's full doc. Enter prints the
-`#help` output for the selection; Esc returns to the prompt. Without
-fzf, or when piped, `#find query` filters the same lines by
-case-insensitive substring, and never asks you to install fzf. The
-preview comes from running `weir --repl-doc <name>` in the
-background, which prints exactly what `#help <name>` would. It covers
-builtin docs only and evaluates nothing.
+`#find [query]` does a fuzzy search over all of it. With fzf
+installed, at a terminal, every module (`Seq — summary`) and member
+(`Seq.map — summary`) is listed in fzf with a **live preview** of the
+selected name's full doc. Enter prints the `#help` output for the
+selection; Esc returns to the prompt.
+
+Without fzf, or when piped, `#find query` filters the same lines by
+case-insensitive substring, and never asks you to install fzf.
+
+The preview runs `weir --repl-doc <name>` in the background, which
+prints exactly what `#help <name>` would. It covers builtin docs only
+and evaluates nothing.
 
 ## History
 
-`#history` shows the session's history. It starts with the **file
-path**, `history at <path> (N entries)`, so you know where the file
-is and can `cat` it directly. `#history` on its own prints every
-entry, numbered; `#history 20` shows the last twenty. Each entry is
-shown on one line, as in history search: a multi-line entry is joined
-with `⏎`, so you can still grep it.
+`#history` shows the session's history, starting with the **file
+path**: `history at <path> (N entries)`, so you can `cat` the file
+directly. `#history` alone prints every entry, numbered; `#history 20`
+shows the last twenty. A multi-line entry is joined with `⏎` onto one
+line, as in history search, so you can still grep it.
 
-The history file is at `$XDG_STATE_HOME/weir/history` (otherwise
+The file is at `$XDG_STATE_HOME/weir/history` (otherwise
 `~/.local/state/weir/history`; `%LOCALAPPDATA%\weir\` on Windows).
-It is created with mode `0600`, since a REPL line can contain a
-secret. To find that base directory from a script, use
-`Path.stateHome ()`. In a piped session (`printf '…' | weir`),
-`#history` shows the file plus that session's lines, which are not
-saved. If there is no usable home (`HOME=` is empty, or
-the file cannot be written), the REPL still starts: history is off for
-that session, with one note saying why.
+`Path.stateHome ()` gives that base directory in a script. The file is
+created with mode `0600`, since a REPL line can contain a secret.
+
+- In a piped session (`printf '…' | weir`), `#history` shows the file
+  plus that session's lines, which aren't saved.
+- With no usable home (`HOME=` empty, or the file can't be written),
+  the REPL still starts with history off for that session, and one note
+  says why.
 
 History keeps each entry once: when you enter a command again, it
 moves to the most recent position and the earlier copy is removed. So
@@ -265,13 +296,14 @@ weir> kubectl get po -o json |> from json Pods |> _.items
 weir> it |> Seq.map _.name
 ```
 
-A `let` binds only its own name: `let o = 10` leaves `it` alone, just
-as `let o = 10;;` does in F# Interactive. Directives never change it,
-and in a new session `it` is not yet defined. `it` exists only in the
-REPL; scripts and `-e` don't have it, just as they don't have the
-short unqualified names. The name comes from F# Interactive and ghci;
-`_` wasn't an option, because it already means other things (the
-`_.field` shorthand and the `let _ =` discard).
+A `let` binds only its own name: `let o = 10` leaves `it` alone, as
+`let o = 10;;` does in F# Interactive. Directives never change it, and
+in a new session `it` isn't defined yet.
+
+`it` exists only in the REPL; scripts and `-e` don't have it, just as
+they don't have the short unqualified names. The name comes from F#
+Interactive and ghci. `_` wasn't an option: it already means the
+`_.field` shorthand and the `let _ =` discard.
 
 At a terminal, a bare command writes straight to the terminal, so its
 colors are kept and weir never sees the output. Its value is
@@ -280,11 +312,13 @@ therefore `()`, and that is what `it` is set to.
 When such a command exits nonzero, the REPL shows a dim `↳ exit N`
 line and the next prompt turns red, instead of printing a red error.
 The output has already been shown and the session carries on, much
-like `$?` in a shell. The nonzero exit still *raises* an error,
-though. In a script it stops the script. Inside a value (`$(cmd)`, a
-reifier, a binding) you see the full `error:`, because there the
-failure interrupted a computation. To get a nonzero exit as a value
-instead, use `cmd | exitCode` or `cmd | complete`.
+like `$?` in a shell.
+
+The nonzero exit still *raises*, though. In a script it stops the
+script. Inside a value (`$(cmd)`, a reifier, a binding) you see the
+full `error:`, because there the failure interrupted a computation.
+To get a nonzero exit as a value, use `cmd | exitCode` or
+`cmd | complete`.
 
 Using that unit `it` where a value is needed is an ordinary type
 error, and the error shows how to capture the command instead, using
@@ -312,16 +346,17 @@ weir> raw |> from json Pods |> _.items |> Seq.map _.⟨TAB⟩
 ```
 
 `#infer <source> from <json|jsonl|yaml|table> as <Name>` evaluates the
-source once, parses it in the given format, derives a set of named
-`type` declarations from it, and adds them to the session as if you
-had typed them. After that, `from json Pods` type-checks and field
-completion works. If you leave out the source, it defaults to `it`
-(`#infer from json as Pods` reads the last result, which is how you
-"pipe" into a directive). For a top-level array (or `from jsonl`),
-`Name` is the element type, and you read the value as `seq<Name>`.
-`from table` drafts the row record from the header and the cells of
-each column; a column with empty or `<none>` cells becomes an
-`Option`, with a note, and the value reads as `seq<Name>`.
+source once, parses it in that format, derives named `type`
+declarations from it, and adds them to the session as if you had typed
+them. After that, `from json Pods` checks and field completion works.
+
+- Leave out the source and it defaults to `it`: `#infer from json as
+  Pods` reads the last result. That's how you "pipe" into a directive.
+- For a top-level array (or `from jsonl`), `Name` is the element type,
+  and you read the value as `seq<Name>`.
+- `from table` drafts the row record from the header and each column's
+  cells. A column with empty or `<none>` cells becomes an `Option`, with
+  a note. The value reads as `seq<Name>`.
 
 The one-step form drafts the types *and* binds the parsed value:
 
@@ -335,19 +370,21 @@ weir> po.items |> Seq.map _.⟨TAB⟩
 `#infer let <x> = <source> |> from <fmt> as <Name|_>` runs the source
 exactly once and uses that one sample both to infer the types and to
 bind the value. Nothing runs twice (no `Seq.freeze` needed), and you
-don't need a third statement repeating the name. `as _` names the
-top-level type automatically (`Type1`), the way nested types are
-always named; it works in the two-step form too. A top-level array is
-bound as `seq<Name>`. If the sample's top level is a scalar or a map
-with data keys, `#infer` defines what types it can and binds nothing;
-the notes show how to read the value.
+don't need a third statement repeating the name.
+
+- `as _` names the top-level type automatically (`Type1`), the way
+  nested types are always named. It works in the two-step form too.
+- A top-level array is bound as `seq<Name>`.
+- If the sample's top level is a scalar or a map with data keys,
+  `#infer` defines what types it can and binds nothing; the notes show
+  how to read the value.
 
 `#save` writes out the explicit form, the `type` declarations plus
 `let x = source |> from <fmt> Name`, never the directive line. The
 one-step form is a REPL convenience; the saved file is ordinary weir
-that `weir check` accepts. (In a script, `from json as Name` is a
-check error that tells you to declare the type, and how to draft it
-with `#infer`.)
+that `weir check` accepts. In a script, `from json as Name` is a check
+error that tells you to declare the type, and how to draft it with
+`#infer`.
 
 The result is ordinary `type` declarations that you own and can edit.
 Like `weir gen types`, `#infer` generates types once, up front;
@@ -370,10 +407,11 @@ that instead: [`weir gen types`](tooling.md#types-from-a-schema) reads
 a locked schema and knows what no sample can, such as which fields
 are required, `additionalProperties`, and the definition names.
 
+### Objects with data keys
+
 An object whose keys are data rather than field names is drafted as a
-map, `seq<string * V>`, instead of a record, with a note. `#infer`
-treats an object this way when all its values have the same shape,
-and either:
+map, `seq<string * V>`, with a note. That happens when all its values
+have the same shape and either:
 
 - most of its keys don't look like identifiers (Kubernetes
   `labels`/`annotations`, with dots, slashes and dashes; a reserved
@@ -383,36 +421,40 @@ and either:
 
 Map keys are data, so no `[<Wire>]` is drafted; read them as pairs
 (`cm.data |> Seq.tryFind (fun (k, _) -> k == "Corefile")`). Both
-`from json` and `from yaml` support this shape. An object with
-identifier keys that are the same in every element, like `metadata`,
-stays a record. An empty `{}` is a map with no entries; it is drafted
-as `seq<string * string>` with a note (with no values to go on, the
-value type defaults to string).
+`from json` and `from yaml` support this shape.
 
-A drafted type name never reuses a name that already exists in the
-session, whether a builtin (`Secret`, `Yaml`, `Duration`, …) or a type
-you declared. For example, a Kubernetes volume's `secret:` object
-would draft `type Secret`, and every `secret: Secret` field would
-then refer to the builtin `Secret` type instead (which `from yaml`
-refuses to read). So `#infer` prefixes the parent's name instead
-(`VolumeSecret`) and prints a note about the rename. The name you give
-with `as` is never renamed: `#infer … as Secret` is refused, and asks
-you to pick another name.
+An object with identifier keys that are the same in every element,
+like `metadata`, stays a record. An empty `{}` is drafted as
+`seq<string * string>`, a map with no entries, with a note: with no
+values to go on, the value type defaults to string.
 
-A key that isn't a valid weir field name never breaks the draft. (An
-object drafted as a map doesn't need field names at all, since its
-keys are data.) For a record, a key that isn't an identifier, or is a
-keyword, gets a derived field name with `[<Wire "the-key">]` on it
-(`k8s-app`→`k8sApp`, `in`→`inField`; no keyword can be a field name).
-An empty-string key can't be a field name and `[<Wire>]` doesn't
-accept it, so it is dropped with a note (reading ignores the extra
-key).
+### Names
+
+A drafted type name never reuses a name already in the session,
+whether a builtin (`Secret`, `Yaml`, `Duration`, …) or a type you
+declared. A Kubernetes volume's `secret:` object would otherwise draft
+`type Secret`, and every `secret: Secret` field would then mean the
+builtin `Secret` (which `from yaml` refuses to read). So `#infer`
+prefixes the parent's name (`VolumeSecret`) and notes the rename. The
+name you give with `as` is never renamed: `#infer … as Secret` is
+refused and asks you to pick another name.
+
+A key that isn't a valid weir field name never breaks the draft (a
+map needs no field names at all, since its keys are data). In a
+record:
+
+- a key that isn't an identifier, or is a keyword, gets a derived field
+  name with `[<Wire "the-key">]` on it (`k8s-app`→`k8sApp`,
+  `in`→`inField`; no keyword can be a field name)
+- an empty-string key can't be a field name and `[<Wire>]` doesn't
+  accept it, so it's dropped with a note (reading ignores the extra
+  key)
+
+### When a draft doesn't check
 
 If a drafted type still fails to check (say the sample had the same
-key twice), `#infer` doesn't just say "a drafted type did not check".
-It shows the `line:col` within the drafted type and prints
-the offending line with a caret, just like a normal parse or type
-error:
+key twice), `#infer` shows the `line:col` within the drafted type and
+prints the offending line with a caret, like any parse or type error:
 
 ```
 weir> #infer sample from json as Pods
@@ -452,12 +494,14 @@ Expressions that were only echoed are left out. Short unqualified
 names are replaced with qualified ones (`map` → `Seq.map`,
 `startsWith` → `Str.startsWith`), and the result is formatted.
 
-The file always passes `weir check`. Any statement that depends on
-something that only exists in the session (such as `let x = it`, where
-`it` is the result of an echoed line) is dropped, and `#save` prints a note saying how many were dropped. A
-binding nothing in the file reads is kept with a `_` added to its
-name (`let _total = …`, or `let (a, _b) = …` inside a pattern), so
-the unused-binding check accepts it.
+The file always passes `weir check`:
+
+- A statement that depends on something only the session has (such as
+  `let x = it`, where `it` is the result of an echoed line) is dropped,
+  and `#save` notes how many were dropped.
+- A binding nothing in the file reads is kept with a `_` added to its
+  name (`let _total = …`, or `let (a, _b) = …` inside a pattern), so the
+  unused-binding check accepts it.
 
 `#save` also expands [command aliases](#alias-command-head-aliases),
 since scripts don't have them. Each saved line's command is rewritten
@@ -526,15 +570,15 @@ waits.
 
 `init.weir` beside the [config file](tooling.md#configuration)
 (`$XDG_CONFIG_HOME/weir/`, else `~/.config/weir/`; `%APPDATA%\weir\`
-on Windows) is loaded before the first prompt. Like a module, it may
-contain only declarations (`type` and `let`) and
+on Windows) is loaded before the first prompt.
+
+Like a module, it may contain only declarations (`type` and `let`) and
 [imports](reference/modules.md), plus
-[`#alias`](#alias-command-head-aliases) lines and one `#session`
-block for settings that a declaration can't express. An imported
-module's members are available in the session as `Alias.member`.
-It follows the script rules, so bare names like `map` or `where`
-are refused there (write `Seq.map`); they're for typing at the
-prompt.
+[`#alias`](#alias-command-head-aliases) lines and one `#session` block
+for settings a declaration can't express. An imported module's members
+are available in the session as `Alias.member`. It follows the script
+rules, so bare names like `map` or `where` are refused (write
+`Seq.map`); those are for typing at the prompt.
 
 The file must start with `#init` on its first line; the REPL refuses
 to load it otherwise. Any file starting with `#init` is checked as an
@@ -587,7 +631,7 @@ A misspelled key gets a suggestion for the closest one. The values
 can't run commands, and every value but `prompt` is read before the
 file's declarations, so it can't name them either. Write it inline:
 `"HOST", File.read "/etc/hostname" |> Seq.exactlyOne` (a file read
-is not a command). `weir check` on the init file reports all of this.
+isn't a command). `weir check` on the init file reports all of this.
 
 A `let pu () = …` is a function with no arguments, not a command
 alias. Functions can take parameters and span several lines, but you
@@ -597,27 +641,29 @@ arguments straight through, like `k get po`, use `#alias` (below).
 
 A `let` can hold a command: `let gl = git log --oneline -n 10` binds a
 lazy value, so nothing runs while the file loads, and typing `gl` runs
-it, every time. A `let` that would run its command at load is refused
-with the reason: a reifier (`| line`, `| text`, `| succeeds`…),
-`|> Seq.freeze`, or passing the command to a function. Wrap those in
-a function, as with `pu` above. A command value runs in the directory
-you are in when you use it, so `gl` logs the repo you have `cd`-ed
-into; only a command written inside `within cd`/`within env` keeps
-that scope.
+it, every time. It runs in the directory you're in when you use it, so
+`gl` logs the repo you've `cd`-ed into; only a command written inside
+`within cd`/`within env` keeps that scope.
 
-Loading is all-or-nothing. If the init file has an error, the REPL
-prints the error with its location plus `init: not loaded`, and the
-session starts without any of it: a `#session` setting (`cwd`, `env`,
-`logLevel`, …) is not left applied, whichever part of the file failed.
-Every bad `#session` value is reported, not just the first, and
-`weir check` on the init file reports the same value errors (code
-`session-value`) for values written literally. An init file takes
-`#init`, `#session` and `#alias` lines; any other directive is an
-error. This is safe because nothing in the
-file runs while loading. A successful load prints nothing (and so does
-a missing init file); you'll see your names, settings and prompt
-working. Only failures are reported. `#help` on a name from the init
-file shows its `///` doc.
+A `let` that would run its command at load is refused with the reason:
+a reifier (`| line`, `| text`, `| succeeds`…), `|> Seq.freeze`, or
+passing the command to a function. Wrap those in a function, as with
+`pu` above.
+
+Loading is all-or-nothing, which is safe because nothing in the file
+runs while loading. If the init file has an error, the REPL prints it
+with its location plus `init: not loaded`, and the session starts
+without any of it: no `#session` setting (`cwd`, `env`, `logLevel`, …)
+stays applied, whichever part failed.
+
+- Every bad `#session` value is reported, not just the first.
+  `weir check` on the init file reports the same value errors (code
+  `session-value`) for values written literally.
+- An init file takes `#init`, `#session` and `#alias` lines; any other
+  directive is an error.
+- A successful load prints nothing, and neither does a missing init
+  file. Only failures are reported.
+- `#help` on a name from the init file shows its `///` doc.
 
 ### `prompt`: your own prompt
 
@@ -647,12 +693,13 @@ let prompt st =
 ```
 
 Write the parameter without a type and read its fields (`st.ok`,
-`st.exit`, `st.duration`). The init file has no signatures, so the function's type
-is inferred from the fields it uses, and it is accepted as long as
-`PromptStatus` has every field it reads. One thing to watch for:
-`match st.exit with` doesn't type-check here, because the type of
-`st.exit` isn't known yet and matching on `Some`/`None` needs it. Use
-the `Option` functions instead
+`st.exit`, `st.duration`). The init file has no signatures, so the
+function's type is inferred from the fields it uses, and it's accepted
+as long as `PromptStatus` has every field it reads.
+
+One catch: `match st.exit with` doesn't check here, because the type
+of `st.exit` isn't known yet and matching on `Some`/`None` needs it.
+Use the `Option` functions instead
 (`st.exit |> Option.map show |> Option.defaultValue ""`).
 
 The function may run commands. It is called once each time the REPL
@@ -684,14 +731,19 @@ let sigil () =
 That shows `≋ weir (main)> ` inside a repo and `≋ tmp> ` outside
 one; `| complete` keeps `git` from raising an error outside a repo.
 
-You can use colors in the prompt. Color escape codes (SGR) don't
-count toward the prompt's width, and a reset is added at the end so the color doesn't spill
-into what you type. Other escape sequences (window title, clipboard,
-hyperlinks) are removed. Newlines and other control characters become
-spaces, and the continuation prompt is padded to the same width. If
-the function raises an error, the REPL falls back to the default
-`weir> ` and says so once on stderr; later failures in the same
-session are silent.
+You can use colors in the prompt:
+
+- Color escapes (SGR) don't count toward the prompt's width, and a
+  reset is added at the end so the color doesn't spill into what you
+  type.
+- Other escape sequences (window title, clipboard, hyperlinks) are
+  removed.
+- Newlines and other control characters become spaces, and the
+  continuation prompt is padded to the same width.
+
+If the function raises, the REPL falls back to the default `weir> `
+and says so once on stderr; later failures in the same session are
+silent.
 
 To put something in the terminal's window title, call `Term.title`
 from the function. It writes the title straight to the terminal as a
@@ -709,9 +761,9 @@ let sigil () =
 ```
 
 The title then follows `cd` on every prompt. Control characters and
-escape sequences in the title text are dropped (so a directory name
-can't smuggle in another escape), and it is cut to 256 characters. With
-no terminal, `Term.title` does nothing; on Windows it sets the console
+escape sequences in the title are dropped (so a directory name can't
+smuggle in another escape), and it's cut to 256 characters. With no
+terminal, `Term.title` does nothing; on Windows it sets the console
 title.
 
 Two limits:
@@ -768,20 +820,20 @@ in `init.weir` (the usual place), one per line:
 
 Now `k get po -o yaml` runs `kubectl get po -o yaml`, and
 `kb overlays/prod` runs `kustomize build overlays/prod`: the fixed
-arguments go right after the program, followed by yours. An alias is
-not a text substitution. Your arguments are passed exactly as usual,
-so `k get $x` still passes `$x` as one argument, and a `k` in a
-string, a variable or an argument is left alone. Only the command
-word itself is replaced. A keyword (`let`, `if`, …) can't be an alias
-name, since a line starting with it is never a command.
+arguments go right after the program, then yours.
 
-Because an alias is just a program plus fixed words, not a command
-line, weir syntax in it is **not interpreted**: a `$(…)` capture
-becomes a literal argument. A pipe or chain word (`|`, `|>`, `&&`,
-`||`, `;`) is refused, since it could only ever reach the program as
-an argument. For a shortcut that needs those (say, cd to the repo root),
-write a function with no arguments in `init.weir` instead, and call
-it with `()`:
+An alias isn't a text substitution. Only the command word is replaced:
+your arguments pass as usual, so `k get $x` still passes `$x` as one
+argument, and a `k` in a string, a variable or an argument is left
+alone. A keyword (`let`, `if`, …) can't be an alias name, since a line
+starting with it is never a command.
+
+Since an alias is a program plus fixed words, not a command line,
+weir syntax in it is **not interpreted**: a `$(…)` capture becomes a
+literal argument. A pipe or chain word (`|`, `|>`, `&&`, `||`, `;`)
+is refused, since it could only ever reach the program as an argument.
+For a shortcut that needs those (say, cd to the repo root), write a
+function with no arguments in `init.weir` and call it with `()`:
 
 ```text
 let root () = cd $(git rev-parse --show-toplevel | line)
@@ -799,11 +851,14 @@ a session binding already holds. An alias over a builtin command
 
 Aliases are looked up **before PATH**, and a `^` prefix skips them:
 with `#alias ls = ls --color`, `ls x` runs `ls --color x` and `^ls x`
-runs the real `ls x`. An alias always points at a program, **never at
-another alias**; an alias of an alias is rejected when the init file
-loads. The program doesn't need to exist when you define the alias
-(as in bash). A malformed `#alias` line is an init error, so nothing
-in the init file is loaded.
+runs the real `ls x`.
+
+- An alias always points at a program, **never at another alias**; an
+  alias of an alias is rejected when the init file loads.
+- The program doesn't need to exist when you define the alias (as in
+  bash).
+- A malformed `#alias` line is an init error, so nothing in the init
+  file is loaded.
 
 Aliases exist **only in the REPL**. Scripts and `-e` never load
 `init.weir`, so an alias name there is just an unknown command.
@@ -816,23 +871,24 @@ all aliases), but `init.weir` is the usual place for them.
 ## Multi-line editing
 
 Enter submits when the statement is complete, and starts a new line
-when it is not. weir uses its own parser to decide, so after
-`match x with` you get a new line, while `1 + 1` is submitted. Up and
-Down move between lines, and a recalled history entry comes back
-whole: a three-line match comes back as three lines that you can
-edit. Lines you type before the first prompt appears are kept, and
-their Enter submits them as usual.
+when it isn't. weir's own parser decides, so after `match x with` you
+get a new line, while `1 + 1` is submitted. Up and Down move between
+lines, and a recalled history entry comes back whole: a three-line
+match comes back as three editable lines. Lines you type before the
+first prompt appears are kept, and their Enter submits them as usual.
 
-A new line starts at the indentation of the line above it, one level
-(4 spaces) deeper when that line opens a body: it ends in `=`, `->`,
-`then`, `else`, `do` or `with`, or is a block head such as `within …`,
-`always`, `for … do` or `retry …`. A comparison (`==`, `<=`, `>=`,
-`!=`), a record field's `=` inside an open `{`, and text inside a
-string or a comment don't count. <kbd>Backspace</kbd> in the leading
-spaces goes back one level (4 columns), which is how you end a block.
-Pasted text keeps exactly its own indentation (a newline with more
-input already behind it is not indented). An empty last line still
-submits when it holds only indentation.
+A new line starts at the indentation of the line above. It goes one
+level (4 spaces) deeper when that line opens a body: it ends in `=`,
+`->`, `then`, `else`, `do` or `with`, or is a block head such as
+`within …`, `always`, `for … do` or `retry …`. A comparison (`==`,
+`<=`, `>=`, `!=`), a record field's `=` inside an open `{`, and text
+inside a string or comment don't count.
+
+- <kbd>Backspace</kbd> in the leading spaces goes back one level (4
+  columns); that's how you end a block.
+- Pasted text keeps exactly its own indentation (a newline with more
+  input already behind it isn't indented).
+- An empty last line still submits when it holds only indentation.
 
 For example, type `let total =` and Enter, then `[1; 2; 3]` and
 Alt+Enter, then `|> Seq.sum` and Enter, without typing any spaces:
@@ -870,13 +926,14 @@ submitted or added to history).
 
 A session with redirected input (`printf '…' | weir`) has no editor,
 but it still groups multi-line statements the way a script does. It
-keeps reading lines while the statement is unfinished (a heredoc
-body, a multi-line `type`, an indented `if`/`match` block, a pipeline
-continued with `|>` lines), so a pasted or scripted block runs as one
-statement. A blank line ends the statement even if it is unfinished,
-as an empty last line does in the editor: the error is shown and the
-lines after it still run. Input with one statement per line works as
-usual, and a directive is always a single line.
+keeps reading while the statement is unfinished (a heredoc body, a
+multi-line `type`, an indented `if`/`match` block, a pipeline continued
+with `|>` lines), so a pasted or scripted block runs as one statement.
+
+A blank line ends the statement even if it's unfinished, as an empty
+last line does in the editor: the error is shown and the lines after
+it still run. Input with one statement per line works as usual, and a
+directive is always a single line.
 
 An entry whose indented line continues a command with what looks like
 a second command (`echo a` above `    echo b`) is refused before any of

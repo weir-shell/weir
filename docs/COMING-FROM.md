@@ -53,22 +53,22 @@ print $"branches: {branches}"
 That `printf` gets one argument, brackets and all. Nothing is re-split.
 
 **The one thing that will catch you out:** a capture gives you lines,
-not a string. In bash, `$(cmd)` is one string with trailing newlines
-stripped. In weir it's a `seq<string>`, one element per line. When you
-pipe a value back into a command (`expr | cmd`), each element is
-written as a line, newline included. So `["x"] | sha256sum` hashes
-`x\n`: the same as `printf 'x\n' | sha256sum`, not
-`printf 'x' | sha256sum`. This is one of the few places where weir is
-less convenient than bash, so take care when hashing. When you want a
-single string, use `cmd | text` (all of stdout) or `cmd | line`
-(exactly one line).
+not a string. bash's `$(cmd)` is one string with trailing newlines
+stripped; weir's is a `seq<string>`, one element per line. For a single
+string, use `cmd | text` (all of stdout) or `cmd | line` (exactly one
+line).
 
-`set -e` is always on and has no name. A nonzero exit raises an error
-(once the command's output has been read to the end) and stops the script,
-pointing at the failing line. To inspect a failure instead, turn it
-into data: `cmd | complete` gives `{ ok; exitCode; stdout; stderr }`
-(`ok` is `exitCode == 0`). That record is also how you get at stderr
-where bash would use `2>&1`.
+It cuts the other way too. Piping a value into a command (`expr | cmd`)
+writes each element as a line, newline included, so `["x"] | sha256sum`
+hashes `x\n` (like `printf 'x\n'`, not `printf 'x'`). Take care when
+hashing; this is one of the few places bash is more convenient.
+
+`set -e` is always on and has no name. A nonzero exit raises (once the
+command's output has been read to the end) and stops the script at the
+failing line. To inspect a failure instead, make it data:
+`cmd | complete` gives `{ ok; exitCode; stdout; stderr }`, where `ok` is
+`exitCode == 0`. That record is also where stderr lives, where bash
+would use `2>&1`.
 
 ```weir-error
 // set -e is unconditional and unnamed: a nonzero exit raises
@@ -84,31 +84,33 @@ print "unreached"
 - Redirects. `>` and `>>` are passed to the command as plain
   arguments, with a warning that suggests `cmd |> File.write "out.txt"`
   (or `File.append` for `>>`).
-- `;` chaining. Write one command per line. A `;` in a command line is
-  passed as a plain argument (with a warning). Since a failure already
-  stops the script, consecutive lines behave like an `&&` chain. For a
-  one-liner, `&&` and `||` are `cmd | and next` and `cmd | or next`.
-  A chain repeats one word (`a | and b | and c`, `a | or b | or c`);
-  mixing them is an error. Mixed, it would not mean what bash means:
-  weir's right side is the rest of the line, so `a | and b | or c`
-  would group as `a | and (b | or c)` where bash reads
-  `(a && b) || c`, and a failed `a` stops a weir script where bash
-  carries on. bash's `a && b || c` is a trap there too (`c` also runs
-  when `b` fails); its intent, "if a then b else c", is
-  `if a | succeeds then b else c`.
+- `;` chaining. Write one command per line; a `;` in a command line is
+  passed as a plain argument (with a warning). A failure already stops
+  the script, so consecutive lines behave like an `&&` chain.
+- `&&` and `||` in a one-liner: `cmd | and next` and `cmd | or next`.
+  A chain repeats one word (`a | and b | and c`, `a | or b | or c`).
+  Mixing them is an error, because it wouldn't mean what bash means:
+  - weir's right side is the rest of the line, so `a | and b | or c`
+    would group as `a | and (b | or c)`, where bash reads
+    `(a && b) || c`.
+  - A failed `a` stops a weir script; bash carries on.
+  - bash's `a && b || c` is a trap anyway (`c` also runs when `b`
+    fails). Its intent, "if a then b else c", is
+    `if a | succeeds then b else c`.
 - `$VAR` expansion. Use `Env.get "VAR"` (an `Option<string>`) and
-  splice the result. To set a variable for one command,
-  `NAME=value cmd` works as in bash.
-- `while`. weir has none.
-  [`retry` and `poll`](GUIDE.md#retrying-and-polling) are bounded by
-  attempts and by time (for example `retry attempts=5 delay=30s`
-  followed by a block); running out raises an error. The loop that
-  runs until you stop it is [`repeat interval=…`](reference/loops.md#repeat):
-  on Ctrl+C or SIGTERM it finishes the iteration in hand and the
-  script carries on after it. A `for` over `Seq.initInfinite` runs
-  forever too, but a signal cuts it mid-iteration. To keep a server up
-  until stopped, end its `within` with
-  [`until stopped`](reference/scopes.md#until-stopped).
+  splice the result. `NAME=value cmd` sets a variable for one command,
+  as in bash.
+- `while`. weir has none. Instead:
+  - [`retry` and `poll`](GUIDE.md#retrying-and-polling), bounded by
+    attempts or time (`retry attempts=5 delay=30s` + a block). Running
+    out raises.
+  - [`repeat interval=…`](reference/loops.md#repeat) runs until you
+    stop it. On Ctrl+C or SIGTERM it finishes the iteration in hand
+    and the script carries on after it.
+  - A `for` over `Seq.initInfinite` also runs forever, but a signal
+    cuts it mid-iteration.
+  - To keep a server up until stopped, end its `within` with
+    [`until stopped`](reference/scopes.md#until-stopped).
 - Anything else from bash. `sh -c "the bash line"` is an ordinary
   command. Inside that quoted line, `$w` is sh's variable, not weir's,
   so interpolate first: `sh -c $"echo got-{w}"`.
@@ -149,11 +151,15 @@ substitution, but now it has a type.
 
 **The one thing that will catch you out:** in fish, an unset or empty
 variable expands to zero arguments and the command runs anyway. weir
-rejects the script before anything runs. `$x` is always exactly one
-argument: an empty seq can't silently drop out of a command line, an
-unbound name is a check error, and a seq only spreads into several
-arguments through `$@x`. Where fish would quietly change how many
-arguments a command gets, weir makes that count visible in the code.
+rejects the script before anything runs:
+
+- `$x` is always exactly one argument, so an empty seq can't silently
+  drop out of a command line.
+- An unbound name is a check error.
+- A seq spreads into several arguments only through `$@x`.
+
+Where fish quietly changes how many arguments a command gets, weir
+makes the count visible in the code.
 
 ```weir-error
 // fish: an unset $nope expands to nothing and echo runs bare;
@@ -164,17 +170,19 @@ echo $nope
 **Not here, and what to write instead:**
 
 - Universal variables (`set -U`) and interactive config. weir is not
-  your login shell, but its REPL has an init file:
-  `~/.config/weir/init.weir` (or `$XDG_CONFIG_HOME/weir/`, and
-  `%APPDATA%\weir\` on Windows). The file starts with `#init` and holds
-  only declarations (`let`/`type`, for example prompt helpers), `#alias`
-  lines, and one `#session { … }` block with the settings `cwd`, `env`,
-  `logLevel`, `echoCap` and `prompt`. The `env` setting sets
-  environment variables once per session, and `Env.vars`, every
-  started process and `within env` all see them. That's the closest
-  thing to `set -U`. A *script's* configuration is a separate matter:
-  read it with `Env.load`, `Args.load` or `from json T`, which give it
-  a type as it comes in.
+  your login shell, but its REPL has an init file,
+  `~/.config/weir/init.weir` (or `$XDG_CONFIG_HOME/weir/`;
+  `%APPDATA%\weir\` on Windows). It starts with `#init` and holds only:
+  - declarations (`let`/`type`, for example prompt helpers)
+  - `#alias` lines
+  - one `#session { … }` block with `cwd`, `env`, `logLevel`, `echoCap`
+    and `prompt`
+
+  The closest thing to `set -U` is `#session`'s `env`: it sets
+  environment variables once per session, and `Env.vars`, every started
+  process and `within env` all see them. A *script's* configuration is
+  separate: read it with `Env.load`, `Args.load` or `from json T`,
+  typed as it comes in.
 - Autoloaded functions (`~/.config/fish/functions`). Use
   `import "./lib.weir" as Lib`, so the script names what it depends on.
 - `and` / `or` command chaining. Write `cmd | and next` /
@@ -207,7 +215,7 @@ widening.
 | `while` / `let rec` | neither exists; `let rec` is a parse error (`'rec' is a keyword`) |
 | `open Seq` | no `open`; names are always qualified. Share code with `import "./lib/x.weir" as X` |
 | `.fsi` / `.mli` signature files | write the signature inline, `let f : int -> int` (no `=`), above the definition |
-| `\| MyMod.Case v ->` qualified cases in patterns | write the case bare: `\| Case v ->` (`\| X.Case v ->` is a parse error) |
+| `\| MyMod.Case v ->` qualified cases in patterns | the same (`\| X.Case v ->`, where `X` is the import's name), or bare: `\| Case v ->` |
 | `$@"…"` / `$$"""…"""` | only `$"""…{hole}…"""`; a literal brace in `$"…"` is `{{` |
 | `[\| 1; 2 \|]` arrays, `list` | one sequence type, `seq<'a>`; `[1; 2]` literals are eager |
 | `{\| ip = "x" \|}` anonymous records | the same syntax and types, with a few limits (below) |
@@ -255,15 +263,14 @@ either way: floats can't be compared with `==`, because they're
 finite-only here. Use `Float.near a b eps`. See
 [GUIDE.md](GUIDE.md#rates-and-percentages-floats-finite-only).)
 
-Equality on collections surprises you in the other direction. weir's
-`==` rejects seqs at check time. That looks like a limitation until
-you see what F# does: `=` on a `seq<'T>` compiles, but the answer
-depends on the runtime type. It's structural if the value happens to
-be a list or array, and reference equality for a computed seq, so
-`Seq.map id [1;2] = Seq.map id [1;2]` is `false`. weir would rather
-refuse than give an answer that depends on where the value came from.
-Compare what you actually mean: `Seq.length`, a `Str.join`ed string,
-or an element-by-element check.
+Equality on collections surprises you the other way: weir's `==`
+rejects seqs at check time. F#'s `=` on a `seq<'T>` compiles, but the
+answer depends on the runtime type: structural for a list or array,
+reference equality for a computed seq. So
+`Seq.map id [1;2] = Seq.map id [1;2]` is `false`. weir refuses rather
+than answer differently depending on where the value came from.
+Compare what you mean: `Seq.length`, a `Str.join`ed string, or an
+element-by-element check.
 
 What F# only warns about, weir treats as an error, reported before
 anything runs: a non-exhaustive match, a discarded non-unit value, an
@@ -311,22 +318,25 @@ git status --porcelain |> Seq.choose (fun l -> match l with | Regex @"^.. (.*)$"
 ```
 
 **The one thing that will catch you out:** there are two pipes, not
-one. PowerShell has a single object pipeline: cmdlets take and
-produce objects. In weir, `|` carries text to and from external
-programs, and `|>` carries values between functions. What's on the
-right decides which one you need, and using the wrong one gives an
-error that names the other. Turning text into values is up to you.
-PowerShell's cmdlets do that conversion for you, but weir runs
-ordinary programs that print text, and `from json T` / `from yaml T`
-are where that text becomes typed data, in the shape you declared.
+one. PowerShell has a single object pipeline. In weir:
 
-The trade-off cuts both ways. PowerShell's types stop at the cmdlet
+- `|` carries text to and from external programs.
+- `|>` carries values between functions.
+
+What's on the right decides which you need; the wrong one gives an
+error that names the other.
+
+Turning text into values is up to you. Cmdlets convert for you, but
+weir runs ordinary programs that print text, and `from json T` /
+`from yaml T` are where that text becomes typed data in the shape you
+declared.
+
+That trade cuts both ways. PowerShell's types stop at the cmdlet
 boundary: a plain `.exe` gives you strings, and `Where-Object Length`
-looks up the property at run time, so a misspelled name matches
-nothing and silently filters out everything. In weir, types start
-right at the boundary with external programs: `from json T` is checked
-before anything runs, and a misspelled field is a check error with a
-did-you-mean.
+looks the property up at run time, so a misspelled name matches
+nothing and silently filters out everything. weir's types start at the
+boundary: `from json T` is checked before anything runs, and a
+misspelled field is a check error with a did-you-mean.
 
 **Not here, and what to write instead:**
 
@@ -367,33 +377,24 @@ ls |> Seq.where (fun f -> f.bytes > 1KiB) |> Seq.length |> print
 ```
 
 **Where the two part company: when the check happens.** Nushell
-parses and type-checks before running. A bad operation like `"s" + 5`
-is a parse error even in a branch that never runs, which is more than
-most shells do. But the check doesn't cover commands or data shapes.
-An external command is looked up only when execution reaches it, so a
-script can run its first half and then fail on a missing command
-(`print "before"; frobnicate` prints `before`, then errors). Parameter
-types are advisory (`def greet [name: string]` accepts `greet 5`). And
-`from json` gives a dynamic record, so a missing field is a run-time
-`column_not_found` error at the line that reads it.
+parses and type-checks before running: `"s" + 5` is a parse error even
+in a branch that never runs, which is more than most shells do. But
+three things are left to run time:
 
-weir moves all three to check time. Every command name is resolved
-before the first line runs, including those in branches that never
-run, and `weir check --can` lists every command the script could run.
-So a missing tool never lets the first half run: the same
-`print "before"` / missing-command file is refused with nothing
-printed. `from json T`, `Args.load T` and `yaml schema=` name the
-shape, so a missing field, an unknown flag or a misspelled manifest
-key is a check error with a did-you-mean, not a surprise at run time.
+| | Nushell | weir |
+|---|---|---|
+| external commands | looked up when execution reaches them: `print "before"; frobnicate` prints `before`, then errors | every name resolved before line one, untaken branches included; the same file is refused with nothing printed. `weir check --can` lists every command the script could run |
+| parameter types | advisory: `def greet [name: string]` accepts `greet 5` | checked |
+| data shapes | `from json` gives a dynamic record; a missing field is a run-time `column_not_found` at the line that reads it | `from json T`, `Args.load T` and `yaml schema=` name the shape; a missing field, unknown flag or misspelled manifest key is a check error with a did-you-mean |
 
 **The trade, honestly:** nu is an interactive shell first, with a REPL
 you live in, a plugin system and a large library of structured
-commands. weir isn't trying to be that (its REPL is for trying out
-weir code, not for living in). What weir adds is the up-front check.
-When a nu one-liner grows into a script, it fails at the line that
-breaks; the weir version fails when you check it, before any side
-effect. If you want a shell, use nu. If you want the script it turned
-into, checked as a whole, use weir.
+commands. weir isn't trying to be that; its REPL is for trying out
+weir code. What weir adds is the up-front check. When a nu one-liner
+grows into a script, it fails at the line that breaks; the weir
+version fails when you check it, before any side effect. If you want a
+shell, use nu. If you want the script it turned into, checked as a
+whole, use weir.
 
 ## Coming from Python
 
@@ -666,7 +667,8 @@ print m
 
 - Implicit `$_`. Name the value; `_.field` and `_[0]` are the short
   forms for "the piped value's field / first element".
-- `tr///` and regex `s///`. Pipe through `tr` or `sed`.
+- `tr///`. Pipe through `tr`. (Regex `s///` is `Str.rreplace`, in the
+  table above.)
 - `local` and dynamic scope. Bindings are lexical; `within env` sets
   environment variables for child processes within a block.
 
@@ -695,26 +697,26 @@ Everything above is a translation. These are the things no other
 language prepares you for, each with what it costs you.
 
 - **The whole file is checked before anything runs**: types, match
-  coverage, discarded values, and whether the commands exist. A
-  broken script is refused before its first line, so it never dies
-  halfway through its side effects. The cost: you can't run the
-  working half of a broken script, and a missing tool blocks the run
-  entirely (`weir check` reports it only as a warning, so you can keep
-  editing).
-- **One splice, one argument.** A splice is one argument, `$@xs` is
-  one per element, and nothing is ever re-split, so shell injection
-  can't be written at all, rather than being guarded against. The same
-  goes for `yaml` blocks: splices go in as typed values, never as text,
-  so YAML injection can't happen either. The cost: a standalone `//`
-  argument reads as a comment (quote it), and gluing a splice into a
-  word (`--file=$f`) is refused, so build the word explicitly.
+  coverage, discarded values, and whether the commands exist. A broken
+  script is refused before its first line, so it never dies halfway
+  through its side effects.\
+  *Cost:* you can't run the working half of a broken script, and a
+  missing tool blocks the run entirely (`weir check` only warns, so you
+  can keep editing).
+- **One splice, one argument.** `$x` is one argument, `$@xs` one per
+  element, and nothing is ever re-split, so shell injection can't be
+  written at all. Splices into `yaml` blocks go in as typed values,
+  never as text, so YAML injection can't happen either.\
+  *Cost:* a standalone `//` argument reads as a comment (quote it), and
+  gluing a splice into a word (`--file=$f`) is refused; build the word
+  explicitly.
 - **Name lookup decides between command and expression.** A bare name
-  at the start of a line is a command if it names one, and an
-  expression otherwise. Your own bindings win over PATH, and `^ls` is
-  the one way to force the external program. No syntax marks the
-  difference. The cost: adding a binding with a command's name changes
-  what a later line means. The lookup order matters, and the editor
-  colors the first word of each line to show you which one you got.
+  at the start of a line is a command if it names one, an expression
+  otherwise. Your bindings win over PATH; `^ls` forces the external
+  program. No syntax marks the difference, but the editor colors the
+  first word of each line to show which you got.\
+  *Cost:* adding a binding with a command's name changes what a later
+  line means.
 
 ```weir
 let rows = ls |> Seq.length
@@ -722,72 +724,74 @@ print $"typed rows: {rows}"
 ^ls -a
 ```
 
-- **`within` scopes.** Six kinds (`tmp`, `cd`, `env`, `lock`, `proc`,
-  `serve`) plus a bare `within` with `always` for your own cleanup,
-  in a language with no `defer`, no `try/finally` and no
-  `IDisposable`. `within proc` replaces a backgrounded `&`: when the
-  block ends, its process tree is killed and reaped. `within lock`
-  replaces `flock`. Cleanup runs on normal exit, `fail`, `exit n`,
-  SIGINT and SIGTERM alike; the only exception is `kill -9`, which
-  nothing can catch (a `within lock` still frees, since the kernel drops
-  the lock). The cost is the flip side of that guarantee: the
-  process tree is killed with SIGKILL, children included, so a scoped
-  child's own SIGTERM handler never runs. A process that must flush on
-  shutdown should be a daemon, not a `within proc`.
-- **`yaml` blocks** are literals that get checked like code. A
-  structural error is a check error. Values YAML would misread are
-  quoted when rendered, so `"no"` stays a string instead of becoming
-  `false` (the "Norway problem"). And `yaml schema=<name>` validates
-  against a vendored JSON schema at check time. The cost: only a
-  subset of YAML is supported (anchors and flow style are rejected),
-  splices are checked by type only (a string spliced where the schema
+- **`within` scopes**, in a language with no `defer`, no `try/finally`
+  and no `IDisposable`. Six kinds (`tmp`, `cd`, `env`, `lock`, `proc`,
+  `serve`), plus a bare `within` with `always` for your own cleanup.
+  `within proc` replaces a backgrounded `&`: when the block ends, its
+  process tree is killed and reaped. `within lock` replaces `flock`.
+  Cleanup runs on normal exit, `fail`, `exit n`, SIGINT and SIGTERM.
+  Only `kill -9` escapes it, since nothing can catch that (a
+  `within lock` still frees: the kernel drops the lock).\
+  *Cost:* the tree is killed with SIGKILL, children included, so a
+  scoped child's own SIGTERM handler never runs. A process that must
+  flush on shutdown should be a daemon, not a `within proc`.
+- **`yaml` blocks** are literals checked like code. A structural error
+  is a check error. Values YAML would misread are quoted when
+  rendered, so `"no"` stays a string instead of becoming `false` (the
+  "Norway problem"). `yaml schema=<name>` validates against a vendored
+  JSON schema at check time.\
+  *Cost:* only a subset of YAML is supported (anchors and populated
+  flow collections are rejected; empty `{}` and `[]` are read).
+  Splices are checked by type only (a string spliced where the schema
   has a `pattern` or `enum` isn't checked against it), and content
   generated with `for` isn't checked structurally.
 - **External contracts.** `weir add schema <url> --as <name>` saves a
-  schema into your project with its version locked. It constrains what
-  the checker accepts and does nothing at run time: think of an F#
-  type provider that runs no code and never changes underneath you.
-  The cost: keeping the saved copies current is up to you, and
+  schema into your project, version locked. It constrains what the
+  checker accepts and does nothing at run time: an F# type provider
+  that runs no code and never changes underneath you.\
+  *Cost:* keeping the saved copies current is up to you, and
   validation only reaches what the checker can see.
-- **Where a command's output goes depends on the reifier.** When the
-  result contains the output, it's captured: `complete` gives you the
-  output in a record. When you only get the exit status (`orFail`,
-  `exitCode`), the output streams to your terminal, because it's meant
-  for a person. `succeeds` discards it, because the true/false is the
-  whole answer. The cost: `succeeds` means exactly `exitCode == 0`
-  (grep's "no match" counts as false; use `complete` when exit codes
-  carry meaning), and `complete` holds the output in memory (about
-  twice the text's size; past ~2 GiB a capture is an error), so stream
-  huge outputs instead.
+- **Where a command's output goes depends on the reifier.**
+
+  | reifier | output |
+  |---|---|
+  | `complete` | captured into the record |
+  | `orFail`, `exitCode` | streams to your terminal: you get the status, the output is for a person |
+  | `succeeds` | discarded: the true/false is the whole answer |
+
+  *Cost:* `succeeds` means exactly `exitCode == 0` (grep's "no match"
+  is false; use `complete` when exit codes carry meaning). `complete`
+  holds the output in memory (about twice the text's size; past ~2 GiB
+  a capture is an error), so stream huge outputs instead.
 - **Floats are finite-only.** A calculation that would give NaN or
-  Infinity raises an error, so floats always sort consistently and
-  `show` never prints a special value. The cost: `1.0 / 0.0` is a
-  run-time error, code that used NaN as a "missing" marker must use
-  `Option` instead, and floats can't be compared with `==` at all
-  (use `Float.near`).
-- **Time is stored as integers.** A `Duration` is a whole number of
-  milliseconds; decimals appear only when parsing and printing
-  (`show 90500ms` is `"1m30.5s"`). The cost: a literal uses one unit
-  (`2.5s` and `1m30s` are errors that show the right spelling; parse
-  compound text with `Duration.parse`), and a `Duration` field goes
-  into JSON only once you pick its encoding (`[<Millis>]` or
-  `[<Seconds>]`) or convert it yourself with `Duration.toMillis`.
+  Infinity raises, so floats always sort consistently and `show` never
+  prints a special value.\
+  *Cost:* `1.0 / 0.0` is a run-time error, code that used NaN as a
+  "missing" marker must use `Option`, and floats can't be compared with
+  `==` at all (use `Float.near`).
+- **Time is stored as integers.** A `Duration` is whole milliseconds;
+  decimals appear only when parsing and printing (`show 90500ms` is
+  `"1m30.5s"`).\
+  *Cost:* a literal uses one unit (`2.5s` and `1m30s` are errors that
+  show the right spelling; parse compound text with `Duration.parse`).
+  A `Duration` field goes into JSON only once you pick its encoding
+  (`[<Millis>]` or `[<Seconds>]`) or convert it with
+  `Duration.toMillis`.
 - **The REPL init file** looks like a shell rc file, but it's checked
   before it runs. `~/.config/weir/init.weir` loads before the first
   prompt. It starts with `#init` and holds only declarations
   (`let`/`type`, for example prompt helpers; no commands run at
   startup), `#alias` lines for command aliases, and one
-  `#session { … }` block for settings a declaration can't express
-  (`cwd`, `env`, `logLevel`, `echoCap`, `prompt`). It is not a login
-  shell: there's no job control. The cost: loading is all-or-nothing.
-  If the file has an error, the REPL shows it with its location and
-  starts with *none* of the file loaded (safe, because nothing in it
-  runs while loading). So a helper you rely on is missing, with the
-  error reported, rather than half-loaded.
+  `#session { … }` block for what a declaration can't express (`cwd`,
+  `env`, `logLevel`, `echoCap`, `prompt`). It is not a login shell: there's no job control.\
+  *Cost:* loading is all-or-nothing. An error shows with its location
+  and the REPL starts with *none* of the file loaded (safe, since
+  nothing in it runs while loading). A helper you rely on is missing,
+  with the error reported, rather than half-loaded.
 - **The docs run.** Every code block on this page, in the GUIDE and in
-  the skill file runs against the release binary in CI, so an example
-  that goes stale fails the build. That's why examples lean on `git`
-  and `sh`: they must run in a bare CI container.
+  the skill file runs against the release binary in CI, so a stale
+  example fails the build. That's why examples lean on `git` and `sh`:
+  they must run in a bare CI container.
 
 If a section above sent you looking for more: [GUIDE.md](GUIDE.md)
 teaches the language, [the reference](reference/lexical.md) describes

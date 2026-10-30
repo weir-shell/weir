@@ -428,7 +428,7 @@ const current = (href) => (path === href || path.startsWith(href) ? "page" : und
         <a href="/docs/install/" aria-current={current("/docs/install/")}>Install</a>
         <a href="/docs/guide/" aria-current={current("/docs/guide/")}>Guide</a>
         <a href="/reference/" aria-current={current("/reference/")}>Reference</a>
-        <a href="/docs/tooling/" aria-current={current("/docs/tooling/")}>Tooling</a>
+        <a href="/docs/editors/" aria-current={["/docs/editors/", "/docs/tooling/", "/docs/repl/"].some(current) ? "page" : undefined}>Tooling</a>
         <a href="/docs/coming-from/" aria-current={current("/docs/coming-from/")}>Coming from…</a>
         <a href="/showcase/" aria-current={current("/showcase/")}>Showcase</a>
         <a href="/changelog/" aria-current={current("/changelog/")}>Changelog</a>

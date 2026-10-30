@@ -20,7 +20,7 @@ let toc = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
 
 // the Tooling AREA shares a sub-nav: its three pages list each other
 // in the sidebar, the current page expanded into its own headings
-const area = { tooling: "Tooling", editors: "Editors", repl: "The REPL" };
+const area = { editors: "Editors", tooling: "Tooling", repl: "The REPL" };
 if (entry.id in area) {
   toc = Object.entries(area).flatMap(([id, text]) =>
     id === entry.id

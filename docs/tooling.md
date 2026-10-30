@@ -39,45 +39,52 @@ usage: weir                                    the REPL
   shebang works too. The script gets its arguments as `Self.args`, or
   parsed into a type you declare with `Args.load`.
 - `weir -e '<program>'` — run a program and print the value of its
-  last statement with its type (`3 : int`), as the REPL echoes it
-  with `#types on`: a unit value prints nothing, and a lazy seq shows
-  its first 100 elements, the REPL's echo limit.
-  Newlines separate statements, just as in a file. The last statement
-  must be an expression; if it is a declaration (a `let`, a `type`,
-  …), the error says which kind. Directives are refused: `-e` takes
-  weir code only (the REPL's directives work at the prompt).
+  last statement with its type (`3 : int`), as the REPL echoes it with
+  `#types on`: a unit value prints nothing, and a lazy seq shows its
+  first 100 elements (the REPL's echo limit).
+  - Newlines separate statements, as in a file.
+  - The last statement must be an expression. If it's a declaration (a
+    `let`, a `type`, …), the error says which kind.
+  - Directives are refused: `-e` takes weir code only (the REPL's
+    directives work at the prompt).
 
 ### Checking
 
-- `weir check script.weir` — print every diagnostic, each with its
-  location and code, without running anything. A command that isn't
-  on PATH is only a warning here (when you run the script, it's an
-  error), so you can work on scripts for tools you haven't installed.
-  `--json` prints the same diagnostics as JSON, for other tools and
-  AI agents to read. A diagnostic that has a related site — the
-  signature an implementation mismatches, the import an imported
-  error came through, the rebinding that shadows an unread binder —
-  carries it in a `related` array of `{file, line, col, message}`;
-  the key is absent otherwise. A diagnostic weir knows how to repair carries a
-  `fix`: a `title` and the `edits` that repair it (`line`, `col`,
-  `endLine`, `endCol` — 1-based, end-exclusive, all against the
-  unedited file — and `newText`), the same edits the editor's quick
-  fix applies.
-- `weir check --can script.weir` — list what the script can run,
-  read, write and connect to, with a `file:line` for each item. This
-  is what the script *could* do, not what it will do, so a branch
-  that never runs still counts. With `--strict`, it exits 2 if the
-  script contains anything weir can't look inside (`sh -c` and other
-  interpreters), so CI can reject scripts that can't be analysed.
-  `--json` gives machine-readable output.
-- `weir fmt script.weir` — format the script in place. With
-  `--check`, it doesn't write anything and exits nonzero if the file
-  isn't formatted, which is what you want in CI. A shebang line is
-  left exactly as written, and a formatted file ends in one newline.
-  A file that doesn't parse is not touched; the error names its line.
-  Line breaks are read as check reads them (LF, CRLF or a bare CR). In
-  an init file, fmt seats every `#session` field at column 4. A
-  heredoc line indented less than the block's first line, a comment
+**`weir check script.weir`** prints every diagnostic, each with its
+location and code, without running anything. A command that isn't on
+PATH is only a warning here (running the script makes it an error), so
+you can work on scripts for tools you haven't installed.
+
+`--json` prints the same diagnostics as JSON, for other tools and AI
+agents:
+
+- A diagnostic with a related site carries it in a `related` array of
+  `{file, line, col, message}`: the signature an implementation
+  mismatches, the import an imported error came through, the rebinding
+  that shadows an unread binder. The key is absent otherwise.
+- A diagnostic weir knows how to repair carries a `fix`: a `title` and
+  the `edits` that apply it, the same edits the editor's quick fix
+  applies. Each edit has `line`, `col`, `endLine`, `endCol` (1-based,
+  end-exclusive, all against the unedited file) and `newText`.
+
+**`weir check --can script.weir`** lists what the script can run,
+read, write and connect to, with a `file:line` for each item. That's
+what the script *could* do, not what it will do, so a branch that
+never runs still counts. `--strict` exits 2 if the script contains
+anything weir can't look inside (`sh -c` and other interpreters), so
+CI can reject scripts that can't be analysed. `--json` gives
+machine-readable output.
+
+**`weir fmt script.weir`** formats the script in place. `--check`
+writes nothing and exits nonzero if the file isn't formatted, which is
+what you want in CI.
+
+- A shebang line is left exactly as written, and a formatted file ends
+  in one newline.
+- A file that doesn't parse isn't touched; the error names its line.
+- Line breaks are read as check reads them (LF, CRLF or a bare CR).
+- In an init file, every `#session` field is seated at column 4.
+- A heredoc line indented less than the block's first line, a comment
   included, is refused with its line and column.
 
 ### The project subcommands
@@ -91,27 +98,27 @@ These maintain the [`.weir/` tree](#project-layout-weir):
   ([signatures drive Tab](#signatures-drive-tab-completion)).
 - `weir add schema <url> --as <name>` — download a JSON schema into
   `.weir/schemas/` and record it in the lock ([schemas](#yaml-schemas)).
-  The source is an http(s) URL; a local path or `file://` is refused
-  (`weir add: add schema takes an http(s) URL; got '<x>'`), as it is
-  for `add module`.
-- `weir add module <src>//<file>@<ref> --as <name>` — download a copy
-  of a remote module, with the files it imports, into `.weir/modules/`
-  and record it in the lock ([modules](#remote-modules)). From any
-  other host: `weir add module <url> --as <name>` for one file, or
-  `weir add module <root url> --path <file> --as <name>` for a file
-  and its imports. `weir add module <name>` vendors a module of the
-  official library at its latest release, `<name>@v<x.y.z>` at one
-  ([the library](#the-library)).
+  The source must be an http(s) URL, as for `add module`; a local path
+  or `file://` is refused
+  (`weir add: add schema takes an http(s) URL; got '<x>'`).
+- `weir add module` — download a copy of a remote module, with the
+  files it imports, into `.weir/modules/` and record it in the lock
+  ([modules](#remote-modules)):
+  - `<src>//<file>@<ref> --as <name>`, from a git host
+  - `<url> --as <name>`, one file from any other host
+  - `<root url> --path <file> --as <name>`, a file and its imports from
+    any other host
+  - `<name>`, a module of the official library at its latest release;
+    `<name>@v<x.y.z>` at one ([the library](#the-library))
 - `weir gen types --schema <name>` — generate weir `type` declarations
   from a locked schema into `.weir/types/<name>.weir`
   ([types from a schema](#types-from-a-schema)).
 - `weir restore` — bring the downloaded files back in line with the
-  lock, checking each hash. A missing file is downloaded again, and so
-  is a file that was changed locally. A missing signature can't be
-  restored, because it was generated rather than downloaded; `restore`
-  reports it and tells you to run `weir add sig` again. Apart from
-  `add schema` and `add module`, this is the only subcommand that
-  downloads anything.
+  lock, checking each hash. A missing or locally changed file is
+  downloaded again. A missing signature can't be restored, because it
+  was generated rather than downloaded; `restore` reports it and tells
+  you to run `weir add sig` again. Apart from `add schema` and
+  `add module`, this is the only subcommand that downloads anything.
 - `weir verify` — compare the vendored files against the lock. It
   reports every missing or modified file, and for signatures a tool
   version mismatch or a missing tool; it exits 1 if there are any.
@@ -154,11 +161,12 @@ bicep build --outfile x.json
 ```
 
 The signature records the tool's version: the first line of its
-`--version` output, with runs of whitespace collapsed and a trailing
-list of library versions dropped (curl's `libcurl/8.18.0
-OpenSSL/3.5.5 …`). (Only the first line, because some tools, like az,
-print pages of environment details.) `weir verify` compares it with the installed tool's version
-and reports any difference at all. When the tool updates, run
+`--version` output (some tools, like az, print pages of environment
+details), with runs of whitespace collapsed and a trailing list of
+library versions dropped (curl's `libcurl/8.18.0 OpenSSL/3.5.5 …`).
+
+`weir verify` compares it with the installed tool's version and
+reports any difference at all. When the tool updates, run
 `weir add sig` again. If the regenerated file shows no diff, nothing
 that matters to your scripts changed.
 
@@ -213,46 +221,59 @@ one line naming how:
 
 - `let dynamic = "git"`: branches, tags and remotes, read by weir's own
   fixed git commands (`git for-each-ref --format=%(refname:short)
-  refs/heads refs/remotes refs/tags`, `git remote`). Which operand takes
-  what is a small table: any operand of checkout, switch, merge, rebase,
-  diff, log, reset, cherry-pick, revert and show is a ref; `branch -d`/
-  `-D` and `-m`/`-c` take a branch, `tag -d` a tag; the first operand of
-  push, fetch and pull is a remote, push's and pull's second a branch;
-  `git remote remove|rename|set-url|… <remote>`. A typed `--`, or `-C`,
-  `-c`, `--git-dir`, `--work-tree` before the subcommand, asks nothing.
+  refs/heads refs/remotes refs/tags`, `git remote`). See the table
+  below for which operand takes what.
 - `let dynamic = "cobra"`: a Cobra tool (kubectl, helm, gh, docker…)
   answers `<tool> __complete <the words typed> <partial>` itself.
+
+What `"git"` offers:
+
+| where | offers |
+|---|---|
+| any operand of checkout, switch, merge, rebase, diff, log, reset, cherry-pick, revert, show | a ref |
+| `branch -d`/`-D`, `-m`/`-c` | a branch |
+| `tag -d` | a tag |
+| push, fetch, pull: first operand | a remote |
+| push, pull: second operand | a branch |
+| `git remote remove\|rename\|set-url\|… <remote>` | a remote |
+
+A typed `--`, or `-C`, `-c`, `--git-dir`, `--work-tree` before the
+subcommand, asks nothing.
 
 `weir add sig` writes the line when it read the tool through its Cobra
 endpoint or git's completion helper; delete it to turn it off.
 
 The tool is asked only for an operand or a flag's value where the
-signature has paths or nothing to offer; subcommands and flag names stay
-the signature's, so Tab starts no program there. If the tool answers,
-you get its candidates; if it has none, fails, or takes longer than
-300 ms, you get what the signature alone gives. A Cobra tool that says
-"no files" gets no path fallback. The child runs in the REPL's directory
-and environment with empty input, no terminal, and its error output
-discarded. It is killed (with its children) at 300 ms, past 1 MiB or
-10,000 lines of output, or as soon as you press another key, and that
-key still lands in the buffer. Answers are kept for the rest of the line
-you are editing. A candidate is offered only if it can be typed as a
-plain argument; anything that would need quoting is dropped.
+signature has paths or nothing to offer. Subcommands and flag names
+stay the signature's, so Tab starts no program there.
+
+- If the tool answers, you get its candidates. If it has none, fails,
+  or takes longer than 300 ms, you get what the signature alone gives.
+  A Cobra tool that says "no files" gets no path fallback.
+- The child runs in the REPL's directory and environment with empty
+  input, no terminal, and its error output discarded.
+- It's killed (with its children) at 300 ms, past 1 MiB or 10,000
+  lines of output, or as soon as you press another key; that key still
+  lands in the buffer.
+- Answers are kept for the rest of the line you're editing.
+- A candidate is offered only if it can be typed as a plain argument;
+  anything that would need quoting is dropped.
 
 ```text
 #alias co = git checkout
 co <TAB>          # your branches
 ```
 
-Trust: a project's `.weir/sigs/` is read without asking, so a
-signature there must never make Tab run a program on its say-so. `"git"`
-runs only weir's own read-only git commands, never text from the
-signature, so any signature can use it. `"cobra"` runs the tool, so it
-is honored only from your user directory (`weir add sig --global
-<tool>`). A project signature asking for it still completes
-subcommands, flags and values, and the REPL says once per session:
-`dynamic completion for kubectl needs a user-level sig: weir add sig
---global kubectl`.
+**Trust.** A project's `.weir/sigs/` is read without asking, so a
+signature there must never make Tab run a program on its say-so.
+
+- `"git"` runs only weir's own read-only git commands, never text from
+  the signature, so any signature can use it.
+- `"cobra"` runs the tool, so it's honored only from your user
+  directory (`weir add sig --global <tool>`). A project signature
+  asking for it still completes subcommands, flags and values, and the
+  REPL says once per session: `dynamic completion for kubectl needs a
+  user-level sig: weir add sig --global kubectl`.
 
 Only the REPL asks. In the editor a script names what it means, not
 whatever branch or pod exists right now, so `weir lsp` stays with the
@@ -282,13 +303,16 @@ first:
   `--dump-options`;
 - then `--help` itself, or `-h`/`-help` when `--help` is refused.
 
-The help pages are always read too: they show which flags take a value
-and list the subcommands. Only the words a help page lists under a
-commands heading are ever run as subcommands (`<tool> <command>
---help`), up to four levels deep and depth-first within a budget per
-top-level command, so `gh pr create` and `docker compose up` are both
-reached. A subcommand whose help is the tool's main page again
-(systemctl's verbs) is not a separate case.
+The help pages are always read too: they show which flags take a
+value and list the subcommands.
+
+- Only words a help page lists under a commands heading are ever run as
+  subcommands (`<tool> <command> --help`).
+- Subcommands are walked up to four levels deep, depth-first within a
+  budget per top-level command, so `gh pr create` and
+  `docker compose up` are both reached.
+- A subcommand whose help is the tool's main page again (systemctl's
+  verbs) isn't a separate case.
 
 For a tool with subcommands, the signature lists flags per
 subcommand:
@@ -331,9 +355,9 @@ whose `[<Wire>]` starts with a dash has exactly that spelling: a
 second short (`-r` beside `-E`), `-h`, a short-only flag (python's
 `-B`), or a single-dash word.
 
-A few `let`s describe the tool's conventions; an older signature has
-none of them and checks exactly as before (GNU flags, none taking a
-value, a multi-letter single-dash word like `-fsSL` never read):
+A few `let`s describe the tool's conventions. An older signature has
+none of them and checks exactly as before: GNU flags, none taking a
+value, and a multi-letter single-dash word like `-fsSL` never read.
 
 - `let bundles = true` — a multi-letter single-dash word is a bundle of
   short flags, checked letter by letter (`tr -dQ` warns on `-Q`).
@@ -448,64 +472,67 @@ also exists, the import is an error — rename one.
 
 `#infer` drafts types from a sample, so it only knows what that
 sample contained: if the next run returns a container without `env`,
-the drafted type breaks. The schema knows what no sample can:
+the drafted type breaks. The schema knows what no sample can.
 
-- a `required` property becomes a plain field, and any other property
-  becomes `Option<…>`
-- `additionalProperties` becomes a `seq<string * V>` mapping
-- `$ref` definition names become type names
-  (`io.k8s.api.core.v1.PodSpec` → `PodSpec`); a deeper in-document
-  pointer (`#/definitions/opts/properties/inner`) names its type from
-  its last segment, and `#` is the whole schema (a reference to it from
-  inside is a cycle, drafted as `Yaml` below)
-- a `$ref` with sibling `properties`/`required` (JSON Schema 2020-12)
-  is merged into one record, with a note
+| in the schema | in weir |
+|---|---|
+| a `required` property | a plain field |
+| any other property | `Option<…>` |
+| nullable (`type: [.., "null"]` / `nullable: true`) | `Option<…>` |
+| `anyOf`/`oneOf` of one schema and `{"type": "null"}`, either order | `Option<…>` of that schema |
+| `additionalProperties` | a `seq<string * V>` mapping |
+| a `$ref` definition name | a type name (`io.k8s.api.core.v1.PodSpec` → `PodSpec`) |
+| a deeper in-document pointer (`#/definitions/opts/properties/inner`) | a type named from its last segment |
+| `#` | the whole schema; a reference to it from inside is a cycle (see self-reference) |
+| a `$ref` with sibling `properties`/`required` (JSON Schema 2020-12) | one merged record, with a note |
+| an `allOf` of one `$ref` plus annotations | flattened (common in Kubernetes schemas) |
+| a `const` | its type (`type`, or the value's own kind) |
+| a field that refers back to its own definition | `Yaml`, with a note: a weir record is a finite tree, so the subtree is read whole as an untyped node |
 
-More of the mapping:
+Enums:
 
-- nullable types (`type: [.., "null"]` / `nullable: true`) become
-  `Option`
-- an `allOf` of one `$ref` plus annotations is flattened (a common
-  pattern in Kubernetes schemas)
-- an `enum` becomes `string` plus a `//` note listing the values
-  (string unions are planned); an enum under `type: boolean`,
-  `integer` or `number`, or of values that are all one such kind,
-  becomes `bool`, `int` or `float`; an enum mixing kinds becomes `Yaml`;
-  a `null` among the values makes it `Option<…>`
-- an `anyOf` or `oneOf` of one schema and `{"type": "null"}`, in
-  either order, becomes `Option<…>` of that schema
-- a field that can be an integer or a string (`anyOf` of the two,
-  `x-kubernetes-int-or-string`, as Kubernetes ports are, or `type:
-  string` with `format: int-or-string`) becomes `Yaml`: `8080` reads
-  as `YInt 8080` and `"25%"` as `YStr "25%"`, and both write back
-  unchanged to JSON and YAML; so does a number-or-string field (a
-  Kubernetes quantity such as `cpu: 1` or `cpu: "500m"`); a `oneOf`
-  alternative that is a `$ref` counts by its target's type, and a
-  `oneOf` with one alternative per JSON kind (a string or an object,
-  say) becomes `Yaml` too
-- a `const` drafts its type (`type`, or the value's own kind)
+- a string `enum` becomes `string` plus a `//` note listing the values
+  (string unions are planned)
+- an enum under `type: boolean`, `integer` or `number`, or of values
+  that are all one such kind, becomes `bool`, `int` or `float`
+- an enum mixing kinds becomes `Yaml`
+- a `null` among the values makes it `Option<…>`
+
+Fields that can hold more than one kind become `Yaml`, which reads
+each value as what it is and writes it back unchanged to JSON and
+YAML:
+
+- integer or string: `anyOf` of the two, `x-kubernetes-int-or-string`
+  (Kubernetes ports), or `type: string` with `format: int-or-string`.
+  `8080` reads as `YInt 8080`, `"25%"` as `YStr "25%"`.
+- number or string, such as a Kubernetes quantity (`cpu: 1` or
+  `cpu: "500m"`)
+- a `oneOf` with one alternative per JSON kind (a string or an object,
+  say). A `oneOf` alternative that's a `$ref` counts by its target's
+  type.
+- an `anyOf` mixing a scalar with an array or object (a string or a
+  list of strings, say), with a note naming how each kind reads. Any
+  other `anyOf` uses the first variant, with a note asking you to check
+  it.
+
+Also:
+
 - each validation keyword the schema uses gets one
   `// note: not enforced: …` line naming where it appears
-- an `anyOf` that mixes a scalar with an array or object (a string or
-  a list of strings, say) becomes `Yaml`, with a note naming how each
-  kind reads; any other `anyOf` uses the first variant, with a note
-  asking you to check it
-- a field that refers back to its own definition becomes `Yaml`, with
-  a note — a weir record is a finite tree, so the subtree is read
-  whole as an untyped node
-- field names are cleaned up the same way `#infer` does it, so a
-  `type:` key becomes `[<Wire "type">] kind`
+- field names are cleaned up the way `#infer` does it, so a `type:` key
+  becomes `[<Wire "type">] kind`
 
 Where the schema leaves a question open, the file has a `// note:`
 line saying what was chosen, instead of a silent guess.
 
 The generated file is **yours**: edit it freely. Nothing regenerates
-it behind your back (signatures work the same way). Running
-`weir gen types` again regenerates it and overwrites your edits. It
-is deliberately **not in the lock**: the lock records the files that
-`add` downloaded, and this file belongs to you once it's generated.
-Instead, a header in the file records the schema name and the lock
-hash it came from.
+it behind your back (signatures work the same way); running
+`weir gen types` again regenerates it and overwrites your edits.
+
+It's deliberately **not in the lock**: the lock records the files
+`add` downloaded, and this file belongs to you once it's generated. A
+header in the file records the schema name and the lock hash it came
+from instead.
 
 The same locked schema always produces the same output. Before
 writing, `weir gen types` checks the module with the normal checker;
@@ -541,13 +568,15 @@ guess where the repo name ends. Marking it explicitly also means one
 syntax works for every host.)
 
 The `@ref` is required: a tag, branch or the full commit sha. weir
-resolves it to the **full commit sha** by listing the repo's refs the
-way `git ls-remote` does (git's own protocol — no API, no token for a
-public repo, no rate limit) and records that sha in the URL stored in
-the lock, so `restore` downloads exactly what you reviewed. A tag or
-branch the repo does not have is refused with a link to its tags page.
-This short form works for `github.com` and `gitlab.com`. For any
-other host, give the full raw URL:
+resolves it to the **full commit sha** and records that sha in the URL
+stored in the lock, so `restore` downloads exactly what you reviewed.
+It lists the repo's refs the way `git ls-remote` does: git's own
+protocol, so no API, no token for a public repo, no rate limit. A tag
+or branch the repo doesn't have is refused with a link to its tags
+page.
+
+This short form works for `github.com` and `gitlab.com`. For any other
+host, give the full raw URL:
 
 ```text
 weir add module https://raw.githubusercontent.com/org/repo/<sha>/lib/retry.weir --as retry
@@ -585,11 +614,10 @@ reported with the file and line:
 - an absolute path
 - a relative path that leads outside the repo
 
-A raw URL is one file, fetched exactly as written (a `//` in it is
-part of the URL), and has no repo to fetch imports from, so a raw URL
-whose file imports is refused. To vendor imports from any host, give
-the repo root as the URL and the entry file, relative to it, with
-`--path`:
+A raw URL is one file, fetched exactly as written (a `//` in it is part
+of the URL). It has no repo to fetch imports from, so a raw URL whose
+file imports is refused. To vendor imports from any host, give the repo
+root as the URL and the entry file, relative to it, with `--path`:
 
 ```text
 weir add module https://raw.githubusercontent.com/org/repo/<sha>/ --path lib/retry.weir --as retry
@@ -634,30 +662,35 @@ weir add module semver
 
 Each module is tagged on its own, `<name>/v<semver>` (`semver/v0.1.0`,
 `yaml/v0.2.3`): a tag names one module, and the tag list filtered to
-the module is its changelog. The bare add reads the repo's tag list
-and picks the highest stable `semver/v*` tag by semver precedence
-(a prerelease only when no stable tag exists), says which on stderr
-(`semver: latest is semver/v0.1.0`), and vendors it. To pin, spell
-the version with its `v`:
+the module is its changelog.
+
+The bare add reads the repo's tag list and picks the highest stable
+`semver/v*` tag by semver precedence (a prerelease only when no stable
+tag exists), says which on stderr (`semver: latest is semver/v0.1.0`),
+and vendors it. To pin, spell the version with its `v`:
 
 ```text
 weir add module semver@v0.1.0
 ```
 
-This is the same as
+That's the same as
 `weir add module github.com/weir-shell/lib//modules/semver.weir@semver/v0.1.0 --as semver`:
 the name is the file and the import alias, and `--as` renames it as
-usual (`weir add module semver --as sv` gives `import "weir:sv" as
-Sv`). Everything after the resolve is the ordinary `add` — the lock
-holds the raw URL at the full commit sha (not the tag: a later `add`
-of the same spelling re-reads the tag list), and `verify` and
-`restore` can't tell the two spellings apart. A spec with a `/` is
-never read as a library name. `semver@0.1.0` (no `v`) and `semver@`
-are refused naming the spelling; a full 40-hex sha after the `@` is
-taken as is. There are no ranges and no branch to track: the latest
-release, or a tag. A name whose alias is a builtin module (`retry` →
-`Retry`) is refused as with `--as`; the library never publishes such
-a name.
+usual (`weir add module semver --as sv` gives
+`import "weir:sv" as Sv`).
+
+Everything after resolving the name is the ordinary `add`. The lock
+holds the raw URL at the full commit sha, not the tag, so a later `add`
+of the same spelling re-reads the tag list; `verify` and `restore`
+can't tell the two spellings apart.
+
+- A spec with a `/` is never read as a library name.
+- `semver@0.1.0` (no `v`) and `semver@` are refused, naming the
+  spelling. A full 40-hex sha after the `@` is taken as is.
+- There are no ranges and no branch to track: the latest release, or a
+  tag.
+- A name whose alias is a builtin module (`retry` → `Retry`) is refused
+  as with `--as`; the library never publishes such a name.
 
 Every library module is a single file with no imports, because a
 vendored module can't import another vendored module yet (above).
@@ -686,20 +719,20 @@ print (SemVer.toString (SemVer.bumpMinor latest))
 where it lives; the module has none (`v1.2.3`, whitespace and `1.2`
 are refusals, and `tryParse` turns each into `None`).
 
-To update, run `add` again. It overwrites the file and prints the
-old and new sha, and you review the change in the vendored file's
-diff. For a module with imports it prints the old and new sha of each
-file that changed, and deletes files the module no longer imports. If
-a vendored file gets modified or deleted, `verify` reports it and
-`restore` downloads it again, at the commit in the lock.
+To update, run `add` again. It overwrites the file and prints the old
+and new sha, and you review the change in the vendored file's diff. For
+a module with imports it prints the old and new sha of each file that
+changed, and deletes files the module no longer imports. If a vendored
+file is modified or deleted, `verify` reports it and `restore`
+downloads it again, at the commit in the lock.
 
 The lock entry of a module with imports records the commit, the entry
 file and every file's sha256. A lock with such an entry has
 `"schemaVersion": 2`; older weir versions refuse to read it rather
-than misread it. `.weir/modules/<name>.weir` and
-`.weir/modules/<name>/` both existing is an error at the import, as is
-a `.weir/modules/<name>/` that the lock has no entry for (the lock
-names the entry file).
+than misread it. It's an error at the import when both
+`.weir/modules/<name>.weir` and `.weir/modules/<name>/` exist, or when
+a `.weir/modules/<name>/` has no lock entry (the lock names the entry
+file).
 
 `check --can` follows imports, so a vendored module's commands, file
 writes and network access appear in **your** report, each at the
@@ -707,11 +740,11 @@ module's own `file:line`. You can see what a dependency is able to do
 before running anything.
 
 For a private repo, set `WEIR_TOKEN_GITHUB_COM` or
-`WEIR_TOKEN_GITLAB_COM`. Only `add` and `restore` need the token;
-using the committed file doesn't. Tokens are read from the
-environment and never stored. A private repo without a token answers
-401 on the ref listing and 404 on the file, so weir's error mentions
-the token on both.
+`WEIR_TOKEN_GITLAB_COM`. Only `add` and `restore` need the token; using
+the committed file doesn't. Tokens are read from the environment and
+never stored. A private repo without a token answers 401 on the ref
+listing and 404 on the file, so weir's error mentions the token in
+both cases.
 
 Modules aren't signed. You decide to trust a module by reviewing its
 code. From then on, the lock holds its hash, and your repo's history

@@ -222,14 +222,15 @@ One difference from F#: `Seq.sum` only works on ints. `Float`,
 
 A `let` bound to a command, `ls`, or `Path.glob` stores the recipe,
 not the result. Nothing runs when the `let` is evaluated; the command
-runs (or the directory is listed) each time the value is read. It
-runs in the directory and environment current when it is read, as an
-F# `seq` reading `Environment.CurrentDirectory` would. The exception
-is a value written inside `within cd` or `within env`: it keeps that
-scope however late it is read. A relative `within cd` path resolves
-when the `within` line runs, against the current directory (or the
-enclosing scope's), and the value keeps that resolved directory, not
-the relative text:
+runs (or the directory is listed) each time the value is read.
+
+It runs in the directory and environment current when it is read, as
+an F# `seq` reading `Environment.CurrentDirectory` would. The
+exception is a value written inside `within cd` or `within env`: it
+keeps that scope however late it is read. A relative `within cd` path
+resolves when the `within` line runs, against the current directory
+(or the enclosing scope's), so the value keeps the resolved
+directory, not the relative text:
 
 ```weir
 Dir.create "proj/src"
@@ -384,13 +385,14 @@ print cli.Target
 ```
 
 Attributes only matter to the checker; at runtime they're gone, and
-`cli` above is just a plain `Cli`. The set of attributes is fixed;
-the ones for `Args.load` are `Short`, `NoShort` and `Default`. A typo like `[<Shrot "c">]` is an error
-with a "did you mean" hint. They're used by `Args.load`, which turns
-the declaration above into a `-C` flag; see
-[The script's own front door](#the-scripts-own-front-door). Help text
-isn't an attribute: the first line of the `///` doc becomes the
-`--help` text, as that section explains.
+`cli` above is just a plain `Cli`. The set is fixed, and a typo like
+`[<Shrot "c">]` is an error with a "did you mean" hint.
+
+The ones for `Args.load` are `Short`, `NoShort` and `Default`;
+`Args.load` turns the declaration above into a `-C` flag (see
+[The script's own front door](#the-scripts-own-front-door)). Help
+text isn't an attribute: the first line of the `///` doc becomes the
+`--help` text.
 
 ## Functions
 
@@ -537,11 +539,13 @@ Record patterns pull fields out by name. You can use them in a
 `match` case, a `let`, a `for` loop variable, or a function
 parameter. A parameter needs no parentheses:
 `let label { names = n } = n` accepts any record that has a `names`
-field. Field names keep their declared case, the variables are
-lowercase, and there's no shorthand: write `{ names = n }`, not
-`{ names }`. A field pattern can also hold a literal, so the case
-only matches some records. That lets you filter and unpack in one
-step:
+field.
+
+Field names keep their declared case, the variables are lowercase,
+and there's no shorthand: write `{ names = n }`, not `{ names }`.
+
+A field pattern can also hold a literal, so the case only matches
+some records. That lets you filter and unpack in one step:
 
 ```weir
 type Container = { State: string; Names: string }
@@ -618,12 +622,13 @@ echo hi io
 On a command line, every word is passed to the program exactly as
 written. Nothing is expanded (except a typed `~`, see below) and
 nothing is split on spaces. You drop back into weir values only with
-a `$` splice (`$name`, or a record field like `$cli.tag`) or `(expr)`. Everywhere
-else is expression code: the right side of a `let`, interpolation
-holes, and inside `$()`. A single word can't mix the two (gluing
-them together is an error), and the
-[editor colors](#what-the-editor-colors-mean) show you exactly
-where each part is.
+a `$` splice (`$name`, or a record field like `$cli.tag`) or `(expr)`.
+
+Everywhere else is expression code: the right side of a `let`,
+interpolation holes, and inside `$()`. A single word can't mix the
+two (gluing them together is an error), and the
+[editor colors](#what-the-editor-colors-mean) show you where each
+part is.
 
 **Which pipe: it depends on what's on the right.** `|` sends output
 to a program (`git log | grep x`). `|>` passes a value to a function
@@ -642,19 +647,23 @@ PATH, so `let f x = x` always returns `x`, whatever is installed.
 If you expect exactly one line, say so with `Seq.exactlyOne`.
 `Seq.head` takes the first line and silently ignores any others,
 which hides output you didn't expect; keep it for when you really
-want the first of many. And if one line is all the command is for,
-use the `| line` reifier: `let tree = git rev-parse HEAD | line`
-gives you a `string`. (A reifier is a `|` stage that turns a
-command's run into a value; see
+want the first of many.
+
+If one line is all the command is for, use the `| line` reifier:
+`let tree = git rev-parse HEAD | line` gives you a `string`. (A
+reifier is a `|` stage that turns a command's run into a value; see
 [Exit codes](#exit-codes-from-command-to-value).)
 
-Weir has no `!` for negation; write `not`. To use a command inside
-an expression, wrap it in `$(...)`, which gives you its output. To
-just run a command, you need nothing extra: a command is an ordinary
-statement, at the top level or inside any block. When the whole
-right side of a `let` is a command, use the plain `let` form. Use
-`$()` when the command is only part of an expression, such as inside
-a record, a hole, or another splice:
+Weir has no `!` for negation; write `not`.
+
+To just run a command, you need nothing extra: a command is an
+ordinary statement, at the top level or inside any block. To use its
+output as a value:
+
+- the whole right side of a `let` is the command: the plain `let`
+  form
+- the command is only part of an expression (a record, a hole,
+  another splice): wrap it in `$(...)`
 
 ```weir
 let ready = 1 > 0
@@ -718,14 +727,16 @@ Things weir command lines don't do:
   directory: an unquoted word that is `~` or starts with `~/` is
   expanded when the line runs (`cat ~/.bashrc`). Quoted strings and
   spliced values are never expanded, so data is never treated as
-  syntax. In an expression, build the path with `Path.home ()`:
-  `File.read $"{Path.home ()}/.bashrc"`. `Path.configHome`,
-  `Path.stateHome` and `Path.cacheHome` give the XDG directories. All
-  four are pure `unit -> string` functions that use the platform's
-  native locations.
+  syntax. See below for home in an expression.
 - No redirects. `>` and `>>` are passed to the program as plain
   arguments, with a warning telling you what to use instead
   (`cmd |> File.write "out.txt"`, or `File.append`).
+
+In an expression, build a home path with `Path.home ()`:
+`File.read $"{Path.home ()}/.bashrc"`. `Path.configHome`,
+`Path.stateHome` and `Path.cacheHome` give the XDG directories. All
+four are `unit -> string` functions that use the platform's native
+locations.
 
 When you need bash behavior, run bash: `sh -c "the bash line"`.
 
@@ -753,12 +764,13 @@ sh -c $"echo interpolated-{marker}"
 
 To run something once per item, use `for … do`, the familiar shell
 loop, with types. A command in the body streams its output, and a
-failing command raises an error at that iteration, which stops
-the script unless something catches it. Commands work as
-statements inside any block, so multi-line bodies just work: two git
-lines under an `if`, `fun f -> git add $f` inside `Seq.iter`, or a
-fetch line before the value of a `let` block. You can splice the
-loop variable like any other value.
+failing command raises an error at that iteration, which stops the
+script unless something catches it. You can splice the loop variable
+like any other value.
+
+Commands work as statements inside any block, so multi-line bodies
+just work: two git lines under an `if`, `fun f -> git add $f` inside
+`Seq.iter`, or a fetch line before the value of a `let` block.
 
 To transform values, keep using pipelines (`|> Seq.map …`); `for` is
 for doing something once per item. They're the same thing
@@ -975,26 +987,27 @@ let secret = yaml
 secret |> to yaml |> print
 ```
 
-`Str.fromBase64` raises an error on invalid base64, and also on valid
-base64 that doesn't decode to text (a PNG's bytes aren't a string,
-and you'd rather hear about it than get garbage).
-`Str.tryFromBase64` returns an `Option` instead, for input from an
-API or anyone you don't trust. `Str.sha256` hashes the UTF-8 bytes
-and returns lowercase hex, the same as `sha256sum`. `Str.sha1` (and
-`Bytes.sha1`, `File.sha1`) does the same with SHA-1, like `sha1sum`,
-for protocols that call for it, such as git object ids. SHA-1 is not
-safe as a security hash.
+- `Str.fromBase64` raises an error on invalid base64, and also on
+  valid base64 that doesn't decode to text (a PNG's bytes aren't a
+  string, and you'd rather hear about it than get garbage).
+- `Str.tryFromBase64` returns an `Option` instead, for input from an
+  API or anyone you don't trust.
+- `Str.sha256` hashes the UTF-8 bytes and returns lowercase hex, the
+  same as `sha256sum`.
+- `Str.sha1` (and `Bytes.sha1`, `File.sha1`) does the same with
+  SHA-1, like `sha1sum`, for protocols that call for it, such as git
+  object ids. SHA-1 is not safe as a security hash.
 
 A ConfigMap needs YAML block scalars. After a `key: |` (or `|-`)
 header, the indented content is taken literally: `$VAR` and `for`
-lines inside it are just text. That matters because embedded scripts
-are full of `$`, and quietly substituting into them would break
-them. If you want templated content, build the string first and
-splice it in as a whole value. `|` means the string ends with one
-newline, and `|-` means it has none. This works both ways: a spliced
-string with several lines is written out as a block scalar
-automatically, using `|` or `|-` according to whether it ends with a
-newline:
+lines inside it are just text. Embedded scripts are full of `$`, and
+quietly substituting into them would break them. For templated
+content, build the string first and splice it in as a whole value.
+
+`|` means the string ends with one newline, and `|-` means it has
+none. This works both ways: a spliced string with several lines is
+written out as a block scalar automatically, `|` or `|-` according to
+whether it ends with a newline:
 
 ```weir
 let hook = $"#!/bin/sh\necho deploying web\n"
@@ -1028,12 +1041,14 @@ with a reifier; they're covered, with the full table,
 
 A **reifier** is a `|` stage after a command that turns the command's
 run into a value: whether it succeeded, its exit code, or its output.
-Each one decides where the command's output goes. When the value you
-get back contains the output (`complete`, `line`, `text`), the
-command's stdout is captured into it (`complete` captures stderr too;
-with `line` and `text` stderr still reaches your terminal); when you only get the exit status (`exitCode`,
-`orFail`), the output streams to your terminal while the command runs;
-and `succeeds`, a plain yes/no, discards it.
+Each one decides where the command's output goes:
+
+- the value contains the output (`complete`, `line`, `text`): stdout
+  is captured into it. `complete` captures stderr too; with `line`
+  and `text` stderr still reaches your terminal.
+- you only get the exit status (`exitCode`, `orFail`): the output
+  streams to your terminal while the command runs.
+- `succeeds`, a plain yes/no, discards it.
 
 | form | output | result |
 |---|---|---|
@@ -1047,12 +1062,14 @@ and `succeeds`, a plain yes/no, discards it.
 
 The rule of thumb: if you're asking a question about the command
 (`succeeds`, `complete`, `line`, `text`), its output is part of the
-answer or not wanted, so its stdout doesn't reach the terminal. If you only
-use the exit status to stop or to branch (`orFail`, `exitCode`), the
-output is for you to watch, so it streams. `succeeds` means exactly
-`exitCode == 0`, so grep finding no match counts as false. When you
-need to tell exit codes apart, use `| complete`. Here's a build you
-can watch, which then acts on its exit code:
+answer or not wanted, so its stdout doesn't reach the terminal. If
+you only use the exit status to stop or to branch (`orFail`,
+`exitCode`), the output is for you to watch, so it streams.
+
+`succeeds` means exactly `exitCode == 0`, so grep finding no match
+counts as false. When you need to tell exit codes apart, use
+`| complete`. Here's a build you can watch, which then acts on its
+exit code:
 
 ```weir
 let rc = sh -c "echo building...; exit 130" | exitCode
@@ -1074,13 +1091,15 @@ sh -c "exit 3" | exitCode // a bare statement discards the code — bind or matc
 ```
 
 The last few rows are written the same way but aren't really about
-exit codes. `cmd | line` is for commands that print one value, like
+exit codes.
+
+`cmd | line` is for commands that print one value, like
 `git rev-parse HEAD`, `az … --query X -o tsv` or `id -un`. It gives
-you that one line of stdout, trimmed, as a `string`. It's a shorter
-way to write `$(cmd) |> Seq.exactlyOne`. It raises an error if the
-command exits nonzero or prints zero lines or more than one. It also
-works with an environment (`$e(cmd | line)`) and at the end of any
-pipeline (`git log | head -1 | line`, `xs | grep foo | line`):
+you that one line of stdout, trimmed, as a `string`: a shorter
+`$(cmd) |> Seq.exactlyOne`. It raises an error if the command exits
+nonzero or prints zero lines or more than one. It also works with an
+environment (`$e(cmd | line)`) and at the end of any pipeline
+(`git log | head -1 | line`, `xs | grep foo | line`):
 
 ```weir
 let scope = printf "id-abc" | line
@@ -1103,15 +1122,15 @@ weir starts the command, waits, and exits with its exit code.)
 
 Like `fail` and `exit`, `| exec` never returns, so it can stand alone
 as a statement. The program can be written literally or come from a
-value (`^$cmd`), and you can add an environment
-(`$e(cmd | exec)`). You can't pipe input into it, since there's no
-weir process left to feed it. And it can't sit inside a `within`
-block of any kind — `weir check` refuses it there, because the
-replaced process would skip the scope's cleanup (the temp dir, the
-scoped process, the `always` block). Close the scope, then exec.
-The same goes for a function that execs, called inside the block or
-in a `pfor` arm; if the check can't follow the call, the run refuses
-it.
+value (`^$cmd`), and you can add an environment (`$e(cmd | exec)`).
+
+You can't pipe input into it, since there's no weir process left to
+feed it. And it can't sit inside a `within` block of any kind:
+`weir check` refuses it there, because the replaced process would
+skip the scope's cleanup (the temp dir, the scoped process, the
+`always` block). Close the scope, then exec. The same goes for a
+function that execs, called inside the block or in a `pfor` arm; if
+the check can't follow the call, the run refuses it.
 
 For bash's `&&`/`||` one-liners, chain on the exit status directly:
 
@@ -1137,14 +1156,16 @@ Two differences from bash:
   them. A builtin raises an error instead of returning an exit code.
 
 An `if` or `elif` condition can be a command directly:
-`if test -f $path | succeeds then …`. The command's arguments end at
-`then`. That only happens in a condition; anywhere else `then` is an
-ordinary argument. To pass the word `then` to a command inside a
-condition, quote it: `"then"`. The condition must still be a `bool`,
-so a command without a reifier is an error
-(`expected bool, got seq<string>`); add `| succeeds`. If you need the
-result twice, bind it first: `let ok = cmd | succeeds`, then
-`if ok then …`.
+`if test -f $path | succeeds then …`.
+
+- The command's arguments end at `then`. That only happens in a
+  condition; anywhere else `then` is an ordinary argument. To pass
+  the word `then` inside a condition, quote it: `"then"`.
+- The condition must still be a `bool`, so a command without a
+  reifier is an error (`expected bool, got seq<string>`); add
+  `| succeeds`.
+- If you need the result twice, bind it first:
+  `let ok = cmd | succeeds`, then `if ok then …`.
 
 ## What the editor colors mean
 
@@ -1444,14 +1465,16 @@ since whoever wrote that text chose the unit.
 A file that other processes append to (a log, a JSONL queue) is read
 in steps with `File.readFrom path offset`. It returns a `FileChunk`:
 `lines`, the complete lines from that byte offset, and `next`, the
-offset to pass the next time. Only the bytes from the offset to the
-file's size are read, and a last line still missing its newline is
-left for the next call, so each line comes back once and whole even
-while writers are appending. A record still missing its newline has no
-complete line to stop at, so each call re-examines it until its newline
-lands: for a large record, gate the poll on growth (keep the last
-`File.size` and skip the call while it is unchanged) or poll at a
-coarser interval:
+offset to pass the next time.
+
+Only the bytes from the offset to the file's size are read, and a
+last line still missing its newline is left for the next call, so
+each line comes back once and whole even while writers are appending.
+
+That unfinished record has no complete line to stop at, so each call
+re-examines it until its newline lands. For a large record, gate the
+poll on growth (keep the last `File.size` and skip the call while it
+is unchanged) or poll at a coarser interval:
 
 ```weir
 ["a"; "b"] |> File.append "guide-follow.log"
@@ -1547,12 +1570,16 @@ You can't pass raw bytes to:
 Each of these is an error. For `print`, `to json`/`to yaml` and
 command arguments, the message points you to `Bytes.toBase64` or
 `File.writeBytes`; `Args.load` and `Env.load` list the field types
-they accept. An interpolation hole or `show` prints only a
-summary (`<5 B>` above), never the bytes themselves, because raw
-bytes can mess up your terminal. `Bytes.length` returns a `Size`.
-`==` compares byte by byte, and there's no ordering. To hash a file
-without loading it into memory, use `File.sha256 path`, which reads
-it as a stream.
+they accept.
+
+An interpolation hole or `show` prints only a summary (`<5 B>`
+above), never the bytes themselves, because raw bytes can mess up
+your terminal. Otherwise:
+
+- `Bytes.length` returns a `Size`.
+- `==` compares byte by byte, and there's no ordering.
+- To hash a file without loading it into memory, use
+  `File.sha256 path`, which reads it as a stream.
 
 ## Data in and out: `Http` and the adapters
 
@@ -1638,22 +1665,27 @@ let key = "xxxx-111"
 
 When to use which: use an anonymous record for *someone else's data,
 or a one-off value, that you read or write in one place*. Declare a
-record for *your own data and anything you reuse*. Two anonymous
-record types with the same fields are the same type, whatever order
-the fields are written in, so a literal fits wherever a matching
-anonymous type is expected. A declared record with the same fields is
-a different type on purpose: declared records are matched by name,
-not by shape.
+record for *your own data and anything you reuse*.
 
-`from json` and `from jsonl` differ in one way. `from json T` reads
-one document, however many lines it spans, and gives you a `T`.
-`from jsonl T` reads one document per line (NDJSON) and gives you a
-`seq<T>`. Neither looks at the input to guess which one it is.
+Two anonymous record types with the same fields are the same type,
+whatever order the fields are written in, so a literal fits wherever
+a matching anonymous type is expected. A declared record with the
+same fields is a different type on purpose: declared records are
+matched by name, not by shape.
+
+`from json` and `from jsonl` differ in one way. Neither looks at the
+input to guess which one it is:
+
+| | reads | gives |
+|---|---|---|
+| `from json T` | one document, however many lines it spans | `T` |
+| `from jsonl T` | one document per line (NDJSON) | `seq<T>` |
+
 Writing works the same way: `value |> to json` writes one compact
 document (a record becomes an object, a sequence an array), and
-`xs |> to jsonl` writes one document per element, lazily. Each
-reader matches the writer of the same name:
-`to json |> from json T`, `to jsonl |> from jsonl T`.
+`xs |> to jsonl` writes one document per element, lazily. Each reader
+matches the writer of the same name: `to json |> from json T`,
+`to jsonl |> from jsonl T`.
 
 ```weir
 type Peer = { host: string; port: int }
@@ -1723,11 +1755,12 @@ type Hook =
 ```
 
 The same union can read a mixed array (`from json seq<Hook>`), a YAML
-document (`from yaml Hook`), a record field, or a `Map` value. When
-you write it back, the tag is added as the first field:
+document (`from yaml Hook`), a record field, or a `Map` value.
+
+When you write it back, the tag is added as the first field:
 `Push { branch = "x" } |> to json` gives
-`{"event":"Push","branch":"x"}`. By default a case's tag value is
-its name; put `[<Wire "pull_request">]` on a case to change it. The
+`{"event":"Push","branch":"x"}`. By default a case's tag value is its
+name; put `[<Wire "pull_request">]` on a case to change it. The
 `[<Other>]` case can't be *written*: it only records something weir
 didn't understand, so there's nothing accurate to write out.
 
@@ -1793,12 +1826,13 @@ docs |> Map.pairs |> Seq.iter (fun (k, d) -> print $"{k}={d.id}")
 
 At the JSON boundary keys can only be strings, since JSON object keys
 are strings. A `Map<int, …>` field or `from json Map<int, …>` is an
-error that shows how to convert the keys with `show`. Inside a
-program a `Map` takes any key with equality — an `int`, a union, a
-tuple, a record — but not a `float`. Pairs come out
-sorted by key (union cases by case name, not declaration order), if
-a key appears twice the last one wins, and
-`to json` writes the object back. The `Map` functions:
+error that shows how to convert the keys with `show`.
+
+Inside a program a `Map` takes any key with equality (an `int`, a
+union, a tuple, a record) but not a `float`. Pairs come out sorted by
+key (union cases by case name, not declaration order), if a key
+appears twice the last one wins, and `to json` writes the object
+back. The `Map` functions:
 
 - `ofPairs` (last key wins), `pairs`, `keys`, `values` (sorted by
   key)
@@ -1873,14 +1907,17 @@ pods |> Seq.where (fun p -> p.restarts > 0) |> Seq.iter (fun p -> print p.name)
 
 In a real script that's `kubectl get po |> from table Pod`, and
 `#infer it from table as Pod` in the REPL writes the record type for
-you. `az … -o table` output works too: the line of dashes az prints
-under the header is skipped when it's the first row after the
-header, so you don't get a junk row
-([Adapters](reference/adapters.md#aligned-tables)). If you read the
-result more than once, add `|> Seq.freeze` at the end. Otherwise
-each read runs `kubectl` again, and the checker warns you about it.
-Extra columns are ignored, and errors include the line and column.
-There's no `to table`; like XML, it's read-only.
+you.
+
+- `az … -o table` output works too: the line of dashes az prints
+  under the header is skipped when it's the first row after the
+  header, so you don't get a junk row
+  ([Adapters](reference/adapters.md#aligned-tables)).
+- If you read the result more than once, add `|> Seq.freeze` at the
+  end. Otherwise each read runs `kubectl` again, and the checker warns
+  you about it.
+- Extra columns are ignored, and errors include the line and column.
+- There's no `to table`; like XML, it's read-only.
 
 Here's a real REPL session that cleans up every evicted pod:
 
@@ -1898,7 +1935,9 @@ lazy sequence, not the output. Without `Seq.freeze`, `#infer` would
 run `kubectl` once and `from table` would run it again, so you'd
 infer from one cluster state and delete from another. With it,
 `kubectl` runs once, and the sample, the filter and the pods you
-delete all come from the same output. Then the typed rows go back
+delete all come from the same output.
+
+Then the typed rows go back
 out as command arguments: `$name` and `$ns` are passed to a real
 command as exactly one argument each.
 
@@ -2013,17 +2052,20 @@ let handler = fun req ->
 
 within serve srv = { port = Some 8080; maxConcurrent = 8 } handler
     print $"serving on {Server.port srv}"
-    Duration.sleep 30s
+until stopped
 ```
 
 `maxConcurrent` limits how many requests are handled at once, the
 same way `Seq.pmapWith` limits parallel work. The server handle has
 only `Server.port`, `Server.running` and `Server.streamErrors` (the
-errors of `Stream` bodies that failed partway). There's no `stop`: the
-server stops when the block ends. TLS, routing libraries and
-WebSockets are deliberately left out. Put a reverse proxy in front,
-`match` on the path, and use `Stream` (server-sent events) where
-you'd want to push data to the client.
+errors of `Stream` bodies that failed partway). There's no `stop`:
+the server stops when the block ends. `until stopped` holds it open
+until Ctrl+C or SIGTERM, then lets running requests finish; without
+it, the server closes as soon as the block's body is done.
+
+TLS, routing libraries and WebSockets are left out on purpose. Put a
+reverse proxy in front, `match` on the path, and use `Stream`
+(server-sent events) where you'd want to push data to the client.
 
 ## Secrets: tokens that cannot leak into logs
 
@@ -2049,16 +2091,21 @@ let cfg = Env.load Cfg
 git push $"https://{Secret.reveal cfg.GITHUB_TOKEN}@github.com/…"
 ```
 
-`Args.load` accepts a `Secret` field too, but anything passed as a
-flag shows up in the process list, and weir can't hide that.
-`File.readSecret` reads a secret file mounted by Kubernetes or
-Docker, and a `Secret` field in a record read with `from json` or
-`from yaml` wraps that value (a token in a vault or API response).
-When such a read fails, the error leaves out the document, since any
-part of it could be the token. Every use of the value goes through an explicit
-`Secret.reveal`, so to audit where a secret goes, search for those
-calls. To build a new value from a secret and keep it secret, use
-`Secret.map`. Writing `"Bearer " + reveal` would give you an
+Other sources of a `Secret`:
+
+- `Args.load` accepts a `Secret` field too, but anything passed as a
+  flag shows up in the process list, and weir can't hide that.
+- `File.readSecret` reads a secret file mounted by Kubernetes or
+  Docker.
+- A `Secret` field in a record read with `from json` or `from yaml`
+  wraps that value (a token in a vault or API response). When such a
+  read fails, the error leaves out the document, since any part of it
+  could be the token.
+
+Every use of the value goes through an explicit `Secret.reveal`, so
+to audit where a secret goes, search for those calls. To build a new
+value from a secret and keep it secret, use `Secret.map`. Writing
+`"Bearer " + reveal` would give you an
 ordinary, unprotected string:
 
 ```weir
@@ -2144,11 +2191,13 @@ There are no positional arguments. Pass everything as a flag
 name is easier to read than a position you have to count.
 `[<Positional>]` on an `Args.load` field is a check error; it only
 describes a foreign tool's operands in a [command
-signature](tooling.md#command-signatures). You only lose the typed,
-help-generating route, though. To read arguments your own way,
-`Args.flag "--clean" "-c"` and `Args.value "--out"` search the raw
-`Self.args` sequence. An option with several values becomes one flag
-per value (`--stack X --env Y`).
+signature](tooling.md#command-signatures).
+
+You only lose the typed, help-generating route, though. To read
+arguments your own way, `Args.flag "--clean" "-c"` and
+`Args.value "--out"` search the raw `Self.args` sequence. An option
+with several values becomes one flag per value
+(`--stack X --env Y`).
 
 ### Shared flags: containment, not inheritance
 
@@ -2306,16 +2355,19 @@ weir use-greet.weir
 
 The line `let hello : string -> string`, a `let` with a type and no
 `=`, is a *signature*. Signatures decide what the module exports:
-only members with a signature can be used by importers. A `let`
-without one is private to the module, and its type is inferred as
-usual. Importing a private member is an error that tells you the
-exact signature to add, including the inferred type. The
-implementation itself needs no type annotations, because the
-signature supplies them. Put `///` docs on the signature line, so
-the API is documented in one place. `type` declarations are already
-explicit, so they're exported as they are. Signatures are only
-allowed in modules: in a script, types are inferred, and only a
-module's API is declared.
+only members with a signature can be used by importers.
+
+- A `let` without one is private to the module, and its type is
+  inferred as usual. Importing a private member is an error that
+  tells you the exact signature to add, including the inferred type.
+- The implementation needs no type annotations; the signature
+  supplies them.
+- Put `///` docs on the signature line, so the API is documented in
+  one place.
+- `type` declarations are already explicit, so they're exported as
+  they are.
+- Signatures are only allowed in modules: in a script, types are
+  inferred, and only a module's API is declared.
 
 (Note the plain `<<<`, not `$<<<`. The module body contains
 `$"hi {name}"`, and `$<<<` would fill in `{name}` when the file is
@@ -2326,21 +2378,26 @@ code, just as for shell text.)
 You always use imported names with the prefix: `G.hello`, `G.Ctx`
 for an imported type, `G.Ctx { field = v }` to build one of its
 records. Without `as`, the prefix is the module's declared name, or
-else the file name with a capital first letter. Nothing is imported
-without a prefix, not even a union's cases, and a local declaration
-always takes priority over an imported name. The one shortcut is a
-type's plain name (`Ctx`), which works while only one import declares
-it; when two imports both declare a `Ctx`, write `G.Ctx` or `H.Ctx`.
+else the file name with a capital first letter.
+
+Nothing is imported without a prefix, not even a union's cases, and a
+local declaration always takes priority over an imported name. The
+one shortcut is a type's plain name (`Ctx`), which works while only
+one import declares it; when two imports both declare a `Ctx`, write
+`G.Ctx` or `H.Ctx`.
 
 Imports are resolved by the checker, from the literal path. Nothing
-is loaded at runtime, and a missing file is an error that shows the
-full absolute path it looked for. Imports of imports work too. A
-module imported by two others is checked only once, and a cycle of
-imports is an error that names it. In a script or the REPL's
-[init file](repl.md#the-init-file), a relative path is resolved from
-the file. You can also type an import at the prompt or use it with
-`-e`; there a relative path is resolved from the current directory
-(see [Importing at the prompt](repl.md#importing-at-the-prompt)).
+is loaded at runtime.
+
+- A missing file is an error that shows the full absolute path it
+  looked for.
+- Imports of imports work too. A module imported by two others is
+  checked only once, and a cycle of imports is an error that names it.
+- In a script or the REPL's [init file](repl.md#the-init-file), a
+  relative path is resolved from the file. At the prompt or with
+  `-e`, it's resolved from the current directory (see
+  [Importing at the prompt](repl.md#importing-at-the-prompt)).
+
 Importing the wrong kind of file is also a clear error:
 
 ```weir
@@ -2356,21 +2413,22 @@ print (if r.exitCode <> 0 then "importing a non-module is a named check error" e
 
 (The error printed by the inner script names the file by its full
 path: ``…/plain.weir is not a module; add `module` at the top, or
-invoke it as a command``.) A module
-`let` that runs a command while the module loads is an error too
-(`| line`, `| text` and the other reifiers, `|> Seq.freeze`); wrap it
-in a function. A plain command `let`, like `let log = git log -n 10`,
-is fine: it runs nothing until a script uses it, and runs again on
-every use. Modules only define things, and scripts run them.
+invoke it as a command``.)
+
+A module `let` that runs a command while the module loads is an
+error too (`| line`, `| text` and the other reifiers,
+`|> Seq.freeze`); wrap it in a function. A plain command `let`, like
+`let log = git log -n 10`, is fine: it runs nothing until a script
+uses it, and runs again on every use. Modules only define things, and
+scripts run them.
 
 A module can also come from another repo, copied into your project
 and committed.
 `weir add module github.com/org/repo//lib/x.weir@v1.2.0 --as x`
 downloads it into `.weir/modules/` and records the exact version in
 the lock file. You can then import it by name from anywhere in the
-project: `import "weir:x" as X`. The details (versions, updates,
-private repos, and what `add` checks) are in
-[tooling.md](tooling.md#remote-modules).
+project: `import "weir:x" as X`. Versions, updates, private repos and
+what `add` checks are in [tooling.md](tooling.md#remote-modules).
 
 ## Retrying and polling
 
@@ -2415,14 +2473,15 @@ build them once and reuse them:
 come back in the same order as the input, and the first failure is
 raised again. `pfor x in xs do …` is the `for`-shaped spelling of
 `Seq.piter`: the same arms, written as a loop. Each worker gets its
-own copy of the session state, so
-a `cd` inside a worker only affects that worker and is gone when the
-workers finish. There's no async/await, and there won't be: in weir,
-you get concurrency from processes and pipelines. Under the hood,
-each worker runs on its own thread inside the weir process. That's
-worth knowing when you think about shared state, or about which
-thread an error is raised on. A task that really needs async belongs
-in full F#.
+own copy of the session state, so a `cd` inside a worker only affects
+that worker and is gone when the workers finish.
+
+There's no async/await, and there won't be: in weir, you get
+concurrency from processes and pipelines. Under the hood, each worker
+runs on its own thread inside the weir process, which is worth
+knowing when you think about shared state, or about which thread an
+error is raised on. A task that really needs async belongs in full
+F#.
 
 A background process always belongs to a scope; there's no `&`.
 `within proc` gives you a handle to the process, and when the block
@@ -2495,9 +2554,11 @@ A generated signature may be incomplete, since it's worked out by
 probing the tool, so an unknown flag is only a warning. Once you've
 checked a signature by hand and marked it `exhaustive`, unknown flags
 become errors. `weir check` never runs the tool, so checking works
-even for tools that are only installed in CI. Generating, checking
-and regenerating signatures, and the `.weir/` directory they live
-in, are covered in [Command signatures](tooling.md#command-signatures) and
+even for tools that are only installed in CI.
+
+Generating, checking and regenerating signatures, and the `.weir/`
+directory they live in, are covered in
+[Command signatures](tooling.md#command-signatures) and
 [Project layout](tooling.md#project-layout-weir).
 
 ## What a script can do, before it runs
@@ -2576,8 +2637,10 @@ hover, and it errs on the side of caution. Calling a function you
 defined earlier is fine if that function is pure. But if weir can't
 see what a function does, such as a function passed in as a
 parameter or a member of an imported module, it doesn't count as
-pure. So the check may reject code that is actually pure, but it
-never accepts code that isn't. Code outside a `pure` block is never
+pure.
+
+So the check may reject code that is actually pure, but it never
+accepts code that isn't. Code outside a `pure` block is never
 restricted.
 
 ## Read-only islands: `readonly`
@@ -2647,23 +2710,34 @@ pending `WriteFile` operation in a `plan`.
 
 The block returns a `Plan`, which holds the operations (`Plan.ops`
 gives them as a `seq<Op>`). You can compare plans with `==` and
-render them with `show` or `Plan.preview`. That means you can test code
-without mocks. `plan <actual> == plan <expected>` is a plain
-comparison, and *neither block does anything*, since both only
-record. For a single operation, with the plan bound as `p`,
+render them with `show` or `Plan.preview`.
+
+That means you can test code without mocks.
+`plan <actual> == plan <expected>` is a plain comparison, and
+*neither block does anything*, since both only record. For a single
+operation, with the plan bound as `p`,
 `(p |> Plan.ops |> Seq.exactlyOne) == WriteFile(Path.combine pwd "out.json", rendered)`
 checks it (the parentheses are needed, and a recorded operation holds
 the absolute path). Preview and diff come for free.
 
 These are the operations a plan can hold (the `Op` union):
-`WriteFile`, `WriteFileAtomic` (from `File.writeAtomic`; `apply`
-replaces the file atomically too), `DeleteFile`, `Copy`, `Move` (files), `CopyDir`,
-`MoveDir`, `MakeDir`, `DeleteDir` (`Dir.delete`, empty only),
-`DeleteTree` (`Dir.deleteAll`), and `HttpSend` (only for HTTP
-methods that change things; `show` masks the auth Secret). Reads still **happen** inside a plan, since a
-script often reads things to decide what to write. File contents are
-captured when the plan is made, so **what you preview is what
-`apply` does**, even if a file changes in between.
+
+| `Op` | from |
+|---|---|
+| `WriteFile` | `File.write` |
+| `WriteFileAtomic` | `File.writeAtomic`; `apply` replaces the file atomically too |
+| `DeleteFile` | `File.delete` |
+| `Copy`, `Move` | `File.copy`, `File.move` |
+| `CopyDir`, `MoveDir` | `Dir.copy`, `Dir.move` |
+| `MakeDir` | `Dir.create` |
+| `DeleteDir` | `Dir.delete`, empty only |
+| `DeleteTree` | `Dir.deleteAll` |
+| `HttpSend` | HTTP methods that change things only; `show` masks the auth Secret |
+
+Reads still **happen** inside a plan, since a script often reads
+things to decide what to write. File contents are captured when the
+plan is made, so **what you preview is what `apply` does**, even if a
+file changes in between.
 
 Where the guarantee stops:
 
@@ -2717,13 +2791,14 @@ print (Color.sgr "38;5;208" "256-color orange")
 Color is only added when it makes sense. You get the color codes
 only when writing to a terminal with color enabled. When output is
 piped or `NO_COLOR` is set, you get the plain string, so
-`weir script | grep` stays plain without any checks on your part. At
-a terminal, `print` lets color through, but turns every *other*
+`weir script | grep` stays plain without any checks on your part.
+`Color.sgr` takes a raw code, for 256-color and truecolor.
+
+At a terminal, `print` lets color through, but turns every *other*
 escape sequence in a value into visible `\xNN`: window titles,
-clipboard access, and cursor movement. A bare carriage return passes,
-so a progress line can rewrite itself. So untrusted data can't mess
-with your terminal. `Color.sgr` takes a
-raw code, for 256-color and truecolor.
+clipboard access, and cursor movement. So untrusted data can't mess
+with your terminal. A bare carriage return passes, so a progress line
+can rewrite itself.
 
 `Table.render` lays out a sequence of records of the same type as
 aligned columns, the same table the REPL shows, and returns lines
@@ -2748,10 +2823,11 @@ for laying out your own output.
 
 `fail "reason"` stops the script with an error showing where it
 happened, and exit code 1. `exit n` exits with a specific code and no
-message, which is how you pass on a child process's failure. There's
-no try/finally. Cleanup belongs in a `within` block, which cleans up
-however the block exits, including errors. A plain `within` with an
-`always` block runs cleanup without holding any resource (see
+message, which is how you pass on a child process's failure.
+
+There's no try/finally. Cleanup belongs in a `within` block, which
+cleans up however the block exits, including errors. A plain `within`
+with an `always` block runs cleanup without holding any resource (see
 [Scoped resources](#scoped-resources-within-and-always)). Or turn a
 command's result into a value with `| complete`, run the cleanup,
 then pass the failure on:
@@ -2817,11 +2893,12 @@ value. After a command, the same word is the reifier you met above,
 `Log.info $"starting {n}"` (and `trace`, `debug`, `warn`) writes log
 messages with a level to stderr. `WEIR_LOG=debug weir script.weir`
 shows more detail for one run without editing anything, and
-`WEIR_LOG=off` turns the log off. `printerr` and `fail` always get
-through, whatever the level. That's why there's no `Log.error`: an
-error you could hide with an environment variable would be exactly
-the message you needed to see. Stdout is exactly the same at every
+`WEIR_LOG=off` turns the log off. Stdout is exactly the same at every
 level, because logging never writes to it.
+
+`printerr` and `fail` always get through, whatever the level. That's
+why there's no `Log.error`: an error you could hide with an
+environment variable would be exactly the message you needed to see.
 
 `printerr` writes to stderr the way `print` writes to stdout. Use
 stderr for messages to the user and stdout for data:
@@ -2839,11 +2916,14 @@ print "done"
 `weir` with no arguments starts the REPL. Here you can use short names
 like `map` and `where` (scripts need `Seq.map` and so on). Each value
 is echoed back (`#types on` adds its type). A `let` bound to a command
-is the exception: the echo shows its name and doesn't run it (`let cleanup =
-rm -rf build` deletes nothing until you type `cleanup`). An entry can span several lines: weir
-checks whether what you've typed so far is a complete statement and
-keeps reading if it isn't. `Ctrl+C` throws away the current entry,
-and `Ctrl+D` or `#quit` exits. While an entry runs, `Ctrl+C` stops
+is the exception: the echo shows its name and doesn't run it
+(`let cleanup = rm -rf build` deletes nothing until you type
+`cleanup`).
+
+An entry can span several lines: weir checks whether what you've
+typed so far is a complete statement and keeps reading if it isn't.
+`Ctrl+C` throws away the current entry, and `Ctrl+D` or `#quit`
+exits. While an entry runs, `Ctrl+C` stops
 whatever it is waiting on (a command, a sleep, a `poll`, a lock) and
 returns to the prompt.
 
