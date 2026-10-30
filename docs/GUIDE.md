@@ -240,9 +240,9 @@ let top = ls |> Seq.map _.name
 let inside = within cd "src" (ls |> Seq.map _.name)
 let greet = within env [Env.pair "GREETING" "hi"] $(sh -c "echo ${GREETING:-unset}")
 cd "src"
-print (show top)      // ["b.txt"]: read after the cd
-print (show inside)   // ["b.txt"]: written inside within cd "src"
-print (show greet)    // ["hi"]: the within env still applies
+print $"{top}"    // ["b.txt"]: read after the cd
+print $"{inside}" // ["b.txt"]: written inside within cd "src"
+print $"{greet}"  // ["hi"]: the within env still applies
 ```
 
 The same holds for `Path.glob` (see
@@ -300,14 +300,14 @@ short, and if it's empty or backwards you get an empty result:
 
 ```weir
 let xs = [10; 20; 30; 40; 50]
-print (show (xs[1..3]))   // [20; 30; 40] — inclusive
-print (show (xs[..2]))    // [10; 20; 30] — open start
-print (show (xs[3..]))    // [40; 50] — open end
-print (show (xs[3..100])) // [40; 50] — clamped, no raise
-print ("weir"[1..2])      // ei — strings slice the same way
-print (show (xs[^1]))     // 50 — from the end: ^n = length − n
-print (show (xs[..^2]))   // [10; 20; 30; 40] — all but the last
-print (show (xs[^2..]))   // [40; 50] — the last two
+print $"{xs[1..3]}"   // [20; 30; 40] — inclusive
+print $"{xs[..2]}"    // [10; 20; 30] — open start
+print $"{xs[3..]}"    // [40; 50] — open end
+print $"{xs[3..100]}" // [40; 50] — clamped, no raise
+print "weir"[1..2]    // ei — strings slice the same way
+print xs[^1]          // 50 — from the end: ^n = length − n
+print $"{xs[..^2]}"   // [10; 20; 30; 40] — all but the last
+print $"{xs[^2..]}"   // [40; 50] — the last two
 ```
 
 You can slice **sequences, strings and `Bytes`**, and the result has
@@ -1534,8 +1534,8 @@ print (Bytes.toBase64 b)
 print $"{b}"
 
 let png = Bytes.fromBase64 "iVBORw0KGgo="
-print (show (Bytes.length png))
-print (show (Str.tryFromUtf8 png))
+print $"{Bytes.length png}"
+print $"{Str.tryFromUtf8 png}"
 ```
 
 You can't pass raw bytes to:

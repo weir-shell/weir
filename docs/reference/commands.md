@@ -240,7 +240,7 @@ test passes an anonymous record with just the fields read:
 
 ```weir
 let codeOf { exitCode = c } = c
-print (show (codeOf {| exitCode = 3 |}))
+print (codeOf {| exitCode = 3 |})
 ```
 
 ```weir-error

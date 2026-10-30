@@ -227,7 +227,7 @@ parts in a record.
 type Pre = [<Ord 1>] Pre of string | [<Ord 2>] Release
 
 print $"{Pre "alpha" < Release}"
-print (show ([Release; Pre "b"; Pre "a"] |> Seq.sort))
+print $"{[Release; Pre "b"; Pre "a"] |> Seq.sort}"
 ```
 
 ## Validated types
@@ -322,7 +322,7 @@ Options order, `None` first, so they sort and can be numbered fields
 of an ordered record:
 
 ```weir
-print (show ([Some 2; None; Some 1] |> Seq.sort))
+print $"{[Some 2; None; Some 1] |> Seq.sort}"
 ```
 
 ## `Map`
@@ -362,7 +362,7 @@ type Tier = Small | Medium | Large
 
 let counts = [Large; Small; Large] |> Seq.countBy id |> Map.ofPairs
 counts |> Map.pairs |> Seq.iter (fun (s, n) -> print $"{s}: {n}")
-print (show (Map.ofPairs [((2, "b"), 1); ((1, "z"), 2)]))
+print $"{Map.ofPairs [((2, "b"), 1); ((1, "z"), 2)]}"
 ```
 
 ### On the wire
@@ -460,8 +460,8 @@ Tuples don't. Name the parts in a record and number them with
 `[<Ord n>]`:
 
 ```weir
-print (show ("a" < "b"))
-print (show (None < Some "x"))
+print ("a" < "b")
+print (None < Some "x")
 ```
 
 ```weir-error

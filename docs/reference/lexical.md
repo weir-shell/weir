@@ -100,7 +100,7 @@ def double x = x * 2 // 'def' is not a weir word — define with 'let f x = ...'
 
 ```weir
 let def = 21
-print (show (def * 2))
+print (def * 2)
 ```
 
 ## Strings

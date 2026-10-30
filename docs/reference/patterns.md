@@ -281,5 +281,5 @@ let both a b =
     | Some x, None -> x
     | None, Some y -> y
     | None, None -> 0
-print (show (both (Some 1) None))
+print (both (Some 1) None)
 ```

@@ -455,7 +455,7 @@ type Event = {
 let line = [{ at = Instant.parse "2026-08-14T12:00:00Z"; took = 1500ms }] |> to jsonl |> Seq.head
 print line
 let back = [line] |> from jsonl Event |> Seq.head
-print (show back.took)
+print $"{back.took}"
 ```
 
 - One declaration covers both directions, so writer and reader can't
