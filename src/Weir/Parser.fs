@@ -2169,25 +2169,7 @@ let private lambdaBody =
 // bounded-depth structure). The post-parse iterative gate does the
 // same for the AST walk. Caller uses the names as a Set, so
 // pop-order is immaterial.
-let patLeafNames (p: Pattern) : string list =
-    let names = System.Collections.Generic.List<string>()
-    let stack = System.Collections.Generic.Stack<Pattern>()
-    stack.Push p
-
-    while stack.Count > 0 do
-        match (stack.Pop()).PKind with
-        | PVar n -> names.Add n
-        | PTuple ps
-        | PSeqList ps -> ps |> List.iter stack.Push
-        | PRecord fields -> fields |> List.iter (snd >> stack.Push)
-        | PCase(_, Some arg, _) -> stack.Push arg
-        | PCons(h, t) ->
-            stack.Push h
-            stack.Push t
-        | PRegex(_, _, _, binder) -> stack.Push binder
-        | _ -> ()
-
-    List.ofSeq names
+let patLeafNames = Desugar.patLeafNames
 
 let private withPatNames (p: Pattern) (inner: Parser<'a, unit>) : Parser<'a, unit> =
     fun stream ->

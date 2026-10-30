@@ -1911,17 +1911,6 @@ and private binderParams (st: St) : Pattern list =
         else
             ps
 
-and private patNames (p: Pattern) : string list =
-    match p.PKind with
-    | PVar n -> [ n ]
-    | PTuple ps
-    | PSeqList ps -> ps |> List.collect patNames
-    | PRecord fields -> fields |> List.collect (snd >> patNames)
-    | PCase(_, Some a, _) -> patNames a
-    | PCons(h, t) -> patNames h @ patNames t
-    | PRegex(_, _, _, b) -> patNames b
-    | _ -> []
-
 and private pat (st: St) : Pattern =
     // cons is the one infix: right-associative over patCore; the nesting
     // bound and the stack probe sit here, where the grammar's deepen does
@@ -2277,7 +2266,7 @@ and private lambda (st: St) : Expr =
     elif not (strWs st "->") then
         refuse st
     else
-        let names = ps |> List.collect patNames
+        let names = ps |> List.collect patLeafNames
         let body = withLocals st names bodyExpr
 
         if not st.Ok then
@@ -2323,7 +2312,7 @@ and private letIn (st: St) : Expr =
         elif not (keyword st "in") then
             refuse st
         else
-            let body = withLocals st (patNames binder) seqExpr
+            let body = withLocals st (patLeafNames binder) seqExpr
 
             if not st.Ok then
                 Unchecked.defaultof<_>
@@ -2357,7 +2346,7 @@ and private letIn (st: St) : Expr =
                 elif st.I >= st.Text.Length then
                     refuse st
                 else
-                    let names = ps |> List.collect patNames
+                    let names = ps |> List.collect patLeafNames
 
                     let value =
                         withLocals st names (fun st -> if couldBeCommand st false then refuse st else seqExpr st)
@@ -2467,11 +2456,11 @@ and private matchArm (st: St) : (Pattern * Expr option * Expr) list =
             refuse st
         elif
             not alts.IsEmpty
-            && (p :: alts |> List.exists (fun a -> not (List.isEmpty (patNames a))))
+            && (p :: alts |> List.exists (fun a -> not (List.isEmpty (patLeafNames a))))
         then
             refuse st
         else
-            let names = patNames p
+            let names = patLeafNames p
 
             let guard =
                 if keyword st "when" then
@@ -3128,7 +3117,7 @@ let private letStmt (st: St) : Stmt =
                 elif not (strWs st "=") then
                     refuse st
                 else
-                    let names = ps |> List.collect patNames
+                    let names = ps |> List.collect patLeafNames
 
                     let rhs =
                         withSpineNames st names (fun st -> if couldBeCommand st false then refuse st else seqExpr st)

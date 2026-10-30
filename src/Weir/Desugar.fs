@@ -266,3 +266,27 @@ let foldSeqExpr (all: Expr list) : Expr =
         all
         None
     |> Option.defaultWith (fun () -> failwith "foldSeqExpr: empty")
+
+// every named binder in a pattern, walked with an explicit stack: a
+// cons chain is flat to read but a deep right spine to walk, and a
+// recursive walk would overflow the call stack [D:pattern-width].
+// Callers use the names as a set, so the order is immaterial.
+let patLeafNames (p: Pattern) : string list =
+    let names = System.Collections.Generic.List<string>()
+    let stack = System.Collections.Generic.Stack<Pattern>()
+    stack.Push p
+
+    while stack.Count > 0 do
+        match (stack.Pop()).PKind with
+        | PVar n -> names.Add n
+        | PTuple ps
+        | PSeqList ps -> ps |> List.iter stack.Push
+        | PRecord fields -> fields |> List.iter (snd >> stack.Push)
+        | PCase(_, Some arg, _) -> stack.Push arg
+        | PCons(h, t) ->
+            stack.Push h
+            stack.Push t
+        | PRegex(_, _, _, binder) -> stack.Push binder
+        | _ -> ()
+
+    List.ofSeq names
