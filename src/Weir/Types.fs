@@ -1436,6 +1436,14 @@ let private schemeIsClosed (sch: Scheme) : bool =
 /// only the schemes with free vars, and scanning the whole env per let
 /// made checking quadratic in the top-level binding count. Read from the
 /// env's index when it is current, else by one scan.
+// a removal that leaves a map without the key alone — Map.remove and
+// Set.remove rebuild the search path even when nothing is removed
+let mapDrop (k: string) (m: Map<string, 'v>) : Map<string, 'v> =
+    if m.ContainsKey k then Map.remove k m else m
+
+let setDrop (k: string) (s: Set<string>) : Set<string> =
+    if s.Contains k then Set.remove k s else s
+
 let openSchemes (env: TypeEnv) : Map<string, Scheme> =
     match env.OpenIndex with
     | Some ix when obj.ReferenceEquals(ix.For, env.Values) -> ix.Open
@@ -1468,7 +1476,7 @@ let bindValue (name: string) (sch: Scheme) (env: TypeEnv) : TypeEnv =
                     For = values
                     Open =
                         if schemeIsClosed sch then
-                            Map.remove name opened
+                            mapDrop name opened
                         else
                             Map.add name sch opened
                 }

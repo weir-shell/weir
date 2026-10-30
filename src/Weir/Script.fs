@@ -6337,37 +6337,44 @@ let rec loadModuleCachedWith
                                     // re-export under this alias) [D:transitive-types]
                                     let reachableDefs =
                                         let own = typeDefs |> List.map fst |> Set.ofList
+                                        let seen = System.Collections.Generic.HashSet<string>(own)
 
-                                        let rec walk (seen: Set<string>) (ty: Ty) =
+                                        let rec walk (ty: Ty) =
                                             match ty with
-                                            | TFun(a, b) -> walk (walk seen a) b
-                                            | TSeq t -> walk seen t
-                                            | TTuple ts -> ts |> List.fold walk seen
-                                            | TRowVar(_, fields) -> fields |> List.map snd |> List.fold walk seen
+                                            | TFun(a, b) ->
+                                                walk a
+                                                walk b
+                                            | TSeq t -> walk t
+                                            | TTuple ts -> List.iter walk ts
+                                            | TRowVar(_, fields) ->
+                                                for _, t in fields do
+                                                    walk t
                                             | TNamed(n, args) ->
-                                                let seen = args |> List.fold walk seen
+                                                List.iter walk args
 
-                                                if seen.Contains n || Map.containsKey n baseTenv.Types then
-                                                    seen
-                                                else
+                                                if not (seen.Contains n) && not (Map.containsKey n baseTenv.Types) then
                                                     match Map.tryFind n finalTenv.Types with
-                                                    | Some def -> defTys def |> List.fold walk (Set.add n seen)
-                                                    | None -> seen
-                                            | _ -> seen
+                                                    | Some def ->
+                                                        seen.Add n |> ignore
+                                                        defTys def |> List.iter walk
+                                                    | None -> ()
+                                            | _ -> ()
 
                                         and defTys (def: TypeDef) =
                                             match def with
                                             | Record rd -> rd.Fields |> List.map snd
                                             | Union u -> u.Cases |> List.choose snd
 
-                                        let roots =
-                                            (members |> List.map (fun (_, sch) -> sch.Ty))
-                                            @ (typeDefs |> List.collect (snd >> defTys))
+                                        for _, sch in members do
+                                            walk sch.Ty
 
-                                        roots
-                                        |> List.fold walk own
-                                        |> Set.filter (fun n -> not (own.Contains n))
-                                        |> Set.toList
+                                        for _, def in typeDefs do
+                                            defTys def |> List.iter walk
+
+                                        seen
+                                        |> Seq.filter (fun n -> not (own.Contains n))
+                                        |> Seq.sort
+                                        |> List.ofSeq
                                         |> List.choose (fun n ->
                                             Map.tryFind n finalTenv.Types |> Option.map (fun d -> n, d))
 

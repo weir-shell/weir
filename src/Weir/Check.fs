@@ -742,45 +742,79 @@ let mapShared (f: 'a -> 'a) (xs: 'a list) : 'a list =
 
     if isNull out then xs else List.ofArray out
 
-let private finalTy (ctx: Ctx) (ty: Ty) : Ty =
-    let rec go (seen: Set<string>) ty =
-        match resolve ctx ty with
-        | TFun(a, b) as t ->
-            let a' = go seen a
-            let b' = go seen b
-            if same a' a && same b' b then t else TFun(a', b')
-        | TSeq e as t ->
-            let e' = go seen e
-            if same e' e then t else TSeq e'
-        | TTuple ts as t ->
-            let ts' = goList seen ts
-            if same ts' ts then t else TTuple ts'
-        | TNamed(n, args) as t ->
-            let args' = goList seen args
-            if same args' args then t else TNamed(n, args')
-        | TRowVar(r, []) as t when seen.Contains r -> t
-        | TRowVar(r, _) when seen.Contains r -> TRowVar(r, [])
-        | TRowVar(r, old) as t ->
-            let seen' = Set.add r seen
+// the finalizer's walk takes its arguments explicitly — no closure per
+// call (finalizeExpr runs it on every typed node) — and a type with
+// nothing to resolve comes back as itself
+let rec private finalGo (ctx: Ctx) (seen: Set<string>) (ty: Ty) : Ty =
+    match resolve ctx ty with
+    | TFun(a, b) as t ->
+        let a' = finalGo ctx seen a
+        let b' = finalGo ctx seen b
+        if same a' a && same b' b then t else TFun(a', b')
+    | TSeq e as t ->
+        let e' = finalGo ctx seen e
+        if same e' e then t else TSeq e'
+    | TTuple ts as t ->
+        let ts' = finalGoList ctx seen ts
+        if same ts' ts then t else TTuple ts'
+    | TNamed(n, args) as t ->
+        let args' = finalGoList ctx seen args
+        if same args' args then t else TNamed(n, args')
+    | TRowVar(r, []) as t when seen.Contains r -> t
+    | TRowVar(r, _) when seen.Contains r -> TRowVar(r, [])
+    | TRowVar(r, old) as t ->
+        let seen' = Set.add r seen
 
-            let fields =
-                rowsOf ctx r |> Map.toList |> List.map (fun (f, (t, _)) -> f, go seen' t)
+        let fields =
+            rowsOf ctx r
+            |> Map.toList
+            |> List.map (fun (f, (t, _)) -> f, finalGo ctx seen' t)
 
-            let rec unchanged (xs: (string * Ty) list) (ys: (string * Ty) list) =
-                match xs, ys with
-                | [], [] -> true
-                | (f, t) :: xs, (g, u) :: ys -> f = g && same t u && unchanged xs ys
-                | _ -> false
+        let rec unchanged (xs: (string * Ty) list) (ys: (string * Ty) list) =
+            match xs, ys with
+            | [], [] -> true
+            | (f, t) :: xs, (g, u) :: ys -> f = g && same t u && unchanged xs ys
+            | _ -> false
 
-            if unchanged fields old then t else TRowVar(r, fields)
-        | t -> t
+        if unchanged fields old then t else TRowVar(r, fields)
+    | t -> t
 
-    and goList (seen: Set<string>) (ts: Ty list) : Ty list = mapShared (go seen) ts
+// mapShared's loop with the walk's arguments passed, not closed over
+and private finalGoList (ctx: Ctx) (seen: Set<string>) (ts: Ty list) : Ty list =
+    let mutable out: Ty[] = null
+    let mutable i = 0
 
-    go Set.empty ty
+    for x in ts do
+        let y = finalGo ctx seen x
 
-let private hasVars (ctx: Ctx) (ty: Ty) : bool =
-    not (Set.isEmpty (tyVars (finalTy ctx ty)))
+        if not (isNull out) then
+            out[i] <- y
+        elif not (same y x) then
+            out <- Array.zeroCreate (List.length ts)
+            let mutable p = ts
+
+            for j in 0 .. i - 1 do
+                out[j] <- p.Head
+                p <- p.Tail
+
+            out[i] <- y
+
+        i <- i + 1
+
+    if isNull out then ts else List.ofArray out
+
+let private finalTy (ctx: Ctx) (ty: Ty) : Ty = finalGo ctx Set.empty ty
+
+// an unresolved var anywhere, without building the var set
+let rec private hasVars (ctx: Ctx) (ty: Ty) : bool =
+    match resolve ctx ty with
+    | TVar _
+    | TRowVar _ -> true
+    | TFun(a, b) -> hasVars ctx a || hasVars ctx b
+    | TSeq t -> hasVars ctx t
+    | TTuple ts
+    | TNamed(_, ts) -> ts |> List.exists (hasVars ctx)
+    | _ -> false
 
 let private occurs (ctx: Ctx) (v: string) (ty: Ty) : bool =
     let seenRows = System.Collections.Generic.HashSet<string>()
@@ -983,7 +1017,15 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
             | TTuple ts -> ts |> List.fold (fun acc t -> acc + rowNames t) Set.empty
             | _ -> Set.empty
 
-        let rows = rowNames sch.Ty
+        let rec hasRowVar ty =
+            match ty with
+            | TRowVar _ -> true
+            | TFun(a, b) -> hasRowVar a || hasRowVar b
+            | TSeq t -> hasRowVar t
+            | TTuple ts -> ts |> List.exists hasRowVar
+            | _ -> false
+
+        let rows = if hasRowVar sch.Ty then rowNames sch.Ty else Set.empty
 
         let mapping =
             sch.Forall
@@ -1286,7 +1328,7 @@ let private dischargeCons (ctx: Ctx) (env: TypeEnv) (v: string) (t: Ty) : Result
     match Map.tryFind v ctx.Cons with
     | None -> Ok()
     | Some ps ->
-        ctx.Cons <- Map.remove v ctx.Cons
+        ctx.Cons <- mapDrop v ctx.Cons
         allOk ps (fun p -> demand ctx env p t)
 
 // a deferred `+` retries the moment one of its vars resolves [D:plus-defer]
@@ -1294,7 +1336,7 @@ let private dischargeAdds (ctx: Ctx) (v: string) : Result<unit, TypeError> =
     match Map.tryFind v ctx.Adds with
     | None -> Ok()
     | Some fs ->
-        ctx.Adds <- Map.remove v ctx.Adds
+        ctx.Adds <- mapDrop v ctx.Adds
         allOk (List.rev fs) (fun (_, f) -> f ())
 
 let rec private bind (ctx: Ctx) (env: TypeEnv) (span: Span) (expected: Ty) (actual: Ty) : Result<unit, TypeError> =
@@ -1978,13 +2020,15 @@ let rec private typeBinOp
         err r.Span $"expected {formatTy a}, got {formatTy b}{shorthandHint}"
     | _, a, _ -> err opSpan $"operator '{op}' is not defined for {formatTy a}"
 
-let rec private funParams (ctx: Ctx) (arity: int) (ty: Ty) : (Ty list * Ty) option =
+let rec private funParamsGo (ctx: Ctx) (arity: int) (acc: Ty list) (ty: Ty) : (Ty list * Ty) option =
     if arity = 0 then
-        Some([], ty)
+        Some(List.rev acc, ty)
     else
         match resolve ctx ty with
-        | TFun(dom, cod) -> funParams ctx (arity - 1) cod |> Option.map (fun (ps, r) -> dom :: ps, r)
+        | TFun(dom, cod) -> funParamsGo ctx (arity - 1) (dom :: acc) cod
         | _ -> None
+
+let private funParams (ctx: Ctx) (arity: int) (ty: Ty) : (Ty list * Ty) option = funParamsGo ctx arity [] ty
 
 let rec private spine (e: Expr) : Expr * Expr list =
     match e.Kind with
@@ -3625,7 +3669,7 @@ let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
         |> Map.ofList
 
     // scooped constraints move into the scheme
-    ctx.Cons <- cs |> Map.fold (fun m v _ -> Map.remove v m) ctx.Cons
+    ctx.Cons <- cs |> Map.fold (fun m v _ -> mapDrop v m) ctx.Cons
 
     {
         Forall = fa
@@ -8625,12 +8669,107 @@ let forallChild (f: TypedExpr -> bool) (te: TypedExpr) : bool =
     (tryPickChild (fun e -> if f e then None else Some()) te).IsNone
 
 let iterChildren (f: TypedExpr -> unit) (te: TypedExpr) : unit =
-    tryPickChild
-        (fun e ->
+    let ofOpt (o: TypedExpr option) =
+        match o with
+        | Some e -> f e
+        | None -> ()
+
+    match te.Kind with
+    | TEInt _
+    | TEStr _
+    | TEBool _
+    | TEUnit
+    | TEHole _
+    | TEVar _
+    | TEEnvLoad _
+    | TEArgsLoad _
+    | TEFrom _
+    | TEFromYaml _
+    | TEFromToml _
+    | TETo _
+    | TEDur _
+    | TEFloat _
+    | TESize _ -> ()
+    | TETry(b, _) -> f b
+    | TEOrFail(b, m, site) ->
+        f b
+        ofOpt m
+        f site
+    | TELet(_, _, v, b) ->
+        f v
+        f b
+    | TELetPat(_, v, b) ->
+        f v
+        f b
+    | TELambda(_, _, b) -> f b
+    | TELambdaPat(_, b) -> f b
+    | TEApp(a, b) ->
+        f a
+        f b
+    | TEPipe(a, b) ->
+        f a
+        f b
+    | TEField(t, _) -> f t
+    | TESlice(t, lo, hi, _, _, _) ->
+        f t
+        ofOpt lo
+        ofOpt hi
+    | TEBinOp(_, l, r) ->
+        f l
+        f r
+    | TERecord(_, fields) ->
+        for _, e in fields do
             f e
-            None)
-        te
-    |> ignore
+    | TEMatch(s, arms) ->
+        f s
+
+        for _, g, b in arms do
+            ofOpt g
+            f b
+    | TEIf(cnd, t, e) ->
+        f cnd
+        f t
+        ofOpt e
+    | TERetry(_, o, w, b, u) ->
+        f o
+        ofOpt w
+        f b
+
+        match u with
+        | Some(_, p) -> f p
+        | None -> ()
+    | TESeq(a, b) ->
+        f a
+        f b
+    | TEWithin(_, _, a, o, b) ->
+        ofOpt a
+        ofOpt o
+        f b
+    | TEAlways(b, c) ->
+        f b
+        f c
+    | TEHold b -> f b
+    | TEList items -> List.iter f items
+    | TETuple items -> List.iter f items
+    | TECmd(h, args, envO) ->
+        (match h with
+         | THeadDyn(_, e) -> f e
+         | THeadLit _ -> ())
+
+        List.iter f args
+        ofOpt envO
+    | TESplat e -> f e
+    | TEUpdate(src, ups) ->
+        f src
+
+        for _, e in ups do
+            f e
+    | TEInterp parts ->
+        for part in parts do
+            match part with
+            | IExpr e -> f e
+            | IStr _ -> ()
+    | TEYaml(tpl, _, _) -> List.iter f (yamlTplTypedExprs tpl)
 
 // ---- unused bindings [D:unused-bindings] ----------------------------------
 // The usage core: a scoped walk of the typed tree. Free names propagate
@@ -8684,7 +8823,7 @@ let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
                     UBareWildcard = false
                 }
 
-            Set.union fv (Set.remove n fb)
+            Set.union fv (setDrop n fb)
         | TELetPat(pat, v, b) ->
             let fv = walk v
             let fb = walk b
@@ -8706,7 +8845,7 @@ let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
                          })
 
             Set.union fv (Set.difference fb (patNames pat))
-        | TELambda(p, _, b) -> Set.remove p (walk b)
+        | TELambda(p, _, b) -> setDrop p (walk b)
         | TELambdaPat(pat, b) -> Set.difference (walk b) (patNames pat)
         | TEMatch(s, arms) ->
             arms
@@ -8722,7 +8861,7 @@ let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
                 unionAll [ walk o; (w |> Option.map walk |> Option.defaultValue Set.empty); walk b ]
 
             match u with
-            | Some((n, _), pred) -> Set.union head (Set.remove n (walk pred))
+            | Some((n, _), pred) -> Set.union head (setDrop n (walk pred))
             | None -> head
         | TEWithin(_, binder, a, o, b) ->
             let args =
@@ -8733,7 +8872,7 @@ let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
 
             let fb =
                 match binder with
-                | Some(n, _) -> Set.remove n (walk b)
+                | Some(n, _) -> setDrop n (walk b)
                 | None -> walk b
 
             Set.union args fb
@@ -10150,7 +10289,7 @@ let rec private reachesCommand (helpers: Map<string, int>) (te: TypedExpr) : boo
     match te.Kind with
     | TECmd _ -> true
     | TEVar v when (reifierOfVar v).IsSome || helpers.ContainsKey v -> true
-    | TELet(n, _, v, b) -> reachesCommand helpers v || reachesCommand (Map.remove n helpers) b
+    | TELet(n, _, v, b) -> reachesCommand helpers v || reachesCommand (mapDrop n helpers) b
     | _ -> existsChild (reachesCommand helpers) te
 
 /// Some arity when a module binding is a function whose body reaches a
@@ -10187,7 +10326,7 @@ let rec eagerCommandHelper (helpers: Map<string, int>) (te: TypedExpr) : string 
         |> Option.orElseWith (fun () -> tryPickChild (eagerCommandHelper helpers) te)
     | TELet(n, _, v, b) ->
         eagerCommandHelper helpers v
-        |> Option.orElseWith (fun () -> eagerCommandHelper (Map.remove n helpers) b)
+        |> Option.orElseWith (fun () -> eagerCommandHelper (mapDrop n helpers) b)
     | _ -> tryPickChild (eagerCommandHelper helpers) te
 
 // lazy command-backed lets [D:lazy-command-lets]: in the helpers map an
@@ -10225,7 +10364,7 @@ let recordCommandBinding (helpers: Map<string, int>) (name: string) (te: TypedEx
     match commandHelperArity helpers te with
     | Some a -> Map.add name a helpers
     | None when lazyCommandSeq (lazyNames helpers) te -> Map.add name 0 helpers
-    | None -> Map.remove name helpers
+    | None -> mapDrop name helpers
 
 /// why evaluating a module/init binding RHS runs a command now — None when
 /// it runs none or only builds a lazy command seq [D:lazy-command-lets]
@@ -10427,7 +10566,7 @@ let rec private reenumWalk
     let walk = reenumWalk nextId emit sink
 
     let removeAll (names: string list) (m: ReenumTracked) =
-        names |> List.fold (fun m n -> Map.remove n m) m
+        names |> List.fold (fun m n -> mapDrop n m) m
 
     let outerIds (m: ReenumTracked) =
         m |> Seq.collect (fun kv -> kv.Value.Pulls |> List.map fst) |> Set.ofSeq
@@ -10444,14 +10583,14 @@ let rec private reenumWalk
 
         walk
             (if carry.Pulls.IsEmpty && not carry.Forced then
-                 Map.remove n tracked
+                 mapDrop n tracked
              else
                  Map.add n carry tracked)
             b
     | TELetPat(pat, v, b) ->
         walk tracked v
         walk (removeAll (patNameSpans pat |> List.map fst) tracked) b
-    | TELambda(p, _, b) -> walk (Map.remove p tracked) b
+    | TELambda(p, _, b) -> walk (mapDrop p tracked) b
     | TELambdaPat(pat, b) -> walk (removeAll (patNameSpans pat |> List.map fst) tracked) b
     | TEApp(f, a) when seqHof f && isFunctionValue a ->
         walk tracked f
@@ -10476,14 +10615,14 @@ let rec private reenumWalk
         walk tracked o
         w |> Option.iter (walk tracked)
         walk tracked b
-        u |> Option.iter (fun ((n, _), pred) -> walk (Map.remove n tracked) pred)
+        u |> Option.iter (fun ((n, _), pred) -> walk (mapDrop n tracked) pred)
     | TEWithin(_, binder, a, o, b) ->
         a |> Option.iter (walk tracked)
         o |> Option.iter (walk tracked)
 
         walk
             (match binder with
-             | Some(n, _) -> Map.remove n tracked
+             | Some(n, _) -> mapDrop n tracked
              | None -> tracked)
             b
     | _ -> iterChildren (walk tracked) te
@@ -10593,7 +10732,7 @@ let tempDirEvents (nextId: unit -> int) (tracked0: Map<string, int>) (root: Type
     let acc = ResizeArray<TempDirEvent>()
 
     let removeAll (names: string list) (m: Map<string, int>) =
-        names |> List.fold (fun m n -> Map.remove n m) m
+        names |> List.fold (fun m n -> mapDrop n m) m
 
     let rec walk (tracked: Map<string, int>) (te: TypedExpr) : unit =
         (match dirDeleteOf te with
@@ -10613,13 +10752,13 @@ let tempDirEvents (nextId: unit -> int) (tracked0: Map<string, int>) (root: Type
                     acc.Add(TempBind(id, n))
                     Map.add n id tracked
                 else
-                    Map.remove n tracked
+                    mapDrop n tracked
 
             walk trackedB b
         | TELetPat(pat, v, b) ->
             walk tracked v
             walk (removeAll (patNameSpans pat |> List.map fst) tracked) b
-        | TELambda(p, _, b) -> walk (Map.remove p tracked) b
+        | TELambda(p, _, b) -> walk (mapDrop p tracked) b
         | TELambdaPat(pat, b) -> walk (removeAll (patNameSpans pat |> List.map fst) tracked) b
         | TEMatch(s, arms) ->
             walk tracked s
@@ -10634,7 +10773,7 @@ let tempDirEvents (nextId: unit -> int) (tracked0: Map<string, int>) (root: Type
 
             walk
                 (match binder with
-                 | Some(n, _) -> Map.remove n tracked
+                 | Some(n, _) -> mapDrop n tracked
                  | None -> tracked)
                 b
         | _ -> iterChildren (walk tracked) te

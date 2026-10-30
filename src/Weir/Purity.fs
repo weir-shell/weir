@@ -62,7 +62,7 @@ let rec private patBound (p: Pattern) : string list =
     | _ -> patChildren p |> List.collect patBound
 
 let private dropPat (p: Pattern) (env: Map<string, bool>) =
-    patBound p |> List.fold (fun e n -> Map.remove n e) env
+    patBound p |> List.fold (fun e n -> mapDrop n e) env
 
 /// conservative purity of a typed expression; `env` carries the purity
 /// of known user bindings (earlier top-level lets, local lets)
@@ -121,7 +121,7 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
         let pv = isPureExpr env v
         pv && isPureExpr (Map.add n pv env) b
     | TELetPat(p, v, b) -> isPureExpr env v && isPureExpr (dropPat p env) b
-    | TELambda(p, _, b) -> isPureExpr (Map.remove p env) b
+    | TELambda(p, _, b) -> isPureExpr (mapDrop p env) b
     | TELambdaPat(p, b) -> isPureExpr (dropPat p env) b
     | TEApp(_, _) ->
         // applying a computed function (a field's value, a match
@@ -241,7 +241,7 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
         firstEffect env v
         |> Option.orElseWith (fun () -> firstEffect (Map.add n true env) b)
     | TELetPat(p, v, b) -> firstEffect env v |> Option.orElseWith (fun () -> firstEffect (dropPat p env) b)
-    | TELambda(p, _, b) -> firstEffect (Map.remove p env) b
+    | TELambda(p, _, b) -> firstEffect (mapDrop p env) b
     | TELambdaPat(p, b) -> firstEffect (dropPat p env) b
     | TEApp(_, _) ->
         (match (headOf te).Kind with
@@ -431,7 +431,7 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
     | TELetPat(p, v, b) ->
         firstMutation env v
         |> Option.orElseWith (fun () -> firstMutation (dropPat p env) b)
-    | TELambda(p, _, b) -> firstMutation (Map.remove p env) b
+    | TELambda(p, _, b) -> firstMutation (mapDrop p env) b
     | TELambdaPat(p, b) -> firstMutation (dropPat p env) b
     // `req |> Http.send` — the piped send (and Http.expect, the same
     // per-method request record): the request is the pipe's argument
@@ -486,7 +486,7 @@ let rec private planRefusalRoot (refused: Map<string, string>) (te: TypedExpr) :
     let found (span: Span) (msg: string) = Some(span, msg, msg)
 
     let without names =
-        names |> List.fold (fun m n -> Map.remove n m) refused
+        names |> List.fold (fun m n -> mapDrop n m) refused
 
     match te.Kind with
     // a command is a proc spawn — uncapturable
@@ -596,7 +596,7 @@ let private isExecVar (n: string) = n.StartsWith "|execed"
 // A local binder shadows a top-level helper.
 let rec private execReach (helpers: Set<string>) (te: TypedExpr) : (Span * string option) option =
     let without names =
-        names |> List.fold (fun h n -> Set.remove n h) helpers
+        names |> List.fold (fun h n -> setDrop n h) helpers
 
     match te.Kind with
     | TEVar n when isExecVar n -> Some(te.Span, None)
@@ -646,7 +646,7 @@ let rec execScopeViolation (helpers: Set<string>) (te: TypedExpr) : (Span * stri
     let recur = execScopeViolation helpers
 
     let without names =
-        names |> List.fold (fun h n -> Set.remove n h) helpers
+        names |> List.fold (fun h n -> setDrop n h) helpers
 
     let rec headOf (e: TypedExpr) =
         match e.Kind with
@@ -734,6 +734,6 @@ let rec pureViolation (refused: Map<string, string>) (env: Map<string, bool>) (t
     | TELetPat(p, v, b) ->
         pureViolation env v
         |> Option.orElseWith (fun () -> pureViolation (dropPat p env) b)
-    | TELambda(p, _, b) -> pureViolation (Map.remove p env) b
+    | TELambda(p, _, b) -> pureViolation (mapDrop p env) b
     | TELambdaPat(p, b) -> pureViolation (dropPat p env) b
     | _ -> Check.tryPickChild (pureViolation env) te
