@@ -28,6 +28,15 @@
   diagnostics, same trees: the starship import goes from 126 ms to
   105 ms pinned to one core (medians of 31), allocation from 84 MB to
   73 MB.
+- **Line assembly scans less.** The string-aware scanner probed every
+  character for a string opener and kept scanning a line after it had
+  found its comment; the per-line checks trimmed and sliced strings to
+  answer yes-or-no questions, and every join built the joined text
+  before appending it. The scanner now probes only the three opener
+  characters and stops at the comment, the checks read the line in
+  place, and the joins append their parts. Same diagnostics, same
+  `fmt` output: the starship import goes from 175 ms to 170 ms pinned
+  to one core (medians of 31).
 - **Line assembly allocates far less.** Before parsing, every physical
   line was trimmed, split into its comment and code and re-scanned by
   the district mask, the doc attachment and the binder-head checks,
