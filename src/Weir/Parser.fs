@@ -4819,23 +4819,7 @@ let private backslashHeadGuard () : Parser<'a, unit> =
 
 envPrefixStmtGuardRef.Value <- envPrefixGuard () <|> backslashHeadGuard ()
 
-// the env-prefix words as one seq<EnvVar> literal [D:within-env-pairs]
-envAssignsFwdRef.Value <-
-    many1 envAssign
-    |>> fun assigns ->
-        let (_, first) = List.head assigns
-        let (_, last) = List.last assigns
-
-        let items =
-            assigns
-            |> List.map (fun ((name, value), sp) ->
-                let at k = { Kind = k; Span = sp }
-                at (EApp(at (EApp(at (EVar "|envPair"), at (EStr name))), value)))
-
-        {
-            Kind = EList items
-            Span = { Start = first.Start; End = last.End }
-        }
+envAssignsFwdRef.Value <- many1 envAssign |>> Desugar.envAssignsList
 
 // ^$name / ^$(…) — the dynamic head [D:dynamic-head]: `^` gains a
 // `$`-splice alternative beside the literal — a runtime string can
@@ -4998,24 +4982,7 @@ let private commandSegment
                          stream)
     <|> (attempt (many envAssign .>>. head) .>>. many argP)
     |>> fun ((assigns, (kind, prog, span)), args) ->
-        // the prefix joins the segment's overlay, after a sigil's so the
-        // nearer spelling wins on a shared name [D:env-prefix]
-        let sigilEnv =
-            match assigns with
-            | [] -> sigilEnv
-            | (_, firstSpan) :: _ ->
-                let at k = { Kind = k; Span = firstSpan }
-
-                let pairs =
-                    assigns
-                    |> List.map (fun ((name, value), sp) ->
-                        let at k = { Kind = k; Span = sp }
-                        at (EApp(at (EApp(at (EVar "|envPair"), at (EStr name))), value)))
-                    |> fun items -> at (EList items)
-
-                match sigilEnv with
-                | None -> Some pairs
-                | Some e -> Some(at (EApp(at (EApp(at (EVar "|seqAppend"), e)), pairs)))
+        let sigilEnv = Desugar.segmentEnv sigilEnv assigns
 
         let fullSpan = {
             Start = span.Start

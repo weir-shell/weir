@@ -765,3 +765,30 @@ let buildBuiltinApp (name: string) (nameSpan: Span) (callArgs: Expr list) =
             Span = Span.union acc.Span arg.Span
         })
         headVar
+
+let private envPair (((name: string), value), (sp: Span)) =
+    let at k = { Kind = k; Span = sp }
+    at (EApp(at (EApp(at (EVar "|envPair"), at (EStr name))), value))
+
+// the env-prefix words as one seq<EnvVar> literal [D:within-env-pairs]
+let envAssignsList (assigns: ((string * Expr) * Span) list) : Expr =
+    let (_, first) = List.head assigns
+    let (_, last) = List.last assigns
+
+    {
+        Kind = EList(assigns |> List.map envPair)
+        Span = { Start = first.Start; End = last.End }
+    }
+
+// the prefix joins the segment's overlay, after a sigil's so the
+// nearer spelling wins on a shared name [D:env-prefix]
+let segmentEnv (sigilEnv: Expr option) (assigns: ((string * Expr) * Span) list) : Expr option =
+    match assigns with
+    | [] -> sigilEnv
+    | (_, firstSpan) :: _ ->
+        let at k = { Kind = k; Span = firstSpan }
+        let pairs = at (EList(assigns |> List.map envPair))
+
+        match sigilEnv with
+        | None -> Some pairs
+        | Some e -> Some(at (EApp(at (EApp(at (EVar "|seqAppend"), e)), pairs)))
