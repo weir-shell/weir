@@ -28,6 +28,15 @@
   diagnostics, same trees: the starship import goes from 126 ms to
   105 ms pinned to one core (medians of 31), allocation from 84 MB to
   73 MB.
+- **Startup builds less.** Every run built the builtin docs table,
+  the builtin value table and the JSON encoder at startup, and the
+  prelude extended the value environment alongside the type
+  environment — whether or not the command read any of them. Those
+  are now built on first use and the prelude's type side extends on
+  its own, so a check never builds what only a run reads; generalizing
+  a closed type no longer walks it for variables. A trivial check goes
+  from 8.6 ms to 8.0 ms, `fmt --check` from 8.7 to 8.0, the bare
+  startup from 10.0 to 8.9 ms pinned to one core (medians of 21).
 - **A check keeps less alive.** `weir check` held every imported
   module's typed statements until exit — for a replay, a capability
   walk or an editor it never performs — and every tree node carried

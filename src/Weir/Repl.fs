@@ -489,7 +489,7 @@ type private State = {
 }
 
 let private initial =
-    let typeEnv, valueEnv = Prelude.extend Builtins.typeEnv Builtins.valueEnv
+    let typeEnv, valueEnv = Prelude.extend Builtins.typeEnv Builtins.valueEnv.Value
 
     {
         TypeEnv = typeEnv
@@ -546,7 +546,7 @@ let docsJson () : string =
 
         for KeyValue(mem, sch) in members do
             let q = $"{m}.{mem}"
-            let d = Map.tryFind q Builtins.builtinDocs
+            let d = Map.tryFind q Builtins.builtinDocs.Value
             w.WriteStartObject()
             w.WriteString("name", mem)
 
@@ -562,7 +562,7 @@ let docsJson () : string =
     w.WriteEndArray()
     w.WriteStartArray "forms"
 
-    for KeyValue(k, d) in Builtins.builtinDocs do
+    for KeyValue(k, d) in Builtins.builtinDocs.Value do
         if not (k.Contains '.') then
             w.WriteStartObject()
             w.WriteString("name", k)
@@ -2435,7 +2435,7 @@ let private clipTo (width: int) (s: string) : string =
 /// a member's glance: the first line of its builtinDocs Summary — the
 /// same text hover and `#help Module.member` lead with, never a copy
 let private memberGlance (qualified: string) : string =
-    match Map.tryFind qualified Builtins.builtinDocs with
+    match Map.tryFind qualified Builtins.builtinDocs.Value with
     | Some d -> (d.Summary.Split '\n')[0]
     | None -> ""
 
@@ -2516,7 +2516,7 @@ let functionEchoLines
         | [| m; mem |] -> te.Modules |> Map.tryFind m |> Option.bind (Map.tryFind mem)
         | _ -> Map.tryFind n te.Values
 
-    match Map.tryFind qualified Builtins.builtinDocs, schemeOf qualified with
+    match Map.tryFind qualified Builtins.builtinDocs.Value, schemeOf qualified with
     | Some d, Some sch ->
         // the #help composition: the annotated signature + the glance
         let style = if color then sigTintStyle else plainSigStyle
@@ -3145,7 +3145,7 @@ let private memberHelp (color: bool) (te: TypeEnv) (name: string) : string optio
         | [| m; mem |] -> te.Modules |> Map.tryFind m |> Option.bind (Map.tryFind mem)
         | _ -> Map.tryFind n te.Values
 
-    match Map.tryFind name Builtins.builtinDocs, schemeOf name with
+    match Map.tryFind name Builtins.builtinDocs.Value, schemeOf name with
     | Some d, sch ->
         let sigLine =
             sch
@@ -3160,7 +3160,7 @@ let private memberHelp (color: bool) (te: TypeEnv) (name: string) : string optio
 // (the same scheme as the qualified member) [D:bare-partition]
 let private bareAliasHome (te: TypeEnv) (name: string) : string option =
     match Map.tryFind name Builtins.bareAliasHomes with
-    | Some home when not (Builtins.builtinDocs.ContainsKey name) ->
+    | Some home when not (Builtins.builtinDocs.Value.ContainsKey name) ->
         match Map.tryFind name te.Values, te.Modules |> Map.tryFind home |> Option.bind (Map.tryFind name) with
         | Some a, Some b when a = b -> Some home
         | _ -> None
@@ -4925,7 +4925,7 @@ let private loadInit (baseState: State) : State =
             notLoaded ()
         | [] ->
 
-            let strictVenv = snd (Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv)
+            let strictVenv = Prelude.extendValues Builtins.valueEnv.Value
 
             let aliasMap: Map<string, Alias> =
                 ic.Aliases |> List.fold (fun m (_, n, a) -> Map.add n a m) Map.empty

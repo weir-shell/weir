@@ -655,7 +655,7 @@ let private pathParamAt (before: string) : bool =
     | head :: args ->
         let head = head.TrimStart '('
 
-        match Map.tryFind head Weir.Builtins.builtinDocs with
+        match Map.tryFind head Weir.Builtins.builtinDocs.Value with
         | Some d when d.Params.Length > args.Length ->
             match List.tryItem args.Length d.Params with
             | Some p -> p = "path" || p = "src" || p = "dst" || (p = "base" && head.StartsWith "Path.")

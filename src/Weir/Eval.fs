@@ -2878,7 +2878,7 @@ let private jsonSegment = 1 <<< 24
 let private jsonLine (renames: Map<string, Map<string, string>>) (unions: Map<string, WireCase>) (v: Value) : string =
     let buffer = new System.Buffers.ArrayBufferWriter<byte>()
     // the CLI's encoder, not the HTML-safe default [D:json-raw-user]
-    use writer = new System.Text.Json.Utf8JsonWriter(buffer, rawJsonWriterOptions)
+    use writer = new System.Text.Json.Utf8JsonWriter(buffer, rawJsonWriterOptions.Value)
 
     let rec write (v: Value) =
         match v with

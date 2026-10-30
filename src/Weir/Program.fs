@@ -11,7 +11,8 @@ open Weir.Types
 // divergence from python -c and friends [D:e-programs]. Strict like
 // files: bare module members live in the REPL session only.
 let private evalOnce (input: string) : int =
-    let typeEnv, valueEnv = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
+    let typeEnv, valueEnv =
+        Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv.Value
 
     let printHint (line: string) =
         Diagnose.hint
@@ -764,7 +765,7 @@ let main argv =
                                          | Ok doc ->
                                              // prelude registration populates the builtin
                                              // nominal set the taken-name guard reads
-                                             Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv |> ignore
+                                             Prelude.extendTypes Builtins.typeEnvStrict |> ignore
                                              let taken = Infer.takenTypeNames Check.builtinTypeNames.Keys
                                              let asName = Map.tryFind "--as" m
 

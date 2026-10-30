@@ -107,7 +107,7 @@ let weirVerdict (src: string) : Verdict =
     | Error _ -> Reject
     | Ok logicalLines ->
         let typeEnv0, _ =
-            Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+            Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv.Value
 
         let typeEnv0 = {
             typeEnv0 with

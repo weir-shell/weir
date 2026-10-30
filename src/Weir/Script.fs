@@ -3533,7 +3533,7 @@ let promptStatusDomain (dom: Ty) : bool =
 let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
     let typeEnv = Builtins.typeEnvStrict
 
-    let typeEnv, valueEnv = Prelude.extend typeEnv Builtins.valueEnv
+    let typeEnv, valueEnv = Prelude.extend typeEnv Builtins.valueEnv.Value
 
     let typeEnv = {
         typeEnv with
@@ -5474,8 +5474,18 @@ type TempDirTracker() =
 // A module's own base env: builtins (strict) + prelude + Self, with
 // Self.scriptPath = the module's own path. Pure — no stdin/args/Session
 // wiring, so loading a module never disturbs the entry's process facts.
+// the type side alone — the check's reads; a check never builds the
+// builtin value table
+let private moduleBaseTypeEnv (absPath: string) : TypeEnv =
+    let te = Prelude.extendTypes Builtins.typeEnvStrict
+
+    {
+        te with
+            Modules = te.Modules |> Map.add "Self" selfMembers
+    }
+
 let private moduleBaseEnvs (absPath: string) : TypeEnv * Eval.Env =
-    let te, ve = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
+    let te, ve = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv.Value
 
     {
         te with
@@ -6156,7 +6166,7 @@ let rec loadModuleCachedWith
                 | Error msg -> stmt (assemblyErrorLocated absPath numbered msg)
                 | Ok [] -> notAModule
                 | Ok(first :: rest) ->
-                    let baseTenv, _ = moduleBaseEnvs absPath
+                    let baseTenv = moduleBaseTypeEnv absPath
 
                     match Parser.parseLineFull (mkR baseTenv) first.Text with
                     | Ok(SModule(declName, _)) ->
@@ -6624,7 +6634,7 @@ let importsOfSource (bytes: byte[]) : (int * int * string) list =
         match assemble numbered with
         | Error _ -> []
         | Ok lls ->
-            let r = resolver (fst (moduleBaseEnvs "/vendored.weir"))
+            let r = resolver (moduleBaseTypeEnv "/vendored.weir")
 
             lls
             |> List.choose (fun ll ->
@@ -6785,7 +6795,7 @@ let private discoverImports (mkR: TypeEnv -> Parser.Resolver) (loads: ModuleLoad
              None)
     with
     | Some(_, Ok entryLines) ->
-        let r = mkR (fst (moduleBaseEnvs entryAbs))
+        let r = mkR (moduleBaseTypeEnv entryAbs)
 
         let sitesOf (lls: LogicalLine list) : (string * string option) list =
             lls
@@ -7388,7 +7398,7 @@ let fixOf
 // [D:json-relaxed-escaping]
 let jsonBuild (build: System.Text.Json.Utf8JsonWriter -> unit) : string =
     use ms = new IO.MemoryStream()
-    use w = new System.Text.Json.Utf8JsonWriter(ms, Types.rawJsonWriterOptions)
+    use w = new System.Text.Json.Utf8JsonWriter(ms, Types.rawJsonWriterOptions.Value)
     build w
     w.Flush()
     Text.Encoding.UTF8.GetString(ms.ToArray())
@@ -12144,7 +12154,7 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
     // the init file is a script, not interactive use: bare module members
     // are refused here as in any script — the session gets them, the file
     // does not [D:init-check-one-home]
-    let strictTenv, _ = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
+    let strictTenv = Prelude.extendTypes Builtins.typeEnvStrict
     let diags = ResizeArray<Diagnostic>(shapeDiags)
     let declDiags = ResizeArray<Diagnostic>()
 
@@ -12833,7 +12843,7 @@ let private analyzeLinesBare
     let body, bodyOffset, sigDecls = scriptBody rawLines
     let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
 
-    let typeEnv0, _ = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
+    let typeEnv0 = Prelude.extendTypes Builtins.typeEnvStrict
 
     let typeEnv0 = {
         typeEnv0 with

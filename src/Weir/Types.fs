@@ -1134,8 +1134,23 @@ type Scheme = {
     HoleDefaults: (int * int) list
 }
 
+// whether a type mentions any variable — the var set is only built
+// when it does (most builtin and finalized types are closed)
+let rec hasTyVar (ty: Ty) : bool =
+    match ty with
+    | TVar _
+    | TRowVar _ -> true
+    | TFun(a, b) -> hasTyVar a || hasTyVar b
+    | TSeq t -> hasTyVar t
+    | TTuple ts
+    | TNamed(_, ts) -> ts |> List.exists hasTyVar
+    | _ -> false
+
+let tyVarsOf (ty: Ty) : Set<string> =
+    if hasTyVar ty then tyVars ty else Set.empty
+
 let generalize (ty: Ty) : Scheme = {
-    Forall = tyVars ty
+    Forall = tyVarsOf ty
     Cs = Map.empty
     Ty = ty
     RowOrigins = Map.empty
@@ -1145,7 +1160,7 @@ let generalize (ty: Ty) : Scheme = {
 // generalization with the checker's constraint residue: only
 // constraints on vars actually quantified ride into the scheme
 let generalizeWith (cs: Map<string, Set<Cls>>) (ty: Ty) : Scheme =
-    let fa = tyVars ty
+    let fa = tyVarsOf ty
 
     {
         Forall = fa
@@ -1164,7 +1179,7 @@ let generalizeWithOrigins
     (holeDefaults: (int * int) list)
     (ty: Ty)
     : Scheme =
-    let fa = tyVars ty
+    let fa = tyVarsOf ty
 
     {
         Forall = fa
@@ -2327,8 +2342,10 @@ type RawBmpEncoder() =
     override _.TryEncodeUnicodeScalar(u, buffer, bufferLength, written) =
         inner.TryEncodeUnicodeScalar(u, buffer, bufferLength, &written)
 
+// built on first use: the encoder's own static setup is startup cost a
+// run without JSON output never needs
 let rawJsonWriterOptions =
-    System.Text.Json.JsonWriterOptions(Encoder = RawBmpEncoder())
+    lazy (System.Text.Json.JsonWriterOptions(Encoder = RawBmpEncoder()))
 
 // The JSON reading depth [D:json-depth]: weir's own value bound (show,
 // equality, to yaml all stop at 100), not System.Text.Json's default 64
