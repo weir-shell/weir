@@ -1,8 +1,8 @@
 # PLAN: the hand-written happy-path parser — a lexer and a recursive-descent parser for the statements that parse, FParsec for everything that does not
 
-**Status: BUILT-P1** (2026-10-29, feat/hand-parser-p1) — P1 landed well
-past its bar; see the session report at the end. P2 (command lines)
-is the next phase. The successor to
+**Status: BUILT-P2** (2026-10-30, feat/hand-parser-p2) — P1 landed well
+past its bar (2026-10-29, feat/hand-parser-p1); P2 took the command
+lines (session reports at the end). P3 (the long tail) is next. The successor to
 [PLAN-parse-fast-path.md](PLAN-parse-fast-path.md), whose "Not here"
 named this redesign as the thing it avoided. That plan's law is kept
 unchanged and applied one level up: the unchanged FParsec grammar is
@@ -270,3 +270,88 @@ goes from 177.5 ms to 123 ms pinned.
   (`foldChain`, `buildBuiltinApp`), with sigils and interpolation holes
   following since both re-enter it.
 
+## Session report — P2 (2026-10-30, feat/hand-parser-p2)
+
+One line: the fast parser now takes command lines wherever the grammar
+does — statements, let and block-let RHS, if conditions and bodies,
+match arms, lambda bodies, `$(…)` captures, value-headed pipes — plus
+the `within`, `for`/`pfor` and `retry`/`poll`/`repeat` forms whose
+bodies they fill; the ports go from 98.2% to 99.8% of parse calls,
+the repo corpus from 77.5% to 99.3%, every corpus oracle-clean, and
+the command-heavy files check 25–38% faster.
+
+- **Built.** The chain desugars moved to `Desugar.fs` (`foldChain` and
+  its helpers with the `Seg` type, `buildBuiltinApp`, `exitCodeSpine`,
+  `chainReifier`, the env-pair and segment-overlay builders; Parser.fs
+  aliases them). In `Fast.fs`: `headOf`, litHead's verdict against
+  the resolver in its order (alias → builtin → known → external, `^`,
+  `^$`, `~/`, env prefixes, the def guard, the yaml marker faces),
+  called once per head so the resolver sees the grammar's calls;
+  `cmdArgs` (barewords, quoted, single-quoted, triple and
+  interpolated strings, `$x.f` splices, `$@xs` splats, paren args,
+  captures, the glued-piece and mid-word refusals, the `in`/`then`/
+  `else`/`elif` stop words); `cmdStages` (reifier markers with
+  reifierEnd's lookahead, command and `|>` expression stages over the
+  operator table without `|>`, the match-arm boundary probe);
+  `valueHeaded` (the gate, then the stages); the grammar's
+  statement-context flags (`letCmdOk`/`letCmdStmt`, `ifCondOk`,
+  `ifBodyOk`) carried on `St`, with armSeq's arming of non-final
+  command elements; `within` cd/env (atom or pairs)/lock/tmp/proc/
+  serve, the trailing `always` and the bare scope; `for`/`pfor` with
+  the lone-command body; `retry`/`poll`/`repeat` with key=value
+  options, `watch=` and `until x`.
+- **Refused on purpose (P3+).** Heredoc and yaml districts, `| and`/
+  `| or` chains, `$@(…)`, `until stopped`, env prefixes at statement
+  and block-element heads, alias heads in value pipes, comprehensions,
+  and a resolved command whose argv fails where the grammar's
+  attempt re-reads the element as an expression (`emptyConfig ()`
+  with the name not yet bound).
+- **What the oracle caught in this phase's code.** The chain flag
+  leaked out of a paren interior, so a parenthesized element after a
+  nested command was armed (21 harness mismatches over ports, lib and
+  the repo); the def teaching fires in every command line before its
+  head resolves, so `if def foo x = 1 then …` must not read as an
+  expression (the adversarial probe); a value-headed pipe in a match
+  arm's lambda body is a pipe when the arm-boundary probe fails — P1's
+  "a `|` in an arm is the next arm's" held only while commands were
+  refused (4 probe mismatches); and a top-level let's params mask an
+  alias head as every scope's names do (P1's spine skipped the mask,
+  harmless while it refused commands, a REPL mismatch once it took
+  them — checked with an alias resolver).
+- **Numbers** (AOT, pinned to core 5, A/B alternating, medians of 21
+  samples of 10 back-to-back checks, main = 07ffa09): ports/ring/
+  ring.weir 22.2 → 16.7 ms, tools/sig-score.weir 20.0 → 12.4 ms,
+  tools/hunt3-xplat.weir 49.4 → 37.7 ms, tools/sweep-repro.weir 33.4 →
+  25.9 ms; the starship import 97.7 → 96.2 ms (P1 had left 8 of its
+  802 statements to the grammar, so this phase's 40 ms bar was out of
+  reach there; ab.py's single-run alternation puts it within noise).
+  Coverage under `WEIR_PARSE_STATS=1 weir check`: ports 9584 → 9738 of
+  9757, repo corpus 1485 → 1903 of 1917, the whole repo 4234 → 5000 of
+  5325 (heredoc districts are most of the rest), lib 205 → 209 of 209,
+  the starship import 794 → 801 of 802. Under the harness (assume
+  resolver, each line alone): corpus 1363 → 2056 of 2253 (183 of the
+  rest the grammar rejects alone too), ports 1291 → 1677, the mutant
+  lists 6512 → 11929, 3915 → 10643, 4368 → 7155, 34670 → 66419.
+- **Agreement.** Oracle-clean over the harness corpora (the repo, the
+  960/1280/5200/510 mutant files, ports, lib), an adversarial probe
+  (~220 command shapes × 59 statement contexts × assume, PATH and
+  alias resolvers, 39,294 statements), the unit suite and the fuzz
+  suite under `WEIR_PARSE_ORACLE=1`, the LSP suites and the e2e
+  shards. `tools/check-parity.weir` and the `fmt --check` loop
+  byte-identical against main over 8,231 files, plain and in oracle
+  mode.
+- **Pins.** Unit: the oracle's agreement on every command form taken
+  (statement, let RHS, block let, if condition and body, match arm,
+  lambda, capture and env capture, dynamic and forced heads, env
+  prefixes, value-headed pipe, each reifier, `|>` stages, within kinds
+  with always, for, retry with until, the armed sequence); a refused
+  command line takes back the anonymous shapes its argv pushed; a
+  2,000-deep capture nest is refused in linear time.
+- **Read on P3.** What still reaches the grammar on real code is the
+  heredoc and yaml districts (most of tools/), `until stopped`, `| and`/
+  `| or`, comprehensions, and the attempt-wrapped command element whose
+  failure the grammar re-reads as an expression — taking that one needs
+  a refusal that knows the grammar fails (not merely "unsupported")
+  and a retry budget, or it doubles per nesting level. `fmt`'s low
+  coverage is its assume resolver (local names read as commands), a
+  resolver question rather than a parser one.

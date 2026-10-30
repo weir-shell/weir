@@ -22,6 +22,17 @@
   import goes from 178 ms to 123 ms pinned to one core and from 131 ms
   to 102 ms on 15 (medians of 21), a direct check of its largest
   module from 76 ms to 65 ms.
+- **The hand-written parser takes command lines too.** It now parses
+  commands wherever the grammar does — statements, `let x = cmd …`,
+  if conditions and bodies, match arms, function bodies, `$(…)`
+  captures, `value | prog` — with their flags, splices, quoted and
+  interpolated arguments, reifiers and `|>` stages, and the `within`,
+  `for` and `retry`/`poll` forms around them. One command anywhere in
+  a function body used to send the whole body to the grammar; now the
+  ports take 99.8% of their statements on the fast path (from 98.2%),
+  and command-heavy files check faster: `ring.weir` 22 → 17 ms,
+  `tools/sig-score.weir` 20 → 12 ms pinned. Same diagnostics, same
+  trees, checked by the same oracle mode.
 - **The checker allocates less.** Every walk over a statement's
   tree built a list of each node's children before looking at them,
   the type finalizer allocated a closure per node, the unused-binding

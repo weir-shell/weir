@@ -20626,6 +20626,72 @@ let depthGuardTests =
                 Expect.isSome (Weir.Fast.tryStmt r stmt) $"the fast parser takes: {stmt}"
                 Expect.isNone (Weir.Parser.parseOracle r stmt) $"the oracle agrees on: {stmt}"
         }
+        test "the parse oracle agrees on the command lines the fast parser owns [D:hand-parser]" {
+            let externals = set [ "git"; "sh"; "grep"; "wc"; "openssl"; "sleep" ]
+
+            let r: Weir.Parser.Resolver = {
+                IsKnown = fun n -> not (externals.Contains n)
+                IsCommandCallable = fun n -> n = "cd"
+                IsExternal = externals.Contains
+                ExternalNames = fun () -> Seq.ofList (Set.toList externals)
+                BareHome = fun _ -> None
+                AliasHead = fun n -> if n = "ll" then Some("ls", [ "-l" ]) else None
+            }
+
+            let sib = " \u001f "
+
+            for stmt in
+                [
+                    "git log --oneline -n 3"
+                    "cd ~/src"
+                    "ll -a"
+                    "let v = git rev-parse HEAD | line"
+                    "let ok = sh -c \"exit 0\" | succeeds"
+                    "let n = git log | exitCode"
+                    "let f x = let r = openssl dgst -sha256 $x | complete in r.exitCode"
+                    "let f x = git push $x.remote | orFail $\"push {x}\""
+                    "let f xs = git add $@xs 'a b' \"c\" (Path.combine x \"d\") ~/e -- ."
+                    "let f x = if git diff --quiet $x | succeeds then git commit -m wip else print \"clean\""
+                    "let f x = match x with | Some b -> git checkout $b | None -> git status"
+                    "let f x = git log $x |> Seq.map Str.trim |> Seq.freeze"
+                    "let f x = git log | grep $x | wc -l | line"
+                    "let f xs = xs | grep a | complete"
+                    "let f e = $(git log | line) + $e(git status | text)"
+                    "let f p = ^$p --version | line"
+                    "let f x = ^git -C $x status"
+                    "let f x = A=1 B=$x git log | complete"
+                    "let f d = within cd d git status" + sib + "always git log"
+                    "let f x = within env GIT_DIR=$x git log | complete"
+                    "let f x = within tmp d git init -q $d"
+                    "within proc p = sleep 10" + sib + "print \"started\""
+                    "let f files = for f in files do git add $f"
+                    "let f x = retry attempts=3 delay=1s git fetch | complete"
+                    + sib
+                    + "until r r.exitCode == 0"
+                    "let f x = git add $x" + sib + "git commit -m x"
+                    "let f x = (fun y -> git show $y) x"
+                ] do
+                Expect.isSome (Weir.Fast.tryStmt r stmt) $"the fast parser takes: {stmt}"
+                Expect.isNone (Weir.Parser.parseOracle r stmt) $"the oracle agrees on: {stmt}"
+
+            // a refused command line takes back the shapes its argv pushed
+            Weir.Types.drainAnonDefs () |> ignore
+
+            Expect.isNone
+                (Weir.Fast.tryStmt r "let f x = git log (x |> from json {| a: int |}) | 5")
+                "a value stage after `|` is refused"
+
+            Expect.isEmpty (Weir.Types.drainAnonDefs ()) "nothing stays pending from the refused command line"
+
+            // captures nest through argv without re-entering an atom: the
+            // refusal past the bound is linear in the depth
+            let captures =
+                "let x = " + String.replicate 2000 "$(git " + "a" + String.replicate 2000 ")"
+
+            let sw = System.Diagnostics.Stopwatch.StartNew()
+            Expect.isNone (Weir.Fast.tryStmt r captures) "the deep capture nest is refused"
+            Expect.isLessThan sw.ElapsedMilliseconds 5000L "the refusal never doubles per level"
+        }
     ]
 
 let boolBranchTests =

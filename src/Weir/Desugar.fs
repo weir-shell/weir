@@ -290,3 +290,505 @@ let patLeafNames (p: Pattern) : string list =
         | _ -> ()
 
     List.ofSeq names
+
+// `| exitCode` streams; capture/discard contexts are destination
+// conflicts [D:exit-reifiers] — reject at parse with the teaching text
+let rec exitCodeSpine (e: Expr) : bool =
+    match e.Kind with
+    | EVar("|exitCoded" | "|exitCodedEnv") -> true
+    | EApp(f, _) -> exitCodeSpine f
+    | _ -> false
+
+// [D:statement-lets] which reifier heads a probed chain — the hardened
+// teaching's evidence: a refused-context RHS that parses as a reifier
+// chain is a command the position cannot take, whether or not the
+// expression grammar would survive its argv (`--flag` heads die there
+// before the pipe is ever seen). App spines head the desugar; a post-
+// reifier `|>` stage rides an EPipe.
+let rec chainReifier (e: Expr) : string option =
+    match e.Kind with
+    | EVar v -> reifierOfVar v
+    | EApp(f, _) -> chainReifier f
+    | EPipe(l, r) -> chainReifier r |> Option.orElseWith (fun () -> chainReifier l)
+    | _ -> None
+
+
+type Seg =
+    | Stage of Expr
+    | CompleteMarker of Span
+    // the exit-code reifiers [D:exit-reifiers] — complete's family,
+    // one rule (single external segment, nothing follows)
+    | SucceedsMarker of Span
+    | ExitCodeMarker of Span
+    | OrFailMarker of Expr * Span
+    // process replacement [D:exec] — the diverging reifier: it never
+    // returns (execve replaces the image), so it ends a command chain
+    // like the rest of the family
+    | ExecMarker of Span
+    // the single-line capture [D:reify-line] — `cmd | line` reifies to
+    // the one trimmed stdout line as a string
+    | LineMarker of Span
+    // the whole-output capture [D:reify-text] — `cmd | text` reifies to
+    // stdout as one string
+    | TextMarker of Span
+    // command chaining [D:cmd-chaining] — bash &&/||: the RHS is a full
+    // command line (right-associative), captured whole
+    | AndMarker of Expr * Span
+    | OrMarker of Expr * Span
+
+
+// fold a parsed pipeline — an initial head expression plus piped stages
+// and reifier markers — into one Expr. Shared by the command-headed
+// chain and the value-headed chain [D:value-headed-pipe]: the only
+// difference is the head (a command segment vs an expression value), so
+// the stage/reifier desugar is one function. A reifier's segment must be
+// a single external command; a value threaded into it (`xs | grep |
+// complete`) carries as the ECmd's stdin position.
+// the error carries the offending segment's span [D:anchor-before-read]
+// so the caller anchors on it, not the chain's drifted end
+// the right-hand side decides the glyph [D:pipe-rhs-decides]: `|` when the
+// stage is a program or a reifier (command grammar), `|>` when it is a
+// function. A mismatch is the teaching error, anchored on the glyph.
+let requiredPipeOp (seg: Seg) : string =
+    match seg with
+    | Stage { Kind = ECmd _ } -> "|" // a program
+    | Stage _ -> "|>" // a function/value stage
+    | _ -> "|" // a reifier terminates the command chain
+
+let pipeOpError (got: string) : string =
+    if got = "|" then
+        "'|' chains commands; pipe expressions with '|>'"
+    else
+        "'|>' applies functions; feed a program with '|'"
+
+// shared by foldChain's arms [D:cmd-chaining]: a command streams through
+// the armed |print (stream + raise); a builtin command (cd) or a nested
+// and/or returns a value or unit, so it runs for effect and is discarded
+let streamOf (e: Expr) =
+    match e.Kind with
+    | ECmd _
+    | EPipe(_, { Kind = ECmd _ }) -> {
+        Kind = EPipe(e, { Kind = EVar "|print"; Span = e.Span })
+        Span = e.Span
+      }
+    | _ -> {
+        Kind = ELet("_chain", e.Span, e, { Kind = EUnit; Span = e.Span })
+        Span = e.Span
+      }
+
+// a chain head is command-ish (an external segment or a command→command
+// pipe); a value head is anything else
+let isCommandish (e: Expr) =
+    match e.Kind with
+    | ECmd _
+    | EPipe(_, { Kind = ECmd _ }) -> true
+    | _ -> false
+
+// a dynamic head rides the desugar as EDynProg — typed string-exactly at
+// check, erased [D:dynamic-head]
+let progArgOf (h: CmdHead) (span: Span) =
+    match h with
+    | HeadLit prog -> { Kind = EStr prog; Span = span }
+    | HeadDyn(disp, he) -> {
+        Kind = EDynProg(disp, he)
+        Span = he.Span
+      }
+
+let orLeftMsg =
+    "'| or' must follow an external command or a pipeline of them — a builtin like cd raises an error instead of returning an exit code"
+
+// a reifier (bar exec, which hands over and never returns) at the end of
+// an and/or right-hand side, with the chain word
+let chainEndReifier (seg: Seg) : (Expr * string * string) option =
+    match seg with
+    | AndMarker(rhs, _) -> Some(rhs, "and")
+    | OrMarker(rhs, _) -> Some(rhs, "or")
+    | _ -> None
+    |> Option.bind (fun (rhs, kw) ->
+        chainReifier rhs
+        |> Option.filter ((<>) "exec")
+        |> Option.map (fun n -> rhs, kw, n))
+
+// which chain word a folded and/or right-hand side starts with: `| and`
+// folds to a sequence of streamed commands, `| or` to an if on the left's
+// exit code [D:and-or-no-mix]
+let chainWord (e: Expr) : string option =
+    match e.Kind with
+    | EIf({
+              Kind = EBinOp("==", code, { Kind = EInt 0L })
+          },
+          { Kind = EUnit },
+          Some _) when chainReifier code = Some "exitCode" -> Some "or"
+    | ESeq({
+               Kind = EPipe(_, { Kind = EVar "|print" })
+           },
+           _)
+    | ESeq({ Kind = ELet("_chain", _, _, _) }, _) -> Some "and"
+    | _ -> None
+
+let mixedChain (seg: Seg) : (string * string * Span) option =
+    match seg with
+    | AndMarker(rhs, sp) when chainWord rhs = Some "or" -> Some("and", "or", sp)
+    | OrMarker(rhs, sp) when chainWord rhs = Some "and" -> Some("or", "and", sp)
+    | _ -> None
+
+// a capture sigil closes its chain at the ')' — the composition exists
+// inside the parens [D:exit-reifiers]: teach the spelling, not just the law
+let captureReifierMsg (inner: Expr) (stageName: string) =
+    let sigil =
+        match inner.Kind with
+        | ECmd(_, _, Some { Kind = EVar n })
+        | EPipe(_,
+                {
+                    Kind = ECmd(_, _, Some { Kind = EVar n })
+                }) -> "$" + n
+        | _ -> "$"
+
+    $"'{stageName}' must directly follow a single external command segment — the capture sigil closes its chain at the ')'; the reifier composes inside the parens: {sigil}(cmd | {stageName})"
+
+let rec foldChain
+    (bareHome: string -> string option)
+    (h: Expr)
+    (rest: ((string * Span) * Seg) list)
+    : Result<Expr, string * Span> =
+    rest
+    |> List.fold
+        (fun acc ((op, opSpan), seg) ->
+            match acc with
+            | Result.Error m -> Result.Error m
+            // a bare module member read as a program after `|>` (`cmd | line
+            // |> split "/"`) is the bare-name slip, taught as in a value
+            // pipe [D:bare-partition]
+            | Result.Ok _ when
+                op = "|>"
+                && (match seg with
+                    | Stage { Kind = ECmd(HeadLit n, _, _) } -> (bareHome n).IsSome
+                    | _ -> false)
+                ->
+                match seg with
+                | Stage({ Kind = ECmd(HeadLit n, _, _) } as e) ->
+                    let home = (bareHome n).Value
+
+                    Result.Error(
+                        $"'{n}' is a bare module member — spell it '{home}.{n}' (bare names live in the REPL session)",
+                        e.Span
+                    )
+                | _ -> Result.Error(pipeOpError op, opSpan)
+            | Result.Ok _ when op <> requiredPipeOp seg -> Result.Error(pipeOpError op, opSpan)
+            | Result.Ok acc when
+                (match seg with
+                 | AndMarker _
+                 | OrMarker _ -> (chainReifier acc).IsSome
+                 | _ -> false)
+                ->
+                // `a | succeeds | and b`: the reifier made a value, and
+                // and/or branch on a command's exit — the value would be
+                // dropped and the branch never taken [D:cmd-chaining]
+                let kw, sp =
+                    match seg with
+                    | AndMarker(_, sp) -> "and", sp
+                    | OrMarker(_, sp) -> "or", sp
+                    | _ -> "", acc.Span
+
+                let name = (chainReifier acc).Value
+
+                Result.Error(
+                    $"'| {kw}' can't follow '| {name}' — '| {name}' turned the command into a value, and '| {kw}' needs a command's exit; to branch on it, write `if <command> | succeeds then … else …`",
+                    sp
+                )
+            | Result.Ok _ when (mixedChain seg).IsSome ->
+                // a mixed chain groups from the right, unlike bash and every
+                // precedence convention — refused, not reinterpreted
+                // [D:and-or-no-mix]
+                let first, second, sp = (mixedChain seg).Value
+
+                Result.Error(
+                    $"'| {first}' and '| {second}' can't be mixed in one chain — for a branch, write an if: "
+                    + "`if a | succeeds then b else c`",
+                    sp
+                )
+            | Result.Ok _ when (chainEndReifier seg).IsSome ->
+                // `a | and b | complete` reads `a | and (b | complete)`: the
+                // reifier would see only b and the chain's value is unit, so
+                // the record is lost [D:cmd-chaining]
+                let rhs, kw, name = (chainEndReifier seg).Value
+
+                Result.Error(
+                    $"'| {name}' can't end a '| {kw}' chain — it would apply to the last command only, and the chain's value is discarded; run the commands on separate lines and capture the one you need: `let r = <command> | {name}`",
+                    rhs.Span
+                )
+            | Result.Ok acc ->
+                match seg with
+                | Stage seg ->
+                    Result.Ok {
+                        Kind = EPipe(acc, seg)
+                        Span = Span.union acc.Span seg.Span
+                    }
+                | AndMarker(rhs, _) ->
+                    // `cmd | and <rest>` = bash &&: stream the left (raising on
+                    // failure — the right is then skipped), then the right
+                    // [D:cmd-chaining]. The armed |print streams+raises; a nested
+                    // and/or is already a unit effect, so it passes through.
+                    Result.Ok {
+                        Kind = ESeq(streamOf acc, streamOf rhs)
+                        Span = Span.union acc.Span rhs.Span
+                    }
+                | OrMarker(rhs, sp) ->
+                    // `cmd | or <rest>` = bash ||: stream the left capturing its
+                    // exit code (no raise); on nonzero, stream the right
+                    // [D:cmd-chaining]. Right-associative, so the left is one
+                    // command or a pipeline, reified through the exitCode family's vars.
+                    // the left's exit code is the exitCode reifier folded onto it
+                    // — one desugar for a command, an env overlay, piped input,
+                    // splats and a pipeline (leftmost failing code)
+                    // [D:chain-reifiers]
+                    let codeResult =
+                        match acc.Kind with
+                        | ECmd _
+                        | EPipe _ ->
+                            foldChain bareHome acc [ ("|", sp), ExitCodeMarker sp ]
+                            |> Result.mapError (fun _ -> orLeftMsg, sp)
+                        | _ -> Result.Error(orLeftMsg, sp)
+
+                    match codeResult with
+                    | Result.Error e -> Result.Error e
+                    | Result.Ok codeExpr ->
+                        let cond = {
+                            Kind = EBinOp("==", codeExpr, { Kind = EInt 0L; Span = sp })
+                            Span = sp
+                        }
+
+                        Result.Ok {
+                            Kind = EIf(cond, { Kind = EUnit; Span = sp }, Some(streamOf rhs))
+                            Span = Span.union acc.Span rhs.Span
+                        }
+                | (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ | ExecMarker _ | LineMarker _ | TextMarker _ as marker) ->
+                    let stageName, mspan, extraArgs =
+                        match marker with
+                        | CompleteMarker sp -> "complete", sp, []
+                        | SucceedsMarker sp -> "succeeds", sp, []
+                        | ExitCodeMarker sp -> "exitCode", sp, []
+                        | OrFailMarker(msg, sp) -> "orFail", sp, [ msg ]
+                        | ExecMarker sp -> "exec", sp, []
+                        | LineMarker sp -> "line", sp, []
+                        | TextMarker sp -> "text", sp, []
+                        // unreachable — the outer arm matched only the seven above
+                        | Stage _
+                        | AndMarker _
+                        | OrMarker _ -> "complete", acc.Span, []
+
+                    // the desugar variables, from the one reifier table
+                    // [D:reifier-term]
+                    let stem = reifierStem stageName
+                    let plainVar, envVar, stdinVar = "|" + stem, $"|{stem}Env", $"|{stem}In"
+
+                    // a reified segment's mixed literal+splat argv denotes a
+                    // seq value [D:splat-reifier-chains]: contiguous non-splat
+                    // args chunk into list literals, each splat splices its
+                    // interior seq whole, folded with Seq.append. Element =
+                    // one word carries through the builtin's argv (the same
+                    // boundary as spawn-argv-build); ESplat never leaves argv
+                    // in the AST. Splat-free argv keeps the plain list node.
+                    let argvExpr (args: Expr list) : Expr =
+                        let hasSplat =
+                            args
+                            |> List.exists (fun a ->
+                                match a.Kind with
+                                | ESplat _ -> true
+                                | _ -> false)
+
+                        // each literal chunk rides `|argv`, the checker's marker
+                        // for argv words: elements obey the command-argument
+                        // law (Secret, Uuid, int, bool), not seq<string>'s
+                        // element unification [D:secret]; erased at check
+                        let argvList (items: Expr list) (span: Span) = {
+                            Kind = EApp({ Kind = EVar "|argv"; Span = span }, { Kind = EList items; Span = span })
+                            Span = span
+                        }
+
+                        if not hasSplat then
+                            argvList args acc.Span
+                        else
+                            let seqAppend (a: Expr) (b: Expr) =
+                                let span = Span.union a.Span b.Span
+
+                                let f = {
+                                    Kind = EVar "|seqAppend"
+                                    Span = span
+                                }
+
+                                {
+                                    Kind = EApp({ Kind = EApp(f, a); Span = span }, b)
+                                    Span = span
+                                }
+
+                            let listOf (chunk: Expr list) =
+                                argvList chunk (Span.union (List.head chunk).Span (List.last chunk).Span)
+
+                            let flush chunk parts =
+                                match chunk with
+                                | [] -> parts
+                                | c -> listOf (List.rev c) :: parts
+
+                            let parts, chunk =
+                                args
+                                |> List.fold
+                                    (fun (parts, chunk) a ->
+                                        match a.Kind with
+                                        // the interior keeps the full `$@...`
+                                        // span (diagnostics + tokens)
+                                        | ESplat inner -> ({ inner with Span = a.Span } :: flush chunk parts, [])
+                                        | _ -> (parts, a :: chunk))
+                                    ([], [])
+
+                            match List.rev (flush chunk parts) with
+                            | [] -> { Kind = EList []; Span = acc.Span }
+                            | first :: rest -> rest |> List.fold seqAppend first
+
+                    match acc.Kind with
+                    | ECmd(h, args, cenv) ->
+                        let span = Span.union acc.Span mspan
+
+                        // env sigils route through the *Env twins — the same
+                        // desugar family, env threaded up front
+                        let headVar =
+                            match cenv with
+                            | Some e -> {
+                                Kind = EApp({ Kind = EVar envVar; Span = mspan }, e)
+                                Span = mspan
+                              }
+                            | None -> { Kind = EVar plainVar; Span = mspan }
+
+                        let progArg = progArgOf h acc.Span
+                        let argList = argvExpr args
+
+                        let applied =
+                            (extraArgs @ [ progArg; argList ])
+                            |> List.fold (fun f a -> { Kind = EApp(f, a); Span = span }) headVar
+
+                        Result.Ok applied
+                    // a value-headed single external segment [D:value-headed-pipe]:
+                    // `xs | grep foo | complete` reifies grep with xs as stdin —
+                    // the stdin-carrying twin, value appended. Only when the LHS
+                    // is a value: a command→command LHS is the multi-external
+                    // case below, rejected as always (the family's single-segment
+                    // rule, unchanged).
+                    // exec replaces this process — there is no parent left to
+                    // feed a piped stdin, so the value-headed route is refused
+                    // [D:exec] (the stdin twin is never emitted)
+                    | EPipe(stdinE, { Kind = ECmd(_, _, None) }) when not (isCommandish stdinE) && stageName = "exec" ->
+                        Result.Error(
+                            "'exec' replaces the current process, so it cannot take a piped stdin — there is no parent left to feed it; drop the value pipe (spawn the command instead if you need its input)",
+                            mspan
+                        )
+                    | EPipe(stdinE, { Kind = ECmd(h, args, None) }) when not (isCommandish stdinE) ->
+                        let span = Span.union acc.Span mspan
+                        let headVar = { Kind = EVar stdinVar; Span = mspan }
+                        let progArg = progArgOf h acc.Span
+                        let argList = argvExpr args
+
+                        let applied =
+                            (extraArgs @ [ progArg; argList; stdinE ])
+                            |> List.fold (fun f a -> { Kind = EApp(f, a); Span = span }) headVar
+
+                        Result.Ok applied
+                    // a capture sigil closes its chain at the ')' — the
+                    // composition exists inside the parens [D:exit-reifiers]:
+                    // teach the spelling, not just the law
+                    | ECapture inner -> Result.Error(captureReifierMsg inner stageName, mspan)
+                    // a reifier after a command chain [D:chain-reifiers]: the
+                    // stages ride a list of (prog, argv, env) — each built as a
+                    // single reified segment's — with the value head's stdin
+                    | EPipe _ ->
+                        // flatten left to right; a value may head the chain
+                        let rec stagesOf (e: Expr) : (Expr option * Expr list) option =
+                            match e.Kind with
+                            | ECmd _ -> Some(None, [ e ])
+                            | EPipe(l, ({ Kind = ECmd _ } as r)) ->
+                                match stagesOf l with
+                                | Some(head, segs) -> Some(head, segs @ [ r ])
+                                | None when not (isCommandish l) -> Some(Some l, [ r ])
+                                | None -> None
+                            | _ -> None
+
+                        match stagesOf acc with
+                        | Some(_, segs) when stageName = "exec" && segs.Length > 1 ->
+                            Result.Error(
+                                "'exec' replaces the current process with ONE program — a pipeline cannot; exec a shell that runs it: sh -c \"a | b\" | exec",
+                                mspan
+                            )
+                        | Some(stdinO, segs) when segs.Length > 1 ->
+                            let span = Span.union acc.Span mspan
+                            let at k = { Kind = k; Span = span }
+
+                            let stage (seg: Expr) =
+                                match seg.Kind with
+                                | ECmd(h, args, cenv) ->
+                                    let envE = cenv |> Option.defaultValue (at (EList []))
+                                    at (ETuple [ progArgOf h seg.Span; argvExpr args; envE ])
+                                | _ -> seg
+
+                            let stdinE =
+                                match stdinO with
+                                | Some v -> at (EApp(at (EVar "Some"), v))
+                                | None -> at (EVar "None")
+
+                            let chainVar = "|chain" + plainVar.Substring(1, 1).ToUpper() + plainVar.Substring 2
+
+                            Result.Ok(
+                                (extraArgs @ [ at (EList(segs |> List.map stage)); stdinE ])
+                                |> List.fold (fun f a -> at (EApp(f, a))) (at (EVar chainVar))
+                            )
+                        | _ -> Result.Error($"'{stageName}' must directly follow a command or a command chain", mspan)
+                    | _ -> Result.Error($"'{stageName}' must directly follow a command or a command chain", mspan))
+        (Result.Ok h)
+
+
+// cd (the one command-callable builtin) is APPLIED, not spawned —
+// `EApp(EVar "cd", arg)`, defaulting to the home path with no arg
+// (a typed `~`, so it resolves at run time [D:tilde-literal]). Used
+// by a bare builtin head AND by an alias that resolves to it
+// (`#alias up = cd ..`) [D:command-head-alias]: the alias must not
+// fall through to HeadLit, which would spawn the external /usr/sbin/cd.
+let buildBuiltinApp (name: string) (nameSpan: Span) (callArgs: Expr list) =
+    let headVar = { Kind = EVar name; Span = nameSpan }
+
+    let effectiveArgs =
+        match callArgs with
+        | [] -> [ tildeExpr "~" nameSpan ]
+        | _ -> callArgs
+
+    effectiveArgs
+    |> List.fold
+        (fun acc arg -> {
+            Kind = EApp(acc, arg)
+            Span = Span.union acc.Span arg.Span
+        })
+        headVar
+
+let private envPair (((name: string), value), (sp: Span)) =
+    let at k = { Kind = k; Span = sp }
+    at (EApp(at (EApp(at (EVar "|envPair"), at (EStr name))), value))
+
+// the env-prefix words as one seq<EnvVar> literal [D:within-env-pairs]
+let envAssignsList (assigns: ((string * Expr) * Span) list) : Expr =
+    let (_, first) = List.head assigns
+    let (_, last) = List.last assigns
+
+    {
+        Kind = EList(assigns |> List.map envPair)
+        Span = { Start = first.Start; End = last.End }
+    }
+
+// the prefix joins the segment's overlay, after a sigil's so the
+// nearer spelling wins on a shared name [D:env-prefix]
+let segmentEnv (sigilEnv: Expr option) (assigns: ((string * Expr) * Span) list) : Expr option =
+    match assigns with
+    | [] -> sigilEnv
+    | (_, firstSpan) :: _ ->
+        let at k = { Kind = k; Span = firstSpan }
+        let pairs = at (EList(assigns |> List.map envPair))
+
+        match sigilEnv with
+        | None -> Some pairs
+        | Some e -> Some(at (EApp(at (EApp(at (EVar "|seqAppend"), e)), pairs)))
