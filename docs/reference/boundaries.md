@@ -7,12 +7,14 @@ error, before the script does anything.
 
 ## `Args.load`
 
-Field names become kebab-case flags (`dryRun` → `--dry-run`), plus a
-first-letter short flag where that is unambiguous (a letter or digit
-only: `__y` gets none). A `bool` field is
-true when the flag is present. `string`, `int` and the other scalars
-are required, and `Option` makes a field optional. The first line of
-the field's `///` comment is its `--help` text:
+Each field becomes a flag:
+
+- the name in kebab case: `dryRun` → `--dry-run`
+- a first-letter short flag when unambiguous (a letter or digit only:
+  `__y` gets none)
+- `bool` is true when the flag is present; `string`, `int` and the
+  other scalars are required; `Option` makes a field optional
+- the first line of the field's `///` doc is its `--help` text
 
 ```weir
 type Cli = {
@@ -37,20 +39,23 @@ together:
 - unparseable values
 
 `--help` prints the usage even when the rest of the command line is
-invalid. A `///` doc on the record type itself is the program's
-description: its first paragraph shows under the usage line. A
-section with nothing in it is left out, and `[flags]` appears in the
-usage line only when there are flags.
+invalid. A `///` doc on the record type is the program's description;
+its first paragraph shows under the usage line. Empty sections are
+left out, and `[flags]` shows in the usage line only when there are
+flags.
 
-A bad command line is the script user's mistake, not the script's, so
-the error reads like any tool's usage error: the script's name, one
-line per problem, the help lines of the flags involved, and a pointer
-to `--help`. It carries no weir source location, and the exit code
-is 2. The word after an unknown flag is reported without its text —
-the flag may be a misspelled secret. That holds for every flag
-spelling (`-tok`, `-xv`, and `--tok=…` hides its attached text) and
-after a subcommand that takes no arguments; a known subcommand name
-after an unknown flag is still read as the subcommand. `deploy.weir --trget prod` gives:
+A bad command line is the user's mistake, not the script's, so the
+error looks like any tool's usage error: the script's name, one line
+per problem, the help lines of the flags involved, and a pointer to
+`--help`. No weir source location; exit code 2.
+
+The word after an unknown flag is reported without its text, since the
+flag may be a misspelled secret. That holds for every spelling (`-tok`,
+`-xv`, and `--tok=…` hides its attached text) and after a subcommand
+that takes no arguments. A known subcommand name after an unknown flag
+is still read as the subcommand.
+
+`deploy.weir --trget prod` gives:
 
 ```text
 deploy.weir: unknown flag '--trget'. Did you mean '--target'?
@@ -62,12 +67,11 @@ run 'deploy.weir --help' for usage
 
 `try` still captures it, with this text as the message.
 
-Load the arguments before the script does anything: `weir check`
-warns (`effect-before-args`) about a top-level statement above the
-first top-level `Args.load` or `Env.load` that writes files, runs a
-command or uses the network, since it would still run on `--help` or
-a bad argument. Reads, printing and function definitions don't count,
-and neither does a `within` whose body holds the load.
+Load the arguments first. A top-level statement above the first
+top-level `Args.load` or `Env.load` that writes files, runs a command
+or uses the network would still run on `--help` or a bad argument, so
+`weir check` warns (`effect-before-args`). Reads, printing, function
+definitions and a `within` whose body holds the load don't count.
 
 There are no positional arguments; pass operands as flags. To parse
 arguments by hand, `Args.flag` and `Args.value` scan the raw

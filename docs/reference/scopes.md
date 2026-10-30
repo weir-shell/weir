@@ -1,44 +1,8 @@
 # Scopes
 
 `within` holds a resource for the length of a block and releases it
-however the block exits: normal completion, an error, `exit n`,
-SIGINT or SIGTERM. This works both in a terminal and detached: a
-`kill -INT`/`kill -TERM` sent to a `setsid` or backgrounded weir
-cleans up the same way, then dies by the signal (`$?` 130/143). While
-a `repeat` runs or a scope is held by [`until stopped`](#until-stopped),
-the first SIGINT, SIGTERM or SIGHUP is only a request to stop
-([`repeat`](loops.md#repeat)): nothing is cut or killed, the loop
-finishes its iteration, the held scope stops holding, and the scopes
-close by their normal path; the second signal is the teardown
-described here. The
-cleanup runs on the flow's own thread (a script's, a REPL entry's),
-and no statement after the signal runs: a sleep
-or a wait on a scoped process is cut short, and the block unwinds from
-there. Running `pmap`, `piter` and `pfirst` arms stop at their next
-builtin call, command or sleep, and the script waits for them before
-any scope releases its resource. A reader closing weir's stdout
-(`weir s.weir | head -1`) ends the script the same way, exiting with 141 (bash's SIGPIPE status) and
-no message. A second signal during cleanup exits immediately, so
-pressing Ctrl+C twice gets you out: no cleanup runs after it, every
-child is killed, and weir dies by the first signal. At a terminal, the
-commands an `always` cleanup runs start with Ctrl+C and Ctrl+\ ignored,
-so a Ctrl+C reaches the script but does not kill them; they keep the
-terminal, so a pager in a cleanup works. There are two exceptions, both by design. `kill -9` of weir
-itself skips cleanup (only a lock is still released, by the kernel).
-And a weir started in the background where job control is off (`weir … &`
-in a script, `sh -c 'weir … &'`, after `set +m`) inherits SIGINT ignored,
-the shell's rule for a background command; while it keeps a controlling
-terminal, Ctrl+C in the terminal does not reach it, and neither does a
-`kill -INT` of its pid. Send it SIGTERM, or SIGHUP unless `nohup` ignored
-that too. With job control on (`weir … &` or `nohup weir … &` typed at an
-interactive shell) the job runs in its own process group with SIGINT
-live: a terminal Ctrl+C is not sent to it, and `kill -INT` works as usual. The block is an ordinary block: its statements run
-and the last expression is its value. It also works as a plain
-statement. One statement is refused inside any `within` block, at
-check time: `cmd | exec`. The replaced process would skip the
-release, so close the scope first and exec after it. That includes
-an exec reached through a function called in the block; one the check
-can't see is refused when it runs.
+however the block exits: normally, by an error, by `exit n`, or on a
+signal.
 
 | form | holds | on every exit |
 |---|---|---|
@@ -49,6 +13,58 @@ can't see is refused when it runs.
 | `within lock "path"` | an advisory file lock | releases it — the kernel does, even on `kill -9` |
 | `within proc h = cmd` | a background process | kills and reaps its tree |
 | `within serve s = cfg handler` | an HTTP listener | closes the socket — the port frees |
+
+The block is an ordinary block: its statements run and the last
+expression is its value. It also works as a plain statement.
+
+`cmd | exec` is refused inside any `within` block at check time, since
+the replaced process would skip the release. Close the scope first and
+exec after it. This includes an exec reached through a function called
+in the block; one the check can't see is refused when it runs.
+
+### Signals
+
+SIGINT and SIGTERM unwind the scopes, then weir dies by the signal
+(`$?` 130/143). This works at a terminal and detached: a `kill -INT`
+or `kill -TERM` sent to a `setsid` or backgrounded weir behaves the
+same.
+
+- Cleanup runs on the flow's own thread (a script's, a REPL entry's).
+  No statement after the signal runs: a sleep or a wait on a scoped
+  process is cut short and the block unwinds from there.
+- Running `pmap`, `piter` and `pfirst` arms stop at their next builtin
+  call, command or sleep. The script waits for them before any scope
+  releases.
+- A reader closing weir's stdout (`weir s.weir | head -1`) ends the
+  script the same way, with exit 141 (bash's SIGPIPE status) and no
+  message.
+- A second signal during cleanup exits at once: Ctrl+C twice gets you
+  out. No cleanup runs after it, every child is killed, and weir dies
+  by the first signal.
+- At a terminal, commands run by an `always` cleanup start with Ctrl+C
+  and Ctrl+\ ignored, so a Ctrl+C reaches the script but doesn't kill
+  them. They keep the terminal, so a pager in a cleanup works.
+
+While a `repeat` runs or a scope is held by
+[`until stopped`](#until-stopped), the first SIGINT, SIGTERM or SIGHUP
+only asks to stop ([`repeat`](loops.md#repeat)). Nothing is cut or
+killed: the loop finishes its iteration, the held scope stops holding,
+and the scopes close normally. The second signal is the teardown
+above.
+
+Two exceptions, both by design:
+
+- `kill -9` of weir skips cleanup. Only a lock is still released, by
+  the kernel.
+- A weir started in the background with job control off (`weir … &` in
+  a script, `sh -c 'weir … &'`, after `set +m`) inherits SIGINT
+  ignored, the shell's rule for background commands. While it keeps a
+  controlling terminal, neither Ctrl+C nor `kill -INT` of its pid
+  reaches it. Send SIGTERM, or SIGHUP unless `nohup` ignored that too.
+  With job control on (`weir … &` or `nohup weir … &` at an
+  interactive shell) the job gets its own process group with SIGINT
+  live: a terminal Ctrl+C isn't sent to it, and `kill -INT` works as
+  usual.
 
 ## `tmp`
 
@@ -72,14 +88,17 @@ before the block runs, that shows the absolute path.
 ## `env`
 
 Adds environment variables for every process started in the block.
-Inside the block, `Env.get`, `Env.vars` and `Env.load` see the overlay
-too, as `pwd` sees `within cd`, and so do `Path.home`, the XDG helpers
-(`Path.configHome` and the rest) and a typed `~`; after it, they read
-the unchanged process environment. A command started in the block is
-looked up on the overlay's `PATH` when it sets one, as the child would
-look it up — a `^$tool` head included, and `Path.which`. Nested overlays combine, with inner values winning, and an
-env given directly on a capture (`$e(...)`) wins over any enclosing
-`within env`:
+
+Inside the block weir's own reads see the overlay too, as `pwd` sees
+`within cd`: `Env.get`, `Env.vars`, `Env.load`, `Path.home`, the XDG
+helpers (`Path.configHome` and the rest) and a typed `~`. After the
+block they read the unchanged process environment.
+
+If the overlay sets `PATH`, commands in the block are looked up on it,
+as the child would: `^$tool` heads and `Path.which` included.
+
+Nested overlays combine, inner values winning. An env given on a
+capture (`$e(...)`) wins over any enclosing `within env`:
 
 ```weir
 let vars = [Env.pair "GREETING" "scoped"]
@@ -143,11 +162,11 @@ scope, so all the rules above apply.
 ## `until stopped`
 
 Any `within` can end with `until stopped`, the bare one included. The
-block runs, then the scope is held until the program is asked to
-stop, then it closes by its normal path: a `serve` drains its
-handlers, a `proc` kills its process tree, `always` runs whole. The
-statements after the scope run, and the program exits 0. It is how a
-server or a sidecar stays up until the operator stops it:
+block runs, then the scope holds until the program is asked to stop,
+then closes normally: a `serve` drains its handlers, a `proc` kills its
+process tree, `always` runs whole. The statements after it run, and the
+program exits 0. This is how a server or sidecar stays up until the
+operator stops it:
 
 ```weir-demo
 within serve srv = { port = Some 8080; maxConcurrent = 4 } handler
@@ -157,20 +176,22 @@ until stopped
 print "server stopped"
 ```
 
-The request is the first SIGINT, SIGTERM or SIGHUP (Ctrl+C on
-Windows) while the scope is held. Nothing is cut or killed by it:
-handlers in flight get the normal two-second drain, not the signal
-path's immediate cut. A second signal is the usual teardown. A signal
-that arrives while the block itself is still running is the usual
-teardown too; the scope only listens for the request once it is
-held. If a stop was already requested (by a `repeat` that ended on
-it, say), the scope does not hold at all and closes right after its
-block. At the prompt, the first Ctrl+C ends the hold and the prompt
-returns.
+The stop request is the first SIGINT, SIGTERM or SIGHUP (Ctrl+C on
+Windows) while the scope is held. It cuts and kills nothing: handlers
+in flight get the normal two-second drain, not the signal path's
+immediate cut.
 
-`always` comes after `until stopped`: the scope is held, then the
-cleanup runs, then the resource is released. Undoing a set-up when
-the operator stops the script needs no resource at all:
+- A second signal is the usual [teardown](#signals).
+- A signal while the block is still running is the usual teardown
+  too; the scope only listens for the request once it holds.
+- If a stop was already requested (say, by a `repeat` that ended on
+  it), the scope doesn't hold and closes right after its block.
+- At the prompt, the first Ctrl+C ends the hold and the prompt
+  returns.
+
+`always` comes after `until stopped`: hold, then clean up, then
+release. Undoing a set-up when the operator stops the script needs no
+resource at all:
 
 ```weir-demo
 within
@@ -197,11 +218,10 @@ print "tunnels closed"
 The inner scope holds; when it is asked to stop, the server drains,
 then `ssh` and `kubectl` are killed in reverse order of starting.
 
-`until stopped` is refused inside a `plan` (a dry run cannot wait for
-a signal) and inside `pure`. `stopped` is not a value: it is only a
-word after a `within`'s `until`, and any other word there is an
-error. Written after `always`, it is an error that gives the right
-order.
+`until stopped` is refused inside `plan` (a dry run can't wait for a
+signal) and `pure`. `stopped` is not a value, just a word after a
+`within`'s `until`; any other word there is an error. Written after
+`always`, it's an error that gives the right order.
 
 ## `lock`
 

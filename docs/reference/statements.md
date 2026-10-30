@@ -17,22 +17,31 @@ ls |> Seq.length // computes an int and discards it — bind it, or pipe it to p
 
 ## Layout
 
-A statement starts at column 0. Indented lines continue it, and the
-next line at column 0 ends it. Indentation is spaces only — a tab in
-a line's leading whitespace is an error, inside text and `yaml`
-blocks too. Blank lines and comment lines are
-ignored for layout, so you can put gaps inside a block.
+A statement starts at column 0. Indented lines continue it; the next
+column-0 line ends it. Blank and comment lines don't count, so a block
+can have gaps.
 
-Under a command, an indented line's words become more arguments of
-that command, so a pasted list of commands that kept its indentation
-runs as one command. `weir check` warns (`continued-command`) when
-such a line starts with a word that names a program — one on `PATH`,
-`cd`, or an explicit `^cmd` — and the REPL refuses the entry before
-anything runs. A flag, a quoted word, a splice or a path never counts,
-nor does a `|` line (the multi-line pipeline), and a command that takes
-a command (`sudo`, `env`, `xargs`, `timeout`, `ssh` and the like, or a
-signature's `stopAtOperand`) may be continued freely. Dedent the line
-to run it on its own, or quote the word to keep it as an argument.
+Indentation is spaces only. A tab in a line's leading whitespace is an
+error, inside text and `yaml` blocks too.
+
+### Indented lines under a command
+
+They are more arguments to that command. So a pasted list of commands
+that kept its indentation runs as one command.
+
+When such a line starts with a program name (one on `PATH`, `cd`, or
+an explicit `^cmd`), `weir check` warns (`continued-command`) and the
+REPL refuses the entry before running anything. These don't count:
+
+- a flag, a quoted word, a splice or a path
+- a `|` line (a multi-line pipeline)
+- lines under a command that takes a command: `sudo`, `env`, `xargs`,
+  `timeout`, `ssh` and the like, or a signature's `stopAtOperand`
+
+Dedent the line to run it on its own, or quote the word to keep it as
+an argument.
+
+### Lets and brackets
 
 An indented `let` ends at the next line with the same indentation.
 An open bracket keeps the statement going, but the closing bracket
@@ -47,14 +56,16 @@ let xs = [
 print $"{xs |> Seq.length}"
 ```
 
-One layout form is triggered by how a line ends. A line ending in the
-`yaml` marker or a heredoc marker (`<<<`/`$<<<`/`$$<<<`) opens a
-block: the indented lines below are that literal's content, not weir
-statements, and the first less-indented line ends it. The heredoc
-forms are covered in [Lexical](lexical.md#strings), the `yaml`
+### Literal blocks
+
+A line ending in `yaml` or a heredoc marker (`<<<`, `$<<<`, `$$<<<`)
+opens a block. The indented lines below are the literal's content, not
+statements; the first less-indented line ends it. A marker with no
+indented block below is an error naming the marker.
+
+Heredocs are covered in [Lexical](lexical.md#strings); the `yaml`
 template in [the guide](../GUIDE.md#commands-and-processes) and
-[Adapters](adapters.md). A marker with no indented block below it is
-an error that names the marker.
+[Adapters](adapters.md).
 
 ```weir
 let motd = $<<<

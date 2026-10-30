@@ -47,37 +47,35 @@ printf "%s %s\n" first
     second
 ```
 
-What command lines do not do:
+What command lines don't do:
 
-- no backslash escapes — a `\` word is an error that shows the
-  replacement (`\;` is `";"`, a literal backslash argument is `"\\"`,
-  and `\ls` is `^ls`)
-- no glob expansion — `Path.glob` is a function
-- no `$VAR` expansion — splice weir bindings instead
-- `~` is the one exception, and only when typed directly: an unquoted
-  word that is `~` or starts with `~/` means your home directory,
-  resolved when the line runs (`cat ~/.bashrc`, `~/bin/tool`, `cd ~`).
-  A quoted `"~/x"`, an interpolation and a spliced value stay literal,
-  because weir never re-reads data as syntax. `~user` is not expanded.
-  In an expression, build the path with `Path.home ()`, or with
-  `Path.configHome`/`Path.stateHome`/`Path.cacheHome` for the XDG
-  directories: `File.read $"{Path.home ()}/.bashrc"`. Each is a pure
-  `unit -> string`. On Windows they use `%APPDATA%`/`%LOCALAPPDATA%`;
-  on POSIX, the `$XDG_*` variables with the usual fallbacks such as
-  `~/.config`
-- `cd dir` changes the session's directory (relative to the current
-  one; `cd` alone goes home) and returns the absolute path it moved
-  to. `pwd` is the current directory as a `string`, read at the moment
-  it is used
-- no `&&` — write two statements, or chain them with
-  [`| and` / `| or`](#chaining)
-- no redirects — `>` is passed as a literal argument, with a warning
-  that suggests `File.write`
+| bash | weir |
+|---|---|
+| `\` escapes | an error showing the fix: `\;` is `";"`, a literal backslash is `"\\"`, `\ls` is `^ls` |
+| glob expansion | `Path.glob` |
+| `$VAR` | splice a weir binding |
+| `&&` | two statements, or [`\| and` / `\| or`](#chaining) |
+| `>` redirects | passed as a literal argument, with a warning suggesting `File.write` |
 
-If the arguments and environment of one command are too large for the
-OS (Linux's argument-list limit), the command fails with an error that
-says so and gives their size; pass big data on stdin (`xs | cmd`) or
-through a file.
+The one expansion is `~`, typed directly. An unquoted word that is `~`
+or starts with `~/` is your home directory, resolved when the line
+runs: `cat ~/.bashrc`, `~/bin/tool`, `cd ~`. Quoted `"~/x"`,
+interpolations and spliced values stay literal (weir never re-reads
+data as syntax). `~user` is not expanded.
+
+In an expression, use `Path.home ()`: `File.read $"{Path.home
+()}/.bashrc"`. For the XDG directories there are `Path.configHome`,
+`Path.stateHome` and `Path.cacheHome`, each `unit -> string`. On
+POSIX they read `$XDG_*` with the usual fallbacks (`~/.config`); on
+Windows, `%APPDATA%`/`%LOCALAPPDATA%`.
+
+`cd dir` changes the session's directory (relative to the current one;
+`cd` alone goes home) and returns the absolute path. `pwd` is the
+current directory as a `string`, read when used.
+
+If one command's arguments and environment exceed the OS limit
+(Linux's argument-list limit), it fails with an error giving their
+size. Pass big data on stdin (`xs | cmd`) or through a file.
 
 When you need bash behaviour, run bash: `sh -c "the line"`. Inside
 that quoted string, `$w` is a shell variable, not a weir binding — to
@@ -94,12 +92,11 @@ echo tagged $marker (40 + 2)
 echo files: $@(["a.txt"; "b.txt"])
 ```
 
-A splice can also read a record field path — `$cli.tag`,
-`$cli.out.dir`, `$@cli.files`, or a dynamic head `^$cli.bin`. It is
-still one word (or one program, for a head). Only an identifier
-extends the path, so `$x.` and `$x/y` are refused as glued words. This
-means bash's `$f.bak` reads a field; on a string it is an error that
-suggests `$"{f}.bak"`.
+A splice can read a record field path: `$cli.tag`, `$cli.out.dir`,
+`$@cli.files`, or a dynamic head `^$cli.bin`. It is still one word (one
+program, for a head). Only an identifier extends the path, so `$x.`
+and `$x/y` are refused as glued words, and bash's `$f.bak` on a string
+is an error suggesting `$"{f}.bak"`.
 
 ```weir
 type Cli = { tag: string; bin: string }
@@ -107,11 +104,10 @@ let cli = { tag = "v1"; bin = "echo" }
 ^$cli.bin release $cli.tag
 ```
 
-Typed values do not convert to argv implicitly. Splicing a `Duration`
-is an error that suggests the explicit forms (`Duration.toMillis d` or
-`show d`). A `Secret` does splice in the clear — passing it to a
-command is what the type is for — but it is refused in interpolation
-and at the serialization boundaries.
+Typed values don't convert to argv implicitly: splicing a `Duration` is
+an error suggesting `Duration.toMillis d` or `show d`. A `Secret` does
+splice, in the clear, since that's what it's for; interpolation and
+serialization refuse it.
 
 ## Pipes
 
@@ -132,11 +128,10 @@ A value on the left of `|` becomes the program's stdin:
 
 ## Streaming, capture, and the markers
 
-A command written as a statement on its own streams its output. With
-a `let` in front, the output is captured instead, as a `seq<string>`
-with one element per line, and nothing is streamed. A bare command is
-an ordinary statement in any block and any `match` case, so most
-command lines need no marker at all:
+A command as a statement streams its output. With `let` in front, the
+output is captured as a `seq<string>`, one element per line, and
+nothing streams. A bare command works in any block and any `match`
+case, so most command lines need no marker:
 
 ```weir
 let files = git ls-files
@@ -147,34 +142,40 @@ if 2 > 1 then
     print ($(git rev-parse HEAD | line)[..6])
 ```
 
-`$(...)` captures a command chain where a bare command can't go:
-inside an expression such as an interpolation hole, a record or a
-splice (as in the example above). A command line runs to the end of
-the line — `;` there is just an argv word — so each command needs a
-line of its own.
+`$(...)` captures a command chain inside an expression, where a bare
+command can't go: an interpolation hole, a record, a splice (as
+above).
 
-A capture holds the whole output in memory. Past about 2 GiB it stops
-with an error naming the command; stream such output instead (iterate
-its lines, or write them to a file with `File.write` and read back what
-you need). `| succeeds` keeps no output, so it has no limit.
+A command line runs to the end of the line; `;` there is just an argv
+word. One command per line.
 
-Environment variables for a single command go before it, as in bash:
-`EDITOR=nano git commit`. Each stage of a pipeline takes its own; after
-the program name, `CC=gcc` is an ordinary argument. An env overlay
-bound to `e` applies to a block of commands with `within env e`, to a
-capture with `$e(...)`, and combines with a prefix — where both set the
-same name, the prefix wins. There is no `!` negation; use the word
-`not`. To choose between two known tools, branch on the whole command
-line. When the program really is a runtime value, run it with a
-dynamic head.
+A capture holds the whole output in memory and stops with an error
+past about 2 GiB. Stream bigger output instead: iterate its lines, or
+`File.write` them and read back what you need. `| succeeds` keeps no
+output, so it has no limit.
+
+### Environment
+
+Variables for one command go before it, as in bash: `EDITOR=nano git
+commit`. Each pipeline stage takes its own. After the program name,
+`CC=gcc` is an ordinary argument.
+
+An overlay bound to `e` applies to a block with `within env e` and to
+a capture with `$e(...)`. It combines with a prefix; where both set a
+name, the prefix wins.
+
+### Choosing a program
+
+There is no `!` negation; use `not`. To pick between two known tools,
+branch on the whole command line. When the program is a runtime value,
+use a dynamic head.
 
 ## Dynamic heads
 
-`^$name` runs the program named by a string value — the same
-force-external `^`, applied to a runtime string. The value is always
-one program name and is never re-parsed: a value containing spaces is
-one (odd) program name, the arguments after it splice as usual, and
-nothing is globbed or word-split. Use it to dispatch to plugins or
+`^$name` runs the program named by a string: the force-external `^`
+applied to a runtime value. The value is one program name, never
+re-parsed. Spaces in it are part of the name; nothing is globbed or
+split. Arguments after it splice as usual. Use it for plugins or
 callbacks without `sh -c`:
 
 ```weir
@@ -190,31 +191,30 @@ weir never picks a line for you:
 ^$(git branch) status // which line is the program? bind and pick first
 ```
 
-The program is looked up when the line runs, not at check time.
-`weir check` reports no command-not-found for a dynamic head, since
-there is nothing to look up yet. A missing program is a run-time error
-that points at the line and names the value, and `weir check --can`
-reports the head as not statically known (`--strict` treats it like
-other sites it cannot see through). Reifiers, pipes, captures and env
-overlays work exactly as with a literal head:
-`^$tool build | complete` gives you the computed program's exit.
+The program is looked up when the line runs:
 
-A literal path head that does not exist yet (`./gen.sh`) is a
-command-not-found warning at check time, like a program missing from
-PATH, and an error at run time before anything runs. If the script
-creates that file itself, name it with a value: `let tool = "./gen.sh"`
-then `^$tool`.
+- `weir check` reports no command-not-found for it.
+- A missing program is a run-time error at the line, naming the value.
+- `weir check --can` reports the head as not statically known;
+  `--strict` treats it like other opaque sites.
+
+Reifiers, pipes, captures and env overlays work as with a literal
+head: `^$tool build | complete` gives the computed program's exit.
+
+A literal path head that doesn't exist yet (`./gen.sh`) is a
+command-not-found warning at check time and an error at run time,
+before anything runs. If the script creates the file itself, use a
+value: `let tool = "./gen.sh"`, then `^$tool`.
 
 <!-- the section's earlier name; kept so published #exit-codes links land here -->
 <a id="exit-codes"></a>
 
 ## Reifiers and chaining
 
-A failing command raises an error when its output is read. A **reifier** —
-a `|` stage after the command — turns the run into a value instead.
-Where the command's output goes follows from what you get back: it is
-captured when the value contains it, streams to the terminal when you
-only get the exit status, and is discarded by `succeeds`:
+A failing command raises when its output is read. A **reifier**, a `|`
+stage after the command, turns the run into a value instead. The
+output is captured when the value contains it, streams when you only
+get the exit status, and is discarded by `succeeds`:
 
 | form | output | result |
 |---|---|---|
@@ -232,12 +232,11 @@ print $"exit {r.exitCode}, said {r.stdout |> Seq.head}"
 if r.ok then print "clean" else print "a tool whose nonzero codes mean something reads the code"
 ```
 
-A `Completed` is a receipt: only `| complete` makes one. Writing one as
-a record literal, or changing one with `{ r with … }`, is a check error
-that names where the value comes from — the same rule holds for
-`FileRow` (from `ls`, `Dir.stat`, `File.stat`) and `HttpResponse` (from
-`Http.send`). A function over the record's fields is row-typed, so a
-test hands it an anonymous record with the fields it reads:
+Only `| complete` makes a `Completed`. A record literal or `{ r with …
+}` of one is a check error naming where the value comes from. Same for
+`FileRow` (from `ls`, `Dir.stat`, `File.stat`) and `HttpResponse`
+(from `Http.send`). Functions over their fields are row-typed, so a
+test passes an anonymous record with just the fields read:
 
 ```weir
 let codeOf { exitCode = c } = c
@@ -249,14 +248,16 @@ let r = { exitCode = 3; stdout = []; stderr = [] }
 print (show r.exitCode)
 ```
 
-A reifier can also follow a whole chain, `a | b | c | line`. The
-chain's exit code is that of the leftmost failing stage (where the
-problem began), or 0. A `complete` record holds the last stage's stdout
-and every stage's stderr, in stage order. When a later stage stops
-reading early (`git log | head -1`), the earlier stage is told to stop,
-and its exit does not count as a failure. Only `exec` needs a single
-command, because a pipeline cannot replace the process (use
-`sh -c "a | b" | exec`).
+A reifier can follow a whole chain, `a | b | c | line`:
+
+- The exit code is the leftmost failing stage's (where the problem
+  began), or 0.
+- `complete` holds the last stage's stdout and every stage's stderr,
+  in stage order.
+- When a later stage stops reading early (`git log | head -1`), the
+  earlier one is told to stop, and its exit isn't a failure.
+- `exec` needs a single command; a pipeline can't replace the process.
+  Use `sh -c "a | b" | exec`.
 
 ```weir
 let newest = sh -c "printf 'b\na\n'" | sort | head -1 | line
@@ -282,35 +283,46 @@ code:
   lines dropped, like bash's `$(…)`. It raises on a nonzero exit:
   `let notes = git log -1 --format=%B | text`.
 - `cmd | exec` — replaces the weir process with the command (`execve`;
-  on Windows weir runs it, waits, and exits with its code). The command
-  keeps weir's pid, so a container entrypoint gets signals directly. It
-  never returns, so it can stand alone as a statement, and it starts
-  in the session's current directory (a `cd` before it counts). It
-  can't take piped input, isn't allowed inside `plan`, and is a check
-  error inside any `within` block (`tmp`, `proc`, `lock`, `serve`,
-  `cd`, `env`, or a bare `within … always`): the replaced process
-  would skip the scope's cleanup, so close the scope first. The
-  check follows calls: a function that execs, called inside a scope,
-  an `always` cleanup or a parallel arm (`pfor`, `Seq.pmap`, `piter`,
-  `pfirst`), is refused too. A helper the check can't see (passed as
-  an argument, or imported) is refused when it runs:
-  `'exec' while a scope is open (a within or always block) is refused`,
-  or `'exec' inside a parallel arm (pfor, Seq.pmap, Seq.piter,
-  Seq.pfirst) is refused`. If the exec itself fails (the command isn't
-  found), the env prefix and directory it set are undone, so the rest
-  of the script runs as before.
+  on Windows weir runs it, waits, and exits with its code). See below.
 
 All three accept an env overlay (`$e(cmd | line)`), and `line` and
 `text` accept piped input (`xs | grep foo | line`).
 
+#### `exec`
+
+The command keeps weir's pid, so as a container entrypoint it gets
+signals directly. It never returns, so it can stand alone as a
+statement. It starts in the session's current directory (a `cd`
+before it counts).
+
+It is refused:
+
+- with piped input
+- inside `plan`
+- inside any `within` block (`tmp`, `proc`, `lock`, `serve`, `cd`,
+  `env`, bare `within … always`), at check time: the replaced process
+  would skip the cleanup. Close the scope first.
+- in a function that execs, called from a scope, an `always` cleanup
+  or a parallel arm (`pfor`, `Seq.pmap`, `piter`, `pfirst`); the check
+  follows calls.
+
+A helper the check can't see (passed as an argument, or imported) is
+refused when it runs, with `'exec' while a scope is open (a within or
+always block) is refused` or `'exec' inside a parallel arm (pfor,
+Seq.pmap, Seq.piter, Seq.pfirst) is refused`.
+
+If the exec itself fails (command not found), its env prefix and
+directory are undone and the script carries on as before.
+
 ### Chaining
 
-`cmd | and next` runs `next` only if `cmd` succeeded, like bash's `&&`;
-if `cmd` fails, that failure is an error, so the script stops there.
-`cmd | or next` runs `next` only if `cmd` failed, like `||`; there the
-failure picks the branch instead of raising. Both stream output and
-return unit, and the right side is a whole command line, so a builtin
-such as `cd` works there:
+- `cmd | and next` is bash's `&&`: `next` runs only if `cmd`
+  succeeded. If `cmd` fails, that's an error and the script stops.
+- `cmd | or next` is `||`: `next` runs only if `cmd` failed. The
+  failure picks the branch instead of raising.
+
+Both stream and return unit. The right side is a whole command line,
+so a builtin like `cd` works there:
 
 ```weir
 sh -c "exit 1" | or echo "fell back"

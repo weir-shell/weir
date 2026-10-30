@@ -3,23 +3,28 @@
 ## What a module is
 
 A file that starts with `module` (alone, or `module Name`) is a
-module. It can be imported, it contains only declarations (`type`
-and `let`; no commands and no bare expressions), and it cannot be run
-on its own. A module's `let` cannot run a command when the module is
-imported (`| line` and the other reifiers, `|> Seq.freeze`, passing
-the command to a function); wrap the command in a function, and it
-runs when a script calls that function. A plain command value
-(`let log = git log -n 10`, or a pipeline of commands) is allowed: it
-is lazy, so importing runs nothing and each use runs it again. A module's top-level `let` values are evaluated
-when the importing program runs, never by `weir check`, which never
-evaluates anything.
+module. You import it; you can't run it.
+
+It holds only declarations: `type` and `let`. No commands, no bare
+expressions.
+
+A `let` can't run a command at import time. That rules out a reifier
+(`| line` and the others), `|> Seq.freeze`, and passing the command to
+a function. Wrap the command in a function instead; it runs when a
+script calls it.
+
+A plain command value is fine (`let log = git log -n 10`, or a
+pipeline of commands). It's lazy: importing runs nothing, and each use
+runs it again.
+
+Top-level `let` values are evaluated when the importing program runs.
+`weir check` never evaluates anything.
 
 ## Import forms
 
-Imports usually come first in the file. A later `import` works too:
-its alias can be used from that line on, not above it. How a
-path resolves depends only on how it is written, never on which files
-exist:
+Imports usually come first. A later `import` works too; its alias is
+usable from that line down. A path resolves by how it's written, never
+by which files exist:
 
 - `import "./lib/x.weir" as X` — a file path, relative to the
   importing file's directory (`lib.weir` and names without an
@@ -53,64 +58,78 @@ weir use-refmod.weir
 
 ## The signature is the export
 
-A member is exported by declaring its signature —
-`let twice : int -> int`, with no `=` — above its implementation.
-Members without a signature are private to the module: their types
-are inferred inside the module, importers can't see them, and using
-one from an importer is a check error that shows the signature to add
-(with the inferred type). The implementation needs no type
-annotations, because it is checked against the signature. A parameter
-can therefore pattern-match on its declared union type, and a generic
-signature (`'a -> 'a`) is enforced: an implementation that is less
-general than its signature is an error. The signature must come before
-the implementation, and a signature with no implementation is an
-error. Put `///` docs on the signature line, where the API is
-documented. `type` declarations are always exported. Scripts can't
-use signatures; in a script, types are always inferred.
+A signature line exports a member: `let twice : int -> int`, no `=`,
+above the implementation.
+
+- **No signature, no export.** Unsigned members are private: inferred
+  inside the module, invisible to importers. Using one from outside is
+  a check error that shows the signature to add, inferred type
+  included.
+- **The implementation needs no annotations.** It's checked against
+  the signature, so a parameter can pattern-match on its declared
+  union, and a generic signature (`'a -> 'a`) is enforced: a less
+  general implementation is an error.
+- **Order.** The signature comes first. A signature with no
+  implementation is an error.
+- **Docs.** `///` goes on the signature line.
+- **Types** are always exported.
+- **Scripts** can't use signatures; types there are always inferred.
 
 ## Qualified access, and what never leaks
 
-Imported values are always qualified: `X.helper`. An imported type has
-a qualified name too, `X.Ctx`, and it works in every place a type is
-written: a record field, a union case's payload, a signature, the
-`from json` slot (`from json X.Ctx`, `seq<X.Ctx>`, `Map<string, X.Ctx>`),
-`Env.load`/`Args.load`, and the record literal `X.Ctx { field = v }`.
-The plain name works too — `Ctx { field = v }`, `from json Ctx` — as long
-as only one import declares a type of that name.
+Imported values are always qualified: `X.helper`. A module exports
+only its own declarations, never what it imported. A local declaration
+takes precedence over an imported name.
 
-Two imports may declare the same type name. Then the plain name refers
-to neither: writing it is an error that lists the qualified names to
-choose from, and each type is reached as `A.Ctx` or `B.Ctx`. The two are
-different types even when their fields are the same, and error messages
-and hovers show the qualified name. A type you declare yourself keeps
-the plain name, and an import of the same name declared below it is
-reached qualified; a declaration below an import that already provides
-the name is an error.
-The same rules hold inside a module: declaring a type twice, or below
-an import that provides it, is an error reported at the module.
-Anonymous record shapes (`{| k: int |}`) belong to no module: two
-modules returning the same shape return one type.
+### Types
 
-An imported union's cases are qualified when you construct a value
-(`X.Red`). In a pattern you may name them bare (`| Red ->`) or
-qualified (`| X.Red ->`). That holds in every pattern position: match
-arms, `let` patterns, parameters, lambdas and nested patterns. A bare
-case resolves against the value's type, as a match arm does, so
-`let (Red r) = paint` works for an imported single-case union and a
-multi-case one is refused in a `let` as a pattern that can fail. A
-qualified case names its import, and the import is checked against the
-value: `Y.Red` on an `X` value is a type error naming both types. When
-two imports declare unions with the same case name and nothing types
-the value, a bare case is an error that lists the qualified spellings.
+An imported type is `X.Ctx`, in every place a type is written:
+
+- a record field, a union case's payload, a signature
+- the `from json` slot: `from json X.Ctx`, `seq<X.Ctx>`,
+  `Map<string, X.Ctx>`
+- `Env.load` / `Args.load`
+- the record literal `X.Ctx { field = v }`
+
+The plain name (`Ctx { field = v }`, `from json Ctx`) works while only
+one import declares it.
+
+When two imports declare the same name, the plain name refers to
+neither: writing it is an error listing `A.Ctx` and `B.Ctx`. They are
+different types even with identical fields, and errors and hovers show
+the qualified name.
+
+A type you declare yourself keeps the plain name; an import of the
+same name below it is reached qualified. Declaring a type below an
+import that already provides the name is an error. The same holds
+inside a module, where declaring a type twice is an error too.
+
+Anonymous shapes (`{| k: int |}`) belong to no module: two modules
+returning the same shape return one type.
+
+### Union cases
+
+Construct with the qualified case: `X.Red`. In patterns, bare
+(`| Red ->`) and qualified (`| X.Red ->`) both work, in every pattern
+position: match arms, `let`, parameters, lambdas, nested patterns.
+
+- A bare case resolves against the value's type, as in a match arm.
+  `let (Red r) = paint` works for an imported single-case union; a
+  multi-case one is refused in a `let` because the pattern can fail.
+- A qualified case is checked against the value: `Y.Red` on an `X`
+  value is a type error naming both types.
+- When two imports declare the same case name and nothing types the
+  value, a bare case is an error listing the qualified spellings.
+
+### Validated types
 
 A [validated type](types.md#validated-types) exports with its
-`create`: whenever the type is exported (always — types export with
-their cases), `X.Email.create` is reachable, or bare `Email.create`
-while one import declares `Email` (two imports name both spellings).
-Its case still exports for patterns (`| X.Email raw ->`), but not for
-construction: `X.Email "a@b"` refuses, naming `X.Email.create`.
-A local declaration always takes precedence over an imported name. A
-module exports only its own declarations, not what it imported.
+`create`, since types always export: `X.Email.create`, or bare
+`Email.create` while only one import declares `Email` (with two, the
+error names both spellings).
+
+Its case exports for patterns (`| X.Email raw ->`) but not for
+construction: `X.Email "a@b"` is refused, naming `X.Email.create`.
 
 ```weir
 let langA = <<<

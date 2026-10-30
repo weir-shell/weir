@@ -74,8 +74,7 @@ a `plan` block runs its reads and captures its file and HTTP changes as a
 `let pure f x = …`. None of them goes after `within`.
 <!-- keywords:end -->
 
-The reserved words are deliberate. Two of them, `rec` and `mutable`,
-are reserved with no meaning, so writing them out of F# habit gives
+`rec` and `mutable` have no meaning. They're reserved so F# habit gets
 an error instead of quietly binding a name:
 
 ```weir-error
@@ -83,11 +82,9 @@ let rec f x = x // 'rec' is reserved; weir has no let rec
 print "y"
 ```
 
-Two more are reserved only so that the error can help. weir has no
-such constructs, but if you type one out of habit from another
-language, the error tells you what to write instead: `while` points
-at `retry`/`poll` and seq iteration, and `return` at a function's last
-expression:
+`while` and `return` are reserved only for the error message, which
+says what to write instead: `while` points at `retry`/`poll` and seq
+iteration, `return` at a function's last expression:
 
 ```weir-error
 while true do print "x" // 'while' is not a weir word — the error points at retry/poll
@@ -111,13 +108,17 @@ print (show (def * 2))
 Strings come in five literal forms, each written on one line. For text
 that spans several lines, use a text block (below).
 
-**Ordinary** — `"..."` with escapes `\"`, `\\`, `\n`, `\t`, `\e` (ESC,
-U+001B, which starts a terminal escape sequence) and `\u{…}` (one
-Unicode code point in 1 to 6 hex digits: `\u{e9}` is `é`, `\u{1F600}`
-is 😀). Interpolated strings take the same escapes. Any other
-backslash is a parse error that lists them, and so is a `\u{…}` that
-names no character: a UTF-16 surrogate (`\u{D800}`–`\u{DFFF}`) or a
-value past `\u{10FFFF}`.
+**Ordinary** — `"..."`. Escapes, also valid in interpolated strings:
+
+| escape | |
+|---|---|
+| `\"` `\\` `\n` `\t` | the usual |
+| `\e` | ESC (U+001B), starts a terminal escape sequence |
+| `\u{…}` | one code point, 1–6 hex digits: `\u{e9}` is `é`, `\u{1F600}` is 😀 |
+
+Any other backslash is a parse error that lists these. So is a
+`\u{…}` that names no character: a UTF-16 surrogate
+(`\u{D800}`–`\u{DFFF}`) or anything past `\u{10FFFF}`.
 
 ```weir
 print "a\tb"
@@ -198,9 +199,11 @@ block |> Seq.iter print
 
 ## Numbers
 
-Integer literals are plain digits. A minus sign glued to the number or name after it, with a space (or
-nothing, or another operator) before it, makes that value negative —
-`-5`, `2 * -3`, and `f -1` passes −1 to `f`:
+Integer literals are plain digits.
+
+A minus glued to what follows it, with a space, nothing or another
+operator before it, negates: `-5`, `2 * -3`, and `f -1` passes −1 to
+`f`:
 
 ```weir
 print $"{-5} {2 * -3}"
@@ -209,9 +212,8 @@ print $"{-5} {2 * -3}"
 Spaced the same on both sides, it subtracts: `x-1` and `x - 1` both
 mean x minus 1. (So `x -1` is not subtraction — it passes −1 to `x`.)
 
-A minus before a name negates in that name's type, so `-x` works for
-a float, `Duration` or `Size` `x` as for an int. One gap remains: a
-lambda parameter whose type isn't known yet (`fun x -> -x`) is typed
+`-x` negates in `x`'s type: int, float, `Duration` or `Size`. One gap:
+a lambda parameter whose type isn't known yet (`fun x -> -x`) is typed
 as an int.
 
 Float literals have a decimal point (`1.5`). Nothing converts
@@ -332,10 +334,9 @@ if !true then print "x" // '!' is not negation — write 'not true'
 ## Directives
 
 A `#` line is an instruction to the tooling, not part of the
-language. Some directives are read when a script is checked; others
-run immediately, either from the REPL's init file (read once at
-startup) or typed at the REPL prompt. Each directive belongs to
-exactly one of these three contexts:
+language. Each directive belongs to one context: a script (read at
+check time), the REPL's init file (read once at startup), or the REPL
+prompt (runs immediately).
 
 | directive | purpose | context |
 |---|---|---|
@@ -352,13 +353,15 @@ exactly one of these three contexts:
 | `#history` | show history (`#history` all, `#history N` last N); prints the file path | REPL prompt, runs now |
 | `#quit` | leave the REPL | REPL prompt, runs now |
 
-There is no `#schema` directive: a `yaml` block names its schema on
-its marker line, `yaml schema=<name>` ([schemas](../tooling.md#yaml-schemas)).
-The [REPL manual](../repl.md) covers the prompt set and the init
-file; [signatures](../tooling.md#command-signatures) cover `#sig`.
-A directive outside its context is an error, the same at check and at
-run: `weir -e` takes none, and an init file takes only `#init`,
-`#session` and `#alias`.
+A directive outside its context is an error, at check and at run.
+`weir -e` takes none; an init file takes only `#init`, `#session` and
+`#alias`.
+
+There is no `#schema`: a `yaml` block names its schema on its marker
+line, `yaml schema=<name>` ([schemas](../tooling.md#yaml-schemas)).
+
+More: the [REPL manual](../repl.md) for the prompt and init file,
+[signatures](../tooling.md#command-signatures) for `#sig`.
 
 ## Attributes
 

@@ -21,81 +21,89 @@ editors, CI gates and agent loops.
 
 ## Which error you see
 
-When a line has more than one thing wrong, you see one error: the one
-at the furthest point the parser reached. A later mistake cannot hide
-an earlier one, and separate broken statements each report their own
-error. The position is always a real spot in your file; a hint may
-replace the message, but never moves the position. `check`,
-`check --json` and the LSP all report the same error.
+### At check time
 
-An error while the script runs is reported as `file:line:col` too, at
-the statement that failed — inside an `if`, `match`, `for`, `within`
-or `retry` body, a pipeline, or a lambda, not at the block's first
-line. A failed command points at the command itself, even when its
-output is only read a few lines later; a reifier's failure (`| text`,
-`| line`, …) points at its command. A failing call (`fail`, a builtin
-such as `Seq.item`) points at the function called, so `if bad then
-fail "x" else …` on one line points at `fail`. Other errors point at
-the start of the failing line. A failure inside a function
-reports the line in the function, then where it was called from, one
-line per call, innermost first:
+A line with several mistakes reports one error: the one at the
+furthest point the parser reached. So a later mistake can't hide an
+earlier one, and each broken statement reports its own.
+
+The position is always a real spot in your file. A hint may replace
+the message but never moves the position. `check`, `check --json`
+and the LSP report the same error.
+
+### At run time
+
+A runtime error is `file:line:col` too, at the statement that failed,
+not at the first line of its block (`if`, `match`, `for`, `within`,
+`retry`, a pipeline, a lambda). It points at:
+
+| failure | position |
+|---|---|
+| a command | the command, even if its output is read lines later |
+| a reifier (`\| text`, `\| line`, …) | its command |
+| a call (`fail`, a builtin such as `Seq.item`) | the function called, so `if bad then fail "x" else …` points at `fail` |
+| anything else | the start of the failing line |
+
+A failure inside a function reports the line in the function, then
+one `called from` line per call, innermost first:
 
 ```text
 lib.weir:7:5: error: command failed with exit code 9: sh -c exit 9
   called from deploy.weir:4:1
 ```
 
-Inline lambdas and `for` bodies add no `called from` line; they are
-part of the statement they're written in.
+Inline lambdas and `for` bodies add no `called from` line; they're
+part of their statement.
 
 ## Raising
 
-The model in one sentence: operations raise on failure; `|> try` /
-`|> try result` (or a `tryX` twin such as `Str.tryToInt`) turn a
-failure into a value; `|> orFail` turns an `Option`/`Result` back into
-a raise.
+Operations raise on failure. `|> try` / `|> try result` (or
+a `tryX` twin such as `Str.tryToInt`) turn a failure into a value.
+`|> orFail` turns an `Option`/`Result` back into a raise.
 
-A failing command raises an error when its output is read; a reifier
-turns the failure into a value instead
-([commands](commands.md#reifiers-and-chaining)). Builtins raise errors with a
-location and a readable message (`File.read: no such file: …`). There
-is no try/catch block. A resource that needs cleanup goes in a
-[`within` scope](scopes.md), which releases it however the block exits.
+A failing command raises when its output is read; a reifier makes the
+failure a value instead ([commands](commands.md#reifiers-and-chaining)).
+Builtins raise with a location and a readable message
+(`File.read: no such file: …`).
 
-To turn a failure into a value, end an expression with `|> try` — the
-expression twin of `| complete`:
+There is no try/catch block. Cleanup belongs in a
+[`within` scope](scopes.md), which releases its resource however the
+block exits.
 
-- `e |> try` is `Option<'T>`: `Some value`, or `None` if evaluating `e`
-  raised.
-- `e |> try result` is `Result<'T, string>`: `Ok value`, or `Error`
-  with the message. `Result` has `map`, `defaultValue`, `toOption` and
+### `try`
+
+The expression twin of `| complete`:
+
+- `e |> try` is `Option<'T>`: `Some value`, or `None` if `e` raised.
+- `e |> try result` is `Result<'T, string>`: `Ok value` or
+  `Error message`. `Result` has `map`, `defaultValue`, `toOption` and
   `isOk`.
-- Everything to the left of `|> try` is captured (`|>` groups left to
-  right), and the value is fully evaluated inside, sequences included,
-  so a failure can't surface after `try` returns. An infinite sequence
-  on the left never finishes.
-- `exit` still exits, and weir's own internal errors are not caught.
-  Effects that happened before the failure are not undone.
+- It captures everything to its left (`|>` groups left to right) and
+  evaluates it fully, sequences included, so no failure surfaces after
+  `try` returns. An infinite sequence on the left never finishes.
+- `exit` still exits, and weir's own internal errors aren't caught.
+  Effects before the failure are not undone.
 - `try` is only valid after `|>`.
 
-`|> orFail` is the inverse: it turns a failed value back into an
-error. Fail fast inside your helpers with `|> orFail`, and decide at
-the boundary with `|> try result`:
+### `orFail`
 
-- `e |> orFail` takes a `Result<'T, string>` or an `Option<'T>` and
-  gives the `'T`: `Ok v` and `Some v` become `v`. Anything else is a
-  check error that names both shapes.
+The inverse: a failed value becomes an error. Fail fast in helpers
+with `|> orFail`; decide at the boundary with `|> try result`.
+
+- `e |> orFail` takes a `Result<'T, string>` or an `Option<'T>`: `Ok v`
+  and `Some v` give `v`. Anything else is a check error naming both
+  shapes.
 - `Error msg` raises `msg`; `None` raises `orFail: no value (None)`.
-- With a message, `e |> orFail "no port"` (any string expression in the
-  same atom position `| orFail "msg"` takes), `Error msg` raises
-  `no port: msg` and `None` raises `no port`. Control characters in an
-  `Error`'s text are shown escaped, like any data in an error message.
-- The error points at the `orFail`, and it is an ordinary one: `|> try`
-  catches it, and a `pure` block allows it.
-- It captures everything to its left, like `try`, and `orFail` is a
+- `e |> orFail "no port"` adds a message (any string expression in the
+  atom position `| orFail "msg"` takes): `Error msg` raises
+  `no port: msg`, `None` raises `no port`. Control characters in an
+  `Error`'s text show escaped, like any data in an error message.
+- The error points at the `orFail` and is ordinary: `|> try` catches
+  it, and a `pure` block allows it.
+- Like `try`, it captures everything to its left, and `orFail` is a
   keyword. After a command the same word is the reifier,
   `<command> | orFail "msg"` (one `|`); `<command> |> orFail` is an
-  error that points at it.
+  error pointing at it.
 
 ```weir
 let cfg = Map.ofPairs [("port", "8080")]

@@ -2,32 +2,30 @@
 
 ## Scalars
 
-- `int` — 64-bit. Arithmetic overflow raises an error rather than
-  wrapping around, while a range simply stops at the type's limit, so
-  every value it yields is correct
-- `float` — always finite: an operation that would produce `NaN` or
-  `Infinity` raises an error, and `==` on floats is a check error that
-  suggests `Float.near`
-- `string` — positions and lengths (`Str.length`, `Str.sub`, slices,
-  `Str.padLeft`, and the regex members' positions, lengths and
-  captures) count Unicode code points; `Str.width` counts the
-  terminal columns the text takes when printed (two for a wide CJK
-  character or an emoji, none for a combining mark or a colour escape)
+- `int`: 64-bit. Overflow raises instead of wrapping. A range stops at
+  the type's limit, so every value it yields is correct.
+- `float`: always finite. An operation that would give `NaN` or
+  `Infinity` raises. `==` on floats is a check error suggesting
+  `Float.near`.
+- `string`: positions and lengths count Unicode code points
+  (`Str.length`, `Str.sub`, slices, `Str.padLeft`, and regex
+  positions, lengths and captures). `Str.width` counts terminal
+  columns instead: two for a wide CJK character or an emoji, none for
+  a combining mark or a colour escape.
 - `bool`
-- `unit` — the value an effect returns, written `()`
+- `unit`: what an effect returns, written `()`.
 
-Nothing converts implicitly: `3 / 2` is integer division, and mixing
-int and float is a type error that suggests `Float.ofInt`:
+Nothing converts implicitly. `3 / 2` is integer division, and mixing
+int and float is a type error suggesting `Float.ofInt`:
 
 ```weir-error
 print $"{3 / 2.0}" // no implicit widening; use Float.ofInt 3
 ```
 
-`%` is integer remainder, truncated, so the sign follows the dividend
-(`-7 % 3` is `-1`, as in F# and .NET; Python's floored `%` gives `2`).
-Dividing by zero raises an error, as with `/`. Floats are refused,
-because weir floats are always finite and IEEE remainder can produce
-NaN:
+`%` is integer remainder, truncated: the sign follows the dividend.
+`-7 % 3` is `-1`, as in F# and .NET (Python's floored `%` gives `2`).
+Dividing by zero raises, as with `/`. Floats are refused: weir floats
+are always finite, and IEEE remainder can produce NaN.
 
 ```weir
 print $"{7 % 3} {-7 % 3}"
@@ -39,21 +37,26 @@ print $"{7.5 % 2.0}" // '%' is integer-only — Float.toInt one side
 
 ## The unit-bearing scalars
 
-`Duration`, `Size`, and `Instant` carry their unit in the value.
+`Duration`, `Size` and `Instant` carry their unit in the value.
 Durations and sizes have literals ([Lexical](lexical.md#duration-literals));
-instants come from `Instant.now ()`, `Instant.parse` or `Instant.parseWith`. Arithmetic between values of
-the same type works where it makes sense. Arithmetic across types
-doesn't exist, and the errors name the explicit conversions
-(`Duration.toMillis`, `Size.parse`, `Instant.epochMs`).
+instants come from `Instant.now ()`, `Instant.parse` or
+`Instant.parseWith`.
+
+Arithmetic works within a type where it makes sense. Across types it
+doesn't exist, and the errors name the conversion (`Duration.toMillis`,
+`Size.parse`, `Instant.epochMs`).
 
 ## `Uuid`
 
-A 128-bit identifier with its own type, not just a string. `Uuid.v7`
-is time-ordered and strictly increasing within the process, so v7 ids
-sort by creation both as uuids and as their text; `Uuid.v4` is random;
-`Uuid.v5` is name-based and deterministic. `Uuid.parse` reads the
-hex-and-dash form, 32 bare hex digits, or a `urn:uuid:` prefix, in any
-case, and raises on anything else; `Uuid.tryParse` returns an `Option`.
+A 128-bit identifier with its own type, not a string.
+
+| make | gives |
+|---|---|
+| `Uuid.v7 ()` | time-ordered, strictly increasing within the process: sorts by creation as uuid and as text |
+| `Uuid.v4 ()` | random |
+| `Uuid.v5 ns name` | name-based, deterministic |
+| `Uuid.parse s` | reads hex-and-dash, 32 bare hex digits, or a `urn:uuid:` prefix, any case; raises on anything else |
+| `Uuid.tryParse s` | the same, as an `Option` |
 
 ```weir
 let id = Uuid.v7 ()
@@ -61,79 +64,93 @@ print $"{id} is version {Uuid.version id}"
 print $"{Uuid.v5 Uuid.ns.url "https://example.com"}"
 ```
 
-Uuids compare for equality and sort (`Seq.sort`, `Seq.min`), by their
-big-endian bytes, which is the same order as their text. There is no
-`<`, since identifiers are not quantities, and that holds through a
-generic function too (`let before a b = Some a < Some b` called with
-Uuids is a check error). In JSON and YAML they are
-written as the lowercase string, and they splice into a command's argv
-as that same text.
+Uuids support `==` and sort (`Seq.sort`, `Seq.min`) by their
+big-endian bytes, which is also their text order. There is no `<`:
+identifiers are not quantities. That holds through generic code too
+(`let before a b = Some a < Some b` called with Uuids is a check
+error).
+
+JSON and YAML write them as the lowercase string, and argv splices
+get the same text.
 
 ## `seq`
 
-A `seq` is lazy. Pipelines compute only what they need, and ranges
-are generated lazily, while `[a; b; c]` literals are ordinary eager
-values. Iterating a bound pipeline a second time runs its effects
-again, including external commands. `Seq.freeze` computes the values
-once and keeps them, and is the usual fix. The checker warns when a
-binding backed by a command is iterated in a second place without
-being frozen (`possible re-enumeration`; this is only a warning, and
-`weir check` still exits 0) — including indirectly: two calls of a
-function that reads it, a read inside a `for` body or a `Seq.map`
-lambda, or two uses of a lazy binding derived from it (`let ys = xs |>
-Seq.where …`). Capturing a command gives a
-`seq<string>`, one element per line.
+A `seq` is lazy: pipelines compute only what they need, and ranges
+generate as they go. `[a; b; c]` literals are eager. Capturing a
+command gives a `seq<string>`, one element per line.
+
+### Re-reading runs it again
+
+Iterating a bound pipeline a second time runs its effects again,
+external commands included. `Seq.freeze` computes once and keeps the
+values; it's the usual fix.
+
+The checker warns (`possible re-enumeration`; `weir check` still exits
+0) when a command-backed binding is read in a second place without a
+freeze. Indirect reads count:
+
+- two calls of a function that reads it
+- a read inside a `for` body or a `Seq.map` lambda
+- two uses of a lazy binding derived from it (`let ys = xs |> Seq.where …`)
+
+### Lazy `let`
 
 A `let` bound to a command, a pipeline of commands, `ls` or
-`Path.glob` holds a lazy value: nothing runs when it is bound, and
-each read runs it again, in the directory and environment current at
-that read; only a `within cd`/`within env` it was written inside is
-kept, however late the read (`let top = ls`, then `cd "src"`: `top`
-lists `src`). These run at once instead: the reifiers
-(`| line`, `| text`, `| complete`, `| succeeds`, `| exitCode`,
-`| orFail`, `| and`/`| or`), `Seq.freeze` and any other function that
-reads the whole sequence, and a `$(…)` or `$@xs` in a command
-argument (argv is built immediately). The contexts
-([guide](../GUIDE.md#lazy-values-a-let-is-a-recipe)):
+`Path.glob` runs nothing when bound. Each read runs it, in the
+directory and environment current at that read. Only an enclosing
+`within cd`/`within env` where it was written is kept, however late
+the read: `let top = ls`, then `cd "src"`, and `top` lists `src`.
 
-- script: nothing runs until the value is used
-- REPL: the echo of a lazy `let` shows `name : type (command-backed —
-  runs on each use; type name to run it)` and never runs it
-- init file and modules: a command, a pipeline of commands or a value
-  piped into a command is allowed; the eager forms and passing the
-  command to a function are refused, since nothing may run at load
+These run at once instead:
 
-List items are separated by `;` (or by line breaks). A comma builds a
-tuple, so `[1, 2]` is a one-item list holding `(1, 2)`; the checker
-warns about that shape and suggests `[1; 2]`, or `[(1, 2)]` if the
-tuple was meant. A list of several pairs, `["a", 1; "b", 2]`, is fine.
+- the reifiers: `| line`, `| text`, `| complete`, `| succeeds`,
+  `| exitCode`, `| orFail`, `| and`/`| or`
+- `Seq.freeze`, and any function that reads the whole sequence
+- `$(…)` or `$@xs` in a command argument (argv is built immediately)
 
-`xs[i]` is `Seq.item i xs` and raises an error when out of range. The
-bracket must directly follow the name, because `f [0]` is a function
-call. `xs[a..b]` slices, **inclusive and clamped** to the available
-range (an out-of-range or reversed range gives an empty result rather
-than an error), and either end can be left open: `xs[..b]` / `xs[a..]`.
-A bounded slice stops reading a lazy source, so
-`(Seq.initInfinite id)[0..4]` terminates. A slice has the type of what you slice: a `seq` gives a
-`seq`, a `string` a `string` (`"weir"[1..2]` is `"ei"`, counted in
-code points), and `Bytes` gives `Bytes`. `^n` counts from the end
-(`^n` = length − n): `xs[^1]` is the last element, `xs[..^2]` all but
-the last, `xs[^2..]` the last two, `xs[^3..^1]` uses the end for both
-bounds. A `^` bound needs the length, so slicing a seq from the end
-reads the whole sequence; slices that count from the start stay lazy.
-There is no dotted `xs.[i]`.
+By context ([guide](../GUIDE.md#lazy-values-a-let-is-a-recipe)):
+
+| context | lazy `let` |
+|---|---|
+| script | runs when the value is used |
+| REPL | the echo shows `name : type (command-backed — runs on each use; type name to run it)` and never runs it |
+| init file, modules | a command, a pipeline of commands, or a value piped into a command is allowed; eager forms and passing the command to a function are refused, since nothing may run at load |
+
+### List literals
+
+Items are separated by `;` or line breaks. A comma builds a tuple, so
+`[1, 2]` is a one-item list holding `(1, 2)`. The checker warns about
+that shape and suggests `[1; 2]`, or `[(1, 2)]` if you meant the
+tuple. A list of pairs, `["a", 1; "b", 2]`, is fine.
+
+### Indexing and slicing
+
+- `xs[i]` is `Seq.item i xs`; it raises when out of range. The bracket
+  must touch the name: `f [0]` is a function call. There is no dotted
+  `xs.[i]`.
+- `xs[a..b]` slices, **inclusive and clamped**: an out-of-range or
+  reversed range gives an empty result, not an error. Either end can
+  be open: `xs[..b]`, `xs[a..]`.
+- A slice has the type of what you slice: `seq` gives `seq`, `string`
+  gives `string` (`"weir"[1..2]` is `"ei"`, in code points), `Bytes`
+  gives `Bytes`.
+- A bounded slice stops reading a lazy source, so
+  `(Seq.initInfinite id)[0..4]` terminates.
+- `^n` counts from the end (length − n): `xs[^1]` is the last element,
+  `xs[..^2]` all but the last, `xs[^2..]` the last two, `xs[^3..^1]`
+  both bounds from the end. A `^` bound needs the length, so it reads
+  the whole seq; slices from the start stay lazy.
 
 ## Tuples
 
-`(a, b)` — two or more elements. A tuple type is just its element types; it needs no declaration. As soon as
-the parts need names, declare a record instead. `fst`/`snd` work on
-pairs only.
+`(a, b)`: two or more elements. The type is just the element types; no
+declaration needed. Once the parts need names, use a record. `fst` and
+`snd` work on pairs only.
 
 ## Records
 
-Records are nominal and have a fixed set of fields: a record literal
-must name every field, and `with` copies a record with some fields
-changed but cannot add new ones:
+Records are nominal with a fixed field set. A literal names every
+field; `with` copies with some fields changed but can't add new ones:
 
 ```weir
 type Score = { Name: string; Points: int }
@@ -151,24 +168,28 @@ print $"{q}"
 ```
 
 Two declared records with the same fields are different types.
-Anonymous record types like `{| ip: string |}` are the exception: two
-with the same fields are the same type, whatever the field order.
-They are meant for reading an external shape once
-(`from json {| ip: string |}`); for your own data, declare a record.
-Fields can take attributes ([Lexical](lexical.md#attributes)), which
-are read at check time and have no effect at runtime. A field whose
-JSON/YAML key is not a legal identifier gives the key with
-`[<Wire "key">]`.
+Anonymous records like `{| ip: string |}` are the exception: same
+fields, same type, whatever the order. Use them to read an external
+shape once (`from json {| ip: string |}`); declare a record for your
+own data.
+
+Fields take attributes ([Lexical](lexical.md#attributes)), read at
+check time with no runtime effect. A JSON/YAML key that isn't a legal
+identifier goes in `[<Wire "key">]`.
+
+### Ordering
 
 A record sorts and compares once its fields carry `[<Ord n>]`
-positions ([Constraints](#constraints)): the order is by the numbered
-fields in ascending `n`, so position 1 decides and position 2 breaks
-ties — the numbers, never the declaration order. Unnumbered fields
-take no part: two values equal on the key but different elsewhere are
-neither `<` nor `>` nor `==`, and a sort keeps their input order.
-Every numbered field must itself order (a scalar, `Duration`/`Size`/
-`Instant`/`Uuid`, an `Option` of one, another numbered type), or the
-declaration refuses, naming the field.
+([Constraints](#constraints)):
+
+- Order is by numbered fields, ascending `n`: position 1 decides,
+  position 2 breaks ties. The numbers count, never declaration order.
+- Unnumbered fields take no part. Two values equal on the key but
+  different elsewhere are neither `<`, `>` nor `==`, and a sort keeps
+  their input order.
+- Each numbered field must itself order (a scalar,
+  `Duration`/`Size`/`Instant`/`Uuid`, an `Option` of one, another
+  numbered type), or the declaration is refused, naming the field.
 
 ```weir
 type SemVer = { [<Ord 1>] major: int; [<Ord 2>] minor: int; [<Ord 3>] patch: int; build: Option<string> }
@@ -180,10 +201,10 @@ print $"{top < { major = 2; minor = 0; patch = 0; build = None }}"
 
 ## Unions
 
-Each case can carry a payload; a payload of several values is a
-tuple. You construct a value by writing the case name. For an
-imported union, constructing a value needs the module name (`X.Red`),
-but a pattern names the case bare (`| Red ->`):
+Each case can carry a payload; several values make a tuple payload.
+Write the case name to construct. An imported union needs the module
+name to construct (`X.Red`), but a pattern names the case bare
+(`| Red ->`):
 
 ```weir
 type Verdict =
@@ -197,10 +218,10 @@ match v with
 | Fail -> print "no"
 ```
 
-`[<Ord n>]` on every case orders a union's values by case position,
-then by payload — `Pre "alpha" < Release` below. A union numbers every
-case or none. A tuple payload (`C of int * string`) cannot order; name
-the parts in a record.
+`[<Ord n>]` on every case orders values by case position, then by
+payload: `Pre "alpha" < Release` below. A union numbers every case or
+none. A tuple payload (`C of int * string`) can't order; name the
+parts in a record.
 
 ```weir
 type Pre = [<Ord 1>] Pre of string | [<Ord 2>] Release
@@ -211,17 +232,19 @@ print (show ([Release; Pre "b"; Pre "a"] |> Seq.sort))
 
 ## Validated types
 
-A single-case union can declare a `validate` block: an indented
-`validate <binder> = <expr>` under the declaration. The binder takes
-the payload; the body only checks it and returns `unit`, refusing by
-raising: `fail` with the message users will see, or any other raise (a
-failing `Str.toInt`, an `|> orFail`), whose message becomes the
-refusal. `if … then fail …` with no `else` is the idiom. The block
-cannot change the value: an accepted payload is stored exactly as
-given, so a wire round trip is byte-identical and `==` compares what
-was written. Normalising is the caller's job:
-`Email.create (Str.toLower input)`. The type then holds only values
-the block accepted.
+A single-case union can carry an indented `validate <binder> = <expr>`
+block under its declaration. The type then holds only values the
+block accepted.
+
+- The binder takes the payload. The body only checks, returning
+  `unit`.
+- It refuses by raising: `fail` with the message users see, or any
+  other raise (a failing `Str.toInt`, an `|> orFail`), whose message
+  becomes the refusal. The idiom is `if … then fail …` with no `else`.
+- It can't change the value. An accepted payload is stored exactly as
+  given, so a wire round trip is byte-identical and `==` compares what
+  was written. Normalising is the caller's job:
+  `Email.create (Str.toLower input)`.
 
 ```weir
 type Email = Email of string
@@ -290,12 +313,13 @@ let e = Email "x" // 'Email' is validated — build it with Email.create (it rai
 
 ## `Option`
 
-`Some x` / `None` represent a value that may be missing. The `try`
-functions return them (`Seq.tryFind`, `Str.tryToInt`,
-`Bytes.tryFromBase64`), and you handle them with `match` or the
-`Option` module (`defaultValue`, `map`, `orFail`). `Option` values
-order, `None` first, so they sort and can be numbered fields of an
-ordered record:
+`Some x` / `None`: a value that may be missing. The `try` functions
+return them (`Seq.tryFind`, `Str.tryToInt`, `Bytes.tryFromBase64`).
+Handle them with `match` or the `Option` module (`defaultValue`,
+`map`, `orFail`).
+
+Options order, `None` first, so they sort and can be numbered fields
+of an ordered record:
 
 ```weir
 print (show ([Some 2; None; Some 1] |> Seq.sort))
@@ -303,29 +327,35 @@ print (show ([Some 2; None; Some 1] |> Seq.sort))
 
 ## `Map`
 
-`Map<K, V>` takes any key type that supports equality: `int`,
-`string`, `bool`, `Duration`, `Size`, `Instant`, `Uuid`, `Bytes`,
-`Secret`, and unions, tuples and records built from those. A `float`
-key is an error, and so is a record that holds a float, because
-floats have no equality ([Constraints](#constraints)); seqs,
-functions and maps can't be keys either.
+`Map<K, V>` takes any key with equality: `int`, `string`, `bool`,
+`Duration`, `Size`, `Instant`, `Uuid`, `Bytes`, `Secret`, and unions,
+tuples and records of those. Not allowed: `float` keys, or records
+holding a float (floats have no equality, see
+[Constraints](#constraints)); seqs, functions and maps.
 
-The functions are `ofPairs` (the last duplicate key wins), `get`
-(raises an error naming a missing key, shown as `show` would show
-it), `tryGet`, `has`, `add`, `remove`, `count`, and
-`pairs`/`keys`/`values` (sorted by key). There is no `m[k]` indexing,
-and `==` is not defined.
+| function | |
+|---|---|
+| `ofPairs` | last duplicate key wins |
+| `get` | raises on a missing key, naming it as `show` would |
+| `tryGet`, `has`, `add`, `remove`, `count` | |
+| `pairs`, `keys`, `values` | sorted by key |
 
-Key order is always the same for the same keys. Scalars sort as
-`Seq.sort` sorts them, tuples compare element by element, records
-field by field in field-name order, and union cases by case name
-(ordinal string order), then by payload. `Bytes` and `Secret` keys
-compare by content.
+There is no `m[k]` indexing, and `==` is not defined.
 
-Union keys order by case name, unlike F#, which uses declaration
-order: a union value carries only its case name, and name order needs
-no hidden state. So `Large` sorts before `Small` below, and `Error`
-before `Ok` in a `Map<Result<int, string>, V>`.
+### Key order
+
+The same keys always give the same order:
+
+- scalars as `Seq.sort` sorts them
+- tuples element by element
+- records field by field, in field-name order
+- union cases by case name (ordinal), then payload
+- `Bytes` and `Secret` by content
+
+Union keys order by case name, not declaration order as in F#: a union
+value carries only its case name, and name order needs no hidden
+state. So `Large` sorts before `Small` below, and `Error` before `Ok`
+in a `Map<Result<int, string>, V>`.
 
 ```weir
 type Tier = Small | Medium | Large
@@ -335,10 +365,12 @@ counts |> Map.pairs |> Seq.iter (fun (s, n) -> print $"{s}: {n}")
 print (show (Map.ofPairs [((2, "b"), 1); ((1, "z"), 2)]))
 ```
 
-JSON object keys are strings, so only a `Map<string, V>` crosses
-`to json` and `from json`; a `Map<int, V>` there is an error that
-shows the conversion, `Map.pairs |> Seq.map (fun (k, v) -> (show k,
-v)) |> Map.ofPairs`. YAML doesn't take a `Map` yet.
+### On the wire
+
+JSON object keys are strings, so only `Map<string, V>` crosses
+`to json`/`from json`. A `Map<int, V>` there is an error showing the
+conversion: `Map.pairs |> Seq.map (fun (k, v) -> (show k, v)) |>
+Map.ofPairs`. YAML doesn't take a `Map` yet.
 
 ```weir-error
 let a = Map.ofPairs [("k", 1)]
@@ -351,72 +383,81 @@ let m = Map.ofPairs [(0.5, "half")] // a float key: floats have no equality
 
 ## `Bytes` and `Secret`
 
-`Bytes` holds binary data. It is never converted to or from text
-implicitly — you read and write it with functions like
-`File.readBytes` and `File.writeBytes` — and anywhere it would be rendered as text the error
-names the function to use instead
-([the guide](../GUIDE.md#binary-data-bytes)). It slices like a
-sequence — `b[1..3]`, `b[..2]`, `b[3..]`, inclusive and clamped,
-giving `Bytes` — but has no single-element `b[i]`; use
-`Bytes.sub start len` to take a range, including a single byte
-(`Bytes.sub i 1`). `Secret` marks a
-credential so it is never shown by accident: `show` masks it,
-interpolation and serialization refuse it, `Secret.reveal` is the
-only way to get the text out, and splicing it into argv passes it
-as-is.
+`Bytes` is binary data ([guide](../GUIDE.md#binary-data-bytes)):
+
+- Never converted to or from text implicitly. Read and write it with
+  `File.readBytes`, `File.writeBytes` and similar; wherever it would
+  render as text, the error names the function to use.
+- Slices like a seq: `b[1..3]`, `b[..2]`, `b[3..]`, inclusive and
+  clamped, giving `Bytes`.
+- No single-element `b[i]`. `Bytes.sub start len` takes a range,
+  including one byte (`Bytes.sub i 1`).
+
+`Secret` marks a credential so it's never shown by accident:
+
+- `show` masks it; interpolation and serialization refuse it.
+- `Secret.reveal` is the only way to get the text.
+- Spliced into argv, it passes as-is.
 
 ## Functions
 
-`let f x y = …` is curried, and you can partially apply any function.
-Bindings are generic where possible: `let id x = x` works on any type,
-and a function-typed parameter is inferred too, so
-`let apply f x = f x` has type `('a -> 'b) -> 'a -> 'b` and can be
-called like any function:
+`let f x y = …` is curried; any function can be partially applied.
+Bindings are generic where possible: `let id x = x` takes any type,
+and function-typed parameters are inferred, so `let apply f x = f x`
+is `('a -> 'b) -> 'a -> 'b`:
 
 ```weir
 let apply f x = f x
 print (apply (fun n -> n + 1) 1)
 ```
 
-The one place inference falls short: `+` on two values of unknown
-type can't be inferred (int or string?), so pin one side down, for
-example with `x + 0`.
+One gap: `+` on two values of unknown type can't be inferred (int or
+string?). Pin one side, e.g. `x + 0`.
 
-You can also **write** a function type — in a union payload, a record
-field, or a generic argument: `Custom of (string -> bool)`,
-`{ matches: string -> bool }`. `->` is right-associative and binds
-more loosely than `*` and generics (`int * string -> bool` is
-`(int * string) -> bool`); a function-typed argument needs
-parentheses (`(unit -> int) -> string`). You can construct such a
-value and call the function inside it, but `==`, `to json`, `to yaml`
-and `show` reject any type that contains a function anywhere, and the
-error names the field. So whether a record can be serialized depends
-on its fields: a record of plain scalars works everywhere.
+### Function types
+
+You can write a function type in a union payload, a record field or a
+generic argument: `Custom of (string -> bool)`,
+`{ matches: string -> bool }`.
+
+- `->` is right-associative and binds looser than `*` and generics:
+  `int * string -> bool` is `(int * string) -> bool`.
+- A function-typed argument needs parentheses:
+  `(unit -> int) -> string`.
+- You can construct the value and call the function inside it, but
+  `==`, `to json`, `to yaml` and `show` reject any type containing a
+  function, naming the field. A record of plain scalars works
+  everywhere.
 
 ## Constraints
 
 Equality, rendering and ordering each work through a built-in
-constraint. Constraints are inferred, never written out, and you
-cannot define your own (there are no user type classes). A helper
-like `let same x y = x == y` works on any type that supports
-equality, and using it with any other type is an error where it is
-called. Functions and seqs can't be compared, and for floats the
-error suggests `Float.near`.
+constraint. Constraints are inferred, never written, and you can't
+define your own (no user type classes).
+
+`let same x y = x == y` works on any type with equality; any other
+type is an error at the call. Functions and seqs can't be compared;
+for floats the error suggests `Float.near`.
 
 ```weir
 let same x y = x == y
 print $"{same 1 1} {same "a" "b"}"
 ```
 
-Ordering is the one constraint you opt into for your own types: a
-record or union sorts (`Seq.sort`, `sortBy` keys, `min`/`max`) and
-compares (`<`, `>`, `<=`, `>=`) only by `[<Ord n>]` positions written
-on its fields or cases, so the order is spelled, never read off the
-declaration. Scalars (`int`, `float`, `string` — ordinal —, `bool`,
-`Duration`, `Size`, `Instant`), `Option` of them and numbered types
-both sort and compare with `<`/`>`/`<=`/`>=`: whatever `Seq.sort`
-orders, the operators compare. Tuples do not — name the parts in a
-record and number them with `[<Ord n>]`:
+Ordering is the one you opt into for your own types. A record or
+union sorts (`Seq.sort`, `sortBy` keys, `min`/`max`) and compares
+(`<`, `>`, `<=`, `>=`) only by `[<Ord n>]` positions on its fields or
+cases. The order is written down, never read off the declaration.
+
+What orders, both for `Seq.sort` and the operators:
+
+- scalars: `int`, `float`, `string` (ordinal), `bool`, `Duration`,
+  `Size`, `Instant`
+- `Option` of them
+- numbered types
+
+Tuples don't. Name the parts in a record and number them with
+`[<Ord n>]`:
 
 ```weir
 print (show ("a" < "b"))

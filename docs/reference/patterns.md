@@ -1,14 +1,17 @@
 # Patterns
 
-Patterns appear in `match` arms (the `| pattern -> …` lines), `let`,
-`for`, and function parameters. A parameter is a plain identifier,
-`()`, a parenthesized tuple pattern (`let dist (x, y) = …`), or a
-record pattern (without parentheses: `let label { names = n } = n`).
-In these binding positions the pattern must always succeed; a pattern
-that can fail (`Some x`, a literal) is rejected there — use `match`
-or `function` instead. A single-case union's constructor always
-succeeds (`let (Tag t) = tag`), whether the union is declared here or
-imported.
+Patterns appear in `match` arms (`| pattern -> …`), `let`, `for`, and
+function parameters. A parameter is one of:
+
+- a plain identifier
+- `()`
+- a tuple pattern in parentheses: `let dist (x, y) = …`
+- a record pattern, no parentheses: `let label { names = n } = n`
+
+Outside `match`, a pattern must always succeed. One that can fail
+(`Some x`, a literal) is rejected; use `match` or `function`. A
+single-case union's constructor always succeeds (`let (Tag t) = tag`),
+declared here or imported.
 
 ```weir
 type Crew = { names: string }
@@ -104,16 +107,17 @@ print n
 
 ### Qualified cases
 
-A case of an imported union may be written qualified, `A.Case`, in any
-pattern: a match arm, a `let` pattern, a parameter, a lambda, or nested
-inside another pattern. The qualifier is the import's name (its `as`
-alias, or the module's own name when there is no alias), the same name
-you construct with. It is checked against the value's type, so a case
-of one import's union on a value of another import's type is a type
-error naming both. A bare case keeps working; when two imports declare
-unions with the same case name and the value's type does not settle
-which one is meant, the bare case is an error listing both qualified
-spellings. Cases of a union declared in the same file are written bare.
+A case of an imported union can be written `A.Case` in any pattern:
+match arm, `let`, parameter, lambda, or nested.
+
+- The qualifier is the import's name (its `as` alias, else the
+  module's name), the same one you construct with.
+- It's checked against the value's type: another import's case is a
+  type error naming both.
+- Bare cases still work. When two imports declare the same case name
+  and the value's type doesn't decide, a bare case is an error listing
+  both qualified spellings.
+- Cases of a union declared in the same file are written bare.
 
 ```weir
 ["module Shapes"; "type Shape = Circle of int | Square of int"; "type Tag = Tag of string"]
@@ -199,11 +203,13 @@ print (f 1)
 ## Guards
 
 Alternatives share one arm: `| "a" | "b" -> …`, `| Debug | Info -> …`.
-Each alternative behaves as its own arm with the same guard and body,
-so a union's alternatives count toward exhaustiveness. An alternative
-cannot bind a name yet — `| (n, 0) | (0, n) -> n` is an error; write one
-arm per alternative. An arm takes at most 64 alternatives; for a longer
-list, test membership in a guard: `| x when Seq.contains x values -> …`.
+Each acts as its own arm with the same guard and body, so they count
+toward exhaustiveness.
+
+- Alternatives can't bind names yet: `| (n, 0) | (0, n) -> n` is an
+  error. Write one arm each.
+- At most 64 per arm. For longer lists, use a guard:
+  `| x when Seq.contains x values -> …`.
 
 ```weir
 type Level = Debug | Info | Warn | Error
@@ -256,14 +262,17 @@ match "cache=42" with
 
 ## Exhaustiveness
 
-A match that doesn't cover every case is an error, not a warning.
-Likewise, an arm that can never be reached because a catch-all comes
-before it is an error. When matching on a union, listing every case
-makes the match complete; literal arms and record arms that can fail
-never do. A tuple is complete when its arms cover every combination of
-its components — `(true, _)` and `(false, _)`, or all four
-`Some`/`None` pairs — and the error names one combination that is
-missing (`missing: (None, Some _)`).
+Both of these are errors, not warnings:
+
+- a match that doesn't cover every case
+- an arm that can't be reached because a catch-all comes before it
+
+Listing every case of a union completes a match. Literal arms and
+record arms that can fail never do.
+
+A tuple is complete when its arms cover every combination:
+`(true, _)` and `(false, _)`, or all four `Some`/`None` pairs. The
+error names one missing combination (`missing: (None, Some _)`).
 
 ```weir
 let both a b =
