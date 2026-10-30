@@ -786,6 +786,110 @@ let tryPickExprChild (f: Expr -> 'a option) (e: Expr) : 'a option =
         go parts
     | EYaml(tpl, _, _) -> ofList (yamlTplExprs tpl)
 
+/// every child of a node, in exprChildren order, without the list
+let iterExprChildren (f: Expr -> unit) (e: Expr) : unit =
+    let ofOpt (o: Expr option) =
+        match o with
+        | Some e -> f e
+        | None -> ()
+
+    match e.Kind with
+    | EInt _
+    | EDur _
+    | EFloat _
+    | ESize _
+    | EStr _
+    | EBool _
+    | EUnit
+    | EVar _
+    | EFrom _
+    | ETo _
+    | ETryForm _
+    | EOpValue _ -> ()
+    | ETry(b, _) -> f b
+    | EOrFail(b, m, _) ->
+        f b
+        ofOpt m
+    | EOrFailForm m -> ofOpt m
+    | ELet(_, _, v, b) ->
+        f v
+        f b
+    | ELetPat(_, v, b) ->
+        f v
+        f b
+    | ELambda(_, _, b) -> f b
+    | ELambdaPat(_, b) -> f b
+    | EWithin(_, _, arg, opts, b) ->
+        ofOpt arg
+        ofOpt opts
+        f b
+    | EAlways(b, c) ->
+        f b
+        f c
+    | EHold b -> f b
+    | ECapture e -> f e
+    | EApp(fn, x) ->
+        f fn
+        f x
+    | EPipe(x, fn) ->
+        f x
+        f fn
+    | EField(t, _, _) -> f t
+    | ESlice(t, lo, hi, _, _) ->
+        f t
+        ofOpt lo
+        ofOpt hi
+    | EBinOp(_, l, r) ->
+        f l
+        f r
+    | ERecord fields
+    | EAnonRecord fields ->
+        for _, _, v in fields do
+            f v
+    | EMatch(s, arms) ->
+        f s
+
+        for _, g, b in arms do
+            ofOpt g
+            f b
+    | EIf(c, t, e) ->
+        f c
+        f t
+        ofOpt e
+    | ESeq(a, b) ->
+        f a
+        f b
+    | EList items -> List.iter f items
+    | ETuple items -> List.iter f items
+    | ECmd(h, args, envO) ->
+        (match h with
+         | HeadDyn(_, e) -> f e
+         | HeadLit _ -> ())
+
+        List.iter f args
+        ofOpt envO
+    | EDynProg(_, e) -> f e
+    | ESplat e -> f e
+    | EUpdate(src, ups) ->
+        f src
+
+        for _, v in ups do
+            f v
+    | ERetry(_, opts, watch, body, until) ->
+        f opts
+        ofOpt watch
+        f body
+
+        match until with
+        | Some(_, pred) -> f pred
+        | None -> ()
+    | EInterp parts ->
+        for part in parts do
+            match part with
+            | IExpr e -> f e
+            | IStr _ -> ()
+    | EYaml(tpl, _, _) -> List.iter f (yamlTplExprs tpl)
+
 type Stmt =
     | SLet of name: string * value: Expr
     | SLetPat of binder: Pattern * value: Expr

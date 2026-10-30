@@ -1005,26 +1005,28 @@ let private cmpDescribe (op: string option) (env: TypeEnv) (t: Ty) : string =
         let off = ordOffender env Set.empty t |> Option.defaultValue t
         $"{subject} — {ordTail env true off}"
 
+// the row vars a scheme's type mentions — fields included, type
+// arguments not
+let rec private rowNames (ty: Ty) : Set<string> =
+    match ty with
+    | TRowVar(r, fields) -> fields |> List.fold (fun acc (_, t) -> acc + rowNames t) (Set.singleton r)
+    | TFun(a, b) -> rowNames a + rowNames b
+    | TSeq t -> rowNames t
+    | TTuple ts -> ts |> List.fold (fun acc t -> acc + rowNames t) Set.empty
+    | _ -> Set.empty
+
+let rec private hasRowVar (ty: Ty) : bool =
+    match ty with
+    | TRowVar _ -> true
+    | TFun(a, b) -> hasRowVar a || hasRowVar b
+    | TSeq t -> hasRowVar t
+    | TTuple ts -> ts |> List.exists hasRowVar
+    | _ -> false
+
 let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
     if Set.isEmpty sch.Forall then
         sch.Ty
     else
-        let rec rowNames ty =
-            match ty with
-            | TRowVar(r, fields) -> fields |> List.fold (fun acc (_, t) -> acc + rowNames t) (Set.singleton r)
-            | TFun(a, b) -> rowNames a + rowNames b
-            | TSeq t -> rowNames t
-            | TTuple ts -> ts |> List.fold (fun acc t -> acc + rowNames t) Set.empty
-            | _ -> Set.empty
-
-        let rec hasRowVar ty =
-            match ty with
-            | TRowVar _ -> true
-            | TFun(a, b) -> hasRowVar a || hasRowVar b
-            | TSeq t -> hasRowVar t
-            | TTuple ts -> ts |> List.exists hasRowVar
-            | _ -> false
-
         let rows = if hasRowVar sch.Ty then rowNames sch.Ty else Set.empty
 
         let mapping =
@@ -1568,7 +1570,7 @@ let private execSite (e: Expr) : Ast.Span option =
     let rec go (e: Expr) =
         match e.Kind with
         | EVar v when v.StartsWith "|execed" -> Some e.Span
-        | _ -> Ast.exprChildren e |> List.tryPick go
+        | _ -> Ast.tryPickExprChild go e
 
     go e
 
@@ -4506,7 +4508,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             let rec exitSite (e: Expr) : Ast.Span option =
                 match e.Kind with
                 | EVar "exit" -> Some e.Span
-                | _ -> Ast.exprChildren e |> List.tryPick exitSite
+                | _ -> Ast.tryPickExprChild exitSite e
 
             do!
                 match exitSite cleanup with
@@ -7610,7 +7612,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             let rec exitSite (e: Expr) : Ast.Span option =
                 match e.Kind with
                 | EVar "exit" -> Some e.Span
-                | _ -> Ast.exprChildren e |> List.tryPick exitSite
+                | _ -> Ast.tryPickExprChild exitSite e
 
             do!
                 match exitSite cleanup with
@@ -8235,7 +8237,7 @@ let anonDefs (expr: Expr) : (string * TypeDef) list =
                      }
          | _ -> ())
 
-        exprChildren e |> List.iter walk
+        iterExprChildren walk e
 
     walk expr
     acc |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq
