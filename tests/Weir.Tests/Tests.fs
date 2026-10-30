@@ -20665,6 +20665,9 @@ let depthGuardTests =
                     "let f x = within tmp d git init -q $d"
                     "within proc p = sleep 10" + sib + "print \"started\""
                     "let f files = for f in files do git add $f"
+                    "let f x = retry attempts=3 delay=1s git fetch | complete"
+                    + sib
+                    + "until r r.exitCode == 0"
                     "let f x = git add $x" + sib + "git commit -m x"
                     "let f x = (fun y -> git show $y) x"
                 ] do

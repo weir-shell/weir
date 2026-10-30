@@ -1305,6 +1305,9 @@ and private term (st: St) : Expr =
             | "from" -> fromExpr st
             | "to" -> toExpr st
             | "within" -> withinExpr st
+            | "retry"
+            | "poll"
+            | "repeat" -> retryForm st
             | "for" -> loopExpr st "for" "|seqIter"
             | "pfor" -> loopExpr st "pfor" "|seqPiter"
             | "true"
@@ -3895,6 +3898,147 @@ and private withinTail (st: St) (cleanupBody: St -> Expr) : Expr option =
     else
         st.I <- save
         None
+
+// retry/poll/repeat [D:retry-poll]: `key=atom` pairs desugar to the
+// defaults record's update (watch= peeled [D:scoped-procs]), or one
+// options atom; the body; an optional `until x` predicate block (`until
+// stopped` is refused)
+and private retryForm (st: St) : Expr =
+    let p = here st
+    let w = takeWord st
+    ws st
+
+    let kind =
+        match w with
+        | "retry" -> LoopRetry
+        | "poll" -> LoopPoll
+        | _ -> LoopRepeat
+
+    let defaultsKey =
+        match kind with
+        | LoopRetry -> "|retryDefaults"
+        | LoopPoll -> "|pollDefaults"
+        | LoopRepeat -> "|repeatDefaults"
+
+    st.Depth <- st.Depth + 1
+    let mutable pairs = []
+    let mutable go = not (tooDeep st)
+
+    if not go then
+        refuse st |> ignore
+
+    while go do
+        let save = st.I
+        let k, ks = identSpanned st
+
+        if isNull' k || peek st <> '=' then
+            st.I <- save
+            go <- false
+        else
+            st.I <- st.I + 1
+            let v = postfixAtom st
+
+            if not st.Ok then
+                go <- false
+            elif isNull' v then
+                refuse st |> ignore
+                go <- false
+            else
+                pairs <- ((k, ks), v) :: pairs
+
+    let pairs = List.rev pairs
+
+    let e =
+        if not st.Ok then
+            Unchecked.defaultof<_>
+        elif
+            pairs
+            |> List.countBy (fun ((k, _), _) -> k)
+            |> List.exists (fun (_, n) -> n > 1)
+        then
+            refuse st
+        else
+            let watchE =
+                pairs |> List.tryPick (fun ((k, _), v) -> if k = "watch" then Some v else None)
+
+            let pairs = pairs |> List.filter (fun ((k, _), _) -> k <> "watch")
+            let at0 = { Start = p; End = p }
+            let defaults = { Kind = EVar defaultsKey; Span = at0 }
+
+            let optsE =
+                match pairs with
+                | [] when watchE.IsSome -> defaults
+                | [] when
+                    kind = LoopRepeat
+                    && (st.I >= st.Text.Length || peek st = ';' || peek st = sibSep)
+                      ->
+                      {
+                          Kind = EUpdate(defaults, [])
+                          Span = at0
+                      }
+                | [] ->
+                    let o = postfixAtom st
+                    if st.Ok && isNull' o then refuse st else o
+                | _ -> {
+                    Kind = EUpdate(defaults, pairs |> List.map (fun ((k, ks), v) -> [ (k, ks) ], v))
+                    Span = {
+                        Start = p
+                        End = (List.last pairs |> snd).Span.End
+                    }
+                  }
+
+            if not st.Ok then
+                Unchecked.defaultof<_>
+            else
+                (strWs st ";" || strWs st sibSepStr) |> ignore
+                let savedParen = st.ExprParen
+                st.ExprParen <- false
+                let body = seqExpr st
+                st.ExprParen <- savedParen
+
+                if not st.Ok then
+                    Unchecked.defaultof<_>
+                else
+                    let save = st.I
+                    (strWs st ";" || strWs st sibSepStr) |> ignore
+
+                    let until =
+                        if keyword st "until" then
+                            let b, bspan = identSpanned st
+
+                            if isNull' b || b = "stopped" then
+                                refuse st
+                            else
+                                (strWs st ";" || strWs st sibSepStr) |> ignore
+
+                                let pred =
+                                    withLocals st [ b ] (fun st ->
+                                        let savedParen = st.ExprParen
+                                        st.ExprParen <- false
+                                        let e = seqExpr st
+                                        st.ExprParen <- savedParen
+                                        e)
+
+                                if st.Ok then Some((b, bspan), pred) else None
+                        else
+                            st.I <- save
+                            None
+
+                    if not st.Ok then
+                        Unchecked.defaultof<_>
+                    else
+                        let endPos =
+                            match until with
+                            | Some(_, pr) -> pr.Span.End
+                            | None -> body.Span.End
+
+                        {
+                            Kind = ERetry(kind, optsE, watchE, body, until)
+                            Span = { Start = p; End = endPos }
+                        }
+
+    st.Depth <- st.Depth - 1
+    e
 
 // for/pfor … in … do [D:for-do]: `xs |> Seq.iter (fun p -> body)`; a
 // lone command body streams, armed (the grammar's cmdBody)
