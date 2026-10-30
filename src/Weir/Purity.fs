@@ -31,7 +31,7 @@ let private effectfulName = Weir.Effects.effectfulName
 // pure unless classified above — exhaustive by construction, so a
 // pure member (Str.trim) never falls into the unknown-callable bucket
 let private builtinNames =
-    lazy (Weir.Builtins.valueEnv |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
+    lazy (Weir.Builtins.valueEnv.Value |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
 
 // A bare uppercase name in expression position is a union
 // constructor: binders start lowercase (Check.casingError's rule) and

@@ -3215,8 +3215,8 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             node
             |> Option.bind (fun n ->
                 match n.Kind with
-                | Check.TEVar name when Map.containsKey name Builtins.builtinDocs ->
-                    let d = Builtins.builtinDocs[name]
+                | Check.TEVar name when Map.containsKey name Builtins.builtinDocs.Value ->
+                    let d = Builtins.builtinDocs.Value[name]
 
                     match n.Ty with
                     | TFun _ when List.isEmpty d.Params -> None // unnamed function -> arrow
@@ -3231,7 +3231,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             node
             |> Option.bind (fun nd ->
                 match nd.Kind with
-                | Check.TEVar name when name.Contains '.' && not (Map.containsKey name Builtins.builtinDocs) ->
+                | Check.TEVar name when name.Contains '.' && not (Map.containsKey name Builtins.builtinDocs.Value) ->
                     (match name.Split '.' with
                      | [| alias; mem |] ->
                          stmts
@@ -3389,10 +3389,11 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 | Check.TEOrFail _ when word = Some "orFail" -> Some "orFail"
                 | Check.TETo(fmt, _, _, _, _, _) when word = Some "to" || word = Some fmt -> Some $"to {fmt}"
                 | _ -> None)
-            |> Option.bind (fun key -> Map.tryFind key Builtins.builtinDocs)
+            |> Option.bind (fun key -> Map.tryFind key Builtins.builtinDocs.Value)
 
         let wordDoc =
-            wordAt ll.Text jcol |> Option.bind (fun w -> Map.tryFind w Builtins.builtinDocs)
+            wordAt ll.Text jcol
+            |> Option.bind (fun w -> Map.tryFind w Builtins.builtinDocs.Value)
 
         let builtinDoc =
             nodeDoc |> Option.orElse wordDoc |> Option.map Builtins.renderBuiltinDoc
@@ -4463,7 +4464,7 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
                         |> Option.map (fun s -> s.Ty)
                     | _ -> None
 
-            match Map.tryFind head Builtins.builtinDocs with
+            match Map.tryFind head Builtins.builtinDocs.Value with
             | Some d when not d.Params.IsEmpty ->
                 schemeTy ()
                 |> Option.map (fun ty -> d.Params, ty, Some(Builtins.renderBuiltinDoc d))
@@ -5668,7 +5669,7 @@ let run (debug: bool) : int =
                                             None
 
                                     let sigDetail =
-                                        Map.tryFind label Builtins.builtinDocs
+                                        Map.tryFind label Builtins.builtinDocs.Value
                                         |> Option.filter (fun d -> not (List.isEmpty d.Params))
                                         |> Option.bind (fun d ->
                                             let tyOf =
@@ -5693,7 +5694,7 @@ let run (debug: bool) : int =
                                     match
                                         Map.tryFind label docByName
                                         |> Option.orElse (
-                                            Map.tryFind label Builtins.builtinDocs
+                                            Map.tryFind label Builtins.builtinDocs.Value
                                             |> Option.map Builtins.renderBuiltinDoc
                                         )
                                     with

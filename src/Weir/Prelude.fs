@@ -88,67 +88,93 @@ let source = [
     "type Op = WriteFile of string * seq<string> | WriteFileAtomic of string * seq<string> | DeleteFile of string | Copy of string * string | Move of string * string | CopyDir of string * string | MoveDir of string * string | MakeDir of string | DeleteDir of string | DeleteTree of string | HttpSend of HttpRequest"
 ]
 
-let private extendClean (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
+// the declarations, parsed once per process
+let private decls: Lazy<Decl list> =
+    lazy
+        (source
+         |> List.map (fun line ->
+             match Parser.parseStmt line with
+             | Result.Ok(SType decl) -> decl
+             | _ -> failwith $"prelude: expected a declaration: {line}"))
+
+let private extendTypesClean (typeEnv: TypeEnv) : TypeEnv =
     Check.preludeLoading.Value <- true
 
-    source
-    |> List.fold
-        (fun (te, ve) line ->
-            match Parser.parseStmt line with
-            | Result.Ok(SType decl) ->
+    let te =
+        decls.Value
+        |> List.fold
+            (fun te decl ->
                 match Check.checkDecl te decl with
-                | Result.Ok te' ->
-                    let ve' =
-                        match decl.Body with
-                        | DUnion cases -> Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) ve
-                        | DRecord _ -> ve
+                | Result.Ok te' -> te'
+                | Result.Error terr -> failwith $"prelude: {Check.formatError terr}")
+            typeEnv
 
-                    te', ve'
-                | Result.Error terr -> failwith $"prelude: {Check.formatError terr}"
-            | _ -> failwith $"prelude: expected a declaration: {line}")
-        (typeEnv, valueEnv)
-    |> fun (te, ve) ->
-        // register every type name present at prelude-close as built-in
-        // [D:desugar-capture]: a later user declaration of one is a
-        // located error, not a silent retype of the builtins behind it
-        Check.preludeLoading.Value <- false
+    // register every type name present at prelude-close as built-in
+    // [D:desugar-capture]: a later user declaration of one is a
+    // located error, not a silent retype of the builtins behind it
+    Check.preludeLoading.Value <- false
 
-        for name in te.Types |> Map.keys do
-            Check.builtinTypeNames.TryAdd(name, 0uy) |> ignore
+    for name in te.Types |> Map.keys do
+        Check.builtinTypeNames.TryAdd(name, 0uy) |> ignore
 
-        // def-less builtins: type constructors with no Record/Union
-        // entry — Map [D:map-string], the Proc handle [D:scoped-procs],
-        // and the patch district's type [D:yaml-nodes]. Without this a
-        // user `type Proc = …` would silently retype every scoped-process
-        // binder behind it. The arity-0 pair rides Check's one list, so
-        // registration and signature nameability cannot drift.
-        for name in "Map" :: Check.deflessBuiltinNominals do
-            Check.builtinTypeNames.TryAdd(name, 0uy) |> ignore
+    // def-less builtins: type constructors with no Record/Union
+    // entry — Map [D:map-string], the Proc handle [D:scoped-procs],
+    // and the patch district's type [D:yaml-nodes]. Without this a
+    // user `type Proc = …` would silently retype every scoped-process
+    // binder behind it. The arity-0 pair rides Check's one list, so
+    // registration and signature nameability cannot drift.
+    for name in "Map" :: Check.deflessBuiltinNominals do
+        Check.builtinTypeNames.TryAdd(name, 0uy) |> ignore
 
-        te, ve
+    te
 
-let private extended =
-    System.Runtime.CompilerServices.ConditionalWeakTable<TypeEnv, Eval.Env * (TypeEnv * Eval.Env)>()
+let private extendValuesClean (valueEnv: Eval.Env) : Eval.Env =
+    decls.Value
+    |> List.fold
+        (fun ve decl ->
+            match decl.Body with
+            | DUnion cases -> Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) ve
+            | DRecord _ -> ve)
+        valueEnv
 
-let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
-    let te, ve =
-        match extended.TryGetValue typeEnv with
-        | true, (forValues, result) when obj.ReferenceEquals(forValues, valueEnv) -> result
+let private extendedTypes =
+    System.Runtime.CompilerServices.ConditionalWeakTable<TypeEnv, TypeEnv>()
+
+let private extendedValues =
+    System.Runtime.CompilerServices.ConditionalWeakTable<Eval.Env, Eval.Env>()
+
+/// the type side alone — what a check needs; the value side is built
+/// only by a run, a REPL or -e, so a check never builds the builtin
+/// value table
+let extendTypes (typeEnv: TypeEnv) : TypeEnv =
+    let te =
+        match extendedTypes.TryGetValue typeEnv with
+        | true, te -> te
         | _ ->
             let held = Types.drainAnonDefs ()
 
-            let result =
+            let te =
                 try
-                    extendClean typeEnv valueEnv
+                    extendTypesClean typeEnv
                 finally
                     for name, fields in held do
                         Types.pushAnonDef name fields
 
-            extended.AddOrUpdate(typeEnv, (valueEnv, result))
-            result
+            extendedTypes.AddOrUpdate(typeEnv, te)
+            te
 
     {
         te with
             AnonLitDefs = System.Collections.Generic.Dictionary(te.AnonLitDefs)
-    },
-    ve
+    }
+
+let extendValues (valueEnv: Eval.Env) : Eval.Env =
+    match extendedValues.TryGetValue valueEnv with
+    | true, ve -> ve
+    | _ ->
+        let ve = extendValuesClean valueEnv
+        extendedValues.AddOrUpdate(valueEnv, ve)
+        ve
+
+let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
+    extendTypes typeEnv, extendValues valueEnv

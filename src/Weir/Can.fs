@@ -642,7 +642,7 @@ let renderHuman (script: string) (caps: Cap list) : string =
 
 let renderJson (script: string) (caps: Cap list) : string =
     // the CLI's encoder [D:json-raw-user]
-    let opts = rawJsonWriterOptions
+    let opts = rawJsonWriterOptions.Value
     use ms = new System.IO.MemoryStream()
     use w = new System.Text.Json.Utf8JsonWriter(ms, opts)
 

@@ -192,7 +192,7 @@ let private totality (lines: string list) =
 // the fast parser's tree is the grammar's, or it refused — the oracle says
 // which, and any other answer fails here with the statement
 let private oracleResolver =
-    Weir.Script.assumeResolver (fst (Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv))
+    Weir.Script.assumeResolver (fst (Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv.Value))
 
 let private agreement (lines: string list) =
     match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with

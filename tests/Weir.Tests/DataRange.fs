@@ -7,7 +7,7 @@ open Expecto
 open Weir.Eval
 
 let private prelude, private preludeVals =
-    Weir.Prelude.extend Weir.Builtins.typeEnv Weir.Builtins.valueEnv
+    Weir.Prelude.extend Weir.Builtins.typeEnv Weir.Builtins.valueEnv.Value
 
 let private run input =
     match Weir.Parser.parseExpr input with

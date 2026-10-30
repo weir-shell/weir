@@ -52,7 +52,7 @@ let private declErr input env =
     | Error terr -> terr
 
 let private preludeTypeEnv, preludeValueEnv =
-    Weir.Prelude.extend Weir.Builtins.typeEnv Weir.Builtins.valueEnv
+    Weir.Prelude.extend Weir.Builtins.typeEnv Weir.Builtins.valueEnv.Value
 
 let private env =
     let e =
@@ -243,7 +243,7 @@ let private inCwd (dir: string) (f: unit -> 'a) : 'a =
 // pins need the real prelude ls
 let private runLive input =
     match typecheck env (parse input) with
-    | Ok te -> eval Weir.Builtins.valueEnv te
+    | Ok te -> eval Weir.Builtins.valueEnv.Value te
     | Error terr -> failtest (formatError terr)
 
 let private fakeExternals =
@@ -10077,7 +10077,7 @@ let replEchoTests =
             let lines =
                 Weir.Repl.functionEchoLines false 100 te (fun _ -> None) "Seq.map" |> Option.get
 
-            let d = Map.find "Seq.map" Weir.Builtins.builtinDocs
+            let d = Map.find "Seq.map" Weir.Builtins.builtinDocs.Value
             let sch = te.Modules["Seq"]["map"]
 
             Expect.equal
@@ -16351,12 +16351,12 @@ let semanticTokenTests =
             let names (te: Weir.Types.TypeEnv) = te.Types |> Map.keys |> Set.ofSeq
 
             let clean, _ =
-                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv.Value
 
             Weir.Types.pushAnonDef "PendingShapeProbe" [ ("a", Weir.Types.TInt) ]
 
             let withPending, _ =
-                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv.Value
 
             let after = Weir.Types.drainAnonDefs ()
             Expect.equal (names withPending) (names clean) "no pending shape enters the prelude env"
@@ -16367,7 +16367,7 @@ let semanticTokenTests =
             // module gate (ci/skill-surface.sh) reads #help, which never
             // listed the bare builtins — the gap `into` and `nats` lived in
             let strict, _ =
-                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv.Value
 
             let cases =
                 strict.Types
@@ -16433,7 +16433,8 @@ let semanticTokenTests =
 
             // every bare builtin explains itself on hover and #help
             let undocumented =
-                bare |> Set.filter (fun b -> not (Map.containsKey b Weir.Builtins.builtinDocs))
+                bare
+                |> Set.filter (fun b -> not (Map.containsKey b Weir.Builtins.builtinDocs.Value))
 
             Expect.isEmpty undocumented "every bare builtin has a builtinDocs entry"
         }
@@ -16461,7 +16462,7 @@ let semanticTokenTests =
             let missing =
                 members
                 |> List.filter (fun q ->
-                    not (Map.containsKey q Weir.Builtins.builtinDocs)
+                    not (Map.containsKey q Weir.Builtins.builtinDocs.Value)
                     && not (Map.containsKey q omitted))
 
             Expect.equal
@@ -16472,7 +16473,9 @@ let semanticTokenTests =
             // the omissions list sweeps both ways: documented or
             // vanished = stale, fails too (the skill-omitted rule)
             for KeyValue(q, _) in omitted do
-                Expect.isFalse (Map.containsKey q Weir.Builtins.builtinDocs) $"'{q}' is omitted but documented — stale"
+                Expect.isFalse
+                    (Map.containsKey q Weir.Builtins.builtinDocs.Value)
+                    $"'{q}' is omitted but documented — stale"
 
                 Expect.contains members q $"'{q}' is omitted but not shipped — stale"
         }
@@ -16516,7 +16519,7 @@ let semanticTokenTests =
                         (env, valueEnv)
                     |> ignore
 
-            for KeyValue(name, d) in Weir.Builtins.builtinDocs do
+            for KeyValue(name, d) in Weir.Builtins.builtinDocs.Value do
                 match d.Example with
                 | None -> ()
                 | Some ex ->
@@ -16613,7 +16616,7 @@ let semanticTokenTests =
                         |> Option.map (fun s -> s.Ty)
                     | _ -> None
 
-            for KeyValue(name, d) in Weir.Builtins.builtinDocs do
+            for KeyValue(name, d) in Weir.Builtins.builtinDocs.Value do
                 if not (List.isEmpty d.Params) then
                     match typeOf name with
                     | Some ty ->
@@ -18537,7 +18540,7 @@ let moduleTests =
             // groupBy is bare now [D:bare-partition] — the hint pin
             // moves to strict mode, where members stay qualified
             let strictEnv, _ =
-                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv.Value
 
             match Weir.Check.typecheck strictEnv (parse "[true] |> groupBy (fun x -> x)") with
             | Error terr -> Expect.stringContains terr.Message "use 'Seq.groupBy'" ""
@@ -19818,7 +19821,7 @@ let scriptTests =
         }
         test "multi-home moved name lists all candidates" {
             let strictEnv, _ =
-                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv.Value
 
             match Weir.Check.typecheck strictEnv (parse "ls |> map (fun x -> x)") with
             | Error terr ->
@@ -20291,7 +20294,7 @@ let unitPrintTests =
             expectValue "[\"a\"] |> iter print" VUnit
 
             let strictEnv, _ =
-                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv.Value
 
             match Weir.Check.typecheck strictEnv (parse "iter print [\"a\"]") with
             | Error terr -> Expect.stringContains (formatError terr) "Seq.iter" "points at the module home"
@@ -27610,7 +27613,7 @@ let recordKeysTests =
         }
         test "the FileRow doc names every declared field (the one accepted copy, drift-pinned)" {
             let doc =
-                match Map.tryFind "FileRow" Weir.Builtins.builtinDocs with
+                match Map.tryFind "FileRow" Weir.Builtins.builtinDocs.Value with
                 | Some d -> string d
                 | None -> failtest "FileRow must be documented"
 
@@ -29858,11 +29861,17 @@ let retryPollTests =
         }
         test "the public name and the internal key are the SAME OBJECT (a divergence would out-bug the bug)" {
             Expect.isTrue
-                (obj.ReferenceEquals(Weir.Builtins.valueEnv["|retryDefaults"], Weir.Builtins.valueEnv["Retry.defaults"]))
+                (obj.ReferenceEquals(
+                    Weir.Builtins.valueEnv.Value["|retryDefaults"],
+                    Weir.Builtins.valueEnv.Value["Retry.defaults"]
+                ))
                 "Retry"
 
             Expect.isTrue
-                (obj.ReferenceEquals(Weir.Builtins.valueEnv["|pollDefaults"], Weir.Builtins.valueEnv["Poll.defaults"]))
+                (obj.ReferenceEquals(
+                    Weir.Builtins.valueEnv.Value["|pollDefaults"],
+                    Weir.Builtins.valueEnv.Value["Poll.defaults"]
+                ))
                 "Poll"
         }
         test "the CAPTURE is a non-event: the showcase's original union beside the sugar [D:desugar-capture]" {
@@ -32616,7 +32625,7 @@ let bareRuleTests =
         }
         test "no message claims a member moved when it did not (strict mode, where names stay qualified)" {
             let strictEnv, _ =
-                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv.Value
 
             match Weir.Check.typecheck strictEnv (parse "[1] |> rev") with
             | Error terr ->
@@ -38479,7 +38488,7 @@ let helpUxTests =
             // — a doc string reaches #help/hover/#find verbatim, so a
             // citation there is archaeology leaking. Comments are the
             // citations' home; the docs are enumerable, so pin them all.
-            for KeyValue(name, d) in Weir.Builtins.builtinDocs do
+            for KeyValue(name, d) in Weir.Builtins.builtinDocs.Value do
                 Expect.isFalse (d.Summary.Contains "[D:") $"{name}: summary cites the ledger"
 
                 match d.Pointer with
@@ -38552,7 +38561,7 @@ let helpUxTests =
             ]
 
             let hits = [
-                for KeyValue(name, d) in Weir.Builtins.builtinDocs do
+                for KeyValue(name, d) in Weir.Builtins.builtinDocs.Value do
                     yield! offenders $"{name} summary" d.Summary
 
                     match d.Pointer with
@@ -38672,7 +38681,7 @@ let helpUxTests =
             Expect.equal (Weir.Types.sigTintStyle.Punct "p") (Weir.Types.Color.dim true "p") "punctuation = dim"
         }
         test "(k) the example block IS the input colorizer's render [D:help-tint] — one brain" {
-            let ex = Weir.Builtins.builtinDocs["Yaml.inferShape"].Example |> Option.get
+            let ex = Weir.Builtins.builtinDocs.Value["Yaml.inferShape"].Example |> Option.get
 
             let expected =
                 ex.Split '\n'
@@ -44985,7 +44994,7 @@ let receiptTests =
         }
         test "every receipt is a registered prelude record" {
             let strict, _ =
-                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+                Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv.Value
 
             for KeyValue(name, r) in Weir.Types.receipts do
                 match Map.tryFind name strict.Types with

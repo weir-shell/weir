@@ -8,7 +8,7 @@ open Weir.Types
 // before building — kept as living tests.
 
 let private preludeTypeEnv, _preludeValueEnv =
-    Weir.Prelude.extend Weir.Builtins.typeEnv Weir.Builtins.valueEnv
+    Weir.Prelude.extend Weir.Builtins.typeEnv Weir.Builtins.valueEnv.Value
 
 // the real taken set a fresh session starts from [D:repl-infer] — the
 // existing drafting pins below run against it, so they double as the
