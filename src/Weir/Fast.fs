@@ -1305,6 +1305,8 @@ and private term (st: St) : Expr =
             | "from" -> fromExpr st
             | "to" -> toExpr st
             | "within" -> withinExpr st
+            | "for" -> loopExpr st "for" "|seqIter"
+            | "pfor" -> loopExpr st "pfor" "|seqPiter"
             | "true"
             | "false" -> appChain st
             | _ -> refuse st
@@ -3893,6 +3895,68 @@ and private withinTail (st: St) (cleanupBody: St -> Expr) : Expr option =
     else
         st.I <- save
         None
+
+// for/pfor … in … do [D:for-do]: `xs |> Seq.iter (fun p -> body)`; a
+// lone command body streams, armed (the grammar's cmdBody)
+and private loopExpr (st: St) (kw: string) (iterKey: string) : Expr =
+    let p = here st
+    keyword st kw |> ignore
+    st.Depth <- st.Depth + 1
+
+    let e =
+        if tooDeep st then
+            refuse st
+        else
+            let binder = commaPats st
+
+            if not st.Ok then
+                Unchecked.defaultof<_>
+            elif isNull' binder || not (keyword st "in") then
+                refuse st
+            else
+                let source = expr st
+
+                if not st.Ok then
+                    Unchecked.defaultof<_>
+                elif matches st ".." || (kw = "pfor" && matches st "->") || not (keyword st "do") then
+                    refuse st
+                elif kw = "pfor" && keywordAhead st "yield" then
+                    refuse st
+                else
+                    let body =
+                        withLocals st (patLeafNames binder) (fun st ->
+                            let h = headOf st true
+
+                            if h.K = HeadK.Refuse then
+                                refuse st
+                            elif h.K = HeadK.NotCmd then
+                                stmtBody st
+                            else
+                                let s = st.I
+                                let chain = cmdLine st true 0 None h
+
+                                if not st.Ok then
+                                    Unchecked.defaultof<_>
+                                // a multi-line body is seqExpr's, after a backtrack
+                                elif peek st = ';' || peek st = sibSep || exitCodeSpine chain then
+                                    refuse st
+                                else
+                                    let span = { Start = at s; End = here st }
+
+                                    {
+                                        Kind = EPipe(chain, { Kind = EVar "|print"; Span = span })
+                                        Span = span
+                                    })
+
+                    if not st.Ok then
+                        Unchecked.defaultof<_>
+                    else
+                        let span = { Start = p; End = body.Span.End }
+                        let mk k = { Kind = k; Span = span }
+                        mk (EPipe(source, mk (EApp(mk (EVar iterKey), mk (ELambdaPat(binder, body))))))
+
+    st.Depth <- st.Depth - 1
+    e
 
 let private attrArg (st: St) : AttrArg option =
     let c = peek st
