@@ -8464,6 +8464,174 @@ let childExprs (te: TypedExpr) : TypedExpr list =
             | IStr _ -> None)
     | TEYaml(tpl, _, _) -> yamlTplTypedExprs tpl
 
+/// the first child `f` answers on, visiting in childExprs order
+/// without building the list — the walks on the check path use this
+/// and its derivatives; childExprs stays for the editor services
+let tryPickChild (f: TypedExpr -> 'a option) (te: TypedExpr) : 'a option =
+    let rec ofList (xs: TypedExpr list) =
+        match xs with
+        | [] -> None
+        | x :: rest ->
+            match f x with
+            | Some _ as r -> r
+            | None -> ofList rest
+
+    let ofOpt (o: TypedExpr option) =
+        match o with
+        | Some e -> f e
+        | None -> None
+
+    let two (a: TypedExpr) (b: TypedExpr) =
+        match f a with
+        | Some _ as r -> r
+        | None -> f b
+
+    match te.Kind with
+    | TEInt _
+    | TEStr _
+    | TEBool _
+    | TEUnit
+    | TEHole _
+    | TEVar _
+    | TEEnvLoad _
+    | TEArgsLoad _
+    | TEFrom _
+    | TEFromYaml _
+    | TEFromToml _
+    | TETo _
+    | TEDur _
+    | TEFloat _
+    | TESize _ -> None
+    | TETry(b, _) -> f b
+    | TEOrFail(b, m, site) ->
+        match f b with
+        | Some _ as r -> r
+        | None ->
+            match ofOpt m with
+            | Some _ as r -> r
+            | None -> f site
+    | TELet(_, _, v, b) -> two v b
+    | TELetPat(_, v, b) -> two v b
+    | TELambda(_, _, b) -> f b
+    | TELambdaPat(_, b) -> f b
+    | TEApp(a, b) -> two a b
+    | TEPipe(a, b) -> two a b
+    | TEField(t, _) -> f t
+    | TESlice(t, lo, hi, _, _, _) ->
+        match f t with
+        | Some _ as r -> r
+        | None ->
+            match ofOpt lo with
+            | Some _ as r -> r
+            | None -> ofOpt hi
+    | TEBinOp(_, l, r) -> two l r
+    | TERecord(_, fields) ->
+        let rec go (xs: (string * TypedExpr) list) =
+            match xs with
+            | [] -> None
+            | (_, e) :: rest ->
+                match f e with
+                | Some _ as r -> r
+                | None -> go rest
+
+        go fields
+    | TEMatch(s, arms) ->
+        match f s with
+        | Some _ as r -> r
+        | None ->
+            let rec go (xs: (Pattern * TypedExpr option * TypedExpr) list) =
+                match xs with
+                | [] -> None
+                | (_, g, b) :: rest ->
+                    match ofOpt g with
+                    | Some _ as r -> r
+                    | None ->
+                        match f b with
+                        | Some _ as r -> r
+                        | None -> go rest
+
+            go arms
+    | TEIf(cnd, t, e) ->
+        match two cnd t with
+        | Some _ as r -> r
+        | None -> ofOpt e
+    | TERetry(_, o, w, b, u) ->
+        match f o with
+        | Some _ as r -> r
+        | None ->
+            match ofOpt w with
+            | Some _ as r -> r
+            | None ->
+                match f b with
+                | Some _ as r -> r
+                | None ->
+                    match u with
+                    | Some(_, p) -> f p
+                    | None -> None
+    | TESeq(a, b) -> two a b
+    | TEWithin(_, _, a, o, b) ->
+        match ofOpt a with
+        | Some _ as r -> r
+        | None ->
+            match ofOpt o with
+            | Some _ as r -> r
+            | None -> f b
+    | TEAlways(b, c) -> two b c
+    | TEHold b -> f b
+    | TEList items -> ofList items
+    | TETuple items -> ofList items
+    | TECmd(h, args, envO) ->
+        match
+            (match h with
+             | THeadDyn(_, e) -> f e
+             | THeadLit _ -> None)
+        with
+        | Some _ as r -> r
+        | None ->
+            match ofList args with
+            | Some _ as r -> r
+            | None -> ofOpt envO
+    | TESplat e -> f e
+    | TEUpdate(src, ups) ->
+        match f src with
+        | Some _ as r -> r
+        | None ->
+            let rec go (xs: (string list * TypedExpr) list) =
+                match xs with
+                | [] -> None
+                | (_, e) :: rest ->
+                    match f e with
+                    | Some _ as r -> r
+                    | None -> go rest
+
+            go ups
+    | TEInterp parts ->
+        let rec go (xs: InterpPart<TypedExpr> list) =
+            match xs with
+            | [] -> None
+            | IExpr e :: rest ->
+                match f e with
+                | Some _ as r -> r
+                | None -> go rest
+            | IStr _ :: rest -> go rest
+
+        go parts
+    | TEYaml(tpl, _, _) -> ofList (yamlTplTypedExprs tpl)
+
+let existsChild (f: TypedExpr -> bool) (te: TypedExpr) : bool =
+    (tryPickChild (fun e -> if f e then Some() else None) te).IsSome
+
+let forallChild (f: TypedExpr -> bool) (te: TypedExpr) : bool =
+    (tryPickChild (fun e -> if f e then None else Some()) te).IsNone
+
+let iterChildren (f: TypedExpr -> unit) (te: TypedExpr) : unit =
+    tryPickChild
+        (fun e ->
+            f e
+            None)
+        te
+    |> ignore
+
 // ---- unused bindings [D:unused-bindings] ----------------------------------
 // The usage core: a scoped walk of the typed tree. Free names propagate
 // upward minus each form's bound set; let-class binders (TELet/TELetPat)
@@ -8570,7 +8738,10 @@ let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
 
             Set.union args fb
         | TEYaml(tpl, _, _) -> walkTpl tpl
-        | _ -> childExprs te |> List.fold (fun acc c -> Set.union acc (walk c)) Set.empty
+        | _ ->
+            let acc = ref Set.empty
+            iterChildren (fun c -> acc.Value <- Set.union acc.Value (walk c)) te
+            acc.Value
 
     and walkTpl (tpl: TypedYamlTpl) : Set<string> =
         match tpl with
@@ -8709,7 +8880,7 @@ let occurrences (te: TypedExpr) : Occurrence list =
                  | None -> scope)
                 b
         | TEYaml(tpl, _, _) -> walkTpl scope tpl
-        | _ -> childExprs te |> List.iter (walk scope)
+        | _ -> iterChildren (walk scope) te
 
     and walkTpl (scope: Map<string, Span>) (tpl: TypedYamlTpl) : unit =
         match tpl with
@@ -8852,7 +9023,7 @@ let typecheckValidator (env: TypeEnv) (typeName: string) (v: Validator) : Result
             let rec selfUse (te: TypedExpr) : Span option =
                 match te.Kind with
                 | TEVar n when n = own -> Some te.Span
-                | _ -> childExprs te |> List.tryPick selfUse
+                | _ -> tryPickChild selfUse te
 
             match selfUse tbody with
             | Some span ->
@@ -9940,7 +10111,7 @@ let warnings (te: TypedExpr) : Warning list =
              }
          | _ -> ())
 
-        childExprs te |> List.iter walk
+        iterChildren walk te
 
     walk te
     List.ofSeq acc
@@ -9962,7 +10133,7 @@ let rec runsCommandT (te: TypedExpr) : bool =
     | TEVar v when (reifierOfVar v).IsSome -> true
     | TELambda _
     | TELambdaPat _ -> false
-    | _ -> childExprs te |> List.exists runsCommandT
+    | _ -> existsChild runsCommandT te
 
 // the walk sees through the module's own helpers [D:modules-v1]: an
 // earlier function whose body reaches a command (directly, or through
@@ -9980,7 +10151,7 @@ let rec private reachesCommand (helpers: Map<string, int>) (te: TypedExpr) : boo
     | TECmd _ -> true
     | TEVar v when (reifierOfVar v).IsSome || helpers.ContainsKey v -> true
     | TELet(n, _, v, b) -> reachesCommand helpers v || reachesCommand (Map.remove n helpers) b
-    | _ -> childExprs te |> List.exists (reachesCommand helpers)
+    | _ -> existsChild (reachesCommand helpers) te
 
 /// Some arity when a module binding is a function whose body reaches a
 /// command — the summary the eager-call walk reads
@@ -10010,14 +10181,14 @@ let rec eagerCommandHelper (helpers: Map<string, int>) (te: TypedExpr) : string 
     | TELambdaPat _ -> None
     | TEApp _ ->
         saturated te 0
-        |> Option.orElseWith (fun () -> childExprs te |> List.tryPick (eagerCommandHelper helpers))
+        |> Option.orElseWith (fun () -> tryPickChild (eagerCommandHelper helpers) te)
     | TEPipe(_, f) ->
         saturated f 1
-        |> Option.orElseWith (fun () -> childExprs te |> List.tryPick (eagerCommandHelper helpers))
+        |> Option.orElseWith (fun () -> tryPickChild (eagerCommandHelper helpers) te)
     | TELet(n, _, v, b) ->
         eagerCommandHelper helpers v
         |> Option.orElseWith (fun () -> eagerCommandHelper (Map.remove n helpers) b)
-    | _ -> childExprs te |> List.tryPick (eagerCommandHelper helpers)
+    | _ -> tryPickChild (eagerCommandHelper helpers) te
 
 // lazy command-backed lets [D:lazy-command-lets]: in the helpers map an
 // arity-0 entry is a binding holding a lazy command seq — reading it
@@ -10031,7 +10202,7 @@ let rec eagerNameRef (names: Set<string>) (te: TypedExpr) : string option =
     | TEVar v when names.Contains v -> Some v
     | TELambda _
     | TELambdaPat _ -> None
-    | _ -> childExprs te |> List.tryPick (eagerNameRef names)
+    | _ -> tryPickChild (eagerNameRef names) te
 
 /// evaluating this builds a command seq and spawns nothing: a command, a
 /// pipeline of commands, a value-headed pipe into a command, or another
@@ -10042,7 +10213,7 @@ let rec private lazyCommandSeq (names: Set<string>) (te: TypedExpr) : bool =
         not (runsCommandT e) && (eagerNameRef names e).IsNone
 
     match te.Kind with
-    | TECmd _ -> childExprs te |> List.forall quiet
+    | TECmd _ -> forallChild quiet te
     | TEPipe(arg, ({ Kind = TECmd _ } as c)) -> lazyCommandSeq names c && (lazyCommandSeq names arg || quiet arg)
     | TEVar v -> names.Contains v
     | _ -> false
@@ -10069,7 +10240,7 @@ let commandRunsNow (helpers: Map<string, int>) (te: TypedExpr) : string option =
         | TEVar v when pick v -> Some v
         | TELambda _
         | TELambdaPat _ -> None
-        | _ -> childExprs e |> List.tryPick (eagerVar pick)
+        | _ -> tryPickChild (eagerVar pick) e
 
     // the stage that forces a seq: `xs |> Seq.freeze` / `Seq.length xs`
     let rec forcer (e: TypedExpr) =
@@ -10119,7 +10290,7 @@ let rec private firstCommand (te: TypedExpr) : TypedExpr option =
     | TECmd _ -> Some te
     | TELambda _
     | TELambdaPat _ -> None
-    | _ -> childExprs te |> List.tryPick firstCommand
+    | _ -> tryPickChild firstCommand te
 
 let private renderCommand (te: TypedExpr) : string =
     match te.Kind with
@@ -10315,7 +10486,7 @@ let rec private reenumWalk
              | Some(n, _) -> Map.remove n tracked
              | None -> tracked)
             b
-    | _ -> childExprs te |> List.iter (walk tracked)
+    | _ -> iterChildren (walk tracked) te
 
 /// bind `n = v` [D:reenum-indirect]: a carrier's RHS reads of outer
 /// tracked bindings are collected as its pulls, not counted now; any
@@ -10466,7 +10637,7 @@ let tempDirEvents (nextId: unit -> int) (tracked0: Map<string, int>) (root: Type
                  | Some(n, _) -> Map.remove n tracked
                  | None -> tracked)
                 b
-        | _ -> childExprs te |> List.iter (walk tracked)
+        | _ -> iterChildren (walk tracked) te
 
     walk tracked0 root
     List.ofSeq acc

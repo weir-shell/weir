@@ -3578,8 +3578,7 @@ let private recordPositions
                 with _ ->
                     ()
 
-            for c in Check.childExprs n do
-                stack.Push c
+            Check.iterChildren stack.Push n
 
 // Streaming output for command-mode statements — the single exempt form.
 // The seq case goes through Eval.writeLines, the same renderer print uses.
@@ -12550,7 +12549,7 @@ let private firstRunEffect (isLetRhs: bool) (te: Check.TypedExpr) : (string * Sp
             | WithinEnv
             | WithinPure
             | WithinReadonly -> go false body
-        | _ -> Check.childExprs e |> List.tryPick (go false)
+        | _ -> Check.tryPickChild (go false) e
 
     go true te
 
@@ -12575,7 +12574,7 @@ let private topLevelLoad (te: Check.TypedExpr) : (string * Span) option =
         | Check.TELambdaPat _ -> None
         | Check.TEIf(cond, _, _) -> go cond
         | Check.TEMatch(scrut, _) -> go scrut
-        | _ -> Check.childExprs e |> List.tryPick go
+        | _ -> Check.tryPickChild go e
 
     go te
 
