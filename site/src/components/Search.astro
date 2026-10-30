@@ -45,6 +45,8 @@ import refUrl from "../data/reference.json?url";
 </dialog>
 
 <script>
+  import { rankSections } from "../lib/rank-sections.mjs";
+
   const modal = document.getElementById("search-modal");
   const input = document.getElementById("search-input");
   const membersSec = document.getElementById("search-members");
@@ -166,16 +168,18 @@ import refUrl from "../data/reference.json?url";
       const res = await pagefind.debouncedSearch(q);
       if (res === null || my !== seq) return; // superseded by newer input
       const pages = await Promise.all(
-        res.results.slice(0, 8).map((r) => r.data()),
+        res.results.map((r) => r.data()),
       );
       if (my !== seq) return;
-      proseHits = pages.map((p) => {
+      proseHits = rankSections(pages, q, 10).map((s) => {
         const li = document.createElement("li");
         const a = el("a");
-        a.href = p.url;
-        a.append(el("span", "s-title", p.meta?.title ?? p.url));
+        a.href = s.url;
+        a.append(
+          el("span", "s-title", s.title === s.page ? s.page : `${s.page} › ${s.title}`),
+        );
         const ex = el("span", "s-excerpt");
-        ex.innerHTML = p.excerpt; // Pagefind's own <mark>-highlighted excerpt
+        ex.innerHTML = s.excerpt; // Pagefind's own <mark>-highlighted excerpt
         a.append(ex);
         li.append(a);
         return li;
