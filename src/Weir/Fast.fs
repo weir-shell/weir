@@ -1094,8 +1094,8 @@ let private armSeq (st: St) (items: struct (Expr * bool) list) : Expr =
 // ---- the expression grammar ------------------------------------------------
 let rec private seqExpr (st: St) : Expr =
     // elements sequenced by `;` or the sibling sentinel — the separator
-    // backs out before a trailing `until`/`always` (the owning forms,
-    // none of them parsed here, so that shape ends in a refusal)
+    // backs out before a trailing `until`/`always` (the owning forms:
+    // retry/poll/repeat and within read them)
     let first = stmtElem st
 
     if not st.Ok then
@@ -1304,6 +1304,7 @@ and private term (st: St) : Expr =
             | "orFail" -> orFailForm st
             | "from" -> fromExpr st
             | "to" -> toExpr st
+            | "within" -> withinExpr st
             | "true"
             | "false" -> appChain st
             | _ -> refuse st
@@ -3669,6 +3670,229 @@ and private valueHeaded (st: St) (lhs: Expr) : Expr =
             | Result.Ok e -> e
             | Result.Error _ -> refuse st
         | _ -> refuse st
+
+// within <kind> … [D:within-scopes]: cd/env/lock take one atom (env its
+// pairs too), tmp/proc/serve a binder; a trailing `always` segment
+// [D:within-always-any] and the bare scope [D:within-always]; `until
+// stopped` [D:held-scope] is refused
+and private withinExpr (st: St) : Expr =
+    let p = here st
+    keyword st "within" |> ignore
+    st.Depth <- st.Depth + 1
+
+    let w = wordAhead st
+
+    let kind =
+        if isNull' w || keywords.Contains w then
+            None
+        else
+            Ast.withinKinds |> List.tryFind (fun k -> k.Name = w && not k.Standalone)
+
+    // the dangle space-joins the first body statement
+    let block (st: St) =
+        (strWs st ";" || strWs st sibSepStr) |> ignore
+        stmtBody st
+
+    let e =
+        if tooDeep st then
+            refuse st
+        else
+            match kind with
+            | None ->
+                let body = block st
+
+                if not st.Ok then
+                    Unchecked.defaultof<_>
+                else
+                    match withinTail st stmtBody with
+                    | Some cleanup when st.Ok -> {
+                        Kind = EAlways(body, cleanup)
+                        Span = { Start = p; End = cleanup.Span.End }
+                      }
+                    | _ -> refuse st
+            | Some wk ->
+                identSpanned st |> ignore
+
+                let mk binder arg opts (body: Expr) =
+                    if not st.Ok then
+                        Unchecked.defaultof<_>
+                    else
+                        {
+                            Kind = EWithin(wk.Id, binder, arg, opts, body)
+                            Span = { Start = p; End = body.Span.End }
+                        }
+
+                match wk.Id with
+                | WithinTmp ->
+                    let b, bspan = identSpanned st
+
+                    if isNull' b then
+                        refuse st
+                    else
+                        mk (Some(b, bspan)) None None (withLocals st [ b ] block)
+                | WithinProc ->
+                    // the scoped process [D:scoped-procs]: one command, letRhsCmd's
+                    let b, bspan = identSpanned st
+
+                    if isNull' b then
+                        refuse st
+                    else
+                        ws st
+
+                        if not (strWs st "=") then
+                            refuse st
+                        else
+                            let h = headOf st false
+
+                            let cmdE =
+                                if h.K = HeadK.Refuse || h.K = HeadK.NotCmd then
+                                    refuse st
+                                else
+                                    cmdLine st false (letRhsStops st) None h
+
+                            if not st.Ok then
+                                Unchecked.defaultof<_>
+                            else
+                                match cmdE.Kind with
+                                | ECmd _ -> mk (Some(b, bspan)) (Some cmdE) None (withLocals st [ b ] block)
+                                | _ -> refuse st
+                | WithinServe ->
+                    // the scoped listener [D:http-serve]: a config atom, a handler atom
+                    let b, bspan = identSpanned st
+
+                    if isNull' b then
+                        refuse st
+                    else
+                        ws st
+
+                        if not (strWs st "=") then
+                            refuse st
+                        else
+                            let cfg = postfixAtom st
+
+                            let handler =
+                                if st.Ok && not (isNull' cfg) then
+                                    postfixAtom st
+                                else
+                                    Unchecked.defaultof<_>
+
+                            if not st.Ok then
+                                Unchecked.defaultof<_>
+                            elif isNull' cfg || isNull' handler then
+                                refuse st
+                            else
+                                mk (Some(b, bspan)) (Some cfg) (Some handler) (withLocals st [ b ] block)
+                | WithinCd
+                | WithinEnv
+                | WithinLock ->
+                    // env takes `NAME=value` words too [D:within-env-pairs]
+                    let arg =
+                        if wk.Id = WithinEnv && envPrefixAhead st then
+                            let assigns = envAssigns st
+
+                            if st.Ok then
+                                envAssignsList assigns
+                            else
+                                Unchecked.defaultof<_>
+                        else
+                            postfixAtom st
+
+                    if not st.Ok then
+                        Unchecked.defaultof<_>
+                    elif isNull' arg then
+                        refuse st
+                    else
+                        // lock's optional `timeout=` key [D:within-lock]
+                        let opts =
+                            if wk.Id = WithinLock && matches st "timeout" then
+                                let save = st.I
+                                st.I <- st.I + 7
+                                ws st
+
+                                if peek st = '=' then
+                                    st.I <- st.I + 1
+                                    ws st
+                                    let o = postfixAtom st
+
+                                    if st.Ok && isNull' o then
+                                        st.I <- save
+                                        None
+                                    else
+                                        optOf o
+                                else
+                                    st.I <- save
+                                    None
+                            else
+                                None
+
+                        if not st.Ok then
+                            Unchecked.defaultof<_>
+                        else
+                            mk None (Some arg) opts (block st)
+                | _ -> refuse st
+
+    let e =
+        if not st.Ok then
+            Unchecked.defaultof<_>
+        else
+            match e.Kind with
+            | EWithin(k, binder, arg, opts, body) ->
+                let names =
+                    match binder with
+                    | Some(n, _) -> [ n ]
+                    | None -> []
+
+                match withinTail st (fun st -> withLocals st names stmtBody) with
+                | _ when not st.Ok -> Unchecked.defaultof<_>
+                | None -> e
+                | Some cleanup ->
+                    let inner = {
+                        Kind = EAlways(body, cleanup)
+                        Span = {
+                            Start = body.Span.Start
+                            End = cleanup.Span.End
+                        }
+                    }
+
+                    {
+                        Kind = EWithin(k, binder, arg, opts, inner)
+                        Span = {
+                            Start = e.Span.Start
+                            End = cleanup.Span.End
+                        }
+                    }
+            | _ -> e
+
+    st.Depth <- st.Depth - 1
+    e
+
+
+// after a scope's block: `until stopped` (refused), then an optional
+// `always` segment, never followed by an `until`
+and private withinTail (st: St) (cleanupBody: St -> Expr) : Expr option =
+    let save = st.I
+    (strWs st ";" || strWs st sibSepStr) |> ignore
+
+    if keywordAhead st "until" then
+        refuse st
+    elif keyword st "always" then
+        (strWs st ";" || strWs st sibSepStr) |> ignore
+        let c = cleanupBody st
+
+        if not st.Ok then
+            None
+        else
+            let after = st.I
+            (strWs st ";" || strWs st sibSepStr) |> ignore
+
+            if keywordAhead st "until" then
+                refuse st
+            else
+                st.I <- after
+                Some c
+    else
+        st.I <- save
+        None
 
 let private attrArg (st: St) : AttrArg option =
     let c = peek st

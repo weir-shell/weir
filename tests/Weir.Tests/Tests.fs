@@ -20660,6 +20660,10 @@ let depthGuardTests =
                     "let f p = ^$p --version | line"
                     "let f x = ^git -C $x status"
                     "let f x = A=1 B=$x git log | complete"
+                    "let f d = within cd d git status" + sib + "always git log"
+                    "let f x = within env GIT_DIR=$x git log | complete"
+                    "let f x = within tmp d git init -q $d"
+                    "within proc p = sleep 10" + sib + "print \"started\""
                     "let f x = git add $x" + sib + "git commit -m x"
                     "let f x = (fun y -> git show $y) x"
                 ] do
