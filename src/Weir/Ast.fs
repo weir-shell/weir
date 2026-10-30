@@ -5,6 +5,9 @@ open Weir.Types
 [<Struct>]
 type Pos = { Line: int; Col: int }
 
+// a struct like Pos: every node carries one, and as a record it was a
+// heap object per node
+[<Struct>]
 type Span = { Start: Pos; End: Pos }
 
 module Span =
