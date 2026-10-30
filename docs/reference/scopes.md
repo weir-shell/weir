@@ -221,102 +221,90 @@ daemon and belongs under systemd; weir has no `nohup`.
 
 ## `serve`
 
-An HTTP listener held for the block. `within serve srv = { port =
-Some 8080; maxConcurrent = 4 } handler` opens the socket on loopback, runs
-`handler` — a plain synchronous `HttpServerRequest ->
-HttpServerResponse` function — once per request, and closes the socket
-however the block exits (normally, by an error, SIGINT, SIGTERM), so
-the port is freed. As with `proc`, the server lives exactly as long as
-the block, and there is no `stop` function. `Server.port` (the port
-actually bound), `Server.running` and `Server.streamErrors` are all
-you can do with the handle.
-
-The listener answers on the same port for all the common loopback
-names — `127.0.0.1`, `localhost` and `[::1]` — so a client using any of
-them reaches the handler (`[::1]` is skipped quietly on a host without
-IPv6 loopback). It only listens on loopback and never binds all
-interfaces, so it can't be reached from other machines; put a reverse
-proxy in front of it for a public address. A request whose `Host`
-names anything else gets a 404 before the handler runs, so a proxy
-must pass a loopback `Host` (nginx's default `proxy_pass
-http://127.0.0.1:8080` does).
-
-The handler routes on `req.path` with an ordinary `match`; there is
-no routing framework:
+An HTTP server that lives as long as the block:
 
 ```
 let handler = fun req ->
     match req.path with
     | "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
+
+within serve srv = { port = Some 8080; maxConcurrent = 4 } handler
+    print $"listening on {Server.port srv}"
 ```
 
-The response `body` is an `HttpBody`, shared with the `Http` client —
-`NoBody`, `Text`, `Json`, `Form`, or `Stream of seq<string>`. A `Stream` body
-is written chunked and flushed per element (SSE-shaped: one event per
-element, one `data:` line per line of it, so a newline cannot forge an
-event),
-so a lazily produced seq streams as it goes: the client sees the
-first elements before the sequence is finished. If a `Stream` producer
-raises partway through, the error is not raised out of the handler.
-Instead it is recorded on the handle, and you read it with
-`Server.streamErrors srv`. The client can tell too: the connection
-closes without the chunked body's final empty chunk, so its HTTP layer
-reports a truncated body (curl exits 18) rather than a complete
-stream. A response header that can't be sent — a name that isn't a
-valid header token, or a value with a control or non-ASCII character
-— is never dropped quietly: the client gets a 500 and
-`Server.streamErrors` names the header and why. A handler that raises,
-or returns a status outside 100–999, also gets the client a 500 and
-leaves a line there (`serve handler on GET /x failed: …`). `exit n`
-in a handler stops the scope: no new request, the body and the other
-handlers are stopped with their cleanups whole, the scope closes, and
-the script exits n. A REPL ^C
-that interrupts a handler is not a failure: the connection closes
-without an answer and nothing is recorded.
-`maxConcurrent` limits how many handlers run at once, as with
-`Seq.pmapWith`; extra requests wait in a queue, and pipelined requests
-on one connection are answered in order.
+The handler is a plain function, `HttpServerRequest ->
+HttpServerResponse`, called once per request. Route with `match`.
+When the block exits, however it exits, the socket closes and the port
+is free. There is no `stop`.
 
-The config record is `{ port; maxConcurrent }` — `port` is an
-`Option<int>`: `Some 8080` asks for that port, `None` lets the kernel
-pick a free one, and `Server.port srv` reports the bound port either
-way — optionally with
-`bodyTimeout` (a `Duration`, default 30s) that limits how long
-reading the request body may take, and `maxBody` (a `Size`, default
-16MiB) that limits its size. The body is read before a handler slot
-is taken, so a slow upload never ties one up: a client that sends its
-body too slowly gets a 408, and a body larger than `maxBody` gets a
-413 and is never buffered whole. The handler's `req.body` is decoded
-per the request's `Content-Type` charset (UTF-8 when none is given); a
-body in a charset weir cannot decode — anything but utf-8, utf-16,
-utf-32, us-ascii and iso-8859-1 — gets a 415 and no handler runs.
+The handle supports `Server.port` (the bound port), `Server.running`
+and `Server.streamErrors`.
 
-When the block exits, the port is freed at once and requests still
-waiting in the queue are dropped. Handlers already running get two
-seconds, together, to finish their responses. A handler still running
-after that is stopped at its next builtin call, command, sleep or
-request (its commands are killed) and its response is discarded, so
-none of its effects happens after the block has exited.
+### Config
 
-`HttpServerRequest` carries:
+| field | type | default | |
+|---|---|---|---|
+| `port` | `Option<int>` | required | `None` picks a free port |
+| `maxConcurrent` | `int` | required | handlers at once; the rest queue |
+| `bodyTimeout` | `Duration` | 30s | slower uploads get 408 |
+| `maxBody` | `Size` | 16MiB | larger bodies get 413, unbuffered |
 
-- `method` — an `HttpMethod`. A valid method the union has no case
-  for arrives as `Other of string` (match it with `| Other v ->`),
-  `QUERY` arrives as `Query`, and a malformed method gets a 400
-  before your handler runs
+The body is read before a handler slot is taken, so a slow upload
+doesn't hold one. Pipelined requests are answered in order.
+
+### Loopback only
+
+It listens on `127.0.0.1`, `localhost` and `[::1]` (skipped if the
+host has no IPv6), never on all interfaces. A request whose `Host` is
+not one of those gets 404. For a public address, put a reverse proxy
+in front that passes a loopback `Host`; nginx's default `proxy_pass
+http://127.0.0.1:8080` does.
+
+### Request
+
+- `method`: an `HttpMethod`. `QUERY` is `Query`; other valid methods
+  are `Other of string`; a malformed one gets 400.
 - `path`
-- `query` — the raw string without the leading `?`; split it with
-  `Str.trySplitOnce`
-- `headers` — pairs, one per value: a repeated header (a proxied
-  `X-Forwarded-For` chain) arrives whole, its values in the order
-  received. Compare names case-insensitively
-- `body` — the request text
+- `query`: the raw string, no leading `?`
+- `headers`: one pair per value, in arrival order. Repeated headers
+  stay whole. Compare names case-insensitively.
+- `body`: text, decoded by the `Content-Type` charset (UTF-8 if none).
+  Only utf-8, utf-16, utf-32, us-ascii and iso-8859-1 decode; anything
+  else gets 415.
 
-Deliberately not supported in v1:
+### Response
 
-- TLS — put a reverse proxy in front
-- a routing DSL — the `match` is the router
-- WebSockets
-- request-body streaming
-- HTTP/2
+`body` is an `HttpBody`, the same type the `Http` client uses:
+`NoBody`, `Text`, `Json`, `Form`, or `Stream of seq<string>`.
+
+`Stream` sends each element as it's produced, as server-sent events:
+one event per element, one `data:` line per line, so a newline can't
+forge an event. If the seq raises partway through, the client gets a
+truncated body (curl exits 18) and the error goes to
+`Server.streamErrors`.
+
+### Failures
+
+The client gets 500 and `Server.streamErrors` gets a line when:
+
+- the handler raises (`serve handler on GET /x failed: …`)
+- it returns a status outside 100–999
+- a response header can't be sent (bad name, or a control or
+  non-ASCII character in the value)
+
+`exit n` in a handler stops the server, runs pending cleanups and
+exits the script with `n`. A REPL Ctrl+C during a handler closes the
+connection unanswered and records nothing.
+
+### Shutdown
+
+When the block exits, the port frees at once and queued requests are
+dropped. Running handlers get 2 seconds, between them, to finish.
+After that each is stopped at its next builtin call, command, sleep
+or request, its commands are killed, and its response is discarded.
+Nothing a handler does happens after the block exits.
+
+### Not supported
+
+TLS (use a reverse proxy), WebSockets, request-body streaming, HTTP/2.
