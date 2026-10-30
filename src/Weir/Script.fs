@@ -356,9 +356,20 @@ let stripInitDirectives (lines: string list) : string list =
 /// statement; checked on the trimmed text so an identifier such as
 /// `elsewhere` is untouched. Hoisted out of the assembler's col-0 gate so
 /// that giant function carries no inline `let … in`.
+// the trailing-whitespace-trimmed line as a span: the col-0 keyword
+// checks compare without a TrimEnd allocation per line
+let private trimmedEnd (raw: string) =
+    System.MemoryExtensions.TrimEnd(System.MemoryExtensions.AsSpan raw)
+
+let private spanIs (t: System.ReadOnlySpan<char>) (word: string) =
+    System.MemoryExtensions.SequenceEqual(t, System.MemoryExtensions.AsSpan word)
+
+let private spanStarts (t: System.ReadOnlySpan<char>) (prefix: string) =
+    System.MemoryExtensions.StartsWith(t, System.MemoryExtensions.AsSpan prefix, System.StringComparison.Ordinal)
+
 let continuesOpenIf (raw: string) : bool =
-    let lw = raw.TrimEnd()
-    lw = "else" || lw.StartsWith "else " || lw.StartsWith "elif "
+    let lw = trimmedEnd raw
+    spanIs lw "else" || spanStarts lw "else " || spanStarts lw "elif "
 
 /// Piece classification, inside assembly: the join/structure decisions.
 /// Kind is exclusive; Marker and OpensCompound are orthogonal fields —
@@ -402,6 +413,26 @@ let private isIdentToken (t: string) =
     t.Length > 0
     && (System.Char.IsLetter t[0] || t[0] = '_')
     && t |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
+
+// isIdentToken over `piece[0 .. stop)` with its trailing whitespace
+// trimmed, without the substring
+let private isIdentPrefix (piece: string) (stop: int) =
+    let mutable e = stop
+
+    while e > 0 && System.Char.IsWhiteSpace piece[e - 1] do
+        e <- e - 1
+
+    e > 0
+    && (System.Char.IsLetter piece[0] || piece[0] = '_')
+    && (let mutable ok = true
+        let mutable i = 1
+
+        while ok && i < e do
+            let c = piece[i]
+            ok <- System.Char.IsLetterOrDigit c || c = '_'
+            i <- i + 1
+
+        ok)
 
 /// the marker predicate lives in Parser (shared with completion);
 /// this alias keeps Script's callers and pins stable
@@ -556,14 +587,14 @@ let classifyPiece (piece: string) : PieceClass = {
     ClosesParen = piece.StartsWith ")"
     StartsField =
         (match piece.IndexOf '=' with
-         | i when i > 0 -> isIdentToken (piece.Substring(0, i).TrimEnd())
+         | i when i > 0 -> isIdentPrefix piece i
          | _ -> false)
     // type-declaration fields carry `:` not `=`; attribute lines
     // start their field [D:multiline-brackets]
     StartsTypeField =
         piece.StartsWith "[<"
         || (match piece.IndexOf ':' with
-            | i when i > 0 -> isIdentToken (piece.Substring(0, i).TrimEnd())
+            | i when i > 0 -> isIdentPrefix piece i
             | _ -> false)
     BraceDelta = braceDelta piece
 }
@@ -622,18 +653,22 @@ let isWithinHead (piece: string) : bool =
 // (or one behind `let <name> =`) opens its block exactly as a within
 // head does — the same lexical rule, one word shorter (no kind, no args)
 let private isDistrictHead (keyword: string) (piece: string) : bool =
-    let t = piece.Trim()
+    if not (piece.Contains keyword) then
+        false
+    else
 
-    let afterLet =
-        if t.StartsWith "let " then
-            match t.IndexOf '=' with
-            | -1 -> t
-            | i -> t.Substring(i + 1).TrimStart()
-        else
-            t
+        let t = piece.Trim()
 
-    afterLet = keyword
-    || afterLet.StartsWith(keyword + " ") && not (afterLet.Contains ";")
+        let afterLet =
+            if t.StartsWith "let " then
+                match t.IndexOf '=' with
+                | -1 -> t
+                | i -> t.Substring(i + 1).TrimStart()
+            else
+                t
+
+        afterLet = keyword
+        || afterLet.StartsWith(keyword + " ") && not (afterLet.Contains ";")
 
 let isPureHead (piece: string) : bool = isDistrictHead "pure" piece
 
@@ -1410,6 +1445,20 @@ let private bufAppend (b: PendBuf) (s: string) : PendBuf =
             LastSegStart = segStart
     }
 
+// the joins append their parts straight into the buffer — no joined
+// string per line — then index the added region exactly as bufAppend does
+let private bufAppended (b: PendBuf) (from: int) : PendBuf =
+    let nonWs, segStart = scanTail b.Sb from b.LastNonWs b.LastSegStart
+
+    {
+        b with
+            LastNonWs = nonWs
+            LastSegStart = segStart
+    }
+
+let private siblingJoinStr = " " + Parser.fieldSepStr + " "
+let private stmtSiblingJoinStr = " " + Parser.sibSepStr + " "
+
 let private bufLen (b: PendBuf) : int = b.Sb.Length
 
 // the TrimEnd'd length of the buffer (LastNonWs + 1), and whether the
@@ -1601,10 +1650,22 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
     // apply the text mutation (identical bytes to the old string algebra)
     let b =
         match j with
-        | JIn -> bufAppend b (" in " + piece)
-        | JSibling -> bufAppend b (" " + Parser.fieldSepStr + " " + piece)
-        | JStmtSibling -> bufAppend b (" " + Parser.sibSepStr + " " + piece)
-        | JSpace -> bufAppend b (" " + piece)
+        | JIn ->
+            let from = b.Sb.Length
+            b.Sb.Append(" in ").Append(piece) |> ignore
+            bufAppended b from
+        | JSibling ->
+            let from = b.Sb.Length
+            b.Sb.Append(siblingJoinStr).Append(piece) |> ignore
+            bufAppended b from
+        | JStmtSibling ->
+            let from = b.Sb.Length
+            b.Sb.Append(stmtSiblingJoinStr).Append(piece) |> ignore
+            bufAppended b from
+        | JSpace ->
+            let from = b.Sb.Length
+            b.Sb.Append(' ').Append(piece) |> ignore
+            bufAppended b from
         | JDistrictOpen(strip, opener) ->
             // strip the armed marker's trailing chars, then wrap. This arm
             // fires once per district (the first content line), so the full
@@ -1621,8 +1682,13 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
                     Ends = b.Ends |> List.map (min b.Sb.Length)
             }
 
-            bufAppend b (opener + piece + ")")
-        | JDistrictSibling opener -> bufAppend b (" ; " + opener + piece + ")")
+            let from = b.Sb.Length
+            b.Sb.Append(opener).Append(piece).Append(')') |> ignore
+            bufAppended b from
+        | JDistrictSibling opener ->
+            let from = b.Sb.Length
+            b.Sb.Append(" ; ").Append(opener).Append(piece).Append(')') |> ignore
+            bufAppended b from
         | JDistrictPipe ->
             // only on a `|` continuation line inside a district — not a
             // quadratic path; rescan the (now one-shorter) buffer whole
@@ -1636,8 +1702,13 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
                     Ends = b.Ends |> List.map (min b.Sb.Length)
             }
 
-            bufAppend b (" " + piece + ")")
-        | JYamlLine rel -> bufAppend b (Parser.sibSepStr + String(' ', rel) + piece)
+            let from = b.Sb.Length
+            b.Sb.Append(' ').Append(piece).Append(')') |> ignore
+            bufAppended b from
+        | JYamlLine rel ->
+            let from = b.Sb.Length
+            b.Sb.Append(Parser.sibSep).Append(' ', rel).Append(piece) |> ignore
+            bufAppended b from
 
     // the piece ends before a district's closing ")"
     let pieceEnd =
@@ -1933,10 +2004,10 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                             // a col-0 `until` continues its retry/poll —
                             // matching the col-0 `|` arm [D:retry-poll]
                             || raw.StartsWith "until "
-                            || raw.TrimEnd() = "until"
+                            || spanIs (trimmedEnd raw) "until"
                             // a col-0 `always` continues its bare within
                             // [D:within-always]
-                            || raw.TrimEnd() = "always"
+                            || spanIs (trimmedEnd raw) "always"
                             // a col-0 `else`/`elif` continues its `if` — the
                             // top-level block form; the ElseHead join below
                             // already handles it, only this gate excluded a
@@ -6000,6 +6071,13 @@ let private vendoredNameFault (path: string) : bool =
 // members (version, exhaustive, Cmd) are read by the sig loader, not by
 // the module's own text — the loader is the use, so the unused check
 // stays off for that one consumer
+// a check-only run keeps no module body [D:check-drops-bodies]: the
+// typed trees are read while the module loads and never again (no
+// replay, no capability walk, no editor), so holding them until exit
+// only makes every collection copy them; a #sig load keeps its body —
+// the sig loader reads it after the load
+let mutable dropModuleBodies = false
+
 let rec loadModuleCachedWith
     (sigContract: bool)
     (mkR: TypeEnv -> Parser.Resolver)
@@ -6417,7 +6495,11 @@ let rec loadModuleCachedWith
                                                    n,
                                                    Map.tryFind n finalTenv.TypeOrigins
                                                    |> Option.defaultValue (ownOrigin n)))
-                                        Body = moduleBody
+                                        Body =
+                                            (if dropModuleBodies && not sigContract then
+                                                 []
+                                             else
+                                                 moduleBody)
                                         MayRebind = false
                                     }
 
@@ -13684,6 +13766,8 @@ let directiveMisuse (rawLines: string list) : (int * string) option =
     directiveMisuses rawLines |> List.tryHead
 
 let checkOnly (json: bool) (path: string) : int =
+    dropModuleBodies <- true
+
     match readEntryScript path with
     | Error msg ->
         Console.Error.WriteLine $"weir: {msg}"

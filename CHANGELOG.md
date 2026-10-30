@@ -28,6 +28,24 @@
   diagnostics, same trees: the starship import goes from 126 ms to
   105 ms pinned to one core (medians of 31), allocation from 84 MB to
   73 MB.
+- **A check keeps less alive.** `weir check` held every imported
+  module's typed statements until exit — for a replay, a capability
+  walk or an editor it never performs — and every tree node carried
+  its position range as a heap object. The bodies are dropped once
+  the module has loaded in check-only runs, and the range is a struct.
+  Each collection copied that live set; the full collection mid-import
+  no longer fires at all: the starship import goes from 107 ms to
+  96 ms pinned to one core and from 109 ms to 87 ms on 15 (medians of
+  21), total collection pause from 45 ms to 29 ms.
+- **Line assembly scans less.** The string-aware scanner probed every
+  character for a string opener and kept scanning a line after it had
+  found its comment; the per-line checks trimmed and sliced strings to
+  answer yes-or-no questions, and every join built the joined text
+  before appending it. The scanner now probes only the three opener
+  characters and stops at the comment, the checks read the line in
+  place, and the joins append their parts. Same diagnostics, same
+  `fmt` output: the starship import goes from 175 ms to 170 ms pinned
+  to one core (medians of 31).
 - **Line assembly allocates far less.** Before parsing, every physical
   line was trimmed, split into its comment and code and re-scanned by
   the district mask, the doc attachment and the binder-head checks,

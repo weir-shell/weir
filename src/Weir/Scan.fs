@@ -134,31 +134,40 @@ let private opener (s: string) (i: int) (modes: ScanMode list) : struct (bool * 
     else
         struct (false, modes, i)
 
-let private stringScanFrom
-    (modes0: ScanMode list)
-    (f: 'a -> int -> char -> 'a)
-    (init: 'a)
-    (s: string)
-    : struct ('a * ScanMode list) =
-    let mutable st = init
+// an opener can only start on these three characters — every other
+// code character skips the probe
+let inline private mayOpen (c: char) = c = '"' || c = '\'' || c = '@'
+
+// the one machine's loop: `step` sees each code character (outside
+// strings) and stops the scan by answering true — the scan's index and
+// open modes come back, so a search ends at its first hit
+let private scanCore (modes0: ScanMode list) (step: int -> char -> bool) (s: string) : struct (int * ScanMode list) =
     let mutable i = 0
+    let mutable stop = false
     // innermost first; empty = top-level code
     let mutable modes: ScanMode list = modes0
 
-    while i < s.Length do
+    while not stop && i < s.Length do
         let c = s[i]
 
         match modes with
         | [] ->
-            let struct (opened, m, j) = opener s i modes
+            if mayOpen c then
+                let struct (opened, m, j) = opener s i modes
 
-            if opened then
-                modes <- m
-                i <- j
+                if opened then
+                    modes <- m
+                    i <- j
+                else
+                    stop <- step i c
             else
-                st <- f st i c
+                stop <- step i c
         | Hole d :: rest ->
-            let struct (opened, m, j) = opener s i modes
+            let struct (opened, m, j) =
+                if mayOpen c then
+                    opener s i modes
+                else
+                    struct (false, modes, i)
 
             if opened then
                 modes <- m
@@ -196,7 +205,26 @@ let private stringScanFrom
                 else
                     modes <- Hole 0 :: modes
 
-        i <- i + 1
+        if not stop then
+            i <- i + 1
+
+    struct (i, modes)
+
+let private stringScanFrom
+    (modes0: ScanMode list)
+    (f: 'a -> int -> char -> 'a)
+    (init: 'a)
+    (s: string)
+    : struct ('a * ScanMode list) =
+    let mutable st = init
+
+    let struct (_, modes) =
+        scanCore
+            modes0
+            (fun i c ->
+                st <- f st i c
+                false)
+            s
 
     struct (st, modes)
 
@@ -216,20 +244,17 @@ let commentAt (line: string) : int =
         -1
     else
 
-        foldOutsideStrings
-            (fun cut i c ->
-                if
-                    cut < 0
-                    && c = '/'
+        let struct (i, _) =
+            scanCore
+                []
+                (fun i c ->
+                    c = '/'
                     && i + 1 < line.Length
                     && line[i + 1] = '/'
-                    && (i = 0 || System.Char.IsWhiteSpace line[i - 1])
-                then
-                    i
-                else
-                    cut)
-            -1
-            line
+                    && (i = 0 || System.Char.IsWhiteSpace line[i - 1]))
+                line
+
+        if i < line.Length then i else -1
 
 // All four weir string kinds are single-line, so a line ending inside
 // one can never be completed by more input — the multiline REPL submits
