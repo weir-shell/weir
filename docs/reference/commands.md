@@ -144,7 +144,7 @@ print $"{files |> Seq.length} tracked"
 
 if 2 > 1 then
     git status --porcelain
-    print (($(git rev-parse HEAD) |> Seq.head)[..6])
+    print ($(git rev-parse HEAD | line)[..6])
 ```
 
 `$(...)` captures a command chain where a bare command can't go:
