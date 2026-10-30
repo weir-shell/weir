@@ -3,8 +3,8 @@ module Weir.Fast
 // The hand-written happy-path parser [D:hand-parser]: a scanner-driven
 // recursive descent over one logical line that builds exactly the tree
 // Parser.fs's grammar would build, or refuses. It never reports: every
-// construct it does not know, every shape the command grammar could
-// claim, every doubt is a refusal, and the FParsec grammar then parses
+// construct it does not know, every command shape outside its subset,
+// every doubt is a refusal, and the FParsec grammar then parses
 // the statement as the sole source of diagnostics. Refusal is a flag,
 // not an exception — it is the common case on real code and must cost
 // nothing but the characters read.
@@ -31,6 +31,15 @@ type private St = {
     mutable AliasMasked: Set<string>
     mutable InArm: int
     mutable ExprParen: bool
+    // the grammar's statement-context flags: letCmdOk and its source
+    // (letCmdStmt), ifCondOk, ifBodyOk — they pick a command line's stop
+    // words and where its reifier may end
+    mutable LetCmd: bool
+    mutable LetCmdStmt: bool
+    mutable IfCond: bool
+    mutable IfBody: bool
+    // the last stmtElem was a command chain (armSeq's Choice1)
+    mutable LastChain: bool
     // where the first refusal happened — the coverage work's one instrument
     mutable RefusedAt: int
     PendingAt: int
@@ -174,8 +183,8 @@ let private identSpanned (st: St) : string * Span =
 
 // ---- the command-head rule, mirrored [D:hand-parser] ------------------
 // Parser.fs tries the command grammar first at every statement position;
-// its head decides against the resolver in this exact order. A head the
-// command grammar would claim is a refusal here (P1 parses no commands).
+// its head decides against the resolver in this exact order (headOf), and
+// a command line follows the verdict.
 let private cmdWordChar (c: char) =
     not (Char.IsWhiteSpace c)
     && c <> '|'
@@ -192,14 +201,132 @@ let private isIdentLike (w: string) =
 
 let private isKnown (st: St) (w: string) = st.Locals.Contains w || st.R.IsKnown w
 
-let private couldBeCommand (st: St) (builtinHeads: bool) : bool =
+// a head word glued to a yaml marker's modifier face (` patch [by=…]
+// [schema=…]` or ` schema=…`, then the sentinel): litHeadWord's
+// notFollowedBy, so the grammar never resolves it
+let private markerFaceAt (t: string) (j0: int) : bool =
+    let schemaChar (c: char) =
+        Char.IsLower c || Char.IsDigit c || c = '-'
+
+    let mutable j = j0
+
+    let run (pred: char -> bool) =
+        let s = j
+
+        while j < t.Length && pred t[j] do
+            j <- j + 1
+
+        j > s
+
+    if String.CompareOrdinal(t, j, " patch", 0, 6) = 0 then
+        j <- j + 6
+        let mutable ok = true
+
+        if String.CompareOrdinal(t, j, " by=", 0, 4) = 0 then
+            j <- j + 4
+            ok <- run (fun c -> c <> ' ' && c <> sibSep)
+
+        if ok && String.CompareOrdinal(t, j, " schema=", 0, 8) = 0 then
+            j <- j + 8
+            ok <- run schemaChar
+
+        ok && j < t.Length && t[j] = sibSep
+    elif String.CompareOrdinal(t, j, " schema=", 0, 8) = 0 then
+        j <- j + 8
+        run schemaChar && j < t.Length && t[j] = sibSep
+    else
+        false
+
+// `ident=` glued, never `==`: an env prefix (the grammar's envAssign)
+let private envPrefixAhead (st: St) : bool =
+    let t = st.Text
+
+    if not (isIdentStart (peek st)) then
+        false
+    else
+        let w = wordAhead st
+        let j = st.I + w.Length
+        j < t.Length && t[j] = '=' && not (j + 1 < t.Length && t[j + 1] = '=')
+
+type private HeadK =
+    | NotCmd = 0
+    | Refuse = 1
+    | External = 2
+    | Builtin = 3
+    | Aliased = 4
+    | Tilde = 5
+    | Dynamic = 6
+    // `NAME=value` words first: the head follows them
+    | Env = 7
+
+// the head verdict: the kind, the word, and where the word ends
+[<Struct>]
+type private Head = { K: HeadK; Word: string; End: int }
+
+let private notCmd = {
+    K = HeadK.NotCmd
+    Word = null
+    End = 0
+}
+
+let private refuseHead = {
+    K = HeadK.Refuse
+    Word = null
+    End = 0
+}
+
+// litHead's decision against the resolver, in its exact order; Refuse
+// where the grammar would raise or the shape is not this parser's
+let private headOf (st: St) (builtinHeads: bool) : Head =
     let t = st.Text
     let c = peek st
 
-    if c = '^' || c = '\\' then
-        true
+    if envPrefixAhead st then
+        { K = HeadK.Env; Word = null; End = 0 }
+    // the def teaching fires ahead of every command line's head
+    // [D:def-shape]: its shape is the grammar's to judge
+    elif c = '\\' || (matches st "def" && (peekAt st 3 = ' ' || peekAt st 3 = '\t')) then
+        refuseHead
+    elif c = '^' then
+        if peekAt st 1 = '$' then
+            let d = peekAt st 2
+
+            if d = '(' || isIdentStart d then
+                {
+                    K = HeadK.Dynamic
+                    Word = null
+                    End = 0
+                }
+            else
+                refuseHead
+        else
+            let mutable j = st.I + 1
+
+            while j < t.Length && j - st.I - 1 < 1024 && cmdWordChar t[j] do
+                j <- j + 1
+
+            if
+                j = st.I + 1
+                || j - st.I - 1 >= 1024
+                || (j < t.Length && t[j] = sibSep)
+                || markerFaceAt t j
+            then
+                refuseHead
+            else
+                let w = t.Substring(st.I + 1, j - st.I - 1)
+
+                if w[0] = '[' || w.StartsWith "~/" then
+                    refuseHead
+                elif st.R.IsExternal w then
+                    {
+                        K = HeadK.External
+                        Word = w
+                        End = j
+                    }
+                else
+                    refuseHead
     elif not (cmdWordChar c) || c = eos then
-        false
+        notCmd
     else
         let mutable j = st.I
 
@@ -207,22 +334,32 @@ let private couldBeCommand (st: St) (builtinHeads: bool) : bool =
             j <- j + 1
 
         if j < t.Length && t[j] = sibSep then
-            false
+            notCmd
+        elif markerFaceAt t j then
+            refuseHead
         else
             let w = t.Substring(st.I, j - st.I)
 
-            if w[0] = '[' then
-                false
-            elif w.StartsWith "~/" then
-                true
-            elif isIdentLike w && not (st.AliasMasked.Contains w) && (st.R.AliasHead w).IsSome then
-                true
-            elif builtinHeads && isIdentLike w && st.R.IsCommandCallable w then
-                true
-            elif isIdentLike w && (keywords.Contains w || isKnown st w) then
-                false
-            else
-                st.R.IsExternal w
+            let k =
+                if w[0] = '[' then
+                    HeadK.NotCmd
+                elif w.StartsWith "~/" then
+                    HeadK.Tilde
+                elif isIdentLike w && not (st.AliasMasked.Contains w) && (st.R.AliasHead w).IsSome then
+                    HeadK.Aliased
+                elif builtinHeads && isIdentLike w && st.R.IsCommandCallable w then
+                    HeadK.Builtin
+                elif isIdentLike w && (keywords.Contains w || isKnown st w) then
+                    HeadK.NotCmd
+                elif st.R.IsExternal w then
+                    HeadK.External
+                else
+                    HeadK.NotCmd
+
+            if k = HeadK.NotCmd then notCmd
+            // the bounded head scan stopped mid-word, or a yaml marker word
+            elif j - st.I >= 1024 || w = "yaml" then refuseHead
+            else { K = k; Word = w; End = j }
 
 // the statement-position guards that fire before the expression grammar
 // gets a look: foreign keywords, `NAME=value` env prefixes, `\`-heads
@@ -784,6 +921,176 @@ and private anonShape (st: St) : (string * Ty) list =
     elif not (strWs st "|}") then refuse st
     else List.rev fields
 
+// ---- the command grammar's lexical half [D:hand-parser] -------------------
+// argv stop words, as cmdArgStops takes them
+[<Literal>]
+let private StopIn = 1
+
+[<Literal>]
+let private StopThen = 2
+
+[<Literal>]
+let private StopElse = 4
+
+// a command-word char at offset k (end of input is none — the grammar's
+// notFollowedBy succeeds there)
+let private wordCharAt (st: St) (k: int) =
+    let j = st.I + k
+    j < st.Text.Length && cmdWordChar st.Text[j]
+
+// `pstring w .>> notFollowedBy (satisfy cmdWordChar)`
+let private stopWordAt (st: St) (w: string) =
+    matches st w && not (wordCharAt st w.Length)
+
+// reifierEnd: what may follow a reifier marker
+let private reifierEndAhead (st: St) : bool =
+    let c = peek st
+
+    st.I >= st.Text.Length
+    || c = '|'
+    || c = ')'
+    || c = ';'
+    || c = sibSep
+    || (st.LetCmd && stopWordAt st "in")
+    || (st.IfCond && stopWordAt st "then")
+    || (st.IfBody && (stopWordAt st "else" || stopWordAt st "elif"))
+
+// `$(` or `$name(` — sigilOpen's shape
+let private captureAhead (st: St) : bool =
+    let t = st.Text
+
+    if peek st <> '$' then
+        false
+    elif peekAt st 1 = '(' then
+        true
+    elif isIdentStart (peekAt st 1) then
+        let mutable j = st.I + 2
+
+        while j < t.Length && isIdentCont t[j] do
+            j <- j + 1
+
+        j < t.Length && t[j] = '('
+    else
+        false
+
+// splicePath: the sigil, a name, its `.field` path; no trailing ws
+let private splicePathAt (st: St) (sigilLen: int) : Expr =
+    let s = st.I
+    st.I <- st.I + sigilLen
+    let w = takeWord st
+
+    if isNull' w then
+        refuse st
+    else
+        let sp = { Start = at s; End = here st }
+        let mutable e = { Kind = EVar w; Span = sp }
+
+        while peek st = '.' && isIdentStart (peekAt st 1) do
+            st.I <- st.I + 1
+            let fs = st.I
+            let f = takeWord st
+            let fsp = { Start = at fs; End = here st }
+
+            e <- {
+                Kind = EField(e, f, fsp)
+                Span = { Start = sp.Start; End = fsp.End }
+            }
+
+        e
+
+let private singleQuotedArg (st: St) : Expr =
+    let s = st.I
+    let j = st.Text.IndexOf('\'', s + 1)
+
+    if j < 0 then
+        refuse st
+    else
+        st.I <- j + 1
+
+        let e = {
+            Kind = EStr(st.Text.Substring(s + 1, j - s - 1))
+            Span = { Start = at s; End = here st }
+        }
+
+        ws st
+        e
+
+let private bareword (st: St) : Expr =
+    let t = st.Text
+    let s = st.I
+    let mutable j = s
+
+    while j < t.Length && cmdWordChar t[j] do
+        j <- j + 1
+
+    // a bareword glued to the sentinel is the yaml wrap's, never argv
+    if j < t.Length && t[j] = sibSep then
+        refuse st
+    else
+        let w = t.Substring(s, j - s)
+        st.I <- j
+        let span = { Start = at s; End = at j }
+
+        let e =
+            if isTildeWord w then
+                tildeExpr w span
+            elif w.StartsWith "\\" then
+                {
+                    Kind = EVar("|backslash " + w)
+                    Span = span
+                }
+            else
+                { Kind = EStr w; Span = span }
+
+        ws st
+        e
+
+// the statement grant [D:statement-lets]: withStmtLetCmd and
+// clearStmtLetCmd over the two flags
+let private withStmtLetCmd (st: St) (body: St -> Expr) : Expr =
+    if st.LetCmd then
+        body st
+    else
+        let savedStmt = st.LetCmdStmt
+        st.LetCmd <- true
+        st.LetCmdStmt <- true
+        let e = body st
+        st.LetCmd <- false
+        st.LetCmdStmt <- savedStmt
+        e
+
+let private clearStmtLetCmd (st: St) (body: St -> Expr) : Expr =
+    if st.LetCmdStmt then
+        let savedOk = st.LetCmd
+        st.LetCmd <- false
+        st.LetCmdStmt <- false
+        let e = body st
+        st.LetCmd <- savedOk
+        st.LetCmdStmt <- true
+        e
+    else
+        body st
+
+// a non-final command element streams [D:interior-arming]: armSeq
+let private armSeq (st: St) (items: struct (Expr * bool) list) : Expr =
+    let n = List.length items
+
+    let armed =
+        items
+        |> List.mapi (fun i (struct (e, chain)) ->
+            if chain && i < n - 1 then
+                if exitCodeSpine e then
+                    refuse st
+                else
+                    {
+                        Kind = EPipe(e, { Kind = EVar "|print"; Span = e.Span })
+                        Span = e.Span
+                    }
+            else
+                e)
+
+    if st.Ok then foldSeqExpr armed else Unchecked.defaultof<_>
+
 // ---- the expression grammar ------------------------------------------------
 let rec private seqExpr (st: St) : Expr =
     // elements sequenced by `;` or the sibling sentinel — the separator
@@ -794,7 +1101,7 @@ let rec private seqExpr (st: St) : Expr =
     if not st.Ok then
         Unchecked.defaultof<_>
     else
-        let mutable items = [ first ]
+        let mutable items = [ struct (first, st.LastChain) ]
         let mutable go = true
 
         while st.Ok && go do
@@ -808,7 +1115,7 @@ let rec private seqExpr (st: St) : Expr =
                     let e = stmtElem st
 
                     if st.Ok then
-                        items <- e :: items
+                        items <- struct (e, st.LastChain) :: items
             else
                 go <- false
 
@@ -816,28 +1123,62 @@ let rec private seqExpr (st: St) : Expr =
             Unchecked.defaultof<_>
         else
             match items with
-            | [ one ] -> one
-            | _ -> foldSeqExpr (List.rev items)
+            | [ _ ] -> first
+            | _ -> armSeq st (List.rev items)
 
 and private stmtElem (st: St) : Expr =
+    st.LastChain <- false
+
     if guardedHead st then
         refuse st
-    elif not st.ExprParen && couldBeCommand st false then
-        refuse st
     else
-        let e = commaExpr st
+        let h = if st.ExprParen then notCmd else headOf st false
 
-        if not st.Ok then
-            Unchecked.defaultof<_>
-        else if
-            // a bare `|` after an element: the next arm's boundary inside a
-            // match (left for the match to read), a value-headed pipe or the
-            // pipe hint anywhere else — both the command grammar's, refused
-            peek st = '|' && peekAt st 1 <> '|' && peekAt st 1 <> '>'
-        then
-            if st.InArm > 0 || st.ExprParen then e else refuse st
-        else
+        if h.K = HeadK.Refuse then
+            refuse st
+        elif h.K <> HeadK.NotCmd then
+            // the interior command element [D:interior-arming]: letRhsCmd
+            let e = cmdLine st false (letRhsStops st) None h
+
+            if st.Ok then
+                st.LastChain <- true
+
             e
+        else
+            let e = commaExpr st
+            // an interior element's chain is not this element's
+            st.LastChain <- false
+
+            if not st.Ok then
+                Unchecked.defaultof<_>
+            else if
+                // a bare `|` after an element: the next arm's boundary inside a
+                // match (left for the match to read), a value-headed pipe or the
+                // pipe hint anywhere else — both the command grammar's, refused
+                peek st = '|' && peekAt st 1 <> '|' && peekAt st 1 <> '>'
+            then
+                if st.ExprParen then
+                    e
+                else
+                    let v = valueHeaded st e
+
+                    if not st.Ok then
+                        Unchecked.defaultof<_>
+                    elif isNull' v then
+                        // the gate refused: inside an arm the `|` is the next
+                        // arm's; anywhere else the pipe hint's
+                        if st.InArm > 0 then e else refuse st
+                    elif obj.ReferenceEquals(v, e) then
+                        e
+                    else
+                        st.LastChain <- true
+                        v
+            else
+                e
+
+// letRhsCmd's argv stops: `in`, and a then/elif body's else/elif
+and private letRhsStops (st: St) : int =
+    if st.IfBody then StopIn ||| StopElse else StopIn
 
 and private commaExpr (st: St) : Expr =
     let first = expr st
@@ -913,9 +1254,12 @@ and private opAhead (st: St) : struct (string * int) =
 
 and private expr (st: St) : Expr = opp st term 1
 
+and private opp (st: St) (termP: St -> Expr) (minPrec: int) : Expr = oppWith st termP minPrec false
+
 // precedence climbing over `termP`, the grammar's OPP with the same
-// table — `updateSource` runs it over application chains alone
-and private opp (st: St) (termP: St -> Expr) (minPrec: int) : Expr =
+// table — `updateSource` runs it over application chains alone, and a
+// command chain's expression stage without `|>` (segOpp)
+and private oppWith (st: St) (termP: St -> Expr) (minPrec: int) (noPipe: bool) : Expr =
     st.Depth <- st.Depth + 1
 
     if tooDeep st then
@@ -928,7 +1272,7 @@ and private opp (st: St) (termP: St -> Expr) (minPrec: int) : Expr =
         while go do
             let struct (op, prec) = opAhead st
 
-            if isNull' op || prec < minPrec then
+            if isNull' op || prec < minPrec || (noPipe && op = "|>") then
                 go <- false
             else
                 st.I <- st.I + op.Length
@@ -1170,7 +1514,9 @@ and private atom (st: St) : Expr =
     elif c = '"' || (c = '@' && peekAt st 1 = '"') then
         stringAtom st
     elif c = '$' then
-        if peekAt st 1 = '"' then interpLit st else refuse st
+        if peekAt st 1 = '"' then interpLit st
+        elif captureAhead st then cmdCapture st
+        else refuse st
     elif c = '(' then
         parenAtom st
     elif c = '{' then
@@ -1372,7 +1718,7 @@ and private parenAtom (st: St) : Expr =
         else
             let savedParen = st.ExprParen
             st.ExprParen <- true
-            let inner = seqExpr st
+            let inner = clearStmtLetCmd st seqExpr
             st.ExprParen <- savedParen
 
             if not st.Ok then
@@ -2234,24 +2580,33 @@ and private withLocals (st: St) (names: string list) (body: St -> Expr) : Expr =
     st.AliasMasked <- savedMask
     e
 
-// a top-level let's params: known names, but no alias mask (the grammar's
-// spine extends the resolver alone)
-and private withSpineNames (st: St) (names: string list) (body: St -> Expr) : Expr =
-    let saved = st.Locals
-
-    for n in names do
-        st.Locals <- Set.add n st.Locals
-
-    let e = body st
-    st.Locals <- saved
-    e
+// a top-level let's params: known names that mask an alias too
+// [D:alias-binding-shadow] (the grammar's withSpine)
+and private withSpineNames (st: St) (names: string list) (body: St -> Expr) : Expr = withLocals st names body
 
 and private bodyExpr (st: St) : Expr =
-    // a statement body: expression territory ends, lets may take commands
+    // a let-in body: expression territory ends
     let saved = st.ExprParen
     st.ExprParen <- false
     let e = seqExpr st
     st.ExprParen <- saved
+    e
+
+// a statement body [D:statement-lets]: expression territory ends, lets
+// may take commands
+and private stmtBody (st: St) : Expr =
+    let saved = st.ExprParen
+    st.ExprParen <- false
+    let e = withStmtLetCmd st seqExpr
+    st.ExprParen <- saved
+    e
+
+// a then/elif body: a statement body whose commands stop at else/elif
+and private ifBody (st: St) : Expr =
+    let saved = st.IfBody
+    st.IfBody <- true
+    let e = stmtBody st
+    st.IfBody <- saved
     e
 
 and private lambda (st: St) : Expr =
@@ -2267,7 +2622,7 @@ and private lambda (st: St) : Expr =
         refuse st
     else
         let names = ps |> List.collect patLeafNames
-        let body = withLocals st names bodyExpr
+        let body = withLocals st names stmtBody
 
         if not st.Ok then
             Unchecked.defaultof<_>
@@ -2348,8 +2703,16 @@ and private letIn (st: St) : Expr =
                 else
                     let names = ps |> List.collect patLeafNames
 
+                    // the block-let command RHS [D:block-let-cmd]: granted
+                    // contexts only — elsewhere the grammar's probe owns it
                     let value =
-                        withLocals st names (fun st -> if couldBeCommand st false then refuse st else seqExpr st)
+                        withLocals st names (fun st ->
+                            let h = headOf st false
+
+                            if h.K = HeadK.Refuse then refuse st
+                            elif h.K = HeadK.NotCmd then seqExpr st
+                            elif st.LetCmd then cmdLine st false (letRhsStops st) None h
+                            else refuse st)
 
                     if not st.Ok then
                         Unchecked.defaultof<_>
@@ -2369,7 +2732,19 @@ and private letIn (st: St) : Expr =
                             }
 
 and private ifCond (st: St) : Expr =
-    if couldBeCommand st false then refuse st else expr st
+    // the condition's command grammar [D:if-succeeds]: argv stops at `then`
+    let h = headOf st false
+
+    if h.K = HeadK.Refuse then
+        refuse st
+    elif h.K = HeadK.NotCmd then
+        expr st
+    else
+        let saved = st.IfCond
+        st.IfCond <- true
+        let e = cmdLine st false StopThen None h
+        st.IfCond <- saved
+        e
 
 and private ifExpr (st: St) : Expr =
     let p = here st
@@ -2381,7 +2756,7 @@ and private ifExpr (st: St) : Expr =
     elif not (keyword st "then") then
         refuse st
     else
-        let thn = bodyExpr st
+        let thn = ifBody st
 
         if not st.Ok then
             Unchecked.defaultof<_>
@@ -2395,7 +2770,7 @@ and private ifExpr (st: St) : Expr =
                     if not (keyword st "then") then
                         refuse st
                     else
-                        let t = bodyExpr st
+                        let t = ifBody st
 
                         if st.Ok then
                             elifs <- (c, t) :: elifs
@@ -2405,7 +2780,7 @@ and private ifExpr (st: St) : Expr =
             else
                 let els =
                     if keyword st "else" then
-                        let e = bodyExpr st
+                        let e = stmtBody st
                         if st.Ok then Some e else None
                     else
                         None
@@ -2475,7 +2850,7 @@ and private matchArm (st: St) : (Pattern * Expr option * Expr) list =
                 refuse st
             else
                 st.InArm <- st.InArm + 1
-                let body = withLocals st names bodyExpr
+                let body = withLocals st names stmtBody
                 st.InArm <- st.InArm - 1
 
                 if st.Ok then
@@ -2747,6 +3122,553 @@ and private orFailForm (st: St) : Expr =
             Kind = EOrFailForm(optOf msg)
             Span = { Start = at s; End = here st }
         }
+
+// ---- command lines [D:hand-parser] ------------------------------------------
+// cmdArgStops' choice, piece by piece: a glued piece, a mid-word splice,
+// a text-block marker or a shape outside this parser is a refusal
+and private cmdArgs (st: St) (stops: int) : Expr list =
+    let t = st.Text
+    let mutable args = []
+    let mutable go = true
+
+    // notGluedPiece: a piece starts after whitespace, `|`, `(` or the sentinel
+    let glued () =
+        let p = peekAt st -1
+        not (Char.IsWhiteSpace p || p = '|' || p = '(' || p = sibSep)
+
+    // notMidWord: a splice starts after a blank
+    let midWord () =
+        let p = peekAt st -1
+        p <> ' ' && p <> '\t'
+
+    while st.Ok && go do
+        let c = peek st
+
+        let arg =
+            if st.I >= t.Length then
+                Unchecked.defaultof<_>
+            elif matches st "<<<" || matches st "$<<<" || matches st "$$<<<" then
+                refuse st
+            elif c = '"' then
+                if glued () then refuse st else stringAtom st
+            elif c = '\'' then
+                if glued () then refuse st else singleQuotedArg st
+            elif c = '@' && peekAt st 1 = '"' then
+                refuse st
+            elif c = '$' then
+                let d = peekAt st 1
+
+                if d = '"' then
+                    if glued () then refuse st else interpLit st
+                elif d = '(' then
+                    if glued () then refuse st else cmdCapture st
+                elif d = '@' then
+                    if peekAt st 2 = '"' || midWord () || not (isIdentStart (peekAt st 2)) then
+                        refuse st
+                    else
+                        // the argv splat [D:argv-splat]
+                        let s = st.I
+                        let inner = splicePathAt st 2
+
+                        if not st.Ok then
+                            Unchecked.defaultof<_>
+                        else
+                            let e = {
+                                Kind = ESplat inner
+                                Span = { Start = at s; End = here st }
+                            }
+
+                            ws st
+                            e
+                elif isIdentStart d then
+                    if midWord () then
+                        refuse st
+                    else
+                        let e = splicePathAt st 1
+
+                        if st.Ok then
+                            ws st
+
+                        e
+                else
+                    refuse st
+            elif c = '(' then
+                if glued () then refuse st else argParens st
+            elif cmdWordChar c then
+                if glued () then
+                    refuse st
+                elif
+                    ((stops &&& StopIn) <> 0 && stopWordAt st "in")
+                    || ((stops &&& StopElse) <> 0 && (stopWordAt st "else" || stopWordAt st "elif"))
+                    || ((stops &&& StopThen) <> 0 && stopWordAt st "then")
+                then
+                    Unchecked.defaultof<_>
+                else
+                    bareword st
+            else
+                Unchecked.defaultof<_>
+
+        if not st.Ok || isNull' arg then
+            go <- false
+        else
+            args <- arg :: args
+
+    if st.Ok then List.rev args else Unchecked.defaultof<_>
+
+// the grammar's `parens` (no unit, no operator value): expression
+// territory, the statement grant cleared
+and private argParens (st: St) : Expr =
+    let start = st.I
+    st.I <- st.I + 1
+    ws st
+
+    if peek st = ')' then
+        refuse st
+    else
+        let savedParen = st.ExprParen
+        st.ExprParen <- true
+        let inner = clearStmtLetCmd st seqExpr
+        st.ExprParen <- savedParen
+
+        if not st.Ok then
+            Unchecked.defaultof<_>
+        elif peek st <> ')' then
+            refuse st
+        else
+            st.I <- st.I + 1
+
+            let e = {
+                inner with
+                    Span = { Start = at start; End = here st }
+            }
+
+            ws st
+            e
+
+// `$(chain)` / `$env(chain)` — captureSigil: the interior is a full
+// command line (builtin heads admitted), closed on this line
+and private cmdCapture (st: St) : Expr =
+    let start = st.I
+
+    let envO =
+        if peekAt st 1 = '(' then
+            st.I <- st.I + 2
+            None
+        else
+            st.I <- st.I + 1
+            let ns = st.I
+            let w = takeWord st
+            let sp = { Start = at ns; End = here st }
+            st.I <- st.I + 1
+            Some { Kind = EVar w; Span = sp }
+
+    ws st
+    let h = headOf st true
+
+    let chain =
+        if h.K = HeadK.Refuse || h.K = HeadK.NotCmd then
+            refuse st
+        else
+            cmdLine st true 0 envO h
+
+    if not st.Ok then
+        Unchecked.defaultof<_>
+    elif exitCodeSpine chain || peek st <> ')' then
+        refuse st
+    else
+        st.I <- st.I + 1
+        let span = { Start = at start; End = here st }
+        ws st
+
+        {
+            Kind = ECapture { chain with Span = span }
+            Span = span
+        }
+
+// `NAME=value` words [D:env-prefix]: envAssign, many; a value the next
+// piece glues to is refused
+and private envAssigns (st: St) : ((string * Expr) * Span) list =
+    let mutable acc = []
+
+    while st.Ok && envPrefixAhead st do
+        let s = st.I
+        let name = takeWord st
+        st.I <- st.I + 1
+        let c = peek st
+
+        let value =
+            if c = ' ' || c = '\t' then
+                Unchecked.defaultof<_>
+            elif c = '$' then
+                let d = peekAt st 1
+
+                if d = '"' then
+                    interpLit st
+                elif d = '(' then
+                    cmdCapture st
+                elif isIdentStart d then
+                    let vs = st.I
+                    st.I <- st.I + 1
+                    let w = takeWord st
+
+                    {
+                        Kind = EVar w
+                        Span = { Start = at vs; End = here st }
+                    }
+                else
+                    refuse st
+            elif c = '"' then
+                stringAtom st
+            elif c = '\'' then
+                singleQuotedArg st
+            elif c = '@' && peekAt st 1 = '"' then
+                refuse st
+            elif cmdWordChar c && st.I < st.Text.Length then
+                let vs = st.I
+                let mutable j = vs
+
+                while j < st.Text.Length && cmdWordChar st.Text[j] do
+                    j <- j + 1
+
+                let w = st.Text.Substring(vs, j - vs)
+                st.I <- j
+                let span = { Start = at vs; End = at j }
+
+                if isTildeWord w then
+                    tildeExpr w span
+                else
+                    { Kind = EStr w; Span = span }
+            else
+                refuse st
+
+        if st.Ok then
+            ws st
+            let sp = { Start = at s; End = here st }
+
+            if st.I < st.Text.Length && not (Char.IsWhiteSpace(peekAt st -1)) then
+                refuse st
+            else
+                let v =
+                    if isNull' value then
+                        { Kind = EStr ""; Span = sp }
+                    else
+                        value
+
+                acc <- ((name, v), sp) :: acc
+
+    if st.Ok then List.rev acc else Unchecked.defaultof<_>
+
+// commandSegment past its head verdict: env prefixes, the head, the
+// argv, the node
+and private cmdSegment (st: St) (builtinHeads: bool) (h: Head) (stops: int) (sigilEnv: Expr option) : Expr =
+    if h.K = HeadK.Env then
+        // `attempt (many envAssign .>>. head)`: no head, no command
+        let assigns = envAssigns st
+
+        if not st.Ok then
+            Unchecked.defaultof<_>
+        else
+            let h2 = headOf st builtinHeads
+
+            if h2.K = HeadK.NotCmd || h2.K = HeadK.Refuse || h2.K = HeadK.Env then
+                refuse st
+            else
+                headSegment st h2 stops (segmentEnv sigilEnv assigns)
+    else
+        headSegment st h stops sigilEnv
+
+// commandSegment past a resolved head
+and private headSegment (st: St) (h: Head) (stops: int) (sigilEnv: Expr option) : Expr =
+    let start = st.I
+
+    let fullSpan (span: Span) (args: Expr list) = {
+        Start = span.Start
+        End =
+            (match args with
+             | [] -> span.End
+             | _ -> (List.last args).Span.End)
+    }
+
+    if h.K = HeadK.Dynamic then
+        // ^$name / ^$(…) — the dynamic head [D:dynamic-head]
+        st.I <- st.I + 1
+
+        let he, disp =
+            if captureAhead st then
+                cmdCapture st, "$(…)"
+            else
+                let e = splicePathAt st 1
+                e, (if st.Ok then "$" + sexpr e else null)
+
+        if not st.Ok then
+            Unchecked.defaultof<_>
+        else
+            ws st
+            let span = { Start = at start; End = he.Span.End }
+            let args = cmdArgs st stops
+
+            if not st.Ok then
+                Unchecked.defaultof<_>
+            else
+                {
+                    Kind = ECmd(HeadDyn(disp, he), args, sigilEnv)
+                    Span = fullSpan span args
+                }
+    else
+        let span = { Start = at start; End = at h.End }
+
+        // the alias table's second read, as litHead's match takes it
+        let alias =
+            if h.K = HeadK.Aliased then
+                (if st.AliasMasked.Contains h.Word then
+                     None
+                 else
+                     st.R.AliasHead h.Word)
+            else
+                None
+
+        st.I <- h.End
+        ws st
+        let args = cmdArgs st stops
+
+        if not st.Ok then
+            Unchecked.defaultof<_>
+        else
+            match h.K with
+            | HeadK.External -> {
+                Kind = ECmd(HeadLit h.Word, args, sigilEnv)
+                Span = fullSpan span args
+              }
+            | HeadK.Tilde -> {
+                Kind = ECmd(HeadDyn(h.Word, tildeExpr h.Word span), args, sigilEnv)
+                Span = fullSpan span args
+              }
+            | HeadK.Builtin -> buildBuiltinApp h.Word span args
+            | _ ->
+                match alias with
+                | Some(exe, prefix) ->
+                    let allArgs = (prefix |> List.map (fun a -> { Kind = EStr a; Span = span })) @ args
+
+                    if st.R.IsCommandCallable exe then
+                        buildBuiltinApp exe span allArgs
+                    else
+                        {
+                            Kind = ECmd(HeadLit exe, allArgs, sigilEnv)
+                            Span = fullSpan span args
+                        }
+                | None -> refuse st
+
+// the match-arm boundary [D:match-arm-commands]: `| <pattern> ->` or
+// `| <pattern> when` ends the chain; a pattern this parser refuses
+// refuses the statement (the grammar's verdict is unknown)
+and private armBoundaryAhead (st: St) : bool =
+    let save = st.I
+    let d = peekAt st 1
+
+    if d = '|' || d = '>' then
+        false
+    else
+        st.I <- st.I + 1
+        ws st
+        let w = wordAhead st
+
+        // a keyword heads no pattern (patWord's fatal, inside the probe's attempt)
+        if
+            not (isNull' w)
+            && keywords.Contains w
+            && w <> "true"
+            && w <> "false"
+            && not (isIdentCont (peekAt st w.Length))
+        then
+            st.I <- save
+            false
+        else
+            let p = commaPats st
+            let mutable alts = []
+
+            while st.Ok && peek st = '|' && peekAt st 1 <> '|' && peekAt st 1 <> '>' do
+                st.I <- st.I + 1
+                ws st
+                let a = commaPats st
+
+                if st.Ok then
+                    alts <- a :: alts
+
+            let boundary =
+                st.Ok
+                && not (
+                    not alts.IsEmpty
+                    && (p :: alts |> List.exists (fun a -> not (List.isEmpty (patLeafNames a))))
+                )
+                && (matches st "->" || keywordAhead st "when")
+
+            st.I <- save
+            boundary
+
+// a chain's expression stage: segOpp, the operator table without `|>`
+and private segTerm (st: St) : Expr =
+    match wordAhead st with
+    | "try"
+    | "orFail"
+    | "for"
+    | "pfor" when not (isIdentCont (peekAt st (wordAhead st).Length)) -> refuse st
+    | _ -> term st
+
+// one stage after a pipe glyph: a reifier marker, a command segment or
+// an expression; and/or chains, the try/orFail forms and env prefixes
+// are refused
+and private cmdStage (st: St) (builtinHeads: bool) (stops: int) (sigilEnv: Expr option) (op: string) : Seg =
+    let t = st.Text
+
+    if peek st = '|' || (op = "|>" && keywordAhead st "orFail") then
+        refuse st
+    else
+        let s = st.I
+        let mutable j = s
+
+        while j < t.Length && cmdWordChar t[j] do
+            j <- j + 1
+
+        let w = if j > s then t.Substring(s, j - s) else null
+
+        if not (isNull w) && List.contains w reifierNames then
+            st.I <- j
+            let span = { Start = at s; End = at j }
+            ws st
+
+            let msg =
+                if w = "orFail" then
+                    postfixAtom st
+                else
+                    Unchecked.defaultof<_>
+
+            if not st.Ok then
+                Unchecked.defaultof<_>
+            elif (w = "orFail" && isNull' msg) || not (reifierEndAhead st) then
+                refuse st
+            else
+                match w with
+                | "complete" -> CompleteMarker span
+                | "succeeds" -> SucceedsMarker span
+                | "exitCode" -> ExitCodeMarker span
+                | "orFail" -> OrFailMarker(msg, span)
+                | "exec" -> ExecMarker span
+                | "line" -> LineMarker span
+                | _ -> TextMarker span
+        elif w = "and" || w = "or" || keywordAhead st "try" || envPrefixAhead st then
+            refuse st
+        else
+            let h = headOf st builtinHeads
+
+            if h.K = HeadK.Refuse then
+                refuse st
+            elif h.K = HeadK.NotCmd then
+                let e = oppWith st segTerm 1 true
+
+                if not st.Ok then Unchecked.defaultof<_>
+                elif isNull' e then refuse st
+                else Stage e
+            else
+                let e = cmdSegment st builtinHeads h stops sigilEnv
+                if st.Ok then Stage e else Unchecked.defaultof<_>
+
+// pipedStages: each glyph and its stage, up to a match arm's boundary
+and private cmdStages (st: St) (builtinHeads: bool) (stops: int) (sigilEnv: Expr option) =
+    let mutable rest = []
+    let mutable go = st.Ok
+
+    while go do
+        if peek st <> '|' then
+            go <- false
+        elif st.InArm > 0 && armBoundaryAhead st then
+            go <- false
+        elif not st.Ok then
+            go <- false
+        else
+            let os = st.I
+            let op = if peekAt st 1 = '>' then "|>" else "|"
+            st.I <- st.I + op.Length
+            let opSpan = { Start = at os; End = here st }
+            ws st
+            let seg = cmdStage st builtinHeads stops sigilEnv op
+
+            if st.Ok then
+                rest <- ((op, opSpan), seg) :: rest
+            else
+                go <- false
+
+    List.rev rest
+
+// cmdLineWith past the head verdict: the segment, the piped stages, and
+// the chain fold shared with the grammar
+and private cmdLine (st: St) (builtinHeads: bool) (stops: int) (sigilEnv: Expr option) (h: Head) : Expr =
+    st.Depth <- st.Depth + 1
+
+    if tooDeep st then
+        st.Depth <- st.Depth - 1
+        refuse st
+    else
+        let head = cmdSegment st builtinHeads h stops sigilEnv
+
+        let rest =
+            if st.Ok then
+                cmdStages st builtinHeads stops sigilEnv
+            else
+                []
+
+        st.Depth <- st.Depth - 1
+
+        if not st.Ok then
+            Unchecked.defaultof<_>
+        else
+            match foldChain st.R.BareHome head rest with
+            | Result.Ok e -> e
+            | Result.Error _ -> refuse st
+
+// a value-headed pipeline [D:value-headed-pipe]: `xs | prog …`, the gate
+// (a single `|`, no chain word or reifier, an external head) then the
+// stages. Unchecked.defaultof<_> with Ok when the gate refuses; `lhs` itself when no
+// stage follows (a match arm's boundary); a capture head, an alias head
+// and a head this parser cannot judge refuse
+and private valueHeaded (st: St) (lhs: Expr) : Expr =
+    let save = st.I
+    st.I <- st.I + 1
+    ws st
+
+    let blocked =
+        match ("and" :: "or" :: reifierNames) |> List.tryFind (fun w -> matches st w) with
+        | Some w ->
+            let c = peekAt st w.Length
+
+            st.I + w.Length >= st.Text.Length
+            || Char.IsWhiteSpace c
+            || c = ')'
+            || c = ';'
+            || c = '|'
+            || c = sibSep
+            || c = fieldSep
+        | None -> false
+
+    let h = if blocked then notCmd else headOf st true
+    st.I <- save
+
+    match lhs.Kind with
+    | ECapture _ -> refuse st
+    | _ when h.K = HeadK.NotCmd || h.K = HeadK.Builtin -> Unchecked.defaultof<_>
+    | _ when h.K = HeadK.Refuse || h.K = HeadK.Aliased -> refuse st
+    | _ ->
+        st.Depth <- st.Depth + 1
+        let stages = if tooDeep st then refuse st else cmdStages st true 0 None
+        st.Depth <- st.Depth - 1
+
+        match stages with
+        | _ when not st.Ok -> Unchecked.defaultof<_>
+        | [] -> lhs
+        | (_, Stage { Kind = ECmd _ }) :: _ ->
+            match foldChain st.R.BareHome lhs stages with
+            | Result.Ok e -> e
+            | Result.Error _ -> refuse st
+        | _ -> refuse st
 
 let private attrArg (st: St) : AttrArg option =
     let c = peek st
@@ -3064,14 +3986,11 @@ let private letStmt (st: St) : Stmt =
         st.I <- st.I + 1
         ws st
 
-        if couldBeCommand st false then
-            refuse st
-        else
-            let value = seqExpr st
+        let value = seqExpr st
 
-            if not st.Ok then Unchecked.defaultof<_>
-            elif st.I <> st.Text.Length then refuse st
-            else SLetPat(binder, value)
+        if not st.Ok then Unchecked.defaultof<_>
+        elif st.I <> st.Text.Length then refuse st
+        else SLetPat(binder, value)
     elif not (retry st save) then
         Unchecked.defaultof<_>
     else
@@ -3119,8 +4038,38 @@ let private letStmt (st: St) : Stmt =
                 else
                     let names = ps |> List.collect patLeafNames
 
+                    // the spine [D:block-let-cmd]: letCmdOk up, params known;
+                    // a command-first RHS sequences its sentinel siblings after it
                     let rhs =
-                        withSpineNames st names (fun st -> if couldBeCommand st false then refuse st else seqExpr st)
+                        withSpineNames st names (fun st ->
+                            let savedLet = st.LetCmd
+                            st.LetCmd <- true
+                            let h = headOf st false
+
+                            let e =
+                                if h.K = HeadK.Refuse then
+                                    refuse st
+                                elif h.K = HeadK.NotCmd then
+                                    seqExpr st
+                                else
+                                    let first = cmdLine st false StopIn None h
+                                    let mutable items = [ struct (first, true) ]
+
+                                    while st.Ok && strWs st sibSepStr do
+                                        let e = stmtElem st
+
+                                        if st.Ok then
+                                            items <- struct (e, st.LastChain) :: items
+
+                                    if not st.Ok then
+                                        Unchecked.defaultof<_>
+                                    else
+                                        match items with
+                                        | [ _ ] -> first
+                                        | _ -> armSeq st (List.rev items)
+
+                            st.LetCmd <- savedLet
+                            e)
 
                     if not st.Ok then
                         Unchecked.defaultof<_>
@@ -3151,14 +4100,25 @@ let private statement (st: St) : Stmt =
         typeDecl st
     elif keywordAhead st "let" then
         letStmt st
-    elif guardedHead st || couldBeCommand st true then
+    elif guardedHead st then
         refuse st
     else
-        let e = seqExpr st
+        let h = headOf st true
 
-        if not st.Ok then Unchecked.defaultof<_>
-        elif st.I <> st.Text.Length then refuse st
-        else SExpr e
+        if h.K = HeadK.Refuse then
+            refuse st
+        elif h.K <> HeadK.NotCmd then
+            let e = cmdLine st true 0 None h
+
+            if not st.Ok then Unchecked.defaultof<_>
+            elif st.I <> st.Text.Length then refuse st
+            else SCmd e
+        else
+            let e = seqExpr st
+
+            if not st.Ok then Unchecked.defaultof<_>
+            elif st.I <> st.Text.Length then refuse st
+            else SExpr e
 
 // ---- the entry and its counters --------------------------------------------
 let mutable private taken = 0L
@@ -3188,6 +4148,11 @@ let private parse (r: Resolver) (input: string) : Stmt * St =
             AliasMasked = Set.empty
             InArm = 0
             ExprParen = false
+            LetCmd = false
+            LetCmdStmt = false
+            IfCond = false
+            IfBody = false
+            LastChain = false
             RefusedAt = 0
             PendingAt = 0
             WordAt = -1
@@ -3207,6 +4172,11 @@ let private parse (r: Resolver) (input: string) : Stmt * St =
             AliasMasked = Set.empty
             InArm = 0
             ExprParen = false
+            LetCmd = false
+            LetCmdStmt = false
+            IfCond = false
+            IfBody = false
+            LastChain = false
             RefusedAt = -1
             PendingAt = pending.Count
             WordAt = -1
