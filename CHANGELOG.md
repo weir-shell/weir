@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- **A `-in` flag no longer closes a block let.** Inside a function or
+  `if` body, `let m = openssl rsa -in $key …` on one line and its
+  body on the next was read as an inline `let … in` with the flag as
+  the keyword, so the body line failed to parse. A keyword now has to
+  stand alone — glued to a dash, a dot or a tick it is part of a word.
 - **A second, hand-written parser takes the common statements.** The
   grammar library parses a statement through a closure per grammar
   rule and a reply per step; most of a check's time went there. A
