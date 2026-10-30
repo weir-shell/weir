@@ -123,7 +123,7 @@ fields, which yaml refuses both ways. Use a seq of pairs,
   PyYAML reads them. A `yaml` block takes the same forms.
 - Text after a quoted value's closing quote (`'a'b`) is an error.
 
-### Numbers
+### YAML numbers
 
 Numbers follow YAML 1.2's core schema, which differs from the YAML 1.1
 readers many tools still use (PyYAML, kubectl's go-yaml v2). A `Yaml`

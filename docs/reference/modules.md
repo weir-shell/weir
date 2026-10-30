@@ -81,7 +81,7 @@ Imported values are always qualified: `X.helper`. A module exports
 only its own declarations, never what it imported. A local declaration
 takes precedence over an imported name.
 
-### Types
+### Imported types
 
 An imported type is `X.Ctx`, in every place a type is written:
 
@@ -121,7 +121,7 @@ position: match arms, `let`, parameters, lambdas, nested patterns.
 - When two imports declare the same case name and nothing types the
   value, a bare case is an error listing the qualified spellings.
 
-### Validated types
+### Imported validated types
 
 A [validated type](types.md#validated-types) exports with its
 `create`, since types always export: `X.Email.create`, or bare
