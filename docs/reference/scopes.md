@@ -231,12 +231,17 @@ let handler = fun req ->
 
 within serve srv = { port = Some 8080; maxConcurrent = 4 } handler
     print $"listening on {Server.port srv}"
+until stopped
 ```
 
 The handler is a plain function, `HttpServerRequest ->
 HttpServerResponse`, called once per request. Route with `match`.
 When the block exits, however it exits, the socket closes and the port
 is free. There is no `stop`.
+
+Without [`until stopped`](#until-stopped) the server closes as soon as
+the block's body finishes, which suits tests and one-shot exchanges.
+With it, the server runs until Ctrl+C or SIGTERM, then drains.
 
 The handle supports `Server.port` (the bound port), `Server.running`
 and `Server.streamErrors`.
@@ -304,6 +309,10 @@ dropped. Running handlers get 2 seconds, between them, to finish.
 After that each is stopped at its next builtin call, command, sleep
 or request, its commands are killed, and its response is discarded.
 Nothing a handler does happens after the block exits.
+
+A signal skips the 2 seconds and stops handlers at once, unless the
+scope is held by `until stopped`: then the first signal gets the
+normal 2-second drain.
 
 ### Not supported
 
